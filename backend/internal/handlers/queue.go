@@ -1,0 +1,210 @@
+package handlers
+
+import (
+	"net/http"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+type QueueHandler struct {
+	db *gorm.DB
+}
+
+type QueueJobInput struct {
+	MediaPath       string `json:"mediaPath" binding:"required"`
+	BatchID         string `json:"batchId"`
+	BatchName       string `json:"batchName"`
+	LibraryID       uint   `json:"libraryId" binding:"required"`
+	ProfileID       uint   `json:"profileId" binding:"required"`
+	AudioProfileKey string `json:"audioProfileKey"`
+	Priority        int    `json:"priority"`
+	Notes           string `json:"notes"`
+}
+
+type QueueJobUpdateInput struct {
+	MediaPath       string  `json:"mediaPath"`
+	LibraryID       *uint   `json:"libraryId"`
+	ProfileID       *uint   `json:"profileId"`
+	AudioProfileKey *string `json:"audioProfileKey"`
+	Priority        *int    `json:"priority"`
+	Status          string  `json:"status"`
+	Notes           string  `json:"notes"`
+}
+
+func NewQueueHandler(db *gorm.DB) QueueHandler {
+	return QueueHandler{db: db}
+}
+
+func (h QueueHandler) List(c *gin.Context) {
+	var jobs []models.QueueJob
+	if err := h.db.Order("priority asc, created_at asc").Find(&jobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, jobs)
+}
+
+func (h QueueHandler) Create(c *gin.Context) {
+	var input QueueJobInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if review := reviewForPath(filepath.Clean(input.MediaPath), assetReviewOverrides(h.db)); review.RequiresReview {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  "asset requires review before queueing",
+			"review": review,
+		})
+		return
+	}
+	if active, err := h.assetHasOpenJob(input.MediaPath, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
+		return
+	}
+
+	priority := input.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	job := models.QueueJob{
+		MediaPath:       input.MediaPath,
+		BatchID:         input.BatchID,
+		BatchName:       input.BatchName,
+		LibraryID:       input.LibraryID,
+		ProfileID:       input.ProfileID,
+		AudioProfileKey: input.AudioProfileKey,
+		Priority:        priority,
+		Status:          "queued",
+		Notes:           input.Notes,
+	}
+
+	if err := h.db.Create(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, job)
+}
+
+func (h QueueHandler) Update(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job id"})
+		return
+	}
+
+	var input QueueJobUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var job models.QueueJob
+	if err := h.db.First(&job, uint(id)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if input.Priority != nil {
+		job.Priority = clamp(*input.Priority, 1, 10)
+	}
+	if queueJobConfigChanged(input) && job.Status != JobStatusQueued && job.Status != JobStatusFailed && job.Status != JobStatusCanceled {
+		c.JSON(http.StatusConflict, gin.H{"error": "only queued, failed, or canceled jobs can be edited"})
+		return
+	}
+	if input.MediaPath != "" && input.MediaPath != job.MediaPath {
+		if active, err := h.assetHasOpenJob(input.MediaPath, job.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if active {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
+			return
+		}
+		if review := reviewForPath(filepath.Clean(input.MediaPath), assetReviewOverrides(h.db)); review.RequiresReview {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":  "asset requires review before queueing",
+				"review": review,
+			})
+			return
+		}
+		job.MediaPath = input.MediaPath
+	}
+	if input.LibraryID != nil {
+		job.LibraryID = *input.LibraryID
+	}
+	if input.ProfileID != nil {
+		job.ProfileID = *input.ProfileID
+	}
+	if input.AudioProfileKey != nil {
+		job.AudioProfileKey = *input.AudioProfileKey
+	}
+
+	if input.Notes != "" {
+		job.Notes = input.Notes
+	}
+
+	if input.Status != "" {
+		if !validJobStatus(input.Status) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job status"})
+			return
+		}
+
+		now := time.Now()
+		switch input.Status {
+		case JobStatusQueued:
+			job.Status = JobStatusQueued
+			job.Progress = 0
+			job.WorkerName = ""
+			job.ErrorMessage = ""
+			job.StartedAt = nil
+			job.FinishedAt = nil
+		case JobStatusCanceled:
+			cancelRunningJobProcess(job.ID)
+			job.Status = JobStatusCanceled
+			job.FinishedAt = &now
+		default:
+			job.Status = input.Status
+		}
+	}
+
+	if err := h.db.Save(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, job)
+}
+
+func queueJobConfigChanged(input QueueJobUpdateInput) bool {
+	return input.MediaPath != "" || input.LibraryID != nil || input.ProfileID != nil || input.AudioProfileKey != nil
+}
+
+func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, error) {
+	cleanPath := filepath.Clean(mediaPath)
+	var count int64
+	query := h.db.Model(&models.QueueJob{}).
+		Where("media_path = ?", cleanPath).
+		Where("status <> ?", JobStatusCanceled).
+		Where("published_at IS NULL")
+	if excludeID != 0 {
+		query = query.Where("id <> ?", excludeID)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}

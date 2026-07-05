@@ -1,0 +1,208 @@
+import type {
+  Library,
+  LibraryInput,
+  LogFile,
+  LogFileContent,
+  MWPImportSummary,
+  AnalysisBackfillResponse,
+  AppSetting,
+  AssetReviewUpdateInput,
+  AssetMetadataUpdateInput,
+  AssetInventory,
+  AdvisorRequest,
+  AdvisorResponse,
+  ClaimJobInput,
+  ExecuteJobInput,
+  JobArtifactsResponse,
+  Profile,
+  ProfileInput,
+  PathBrowseResponse,
+  PublishResult,
+  QueueJob,
+  QueueJobInput,
+  QueueJobUpdateInput,
+  ScanResult,
+  SoftwareVersions,
+  UpdateLibraryInput,
+  UpdateProfileInput,
+  UpdateSettingInput,
+  UpdateJobStatusInput,
+  ValidationResult,
+} from './types';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...init?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  libraries: () => request<Library[]>('/api/libraries'),
+  logFiles: () => request<LogFile[]>('/api/logs/files'),
+  logFile: (name: string) => request<LogFileContent>(`/api/logs/files/${encodeURIComponent(name)}`),
+  browsePaths: (root: 'raw' | 'library' | 'staging') =>
+    request<PathBrowseResponse>(`/api/paths/browse?root=${encodeURIComponent(root)}`),
+  assets: () => request<AssetInventory>('/api/assets'),
+  updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
+    request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify(review),
+    }),
+  updateAssetMetadata: ({ path, ...metadata }: AssetMetadataUpdateInput) =>
+    request<{ path: string; metadata: unknown }>(`/api/assets/metadata?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify(metadata),
+    }),
+  evaluateAdvisor: (advisorRequest: AdvisorRequest) =>
+    request<AdvisorResponse>('/api/advisor/evaluate', {
+      method: 'POST',
+      body: JSON.stringify(advisorRequest),
+    }),
+  createLibrary: (library: LibraryInput) =>
+    request<Library>('/api/libraries', {
+      method: 'POST',
+      body: JSON.stringify(library),
+    }),
+  updateLibrary: ({ id, ...library }: UpdateLibraryInput) =>
+    request<Library>(`/api/libraries/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(library),
+    }),
+  profiles: () => request<Profile[]>('/api/profiles'),
+  profilesAdmin: () => request<Profile[]>('/api/profiles?includeDisabled=true&includeDeleted=true'),
+  createProfile: (profile: ProfileInput) =>
+    request<Profile>('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify(profile),
+    }),
+  updateProfile: ({ id, ...profile }: UpdateProfileInput) =>
+    request<Profile>(`/api/profiles/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(profile),
+    }),
+  setProfileDisabled: ({ id, disabled }: { id: number; disabled: boolean }) =>
+    request<Profile>(`/api/profiles/${id}/disabled`, {
+      method: 'POST',
+      body: JSON.stringify({ disabled }),
+    }),
+  deleteProfile: (id: number) =>
+    request<{ status: string; id: number }>(`/api/profiles/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+    }),
+  queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
+  createQueueJob: (job: QueueJobInput) =>
+    request<QueueJob>('/api/queue/jobs', {
+      method: 'POST',
+      body: JSON.stringify(job),
+    }),
+  updateQueueJob: ({ jobId, ...job }: QueueJobUpdateInput) =>
+    request<QueueJob>(`/api/queue/jobs/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify(job),
+    }),
+  jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),
+  backfillAnalysisAsIsReports: () =>
+    request<AnalysisBackfillResponse>('/api/analysis/backfill-as-is', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  claimQueueJob: (claim: ClaimJobInput) =>
+    request<QueueJob>('/api/workers/claim', {
+      method: 'POST',
+      body: JSON.stringify(claim),
+    }),
+  updateQueueJobStatus: ({ jobId, ...statusUpdate }: UpdateJobStatusInput) =>
+    request<QueueJob>(`/api/workers/jobs/${jobId}/status`, {
+      method: 'POST',
+      body: JSON.stringify(statusUpdate),
+    }),
+  dryRunQueueJob: (jobId: number) =>
+    request<QueueJob>(`/api/workers/jobs/${jobId}/dry-run`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  executeQueueJob: ({ jobId, overwrite = false }: ExecuteJobInput) =>
+    request<QueueJob>(`/api/workers/jobs/${jobId}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ overwrite }),
+    }),
+  validateJob: (jobId: number) =>
+    request<ValidationResult>(`/api/validation/jobs/${jobId}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  publishJob: ({ jobId, overwrite = false }: { jobId: number; overwrite?: boolean }) =>
+    request<PublishResult>(`/api/publisher/jobs/${jobId}/publish`, {
+      method: 'POST',
+      body: JSON.stringify({ overwrite }),
+    }),
+  settings: () => request<AppSetting[]>('/api/settings'),
+  softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
+  updateSetting: ({ key, value }: UpdateSettingInput) =>
+    request<AppSetting>(`/api/settings/${key}`, {
+      method: 'POST',
+      body: JSON.stringify({ value }),
+    }),
+  importMWP: () =>
+    request<MWPImportSummary>('/api/import/mwp', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  scan: ({ path, force = false }: { path: string; force?: boolean }) =>
+    request<ScanResult>('/api/scan', {
+      method: 'POST',
+      body: JSON.stringify({ path, force }),
+  }),
+  assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
+  compatibleAssetPreviewUrl: ({
+    path,
+    profileId = 0,
+    start = '00:00:00',
+    seconds = 20,
+    videoCodec = '',
+    qualityValue = 0,
+    videoPreset = '',
+    pixFmt = '',
+    videoFilters = '',
+    x265Params = '',
+  }: {
+    path: string;
+    profileId?: number;
+    start?: string;
+    seconds?: number;
+    videoCodec?: string;
+    qualityValue?: number;
+    videoPreset?: string;
+    pixFmt?: string;
+    videoFilters?: string;
+    x265Params?: string;
+  }) =>
+    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}`,
+  audioPreviewUrl: ({
+    path,
+    profileKey = '',
+    start = '00:00:00',
+    seconds = 20,
+    filters = '',
+  }: {
+    path: string;
+    profileKey?: string;
+    start?: string;
+    seconds?: number;
+    filters?: string;
+  }) =>
+    `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}`,
+};

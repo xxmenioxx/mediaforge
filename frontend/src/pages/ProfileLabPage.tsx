@@ -1,0 +1,1780 @@
+import {
+  Alert,
+  Autocomplete,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Checkbox,
+  Chip,
+  Grid,
+  MenuItem,
+  Slider,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SaveIcon from '@mui/icons-material/Save';
+import TuneIcon from '@mui/icons-material/Tune';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../api/client';
+import type { AppSetting, Asset, AudioEnhancementProfile, Profile, ProfileInput } from '../api/types';
+import { starterAudioProfiles } from '../audioProfiles';
+import { PageHeader } from '../components/PageHeader';
+
+const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
+
+const channelModes = [
+  { value: 'preserve', label: 'Preserve', description: 'Keep the source channel layout unless other filters/codecs change it.' },
+  { value: 'dual-mono', label: 'Mono to Dual Mono', description: 'Safely duplicate mono into left and right channels.' },
+  { value: 'force-stereo', label: 'Force Stereo', description: 'Ask FFmpeg to output a stereo layout without pseudo-stereo widening.' },
+  { value: 'downmix-mono', label: 'Downmix to Mono', description: 'Mix stereo or multichannel audio into one centered mono track.' },
+  { value: 'light-stereo', label: 'Mono to Light Stereo', description: 'Experimental pseudo-stereo using small delay and widening.' },
+] as const;
+
+const forceStereoModes = [
+  { value: 'auto', label: 'Auto mix', description: 'Recommended. Let FFmpeg convert the source layout into stereo.' },
+  { value: 'first-two', label: 'First L/R', description: 'Keep the first two input channels as left and right.' },
+  { value: 'duplicate-first', label: 'Duplicate first channel', description: 'Use the first input channel for both left and right.' },
+] as const;
+
+const encoderPresetOptions = [
+  { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful for quick tests.' },
+  { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
+  { value: 'slow', label: 'Higher compression', description: 'Slower, usually smaller files at the same quality.' },
+  { value: 'slower', label: 'Archive patience', description: 'Very slow. Use only when size matters and time is acceptable.' },
+] as const;
+
+const pixelFormatOptions = [
+  { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265/anime/DVD. Helps reduce banding while staying widely playable.' },
+  { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or codecs that do not need 10-bit output.' },
+] as const;
+
+const deinterlaceOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'auto', label: 'Auto' },
+] as const;
+
+const denoiseOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'light', label: 'Light' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'strong', label: 'Strong' },
+] as const;
+
+const debandOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'light', label: 'Light' },
+  { value: 'medium', label: 'Medium' },
+] as const;
+
+const cropOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'manual', label: 'Manual' },
+] as const;
+
+const videoStarterPresets = [
+  {
+    key: 'anime-dvd',
+    label: 'Anime DVD',
+    description: 'DVDs comerciales y rips limpios. Balance ideal de calidad y tamaño.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 20,
+      workerConfig: {
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+      },
+    },
+  },
+  {
+    key: 'anime-tv-rip',
+    label: 'Anime TV Rip',
+    description: 'Capturas MPEG-2, fansubs antiguos o fuentes con entrelazado/ruido.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 21,
+      workerConfig: {
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'auto',
+        denoise: 'light',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: 'bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6',
+        x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+      },
+    },
+  },
+  {
+    key: 'anime-master',
+    label: 'Archivo Maestro',
+    description: 'Para animes favoritos o conversiones donde pesa más la fidelidad.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 18,
+      workerConfig: {
+        videoPreset: 'slow',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'light',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+      },
+    },
+  },
+  {
+    key: 'anime-high-compression',
+    label: 'Compresión Alta',
+    description: 'Cuando el espacio importa más. Suele funcionar bien con anime SD.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 23,
+      workerConfig: {
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+      },
+    },
+  },
+] as const;
+
+const emptyVideoDraft: ProfileInput = {
+  name: '',
+  description: '',
+  container: 'mkv',
+  videoCodec: 'x265',
+  audioCodec: 'copy',
+  qualityMode: 'crf',
+  qualityValue: 22,
+  preserveHdr: true,
+  preserveSubtitles: true,
+  preserveChapters: true,
+  workerConfig: {
+    encoder: 'ffmpeg',
+    preset: 'profile-lab',
+    videoPreset: 'medium',
+    pixFmt: 'yuv420p10le',
+    deinterlace: 'off',
+    denoise: 'off',
+    deband: 'off',
+    crop: 'off',
+    cropValue: '',
+    videoFilters: '',
+    x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+  },
+};
+
+const emptyAudioDraft: AudioEnhancementProfile = {
+  key: '',
+  name: '',
+  description: '',
+  intent: 'Asset-specific restoration',
+  filters: 'loudnorm=I=-18:TP=-2:LRA=11',
+  rnnoiseModelPath: '',
+  channelMode: 'preserve',
+  forceStereoMode: 'auto',
+  stereoDelayMs: 12,
+  stereoWidth: 20,
+  eqBands: defaultEqBands(),
+  preserveOriginalTrack: true,
+  outputCodec: 'aac',
+  targetLoudness: -18,
+  truePeak: -2,
+  notes: '',
+};
+
+export function ProfileLabPage() {
+  const queryClient = useQueryClient();
+  const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
+  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const rawAssets = assets.data?.unprocessed ?? [];
+  const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
+  const [assetPath, setAssetPath] = useState('');
+  const [start, setStart] = useState('00:00:00');
+  const [seconds, setSeconds] = useState(20);
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
+  const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
+  const [processedVideoQualityValue, setProcessedVideoQualityValue] = useState(emptyVideoDraft.qualityValue);
+  const [processedVideoOptions, setProcessedVideoOptions] = useState(videoPreviewOptions(emptyVideoDraft));
+  const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
+  const [processedAudioFilters, setProcessedAudioFilters] = useState('');
+  const [processedAudioChannelMode, setProcessedAudioChannelMode] = useState<AudioEnhancementProfile['channelMode']>('preserve');
+  const [audioFilterChain, setAudioFilterChain] = useState(effectiveAudioFilters(emptyAudioDraft));
+  const [audioFilterChainEdited, setAudioFilterChainEdited] = useState(false);
+  const [audioPreviewStatus, setAudioPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [videoDraft, setVideoDraft] = useState<ProfileInput>(emptyVideoDraft);
+  const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
+  const previewsRef = useRef<HTMLDivElement | null>(null);
+  const selectedAsset = rawAssets.find((asset) => asset.path === assetPath) ?? null;
+  const currentAudioFilters = effectiveAudioFilters(audioDraft);
+  const previewAudioFilters = audioFilterChain.trim() || 'anull';
+
+  useEffect(() => {
+    if (!audioFilterChainEdited) {
+      setAudioFilterChain(currentAudioFilters || 'anull');
+    }
+  }, [audioFilterChainEdited, currentAudioFilters]);
+
+  const createVideoProfile = useMutation({
+    mutationFn: api.createProfile,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
+    },
+  });
+
+  const updateSetting = useMutation({
+    mutationFn: api.updateSetting,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+  });
+
+  function selectVideoProfile(profileId: number) {
+    const profile = (profiles.data ?? []).find((candidate) => candidate.id === profileId);
+    if (!profile) {
+      return;
+    }
+    setVideoDraft({
+      name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
+      description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
+      container: profile.container,
+      videoCodec: profile.videoCodec,
+      audioCodec: profile.audioCodec,
+      qualityMode: profile.qualityMode,
+      qualityValue: profile.qualityValue,
+      preserveHdr: profile.preserveHdr,
+      preserveSubtitles: profile.preserveSubtitles,
+      preserveChapters: profile.preserveChapters,
+      workerConfig: { ...profile.workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
+    });
+  }
+
+  function applyStarterVideoPreset(presetKey: string) {
+    const preset = videoStarterPresets.find((candidate) => candidate.key === presetKey);
+    if (!preset) {
+      return;
+    }
+    setVideoDraft((current) => ({
+      ...current,
+      name: selectedAsset?.fileName ? `${preset.label} - ${selectedAsset.fileName}` : preset.label,
+      description: `${preset.description}${selectedAsset ? ` Asset base: ${selectedAsset.relativePath || selectedAsset.fileName}.` : ''}`,
+      videoCodec: preset.draft.videoCodec,
+      qualityValue: preset.draft.qualityValue,
+      workerConfig: {
+        ...current.workerConfig,
+        ...preset.draft.workerConfig,
+        starterPreset: preset.key,
+      },
+    }));
+  }
+
+  function selectAudioProfile(profileKey: string) {
+    const profile = audioProfiles.find((candidate) => candidate.key === profileKey);
+    if (!profile) {
+      return;
+    }
+    const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
+    setAudioDraft({
+      ...profile,
+      key: uniqueKey(slugify(baseName), audioProfiles),
+      name: baseName,
+      description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
+      notes: [profile.notes, selectedAsset ? `Lab asset: ${selectedAsset.path}` : ''].filter(Boolean).join('\n'),
+    });
+    setAudioFilterChainEdited(false);
+  }
+
+  function applyStarterAudioProfile(profileKey: string) {
+    const profile = starterAudioProfiles.find((candidate) => candidate.key === profileKey);
+    if (!profile) {
+      return;
+    }
+    const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
+    setAudioDraft({
+      ...profile,
+      key: uniqueKey(slugify(baseName), audioProfiles),
+      name: baseName,
+      description: `Started from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
+      notes: [profile.notes, selectedAsset ? `Lab asset: ${selectedAsset.path}` : ''].filter(Boolean).join('\n'),
+    });
+    setAudioFilterChainEdited(false);
+  }
+
+  function saveVideoProfile() {
+    createVideoProfile.mutate({
+      ...videoDraft,
+      workerConfig: {
+        ...videoDraft.workerConfig,
+        source: 'profile-lab',
+        derivedFromAsset: selectedAsset?.path ?? '',
+      },
+    });
+  }
+
+  function saveAudioProfile() {
+    const normalized = {
+      ...audioDraft,
+      key: slugify(audioDraft.key || audioDraft.name),
+      filters: audioFilterChainEdited ? previewAudioFilters : audioDraft.filters,
+      channelMode: audioFilterChainEdited ? 'preserve' as const : audioDraft.channelMode,
+      eqBands: audioFilterChainEdited ? defaultEqBands() : normalizeEqBands(audioDraft.eqBands),
+    };
+    const existing = audioProfiles.filter((profile) => profile.key !== normalized.key);
+    updateSetting.mutate({ key: 'audioEnhancementProfiles', value: { profiles: [...existing, normalized] } });
+  }
+
+  function processAudioPreview() {
+    setProcessedAudioFilters(previewAudioFilters);
+    setProcessedAudioChannelMode(audioDraft.channelMode);
+    setAudioPreviewStatus('loading');
+    setAudioPreviewNonce((current) => current + 1);
+    scrollToPreviews();
+  }
+
+  function processVideoPreview() {
+    setProcessedVideoCodec(videoDraft.videoCodec);
+    setProcessedVideoQualityValue(videoDraft.qualityValue);
+    setProcessedVideoOptions(videoPreviewOptions(videoDraft));
+    setVideoPreviewStatus('loading');
+    setVideoPreviewNonce((current) => current + 1);
+    scrollToPreviews();
+  }
+
+  function resetProcessedAudioPreview() {
+    setAudioPreviewNonce(0);
+    setAudioPreviewStatus('idle');
+    setProcessedAudioFilters('');
+    setProcessedAudioChannelMode('preserve');
+  }
+
+  function resetProcessedVideoPreview() {
+    setVideoPreviewNonce(0);
+    setVideoPreviewStatus('idle');
+  }
+
+  function resetProcessedPreviews() {
+    resetProcessedAudioPreview();
+    resetProcessedVideoPreview();
+  }
+
+  function scrollToPreviews() {
+    window.requestAnimationFrame(() => {
+      previewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  return (
+    <>
+      <PageHeader title="Profile Lab" eyebrow="A/B Preview">
+        <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 900 }}>
+          Compare original samples against video and audio profile drafts, then save asset-specific profiles for repeatable series, anime, or source families.
+        </Typography>
+      </PageHeader>
+      <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
+        <Card sx={{ mb: 2 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Grid container spacing={1.5} alignItems="stretch">
+              <Grid size={{ xs: 12, lg: 6 }}>
+                <AssetAutocomplete
+                  assets={rawAssets}
+                  value={selectedAsset}
+                  onChange={(asset) => {
+                    setAssetPath(asset?.path ?? '');
+                    resetProcessedPreviews();
+                  }}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
+                <TextField
+                  label="Start"
+                  value={start}
+                  onChange={(event) => {
+                    setStart(event.target.value);
+                    resetProcessedPreviews();
+                  }}
+                  helperText="HH:MM:SS"
+                  fullWidth
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
+                <TextField
+                  label="Seconds"
+                  value={seconds}
+                  type="number"
+                  inputProps={{ min: 5, max: 120 }}
+                  onChange={(event) => {
+                    setSeconds(Number(event.target.value));
+                    resetProcessedPreviews();
+                  }}
+                  fullWidth
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
+                <Button
+                  startIcon={<PlayArrowIcon />}
+                  variant="contained"
+                  disabled={!assetPath}
+                  onClick={() => {
+                    setPreviewNonce((current) => current + 1);
+                  }}
+                  fullWidth
+                  sx={{ height: '100%', minHeight: 54 }}
+                >
+                  Preview
+                </Button>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+        <Box ref={previewsRef} sx={{ scrollMarginTop: 16, mb: 2 }}>
+          <Stack spacing={2}>
+              {assetPath && previewNonce > 0 ? (
+                <Grid container spacing={2} alignItems="stretch">
+                  <Grid size={{ xs: 12, lg: 6 }}>
+                    <SampleCard title="Sample A" subtitle="Original source, browser-safe preview">
+                      <Stack spacing={2}>
+                        <VideoPreview label="Original video" src={`${api.compatibleAssetPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
+                        <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
+                      </Stack>
+                    </SampleCard>
+                  </Grid>
+                  <Grid size={{ xs: 12, lg: 6 }}>
+                    <SampleCard title="Sample B" subtitle="Current video and audio profile drafts">
+                      <Stack spacing={2}>
+                        {videoPreviewNonce > 0 ? (
+                          <VideoPreview
+                            label="Video draft"
+                            src={`${api.compatibleAssetPreviewUrl({
+                              path: assetPath,
+                              start,
+                              seconds,
+                              videoCodec: processedVideoCodec,
+                              qualityValue: processedVideoQualityValue,
+                              ...processedVideoOptions,
+                            })}&nonce=${videoPreviewNonce}`}
+                            onStatusChange={setVideoPreviewStatus}
+                          />
+                        ) : (
+                          <Alert severity="info">Process video after choosing the video profile settings to generate Sample B video.</Alert>
+                        )}
+                        {audioPreviewNonce > 0 ? (
+                          <AudioPreview
+                            label="Audio draft"
+                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds, filters: processedAudioFilters })}&nonce=${audioPreviewNonce}`}
+                            onStatusChange={setAudioPreviewStatus}
+                          />
+                        ) : (
+                          <Alert severity="info">Process audio after tuning the EQ and filters to generate Sample B audio.</Alert>
+                        )}
+                      </Stack>
+                    </SampleCard>
+                  </Grid>
+                </Grid>
+              ) : (
+                <Card>
+                  <CardContent>
+                    <Stack spacing={1}>
+                      <Typography variant="h3">Preview Workbench</Typography>
+                      <Typography color="text.secondary">
+                        Select an asset and generate a preview to compare Sample A against Sample B.
+                      </Typography>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              )}
+            </Stack>
+        </Box>
+
+        <Stack spacing={2}>
+              <Card>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <TuneIcon color="primary" />
+                    <Typography variant="h3">Video Profile Draft</Typography>
+                  </Stack>
+                  <Alert severity="info">
+                    <strong>copy</strong> keeps the original stream untouched. Use it to preserve quality; choose x264/x265 or another codec when
+                    you need smaller files, compatibility, or filters.
+                  </Alert>
+                  <Grid container spacing={2}>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField label="Starter preset" value="" onChange={(event) => applyStarterVideoPreset(event.target.value)} select fullWidth>
+                        <MenuItem value="" disabled>
+                          Choose a video preset
+                        </MenuItem>
+                        {videoStarterPresets.map((preset) => (
+                          <MenuItem key={preset.key} value={preset.key}>
+                            {preset.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 8 }}>
+                      <VideoProfileAutocomplete profiles={profiles.data ?? []} onChange={(profile) => profile ? selectVideoProfile(profile.id) : undefined} />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 7 }}>
+                      <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 5 }}>
+                      <TextField label="Video codec" value={videoDraft.videoCodec} onChange={(event) => setVideoDraft({ ...videoDraft, videoCodec: event.target.value })} select fullWidth>
+                        {['x264', 'x265', 'x265_10bit', 'copy'].map((codec) => (
+                          <MenuItem key={codec} value={codec}>
+                            {codec}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 4 }}>
+                      <TextField label="Container" value={videoDraft.container} onChange={(event) => setVideoDraft({ ...videoDraft, container: event.target.value })} select fullWidth>
+                        {['mkv', 'mp4'].map((container) => (
+                          <MenuItem key={container} value={container}>
+                            {container}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 4 }}>
+                      <TextField label="Audio codec" value={videoDraft.audioCodec} onChange={(event) => setVideoDraft({ ...videoDraft, audioCodec: event.target.value })} select fullWidth>
+                        {['copy', 'aac', 'ac3', 'opus'].map((codec) => (
+                          <MenuItem key={codec} value={codec}>
+                            {codec}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 8 }}>
+                      <Stack spacing={1.25} sx={{ minHeight: 128 }}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                          <Typography fontWeight={700}>Quality target</Typography>
+                          <Chip label={qualityLabel(videoDraft.qualityValue, videoDraft.videoCodec)} size="small" />
+                        </Stack>
+                        <Slider
+                          value={videoDraft.qualityValue}
+                          min={15}
+                          max={28}
+                          step={1}
+                          marks={[{ value: 15 }, { value: 18 }, { value: 22 }, { value: 28 }]}
+                          disabled={videoDraft.videoCodec === 'copy'}
+                          onChange={(_, value) => setVideoDraft({ ...videoDraft, qualityValue: Array.isArray(value) ? value[0] : value })}
+                          valueLabelDisplay="auto"
+                        />
+                        <Stack direction="row" justifyContent="space-between" sx={{ px: 0.25 }}>
+                          <Typography color="text.secondary" variant="body2">
+                            Best
+                          </Typography>
+                          <Typography color="text.secondary" variant="body2">
+                            Balanced
+                          </Typography>
+                          <Typography color="text.secondary" variant="body2">
+                            Small
+                          </Typography>
+                        </Stack>
+                      </Stack>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={videoDraft.preserveHdr ? 'Preserve HDR' : 'No HDR metadata'} />
+                        <Chip label={videoDraft.preserveSubtitles ? 'Preserve subtitles' : 'No subtitles'} />
+                        <Chip label={videoDraft.preserveChapters ? 'Preserve chapters' : 'No chapters'} />
+                      </Stack>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Grid container spacing={2}>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField
+                            label="Encoding speed"
+                            value={videoWorkerValue(videoDraft, 'videoPreset', 'medium')}
+                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoPreset', event.target.value)}
+                            helperText={encoderPresetDescription(videoWorkerValue(videoDraft, 'videoPreset', 'medium'))}
+                            select
+                            fullWidth
+                          >
+                            {encoderPresetOptions.map((preset) => (
+                              <MenuItem key={preset.value} value={preset.value}>
+                                {preset.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField
+                            label="Color depth"
+                            value={videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le')}
+                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'pixFmt', event.target.value)}
+                            helperText={pixelFormatDescription(videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le'))}
+                            select
+                            fullWidth
+                          >
+                            {pixelFormatOptions.map((pixFmt) => (
+                              <MenuItem key={pixFmt.value} value={pixFmt.value}>
+                                {pixFmt.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12 }}>
+                          <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
+                            <Stack spacing={2}>
+                              <Stack spacing={0.4}>
+                                <Typography fontWeight={700}>Image cleanup</Typography>
+                                <Typography color="text.secondary" variant="body2">
+                                  These controls build the FFmpeg video filter chain for Sample B and saved profiles.
+                                </Typography>
+                              </Stack>
+                              <Grid container spacing={2}>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                  <TextField
+                                    label="Deinterlace"
+                                    value={videoFilterControlValue(videoDraft, 'deinterlace', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deinterlace', event.target.value)}
+                                    select
+                                    fullWidth
+                                  >
+                                    {deinterlaceOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                  <TextField
+                                    label="Denoise"
+                                    value={videoFilterControlValue(videoDraft, 'denoise', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'denoise', event.target.value)}
+                                    select
+                                    fullWidth
+                                  >
+                                    {denoiseOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                  <TextField
+                                    label="Deband"
+                                    value={videoFilterControlValue(videoDraft, 'deband', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deband', event.target.value)}
+                                    select
+                                    fullWidth
+                                  >
+                                    {debandOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                  <TextField
+                                    label="Crop"
+                                    value={videoFilterControlValue(videoDraft, 'crop', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'crop', event.target.value)}
+                                    select
+                                    fullWidth
+                                  >
+                                    {cropOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                {videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' ? (
+                                  <Grid size={{ xs: 12, md: 6 }}>
+                                    <TextField
+                                      label="Manual crop"
+                                      value={videoWorkerValue(videoDraft, 'cropValue')}
+                                      onChange={(event) => updateVideoFilterControl(setVideoDraft, 'cropValue', event.target.value)}
+                                      placeholder="iw:ih-80:0:40"
+                                      helperText="FFmpeg crop expression: width:height:x:y."
+                                      fullWidth
+                                    />
+                                  </Grid>
+                                ) : null}
+                                <Grid size={{ xs: 12, md: videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' ? 6 : 12 }}>
+                                  <TextField
+                                    label="Video filters"
+                                    value={videoWorkerValue(videoDraft, 'videoFilters')}
+                                    onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoFilters', event.target.value)}
+                                    placeholder="bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6"
+                                    helperText="Auto-generated by cleanup controls. You can edit it directly for advanced FFmpeg filters."
+                                    fullWidth
+                                  />
+                                </Grid>
+                              </Grid>
+                            </Stack>
+                          </Box>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 6 }}>
+                          <TextField
+                            label="x265 params"
+                            value={videoWorkerValue(videoDraft, 'x265Params')}
+                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'x265Params', event.target.value)}
+                            placeholder="aq-mode=3:aq-strength=0.9:deblock=-1,-1"
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField label="AQ mode" value={x265ParamValue(videoDraft, 'aq-mode')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'aq-mode', event.target.value)} fullWidth />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField label="psy-rd" value={x265ParamValue(videoDraft, 'psy-rd')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'psy-rd', event.target.value)} fullWidth />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField label="deblock" value={x265ParamValue(videoDraft, 'deblock')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'deblock', event.target.value)} placeholder="-1,-1" fullWidth />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <TextField label="cutree" value={x265ParamValue(videoDraft, 'cutree')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'cutree', event.target.value)} placeholder="1" fullWidth />
+                        </Grid>
+                      </Grid>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField label="Description" value={videoDraft.description} onChange={(event) => setVideoDraft({ ...videoDraft, description: event.target.value })} multiline minRows={2} fullWidth />
+                    </Grid>
+                  </Grid>
+                  <Button
+                    startIcon={<PlayArrowIcon />}
+                    variant="contained"
+                    disabled={!assetPath || previewNonce === 0 || videoPreviewStatus === 'loading'}
+                    onClick={processVideoPreview}
+                  >
+                    {videoPreviewStatus === 'loading' ? 'Processing Video...' : 'Process Video'}
+                  </Button>
+                  {videoPreviewStatus === 'ready' ? (
+                    <Alert severity="success">Video sample ready in Sample B.</Alert>
+                  ) : null}
+                  {videoPreviewNonce > 0 &&
+                  videoPreviewStatus !== 'loading' &&
+                  (processedVideoCodec !== videoDraft.videoCodec || processedVideoQualityValue !== videoDraft.qualityValue || JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft))) ? (
+                    <Alert severity="info">Video settings changed. Process video again to refresh Sample B.</Alert>
+                  ) : null}
+                  {videoPreviewStatus === 'error' ? (
+                    <Alert severity="warning">Video sample could not be processed.</Alert>
+                  ) : null}
+                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!videoDraft.name || createVideoProfile.isPending} onClick={saveVideoProfile}>
+                    Save Video Profile
+                  </Button>
+                  {createVideoProfile.isSuccess ? <Alert severity="success">Video profile saved.</Alert> : null}
+                </Stack>
+              </CardContent>
+            </Card>
+
+              <Card>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <GraphicEqIcon color="primary" />
+                    <Typography variant="h3">Audio Profile Draft</Typography>
+                  </Stack>
+                  <Alert severity="info">
+                    <strong>copy</strong> cannot apply loudness, EQ, denoise, or filters. For restored audio, keep the original track and output the
+                    enhanced copy as AAC, Opus, AC3, or FLAC.
+                  </Alert>
+                  <Grid container spacing={2}>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField
+                        label="Starter preset"
+                        value=""
+                        onChange={(event) => applyStarterAudioProfile(event.target.value)}
+                        select
+                        fullWidth
+                      >
+                        <MenuItem value="" disabled>
+                          Choose a starter preset
+                        </MenuItem>
+                        {starterAudioProfiles.map((profile) => (
+                          <MenuItem key={profile.key} value={profile.key}>
+                            {profile.name} - {profile.intent}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <AudioProfileAutocomplete profiles={audioProfiles} onChange={(profile) => profile ? selectAudioProfile(profile.key) : undefined} />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField label="New audio profile name" value={audioDraft.name} onChange={(event) => setAudioDraft({ ...audioDraft, name: event.target.value, key: slugify(event.target.value) })} fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                      <TextField label="Output codec" value={audioDraft.outputCodec} onChange={(event) => setAudioDraft({ ...audioDraft, outputCodec: event.target.value })} select fullWidth>
+                        {['aac', 'copy', 'flac', 'opus', 'ac3'].map((codec) => (
+                          <MenuItem key={codec} value={codec}>
+                            {codec}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                      <TextField
+                        label="Channel mode"
+                        value={audioDraft.channelMode}
+                        onChange={(event) =>
+                          setAudioDraft({
+                            ...audioDraft,
+                            channelMode: event.target.value as AudioEnhancementProfile['channelMode'],
+                          })
+                        }
+                        select
+                        fullWidth
+                      >
+                        {channelModes.map((mode) => (
+                          <MenuItem key={mode.value} value={mode.value}>
+                            {mode.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Alert severity={audioDraft.channelMode === 'light-stereo' ? 'warning' : 'info'} sx={{ height: '100%' }}>
+                        {channelModes.find((mode) => mode.value === audioDraft.channelMode)?.description}
+                      </Alert>
+                    </Grid>
+                    {audioDraft.channelMode === 'force-stereo' ? (
+                      <>
+                        <Grid size={{ xs: 12, md: 5 }}>
+                          <TextField
+                            label="Stereo method"
+                            value={audioDraft.forceStereoMode}
+                            onChange={(event) =>
+                              setAudioDraft({
+                                ...audioDraft,
+                                forceStereoMode: event.target.value as AudioEnhancementProfile['forceStereoMode'],
+                              })
+                            }
+                            select
+                            fullWidth
+                          >
+                            {forceStereoModes.map((mode) => (
+                              <MenuItem key={mode.value} value={mode.value}>
+                                {mode.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 7 }}>
+                          <Alert severity="info" sx={{ height: '100%' }}>
+                            {forceStereoModes.find((mode) => mode.value === audioDraft.forceStereoMode)?.description}
+                          </Alert>
+                        </Grid>
+                      </>
+                    ) : null}
+                    {audioDraft.channelMode === 'light-stereo' ? (
+                      <>
+                        <Grid size={{ xs: 12, md: 6 }}>
+                          <TextField
+                            label="Stereo delay ms"
+                            value={audioDraft.stereoDelayMs}
+                            type="number"
+                            onChange={(event) => setAudioDraft({ ...audioDraft, stereoDelayMs: Number(event.target.value) })}
+                            inputProps={{ min: 1, max: 40 }}
+                            helperText="Small values are safer. Try 8-16 ms first."
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 6 }}>
+                          <TextField
+                            label="Stereo width"
+                            value={audioDraft.stereoWidth}
+                            type="number"
+                            onChange={(event) => setAudioDraft({ ...audioDraft, stereoWidth: Number(event.target.value) })}
+                            inputProps={{ min: 0, max: 100 }}
+                            helperText="Higher values widen more, but can sound phasey."
+                            fullWidth
+                          />
+                        </Grid>
+                      </>
+                    ) : null}
+                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                      <TextField label="Target loudness LUFS" value={audioDraft.targetLoudness} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, targetLoudness: Number(event.target.value) })} fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                      <TextField label="True peak dB" value={audioDraft.truePeak} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, truePeak: Number(event.target.value) })} fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ height: '100%', minHeight: 54 }}>
+                        <Checkbox
+                          checked={audioDraft.preserveOriginalTrack}
+                          onChange={(event) => setAudioDraft({ ...audioDraft, preserveOriginalTrack: event.target.checked })}
+                        />
+                        <Typography>Preserve original audio track</Typography>
+                      </Stack>
+                    </Grid>
+                    <Grid size={{ xs: 12, lg: 6 }}>
+                      <TextField
+                        label="FFmpeg audio filter chain"
+                        value={audioFilterChain}
+                        onChange={(event) => {
+                          setAudioFilterChainEdited(true);
+                          setAudioFilterChain(event.target.value);
+                        }}
+                        onBlur={() => {
+                          if (!audioFilterChain.trim()) {
+                            setAudioFilterChainEdited(false);
+                          }
+                        }}
+                        multiline
+                        minRows={5}
+                        helperText="Auto-generated from the controls until edited. Process Audio uses this exact chain for Sample B."
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12, lg: 6 }}>
+                      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
+                        <Stack spacing={2}>
+                          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+                            <Stack>
+                              <Typography fontWeight={700}>Graphic EQ</Typography>
+                              <Typography color="text.secondary" variant="body2">
+                                Tune this draft before generating the A/B audio preview.
+                              </Typography>
+                            </Stack>
+                            <Button
+                              variant="outlined"
+                              onClick={() => setAudioDraft((current) => ({ ...current, eqBands: defaultEqBands() }))}
+                            >
+                              Reset EQ
+                            </Button>
+                          </Stack>
+                          <Box sx={{ overflowX: 'auto', pb: 1 }}>
+                            <Stack direction="row" spacing={1.25} sx={{ minWidth: 720 }}>
+                              {eqFrequencies.map((frequency) => {
+                                const key = String(frequency);
+                                const value = audioDraft.eqBands?.[key] ?? 0;
+                                return (
+                                  <Stack
+                                    key={key}
+                                    spacing={1}
+                                    alignItems="center"
+                                    sx={{
+                                      width: 72,
+                                      border: 1,
+                                      borderColor: 'divider',
+                                      borderRadius: 1,
+                                      p: 1,
+                                      bgcolor: 'rgba(255,255,255,0.02)',
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    <Chip label={eqBandLabel(frequency)} size="small" />
+                                    <Typography fontWeight={700} variant="body2" noWrap>
+                                      {formatFrequency(frequency)}
+                                    </Typography>
+                                    <Typography color={value === 0 ? 'text.secondary' : 'primary.main'} fontWeight={700} variant="caption">
+                                      {value > 0 ? '+' : ''}{value} dB
+                                    </Typography>
+                                    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: 190 }}>
+                                      <Stack justifyContent="space-between" sx={{ height: '100%' }}>
+                                        <Typography color="text.secondary" variant="caption">+12</Typography>
+                                        <Typography color="text.secondary" variant="caption">0</Typography>
+                                        <Typography color="text.secondary" variant="caption">-12</Typography>
+                                      </Stack>
+                                      <Slider
+                                        value={value}
+                                        min={-12}
+                                        max={12}
+                                        step={0.5}
+                                        orientation="vertical"
+                                        sx={{ height: 170 }}
+                                        onChange={(_, nextValue) =>
+                                          setAudioDraft((current) => ({
+                                            ...current,
+                                            eqBands: {
+                                              ...(current.eqBands ?? defaultEqBands()),
+                                              [key]: Array.isArray(nextValue) ? nextValue[0] : nextValue,
+                                            },
+                                          }))
+                                        }
+                                      />
+                                    </Stack>
+                                  </Stack>
+                                );
+                              })}
+                            </Stack>
+                          </Box>
+                          <Button
+                            startIcon={<PlayArrowIcon />}
+                            variant="contained"
+                            disabled={!assetPath || previewNonce === 0 || audioPreviewStatus === 'loading'}
+                            onClick={processAudioPreview}
+                          >
+                            {audioPreviewStatus === 'loading' ? 'Processing Audio...' : 'Process Audio'}
+                          </Button>
+                          {audioPreviewStatus === 'ready' ? (
+                            <Alert severity="success">Audio sample ready in Sample B.</Alert>
+                          ) : null}
+                          {audioPreviewNonce > 0 && audioPreviewStatus !== 'loading' && processedAudioFilters !== previewAudioFilters ? (
+                            <Alert severity="info">Audio settings changed. Process audio again to refresh Sample B.</Alert>
+                          ) : null}
+                          {audioPreviewNonce > 0 && audioPreviewStatus !== 'loading' && processedAudioChannelMode !== audioDraft.channelMode ? (
+                            <Alert severity="info">Channel mode changed. Process audio again to refresh Sample B.</Alert>
+                          ) : null}
+                          {audioPreviewStatus === 'error' ? (
+                            <Alert severity="warning">Audio sample could not be processed.</Alert>
+                          ) : null}
+                        </Stack>
+                      </Box>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField label="Notes" value={audioDraft.notes} onChange={(event) => setAudioDraft({ ...audioDraft, notes: event.target.value })} multiline minRows={2} fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={audioFilterChainEdited ? 'Edited chain' : 'Auto chain'} size="small" />
+                        <Chip label={`Preview: ${previewAudioFilters || 'anull'}`} size="small" />
+                        <Chip label={audioDraft.preserveOriginalTrack ? 'Preserve original' : 'Replace audio'} size="small" />
+                      </Stack>
+                    </Grid>
+                  </Grid>
+                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!audioDraft.name || updateSetting.isPending} onClick={saveAudioProfile}>
+                    Save Audio Profile
+                  </Button>
+                  {updateSetting.isSuccess ? <Alert severity="success">Audio profile saved.</Alert> : null}
+                </Stack>
+              </CardContent>
+            </Card>
+        </Stack>
+      </Box>
+    </>
+  );
+}
+
+function SampleCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return (
+    <Card sx={{ height: '100%' }}>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+            <Typography variant="h3">{title}</Typography>
+            <Typography color="text.secondary" variant="body2">
+              {subtitle}
+            </Typography>
+          </Stack>
+          {children}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function VideoPreview({
+  label,
+  src,
+  onStatusChange,
+}: {
+  label: string;
+  src: string;
+  onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
+}) {
+  return (
+    <Stack spacing={1}>
+      <Typography fontWeight={700}>{label}</Typography>
+      <Box
+        component="video"
+        controls
+        src={src}
+        onLoadStart={() => onStatusChange?.('loading')}
+        onCanPlay={() => onStatusChange?.('ready')}
+        onError={() => onStatusChange?.('error')}
+        sx={{ width: '100%', maxHeight: 420, aspectRatio: '16 / 9', bgcolor: 'black', borderRadius: 1 }}
+      />
+    </Stack>
+  );
+}
+
+function AudioPreview({
+  label,
+  src,
+  onStatusChange,
+}: {
+  label: string;
+  src: string;
+  onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [waveformError, setWaveformError] = useState('');
+  const [audioSrc, setAudioSrc] = useState('');
+
+  useEffect(() => {
+    let canceled = false;
+    let objectUrl = '';
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context || !src) {
+      return;
+    }
+    const waveformCanvas = canvas;
+    const waveformContext = context;
+
+    setStatus('loading');
+    setWaveformError('');
+    onStatusChange?.('loading');
+    setAudioSrc('');
+    clearWaveform(waveformCanvas, waveformContext);
+
+    async function draw() {
+      try {
+        const response = await fetch(src);
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText || `Preview failed with ${response.status}`);
+        }
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        setAudioSrc(objectUrl);
+        setStatus('ready');
+        onStatusChange?.('ready');
+
+        const data = await blob.arrayBuffer();
+        const AudioContextClass =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!AudioContextClass) {
+          throw new Error('AudioContext is unavailable');
+        }
+        const audioContext = new AudioContextClass();
+        const buffer = await audioContext.decodeAudioData(data.slice(0));
+        await audioContext.close();
+        if (canceled) {
+          return;
+        }
+        drawWaveform(waveformCanvas, waveformContext, buffer);
+      } catch (error) {
+        if (!canceled) {
+          if (objectUrl) {
+            setWaveformError('Waveform unavailable, but the audio preview can still be played.');
+            drawWaveformError(waveformCanvas, waveformContext);
+            return;
+          }
+          const message = error instanceof Error ? error.message : 'Audio preview unavailable.';
+          setWaveformError(message);
+          setStatus('error');
+          onStatusChange?.('error');
+          drawWaveformError(waveformCanvas, waveformContext, message);
+        }
+      }
+    }
+
+    void draw();
+    return () => {
+      canceled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [onStatusChange, src]);
+
+  return (
+    <Stack spacing={1}>
+      <Typography fontWeight={700}>{label}</Typography>
+      <Box
+        component="canvas"
+        ref={canvasRef}
+        height={132}
+        sx={{
+          width: '100%',
+          height: 132,
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 1,
+          bgcolor: 'rgba(255,255,255,0.03)',
+        }}
+      />
+      {status === 'error' ? (
+        <Typography color="warning.main" variant="body2">
+          {waveformError || 'Audio preview unavailable.'}
+        </Typography>
+      ) : waveformError ? (
+        <Typography color="warning.main" variant="body2">
+          {waveformError}
+        </Typography>
+      ) : null}
+      <Box component="audio" controls src={audioSrc} sx={{ width: '100%' }} />
+    </Stack>
+  );
+}
+
+function clearWaveform(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) {
+  const width = canvas.clientWidth || 480;
+  const height = canvas.clientHeight || 132;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = 'rgba(255,255,255,0.03)';
+  context.fillRect(0, 0, width, height);
+}
+
+function drawWaveform(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, buffer: AudioBuffer) {
+  clearWaveform(canvas, context);
+  const width = canvas.clientWidth || 480;
+  const height = canvas.clientHeight || 132;
+  const channels = Math.min(buffer.numberOfChannels, 2);
+  const laneHeight = height / channels;
+
+  for (let channel = 0; channel < channels; channel += 1) {
+    drawWaveformChannel(context, buffer.getChannelData(channel), channel, laneHeight, width);
+  }
+}
+
+function drawWaveformChannel(
+  context: CanvasRenderingContext2D,
+  data: Float32Array,
+  channel: number,
+  laneHeight: number,
+  width: number,
+) {
+  const step = Math.max(1, Math.floor(data.length / width));
+  const laneTop = channel * laneHeight;
+  const center = laneTop + laneHeight / 2;
+  const amplitude = laneHeight * 0.38;
+  const label = channel === 0 ? 'L' : 'R';
+
+  context.strokeStyle = channel === 0 ? '#4fb3ff' : '#75d36b';
+  context.lineWidth = 1;
+  context.beginPath();
+  for (let x = 0; x < width; x += 1) {
+    let min = 1;
+    let max = -1;
+    const start = x * step;
+    for (let index = 0; index < step && start + index < data.length; index += 1) {
+      const value = data[start + index];
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
+    context.moveTo(x, center + min * amplitude);
+    context.lineTo(x, center + max * amplitude);
+  }
+  context.stroke();
+
+  context.strokeStyle = 'rgba(255,255,255,0.18)';
+  context.beginPath();
+  context.moveTo(0, center);
+  context.lineTo(width, center);
+  context.stroke();
+
+  context.fillStyle = 'rgba(255,255,255,0.72)';
+  context.font = '12px sans-serif';
+  context.fillText(label, 10, laneTop + 18);
+}
+
+function drawWaveformError(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, message = 'Waveform unavailable') {
+  clearWaveform(canvas, context);
+  const height = canvas.clientHeight || 132;
+  context.fillStyle = 'rgba(246,180,75,0.85)';
+  context.font = '14px sans-serif';
+  context.fillText(message.slice(0, 88), 16, height / 2);
+}
+
+function videoPreviewOptions(draft: ProfileInput) {
+  return {
+    videoPreset: videoWorkerValue(draft, 'videoPreset', 'medium'),
+    pixFmt: videoWorkerValue(draft, 'pixFmt', isTenBitDraft(draft) ? 'yuv420p10le' : 'yuv420p'),
+    videoFilters: videoWorkerValue(draft, 'videoFilters'),
+    x265Params: videoWorkerValue(draft, 'x265Params'),
+  };
+}
+
+function isTenBitDraft(draft: ProfileInput) {
+  return draft.videoCodec.includes('10bit') || videoWorkerValue(draft, 'pixFmt').includes('10');
+}
+
+function videoWorkerValue(draft: ProfileInput, key: string, fallback = '') {
+  const value = draft.workerConfig?.[key];
+  return typeof value === 'string' ? value : fallback;
+}
+
+function updateVideoWorkerConfig(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  key: string,
+  value: string,
+) {
+  setVideoDraft((current) => ({
+    ...current,
+    workerConfig: {
+      ...current.workerConfig,
+      [key]: value,
+    },
+  }));
+}
+
+function encoderPresetDescription(value: string) {
+  return encoderPresetOptions.find((option) => option.value === value)?.description ?? 'Controls how much time FFmpeg spends compressing video.';
+}
+
+function pixelFormatDescription(value: string) {
+  return pixelFormatOptions.find((option) => option.value === value)?.description ?? 'Controls output color depth and playback compatibility.';
+}
+
+function qualityLabel(qualityValue: number, videoCodec: string) {
+  if (videoCodec === 'copy') {
+    return 'Original';
+  }
+  if (qualityValue <= 18) {
+    return 'Best quality';
+  }
+  if (qualityValue <= 23) {
+    return 'Balanced';
+  }
+  return 'Smaller file';
+}
+
+function videoFilterControlValue(draft: ProfileInput, key: string, fallback = '') {
+  return videoWorkerValue(draft, key, fallback);
+}
+
+function updateVideoFilterControl(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  key: string,
+  value: string,
+) {
+  setVideoDraft((current) => {
+    const workerConfig = {
+      ...current.workerConfig,
+      [key]: value,
+    };
+    return {
+      ...current,
+      workerConfig: {
+        ...workerConfig,
+        videoFilters: buildVideoFilterChain(workerConfig),
+      },
+    };
+  });
+}
+
+function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
+  const filters: string[] = [];
+  const deinterlace = stringValue(workerConfig.deinterlace, 'off');
+  const denoise = stringValue(workerConfig.denoise, 'off');
+  const deband = stringValue(workerConfig.deband, 'off');
+  const crop = stringValue(workerConfig.crop, 'off');
+  const cropValue = stringValue(workerConfig.cropValue, '');
+
+  if (deinterlace === 'auto') {
+    filters.push('bwdif=mode=send_frame');
+  }
+  if (denoise === 'light') {
+    filters.push('hqdn3d=1.5:1.5:6:6');
+  } else if (denoise === 'medium') {
+    filters.push('hqdn3d=2:2:7:7');
+  } else if (denoise === 'strong') {
+    filters.push('nlmeans=s=2:p=7:r=15');
+  }
+  if (deband === 'light') {
+    filters.push('deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018');
+  } else if (deband === 'medium') {
+    filters.push('deband=1thr=0.028:2thr=0.028:3thr=0.028:4thr=0.028');
+  }
+  if (crop === 'manual' && cropValue.trim()) {
+    filters.push(`crop=${cropValue.trim()}`);
+  }
+  return filters.join(',');
+}
+
+function x265ParamValue(draft: ProfileInput, key: string) {
+  const params = parseX265Params(videoWorkerValue(draft, 'x265Params'));
+  return params[key] ?? '';
+}
+
+function updateX265Param(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  draft: ProfileInput,
+  key: string,
+  value: string,
+) {
+  const params = parseX265Params(videoWorkerValue(draft, 'x265Params'));
+  const cleanValue = value.trim();
+  if (cleanValue) {
+    params[key] = cleanValue;
+  } else {
+    delete params[key];
+  }
+  updateVideoWorkerConfig(setVideoDraft, 'x265Params', serializeX265Params(params));
+}
+
+function parseX265Params(value: string) {
+  return value
+    .split(':')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((params, part) => {
+      const separator = part.indexOf('=');
+      if (separator === -1) {
+        params[part] = '1';
+        return params;
+      }
+      params[part.slice(0, separator)] = part.slice(separator + 1);
+      return params;
+    }, {});
+}
+
+function serializeX265Params(params: Record<string, string>) {
+  return Object.entries(params)
+    .filter(([, value]) => value.trim() !== '')
+    .map(([key, value]) => `${key}=${value}`)
+    .join(':');
+}
+
+function VideoProfileAutocomplete({ profiles, onChange }: { profiles: Profile[]; onChange: (profile: Profile | null) => void }) {
+  return (
+    <Autocomplete
+      options={profiles}
+      value={null}
+      onChange={(_, profile) => onChange(profile)}
+      getOptionLabel={(profile) => `${profile.name} · ${profile.videoCodec} CRF ${profile.qualityValue}`}
+      isOptionEqualToValue={(option, selected) => option.id === selected.id}
+      filterOptions={(options, state) => {
+        const query = state.inputValue.trim().toLowerCase();
+        if (!query) {
+          return options.slice(0, 50);
+        }
+        return options
+          .filter((profile) =>
+            [profile.name, profile.description, profile.videoCodec, profile.audioCodec, profile.container].some((value) =>
+              value.toLowerCase().includes(query),
+            ),
+          )
+          .slice(0, 50);
+      }}
+      renderInput={(params) => <TextField {...params} label="Search video profile" />}
+      renderOption={(props, profile) => (
+        <Box component="li" {...props} key={profile.id}>
+          <Stack sx={{ minWidth: 0 }}>
+            <Typography fontWeight={700} noWrap>
+              {profile.name}
+            </Typography>
+            <Typography color="text.secondary" variant="body2" noWrap>
+              {profile.container.toUpperCase()} · {profile.videoCodec} · {profile.audioCodec} · CRF {profile.qualityValue}
+            </Typography>
+          </Stack>
+        </Box>
+      )}
+      fullWidth
+    />
+  );
+}
+
+function AudioProfileAutocomplete({
+  profiles,
+  onChange,
+}: {
+  profiles: AudioEnhancementProfile[];
+  onChange: (profile: AudioEnhancementProfile | null) => void;
+}) {
+  return (
+    <Autocomplete
+      options={profiles}
+      value={null}
+      onChange={(_, profile) => onChange(profile)}
+      getOptionLabel={(profile) => `${profile.name} · ${profile.outputCodec}`}
+      isOptionEqualToValue={(option, selected) => option.key === selected.key}
+      filterOptions={(options, state) => {
+        const query = state.inputValue.trim().toLowerCase();
+        if (!query) {
+          return options.slice(0, 50);
+        }
+        return options
+          .filter((profile) =>
+            [profile.name, profile.description, profile.intent, profile.outputCodec, profile.filters].some((value) =>
+              value.toLowerCase().includes(query),
+            ),
+          )
+          .slice(0, 50);
+      }}
+      renderInput={(params) => <TextField {...params} label="Search audio profile" />}
+      renderOption={(props, profile) => (
+        <Box component="li" {...props} key={profile.key}>
+          <Stack sx={{ minWidth: 0 }}>
+            <Typography fontWeight={700} noWrap>
+              {profile.name}
+            </Typography>
+            <Typography color="text.secondary" variant="body2" noWrap>
+              {profile.outputCodec} · {profile.intent || 'Audio enhancement'}
+            </Typography>
+          </Stack>
+        </Box>
+      )}
+      fullWidth
+    />
+  );
+}
+
+function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: Asset | null; onChange: (asset: Asset | null) => void }) {
+  return (
+    <Autocomplete
+      options={assets}
+      value={value}
+      onChange={(_, asset) => onChange(asset)}
+      getOptionLabel={(asset) => asset.relativePath || asset.fileName}
+      isOptionEqualToValue={(option, selected) => option.path === selected.path}
+      filterOptions={(options, state) => {
+        const query = state.inputValue.trim().toLowerCase();
+        if (!query) {
+          return options.slice(0, 50);
+        }
+        return options
+          .filter((asset) =>
+            [asset.fileName, asset.relativePath, asset.path].some((value) => value.toLowerCase().includes(query)),
+          )
+          .slice(0, 50);
+      }}
+      renderInput={(params) => <TextField {...params} label="Raw asset" />}
+      renderOption={(props, asset) => (
+        <Box component="li" {...props} key={asset.path}>
+          <Stack sx={{ minWidth: 0 }}>
+            <Typography fontWeight={700} noWrap>
+              {asset.fileName}
+            </Typography>
+            <Typography color="text.secondary" variant="body2" noWrap>
+              {asset.relativePath || asset.path}
+            </Typography>
+          </Stack>
+        </Box>
+      )}
+      fullWidth
+    />
+  );
+}
+
+function getAudioProfiles(settings?: AppSetting[]) {
+  const value = settings?.find((setting) => setting.key === 'audioEnhancementProfiles')?.value.profiles;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((profile) => normalizeAudioProfile(profile))
+    .filter((profile): profile is AudioEnhancementProfile => Boolean(profile))
+    .filter((profile) => !profile.disabled && !profile.deletedAt);
+}
+
+function normalizeAudioProfile(value: unknown): AudioEnhancementProfile | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.key !== 'string' || typeof candidate.name !== 'string' || typeof candidate.filters !== 'string') {
+    return null;
+  }
+  return {
+    key: candidate.key,
+    name: candidate.name,
+    description: stringValue(candidate.description),
+    intent: stringValue(candidate.intent),
+    filters: sanitizeAudioFilterChain(candidate.filters),
+    rnnoiseModelPath: stringValue(candidate.rnnoiseModelPath),
+    channelMode: channelModeValue(candidate.channelMode),
+    forceStereoMode: forceStereoModeValue(candidate.forceStereoMode),
+    stereoDelayMs: numberValue(candidate.stereoDelayMs, 12),
+    stereoWidth: numberValue(candidate.stereoWidth, 20),
+    eqBands: normalizeEqBands(candidate.eqBands),
+    preserveOriginalTrack: booleanValue(candidate.preserveOriginalTrack, true),
+    outputCodec: stringValue(candidate.outputCodec, 'aac'),
+    targetLoudness: numberValue(candidate.targetLoudness, -18),
+    truePeak: numberValue(candidate.truePeak, -2),
+    notes: stringValue(candidate.notes),
+    disabled: booleanValue(candidate.disabled, false),
+    deletedAt: stringValue(candidate.deletedAt),
+  };
+}
+
+function effectiveAudioFilters(profile: AudioEnhancementProfile) {
+  return sanitizeAudioFilterChain([rnnoiseFilter(profile.rnnoiseModelPath), channelFilter(profile), normalizedBaseFilters(profile), eqFilterChain(profile.eqBands)]
+    .filter(Boolean)
+    .join(','));
+}
+
+function channelFilter(profile: AudioEnhancementProfile) {
+  switch (profile.channelMode) {
+    case 'dual-mono':
+      return 'pan=stereo|c0=c0|c1=c0';
+    case 'force-stereo':
+      return forceStereoFilter(profile.forceStereoMode);
+    case 'downmix-mono':
+      return 'aresample=ocl=mono';
+    case 'light-stereo': {
+      const delay = Math.max(1, Math.min(40, Math.round(profile.stereoDelayMs || 12)));
+      const width = Math.max(0, Math.min(100, profile.stereoWidth || 20));
+      const feedback = trimGain((width / 100) * 0.12);
+      const crossfeed = trimGain(Math.max(0.05, 0.22 - width / 600));
+      return `pan=stereo|c0=c0|c1=c0,adelay=0|${delay},stereowiden=delay=${delay}:feedback=${feedback}:crossfeed=${crossfeed}:drymix=0.9`;
+    }
+    default:
+      return '';
+  }
+}
+
+function forceStereoFilter(mode: AudioEnhancementProfile['forceStereoMode']) {
+  switch (mode) {
+    case 'first-two':
+      return 'pan=stereo|c0=c0|c1=c1';
+    case 'duplicate-first':
+      return 'pan=stereo|c0=c0|c1=c0';
+    default:
+      return 'aresample=ocl=stereo';
+  }
+}
+
+function normalizedBaseFilters(profile: AudioEnhancementProfile) {
+  const filters = profile.filters
+    .split(',')
+    .map((filter) => filter.trim())
+    .filter(Boolean);
+  const loudnorm = loudnormFilter(profile);
+  let foundLoudnorm = false;
+  const normalized = filters.map((filter) => {
+    if (!filter.startsWith('loudnorm=')) {
+      return filter;
+    }
+    foundLoudnorm = true;
+    return loudnorm;
+  });
+  if (!foundLoudnorm) {
+    normalized.push(loudnorm);
+  }
+  return normalized.join(',');
+}
+
+function loudnormFilter(profile: AudioEnhancementProfile) {
+  const target = Number.isFinite(profile.targetLoudness) ? profile.targetLoudness : -18;
+  const peak = Number.isFinite(profile.truePeak) ? profile.truePeak : -2;
+  const existing = profile.filters
+    .split(',')
+    .map((filter) => filter.trim())
+    .find((filter) => filter.startsWith('loudnorm='));
+  const lraMatch = existing?.match(/(?:^|:)LRA=([^:]+)/);
+  const lra = lraMatch?.[1] ?? '11';
+  return `loudnorm=I=${trimGain(target)}:TP=${trimGain(peak)}:LRA=${lra}`;
+}
+
+function rnnoiseFilter(modelPath: string) {
+  const path = modelPath.trim();
+  return path ? `arnndn=m=${path}` : '';
+}
+
+function eqFilterChain(bands: Record<string, number>) {
+  return eqFrequencies
+    .map((frequency) => ({ frequency, gain: bands[String(frequency)] ?? 0 }))
+    .filter(({ gain }) => Math.abs(gain) > 0)
+    .map(({ frequency, gain }) => `equalizer=f=${frequency}:t=q:w=1:g=${trimGain(gain)}`)
+    .join(',');
+}
+
+function sanitizeAudioFilterChain(filterChain: string) {
+  return filterChain.replace(/afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)/g, (_match, prefix: string, rawValue: string) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return `afftdn=${prefix}${rawValue}`;
+    }
+    return `afftdn=${prefix}${trimGain(Math.max(-80, Math.min(-20, parsed)))}`;
+  });
+}
+
+function defaultEqBands() {
+  return eqFrequencies.reduce<Record<string, number>>((bands, frequency) => {
+    bands[String(frequency)] = 0;
+    return bands;
+  }, {});
+}
+
+function normalizeEqBands(value: unknown) {
+  const bands = defaultEqBands();
+  if (!value || typeof value !== 'object') {
+    return bands;
+  }
+  const candidate = value as Record<string, unknown>;
+  eqFrequencies.forEach((frequency) => {
+    const key = String(frequency);
+    bands[key] = Math.max(-12, Math.min(12, numberValue(candidate[key], 0)));
+  });
+  return bands;
+}
+
+function uniqueKey(baseKey: string, profiles: AudioEnhancementProfile[]) {
+  const existing = new Set(profiles.map((profile) => profile.key));
+  let nextKey = slugify(baseKey || 'audio-profile');
+  let suffix = 2;
+  while (existing.has(nextKey)) {
+    nextKey = `${slugify(baseKey || 'audio-profile')}-${suffix}`;
+    suffix += 1;
+  }
+  return nextKey;
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function trimGain(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatFrequency(frequency: number) {
+  return frequency >= 1000 ? `${frequency / 1000} kHz` : `${frequency} Hz`;
+}
+
+function eqBandLabel(frequency: number) {
+  if (frequency < 250) {
+    return 'Bajos';
+  }
+  if (frequency < 4000) {
+    return 'Medios';
+  }
+  return 'Agudos';
+}
+
+function stringValue(value: unknown, fallback = '') {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function channelModeValue(value: unknown): AudioEnhancementProfile['channelMode'] {
+  if (value === 'dual-mono' || value === 'force-stereo' || value === 'downmix-mono' || value === 'light-stereo') {
+    return value;
+  }
+  return 'preserve';
+}
+
+function forceStereoModeValue(value: unknown): AudioEnhancementProfile['forceStereoMode'] {
+  if (value === 'first-two' || value === 'duplicate-first') {
+    return value;
+  }
+  return 'auto';
+}
+
+function numberValue(value: unknown, fallback: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function booleanValue(value: unknown, fallback: boolean) {
+  return typeof value === 'boolean' ? value : fallback;
+}

@@ -1,0 +1,12 @@
+services:
+  backend:
+    volumes:
+      - mediaforge-db:/app/data
+      - /volume1/mediaforge/raw:/media/raw
+      - /volume1/mediaforge/library:/media/library
+      - /volume1/mediaforge/staging:/media/staging
+      - /volume1/mediaforge/originals_archive:/media/originals_archive
+      - /volume1/mediaforge/reports:/media/reports
+
+volumes:
+  mediaforge-db:

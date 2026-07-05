@@ -1,0 +1,457 @@
+package database
+
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func Open(path string) (*gorm.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+
+	return gorm.Open(sqlite.Open(path), &gorm.Config{})
+}
+
+func Migrate(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&models.Library{},
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.ScanResult{},
+		&models.AppSetting{},
+	)
+}
+
+func Seed(db *gorm.DB) error {
+	var count int64
+	if err := db.Model(&models.Profile{}).Count(&count).Error; err != nil {
+		return err
+	}
+
+	if count > 0 {
+		return seedSettings(db)
+	}
+
+	profiles := []models.Profile{
+		{
+			Name:              "DVD Archive x265 Main10",
+			Description:       "Default DVD profile for clean SD sources. Preserves all audio tracks, subtitles, chapters, and targets a compact high-quality x265 Main10 output.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      20,
+			PreserveHDR:       false,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":         "mediaforge-v1",
+				"engine":         "FFmpeg",
+				"preset":         "dvd-archive-main10",
+				"videoPreset":    "medium",
+				"pixFmt":         "yuv420p10le",
+				"x265Params":     "aq-mode=3:aq-strength=0.8:deblock=-1,-1",
+				"processingMode": "full_encode",
+			},
+		},
+		{
+			Name:              "Anime DVD x265 Main10",
+			Description:       "Default anime DVD profile. Preserves all audio tracks, subtitles, chapters, and is tuned for line art with balanced size.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      20,
+			PreserveHDR:       false,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":         "mediaforge-v1",
+				"engine":         "FFmpeg",
+				"preset":         "anime-dvd-main10",
+				"videoPreset":    "medium",
+				"pixFmt":         "yuv420p10le",
+				"x265Params":     "aq-mode=3:aq-strength=0.9:deblock=-1,-1",
+				"processingMode": "full_encode",
+			},
+		},
+		{
+			Name:              "Series Balanced x265 Main10",
+			Description:       "Default profile for episode batches and series. Preserves all audio tracks, subtitles, chapters, and is slightly smaller than DVD/Anime defaults.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      21,
+			PreserveHDR:       false,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":         "mediaforge-v1",
+				"engine":         "FFmpeg",
+				"preset":         "series-balanced-main10",
+				"videoPreset":    "medium",
+				"pixFmt":         "yuv420p10le",
+				"x265Params":     "aq-mode=3:aq-strength=0.75:deblock=-1,-1",
+				"processingMode": "full_encode",
+			},
+		},
+	}
+
+	if err := db.Create(&profiles).Error; err != nil {
+		return err
+	}
+
+	return seedSettings(db)
+}
+
+func seedSettings(db *gorm.DB) error {
+	defaults := []models.AppSetting{
+		{
+			Key: "paths",
+			Value: models.JSONMap{
+				"rawRoot":              "/media/raw",
+				"libraryRoot":          "/media/library",
+				"stagingPath":          "/media/staging",
+				"originalsArchivePath": "/media/originals_archive",
+				"asIsReportsPath":      "/media/reports/as-is",
+				"resultsReportsPath":   "/media/reports/results",
+				"logsPath":             "/media/reports/logs",
+			},
+		},
+		{
+			Key: "workers",
+			Value: models.JSONMap{
+				"defaultWorkerName":       "local-worker",
+				"autoWorkerEnabled":       true,
+				"maxConcurrentJobs":       1,
+				"maxJobsPerBatch":         10,
+				"delaySecondsBetweenJobs": 30,
+				"batchCooldownSeconds":    600,
+				"dryRunOnly":              true,
+			},
+		},
+		{
+			Key: "pipelineAutomation",
+			Value: models.JSONMap{
+				"autoAnalysisEnabled":   false,
+				"autoValidationEnabled": false,
+				"autoPublisherEnabled":  false,
+			},
+		},
+		{
+			Key: "validation",
+			Value: models.JSONMap{
+				"minimumScore":         90,
+				"requireDurationMatch": true,
+			},
+		},
+		{
+			Key: "cancellationPolicy",
+			Value: models.JSONMap{
+				"keepLogsAndDiagnostics":         true,
+				"deleteGeneratedFiles":           false,
+				"deletePartialOutputFromStaging": false,
+				"controlledRoots": []string{
+					"/media/staging",
+					"/mwp/work",
+					"/mwp/work/temp",
+					"/tmp/mediaforge",
+				},
+			},
+		},
+		{
+			Key: "originalRetentionPolicy",
+			Value: models.JSONMap{
+				"keepOriginalsDays":                   30,
+				"enabledForSuccessfulConversionsOnly": true,
+				"autoDeleteEnabled":                   false,
+				"processedOriginalsPath":              "/media/originals_archive/processed-originals",
+			},
+		},
+		{
+			Key: "audioEnhancementProfiles",
+			Value: models.JSONMap{
+				"profiles": []models.JSONMap{
+					{
+						"key":                   "gentle-normalize",
+						"name":                  "Gentle Normalize",
+						"description":           "Safely evens out quiet or inconsistent audio without changing the character too much.",
+						"intent":                "Low-risk loudness normalization",
+						"filters":               "loudnorm=I=-18:TP=-2:LRA=11",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Good first pass for TV recordings, DVD rips, and uneven episode batches.",
+					},
+					{
+						"key":                   "dialogue-clarity",
+						"name":                  "Dialogue Clarity",
+						"description":           "Adds gentle voice presence and compression for dialogue-heavy older sources.",
+						"intent":                "Make voices easier to understand",
+						"filters":               "highpass=f=80,equalizer=f=1800:t=q:w=1.1:g=2.5,acompressor=threshold=-20dB:ratio=2.2:attack=20:release=250,loudnorm=I=-18:TP=-2:LRA=9",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Useful for old anime dubs, TV captures, and sources where voices sit behind music/effects.",
+					},
+					{
+						"key":                   "old-source-cleanup",
+						"name":                  "Old Source Cleanup",
+						"description":           "Reduces light hiss/noise, trims rumble, and normalizes loudness for older TV/anime audio.",
+						"intent":                "Cleanup for aged stereo or mono sources",
+						"filters":               "highpass=f=70,lowpass=f=15000,afftdn=nf=-25,acompressor=threshold=-22dB:ratio=2:attack=25:release=300,loudnorm=I=-18:TP=-2:LRA=10",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "More aggressive. Preview before applying because denoise filters can create artifacts.",
+					},
+					{
+						"key":                   "speech-neural-denoise",
+						"name":                  "Speech Neural Denoise",
+						"description":           "Uses FFmpeg arnndn with an external speech denoise model, then normalizes loudness.",
+						"intent":                "Reduce speech noise with a neural model",
+						"filters":               "loudnorm=I=-18:TP=-2:LRA=10",
+						"rnnoiseModelPath":      "/mediaforge/models/audio/rnnoise-model.rnnn",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Requires a valid arnndn/RNNoise model path mounted inside the backend container. Test before batch use.",
+					},
+					{
+						"key":                   "hiss-reduction-light",
+						"name":                  "Hiss Reduction Light",
+						"description":           "Gently reduces high-frequency hiss while keeping ambience and music mostly intact.",
+						"intent":                "Light hiss cleanup",
+						"filters":               "highpass=f=55,lowpass=f=17000,afftdn=nf=-20,loudnorm=I=-18:TP=-2:LRA=11",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Start here for music, concerts, and sources where noise reduction should be subtle.",
+					},
+					{
+						"key":                   "hiss-reduction-medium",
+						"name":                  "Hiss Reduction Medium",
+						"description":           "Moderate hiss reduction for TV, tape, and older stereo or mono sources.",
+						"intent":                "Balanced hiss cleanup",
+						"filters":               "highpass=f=65,lowpass=f=15500,afftdn=nf=-24,acompressor=threshold=-22dB:ratio=1.8:attack=25:release=250,loudnorm=I=-18:TP=-2:LRA=10",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Good default for old TV/anime audio. Preview for watery artifacts before batch use.",
+					},
+					{
+						"key":                   "hiss-reduction-strong",
+						"name":                  "Hiss Reduction Strong",
+						"description":           "Aggressive hiss cleanup for noisy spoken material where artifacts are acceptable.",
+						"intent":                "Strong hiss cleanup",
+						"filters":               "highpass=f=80,lowpass=f=13500,afftdn=nf=-32,acompressor=threshold=-24dB:ratio=2.4:attack=20:release=300,loudnorm=I=-18:TP=-2:LRA=9",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Use for dialogue-first sources. Strong denoise can damage music, ambience, and cymbals.",
+					},
+					{
+						"key":                   "old-mono-cleanup",
+						"name":                  "Old Mono Cleanup",
+						"description":           "Centers old mono-style sources, reduces rumble/hiss, and normalizes loudness.",
+						"intent":                "Mono restoration",
+						"filters":               "highpass=f=80,lowpass=f=14500,afftdn=nf=-24,acompressor=threshold=-22dB:ratio=2:attack=25:release=280,loudnorm=I=-18:TP=-2:LRA=10",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "dual-mono",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Best for old mono dubs, VHS/DVD extras, and sources that should play evenly on both speakers.",
+					},
+					{
+						"key":                   "old-anime-dialogue-cleanup",
+						"name":                  "Old Anime Dialogue Cleanup",
+						"description":           "Raises dialogue presence while gently reducing hiss and low-end rumble.",
+						"intent":                "Old anime and TV dialogue",
+						"filters":               "highpass=f=75,lowpass=f=15000,afftdn=nf=-23,equalizer=f=1800:t=q:w=1.1:g=2,acompressor=threshold=-21dB:ratio=2.1:attack=18:release=260,loudnorm=I=-18:TP=-2:LRA=9",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Designed for old anime/TV dubs where voices need help but music should not be crushed.",
+					},
+					{
+						"key":                   "concert-pcm-preserve",
+						"name":                  "Concert PCM Preserve",
+						"description":           "Keeps concert dynamics mostly intact with only light cleanup and safe loudness.",
+						"intent":                "Concert and PCM preservation",
+						"filters":               "highpass=f=40,lowpass=f=19000,loudnorm=I=-19:TP=-2:LRA=14",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "preserve",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "flac",
+						"targetLoudness":        -19,
+						"truePeak":              -2,
+						"notes":                 "Good for concerts and PCM tracks. Avoid heavy denoise unless a sample proves it is needed.",
+					},
+					{
+						"key":                   "mono-dual-mono-safe",
+						"name":                  "Mono to Dual Mono Safe",
+						"description":           "Duplicates a mono source into left and right channels without fake stereo widening.",
+						"intent":                "Safe mono compatibility",
+						"filters":               "loudnorm=I=-18:TP=-2:LRA=11",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "dual-mono",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Use for mono tracks that should play evenly on stereo devices. This does not create true stereo.",
+					},
+					{
+						"key":                   "downmix-mono-safe",
+						"name":                  "Downmix to Mono Safe",
+						"description":           "Mixes stereo or multichannel audio into one centered mono track.",
+						"intent":                "Mono compatibility",
+						"filters":               "loudnorm=I=-18:TP=-2:LRA=11",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "downmix-mono",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Useful when stereo image or phase problems make old sources clearer as a centered mono track.",
+					},
+					{
+						"key":                   "mono-light-stereo-experimental",
+						"name":                  "Mono to Light Stereo Experimental",
+						"description":           "Creates a subtle pseudo-stereo image from mono using a small delay and widening.",
+						"intent":                "Experimental mono widening",
+						"filters":               "loudnorm=I=-18:TP=-2:LRA=11",
+						"rnnoiseModelPath":      "",
+						"channelMode":           "light-stereo",
+						"forceStereoMode":       "auto",
+						"stereoDelayMs":         12,
+						"stereoWidth":           20,
+						"preserveOriginalTrack": true,
+						"outputCodec":           "aac",
+						"targetLoudness":        -18,
+						"truePeak":              -2,
+						"notes":                 "Preview carefully. Pseudo-stereo can make dialogue or old dubs sound phasey if pushed too far.",
+					},
+				},
+			},
+		},
+		{
+			Key: "assetTypes",
+			Value: models.JSONMap{
+				"types": []models.JSONMap{
+					{
+						"key":        "movies",
+						"label":      "Movies",
+						"extensions": []string{".mkv", ".mp4", ".avi", ".mov"},
+					},
+					{
+						"key":        "tv",
+						"label":      "TV Shows",
+						"extensions": []string{".mkv", ".mp4"},
+					},
+					{
+						"key":        "anime",
+						"label":      "Anime",
+						"extensions": []string{".mkv", ".mp4"},
+					},
+					{
+						"key":        "music-videos",
+						"label":      "Music Videos",
+						"extensions": []string{".mkv", ".mp4", ".mov"},
+					},
+					{
+						"key":        "concerts",
+						"label":      "Concerts",
+						"extensions": []string{".mkv", ".mp4"},
+					},
+					{
+						"key":        "home-videos",
+						"label":      "Home Videos",
+						"extensions": []string{".mp4", ".mov"},
+					},
+				},
+			},
+		},
+		{
+			Key: "assetCategories",
+			Value: models.JSONMap{
+				"categories": []string{"movie", "anime", "series", "episode", "season", "extras", "special", "concert", "music-video", "documentary"},
+			},
+		},
+	}
+
+	for _, setting := range defaults {
+		if err := db.FirstOrCreate(&setting, models.AppSetting{Key: setting.Key}).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

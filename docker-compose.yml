@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      MEDIAFORGE_API_HOST: 0.0.0.0
+      MEDIAFORGE_API_PORT: 8080
+      MEDIAFORGE_DB_PATH: /app/data/mediaforge.db
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend-data:/app/data
+      - ./media/raw:/media/raw
+      - ./media/library:/media/library
+      - ./media/staging:/media/staging
+      - ./media/originals_archive:/media/originals_archive
+      - ./media/reports:/media/reports
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
