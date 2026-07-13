@@ -20,7 +20,7 @@ func New(db *gorm.DB) *gin.Engine {
 			"http://localhost:5173",
 			"http://127.0.0.1:5173",
 		},
-		AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Range"},
 		ExposeHeaders: []string{"Accept-Ranges", "Content-Length", "Content-Range", "Content-Type"},
 	}))
@@ -55,8 +55,11 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/logs/files", logs.ListFiles)
 		api.GET("/logs/files/:name", logs.ReadFile)
 		api.GET("/assets", assets.List)
+		api.POST("/assets/sync", assets.Sync)
+		api.POST("/assets/recover", assets.Recover)
 		api.POST("/assets/review", assets.UpdateReview)
 		api.POST("/assets/metadata", assets.UpdateMetadata)
+		api.POST("/assets/conversion", assets.UpdateConversion)
 		api.GET("/assets/preview", assets.Preview)
 		api.GET("/assets/preview/compatible", assets.CompatiblePreview)
 		api.GET("/assets/preview/audio", assets.AudioPreview)

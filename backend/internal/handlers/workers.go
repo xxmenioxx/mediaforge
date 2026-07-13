@@ -26,8 +26,8 @@ const (
 )
 
 var (
-	errWorkerLimitReached = errors.New("worker claim limit reached")
-	errWorkerDelayActive  = errors.New("worker delay between jobs is still active")
+	errWorkerLimitReached        = errors.New("worker claim limit reached")
+	errWorkerDelayActive         = errors.New("worker delay between jobs is still active")
 	errWorkerBatchCooldownActive = errors.New("worker batch cooldown is still active")
 )
 
@@ -330,13 +330,15 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		return
 	}
 
-	outputPath := plannedOutputPathForJob(h.db, job, library, profile)
+	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
+	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
+	outputPath := plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	audioProfile, err := h.audioProfile(job.AudioProfileKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	plan, err := buildMediaJobPlan(job.MediaPath, outputPath, profile, audioProfile, true)
+	plan, err := buildMediaJobPlanWithOverride(job.MediaPath, outputPath, profile, audioProfile, true, override)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -351,6 +353,9 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 	job.OutputPath = outputPath
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Dry-run command: "+command)
+	if !assetConversionOverrideEmpty(override) {
+		job.Notes = appendNote(job.Notes, "Asset conversion overrides applied")
+	}
 	job.FinishedAt = nil
 
 	if err := h.db.Save(&job).Error; err != nil {
@@ -424,7 +429,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	outputPath := plannedStagingOutputPath(h.db, job, library, profile, paths)
+	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
+	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
+	outputPath := plannedStagingOutputPath(h.db, job, library, effectiveProfile, paths)
 	if !overwrite {
 		if _, err := os.Stat(outputPath); err == nil {
 			return job, http.StatusConflict, fmt.Errorf("staging output already exists; retry with overwrite enabled")
@@ -439,7 +446,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	plan, err := buildMediaJobPlan(job.MediaPath, outputPath, profile, audioProfile, overwrite)
+	plan, err := buildMediaJobPlanWithOverride(job.MediaPath, outputPath, profile, audioProfile, overwrite, override)
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
@@ -450,11 +457,14 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	job.OutputPath = outputPath
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
+	if !assetConversionOverrideEmpty(override) {
+		job.Notes = appendNote(job.Notes, "Asset conversion overrides applied")
+	}
 	if audioProfile != nil {
 		job.Notes = appendNote(job.Notes, "Audio enhancement profile: "+audioProfile.Key)
 		job.Notes = appendNote(job.Notes, "Processing mode: "+plan.ProcessingMode)
 	}
-	if err := writeJobAsIsArtifact(h.db, job, profile, audioProfile, command, plan.ProcessingMode); err != nil {
+	if err := writeJobAsIsArtifact(h.db, job, plan.Profile, audioProfile, command, plan.ProcessingMode); err != nil {
 		job.Notes = appendNote(job.Notes, "AS-IS artifact warning: "+err.Error())
 	}
 	if job.StartedAt == nil {
@@ -513,11 +523,11 @@ func normalizedProgress(status string, progress int) int {
 }
 
 func plannedOutputPath(mediaPath string, library models.Library, profile models.Profile) string {
-	return path.Join(library.DestinationPath, outputFileRelativePath(libraryRelativeMediaPath(mediaPath, library), profile))
+	return path.Join(library.DestinationPath, outputFileRelativePath(libraryOutputBaseRelativePath(libraryRelativeMediaPath(mediaPath, library)), profile))
 }
 
 func plannedOutputPathForJob(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile) string {
-	relative := libraryOutputRelativePathForJob(db, job, library, libraryRelativeMediaPath(job.MediaPath, library))
+	relative := libraryOutputRelativePathForJob(db, job, library, libraryOutputBaseRelativePath(libraryRelativeMediaPath(job.MediaPath, library)))
 	return path.Join(library.DestinationPath, outputFileRelativePath(relative, profile))
 }
 
@@ -527,6 +537,26 @@ func libraryRelativeMediaPath(mediaPath string, library models.Library) string {
 		return path.Base(mediaPath)
 	}
 	return relative
+}
+
+func libraryOutputBaseRelativePath(relative string) string {
+	parts := pathSegments(relative)
+	if len(parts) <= 1 {
+		return relative
+	}
+	if isSourceBucketSegment(parts[0]) {
+		return path.Join(parts[1:]...)
+	}
+	return relative
+}
+
+func isSourceBucketSegment(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "movie", "movies", "series", "anime", "documentary", "documentaries", "concert", "concerts", "music-video", "music-videos":
+		return true
+	default:
+		return false
+	}
 }
 
 func outputFileRelativePath(relative string, profile models.Profile) string {
@@ -853,6 +883,7 @@ func plannedStagingOutputPath(db *gorm.DB, job models.QueueJob, library models.L
 		relative = relativeMediaPath(job.MediaPath, library.SourcePath)
 	}
 
+	relative = libraryOutputBaseRelativePath(relative)
 	relative = libraryOutputRelativePathForJob(db, job, library, relative)
 	base := outputFileRelativePath(relative, profile)
 	return filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), filepath.FromSlash(base))

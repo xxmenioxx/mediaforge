@@ -1,111 +1,232 @@
-import { Box, Card, CardContent, Chip, Grid, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material';
-import type { MediaStreamInfo, ScanResult } from '../api/types';
+import { Box, Checkbox, Chip, Stack, Switch, TextField, Typography } from '@mui/material';
+import type { MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 
 type MediaSnapshotDetailsProps = {
   scan: ScanResult;
+  streamControls?: StreamControls;
+  metadataControls?: StreamMetadataControls;
 };
 
-export function MediaSnapshotDetails({ scan }: MediaSnapshotDetailsProps) {
-  return (
-    <Stack spacing={2}>
-      <Card variant="outlined" sx={{ bgcolor: 'transparent' }}>
-        <CardContent>
-          <Grid container spacing={2}>
-            <SnapshotMetric label="Codec" value={scan.videoCodec || 'unknown'} />
-            <SnapshotMetric label="Resolution" value={scan.width && scan.height ? `${scan.width}x${scan.height}` : 'unknown'} />
-            <SnapshotMetric label="Duration" value={formatDuration(scan.duration)} />
-            <SnapshotMetric label="Bitrate" value={formatBitrate(scan.bitrate)} />
-            <SnapshotMetric label="Size" value={formatBytes(scan.sizeBytes)} />
-            <SnapshotMetric label="Range" value={scan.hdr ? 'HDR' : 'SDR'} />
-            <SnapshotMetric label="Chapters" value={`${scan.chapters}`} />
-            <SnapshotMetric label="Container" value={scan.container || 'unknown'} wide />
-          </Grid>
-        </CardContent>
-      </Card>
+export type StreamControls = {
+  video: StreamControlState;
+  audio: StreamControlState;
+  subtitle: StreamControlState;
+};
 
-      <StreamSection title={`Video Tracks (${scan.videoStreams?.length ?? 0})`} streams={scan.videoStreams ?? []} emptyLabel="No video tracks found." />
-      <StreamSection title={`Audio Tracks (${scan.audioTracks})`} streams={scan.audioStreams ?? []} emptyLabel="No audio tracks found." />
-      <StreamSection title={`Subtitle Tracks (${scan.subtitleTracks})`} streams={scan.subtitleStreams ?? []} emptyLabel="No subtitle tracks found." />
+type StreamControlState = {
+  selected: number[];
+  disabled?: boolean;
+  onToggle: (index: number, keep: boolean) => void;
+};
+
+export type StreamMetadataControls = {
+  video?: StreamMetadataControlState;
+  audio: StreamMetadataControlState;
+  subtitle: StreamMetadataControlState;
+};
+
+type StreamMetadataControlState = {
+  values: Record<string, StreamMetadataOverride>;
+  disabled?: boolean;
+  onChange: (index: number, patch: StreamMetadataOverride) => void;
+};
+
+export function MediaSnapshotDetails({ scan, streamControls, metadataControls }: MediaSnapshotDetailsProps) {
+  return (
+    <Stack spacing={1.25}>
+      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+        <SnapshotChip label="Video" value={`${scan.videoCodec || 'unknown'}${scan.width && scan.height ? ` ${scan.width}x${scan.height}` : ''}`} />
+        <SnapshotChip label="Duration" value={formatDuration(scan.duration)} />
+        <SnapshotChip label="Bitrate" value={formatBitrate(scan.bitrate)} />
+        <SnapshotChip label="Size" value={formatBytes(scan.sizeBytes)} />
+        <SnapshotChip label="Range" value={scan.hdr ? 'HDR' : 'SDR'} />
+        <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
+        <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
+      </Stack>
+
+      <StreamSection
+        title={`Video (${scan.videoStreams?.length ?? 0})`}
+        streams={scan.videoStreams ?? []}
+        emptyLabel="No video tracks found."
+        control={streamControls?.video}
+        metadataControl={metadataControls?.video}
+      />
+      <StreamSection
+        title={`Audio (${scan.audioTracks})`}
+        streams={scan.audioStreams ?? []}
+        emptyLabel="No audio tracks found."
+        control={streamControls?.audio}
+        metadataControl={metadataControls?.audio}
+      />
+      <StreamSection
+        title={`Subtitles (${scan.subtitleTracks})`}
+        streams={scan.subtitleStreams ?? []}
+        emptyLabel="No subtitle tracks found."
+        control={streamControls?.subtitle}
+        metadataControl={metadataControls?.subtitle}
+      />
     </Stack>
   );
 }
 
-function StreamSection({ title, streams, emptyLabel }: { title: string; streams: MediaStreamInfo[]; emptyLabel: string }) {
+function StreamSection({
+  title,
+  streams,
+  emptyLabel,
+  control,
+  metadataControl,
+}: {
+  title: string;
+  streams: MediaStreamInfo[];
+  emptyLabel: string;
+  control?: StreamControlState;
+  metadataControl?: StreamMetadataControlState;
+}) {
   return (
-    <Box>
-      <Typography variant="h3" sx={{ mb: 1 }}>
-        {title}
-      </Typography>
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.25, py: 0.9, bgcolor: 'rgba(255,255,255,0.025)' }}>
+        <Typography fontWeight={700}>{title}</Typography>
+        {control ? <Typography color="text.secondary" variant="body2">{control.selected.length}/{streams.length} kept</Typography> : null}
+      </Stack>
       {streams.length ? (
-        <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small" sx={{ minWidth: 860 }}>
-            <TableHead>
-              <TableRow>
-                <TableCell>Track</TableCell>
-                <TableCell>Language</TableCell>
-                <TableCell>Codec</TableCell>
-                <TableCell>Details</TableCell>
-                <TableCell>Flags</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {streams.map((stream) => (
-                <TableRow key={`${stream.type}-${stream.index}`}>
-                  <TableCell>
-                    <Stack spacing={0.3}>
-                      <Typography fontWeight={700}>#{stream.index}</Typography>
-                      {stream.title ? (
-                        <Typography color="text.secondary" variant="body2">
-                          {stream.title}
-                        </Typography>
-                      ) : null}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{languageLabel(stream.language)}</TableCell>
-                  <TableCell>
-                    <Stack spacing={0.3}>
-                      <Typography>{stream.codec || 'unknown'}</Typography>
-                      <Typography color="text.secondary" variant="body2">
-                        {stream.codecLong || stream.profile || 'No codec details'}
-                      </Typography>
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                      {streamDetails(stream).map((detail) => (
-                        <Chip key={detail} label={detail} size="small" />
-                      ))}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                      {streamFlags(stream).map((flag) => (
-                        <Chip key={flag} label={flag} size="small" color={flag === 'forced' ? 'warning' : 'default'} />
-                      ))}
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Box>
+        <Stack>
+          {streams.map((stream) => (
+            <StreamRow key={`${stream.type}-${stream.index}`} stream={stream} control={control} metadataControl={metadataControl} />
+          ))}
+        </Stack>
       ) : (
-        <Typography color="text.secondary">{emptyLabel}</Typography>
+        <Typography color="text.secondary" sx={{ px: 1.25, py: 1 }}>
+          {emptyLabel}
+        </Typography>
       )}
     </Box>
   );
 }
 
-function SnapshotMetric({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
+function StreamRow({
+  stream,
+  control,
+  metadataControl,
+}: {
+  stream: MediaStreamInfo;
+  control?: StreamControlState;
+  metadataControl?: StreamMetadataControlState;
+}) {
+  const metadata = metadataControl?.values[String(stream.index)] ?? {};
+  const canEditMetadata = Boolean(metadataControl);
+
   return (
-    <Grid size={{ xs: 6, sm: 4, md: wide ? 3 : 1.5 }}>
-      <Typography color="text.secondary" variant="body2">
-        {label}
-      </Typography>
-      <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-        {value}
-      </Typography>
-    </Grid>
+    <Box sx={{ borderTop: 1, borderColor: 'divider', px: 1, py: 0.85 }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: { md: 300 }, flex: 1 }}>
+          {control ? (
+            <Checkbox
+              checked={control.selected.includes(stream.index)}
+              onChange={(event) => control.onToggle(stream.index, event.target.checked)}
+              disabled={control.disabled}
+              size="small"
+              inputProps={{ 'aria-label': `Keep ${stream.type} track ${stream.index}` }}
+            />
+          ) : null}
+          <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Chip label={`#${stream.index}`} size="small" />
+              <Typography fontWeight={700}>{languageLabel(stream.language)}</Typography>
+              <Typography color="text.secondary">{stream.codec || 'unknown'}</Typography>
+            </Stack>
+            <Typography color="text.secondary" variant="body2" noWrap>
+              {stream.title || stream.codecLong || stream.profile || 'No title'}
+            </Typography>
+          </Stack>
+        </Stack>
+
+        <Stack direction="row" spacing={0.6} flexWrap="wrap" useFlexGap sx={{ flex: 1.3 }}>
+          {streamDetails(stream).slice(0, 5).map((detail) => (
+            <Chip key={detail} label={detail} size="small" />
+          ))}
+          {streamFlags(stream).map((flag) => (
+            <Chip key={flag} label={flag} size="small" color={flag === 'forced' ? 'warning' : 'default'} />
+          ))}
+        </Stack>
+
+        {canEditMetadata ? (
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} sx={{ minWidth: { md: 420 } }}>
+            <TextField
+              label="Lang"
+              value={metadata.language ?? ''}
+              onChange={(event) => metadataControl?.onChange(stream.index, { language: event.target.value })}
+              placeholder={stream.language && stream.language !== 'und' ? stream.language : 'eng'}
+              disabled={metadataControl?.disabled}
+              size="small"
+              sx={{ width: { sm: 92 } }}
+            />
+            <TextField
+              label="Title"
+              value={metadata.title ?? ''}
+              onChange={(event) => metadataControl?.onChange(stream.index, { title: event.target.value })}
+              placeholder={stream.title || 'Track title'}
+              disabled={metadataControl?.disabled}
+              size="small"
+              sx={{ flex: 1 }}
+            />
+            <MetadataSwitch
+              label="Default"
+              value={metadata.default}
+              fallback={stream.default}
+              disabled={metadataControl?.disabled}
+              onChange={(value) => metadataControl?.onChange(stream.index, { default: value })}
+            />
+            <MetadataSwitch
+              label="Forced"
+              value={metadata.forced}
+              fallback={stream.forced}
+              disabled={metadataControl?.disabled}
+              onChange={(value) => metadataControl?.onChange(stream.index, { forced: value })}
+            />
+          </Stack>
+        ) : null}
+      </Stack>
+    </Box>
+  );
+}
+
+function MetadataSwitch({
+  label,
+  value,
+  fallback,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value?: boolean;
+  fallback?: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean | undefined) => void;
+}) {
+  const checked = value ?? fallback ?? false;
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.25} sx={{ minWidth: 92 }}>
+      <Switch checked={checked} onChange={(event) => onChange(event.target.checked === fallback ? undefined : event.target.checked)} disabled={disabled} size="small" />
+      <Typography variant="body2">{label}</Typography>
+    </Stack>
+  );
+}
+
+function SnapshotChip({ label, value }: { label: string; value: string }) {
+  return (
+    <Chip
+      label={
+        <Stack direction="row" spacing={0.5}>
+          <Typography component="span" color="text.secondary" variant="body2">
+            {label}
+          </Typography>
+          <Typography component="span" fontWeight={700} variant="body2">
+            {value}
+          </Typography>
+        </Stack>
+      }
+      sx={{ height: 30, maxWidth: '100%' }}
+    />
   );
 }
 
@@ -143,6 +264,18 @@ function languageLabel(language: string) {
   }
 
   return language.toUpperCase();
+}
+
+function friendlyContainer(container: string) {
+  if (!container) {
+    return 'unknown';
+  }
+  return container
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => (part === 'matroska' ? 'mkv' : part))
+    .join(', ');
 }
 
 function formatBytes(bytes: number) {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -25,8 +26,35 @@ type AssetHandler struct {
 type AssetInventory struct {
 	Unprocessed       []Asset      `json:"unprocessed"`
 	Converted         []Asset      `json:"converted"`
+	Archive           []Asset      `json:"archive"`
 	UnprocessedGroups []AssetGroup `json:"unprocessedGroups"`
 	ConvertedGroups   []AssetGroup `json:"convertedGroups"`
+	ArchiveGroups     []AssetGroup `json:"archiveGroups"`
+	Reports           AssetReports `json:"reports"`
+	Sync              AssetSyncInfo `json:"sync"`
+}
+
+type AssetSyncInfo struct {
+	LastSyncedAt time.Time `json:"lastSyncedAt"`
+	TotalRecords int64    `json:"totalRecords"`
+	MissingFiles int64    `json:"missingFiles"`
+}
+
+type AssetReports struct {
+	UnprocessedFiles int   `json:"unprocessedFiles"`
+	ConvertedFiles   int   `json:"convertedFiles"`
+	ArchiveFiles     int   `json:"archiveFiles"`
+	ArchiveBytes     int64 `json:"archiveBytes"`
+	ExpiredArchive   int   `json:"expiredArchive"`
+	MissingFiles      int   `json:"missingFiles"`
+}
+
+type AssetSyncResult struct {
+	SyncedAt          time.Time `json:"syncedAt"`
+	UnprocessedFiles int       `json:"unprocessedFiles"`
+	ConvertedFiles   int       `json:"convertedFiles"`
+	ArchiveFiles     int       `json:"archiveFiles"`
+	ExpiredDeleted   int       `json:"expiredDeleted"`
 }
 
 type AssetReviewState struct {
@@ -43,19 +71,51 @@ type AssetMetadataState struct {
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
+type AssetConversionOverrideState struct {
+	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata       map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
+	AudioMetadata       map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
+	SubtitleMetadata    map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	VideoCodec          string                         `json:"videoCodec,omitempty"`
+	AudioCodec          string                         `json:"audioCodec,omitempty"`
+	QualityMode         string                         `json:"qualityMode,omitempty"`
+	QualityValue        int                            `json:"qualityValue,omitempty"`
+	VideoPreset         string                         `json:"videoPreset,omitempty"`
+	PixFmt              string                         `json:"pixFmt,omitempty"`
+	VideoFilters        string                         `json:"videoFilters,omitempty"`
+	X265Params          string                         `json:"x265Params,omitempty"`
+	ProcessingMode      string                         `json:"processingMode,omitempty"`
+	PreserveHDR         *bool                          `json:"preserveHdr,omitempty"`
+	PreserveSubtitles   *bool                          `json:"preserveSubtitles,omitempty"`
+	PreserveChapters    *bool                          `json:"preserveChapters,omitempty"`
+	UpdatedAt           *time.Time                     `json:"updatedAt,omitempty"`
+}
+
+type StreamMetadataOverride struct {
+	Title    string `json:"title,omitempty"`
+	Language string `json:"language,omitempty"`
+	Default  *bool  `json:"default,omitempty"`
+	Forced   *bool  `json:"forced,omitempty"`
+}
+
 type Asset struct {
-	LibraryID    uint               `json:"libraryId"`
-	LibraryName  string             `json:"libraryName"`
-	Path         string             `json:"path"`
-	RelativePath string             `json:"relativePath"`
-	GroupPath    string             `json:"groupPath"`
-	FileName     string             `json:"fileName"`
-	Extension    string             `json:"extension"`
-	SizeBytes    int64              `json:"sizeBytes"`
-	ModifiedAt   time.Time          `json:"modifiedAt"`
-	Status       string             `json:"status"`
-	Review       AssetReviewState   `json:"review"`
-	Metadata     AssetMetadataState `json:"metadata"`
+	LibraryID    uint                         `json:"libraryId"`
+	LibraryName  string                       `json:"libraryName"`
+	Path         string                       `json:"path"`
+	RelativePath string                       `json:"relativePath"`
+	GroupPath    string                       `json:"groupPath"`
+	FileName     string                       `json:"fileName"`
+	Extension    string                       `json:"extension"`
+	SizeBytes    int64                        `json:"sizeBytes"`
+	ModifiedAt   time.Time                    `json:"modifiedAt"`
+	Status       string                       `json:"status"`
+	Missing      bool                         `json:"missing"`
+	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
+	Review       AssetReviewState             `json:"review"`
+	Metadata     AssetMetadataState           `json:"metadata"`
+	Conversion   AssetConversionOverrideState `json:"conversion"`
 }
 
 type AssetGroup struct {
@@ -87,67 +147,196 @@ type AssetMetadataUpdateInput struct {
 	Tags       []string `json:"tags"`
 }
 
+type AssetConversionUpdateInput struct {
+	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata       map[int]StreamMetadataOverride `json:"videoMetadata"`
+	AudioMetadata       map[int]StreamMetadataOverride `json:"audioMetadata"`
+	SubtitleMetadata    map[int]StreamMetadataOverride `json:"subtitleMetadata"`
+	VideoCodec          string                         `json:"videoCodec"`
+	AudioCodec          string                         `json:"audioCodec"`
+	QualityMode         string                         `json:"qualityMode"`
+	QualityValue        int                            `json:"qualityValue"`
+	VideoPreset         string                         `json:"videoPreset"`
+	PixFmt              string                         `json:"pixFmt"`
+	VideoFilters        string                         `json:"videoFilters"`
+	X265Params          string                         `json:"x265Params"`
+	ProcessingMode      string                         `json:"processingMode"`
+	PreserveHDR         *bool                          `json:"preserveHdr"`
+	PreserveSubtitles   *bool                          `json:"preserveSubtitles"`
+	PreserveChapters    *bool                          `json:"preserveChapters"`
+}
+
 func NewAssetHandler(db *gorm.DB) AssetHandler {
 	return AssetHandler{db: db}
 }
 
 func (h AssetHandler) List(c *gin.Context) {
-	var libraries []models.Library
-	if err := h.db.Order("name asc").Find(&libraries).Error; err != nil {
+	inventory, err := h.assetInventoryFromDB()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	inventory := AssetInventory{
-		Unprocessed:       []Asset{},
-		Converted:         []Asset{},
-		UnprocessedGroups: []AssetGroup{},
-		ConvertedGroups:   []AssetGroup{},
+	c.JSON(http.StatusOK, inventory)
+}
+
+func (h AssetHandler) Sync(c *gin.Context) {
+	result, err := h.syncAssetInventory()
+	if err != nil {
+		appendSystemLog(h.db, "asset_inventory_sync_failed", nil, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	seenDestinationPaths := map[string]struct{}{}
+	appendSystemLog(h.db, "asset_inventory_synced", map[string]string{
+		"unprocessed": strconv.Itoa(result.UnprocessedFiles),
+		"converted":   strconv.Itoa(result.ConvertedFiles),
+		"archive":     strconv.Itoa(result.ArchiveFiles),
+	}, nil)
+	c.JSON(http.StatusOK, result)
+}
 
-	for _, library := range libraries {
-		destinationPath := strings.TrimSpace(library.DestinationPath)
-		if destinationPath == "" {
-			continue
-		}
-		if _, seen := seenDestinationPaths[destinationPath]; seen {
-			continue
-		}
-		seenDestinationPaths[destinationPath] = struct{}{}
-
-		convertedAssets := collectAssets(library, destinationPath, "converted")
-		inventory.Converted = append(inventory.Converted, convertedAssets...)
+func (h AssetHandler) Recover(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
 	}
-
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", filepath.Clean(path)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "archive asset not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if record.Status != "archive" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only archive assets can be recovered"})
+		return
+	}
+	if record.Missing {
+		c.JSON(http.StatusNotFound, gin.H{"error": "archive file is no longer physically available"})
+		return
+	}
 	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	sourceLibrary := models.Library{Name: "Originals", SourcePath: rawRoot}
-	sourceAssets := collectAssets(sourceLibrary, rawRoot, "unprocessed")
-	convertedKeys := assetKeySet(inventory.Converted)
-	for _, asset := range sourceAssets {
-		if _, ok := convertedKeys[assetKey(asset.RelativePath)]; !ok {
-			inventory.Unprocessed = append(inventory.Unprocessed, asset)
-		}
+	destination := filepath.Join(rawRoot, filepath.FromSlash(record.RelativePath))
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := os.Stat(destination); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "raw asset already exists; converted files were not changed"})
+		return
+	}
+	if err := os.Rename(record.Path, destination); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	now := time.Now()
+	record.Missing = true
+	record.SyncedAt = now
+	if err := h.db.Save(&record).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	rawRecord := record
+	rawRecord.ID = 0
+	rawRecord.Path = filepath.Clean(destination)
+	rawRecord.RootPath = filepath.Clean(rawRoot)
+	rawRecord.Status = "unprocessed"
+	rawRecord.LibraryID = 0
+	rawRecord.LibraryName = "Originals"
+	rawRecord.Missing = false
+	rawRecord.ExpiresAt = nil
+	rawRecord.SyncedAt = now
+	if err := upsertAssetRecord(h.db, rawRecord); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "recovered",
+		"sourcePath": path,
+		"recoveredPath": destination,
+		"message": "Archive asset recovered. Converted files were not deleted.",
+	})
+}
+
+func (h AssetHandler) UpdateConversion(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	resolvedPath, err := h.resolveMediaPath(path)
+	if err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "stage": "resolve_path"}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	allowed, err := h.pathBelongsToLibrary(resolvedPath)
+	if err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		err := fmt.Errorf("media path is outside configured libraries")
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
 	}
 
-	reviews := assetReviewOverrides(h.db)
-	metadata := assetMetadataOverrides(h.db)
-	applyAssetReviews(inventory.Unprocessed, reviews)
-	applyAssetReviews(inventory.Converted, reviews)
-	applyAssetMetadata(inventory.Unprocessed, metadata)
-	applyAssetMetadata(inventory.Converted, metadata)
-	sortAssets(inventory.Unprocessed)
-	sortAssets(inventory.Converted)
-	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
-	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
-	sortAssetGroups(inventory.UnprocessedGroups)
-	sortAssetGroups(inventory.ConvertedGroups)
+	var input AssetConversionUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "bind_json"}, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	c.JSON(http.StatusOK, inventory)
+	entries := assetConversionOverrides(h.db)
+	cleanPath := filepath.Clean(resolvedPath)
+	override := AssetConversionOverrideState{
+		KeepVideoStreams:    normalizedStreamIndexes(input.KeepVideoStreams),
+		KeepAudioStreams:    normalizedStreamIndexes(input.KeepAudioStreams),
+		KeepSubtitleStreams: normalizedStreamIndexes(input.KeepSubtitleStreams),
+		VideoMetadata:       normalizedStreamMetadata(input.VideoMetadata),
+		AudioMetadata:       normalizedStreamMetadata(input.AudioMetadata),
+		SubtitleMetadata:    normalizedStreamMetadata(input.SubtitleMetadata),
+		VideoCodec:          strings.TrimSpace(input.VideoCodec),
+		AudioCodec:          strings.TrimSpace(input.AudioCodec),
+		QualityMode:         strings.TrimSpace(input.QualityMode),
+		QualityValue:        input.QualityValue,
+		VideoPreset:         strings.TrimSpace(input.VideoPreset),
+		PixFmt:              strings.TrimSpace(input.PixFmt),
+		VideoFilters:        strings.TrimSpace(input.VideoFilters),
+		X265Params:          strings.TrimSpace(input.X265Params),
+		ProcessingMode:      strings.TrimSpace(input.ProcessingMode),
+		PreserveHDR:         input.PreserveHDR,
+		PreserveSubtitles:   input.PreserveSubtitles,
+		PreserveChapters:    input.PreserveChapters,
+	}
+	if assetConversionOverrideEmpty(override) {
+		delete(entries, cleanPath)
+	} else {
+		now := time.Now()
+		override.UpdatedAt = &now
+		entries[cleanPath] = override
+	}
+
+	if err := saveAssetConversionOverrides(h.db, entries); err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "save_setting"}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	appendSystemLog(h.db, "asset_conversion_override_saved", map[string]string{"path": path, "resolvedPath": resolvedPath}, nil)
+	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "conversion": conversionOverrideForPath(cleanPath, entries)})
 }
 
 func (h AssetHandler) UpdateMetadata(c *gin.Context) {
@@ -743,6 +932,258 @@ func settingPath(db *gorm.DB, key string, fallback string) (string, error) {
 	return stringSetting(paths, key, fallback), nil
 }
 
+func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
+	records := []models.AssetRecord{}
+	if err := h.db.Order("status asc, library_name asc, relative_path asc").Find(&records).Error; err != nil {
+		return AssetInventory{}, err
+	}
+
+	inventory := AssetInventory{
+		Unprocessed:       []Asset{},
+		Converted:         []Asset{},
+		Archive:           []Asset{},
+		UnprocessedGroups: []AssetGroup{},
+		ConvertedGroups:   []AssetGroup{},
+		ArchiveGroups:     []AssetGroup{},
+	}
+	for _, record := range records {
+		asset := assetFromRecord(record)
+		switch record.Status {
+		case "converted":
+			inventory.Converted = append(inventory.Converted, asset)
+		case "archive":
+			inventory.Archive = append(inventory.Archive, asset)
+		default:
+			if !record.Missing {
+				inventory.Unprocessed = append(inventory.Unprocessed, asset)
+			}
+		}
+	}
+
+	reviews := assetReviewOverrides(h.db)
+	metadata := assetMetadataOverrides(h.db)
+	conversion := assetConversionOverrides(h.db)
+	applyAssetReviews(inventory.Unprocessed, reviews)
+	applyAssetReviews(inventory.Converted, reviews)
+	applyAssetReviews(inventory.Archive, reviews)
+	applyAssetMetadata(inventory.Unprocessed, metadata)
+	applyAssetMetadata(inventory.Converted, metadata)
+	applyAssetMetadata(inventory.Archive, metadata)
+	applyAssetConversionOverrides(inventory.Unprocessed, conversion)
+	applyAssetConversionOverrides(inventory.Converted, conversion)
+	applyAssetConversionOverrides(inventory.Archive, conversion)
+	sortAssets(inventory.Unprocessed)
+	sortAssets(inventory.Converted)
+	sortAssets(inventory.Archive)
+	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
+	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
+	inventory.ArchiveGroups = groupAssets(inventory.Archive, reviews, metadata)
+	sortAssetGroups(inventory.UnprocessedGroups)
+	sortAssetGroups(inventory.ConvertedGroups)
+	sortAssetGroups(inventory.ArchiveGroups)
+	inventory.Reports = assetReports(inventory)
+
+	var last models.AssetRecord
+	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
+		inventory.Sync.LastSyncedAt = last.SyncedAt
+	}
+	_ = h.db.Model(&models.AssetRecord{}).Count(&inventory.Sync.TotalRecords).Error
+	_ = h.db.Model(&models.AssetRecord{}).Where("missing = ?", true).Count(&inventory.Sync.MissingFiles).Error
+	return inventory, nil
+}
+
+func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
+	now := time.Now()
+	result := AssetSyncResult{SyncedAt: now}
+
+	var libraries []models.Library
+	if err := h.db.Order("name asc").Find(&libraries).Error; err != nil {
+		return result, err
+	}
+	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
+	if err != nil {
+		return result, err
+	}
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return result, err
+	}
+	keepDays := originalRetentionDays(h.db)
+	expireArchive := assetInventoryExpireArchiveFiles(h.db)
+
+	foundPaths := map[string]struct{}{}
+	rawRecords := collectAssetRecords(models.Library{Name: "Originals", SourcePath: rawRoot}, rawRoot, "unprocessed", now, keepDays)
+	for _, record := range rawRecords {
+		foundPaths[record.Path] = struct{}{}
+		if err := upsertAssetRecord(h.db, record); err != nil {
+			return result, err
+		}
+		result.UnprocessedFiles++
+	}
+
+	seenDestinations := map[string]struct{}{}
+	for _, library := range libraries {
+		destinationPath := strings.TrimSpace(library.DestinationPath)
+		if destinationPath == "" {
+			continue
+		}
+		if _, seen := seenDestinations[destinationPath]; seen {
+			continue
+		}
+		seenDestinations[destinationPath] = struct{}{}
+		for _, record := range collectAssetRecords(library, destinationPath, "converted", now, keepDays) {
+			foundPaths[record.Path] = struct{}{}
+			if err := upsertAssetRecord(h.db, record); err != nil {
+				return result, err
+			}
+			result.ConvertedFiles++
+		}
+	}
+
+	for _, record := range collectAssetRecords(models.Library{Name: "Original Archive"}, archiveRoot, "archive", now, keepDays) {
+		foundPaths[record.Path] = struct{}{}
+		if expireArchive && record.ExpiresAt != nil && now.After(*record.ExpiresAt) {
+			if err := os.Remove(record.Path); err == nil {
+				record.Missing = true
+				result.ExpiredDeleted++
+			}
+		}
+		if err := upsertAssetRecord(h.db, record); err != nil {
+			return result, err
+		}
+		result.ArchiveFiles++
+	}
+
+	var records []models.AssetRecord
+	if err := h.db.Find(&records).Error; err != nil {
+		return result, err
+	}
+	for _, record := range records {
+		if _, ok := foundPaths[record.Path]; ok {
+			continue
+		}
+		if !record.Missing {
+			record.Missing = true
+			record.SyncedAt = now
+			if err := h.db.Save(&record).Error; err != nil {
+				return result, err
+			}
+		}
+	}
+	return result, nil
+}
+
+func collectAssetRecords(library models.Library, root string, status string, syncedAt time.Time, keepDays int) []models.AssetRecord {
+	if strings.TrimSpace(root) == "" {
+		return []models.AssetRecord{}
+	}
+
+	records := []models.AssetRecord{}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		extension := strings.ToLower(filepath.Ext(path))
+		if !isMediaExtension(extension) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		relativePath := filepath.ToSlash(relativeAssetPath(root, path))
+		record := models.AssetRecord{
+			Path:         filepath.Clean(path),
+			RootPath:     filepath.Clean(root),
+			RelativePath: relativePath,
+			GroupPath:    filepath.ToSlash(logicalAssetGroupPath(relativePath)),
+			FileName:     filepath.Base(path),
+			Extension:    extension,
+			SizeBytes:    info.Size(),
+			ModifiedAt:   info.ModTime(),
+			Status:       status,
+			LibraryID:    library.ID,
+			LibraryName:  library.Name,
+			Missing:      false,
+			SyncedAt:     syncedAt,
+		}
+		if status == "archive" && keepDays > 0 {
+			expiresAt := info.ModTime().Add(time.Duration(keepDays) * 24 * time.Hour)
+			record.ExpiresAt = &expiresAt
+		}
+		records = append(records, record)
+		return nil
+	})
+	return records
+}
+
+func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
+	var existing models.AssetRecord
+	if err := db.First(&existing, "path = ?", record.Path).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return db.Create(&record).Error
+		}
+		return err
+	}
+	record.ID = existing.ID
+	record.CreatedAt = existing.CreatedAt
+	return db.Save(&record).Error
+}
+
+func assetFromRecord(record models.AssetRecord) Asset {
+	return Asset{
+		LibraryID:    record.LibraryID,
+		LibraryName:  record.LibraryName,
+		Path:         record.Path,
+		RelativePath: record.RelativePath,
+		GroupPath:    record.GroupPath,
+		FileName:     record.FileName,
+		Extension:    record.Extension,
+		SizeBytes:    record.SizeBytes,
+		ModifiedAt:   record.ModifiedAt,
+		Status:       record.Status,
+		Missing:      record.Missing,
+		ExpiresAt:    record.ExpiresAt,
+	}
+}
+
+func assetReports(inventory AssetInventory) AssetReports {
+	report := AssetReports{
+		UnprocessedFiles: len(inventory.Unprocessed),
+		ConvertedFiles:   len(inventory.Converted),
+		ArchiveFiles:     len(inventory.Archive),
+	}
+	now := time.Now()
+	for _, asset := range append(append([]Asset{}, inventory.Converted...), inventory.Archive...) {
+		if asset.Missing {
+			report.MissingFiles++
+		}
+	}
+	for _, asset := range inventory.Archive {
+		report.ArchiveBytes += asset.SizeBytes
+		if asset.ExpiresAt != nil && now.After(*asset.ExpiresAt) {
+			report.ExpiredArchive++
+		}
+	}
+	return report
+}
+
+func originalRetentionDays(db *gorm.DB) int {
+	setting := models.AppSetting{}
+	if err := db.First(&setting, "key = ?", "originalRetentionPolicy").Error; err != nil || setting.Value == nil {
+		return 30
+	}
+	return intValueSetting(setting.Value["keepOriginalsDays"], 30)
+}
+
+func assetInventoryExpireArchiveFiles(db *gorm.DB) bool {
+	setting := models.AppSetting{}
+	if err := db.First(&setting, "key = ?", "assetInventory").Error; err != nil || setting.Value == nil {
+		return true
+	}
+	return boolSetting(setting.Value["expireArchiveFiles"], true)
+}
+
 func collectAssets(library models.Library, root string, status string) []Asset {
 	if strings.TrimSpace(root) == "" {
 		return []Asset{}
@@ -885,6 +1326,53 @@ func saveAssetMetadataOverrides(db *gorm.DB, metadata map[string]AssetMetadataSt
 	return db.Save(&setting).Error
 }
 
+func assetConversionOverrides(db *gorm.DB) map[string]AssetConversionOverrideState {
+	setting := models.AppSetting{}
+	if err := db.First(&setting, "key = ?", "assetConversionOverrides").Error; err != nil || setting.Value == nil {
+		return map[string]AssetConversionOverrideState{}
+	}
+
+	rawEntries, ok := setting.Value["entries"].(map[string]interface{})
+	if !ok {
+		return map[string]AssetConversionOverrideState{}
+	}
+
+	entries := map[string]AssetConversionOverrideState{}
+	for rawPath, rawValue := range rawEntries {
+		bytes, err := json.Marshal(rawValue)
+		if err != nil {
+			continue
+		}
+		var override AssetConversionOverrideState
+		if err := json.Unmarshal(bytes, &override); err != nil {
+			continue
+		}
+		entries[filepath.Clean(rawPath)] = override
+	}
+	return entries
+}
+
+func saveAssetConversionOverrides(db *gorm.DB, overrides map[string]AssetConversionOverrideState) error {
+	entries := map[string]interface{}{}
+	for path, override := range overrides {
+		if assetConversionOverrideEmpty(override) {
+			continue
+		}
+		entries[filepath.Clean(path)] = override
+	}
+
+	setting := models.AppSetting{}
+	value := models.JSONMap{"entries": entries}
+	if err := db.First(&setting, "key = ?", "assetConversionOverrides").Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return db.Create(&models.AppSetting{Key: "assetConversionOverrides", Value: value}).Error
+		}
+		return err
+	}
+	setting.Value = value
+	return db.Save(&setting).Error
+}
+
 func assetReviewOverrides(db *gorm.DB) map[string]AssetReviewState {
 	setting := models.AppSetting{}
 	if err := db.First(&setting, "key = ?", "assetReviewOverrides").Error; err != nil || setting.Value == nil {
@@ -953,6 +1441,12 @@ func applyAssetMetadata(assets []Asset, metadata map[string]AssetMetadataState) 
 	}
 }
 
+func applyAssetConversionOverrides(assets []Asset, overrides map[string]AssetConversionOverrideState) {
+	for index := range assets {
+		assets[index].Conversion = conversionOverrideForPath(assets[index].Path, overrides)
+	}
+}
+
 func metadataForPath(path string, metadata map[string]AssetMetadataState) AssetMetadataState {
 	cleanPath := filepath.Clean(path)
 	item, ok := metadata[cleanPath]
@@ -966,6 +1460,85 @@ func metadataForPath(path string, metadata map[string]AssetMetadataState) AssetM
 		item.Tags = []string{}
 	}
 	return item
+}
+
+func conversionOverrideForPath(path string, overrides map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+	cleanPath := filepath.Clean(path)
+	override, ok := overrides[cleanPath]
+	if !ok {
+		return AssetConversionOverrideState{}
+	}
+	override.KeepVideoStreams = normalizedStreamIndexes(override.KeepVideoStreams)
+	override.KeepAudioStreams = normalizedStreamIndexes(override.KeepAudioStreams)
+	override.KeepSubtitleStreams = normalizedStreamIndexes(override.KeepSubtitleStreams)
+	override.VideoMetadata = normalizedStreamMetadata(override.VideoMetadata)
+	override.AudioMetadata = normalizedStreamMetadata(override.AudioMetadata)
+	override.SubtitleMetadata = normalizedStreamMetadata(override.SubtitleMetadata)
+	return override
+}
+
+func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
+	return override.KeepVideoStreams == nil &&
+		override.KeepAudioStreams == nil &&
+		override.KeepSubtitleStreams == nil &&
+		len(override.VideoMetadata) == 0 &&
+		len(override.AudioMetadata) == 0 &&
+		len(override.SubtitleMetadata) == 0 &&
+		strings.TrimSpace(override.VideoCodec) == "" &&
+		strings.TrimSpace(override.AudioCodec) == "" &&
+		strings.TrimSpace(override.QualityMode) == "" &&
+		override.QualityValue == 0 &&
+		strings.TrimSpace(override.VideoPreset) == "" &&
+		strings.TrimSpace(override.PixFmt) == "" &&
+		strings.TrimSpace(override.VideoFilters) == "" &&
+		strings.TrimSpace(override.X265Params) == "" &&
+		strings.TrimSpace(override.ProcessingMode) == "" &&
+		override.PreserveHDR == nil &&
+		override.PreserveSubtitles == nil &&
+		override.PreserveChapters == nil
+}
+
+func normalizedStreamMetadata(metadata map[int]StreamMetadataOverride) map[int]StreamMetadataOverride {
+	normalized := map[int]StreamMetadataOverride{}
+	for index, item := range metadata {
+		if index < 0 {
+			continue
+		}
+		clean := StreamMetadataOverride{
+			Title:    strings.TrimSpace(item.Title),
+			Language: strings.ToLower(strings.TrimSpace(item.Language)),
+			Default:  item.Default,
+			Forced:   item.Forced,
+		}
+		if clean.Title == "" && clean.Language == "" && clean.Default == nil && clean.Forced == nil {
+			continue
+		}
+		normalized[index] = clean
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func normalizedStreamIndexes(indexes []int) []int {
+	if indexes == nil {
+		return nil
+	}
+	seen := map[int]struct{}{}
+	normalized := []int{}
+	for _, index := range indexes {
+		if index < 0 {
+			continue
+		}
+		if _, ok := seen[index]; ok {
+			continue
+		}
+		seen[index] = struct{}{}
+		normalized = append(normalized, index)
+	}
+	sort.Ints(normalized)
+	return normalized
 }
 
 func reviewForPath(path string, reviews map[string]AssetReviewState) AssetReviewState {
@@ -1066,6 +1639,23 @@ func normalizedTags(tags []string) []string {
 func boolSetting(value interface{}, fallback bool) bool {
 	if typed, ok := value.(bool); ok {
 		return typed
+	}
+	return fallback
+}
+
+func intValueSetting(value interface{}, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, err := strconv.Atoi(string(typed))
+		if err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }

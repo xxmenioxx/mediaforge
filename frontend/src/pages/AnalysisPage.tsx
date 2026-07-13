@@ -486,8 +486,10 @@ function assetOptionFromPath(path: string): Asset | null {
     sizeBytes: 0,
     modifiedAt: new Date().toISOString(),
     status: 'unprocessed',
+    missing: false,
     review: { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' },
     metadata: { categories: [], tags: [], updatedAt: '' },
+    conversion: {},
   };
 }
 

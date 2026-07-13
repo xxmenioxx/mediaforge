@@ -66,9 +66,12 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'converted';
+  status: 'unprocessed' | 'converted' | 'archive';
+  missing: boolean;
+  expiresAt?: string;
   review: AssetReviewState;
   metadata: AssetMetadataState;
+  conversion: AssetConversionOverrideState;
 };
 
 export type AssetGroup = {
@@ -77,7 +80,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'converted';
+  status: 'unprocessed' | 'converted' | 'archive';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;
@@ -102,6 +105,35 @@ export type AssetMetadataState = {
   updatedAt: string;
 };
 
+export type AssetConversionOverrideState = {
+  keepVideoStreams?: number[] | null;
+  keepAudioStreams?: number[] | null;
+  keepSubtitleStreams?: number[] | null;
+  videoMetadata?: Record<string, StreamMetadataOverride>;
+  audioMetadata?: Record<string, StreamMetadataOverride>;
+  subtitleMetadata?: Record<string, StreamMetadataOverride>;
+  videoCodec?: string;
+  audioCodec?: string;
+  qualityMode?: string;
+  qualityValue?: number;
+  videoPreset?: string;
+  pixFmt?: string;
+  videoFilters?: string;
+  x265Params?: string;
+  processingMode?: string;
+  preserveHdr?: boolean;
+  preserveSubtitles?: boolean;
+  preserveChapters?: boolean;
+  updatedAt?: string;
+};
+
+export type StreamMetadataOverride = {
+  title?: string;
+  language?: string;
+  default?: boolean;
+  forced?: boolean;
+};
+
 export type AssetReviewUpdateInput = {
   path: string;
   requiresReview: boolean;
@@ -116,11 +148,42 @@ export type AssetMetadataUpdateInput = {
   tags: string[];
 };
 
+export type AssetConversionUpdateInput = AssetConversionOverrideState & {
+  path: string;
+};
+
 export type AssetInventory = {
   unprocessed: Asset[];
   converted: Asset[];
+  archive: Asset[];
   unprocessedGroups: AssetGroup[];
   convertedGroups: AssetGroup[];
+  archiveGroups: AssetGroup[];
+  reports: AssetReports;
+  sync: AssetSyncInfo;
+};
+
+export type AssetReports = {
+  unprocessedFiles: number;
+  convertedFiles: number;
+  archiveFiles: number;
+  archiveBytes: number;
+  expiredArchive: number;
+  missingFiles: number;
+};
+
+export type AssetSyncInfo = {
+  lastSyncedAt: string;
+  totalRecords: number;
+  missingFiles: number;
+};
+
+export type AssetSyncResult = {
+  syncedAt: string;
+  unprocessedFiles: number;
+  convertedFiles: number;
+  archiveFiles: number;
+  expiredDeleted: number;
 };
 
 export type AdvisorRequest = {

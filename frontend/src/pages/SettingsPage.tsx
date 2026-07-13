@@ -79,6 +79,11 @@ type SettingsForm = {
     autoValidationEnabled: boolean;
     autoPublisherEnabled: boolean;
   };
+  assetInventory: {
+    autoSyncEnabled: boolean;
+    syncIntervalMinutes: number;
+    expireArchiveFiles: boolean;
+  };
   validation: {
     minimumScore: number;
     requireDurationMatch: boolean;
@@ -101,6 +106,7 @@ type SettingsForm = {
     paths: string;
     workers: string;
     pipelineAutomation: string;
+    assetInventory: string;
     validation: string;
     cancellationPolicy: string;
     originalRetentionPolicy: string;
@@ -143,6 +149,11 @@ const initialSettings: SettingsForm = buildSettingsForm({
     autoAnalysisEnabled: false,
     autoValidationEnabled: false,
     autoPublisherEnabled: false,
+  },
+  assetInventory: {
+    autoSyncEnabled: true,
+    syncIntervalMinutes: 60,
+    expireArchiveFiles: true,
   },
   validation: { minimumScore: 90, requireDurationMatch: true },
   cancellationPolicy: {
@@ -216,6 +227,7 @@ export function SettingsPage() {
     updateSetting.mutate({ key: 'paths', value: nextForm.paths });
     updateSetting.mutate({ key: 'workers', value: nextForm.workers });
     updateSetting.mutate({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation });
+    updateSetting.mutate({ key: 'assetInventory', value: nextForm.assetInventory });
     updateSetting.mutate({ key: 'validation', value: nextForm.validation });
     updateSetting.mutate({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy });
     updateSetting.mutate({ key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy });
@@ -227,6 +239,7 @@ export function SettingsPage() {
     const paths = parseJsonObject(form.advancedJson.paths, form.paths);
     const workers = parseJsonObject(form.advancedJson.workers, form.workers);
     const pipelineAutomation = parseJsonObject(form.advancedJson.pipelineAutomation, form.pipelineAutomation);
+    const assetInventory = parseJsonObject(form.advancedJson.assetInventory, form.assetInventory);
     const validation = parseJsonObject(form.advancedJson.validation, form.validation);
     const cancellationPolicy = parseJsonObject(form.advancedJson.cancellationPolicy, form.cancellationPolicy);
     const originalRetentionPolicy = parseJsonObject(
@@ -273,6 +286,11 @@ export function SettingsPage() {
           pipelineAutomation.autoPublisherEnabled,
           initialSettings.pipelineAutomation.autoPublisherEnabled,
         ),
+      },
+      assetInventory: {
+        autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
+        syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
+        expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
       },
       validation: {
         minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
@@ -1086,6 +1104,59 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
             }
             label="Automatic publisher and originals archive"
           />
+          <Divider />
+          <Typography variant="h3">Asset Inventory Sync</Typography>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={form.assetInventory.autoSyncEnabled}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    assetInventory: {
+                      ...current.assetInventory,
+                      autoSyncEnabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+            }
+            label="Automatic asset inventory sync"
+          />
+          <TextField
+            label="Sync interval minutes"
+            type="number"
+            value={form.assetInventory.syncIntervalMinutes}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                assetInventory: {
+                  ...current.assetInventory,
+                  syncIntervalMinutes: Number(event.target.value),
+                },
+              }))
+            }
+            helperText="How often MediaForge refreshes raw/library/archive inventory in the DB."
+            inputProps={{ min: 5, max: 10080 }}
+            fullWidth
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={form.assetInventory.expireArchiveFiles}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    assetInventory: {
+                      ...current.assetInventory,
+                      expireArchiveFiles: event.target.checked,
+                    },
+                  }))
+                }
+              />
+            }
+            label="Physically delete expired archive files during sync"
+          />
         </Stack>
       </CardContent>
     </Card>
@@ -1339,7 +1410,7 @@ function AdvancedSettings({
             </Typography>
           </Stack>
           <Divider />
-          {(['paths', 'workers', 'pipelineAutomation', 'validation', 'cancellationPolicy', 'originalRetentionPolicy', 'assetTypes', 'assetCategories'] as const).map((key) => (
+          {(['paths', 'workers', 'pipelineAutomation', 'assetInventory', 'validation', 'cancellationPolicy', 'originalRetentionPolicy', 'assetTypes', 'assetCategories'] as const).map((key) => (
             <TextField
               key={key}
               label={key}
@@ -1374,6 +1445,7 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
   const paths = byKey.paths ?? {};
   const workers = byKey.workers ?? {};
   const pipelineAutomation = byKey.pipelineAutomation ?? {};
+  const assetInventory = byKey.assetInventory ?? {};
   const validation = byKey.validation ?? {};
   const cancellationPolicy = byKey.cancellationPolicy ?? {};
   const originalRetentionPolicy = byKey.originalRetentionPolicy ?? {};
@@ -1418,6 +1490,11 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
         pipelineAutomation.autoPublisherEnabled,
         initialSettings.pipelineAutomation.autoPublisherEnabled,
       ),
+    },
+    assetInventory: {
+      autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
+      syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
+      expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
     },
     validation: {
       minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
@@ -1477,6 +1554,7 @@ function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsFo
       paths: JSON.stringify(base.paths, null, 2),
       workers: JSON.stringify(base.workers, null, 2),
       pipelineAutomation: JSON.stringify(base.pipelineAutomation, null, 2),
+      assetInventory: JSON.stringify(base.assetInventory, null, 2),
       validation: JSON.stringify(base.validation, null, 2),
       cancellationPolicy: JSON.stringify(base.cancellationPolicy, null, 2),
       originalRetentionPolicy: JSON.stringify(base.originalRetentionPolicy, null, 2),

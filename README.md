@@ -192,6 +192,25 @@ Profiles should also be designed for future community sharing through exportable
 intended use cases, tool requirements, compatibility notes, versioning, provenance, and safety warnings. Shared profiles
 should always be reviewed and tested before being enabled.
 
+## Future Multimedia Library
+
+MediaForge should later add a **Multimedia Library** workspace for browsing assets across registered filesystem libraries
+without becoming a media server or metadata scraper.
+
+The workspace should support library tabs or an equivalent library selector, filters by registered library and path,
+search, technical media filters, and an aggregate "All libraries" view. External roots must be explicitly registered and
+remain read-only during browsing and analysis.
+
+Each asset should show whether MediaForge processed it and, when known, the MediaForge version, job, profile/profile
+version, processing date, and source fingerprint. The database and job history are the authoritative provenance record.
+MediaForge may also write portable embedded metadata when the output container supports it and a sidecar manifest when it
+does not; provenance detection must not depend only on embedded tags because other tools can remove them.
+
+The existing Advisor should be available from this workspace and support filtering or sorting by recommendation. Its
+summary should explain whether conversion is worthwhile, estimated space saved or added, compatibility improvements,
+quality or restoration opportunities, risks, confidence, and the recommended profile. Analysis remains non-destructive
+and conversion always requires the normal queue/approval policy.
+
 ## Local Development
 
 MediaForge is Docker-first. You do not need Go, Node.js, or npm installed on the host machine for the normal development path.

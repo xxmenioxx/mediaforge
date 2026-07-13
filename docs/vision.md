@@ -363,6 +363,67 @@ Eventually a public repository may exist.
 
 ---
 
+# Phase 5 - Multimedia Library
+
+This later phase adds a unified inventory workspace for assets that live across
+registered media paths. It is an analysis and decision surface, not a playback
+catalog or replacement for Jellyfin, Plex, Radarr, or Sonarr.
+
+## Federated Library Browser
+
+Users should be able to:
+
+- browse one registered library at a time using tabs or a library selector
+- browse all registered libraries in one aggregate view
+- filter by library, path, media type, container, codec, resolution, size,
+  warnings, analysis status, and Advisor recommendation
+- search and sort assets without moving or modifying source files
+- add other filesystem roots explicitly, with read-only discovery by default
+
+Paths outside configured roots must never be scanned implicitly.
+
+## MediaForge Provenance
+
+Every successfully processed output should have a durable provenance record.
+The MediaForge database and immutable job report are authoritative and should
+store at least:
+
+- processed by MediaForge
+- MediaForge application version
+- job ID and processing timestamp
+- profile ID and profile version
+- source fingerprint and output fingerprint
+- effective processing pipeline and validation result
+
+For portability, MediaForge should also write equivalent embedded container
+metadata when the format supports safe custom tags. When it does not, it should
+write a versioned sidecar manifest. Embedded tags and sidecars are useful hints,
+but must not be the only source of truth because files can be remuxed, copied,
+renamed, or stripped of metadata.
+
+The UI should distinguish verified provenance, imported/unverified provenance,
+and assets with no known MediaForge history.
+
+## Library Advisor
+
+The existing Advisor should be reusable from the Multimedia Library, both per
+asset and for filtered batches. It should explain:
+
+- whether conversion is recommended, optional, or should be skipped
+- estimated output size and potential space savings
+- compatibility improvements
+- likely quality, restoration, or normalization benefits
+- possible quality loss or processing risks
+- confidence and the evidence behind the recommendation
+- suggested video and audio profiles
+
+Advisor results should be filterable and sortable so users can find the largest
+safe savings or the assets most likely to benefit from improvement. Advice is
+non-destructive; queueing and conversion continue to follow explicit approval,
+automation, and safety policies.
+
+---
+
 # Future Vision
 
 MediaForge should eventually become much more than a FFmpeg frontend.

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,18 +19,32 @@ import (
 )
 
 type jobArtifact struct {
-	GeneratedAt     time.Time       `json:"generatedAt"`
-	Kind            string          `json:"kind"`
-	Job             models.QueueJob `json:"job"`
-	Command         string          `json:"command,omitempty"`
-	ExecutionEngine string          `json:"executionEngine,omitempty"`
-	Profile         models.Profile  `json:"profile"`
-	AudioProfileKey string          `json:"audioProfileKey,omitempty"`
-	ProcessingMode  string          `json:"processingMode,omitempty"`
-	SourceProbe     map[string]any  `json:"sourceProbe,omitempty"`
-	OutputProbe     map[string]any  `json:"outputProbe,omitempty"`
-	Result          map[string]any  `json:"result,omitempty"`
-	Notes           string          `json:"notes,omitempty"`
+	GeneratedAt     time.Time             `json:"generatedAt"`
+	Kind            string                `json:"kind"`
+	Job             models.QueueJob       `json:"job"`
+	Command         string                `json:"command,omitempty"`
+	ExecutionEngine string                `json:"executionEngine,omitempty"`
+	Profile         models.Profile        `json:"profile"`
+	AudioProfileKey string                `json:"audioProfileKey,omitempty"`
+	ProcessingMode  string                `json:"processingMode,omitempty"`
+	AssetConversion AssetConversionReport `json:"assetConversion,omitempty"`
+	SourceProbe     map[string]any        `json:"sourceProbe,omitempty"`
+	OutputProbe     map[string]any        `json:"outputProbe,omitempty"`
+	Result          map[string]any        `json:"result,omitempty"`
+	Notes           string                `json:"notes,omitempty"`
+}
+
+type AssetConversionReport struct {
+	HasOverrides      bool                           `json:"hasOverrides"`
+	Override          AssetConversionOverrideState   `json:"override,omitempty"`
+	SelectedVideo     []int                          `json:"selectedVideo,omitempty"`
+	SelectedAudio     []int                          `json:"selectedAudio,omitempty"`
+	SelectedSubtitles []int                          `json:"selectedSubtitles,omitempty"`
+	VideoMetadata     map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
+	AudioMetadata     map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
+	SubtitleMetadata  map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	ProfileOverrides  map[string]any                 `json:"profileOverrides,omitempty"`
+	HumanSummary      []string                       `json:"humanSummary,omitempty"`
 }
 
 type jobArtifactsResponse struct {
@@ -91,6 +106,7 @@ func BackfillAnalysisFromAsIsReports(db *gorm.DB) gin.HandlerFunc {
 
 func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profile, audioProfile *audioEnhancementProfile, command string, processingMode string) error {
 	sourceProbe := ffprobeJSON(job.MediaPath)
+	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
 	artifact := jobArtifact{
 		GeneratedAt:     time.Now(),
 		Kind:            "as-is",
@@ -99,17 +115,18 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 		ExecutionEngine: "FFmpeg",
 		Profile:         profile,
 		ProcessingMode:  processingMode,
+		AssetConversion: assetConversionReport(override),
 		SourceProbe:     sourceProbe,
 		Notes:           job.Notes,
 	}
 	if audioProfile != nil {
 		artifact.AudioProfileKey = audioProfile.Key
 	}
-	appendAnalysisRecordForJob(db, job, sourceProbe)
+	appendAnalysisRecordForJob(db, job, sourceProbe, artifact.AssetConversion)
 	return writeJobArtifact(db, job, "as-is", artifact)
 }
 
-func appendAnalysisRecordForJob(db *gorm.DB, job models.QueueJob, sourceProbe map[string]any) {
+func appendAnalysisRecordForJob(db *gorm.DB, job models.QueueJob, sourceProbe map[string]any, conversion AssetConversionReport) {
 	if len(sourceProbe) == 0 || sourceProbe["error"] != nil {
 		return
 	}
@@ -126,13 +143,14 @@ func appendAnalysisRecordForJob(db *gorm.DB, job models.QueueJob, sourceProbe ma
 	}
 	scan := buildScanResult(job.MediaPath, size, probe, models.JSONMap(sourceProbe))
 	record := models.JSONMap{
-		"id":        strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + job.MediaPath,
-		"assetPath": job.MediaPath,
-		"assetName": scan.FileName,
-		"decision":  "queued-conversion-as-is",
-		"notes":     "Automatically captured before MediaForge job #" + strconv.FormatUint(uint64(job.ID), 10),
-		"scan":      scan,
-		"createdAt": time.Now().UTC().Format(time.RFC3339),
+		"id":         strconv.FormatInt(time.Now().UnixMilli(), 10) + "-" + job.MediaPath,
+		"assetPath":  job.MediaPath,
+		"assetName":  scan.FileName,
+		"decision":   "queued-conversion-as-is",
+		"notes":      "Automatically captured before MediaForge job #" + strconv.FormatUint(uint64(job.ID), 10),
+		"scan":       scan,
+		"conversion": conversion,
+		"createdAt":  time.Now().UTC().Format(time.RFC3339),
 	}
 
 	var setting models.AppSetting
@@ -278,13 +296,14 @@ func analysisRecordFromAsIsReport(path string, fileName string) (models.JSONMap,
 		jobID = "unknown"
 	}
 	return models.JSONMap{
-		"id":        "as-is-report-" + strings.TrimSuffix(fileName, filepath.Ext(fileName)),
-		"assetPath": assetPath,
-		"assetName": scan.FileName,
-		"decision":  "queued-conversion-as-is",
-		"notes":     "Imported from AS-IS report for MediaForge job #" + jobID + ".",
-		"scan":      scan,
-		"createdAt": generatedAt.UTC().Format(time.RFC3339),
+		"id":         "as-is-report-" + strings.TrimSuffix(fileName, filepath.Ext(fileName)),
+		"assetPath":  assetPath,
+		"assetName":  scan.FileName,
+		"decision":   "queued-conversion-as-is",
+		"notes":      "Imported from AS-IS report for MediaForge job #" + jobID + ".",
+		"scan":       scan,
+		"conversion": artifact.AssetConversion,
+		"createdAt":  generatedAt.UTC().Format(time.RFC3339),
 	}, true
 }
 
@@ -321,14 +340,128 @@ func probeSizeBytes(raw map[string]any) int64 {
 	return size
 }
 
+func assetConversionReport(override AssetConversionOverrideState) AssetConversionReport {
+	report := AssetConversionReport{
+		HasOverrides: assetConversionReportHasOverrides(override),
+	}
+	if !report.HasOverrides {
+		return report
+	}
+
+	report.Override = override
+	report.SelectedVideo = override.KeepVideoStreams
+	report.SelectedAudio = override.KeepAudioStreams
+	report.SelectedSubtitles = override.KeepSubtitleStreams
+	report.VideoMetadata = override.VideoMetadata
+	report.AudioMetadata = override.AudioMetadata
+	report.SubtitleMetadata = override.SubtitleMetadata
+	report.ProfileOverrides = assetProfileOverrideMap(override)
+	report.HumanSummary = assetConversionHumanSummary(override)
+	return report
+}
+
+func assetConversionReportHasOverrides(override AssetConversionOverrideState) bool {
+	return !assetConversionOverrideEmpty(override) ||
+		len(override.VideoMetadata) > 0 ||
+		len(override.AudioMetadata) > 0 ||
+		len(override.SubtitleMetadata) > 0
+}
+
+func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]any {
+	values := map[string]any{}
+	if strings.TrimSpace(override.VideoCodec) != "" {
+		values["videoCodec"] = override.VideoCodec
+	}
+	if strings.TrimSpace(override.AudioCodec) != "" {
+		values["audioCodec"] = override.AudioCodec
+	}
+	if strings.TrimSpace(override.QualityMode) != "" {
+		values["qualityMode"] = override.QualityMode
+	}
+	if override.QualityValue > 0 {
+		values["qualityValue"] = override.QualityValue
+	}
+	if strings.TrimSpace(override.VideoPreset) != "" {
+		values["videoPreset"] = override.VideoPreset
+	}
+	if strings.TrimSpace(override.PixFmt) != "" {
+		values["pixFmt"] = override.PixFmt
+	}
+	if strings.TrimSpace(override.VideoFilters) != "" {
+		values["videoFilters"] = override.VideoFilters
+	}
+	if strings.TrimSpace(override.X265Params) != "" {
+		values["x265Params"] = override.X265Params
+	}
+	if strings.TrimSpace(override.ProcessingMode) != "" {
+		values["processingMode"] = override.ProcessingMode
+	}
+	if override.PreserveHDR != nil {
+		values["preserveHdr"] = *override.PreserveHDR
+	}
+	if override.PreserveSubtitles != nil {
+		values["preserveSubtitles"] = *override.PreserveSubtitles
+	}
+	if override.PreserveChapters != nil {
+		values["preserveChapters"] = *override.PreserveChapters
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func assetConversionHumanSummary(override AssetConversionOverrideState) []string {
+	summary := []string{}
+	if override.KeepVideoStreams != nil {
+		summary = append(summary, "Selected video streams: "+intListLabel(override.KeepVideoStreams))
+	}
+	if override.KeepAudioStreams != nil {
+		summary = append(summary, "Selected audio streams: "+intListLabel(override.KeepAudioStreams))
+	}
+	if override.KeepSubtitleStreams != nil {
+		summary = append(summary, "Selected subtitle streams: "+intListLabel(override.KeepSubtitleStreams))
+	}
+	if len(override.AudioMetadata) > 0 {
+		summary = append(summary, "Audio track metadata edited")
+	}
+	if len(override.VideoMetadata) > 0 {
+		summary = append(summary, "Video track metadata edited")
+	}
+	if len(override.SubtitleMetadata) > 0 {
+		summary = append(summary, "Subtitle track metadata edited")
+	}
+	for key, value := range assetProfileOverrideMap(override) {
+		summary = append(summary, key+": "+fmt.Sprint(value))
+	}
+	sort.Strings(summary)
+	return summary
+}
+
+func intListLabel(values []int) string {
+	if values == nil {
+		return "profile/default"
+	}
+	if len(values) == 0 {
+		return "none"
+	}
+	labels := make([]string, 0, len(values))
+	for _, value := range values {
+		labels = append(labels, strconv.Itoa(value))
+	}
+	return strings.Join(labels, ", ")
+}
+
 func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]any) error {
+	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
 	artifact := jobArtifact{
-		GeneratedAt: time.Now(),
-		Kind:        "result",
-		Job:         job,
-		OutputProbe: ffprobeJSON(job.OutputPath),
-		Result:      result,
-		Notes:       job.Notes,
+		GeneratedAt:     time.Now(),
+		Kind:            "result",
+		Job:             job,
+		AssetConversion: assetConversionReport(override),
+		OutputProbe:     ffprobeJSON(job.OutputPath),
+		Result:          result,
+		Notes:           job.Notes,
 	}
 	return writeJobArtifact(db, job, "result", artifact)
 }
@@ -425,16 +558,58 @@ func readLatestJobArtifact(db *gorm.DB, job models.QueueJob, kind string) (map[s
 		return left.ModTime().After(right.ModTime())
 	})
 
-	path := filepath.Join(dir, matches[0].Name())
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", err
+	for _, match := range matches {
+		path := filepath.Join(dir, match.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, "", err
+		}
+		var artifact map[string]any
+		if err := json.Unmarshal(content, &artifact); err != nil {
+			return nil, "", err
+		}
+		if jobArtifactMatchesJob(artifact, job) {
+			return artifact, path, nil
+		}
 	}
-	var artifact map[string]any
-	if err := json.Unmarshal(content, &artifact); err != nil {
-		return nil, "", err
+	return nil, "", os.ErrNotExist
+}
+
+func jobArtifactMatchesJob(artifact map[string]any, job models.QueueJob) bool {
+	rawJob, ok := artifact["job"].(map[string]any)
+	if !ok {
+		return false
 	}
-	return artifact, path, nil
+	if uintFromUnknown(rawJob["id"]) != job.ID {
+		return false
+	}
+	return filepath.Clean(stringFromUnknown(rawJob["mediaPath"])) == filepath.Clean(job.MediaPath)
+}
+
+func uintFromUnknown(value any) uint {
+	switch typed := value.(type) {
+	case float64:
+		if typed >= 0 && typed == float64(uint(typed)) {
+			return uint(typed)
+		}
+	case int:
+		if typed >= 0 {
+			return uint(typed)
+		}
+	case uint:
+		return typed
+	case json.Number:
+		parsed, err := strconv.ParseUint(string(typed), 10, 64)
+		if err == nil {
+			return uint(parsed)
+		}
+	case string:
+		parsed, err := strconv.ParseUint(strings.TrimSpace(typed), 10, 64)
+		if err == nil {
+			return uint(parsed)
+		}
+	}
+	return 0
 }
 
 func jobReportFileName(job models.QueueJob, kind string) string {

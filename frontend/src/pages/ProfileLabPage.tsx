@@ -7,13 +7,21 @@ import {
   CardContent,
   Checkbox,
   Chip,
+  Collapse,
+  Divider,
+  FormControlLabel,
   Grid,
   MenuItem,
   Slider,
   Stack,
+  Tab,
+  Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import FactCheckIcon from '@mui/icons-material/FactCheck';
 import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
@@ -22,11 +30,60 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
-import type { AppSetting, Asset, AudioEnhancementProfile, Profile, ProfileInput } from '../api/types';
+import type {
+  AppSetting,
+  Asset,
+  AssetConversionOverrideState,
+  AudioEnhancementProfile,
+  MediaStreamInfo,
+  Profile,
+  ProfileInput,
+  ScanResult,
+  StreamMetadataOverride,
+} from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
+import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
+
+type LabSection = 'video' | 'audio' | 'tracks';
+
+type TrackProfile = {
+  key: string;
+  name: string;
+  description: string;
+  sourceAssetPath?: string;
+  sourceAssetName?: string;
+  keepVideoStreams?: number[];
+  keepAudioStreams?: number[];
+  keepSubtitleStreams?: number[];
+  videoMetadata?: Record<string, StreamMetadataOverride>;
+  audioMetadata?: Record<string, StreamMetadataOverride>;
+  subtitleMetadata?: Record<string, StreamMetadataOverride>;
+  videoMode: 'first' | 'all' | 'require-one';
+  audioMode: 'all' | 'default' | 'languages' | 'none';
+  audioLanguages: string[];
+  audioRequired: boolean;
+  dropCommentary: boolean;
+  defaultAudioLanguage: string;
+  subtitleMode: 'all' | 'none' | 'forced' | 'languages' | 'forced-or-languages';
+  subtitleLanguages: string[];
+  subtitlesRequired: boolean;
+  defaultSubtitleLanguage: string;
+  validationMode: 'block' | 'review' | 'warn';
+  notes: string;
+  disabled?: boolean;
+  deletedAt?: string;
+};
+
+const languageOptions = [
+  { value: 'jpn', label: 'Japanese' },
+  { value: 'spa', label: 'Spanish' },
+  { value: 'eng', label: 'English' },
+  { value: 'lat', label: 'Latin Spanish' },
+  { value: 'und', label: 'Undetermined' },
+] as const;
 
 const channelModes = [
   { value: 'preserve', label: 'Preserve', description: 'Keep the source channel layout unless other filters/codecs change it.' },
@@ -42,6 +99,26 @@ const forceStereoModes = [
   { value: 'duplicate-first', label: 'Duplicate first channel', description: 'Use the first input channel for both left and right.' },
 ] as const;
 
+const videoCodecOptions = [
+  { value: 'x265_10bit', label: 'HEVC / x265 10-bit' },
+  { value: 'x265', label: 'HEVC / x265' },
+  { value: 'x264', label: 'H.264 / x264' },
+  { value: 'copy', label: 'Keep original video' },
+] as const;
+
+const audioCodecOptions = [
+  { value: 'copy', label: 'Keep original audio' },
+  { value: 'aac', label: 'AAC (best compatibility)' },
+  { value: 'ac3', label: 'AC-3 (home theater)' },
+  { value: 'opus', label: 'Opus (small files)' },
+] as const;
+
+const workModeOptions = [
+  { value: '', label: 'Profile default' },
+  { value: 'full_encode', label: 'Re-encode video' },
+  { value: 'audio_only', label: 'Audio/subtitle fixes only' },
+] as const;
+
 const encoderPresetOptions = [
   { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful for quick tests.' },
   { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
@@ -52,6 +129,22 @@ const encoderPresetOptions = [
 const pixelFormatOptions = [
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265/anime/DVD. Helps reduce banding while staying widely playable.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or codecs that do not need 10-bit output.' },
+] as const;
+
+const videoEncoderOptions = [
+  { value: 'auto', label: 'Auto', description: 'MediaForge chooses software unless hardware fallback is enabled and available.' },
+  { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
+  { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
+  { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
+  { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
+  { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
+] as const;
+
+const qualityOptions = [
+  { value: 'maximum', label: 'Maximum', description: 'Near-lossless drafts. Larger files, best for masters.', crf: 15, preset: 'slow' },
+  { value: 'high', label: 'High', description: 'Very high quality for favorite sources.', crf: 18, preset: 'medium' },
+  { value: 'balanced', label: 'Balanced', description: 'Good default for most anime and series.', crf: 22, preset: 'medium' },
+  { value: 'small', label: 'Small', description: 'Prioritizes smaller files.', crf: 25, preset: 'slow' },
 ] as const;
 
 const deinterlaceOptions = [
@@ -86,6 +179,9 @@ const videoStarterPresets = [
       videoCodec: 'x265_10bit',
       qualityValue: 20,
       workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
         deinterlace: 'off',
@@ -105,6 +201,9 @@ const videoStarterPresets = [
       videoCodec: 'x265_10bit',
       qualityValue: 21,
       workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
         deinterlace: 'auto',
@@ -124,6 +223,9 @@ const videoStarterPresets = [
       videoCodec: 'x265_10bit',
       qualityValue: 18,
       workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
         videoPreset: 'slow',
         pixFmt: 'yuv420p10le',
         deinterlace: 'off',
@@ -143,6 +245,9 @@ const videoStarterPresets = [
       videoCodec: 'x265_10bit',
       qualityValue: 23,
       workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
         deinterlace: 'off',
@@ -151,6 +256,112 @@ const videoStarterPresets = [
         crop: 'off',
         videoFilters: '',
         x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+      },
+    },
+  },
+  {
+    key: 'hevc-small-size',
+    label: 'HEVC Small Size',
+    description: 'Software x265 cuando importa más ahorrar espacio.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 21,
+      workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
+        videoPreset: 'slow',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: 'aq-mode=3:aq-strength=0.8:deblock=-1,-1',
+        addAacStereoDefault: true,
+        preserveOriginalAudio: true,
+        warnSubtitleFormats: true,
+        preferSrtSubtitles: false,
+      },
+    },
+  },
+  {
+    key: 'hevc-archive-quality',
+    label: 'HEVC Archive Quality',
+    description: 'Software x265 para películas, conciertos y assets difíciles.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 19,
+      workerConfig: {
+        videoEncoder: 'libx265',
+        preferredEncoder: 'software',
+        useHardwareIfAvailable: false,
+        videoPreset: 'slow',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'light',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+        addAacStereoDefault: true,
+        preserveOriginalAudio: true,
+        warnSubtitleFormats: true,
+        preferSrtSubtitles: false,
+      },
+    },
+  },
+  {
+    key: 'hevc-balanced-fast',
+    label: 'HEVC Balanced Fast',
+    description: 'QSV/hardware cuando importa más velocidad y no saturar el NAS.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 25,
+      workerConfig: {
+        videoEncoder: 'hevc_qsv',
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+        globalQuality: 25,
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: '',
+        addAacStereoDefault: true,
+        preserveOriginalAudio: true,
+        warnSubtitleFormats: true,
+        preferSrtSubtitles: false,
+      },
+    },
+  },
+  {
+    key: 'hevc-bulk-convert',
+    label: 'HEVC Bulk Convert',
+    description: 'Hardware HEVC para bibliotecas grandes y conversiones masivas.',
+    draft: {
+      videoCodec: 'x265_10bit',
+      qualityValue: 27,
+      workerConfig: {
+        videoEncoder: 'hevc_qsv',
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+        globalQuality: 27,
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p10le',
+        deinterlace: 'off',
+        denoise: 'off',
+        deband: 'off',
+        crop: 'off',
+        videoFilters: '',
+        x265Params: '',
+        addAacStereoDefault: true,
+        preserveOriginalAudio: true,
+        warnSubtitleFormats: true,
+        preferSrtSubtitles: false,
       },
     },
   },
@@ -170,6 +381,10 @@ const emptyVideoDraft: ProfileInput = {
   workerConfig: {
     encoder: 'ffmpeg',
     preset: 'profile-lab',
+    videoEncoder: 'auto',
+    preferredEncoder: 'software',
+    useHardwareIfAvailable: false,
+    globalQuality: 25,
     videoPreset: 'medium',
     pixFmt: 'yuv420p10le',
     deinterlace: 'off',
@@ -179,6 +394,10 @@ const emptyVideoDraft: ProfileInput = {
     cropValue: '',
     videoFilters: '',
     x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
+    addAacStereoDefault: false,
+    preserveOriginalAudio: true,
+    preferSrtSubtitles: false,
+    warnSubtitleFormats: true,
   },
 };
 
@@ -201,6 +420,24 @@ const emptyAudioDraft: AudioEnhancementProfile = {
   notes: '',
 };
 
+const emptyTrackDraft: TrackProfile = {
+  key: '',
+  name: '',
+  description: '',
+  videoMode: 'first',
+  audioMode: 'languages',
+  audioLanguages: ['jpn', 'spa'],
+  audioRequired: true,
+  dropCommentary: true,
+  defaultAudioLanguage: 'jpn',
+  subtitleMode: 'forced-or-languages',
+  subtitleLanguages: ['spa', 'eng'],
+  subtitlesRequired: false,
+  defaultSubtitleLanguage: 'spa',
+  validationMode: 'review',
+  notes: '',
+};
+
 export function ProfileLabPage() {
   const queryClient = useQueryClient();
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
@@ -208,6 +445,8 @@ export function ProfileLabPage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const rawAssets = assets.data?.unprocessed ?? [];
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
+  const trackProfiles = useMemo(() => getTrackProfiles(settings.data), [settings.data]);
+  const [labSection, setLabSection] = useState<LabSection>('video');
   const [assetPath, setAssetPath] = useState('');
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
@@ -224,7 +463,10 @@ export function ProfileLabPage() {
   const [audioFilterChainEdited, setAudioFilterChainEdited] = useState(false);
   const [audioPreviewStatus, setAudioPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [videoDraft, setVideoDraft] = useState<ProfileInput>(emptyVideoDraft);
+  const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
+  const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
+  const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const selectedAsset = rawAssets.find((asset) => asset.path === assetPath) ?? null;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
@@ -249,6 +491,16 @@ export function ProfileLabPage() {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
+
+  const trackSnapshot = useMutation({ mutationFn: api.scan });
+
+  useEffect(() => {
+    setTrackConversionDraft({});
+    if (labSection === 'tracks' && assetPath) {
+      trackSnapshot.reset();
+      trackSnapshot.mutate({ path: assetPath });
+    }
+  }, [assetPath, labSection]);
 
   function selectVideoProfile(profileId: number) {
     const profile = (profiles.data ?? []).find((candidate) => candidate.id === profileId);
@@ -342,6 +594,95 @@ export function ProfileLabPage() {
     };
     const existing = audioProfiles.filter((profile) => profile.key !== normalized.key);
     updateSetting.mutate({ key: 'audioEnhancementProfiles', value: { profiles: [...existing, normalized] } });
+  }
+
+  function saveTrackProfile() {
+    const conversion = cleanTrackConversionOverride(trackConversionDraft);
+    const normalized = {
+      ...trackDraft,
+      key: slugify(trackDraft.key || trackDraft.name),
+      sourceAssetPath: selectedAsset?.path ?? trackDraft.sourceAssetPath ?? '',
+      sourceAssetName: selectedAsset?.fileName ?? trackDraft.sourceAssetName ?? '',
+      keepVideoStreams: conversion.keepVideoStreams,
+      keepAudioStreams: conversion.keepAudioStreams,
+      keepSubtitleStreams: conversion.keepSubtitleStreams,
+      videoMetadata: conversion.videoMetadata,
+      audioMetadata: conversion.audioMetadata,
+      subtitleMetadata: conversion.subtitleMetadata,
+      audioLanguages: normalizeStringList(trackDraft.audioLanguages),
+      subtitleLanguages: normalizeStringList(trackDraft.subtitleLanguages),
+      defaultAudioLanguage: trackDraft.defaultAudioLanguage.trim().toLowerCase(),
+      defaultSubtitleLanguage: trackDraft.defaultSubtitleLanguage.trim().toLowerCase(),
+    };
+    const existing = trackProfiles.filter((profile) => profile.key !== normalized.key);
+    updateSetting.mutate({ key: 'trackProfiles', value: { profiles: [...existing, normalized] } });
+  }
+
+  function scanTrackAsset(force = false) {
+    if (!assetPath) {
+      return;
+    }
+    trackSnapshot.mutate({ path: assetPath, force });
+  }
+
+  function selectTrackProfile(profile: TrackProfile | null) {
+    if (!profile) {
+      return;
+    }
+    const nextName = `${profile.name} Lab`;
+    setTrackDraft({
+      ...profile,
+      key: uniqueTrackKey(`${profile.key}-lab`, trackProfiles),
+      name: nextName,
+      sourceAssetPath: selectedAsset?.path ?? profile.sourceAssetPath,
+      sourceAssetName: selectedAsset?.fileName ?? profile.sourceAssetName,
+    });
+    setTrackConversionDraft({
+      keepVideoStreams: profile.keepVideoStreams,
+      keepAudioStreams: profile.keepAudioStreams,
+      keepSubtitleStreams: profile.keepSubtitleStreams,
+      videoMetadata: profile.videoMetadata,
+      audioMetadata: profile.audioMetadata,
+      subtitleMetadata: profile.subtitleMetadata,
+    });
+  }
+
+  function toggleTrackStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
+    const scan = trackSnapshot.data;
+    if (!scan) {
+      return;
+    }
+    const allIndexes = streamIndexesForType(scan, type);
+    const current = conversionStreamIndexes(trackConversionDraft, scan, type);
+    const next = keep ? normalizeNumberList([...current, index]) : current.filter((candidate) => candidate !== index);
+    updateTrackDraftStream(type, selectedOrUndefined(next, allIndexes));
+  }
+
+  function updateTrackDraftStream(type: MediaStreamInfo['type'], indexes: number[] | undefined) {
+    setTrackConversionDraft((current) => {
+      if (type === 'video') {
+        return { ...current, keepVideoStreams: indexes };
+      }
+      if (type === 'audio') {
+        return { ...current, keepAudioStreams: indexes };
+      }
+      return { ...current, keepSubtitleStreams: indexes };
+    });
+  }
+
+  function updateTrackMetadata(type: 'video' | 'audio' | 'subtitle', index: number, patch: StreamMetadataOverride) {
+    setTrackConversionDraft((current) => {
+      const key = type === 'video' ? 'videoMetadata' : type === 'audio' ? 'audioMetadata' : 'subtitleMetadata';
+      const currentMap = current[key] ?? {};
+      const nextItem = cleanStreamMetadataOverride({ ...(currentMap[String(index)] ?? {}), ...patch });
+      const nextMap = { ...currentMap };
+      if (streamMetadataOverrideEmpty(nextItem)) {
+        delete nextMap[String(index)];
+      } else {
+        nextMap[String(index)] = nextItem;
+      }
+      return { ...current, [key]: Object.keys(nextMap).length ? nextMap : undefined };
+    });
   }
 
   function processAudioPreview() {
@@ -506,7 +847,18 @@ export function ProfileLabPage() {
             </Stack>
         </Box>
 
+        <Card sx={{ mb: 2 }}>
+          <CardContent sx={{ py: 0, '&:last-child': { pb: 0 } }}>
+            <Tabs value={labSection} onChange={(_, value) => setLabSection(value)} variant="scrollable" scrollButtons="auto">
+              <Tab value="video" icon={<TuneIcon />} iconPosition="start" label="Video" />
+              <Tab value="audio" icon={<GraphicEqIcon />} iconPosition="start" label="Audio" />
+              <Tab value="tracks" icon={<FactCheckIcon />} iconPosition="start" label="Tracks" />
+            </Tabs>
+          </CardContent>
+        </Card>
+
         <Stack spacing={2}>
+          {labSection === 'video' ? (
               <Card>
               <CardContent>
                 <Stack spacing={2}>
@@ -539,9 +891,9 @@ export function ProfileLabPage() {
                     </Grid>
                     <Grid size={{ xs: 12, md: 5 }}>
                       <TextField label="Video codec" value={videoDraft.videoCodec} onChange={(event) => setVideoDraft({ ...videoDraft, videoCodec: event.target.value })} select fullWidth>
-                        {['x264', 'x265', 'x265_10bit', 'copy'].map((codec) => (
-                          <MenuItem key={codec} value={codec}>
-                            {codec}
+                        {videoCodecOptions.map((codec) => (
+                          <MenuItem key={codec.value} value={codec.value}>
+                            {codec.label}
                           </MenuItem>
                         ))}
                       </TextField>
@@ -557,47 +909,175 @@ export function ProfileLabPage() {
                     </Grid>
                     <Grid size={{ xs: 12, sm: 4 }}>
                       <TextField label="Audio codec" value={videoDraft.audioCodec} onChange={(event) => setVideoDraft({ ...videoDraft, audioCodec: event.target.value })} select fullWidth>
-                        {['copy', 'aac', 'ac3', 'opus'].map((codec) => (
-                          <MenuItem key={codec} value={codec}>
-                            {codec}
+                        {audioCodecOptions.map((codec) => (
+                          <MenuItem key={codec.value} value={codec.value}>
+                            {codec.label}
                           </MenuItem>
                         ))}
                       </TextField>
                     </Grid>
-                    <Grid size={{ xs: 12, md: 8 }}>
-                      <Stack spacing={1.25} sx={{ minHeight: 128 }}>
-                        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                          <Typography fontWeight={700}>Quality target</Typography>
-                          <Chip label={qualityLabel(videoDraft.qualityValue, videoDraft.videoCodec)} size="small" />
-                        </Stack>
-                        <Slider
-                          value={videoDraft.qualityValue}
-                          min={15}
-                          max={28}
-                          step={1}
-                          marks={[{ value: 15 }, { value: 18 }, { value: 22 }, { value: 28 }]}
-                          disabled={videoDraft.videoCodec === 'copy'}
-                          onChange={(_, value) => setVideoDraft({ ...videoDraft, qualityValue: Array.isArray(value) ? value[0] : value })}
-                          valueLabelDisplay="auto"
-                        />
-                        <Stack direction="row" justifyContent="space-between" sx={{ px: 0.25 }}>
-                          <Typography color="text.secondary" variant="body2">
-                            Best
-                          </Typography>
-                          <Typography color="text.secondary" variant="body2">
-                            Balanced
-                          </Typography>
-                          <Typography color="text.secondary" variant="body2">
-                            Small
-                          </Typography>
-                        </Stack>
-                      </Stack>
+                    <Grid size={{ xs: 12, sm: 4 }}>
+                      <TextField
+                        label="Work mode"
+                        value={videoWorkerValue(videoDraft, 'processingMode')}
+                        onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'processingMode', event.target.value)}
+                        select
+                        fullWidth
+                      >
+                        {workModeOptions.map((mode) => (
+                          <MenuItem key={mode.value || 'default'} value={mode.value}>
+                            {mode.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                        <Chip label={videoDraft.preserveHdr ? 'Preserve HDR' : 'No HDR metadata'} />
-                        <Chip label={videoDraft.preserveSubtitles ? 'Preserve subtitles' : 'No subtitles'} />
-                        <Chip label={videoDraft.preserveChapters ? 'Preserve chapters' : 'No chapters'} />
+                      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
+                        <Grid container spacing={2} alignItems="flex-start">
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Encoder"
+                              value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoEncoder', event.target.value)}
+                              helperText={videoEncoderDescription(videoWorkerValue(videoDraft, 'videoEncoder', 'auto'))}
+                              select
+                              size="small"
+                              disabled={videoDraft.videoCodec === 'copy'}
+                              fullWidth
+                            >
+                              {videoEncoderOptions.map((encoder) => (
+                                <MenuItem key={encoder.value} value={encoder.value}>
+                                  {encoder.label}
+                                </MenuItem>
+                              ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Hardware quality"
+                              value={numberWorkerValue(videoDraft, 'globalQuality', videoDraft.qualityValue || 25)}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'globalQuality', Number(event.target.value))}
+                              type="number"
+                              inputProps={{ min: 15, max: 35 }}
+                              helperText="QSV/NVENC/VT/AMF"
+                              size="small"
+                              disabled={videoDraft.videoCodec === 'copy'}
+                              fullWidth
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'useHardwareIfAvailable', event.target.checked)}
+                                />
+                              }
+                              label="Use hardware if available"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoWorkerBool(videoDraft, 'addAacStereoDefault')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'addAacStereoDefault', event.target.checked)}
+                                />
+                              }
+                              label="AAC stereo default"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoWorkerBool(videoDraft, 'preserveOriginalAudio', true)}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preserveOriginalAudio', event.target.checked)}
+                                />
+                              }
+                              label="Original audio secondary"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoWorkerBool(videoDraft, 'preferSrtSubtitles')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preferSrtSubtitles', event.target.checked)}
+                                />
+                              }
+                              label="Prefer SRT subtitles"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoWorkerBool(videoDraft, 'warnSubtitleFormats', true)}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'warnSubtitleFormats', event.target.checked)}
+                                />
+                              }
+                              label="Warn ASS/PGS/VobSub"
+                            />
+                          </Grid>
+                        </Grid>
+                      </Box>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 5 }}>
+                      <Box sx={{ maxWidth: 440, pb: 1.5 }}>
+                        <Stack spacing={0.5}>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                            <Typography fontWeight={700}>Quality</Typography>
+                            <Tooltip title="Lower keeps more detail. Higher creates smaller files. Exact CRF is available in Advanced.">
+                              <Chip label={`${qualityLabel(videoDraft.qualityValue, videoDraft.videoCodec)} · ${videoDraft.videoCodec === 'copy' ? 'Original' : `CRF ${videoDraft.qualityValue}`}`} size="small" />
+                            </Tooltip>
+                          </Stack>
+                          <Slider
+                            value={videoDraft.qualityValue}
+                            min={15}
+                            max={28}
+                            step={1}
+                            marks={[
+                              { value: 15, label: 'Max' },
+                              { value: 18, label: 'High' },
+                              { value: 22, label: 'Bal' },
+                              { value: 25, label: 'Small' },
+                            ]}
+                            disabled={videoDraft.videoCodec === 'copy'}
+                            onChange={(_, value) => setVideoDraft({ ...videoDraft, qualityValue: Array.isArray(value) ? value[0] : value })}
+                            valueLabelDisplay="auto"
+                            size="small"
+                            sx={{
+                              mx: 1,
+                              mt: 0.25,
+                              mb: 2,
+                              width: 'calc(100% - 16px)',
+                              '& .MuiSlider-markLabel': { fontSize: 12, color: 'text.secondary', top: 28 },
+                            }}
+                          />
+                        </Stack>
+                      </Box>
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 7 }}>
+                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ alignItems: 'center', minHeight: 48 }}>
+                        <PreserveButton
+                          active={videoDraft.preserveHdr}
+                          label="HDR"
+                          tooltip="Keep HDR metadata and source color information when possible."
+                          onClick={() => setVideoDraft((current) => ({ ...current, preserveHdr: !current.preserveHdr }))}
+                        />
+                        <PreserveButton
+                          active={videoDraft.preserveSubtitles}
+                          label="Subtitles"
+                          tooltip="Keep subtitle streams unless a tracks profile removes specific ones."
+                          onClick={() => setVideoDraft((current) => ({ ...current, preserveSubtitles: !current.preserveSubtitles }))}
+                        />
+                        <PreserveButton
+                          active={videoDraft.preserveChapters}
+                          label="Chapters"
+                          tooltip="Keep chapter markers from the source."
+                          onClick={() => setVideoDraft((current) => ({ ...current, preserveChapters: !current.preserveChapters }))}
+                        />
                       </Stack>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
@@ -609,6 +1089,7 @@ export function ProfileLabPage() {
                             onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoPreset', event.target.value)}
                             helperText={encoderPresetDescription(videoWorkerValue(videoDraft, 'videoPreset', 'medium'))}
                             select
+                            size="small"
                             fullWidth
                           >
                             {encoderPresetOptions.map((preset) => (
@@ -625,6 +1106,7 @@ export function ProfileLabPage() {
                             onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'pixFmt', event.target.value)}
                             helperText={pixelFormatDescription(videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le'))}
                             select
+                            size="small"
                             fullWidth
                           >
                             {pixelFormatOptions.map((pixFmt) => (
@@ -716,42 +1198,140 @@ export function ProfileLabPage() {
                                     />
                                   </Grid>
                                 ) : null}
-                                <Grid size={{ xs: 12, md: videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' ? 6 : 12 }}>
-                                  <TextField
-                                    label="Video filters"
-                                    value={videoWorkerValue(videoDraft, 'videoFilters')}
-                                    onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoFilters', event.target.value)}
-                                    placeholder="bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6"
-                                    helperText="Auto-generated by cleanup controls. You can edit it directly for advanced FFmpeg filters."
-                                    fullWidth
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Brightness"
+                                    tooltip="Small luma correction for sources that are too dark or washed out."
+                                    value={numberWorkerValue(videoDraft, 'brightness', 0)}
+                                    min={-100}
+                                    max={100}
+                                    valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'brightness', String(value))}
+                                  />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Contrast"
+                                    tooltip="Adjust image separation. Keep changes subtle for animation."
+                                    value={numberWorkerValue(videoDraft, 'contrast', 100)}
+                                    min={50}
+                                    max={150}
+                                    valueLabel={(value) => `${value}%`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'contrast', String(value))}
+                                  />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Saturation"
+                                    tooltip="Color intensity correction. Useful for faded sources."
+                                    value={numberWorkerValue(videoDraft, 'saturation', 100)}
+                                    min={50}
+                                    max={150}
+                                    valueLabel={(value) => `${value}%`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'saturation', String(value))}
+                                  />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Gamma"
+                                    tooltip="Midtone correction. Helps sources that look flat, too dark, or too bright without moving black/white as much."
+                                    value={numberWorkerValue(videoDraft, 'gamma', 100)}
+                                    min={70}
+                                    max={130}
+                                    valueLabel={(value) => `${value}%`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'gamma', String(value))}
+                                  />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Temperature"
+                                    tooltip="Warmer/cooler correction. Positive warms, negative cools."
+                                    value={numberWorkerValue(videoDraft, 'temperature', 0)}
+                                    min={-100}
+                                    max={100}
+                                    valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'temperature', String(value))}
+                                  />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Tint"
+                                    tooltip="Green/magenta correction. Useful for color casts after old transfers."
+                                    value={numberWorkerValue(videoDraft, 'tint', 0)}
+                                    min={-100}
+                                    max={100}
+                                    valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'tint', String(value))}
                                   />
                                 </Grid>
                               </Grid>
                             </Stack>
                           </Box>
                         </Grid>
-                        <Grid size={{ xs: 12, md: 6 }}>
-                          <TextField
-                            label="x265 params"
-                            value={videoWorkerValue(videoDraft, 'x265Params')}
-                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'x265Params', event.target.value)}
-                            placeholder="aq-mode=3:aq-strength=0.9:deblock=-1,-1"
-                            fullWidth
-                          />
-                        </Grid>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField label="AQ mode" value={x265ParamValue(videoDraft, 'aq-mode')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'aq-mode', event.target.value)} fullWidth />
-                        </Grid>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField label="psy-rd" value={x265ParamValue(videoDraft, 'psy-rd')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'psy-rd', event.target.value)} fullWidth />
-                        </Grid>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField label="deblock" value={x265ParamValue(videoDraft, 'deblock')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'deblock', event.target.value)} placeholder="-1,-1" fullWidth />
-                        </Grid>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField label="cutree" value={x265ParamValue(videoDraft, 'cutree')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'cutree', event.target.value)} placeholder="1" fullWidth />
-                        </Grid>
                       </Grid>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Button
+                        variant="text"
+                        onClick={() => setVideoAdvancedOpen((current) => !current)}
+                        endIcon={
+                          <ExpandMoreIcon
+                            sx={{
+                              transform: videoAdvancedOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                              transition: (theme) => theme.transitions.create('transform', { duration: theme.transitions.duration.shortest }),
+                            }}
+                          />
+                        }
+                        sx={{ px: 0 }}
+                      >
+                        Advanced
+                      </Button>
+                      <Collapse in={videoAdvancedOpen} timeout="auto" unmountOnExit>
+                        <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, mt: 1, bgcolor: 'rgba(255,255,255,0.018)' }}>
+                          <Stack spacing={2}>
+                            <Stack spacing={0.4}>
+                              <Typography fontWeight={700}>Technical encoder controls</Typography>
+                              <Typography color="text.secondary" variant="body2">
+                                These values are saved exactly into the profile and used by FFmpeg previews and workers.
+                              </Typography>
+                            </Stack>
+                            <Divider />
+                            <Grid container spacing={2}>
+                              <Grid size={{ xs: 12, md: 6 }}>
+                                <TextField
+                                  label="Custom FFmpeg video filters"
+                                  value={videoWorkerValue(videoDraft, 'videoFilters')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoFilters', event.target.value)}
+                                  placeholder="bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6"
+                                  helperText="Normally generated by Image cleanup. Edit only when you need custom FFmpeg filters."
+                                  fullWidth
+                                />
+                              </Grid>
+                              <Grid size={{ xs: 12, md: 6 }}>
+                                <TextField
+                                  label="Custom x265 params"
+                                  value={videoWorkerValue(videoDraft, 'x265Params')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'x265Params', event.target.value)}
+                                  placeholder="aq-mode=3:aq-strength=0.9:deblock=-1,-1"
+                                  fullWidth
+                                />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="AQ mode" value={x265ParamValue(videoDraft, 'aq-mode')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'aq-mode', event.target.value)} fullWidth />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="psy-rd" value={x265ParamValue(videoDraft, 'psy-rd')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'psy-rd', event.target.value)} fullWidth />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="deblock" value={x265ParamValue(videoDraft, 'deblock')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'deblock', event.target.value)} placeholder="-1,-1" fullWidth />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="cutree" value={x265ParamValue(videoDraft, 'cutree')} onChange={(event) => updateX265Param(setVideoDraft, videoDraft, 'cutree', event.target.value)} placeholder="1" fullWidth />
+                              </Grid>
+                            </Grid>
+                          </Stack>
+                        </Box>
+                      </Collapse>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
                       <TextField label="Description" value={videoDraft.description} onChange={(event) => setVideoDraft({ ...videoDraft, description: event.target.value })} multiline minRows={2} fullWidth />
@@ -784,6 +1364,8 @@ export function ProfileLabPage() {
               </CardContent>
             </Card>
 
+          ) : null}
+          {labSection === 'audio' ? (
               <Card>
               <CardContent>
                 <Stack spacing={2}>
@@ -1057,6 +1639,146 @@ export function ProfileLabPage() {
                 </Stack>
               </CardContent>
             </Card>
+          ) : null}
+          {labSection === 'tracks' ? (
+            <Card>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <FactCheckIcon color="primary" />
+                    <Typography variant="h3">Track Profile Draft</Typography>
+                  </Stack>
+                  <Alert severity="info">
+                    Start from a real asset snapshot, choose the tracks to keep, edit audio/subtitle metadata, then save those choices as a reusable track profile.
+                  </Alert>
+                  <Grid container spacing={2}>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TrackProfileAutocomplete
+                        profiles={trackProfiles}
+                        onChange={selectTrackProfile}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField
+                        label="New track profile name"
+                        value={trackDraft.name}
+                        onChange={(event) => setTrackDraft({ ...trackDraft, name: event.target.value, key: slugify(event.target.value) })}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField
+                        label="Validation"
+                        value={trackDraft.validationMode}
+                        onChange={(event) => setTrackDraft({ ...trackDraft, validationMode: event.target.value as TrackProfile['validationMode'] })}
+                        select
+                        fullWidth
+                      >
+                        <MenuItem value="review">Mark asset for review</MenuItem>
+                        <MenuItem value="block">Block queue</MenuItem>
+                        <MenuItem value="warn">Warn but allow</MenuItem>
+                      </TextField>
+                    </Grid>
+
+                    <Grid size={{ xs: 12 }}>
+                      <Stack spacing={1.5}>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between">
+                          <Stack sx={{ minWidth: 0 }}>
+                            <Typography fontWeight={700}>Current asset tracks</Typography>
+                            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
+                              {selectedAsset?.relativePath || selectedAsset?.path || 'Select an asset in the Lab header to inspect its tracks.'}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" spacing={1}>
+                            <Button disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(false)}>
+                              Scan
+                            </Button>
+                            <Button disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(true)}>
+                              Rescan
+                            </Button>
+                          </Stack>
+                        </Stack>
+                        {!assetPath ? <Alert severity="warning">Choose an asset first so the Lab can show real video, audio, and subtitle tracks.</Alert> : null}
+                        {trackSnapshot.isPending ? <Alert severity="info">Reading track snapshot...</Alert> : null}
+                        {trackSnapshot.isError ? <Alert severity="warning">Could not scan this asset. It may not be readable from the backend.</Alert> : null}
+                        {trackSnapshot.data ? (
+                          <MediaSnapshotDetails
+                            scan={trackSnapshot.data}
+                            streamControls={{
+                              video: {
+                                selected: conversionStreamIndexes(trackConversionDraft, trackSnapshot.data, 'video'),
+                                disabled: updateSetting.isPending,
+                                onToggle: (index, keep) => toggleTrackStream('video', index, keep),
+                              },
+                              audio: {
+                                selected: conversionStreamIndexes(trackConversionDraft, trackSnapshot.data, 'audio'),
+                                disabled: updateSetting.isPending,
+                                onToggle: (index, keep) => toggleTrackStream('audio', index, keep),
+                              },
+                              subtitle: {
+                                selected: conversionStreamIndexes(trackConversionDraft, trackSnapshot.data, 'subtitle'),
+                                disabled: updateSetting.isPending,
+                                onToggle: (index, keep) => toggleTrackStream('subtitle', index, keep),
+                              },
+                            }}
+                            metadataControls={{
+                              video: {
+                                values: trackConversionDraft.videoMetadata ?? {},
+                                disabled: updateSetting.isPending,
+                                onChange: (index, patch) => updateTrackMetadata('video', index, patch),
+                              },
+                              audio: {
+                                values: trackConversionDraft.audioMetadata ?? {},
+                                disabled: updateSetting.isPending,
+                                onChange: (index, patch) => updateTrackMetadata('audio', index, patch),
+                              },
+                              subtitle: {
+                                values: trackConversionDraft.subtitleMetadata ?? {},
+                                disabled: updateSetting.isPending,
+                                onChange: (index, patch) => updateTrackMetadata('subtitle', index, patch),
+                              },
+                            }}
+                          />
+                        ) : null}
+                      </Stack>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField
+                        label="Description"
+                        value={trackDraft.description}
+                        onChange={(event) => setTrackDraft({ ...trackDraft, description: event.target.value })}
+                        multiline
+                        minRows={2}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField
+                        label="Notes"
+                        value={trackDraft.notes}
+                        onChange={(event) => setTrackDraft({ ...trackDraft, notes: event.target.value })}
+                        multiline
+                        minRows={2}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={`Video kept: ${trackSelectionLabel(trackConversionDraft, trackSnapshot.data, 'video')}`} size="small" />
+                        <Chip label={`Audio kept: ${trackSelectionLabel(trackConversionDraft, trackSnapshot.data, 'audio')}`} size="small" />
+                        <Chip label={`Subs kept: ${trackSelectionLabel(trackConversionDraft, trackSnapshot.data, 'subtitle')}`} size="small" />
+                        <Chip label={`Validation: ${trackValidationLabel(trackDraft.validationMode)}`} size="small" />
+                      </Stack>
+                    </Grid>
+                  </Grid>
+                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!trackDraft.name || updateSetting.isPending} onClick={saveTrackProfile}>
+                    Save Track Profile
+                  </Button>
+                  {updateSetting.isSuccess ? <Alert severity="success">Track profile saved.</Alert> : null}
+                </Stack>
+              </CardContent>
+            </Card>
+          ) : null}
         </Stack>
       </Box>
     </>
@@ -1078,6 +1800,69 @@ function SampleCard({ title, subtitle, children }: { title: string; subtitle: st
         </Stack>
       </CardContent>
     </Card>
+  );
+}
+
+function PreserveButton({
+  active,
+  label,
+  tooltip,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip title={tooltip}>
+      <Button
+        type="button"
+        size="small"
+        variant={active ? 'contained' : 'outlined'}
+        onClick={onClick}
+        sx={{ minHeight: 32, borderRadius: 1, px: 1.25, whiteSpace: 'nowrap' }}
+      >
+        {active ? 'Preserve ' : 'Remove '}{label}
+      </Button>
+    </Tooltip>
+  );
+}
+
+function ImageAdjustmentSlider({
+  label,
+  tooltip,
+  value,
+  min,
+  max,
+  valueLabel,
+  onChange,
+}: {
+  label: string;
+  tooltip: string;
+  value: number;
+  min: number;
+  max: number;
+  valueLabel: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Tooltip title={tooltip}>
+      <Stack spacing={0.5}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Typography fontWeight={700}>{label}</Typography>
+          <Chip label={valueLabel(value)} size="small" />
+        </Stack>
+        <Slider
+          value={value}
+          min={min}
+          max={max}
+          step={5}
+          size="small"
+          onChange={(_, nextValue) => onChange(Array.isArray(nextValue) ? nextValue[0] : nextValue)}
+        />
+      </Stack>
+    </Tooltip>
   );
 }
 
@@ -1294,10 +2079,17 @@ function drawWaveformError(canvas: HTMLCanvasElement, context: CanvasRenderingCo
 
 function videoPreviewOptions(draft: ProfileInput) {
   return {
+    videoEncoder: videoWorkerValue(draft, 'videoEncoder', 'auto'),
+    useHardwareIfAvailable: videoWorkerBool(draft, 'useHardwareIfAvailable'),
+    globalQuality: numberWorkerValue(draft, 'globalQuality', draft.qualityValue || 25),
     videoPreset: videoWorkerValue(draft, 'videoPreset', 'medium'),
     pixFmt: videoWorkerValue(draft, 'pixFmt', isTenBitDraft(draft) ? 'yuv420p10le' : 'yuv420p'),
     videoFilters: videoWorkerValue(draft, 'videoFilters'),
     x265Params: videoWorkerValue(draft, 'x265Params'),
+    addAacStereoDefault: videoWorkerBool(draft, 'addAacStereoDefault'),
+    preserveOriginalAudio: videoWorkerBool(draft, 'preserveOriginalAudio', true),
+    preferSrtSubtitles: videoWorkerBool(draft, 'preferSrtSubtitles'),
+    warnSubtitleFormats: videoWorkerBool(draft, 'warnSubtitleFormats', true),
   };
 }
 
@@ -1310,10 +2102,27 @@ function videoWorkerValue(draft: ProfileInput, key: string, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
+function videoWorkerBool(draft: ProfileInput, key: string, fallback = false) {
+  const value = draft.workerConfig?.[key];
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase());
+  }
+  return fallback;
+}
+
+function numberWorkerValue(draft: ProfileInput, key: string, fallback: number) {
+  const value = draft.workerConfig?.[key];
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function updateVideoWorkerConfig(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   key: string,
-  value: string,
+  value: unknown,
 ) {
   setVideoDraft((current) => ({
     ...current,
@@ -1332,6 +2141,10 @@ function pixelFormatDescription(value: string) {
   return pixelFormatOptions.find((option) => option.value === value)?.description ?? 'Controls output color depth and playback compatibility.';
 }
 
+function videoEncoderDescription(value: string) {
+  return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
+}
+
 function qualityLabel(qualityValue: number, videoCodec: string) {
   if (videoCodec === 'copy') {
     return 'Original';
@@ -1343,6 +2156,38 @@ function qualityLabel(qualityValue: number, videoCodec: string) {
     return 'Balanced';
   }
   return 'Smaller file';
+}
+
+function qualityChoiceForValue(qualityValue: number, videoCodec: string) {
+  if (videoCodec === 'copy') {
+    return 'original';
+  }
+  if (qualityValue <= 16) {
+    return 'maximum';
+  }
+  if (qualityValue <= 19) {
+    return 'high';
+  }
+  if (qualityValue <= 23) {
+    return 'balanced';
+  }
+  return 'small';
+}
+
+function applyVideoQualityOption(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  option: typeof qualityOptions[number],
+) {
+  setVideoDraft((current) => ({
+    ...current,
+    videoCodec: current.videoCodec === 'copy' ? 'x265' : current.videoCodec,
+    qualityMode: 'crf',
+    qualityValue: option.crf,
+    workerConfig: {
+      ...current.workerConfig,
+      videoPreset: option.preset,
+    },
+  }));
 }
 
 function videoFilterControlValue(draft: ProfileInput, key: string, fallback = '') {
@@ -1376,6 +2221,12 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
   const cropValue = stringValue(workerConfig.cropValue, '');
+  const brightness = numericWorkerConfigValue(workerConfig, 'brightness', 0);
+  const contrast = numericWorkerConfigValue(workerConfig, 'contrast', 100);
+  const saturation = numericWorkerConfigValue(workerConfig, 'saturation', 100);
+  const gamma = numericWorkerConfigValue(workerConfig, 'gamma', 100);
+  const temperature = numericWorkerConfigValue(workerConfig, 'temperature', 0);
+  const tint = numericWorkerConfigValue(workerConfig, 'tint', 0);
 
   if (deinterlace === 'auto') {
     filters.push('bwdif=mode=send_frame');
@@ -1395,7 +2246,30 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   if (crop === 'manual' && cropValue.trim()) {
     filters.push(`crop=${cropValue.trim()}`);
   }
+  if (brightness !== 0 || contrast !== 100 || saturation !== 100 || gamma !== 100) {
+    const eqParts = [
+      `brightness=${trimGain((Math.max(-100, Math.min(100, brightness)) / 100) * 0.12)}`,
+      `contrast=${trimGain(Math.max(50, Math.min(150, contrast)) / 100)}`,
+      `saturation=${trimGain(Math.max(50, Math.min(150, saturation)) / 100)}`,
+      `gamma=${trimGain(Math.max(70, Math.min(130, gamma)) / 100)}`,
+    ];
+    filters.push(`eq=${eqParts.join(':')}`);
+  }
+  if (temperature !== 0 || tint !== 0) {
+    const warm = Math.max(-100, Math.min(100, temperature)) / 100;
+    const magenta = Math.max(-100, Math.min(100, tint)) / 100;
+    const red = trimGain(warm * 0.08);
+    const blue = trimGain(-warm * 0.08);
+    const green = trimGain(-magenta * 0.06);
+    filters.push(`colorbalance=rs=${red}:bs=${blue}:gs=${green}:rm=${red}:bm=${blue}:gm=${green}`);
+  }
   return filters.join(',');
+}
+
+function numericWorkerConfigValue(workerConfig: Record<string, unknown>, key: string, fallback: number) {
+  const value = workerConfig[key];
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function x265ParamValue(draft: ProfileInput, key: string) {
@@ -1563,6 +2437,300 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
   );
 }
 
+function TrackProfileAutocomplete({
+  profiles,
+  onChange,
+}: {
+  profiles: TrackProfile[];
+  onChange: (profile: TrackProfile | null) => void;
+}) {
+  return (
+    <Autocomplete
+      options={profiles}
+      value={null}
+      onChange={(_, profile) => onChange(profile)}
+      getOptionLabel={(profile) => `${profile.name} · ${profileTrackSummary(profile)}`}
+      isOptionEqualToValue={(option, selected) => option.key === selected.key}
+      renderInput={(params) => <TextField {...params} label="Start from track profile" />}
+      fullWidth
+    />
+  );
+}
+
+function LanguageMultiSelect({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: string[];
+  onChange: (value: string[]) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Autocomplete
+      multiple
+      options={languageOptions}
+      value={languageOptions.filter((option) => value.includes(option.value))}
+      onChange={(_, options) => onChange(options.map((option) => option.value))}
+      getOptionLabel={(option) => option.label}
+      disabled={disabled}
+      renderInput={(params) => <TextField {...params} label={label} />}
+      fullWidth
+    />
+  );
+}
+
+function LanguageSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <TextField label={label} value={value} onChange={(event) => onChange(event.target.value)} select fullWidth>
+      <MenuItem value="">Do not change</MenuItem>
+      {languageOptions.map((option) => (
+        <MenuItem key={option.value} value={option.value}>
+          {option.label}
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}
+
+function getTrackProfiles(settings?: AppSetting[]) {
+  const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((profile) => normalizeTrackProfile(profile))
+    .filter((profile): profile is TrackProfile => Boolean(profile))
+    .filter((profile) => !profile.disabled && !profile.deletedAt);
+}
+
+function normalizeTrackProfile(value: unknown): TrackProfile | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.key !== 'string' || typeof candidate.name !== 'string') {
+    return null;
+  }
+  return {
+    key: candidate.key,
+    name: candidate.name,
+    description: stringValue(candidate.description),
+    sourceAssetPath: stringValue(candidate.sourceAssetPath),
+    sourceAssetName: stringValue(candidate.sourceAssetName),
+    keepVideoStreams: optionalNumberList(candidate.keepVideoStreams),
+    keepAudioStreams: optionalNumberList(candidate.keepAudioStreams),
+    keepSubtitleStreams: optionalNumberList(candidate.keepSubtitleStreams),
+    videoMetadata: streamMetadataMapValue(candidate.videoMetadata),
+    audioMetadata: streamMetadataMapValue(candidate.audioMetadata),
+    subtitleMetadata: streamMetadataMapValue(candidate.subtitleMetadata),
+    videoMode: trackVideoMode(candidate.videoMode),
+    audioMode: trackAudioMode(candidate.audioMode),
+    audioLanguages: stringArrayValue(candidate.audioLanguages),
+    audioRequired: booleanValue(candidate.audioRequired, false),
+    dropCommentary: booleanValue(candidate.dropCommentary, true),
+    defaultAudioLanguage: stringValue(candidate.defaultAudioLanguage),
+    subtitleMode: trackSubtitleMode(candidate.subtitleMode),
+    subtitleLanguages: stringArrayValue(candidate.subtitleLanguages),
+    subtitlesRequired: booleanValue(candidate.subtitlesRequired, false),
+    defaultSubtitleLanguage: stringValue(candidate.defaultSubtitleLanguage),
+    validationMode: trackValidationMode(candidate.validationMode),
+    notes: stringValue(candidate.notes),
+    disabled: booleanValue(candidate.disabled, false),
+    deletedAt: stringValue(candidate.deletedAt),
+  };
+}
+
+function trackVideoMode(value: unknown): TrackProfile['videoMode'] {
+  if (value === 'all' || value === 'require-one') {
+    return value;
+  }
+  return 'first';
+}
+
+function trackAudioMode(value: unknown): TrackProfile['audioMode'] {
+  if (value === 'all' || value === 'default' || value === 'none') {
+    return value;
+  }
+  return 'languages';
+}
+
+function trackSubtitleMode(value: unknown): TrackProfile['subtitleMode'] {
+  if (value === 'all' || value === 'none' || value === 'forced' || value === 'languages') {
+    return value;
+  }
+  return 'forced-or-languages';
+}
+
+function trackValidationMode(value: unknown): TrackProfile['validationMode'] {
+  if (value === 'block' || value === 'warn') {
+    return value;
+  }
+  return 'review';
+}
+
+function trackRuleLabel(value: string) {
+  return value.replace(/-/g, ' ');
+}
+
+function profileTrackSummary(profile: TrackProfile) {
+  const video = Array.isArray(profile.keepVideoStreams) ? `${profile.keepVideoStreams.length} video` : 'all video';
+  const audio = Array.isArray(profile.keepAudioStreams) ? `${profile.keepAudioStreams.length} audio` : 'all audio';
+  const subs = Array.isArray(profile.keepSubtitleStreams) ? `${profile.keepSubtitleStreams.length} subs` : 'all subs';
+  return `${video} / ${audio} / ${subs}`;
+}
+
+function trackSelectionLabel(value: AssetConversionOverrideState, scan: ScanResult | undefined, type: MediaStreamInfo['type']) {
+  if (!scan) {
+    return 'scan asset';
+  }
+  const selected = conversionStreamIndexes(value, scan, type);
+  const all = streamIndexesForType(scan, type);
+  return `${selected.length}/${all.length}`;
+}
+
+function trackValidationLabel(value: TrackProfile['validationMode']) {
+  switch (value) {
+    case 'block':
+      return 'block queue';
+    case 'warn':
+      return 'warn only';
+    default:
+      return 'mark review';
+  }
+}
+
+function uniqueTrackKey(baseKey: string, profiles: TrackProfile[]) {
+  const existing = new Set(profiles.map((profile) => profile.key));
+  let nextKey = slugify(baseKey || 'track-profile');
+  let suffix = 2;
+  while (existing.has(nextKey)) {
+    nextKey = `${slugify(baseKey || 'track-profile')}-${suffix}`;
+    suffix += 1;
+  }
+  return nextKey;
+}
+
+function cleanTrackConversionOverride(value: AssetConversionOverrideState): AssetConversionOverrideState {
+  const clean: AssetConversionOverrideState = {};
+  if (Array.isArray(value.keepVideoStreams)) {
+    clean.keepVideoStreams = normalizeNumberList(value.keepVideoStreams);
+  }
+  if (Array.isArray(value.keepAudioStreams)) {
+    clean.keepAudioStreams = normalizeNumberList(value.keepAudioStreams);
+  }
+  if (Array.isArray(value.keepSubtitleStreams)) {
+    clean.keepSubtitleStreams = normalizeNumberList(value.keepSubtitleStreams);
+  }
+  const audioMetadata = cleanStreamMetadataMap(value.audioMetadata);
+  const subtitleMetadata = cleanStreamMetadataMap(value.subtitleMetadata);
+  const videoMetadata = cleanStreamMetadataMap(value.videoMetadata);
+  if (videoMetadata) {
+    clean.videoMetadata = videoMetadata;
+  }
+  if (audioMetadata) {
+    clean.audioMetadata = audioMetadata;
+  }
+  if (subtitleMetadata) {
+    clean.subtitleMetadata = subtitleMetadata;
+  }
+  return clean;
+}
+
+function cleanStreamMetadataMap(value?: Record<string, StreamMetadataOverride>) {
+  if (!value) {
+    return undefined;
+  }
+  const clean: Record<string, StreamMetadataOverride> = {};
+  Object.entries(value).forEach(([index, metadata]) => {
+    const numericIndex = Number(index);
+    if (!Number.isInteger(numericIndex) || numericIndex < 0) {
+      return;
+    }
+    const item = cleanStreamMetadataOverride(metadata);
+    if (!streamMetadataOverrideEmpty(item)) {
+      clean[String(numericIndex)] = item;
+    }
+  });
+  return Object.keys(clean).length ? clean : undefined;
+}
+
+function cleanStreamMetadataOverride(value: StreamMetadataOverride): StreamMetadataOverride {
+  const clean: StreamMetadataOverride = {};
+  const title = value.title?.trim();
+  const language = value.language?.trim().toLowerCase();
+  if (title) {
+    clean.title = title;
+  }
+  if (language) {
+    clean.language = language;
+  }
+  if (typeof value.default === 'boolean') {
+    clean.default = value.default;
+  }
+  if (typeof value.forced === 'boolean') {
+    clean.forced = value.forced;
+  }
+  return clean;
+}
+
+function streamMetadataOverrideEmpty(value: StreamMetadataOverride) {
+  return !value.title && !value.language && value.default === undefined && value.forced === undefined;
+}
+
+function streamMetadataMapValue(value: unknown) {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  return cleanStreamMetadataMap(value as Record<string, StreamMetadataOverride>);
+}
+
+function optionalNumberList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return normalizeNumberList(value.filter((candidate): candidate is number => typeof candidate === 'number'));
+}
+
+function conversionStreamIndexes(value: AssetConversionOverrideState, scan: ScanResult, type: MediaStreamInfo['type']) {
+  const allIndexes = streamIndexesForType(scan, type);
+  const selected =
+    type === 'video'
+      ? value.keepVideoStreams
+      : type === 'audio'
+        ? value.keepAudioStreams
+        : value.keepSubtitleStreams;
+  return Array.isArray(selected) ? selected : allIndexes;
+}
+
+function streamIndexesForType(scan: ScanResult, type: MediaStreamInfo['type']) {
+  const streams = type === 'video' ? scan.videoStreams : type === 'audio' ? scan.audioStreams : scan.subtitleStreams;
+  return normalizeNumberList(Array.isArray(streams) ? streams.map((stream) => stream.index) : []);
+}
+
+function selectedOrUndefined(selected: number[], allIndexes: number[]) {
+  const normalizedSelected = normalizeNumberList(selected);
+  const normalizedAll = normalizeNumberList(allIndexes);
+  if (normalizedSelected.length === normalizedAll.length && normalizedSelected.every((value, index) => value === normalizedAll[index])) {
+    return undefined;
+  }
+  return normalizedSelected;
+}
+
+function normalizeNumberList(values: number[]) {
+  return Array.from(new Set(values.filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
+}
+
 function getAudioProfiles(settings?: AppSetting[]) {
   const value = settings?.find((setting) => setting.key === 'audioEnhancementProfiles')?.value.profiles;
   if (!Array.isArray(value)) {
@@ -1572,6 +2740,27 @@ function getAudioProfiles(settings?: AppSetting[]) {
     .map((profile) => normalizeAudioProfile(profile))
     .filter((profile): profile is AudioEnhancementProfile => Boolean(profile))
     .filter((profile) => !profile.disabled && !profile.deletedAt);
+}
+
+function stringArrayValue(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return normalizeStringList(value.filter((item): item is string => typeof item === 'string'));
+}
+
+function normalizeStringList(values: string[]) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  values.forEach((value) => {
+    const clean = value.trim().toLowerCase();
+    if (!clean || seen.has(clean)) {
+      return;
+    }
+    seen.add(clean);
+    normalized.push(clean);
+  });
+  return normalized;
 }
 
 function normalizeAudioProfile(value: unknown): AudioEnhancementProfile | null {

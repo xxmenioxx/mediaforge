@@ -27,6 +27,7 @@ func main() {
 
 	router := routes.New(db)
 	handlers.StartAutoWorker(db)
+	handlers.StartAssetInventorySyncer(db)
 
 	if err := router.Run(cfg.Address()); err != nil {
 		log.Fatalf("run api: %v", err)

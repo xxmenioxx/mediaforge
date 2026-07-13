@@ -74,6 +74,52 @@ func TestPlannedOutputPathForSingleJobKeepsSourceName(t *testing.T) {
 	}
 }
 
+func TestPlannedOutputPathDropsRawSourceBucketForSelectedLibrary(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		MediaPath:  "/media/raw/series/Rurouni Kenshin/Trust & Betrayal Act 4.mkv",
+		BatchID:    "batch-kenshin",
+		BatchName:  "series/Rurouni Kenshin",
+		LibraryID:  1,
+		ProfileID: 1,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	outputPath := plannedOutputPathForJob(db, job, library, profile)
+
+	if outputPath != "/media/library/anime/Rurouni Kenshin/Trust & Betrayal Act 4.mkv" {
+		t.Fatalf("unexpected output path: %s", outputPath)
+	}
+}
+
+func TestPlannedStagingOutputPathDropsRawSourceBucket(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/movies",
+	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		ID:        7,
+		MediaPath: "/media/raw/movies/Movie (1989)/feature.mp4",
+		LibraryID: 1,
+		ProfileID: 1,
+	}
+
+	outputPath := plannedStagingOutputPath(db, job, library, profile, pathSettings{rawRoot: "/media/raw", stagingPath: "/media/staging"})
+
+	if outputPath != "/media/staging/job-7/Movie (1989)/feature.mkv" {
+		t.Fatalf("unexpected staging output path: %s", outputPath)
+	}
+}
+
 func TestPlannedOutputPathForMultiEpisodeBatchRequiresLibraryOption(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

@@ -16,7 +16,6 @@ import {
   FormControlLabel,
   Grid,
   MenuItem,
-  Slider,
   Stack,
   Table,
   TableBody,
@@ -57,6 +56,13 @@ const initialProfile: ProfileInput = {
     preset: 'custom',
     videoPreset: 'medium',
     pixFmt: 'yuv420p10le',
+    videoEncoder: 'auto',
+    useHardwareIfAvailable: false,
+    preferredEncoder: 'software',
+    addAacStereoDefault: false,
+    preserveOriginalAudio: true,
+    preferSrtSubtitles: false,
+    warnSubtitleFormats: true,
   },
 };
 
@@ -70,6 +76,22 @@ const encoderPresetOptions = [
 const pixelFormatOptions = [
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265, anime, and DVD sources. Helps reduce banding.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or simple compatibility-focused outputs.' },
+] as const;
+
+const videoEncoderOptions = [
+  { value: 'auto', label: 'Auto', description: 'MediaForge chooses software unless hardware fallback is enabled and available.' },
+  { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
+  { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
+  { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
+  { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
+  { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
+] as const;
+
+const qualityOptions = [
+  { value: 'maximum', label: 'Maximum', description: 'Use when quality matters more than size.', crf: 15, preset: 'slow' },
+  { value: 'high', label: 'High', description: 'Excellent quality with reasonable file sizes.', crf: 18, preset: 'medium' },
+  { value: 'balanced', label: 'Balanced', description: 'Good default for most libraries.', crf: 22, preset: 'medium' },
+  { value: 'small', label: 'Small', description: 'Prioritize smaller files.', crf: 25, preset: 'slow' },
 ] as const;
 
 export function ProfilesPage() {
@@ -128,7 +150,7 @@ export function ProfilesPage() {
     setProfileForm({ ...form, [field]: value });
   }
 
-  function updateWorkerConfig(key: string, value: string) {
+  function updateWorkerConfig(key: string, value: unknown) {
     setProfileForm({
       ...form,
       workerConfig: {
@@ -138,12 +160,22 @@ export function ProfilesPage() {
     });
   }
 
+  function updateX265Param(key: string, value: string) {
+    const params = parseX265Params(workerConfigString(form, 'x265Params'));
+    if (value.trim()) {
+      params.set(key, value.trim());
+    } else {
+      params.delete(key);
+    }
+    updateWorkerConfig('x265Params', formatX265Params(params));
+  }
+
   function setProfileForm(next: ProfileInput) {
     setForm(next);
     setProfileJson(JSON.stringify(next, null, 2));
   }
 
-  function applyGuidedPreset(preset: 'archive' | 'streaming' | 'smaller' | 'original') {
+  function applyGuidedPreset(preset: 'archive' | 'streaming' | 'smaller' | 'original' | 'hevc-small' | 'hevc-balanced-fast' | 'hevc-archive' | 'hevc-bulk') {
     const presets: Record<typeof preset, Partial<ProfileInput>> = {
       archive: {
         name: form.name || 'Archive Quality',
@@ -159,6 +191,13 @@ export function ProfilesPage() {
           ...form.workerConfig,
           videoPreset: 'medium',
           pixFmt: 'yuv420p10le',
+          videoEncoder: 'libx265',
+          preferredEncoder: 'software',
+          useHardwareIfAvailable: false,
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          preferSrtSubtitles: false,
+          warnSubtitleFormats: true,
         },
       },
       streaming: {
@@ -175,6 +214,13 @@ export function ProfilesPage() {
           ...form.workerConfig,
           videoPreset: 'medium',
           pixFmt: 'yuv420p',
+          videoEncoder: 'auto',
+          preferredEncoder: 'hardware',
+          useHardwareIfAvailable: true,
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          preferSrtSubtitles: true,
+          warnSubtitleFormats: true,
         },
       },
       smaller: {
@@ -191,6 +237,13 @@ export function ProfilesPage() {
           ...form.workerConfig,
           videoPreset: 'slow',
           pixFmt: 'yuv420p10le',
+          videoEncoder: 'libx265',
+          preferredEncoder: 'software',
+          useHardwareIfAvailable: false,
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          preferSrtSubtitles: false,
+          warnSubtitleFormats: true,
         },
       },
       original: {
@@ -209,9 +262,116 @@ export function ProfilesPage() {
           pixFmt: 'yuv420p10le',
         },
       },
+      'hevc-small': {
+        name: form.name || 'HEVC Small Size',
+        description: 'Software x265 for assets where saving space matters more than speed.',
+        container: 'mkv',
+        videoCodec: 'x265_10bit',
+        audioCodec: 'copy',
+        qualityValue: 21,
+        preserveHdr: true,
+        preserveSubtitles: true,
+        preserveChapters: true,
+        workerConfig: {
+          ...form.workerConfig,
+          videoEncoder: 'libx265',
+          preferredEncoder: 'software',
+          useHardwareIfAvailable: false,
+          videoPreset: 'slow',
+          pixFmt: 'yuv420p10le',
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          warnSubtitleFormats: true,
+          preferSrtSubtitles: false,
+        },
+      },
+      'hevc-balanced-fast': {
+        name: form.name || 'HEVC Balanced Fast',
+        description: 'Hardware HEVC for faster queues and lower NAS pressure.',
+        container: 'mkv',
+        videoCodec: 'x265_10bit',
+        audioCodec: 'copy',
+        qualityValue: 25,
+        preserveHdr: true,
+        preserveSubtitles: true,
+        preserveChapters: true,
+        workerConfig: {
+          ...form.workerConfig,
+          videoEncoder: 'hevc_qsv',
+          preferredEncoder: 'hardware',
+          useHardwareIfAvailable: true,
+          globalQuality: 25,
+          videoPreset: 'medium',
+          pixFmt: 'yuv420p10le',
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          warnSubtitleFormats: true,
+          preferSrtSubtitles: false,
+        },
+      },
+      'hevc-archive': {
+        name: form.name || 'HEVC Archive Quality',
+        description: 'Software x265 for important movies, concerts, and difficult sources.',
+        container: 'mkv',
+        videoCodec: 'x265_10bit',
+        audioCodec: 'copy',
+        qualityValue: 19,
+        preserveHdr: true,
+        preserveSubtitles: true,
+        preserveChapters: true,
+        workerConfig: {
+          ...form.workerConfig,
+          videoEncoder: 'libx265',
+          preferredEncoder: 'software',
+          useHardwareIfAvailable: false,
+          videoPreset: 'slow',
+          pixFmt: 'yuv420p10le',
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          warnSubtitleFormats: true,
+          preferSrtSubtitles: false,
+        },
+      },
+      'hevc-bulk': {
+        name: form.name || 'HEVC Bulk Convert',
+        description: 'Hardware HEVC for large libraries and unattended bulk conversion.',
+        container: 'mkv',
+        videoCodec: 'x265_10bit',
+        audioCodec: 'copy',
+        qualityValue: 27,
+        preserveHdr: true,
+        preserveSubtitles: true,
+        preserveChapters: true,
+        workerConfig: {
+          ...form.workerConfig,
+          videoEncoder: 'hevc_qsv',
+          preferredEncoder: 'hardware',
+          useHardwareIfAvailable: true,
+          globalQuality: 27,
+          videoPreset: 'medium',
+          pixFmt: 'yuv420p10le',
+          addAacStereoDefault: true,
+          preserveOriginalAudio: true,
+          warnSubtitleFormats: true,
+          preferSrtSubtitles: false,
+        },
+      },
     };
 
     setProfileForm({ ...form, ...presets[preset] });
+  }
+
+  function applyQualityOption(option: typeof qualityOptions[number]) {
+    setProfileForm({
+      ...form,
+      qualityMode: 'crf',
+      qualityValue: option.crf,
+      videoCodec: form.videoCodec === 'copy' ? 'x265' : form.videoCodec,
+      workerConfig: {
+        ...form.workerConfig,
+        videoPreset: option.preset,
+      },
+    });
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -313,8 +473,7 @@ export function ProfilesPage() {
     <>
       <PageHeader title="Profiles" eyebrow="Worker-ready presets">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Profiles preserve the media worker pipeline configuration shape while exposing it through a
-          friendly form-based interface.
+          Build reusable conversion profiles from human choices first. Technical encoder details stay available in Advanced.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
@@ -371,6 +530,26 @@ export function ProfilesPage() {
                     description="Keep streams untouched when possible."
                     onClick={() => applyGuidedPreset('original')}
                   />
+                  <GuidedPresetButton
+                    label="HEVC Small Size"
+                    description="Software x265 for better savings per GB."
+                    onClick={() => applyGuidedPreset('hevc-small')}
+                  />
+                  <GuidedPresetButton
+                    label="HEVC Balanced Fast"
+                    description="Hardware HEVC for fast queues."
+                    onClick={() => applyGuidedPreset('hevc-balanced-fast')}
+                  />
+                  <GuidedPresetButton
+                    label="HEVC Archive Quality"
+                    description="Software x265 for important assets."
+                    onClick={() => applyGuidedPreset('hevc-archive')}
+                  />
+                  <GuidedPresetButton
+                    label="HEVC Bulk Convert"
+                    description="Hardware HEVC for large libraries."
+                    onClick={() => applyGuidedPreset('hevc-bulk')}
+                  />
                 </Grid>
 
                 <Divider />
@@ -378,8 +557,7 @@ export function ProfilesPage() {
                 <Grid container spacing={2}>
                   <Grid size={{ xs: 12 }}>
                     <Alert severity="info">
-                      <strong>copy</strong> preserves the original stream without re-encoding. It is fast and lossless, but filters, loudness, EQ,
-                      denoise, and compatibility changes require choosing a real codec instead.
+                      Choose the result you want. MediaForge will translate it into encoder settings; Advanced is only for exact technical overrides.
                     </Alert>
                   </Grid>
                   <Grid size={{ xs: 12, md: 4 }}>
@@ -400,36 +578,32 @@ export function ProfilesPage() {
                     />
                   </Grid>
                   <Grid size={{ xs: 12, md: 7 }}>
-                    <Stack spacing={1.25} sx={{ minHeight: 128 }}>
+                    <Stack spacing={1.25}>
                       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                        <Typography fontWeight={700}>Quality target</Typography>
+                        <Typography fontWeight={700}>Quality</Typography>
                         <Chip label={qualityLabel(form.qualityValue, form.videoCodec)} size="small" />
                       </Stack>
-                      <Slider
-                        value={form.qualityValue}
-                        min={15}
-                        max={28}
-                        step={1}
-                        marks={[{ value: 15 }, { value: 18 }, { value: 22 }, { value: 28 }]}
-                        disabled={form.videoCodec === 'copy'}
-                        onChange={(_, value) => updateField('qualityValue', Array.isArray(value) ? value[0] : value)}
-                        valueLabelDisplay="auto"
-                        sx={{ mt: 1, mb: 0.5 }}
-                      />
-                      <Stack direction="row" justifyContent="space-between" sx={{ px: 0.25 }}>
-                        <Typography color="text.secondary" variant="body2">
-                          Best
-                        </Typography>
-                        <Typography color="text.secondary" variant="body2">
-                          Balanced
-                        </Typography>
-                        <Typography color="text.secondary" variant="body2">
-                          Small
-                        </Typography>
-                      </Stack>
-                      <Typography color="text.secondary" variant="body2">
-                        Lower values keep more quality. Higher values create smaller files.
-                      </Typography>
+                      <Grid container spacing={1}>
+                        {qualityOptions.map((option) => {
+                          const selected = qualityChoiceForValue(form.qualityValue, form.videoCodec) === option.value;
+                          return (
+                            <Grid key={option.value} size={{ xs: 12, sm: 6 }}>
+                              <Button
+                                type="button"
+                                variant={selected ? 'contained' : 'outlined'}
+                                onClick={() => applyQualityOption(option)}
+                                disabled={form.videoCodec === 'copy'}
+                                title={option.description}
+                                fullWidth
+                                sx={{ minHeight: 54, justifyContent: 'space-between' }}
+                              >
+                                <span>{option.label}</span>
+                                <Chip label={`CRF ${option.crf}`} size="small" sx={{ ml: 1 }} />
+                              </Button>
+                            </Grid>
+                          );
+                        })}
+                      </Grid>
                     </Stack>
                   </Grid>
                   <Grid size={{ xs: 12, md: 5 }}>
@@ -469,47 +643,104 @@ export function ProfilesPage() {
                   <Grid size={{ xs: 12 }}>
                     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
                       <Grid container spacing={2} alignItems="flex-start">
-                        <Grid size={{ xs: 12 }}>
-                          <Stack spacing={0.4}>
-                            <Typography fontWeight={700}>Video encoding</Typography>
-                            <Typography color="text.secondary" variant="body2">
-                              These defaults affect how FFmpeg writes the video stream. They keep audio, subtitles, and chapters untouched.
-                            </Typography>
-                          </Stack>
-                        </Grid>
-                        <Grid size={{ xs: 12, md: 6 }}>
+                        <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
-                            label="Encoding speed"
-                            value={workerConfigString(form, 'videoPreset', 'medium')}
-                            onChange={(event) => updateWorkerConfig('videoPreset', event.target.value)}
-                            helperText={encoderPresetDescription(workerConfigString(form, 'videoPreset', 'medium'))}
+                            label="Encoder"
+                            value={workerConfigString(form, 'videoEncoder', 'auto')}
+                            onChange={(event) => updateWorkerConfig('videoEncoder', event.target.value)}
+                            helperText={videoEncoderDescription(workerConfigString(form, 'videoEncoder', 'auto'))}
                             disabled={form.videoCodec === 'copy'}
                             select
                             fullWidth
                           >
-                            {encoderPresetOptions.map((option) => (
+                            {videoEncoderOptions.map((option) => (
                               <MenuItem key={option.value} value={option.value}>
                                 {option.label}
                               </MenuItem>
                             ))}
                           </TextField>
                         </Grid>
-                        <Grid size={{ xs: 12, md: 6 }}>
+                        <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
-                            label="Color depth"
-                            value={workerConfigString(form, 'pixFmt', 'yuv420p10le')}
-                            onChange={(event) => updateWorkerConfig('pixFmt', event.target.value)}
-                            helperText={pixelFormatDescription(workerConfigString(form, 'pixFmt', 'yuv420p10le'))}
+                            label="Hardware preference"
+                            value={workerConfigString(form, 'preferredEncoder', 'software')}
+                            onChange={(event) => updateWorkerConfig('preferredEncoder', event.target.value)}
+                            helperText="Hardware is faster for bulk queues; software x265 is better for careful archival compression."
                             disabled={form.videoCodec === 'copy'}
                             select
                             fullWidth
                           >
-                            {pixelFormatOptions.map((option) => (
-                              <MenuItem key={option.value} value={option.value}>
-                                {option.label}
-                              </MenuItem>
-                            ))}
+                            <MenuItem value="software">Prefer software quality</MenuItem>
+                            <MenuItem value="hardware">Prefer hardware speed</MenuItem>
+                            <MenuItem value="auto">Auto</MenuItem>
                           </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Hardware quality"
+                            value={workerConfigNumber(form, 'globalQuality', form.qualityValue || 25)}
+                            onChange={(event) => updateWorkerConfig('globalQuality', Number(event.target.value))}
+                            helperText="Used by QSV/NVENC/VideoToolbox/AMF. Lower keeps more detail."
+                            type="number"
+                            inputProps={{ min: 15, max: 35 }}
+                            disabled={form.videoCodec === 'copy'}
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={workerConfigBool(form, 'useHardwareIfAvailable')}
+                                onChange={(event) => updateWorkerConfig('useHardwareIfAvailable', event.target.checked)}
+                              />
+                            }
+                            label="Use hardware if available"
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={workerConfigBool(form, 'addAacStereoDefault')}
+                                onChange={(event) => updateWorkerConfig('addAacStereoDefault', event.target.checked)}
+                              />
+                            }
+                            label="Add AAC stereo default"
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={workerConfigBool(form, 'preserveOriginalAudio', true)}
+                                onChange={(event) => updateWorkerConfig('preserveOriginalAudio', event.target.checked)}
+                              />
+                            }
+                            label="Keep original audio as secondary"
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={workerConfigBool(form, 'preferSrtSubtitles')}
+                                onChange={(event) => updateWorkerConfig('preferSrtSubtitles', event.target.checked)}
+                              />
+                            }
+                            label="Convert subtitles to SRT when possible"
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={workerConfigBool(form, 'warnSubtitleFormats', true)}
+                                onChange={(event) => updateWorkerConfig('warnSubtitleFormats', event.target.checked)}
+                              />
+                            }
+                            label="Warn about ASS/PGS/VobSub"
+                          />
                         </Grid>
                       </Grid>
                     </Box>
@@ -520,7 +751,7 @@ export function ProfilesPage() {
                         <Stack>
                           <Typography fontWeight={700}>Advanced</Typography>
                           <Typography color="text.secondary" variant="body2">
-                            Codecs, exact CRF, profile JSON, and worker command preview.
+                            CRF, codecs, tune, x265 params, profile JSON, and command preview.
                           </Typography>
                         </Stack>
                       </AccordionSummary>
@@ -579,6 +810,91 @@ export function ProfilesPage() {
                               type="number"
                               inputProps={{ min: 0, max: 51 }}
                               required
+                              fullWidth
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Preset"
+                              value={workerConfigString(form, 'videoPreset', 'medium')}
+                              onChange={(event) => updateWorkerConfig('videoPreset', event.target.value)}
+                              helperText={encoderPresetDescription(workerConfigString(form, 'videoPreset', 'medium'))}
+                              disabled={form.videoCodec === 'copy'}
+                              select
+                              fullWidth
+                            >
+                              {encoderPresetOptions.map((option) => (
+                                <MenuItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </MenuItem>
+                              ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Color depth"
+                              value={workerConfigString(form, 'pixFmt', 'yuv420p10le')}
+                              onChange={(event) => updateWorkerConfig('pixFmt', event.target.value)}
+                              helperText={pixelFormatDescription(workerConfigString(form, 'pixFmt', 'yuv420p10le'))}
+                              disabled={form.videoCodec === 'copy'}
+                              select
+                              fullWidth
+                            >
+                              {pixelFormatOptions.map((option) => (
+                                <MenuItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </MenuItem>
+                              ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Tune"
+                              value={workerConfigString(form, 'tune')}
+                              onChange={(event) => updateWorkerConfig('tune', event.target.value)}
+                              select
+                              fullWidth
+                            >
+                              <MenuItem value="">Auto</MenuItem>
+                              <MenuItem value="film">Film</MenuItem>
+                              <MenuItem value="animation">Animation</MenuItem>
+                              <MenuItem value="grain">Grain</MenuItem>
+                              <MenuItem value="fastdecode">Fast decode</MenuItem>
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="AQ mode"
+                              value={x265ParamValue(form, 'aq-mode')}
+                              onChange={(event) => updateX265Param('aq-mode', event.target.value)}
+                              placeholder="3"
+                              fullWidth
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="AQ strength"
+                              value={x265ParamValue(form, 'aq-strength')}
+                              onChange={(event) => updateX265Param('aq-strength', event.target.value)}
+                              placeholder="0.9"
+                              fullWidth
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="psy-rd"
+                              value={x265ParamValue(form, 'psy-rd')}
+                              onChange={(event) => updateX265Param('psy-rd', event.target.value)}
+                              placeholder="2.0"
+                              fullWidth
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, md: 6 }}>
+                            <TextField
+                              label="x265 params"
+                              value={workerConfigString(form, 'x265Params')}
+                              onChange={(event) => updateWorkerConfig('x265Params', event.target.value)}
+                              placeholder="aq-mode=3:aq-strength=0.9:deblock=-1,-1"
                               fullWidth
                             />
                           </Grid>
@@ -779,6 +1095,22 @@ function qualityLabel(qualityValue: number, videoCodec: string) {
   return 'Smaller file';
 }
 
+function qualityChoiceForValue(qualityValue: number, videoCodec: string) {
+  if (videoCodec === 'copy') {
+    return 'original';
+  }
+  if (qualityValue <= 16) {
+    return 'maximum';
+  }
+  if (qualityValue <= 19) {
+    return 'high';
+  }
+  if (qualityValue <= 23) {
+    return 'balanced';
+  }
+  return 'small';
+}
+
 function preservationSummary(profile: Profile) {
   const preserved = [
     profile.preserveHdr ? 'HDR' : null,
@@ -794,6 +1126,49 @@ function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
+function workerConfigBool(profile: ProfileInput, key: string, fallback = false) {
+  const value = profile.workerConfig?.[key];
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase());
+  }
+  return fallback;
+}
+
+function workerConfigNumber(profile: ProfileInput, key: string, fallback: number) {
+  const value = profile.workerConfig?.[key];
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function x265ParamValue(profile: ProfileInput, key: string) {
+  return parseX265Params(workerConfigString(profile, 'x265Params')).get(key) ?? '';
+}
+
+function parseX265Params(value: string) {
+  const params = new Map<string, string>();
+  value
+    .split(':')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const [key, ...rest] = part.split('=');
+      if (key) {
+        params.set(key, rest.join('='));
+      }
+    });
+  return params;
+}
+
+function formatX265Params(params: Map<string, string>) {
+  return Array.from(params.entries())
+    .filter(([key, value]) => key.trim() && value.trim())
+    .map(([key, value]) => `${key.trim()}=${value.trim()}`)
+    .join(':');
+}
+
 function encoderPresetDescription(value: string) {
   return encoderPresetOptions.find((option) => option.value === value)?.description ?? 'Controls how much time FFmpeg spends compressing video.';
 }
@@ -802,19 +1177,30 @@ function pixelFormatDescription(value: string) {
   return pixelFormatOptions.find((option) => option.value === value)?.description ?? 'Controls output color depth and playback compatibility.';
 }
 
+function videoEncoderDescription(value: string) {
+  return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
+}
+
 function buildDryRunCommand(profile: ProfileInput) {
   const input = '<input>';
   const output = `<output>.${profile.container}`;
-  const videoArgs = profile.videoCodec === 'copy' ? '-c:v copy' : `-c:v ${profile.videoCodec}`;
-  const presetArgs = profile.videoCodec === 'copy' ? '' : `-preset ${workerConfigString(profile, 'videoPreset', 'medium')}`;
+  const encoder = workerConfigString(profile, 'videoEncoder', 'auto');
+  const resolvedEncoder = encoder === 'auto' ? (workerConfigBool(profile, 'useHardwareIfAvailable') ? 'auto-hardware' : profile.videoCodec) : encoder;
+  const isHardware = ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf', 'auto-hardware'].includes(resolvedEncoder);
+  const videoArgs = profile.videoCodec === 'copy' ? '-c:v copy' : `-c:v ${resolvedEncoder}`;
+  const presetArgs = profile.videoCodec === 'copy' || isHardware ? '' : `-preset ${workerConfigString(profile, 'videoPreset', 'medium')}`;
   const pixFmtArgs = profile.videoCodec === 'copy' ? '' : `-pix_fmt ${workerConfigString(profile, 'pixFmt', 'yuv420p10le')}`;
+  const tuneArgs = profile.videoCodec === 'copy' || !workerConfigString(profile, 'tune') ? '' : `-tune ${workerConfigString(profile, 'tune')}`;
+  const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
+  const hardwareQualityArgs = isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
-  const subtitleArgs = profile.preserveSubtitles ? '-c:s copy' : '-sn';
+  const aacArgs = workerConfigBool(profile, 'addAacStereoDefault') ? '-map 0:a:0 -c:a:1 aac -ac:a:1 2 -disposition:a:1 default' : '';
+  const subtitleArgs = profile.preserveSubtitles ? (workerConfigBool(profile, 'preferSrtSubtitles') ? '-c:s srt' : '-c:s copy') : '-sn';
   const chapterArgs = profile.preserveChapters ? '-map_chapters 0' : '-map_chapters -1';
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';
-  const qualityArgs = profile.qualityMode === 'crf' && profile.videoCodec !== 'copy' ? `-crf ${profile.qualityValue}` : '';
+  const qualityArgs = profile.qualityMode === 'crf' && profile.videoCodec !== 'copy' && !isHardware ? `-crf ${profile.qualityValue}` : '';
 
-  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, audioArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
+  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
     .filter(Boolean)
     .join(' ');
 }

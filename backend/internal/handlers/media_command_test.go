@@ -41,7 +41,7 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 	command := shellJoin(args)
 
 	assertContains(t, command, "-map 0")
-	assertContains(t, command, "-map 0:a:0")
+	assertContains(t, command, "-map 0:1")
 	assertContains(t, command, "-c copy")
 	assertContains(t, command, "-c:v copy")
 	assertContains(t, command, "-filter:a:1")
@@ -77,9 +77,95 @@ func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	assertContains(t, command, "-crf 20")
 }
 
+func TestFFmpegCommandBuilderUsesSelectedStreamIndexes(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath:      "/media/raw/episode.mkv",
+		OutputPath:     "/media/staging/job-2/episode.mkv",
+		Overwrite:      true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      20,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+		},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{{Index: 0}, {Index: 3}},
+			Audio: []MediaAudioStream{
+				{Index: 1, Codec: "aac", Channels: 2, ChannelLayout: "stereo"},
+				{Index: 2, Codec: "ac3", Channels: 6, ChannelLayout: "5.1"},
+			},
+			Subtitle: []MediaStream{{Index: 4}, {Index: 5}},
+		},
+		Override: AssetConversionOverrideState{
+			KeepVideoStreams:    []int{0},
+			KeepAudioStreams:    []int{2},
+			KeepSubtitleStreams: []int{},
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+
+	assertContains(t, command, "-map 0:0")
+	assertContains(t, command, "-map 0:2")
+	assertNotContains(t, command, "-map 0 ")
+	assertNotContains(t, command, "-map 0:1")
+	assertNotContains(t, command, "-map 0:4")
+	assertNotContains(t, command, "-map 0:5")
+}
+
+func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath:      "/media/raw/episode.mkv",
+		OutputPath:     "/media/staging/job-3/episode.mkv",
+		Overwrite:      true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      21,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"videoEncoder":          "libx265",
+				"addAacStereoDefault":   true,
+				"preserveOriginalAudio": true,
+				"preferSrtSubtitles":    true,
+			},
+		},
+		Streams: MediaStreamInventory{
+			Video:    []MediaStream{{Index: 0}},
+			Audio:    []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6, ChannelLayout: "5.1"}},
+			Subtitle: []MediaStream{{Index: 2, Codec: "ass"}},
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+
+	assertContains(t, command, "-map 0")
+	assertContains(t, command, "-map 0:1")
+	assertContains(t, command, "-c:v libx265")
+	assertContains(t, command, "-crf 21")
+	assertContains(t, command, "-c:a:1 aac")
+	assertContains(t, command, "-ac:a:1 2")
+	assertContains(t, command, "-disposition:a:0 0")
+	assertContains(t, command, "-disposition:a:1 default")
+	assertContains(t, command, "-c:s srt")
+}
+
 func assertContains(t *testing.T, value string, expected string) {
 	t.Helper()
 	if !strings.Contains(value, expected) {
 		t.Fatalf("expected command to contain %q\ncommand: %s", expected, value)
+	}
+}
+
+func assertNotContains(t *testing.T, value string, unexpected string) {
+	t.Helper()
+	if strings.Contains(value, unexpected) {
+		t.Fatalf("expected command not to contain %q\ncommand: %s", unexpected, value)
 	}
 }

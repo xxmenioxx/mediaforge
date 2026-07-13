@@ -10,8 +10,11 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Divider,
   Grid,
   IconButton,
+  InputAdornment,
+  MenuItem,
   Stack,
   Switch,
   Tab,
@@ -19,6 +22,7 @@ import {
   TableBody,
   TableCell,
   TableHead,
+  TablePagination,
   TableRow,
   Tabs,
   TextField,
@@ -33,29 +37,40 @@ import PlayCircleIcon from '@mui/icons-material/PlayCircle';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import type { MouseEvent } from 'react';
+import { Component, useEffect, useState } from 'react';
+import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
-import type { AdvisorResponse, AppSetting, Asset, AssetGroup, AudioEnhancementProfile, Library, Profile, QueueJob } from '../api/types';
+import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, Library, MediaStreamInfo, Profile, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 
 export function AssetsPage() {
-  const [tab, setTab] = useState<'unprocessed' | 'converted'>('unprocessed');
+  const [tab, setTab] = useState<'unprocessed' | 'converted' | 'archive' | 'reports'>('unprocessed');
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
+  const queryClient = useQueryClient();
+  const syncAssets = useMutation({
+    mutationFn: api.syncAssets,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
   const audioProfiles = getAudioProfiles(settings.data);
   const assetCategories = getAssetCategories(settings.data);
-  const unprocessedCount = assets.data?.unprocessed.length ?? 0;
-  const convertedCount = assets.data?.converted.length ?? 0;
-  const currentGroups = tab === 'unprocessed' ? assets.data?.unprocessedGroups ?? [] : assets.data?.convertedGroups ?? [];
+  const unprocessedCount = safeArray(assets.data?.unprocessed).length;
+  const convertedCount = safeArray(assets.data?.converted).length;
+  const archiveCount = safeArray(assets.data?.archive).length;
+  const currentGroups = safeArray(
+    tab === 'archive' ? assets.data?.archiveGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
+  );
 
   return (
     <>
@@ -79,35 +94,96 @@ export function AssetsPage() {
               <Tabs value={tab} onChange={(_, value) => setTab(value)}>
                 <Tab label={<AssetTabLabel label="Unprocessed" count={unprocessedCount} color="warning" />} value="unprocessed" />
                 <Tab label={<AssetTabLabel label="Converted" count={convertedCount} color="success" />} value="converted" />
+                <Tab label={<AssetTabLabel label="Archive" count={archiveCount} color="default" />} value="archive" />
+                <Tab label="Reports" value="reports" />
               </Tabs>
-              <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => assets.refetch()} sx={{ mb: 1 }}>
-                Snapshot
+              <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ mb: 1 }}>
+                Sync
               </Button>
             </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ py: 1 }}>
+              <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
+              {assets.data?.sync?.missingFiles ? <Chip label={`${assets.data.sync.missingFiles} missing physical files`} color="warning" size="small" /> : null}
+              {syncAssets.isSuccess ? <Chip label="Inventory synced" color="success" size="small" /> : null}
+            </Stack>
           </CardContent>
-          <AssetTable
-            key={tab}
-            groups={currentGroups}
-            libraries={libraries.data ?? []}
-            profiles={profiles.data ?? []}
-            audioProfiles={audioProfiles}
-            settings={settings.data ?? []}
-            assetCategories={assetCategories}
-            queueJobs={jobs.data ?? []}
-            emptyLabel={tab === 'unprocessed' ? 'No pending asset groups found.' : 'No converted asset groups found.'}
-          />
+          {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
+          {tab === 'reports' ? (
+            <AssetReportsPanel inventory={assets.data} />
+          ) : (
+            <AssetsErrorBoundary boundaryKey={tab}>
+              <AssetTable
+                key={tab}
+                groups={currentGroups}
+                libraries={libraries.data ?? []}
+                profiles={profiles.data ?? []}
+                audioProfiles={audioProfiles}
+                settings={settings.data ?? []}
+                assetCategories={assetCategories}
+                queueJobs={jobs.data ?? []}
+                mode={tab}
+                emptyLabel={
+                  tab === 'archive'
+                    ? 'No archived originals found in the inventory.'
+                    : tab === 'unprocessed'
+                      ? 'No pending asset groups found.'
+                      : 'No converted asset groups found.'
+                }
+              />
+            </AssetsErrorBoundary>
+          )}
         </Card>
       </Box>
     </>
   );
 }
 
-function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' }) {
+function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' | 'default' }) {
   return (
     <Stack direction="row" alignItems="center" spacing={1}>
       <Typography fontWeight={700}>{label}</Typography>
       <Chip label={count} color={color} size="small" />
     </Stack>
+  );
+}
+
+function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
+  const reports = inventory?.reports;
+  if (!reports) {
+    return (
+      <CardContent>
+        <Alert severity="info">Sync assets to build inventory reports.</Alert>
+      </CardContent>
+    );
+  }
+
+  return (
+    <CardContent>
+      <Grid container spacing={1.5}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Unprocessed" value={String(reports.unprocessedFiles)} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Converted records" value={String(reports.convertedFiles)} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Archive originals" value={String(reports.archiveFiles)} helper={formatBytes(reports.archiveBytes)} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Needs attention" value={String(reports.missingFiles + reports.expiredArchive)} helper={`${reports.missingFiles} missing / ${reports.expiredArchive} expired`} />
+        </Grid>
+      </Grid>
+    </CardContent>
+  );
+}
+
+function ReportTile({ label, value, helper }: { label: string; value: string; helper?: string }) {
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, height: '100%' }}>
+      <Typography color="text.secondary" variant="body2">{label}</Typography>
+      <Typography variant="h2" sx={{ mt: 0.5 }}>{value}</Typography>
+      {helper ? <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>{helper}</Typography> : null}
+    </Box>
   );
 }
 
@@ -118,6 +194,44 @@ const actionIconSx = {
   height: 38,
 };
 
+class AssetsErrorBoundary extends Component<
+  { boundaryKey: string; children: ReactNode },
+  { error: Error | null; boundaryKey: string }
+> {
+  state: { error: Error | null; boundaryKey: string } = { error: null, boundaryKey: this.props.boundaryKey };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  static getDerivedStateFromProps(
+    props: { boundaryKey: string; children: ReactNode },
+    state: { error: Error | null; boundaryKey: string },
+  ) {
+    if (props.boundaryKey !== state.boundaryKey) {
+      return { error: null, boundaryKey: props.boundaryKey };
+    }
+    return null;
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Assets render error', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <CardContent>
+          <Alert severity="error">
+            Assets could not render this path: {this.state.error.message}
+          </Alert>
+        </CardContent>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function AssetTable({
   groups,
   libraries,
@@ -126,6 +240,7 @@ function AssetTable({
   settings,
   assetCategories,
   queueJobs,
+  mode,
   emptyLabel,
 }: {
   groups: AssetGroup[];
@@ -135,9 +250,21 @@ function AssetTable({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
+  mode: 'unprocessed' | 'converted' | 'archive';
   emptyLabel: string;
 }) {
-  if (groups.length === 0) {
+  const visibleGroups = safeArray(groups);
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const filteredGroups = filterAssetGroups(visibleGroups, query);
+  const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+
+  useEffect(() => {
+    setPage(0);
+  }, [query, mode, visibleGroups.length]);
+
+  if (visibleGroups.length === 0) {
     return (
       <CardContent>
         <Alert severity="info">{emptyLabel}</Alert>
@@ -146,36 +273,82 @@ function AssetTable({
   }
 
   return (
-    <Box sx={{ overflowX: 'auto' }}>
-      <Table size="small" sx={{ minWidth: 980, tableLayout: 'fixed' }}>
-        <TableHead>
-          <TableRow>
-            <TableCell sx={{ width: 360 }}>Path</TableCell>
-            <TableCell sx={{ width: 130 }}>Library</TableCell>
-            <TableCell sx={{ width: 150 }}>Status</TableCell>
-            <TableCell sx={{ width: 150 }}>Confidence</TableCell>
-            <TableCell sx={{ width: 80 }}>Files</TableCell>
-            <TableCell sx={{ width: 140 }}>Total size</TableCell>
-            <TableCell sx={{ width: 190 }}>Modified</TableCell>
-            <TableCell padding="checkbox" sx={{ width: 52 }} />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {groups.map((group) => (
-            <AssetGroupRow
-              key={group.id}
-              group={group}
-              libraries={libraries}
-              profiles={profiles}
-              audioProfiles={audioProfiles}
-              settings={settings}
-              assetCategories={assetCategories}
-              queueJobs={queueJobs}
-            />
-          ))}
-        </TableBody>
-      </Table>
-    </Box>
+    <>
+      <CardContent sx={{ py: 1.25 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
+          <TextField
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search path, file, library, status"
+            size="small"
+            sx={{ maxWidth: { md: 420 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip label={`${filteredGroups.length}/${visibleGroups.length} groups`} size="small" />
+            <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
+            <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
+          </Stack>
+        </Stack>
+      </CardContent>
+      <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
+        <Table size="small" sx={{ minWidth: 980, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 390 }}>Asset group</TableCell>
+              <TableCell sx={{ width: 130 }}>Library</TableCell>
+              <TableCell sx={{ width: 140 }}>Status</TableCell>
+              <TableCell sx={{ width: 130 }}>Confidence</TableCell>
+              <TableCell sx={{ width: 70 }}>Files</TableCell>
+              <TableCell sx={{ width: 120 }}>Size</TableCell>
+              <TableCell sx={{ width: 165 }}>Modified</TableCell>
+              <TableCell padding="checkbox" sx={{ width: 52 }} />
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {pagedGroups.length ? (
+              pagedGroups.map((group) => (
+                <AssetGroupRow
+                  key={group.id}
+                  group={group}
+                  libraries={libraries}
+                  profiles={profiles}
+                  audioProfiles={audioProfiles}
+                  settings={settings}
+                  assetCategories={assetCategories}
+                  queueJobs={queueJobs}
+                  mode={mode}
+                />
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={8}>
+                  <Alert severity="info">No asset groups match this search.</Alert>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Box>
+      <TablePagination
+        component="div"
+        count={filteredGroups.length}
+        page={Math.min(page, Math.max(0, Math.ceil(filteredGroups.length / rowsPerPage) - 1))}
+        rowsPerPage={rowsPerPage}
+        rowsPerPageOptions={[10, 25, 50, 100]}
+        onPageChange={(_, nextPage) => setPage(nextPage)}
+        onRowsPerPageChange={(event) => {
+          setRowsPerPage(Number(event.target.value));
+          setPage(0);
+        }}
+      />
+    </>
   );
 }
 
@@ -187,6 +360,7 @@ function AssetGroupRow({
   settings,
   assetCategories,
   queueJobs,
+  mode,
 }: {
   group: AssetGroup;
   libraries: Library[];
@@ -195,17 +369,22 @@ function AssetGroupRow({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
+  mode: 'unprocessed' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<number>(profiles[0]?.id ?? 0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
+  const groupAssets = safeArray(group.assets);
+  const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
+  const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
-  const [groupCategory, setGroupCategory] = useState<string>(firstCategory(group.pathMetadata.categories));
+  const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
   const effectiveProfileId = selectedProfileId || profiles[0]?.id || 0;
-  const representativeAsset = firstAssetForGroup(group);
+  const representativeAsset = firstAssetForGroup(groupAssets);
   const isConvertedGroup = group.status === 'converted';
+  const isArchiveGroup = mode === 'archive' || group.status === 'archive';
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -239,7 +418,7 @@ function AssetGroupRow({
       const batchName = groupDisplayPath(group);
 
       return Promise.all(
-        group.assets.map((asset) =>
+        groupAssets.map((asset) =>
           api.createQueueJob({
             mediaPath: asset.path,
             batchId,
@@ -296,24 +475,20 @@ function AssetGroupRow({
         sx={{ cursor: 'pointer' }}
       >
         <TableCell>
-          <Stack spacing={0.4}>
-            <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-              {groupDisplayPath(group)}
+          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+            <Typography fontWeight={700} sx={{ wordBreak: 'break-word', lineHeight: 1.25 }}>
+              {groupTitle(group)}
             </Typography>
-            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-              {group.path}
+            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all', lineHeight: 1.25 }}>
+              {groupSubpath(group)}
             </Typography>
           </Stack>
         </TableCell>
         <TableCell>{group.libraryName}</TableCell>
         <TableCell>
           <Stack spacing={0.75} alignItems="flex-start">
-            <Chip
-              label={group.status === 'converted' ? 'Converted' : 'Unprocessed'}
-              color={group.status === 'converted' ? 'success' : 'warning'}
-              size="small"
-            />
-            {group.review.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
+            <Chip label={statusLabel(group.status)} color={statusColor(group.status)} size="small" />
+            {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
         <TableCell>
@@ -350,11 +525,13 @@ function AssetGroupRow({
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
-                {isConvertedGroup ? (
+                {isConvertedGroup || isArchiveGroup ? (
                   <Alert severity="info">
-                    Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.
+                    {isArchiveGroup
+                      ? 'Archived originals are protected here. Recovering an original will not delete converted files.'
+                      : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
                   </Alert>
-                ) : (
+                ) : groupAssets.length > 1 ? (
                   <Grid container spacing={2} alignItems="stretch">
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AssetCategorySelect
@@ -362,7 +539,7 @@ function AssetGroupRow({
                         options={assetCategories}
                         onChange={(category) => {
                           setGroupCategory(category);
-                          updateMetadata.mutate({ path: group.path, categories: category ? [category] : [], tags: group.pathMetadata.tags ?? [] });
+                          updateMetadata.mutate({ path: group.path, categories: category ? [category] : [], tags: safeArray(pathMetadata.tags) });
                         }}
                         label="Category"
                       />
@@ -391,8 +568,8 @@ function AssetGroupRow({
                           queueGroup.isPending ||
                           !effectiveProfileId ||
                           !selectedLibraryId ||
-                          group.assets.length === 0 ||
-                          group.assets.some((asset) => asset.review.requiresReview || assetHasOpenJob(asset, queueJobs))
+                          groupAssets.length === 0 ||
+                          groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))
                         }
                         fullWidth
                         sx={{ minHeight: 40, alignSelf: 'center' }}
@@ -401,25 +578,25 @@ function AssetGroupRow({
                       </Button>
                     </Grid>
                   </Grid>
-                )}
+                ) : null}
                 {!isConfidenceEnabled ? (
                   <Alert severity="warning">
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
                   </Alert>
                 ) : null}
-                {group.review.requiresReview ? (
+                {groupReview.requiresReview ? (
                   <Alert severity="warning">
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
                   </Alert>
                 ) : null}
                 {advisor.isError ? <Alert severity="warning">Could not evaluate this path.</Alert> : null}
-                {queueGroup.isSuccess ? <Alert severity="success">{group.assets.length} files queued from this folder.</Alert> : null}
+                {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">Could not queue this folder.</Alert> : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
                   <Table size="small" sx={{ minWidth: 1240, tableLayout: 'fixed' }}>
                     <TableHead>
                       <TableRow>
-                        <TableCell sx={{ width: 230 }}>Asset file</TableCell>
+                        <TableCell sx={{ width: 230 }}>Asset</TableCell>
                         <TableCell sx={{ width: 118 }}>Status</TableCell>
                         <TableCell sx={{ width: 95 }}>Score</TableCell>
                         <TableCell sx={{ width: 100 }}>Size</TableCell>
@@ -432,7 +609,7 @@ function AssetGroupRow({
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {group.assets.map((asset) => (
+                      {groupAssets.map((asset) => (
                         <AssetRow
                           key={`${asset.status}-${asset.libraryId}-${asset.path}-${selectedProfileId}-${selectedLibraryId}`}
                           asset={asset}
@@ -448,6 +625,7 @@ function AssetGroupRow({
                           groupLibraryId={selectedLibraryId}
                           hasOpenJob={queueGroup.isPending || assetHasOpenJob(asset, queueJobs)}
                           queueJobs={queueJobs}
+                          mode={mode}
                         />
                       ))}
                     </TableBody>
@@ -476,6 +654,7 @@ function AssetRow({
   groupLibraryId,
   hasOpenJob,
   queueJobs,
+  mode,
 }: {
   asset: Asset;
   libraries: Library[];
@@ -490,6 +669,7 @@ function AssetRow({
   groupLibraryId: number;
   hasOpenJob: boolean;
   queueJobs: QueueJob[];
+  mode: 'unprocessed' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
   const [selectedProfileId, setSelectedProfileId] = useState<number>(groupProfileId);
@@ -500,9 +680,12 @@ function AssetRow({
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [showFinalDetailsDialog, setShowFinalDetailsDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
-  const [reviewReason, setReviewReason] = useState(asset.review.reason || '');
-  const [reviewTags, setReviewTags] = useState<string[]>(asset.review.tags ?? []);
-  const [category, setCategory] = useState<string>(firstCategory(asset.metadata.categories) || groupCategory);
+  const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
+  const assetMetadata = asset.metadata ?? { categories: [], tags: [], updatedAt: '' };
+  const [reviewReason, setReviewReason] = useState(assetReview.reason || '');
+  const [reviewTags, setReviewTags] = useState<string[]>(safeArray(assetReview.tags));
+  const [category, setCategory] = useState<string>(firstCategory(assetMetadata.categories) || groupCategory);
+  const [conversionDraft, setConversionDraft] = useState<AssetConversionOverrideState>(() => normalizeAssetConversionOverride(asset.conversion));
   const snapshot = useMutation({ mutationFn: api.scan });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
@@ -530,17 +713,34 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
-  const isBlockedByReview = asset.review.requiresReview;
+  const updateConversion = useMutation({
+    mutationFn: api.updateAssetConversion,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const recoverAsset = useMutation({
+    mutationFn: api.recoverAsset,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const isBlockedByReview = assetReview.requiresReview;
   const isConverted = asset.status === 'converted';
+  const isArchive = mode === 'archive' || asset.status === 'archive';
   const associatedJob = associatedJobForAsset(asset, queueJobs);
-  const rowLocked = hasOpenJob || createJob.isPending || isConverted;
+  const rowLocked = hasOpenJob || createJob.isPending || isConverted || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
 
   useEffect(() => {
-    if (!firstCategory(asset.metadata.categories)) {
+    if (!firstCategory(assetMetadata.categories)) {
       setCategory(groupCategory);
     }
-  }, [asset.metadata.categories, groupCategory]);
+  }, [assetMetadata.categories, groupCategory]);
+
+  useEffect(() => {
+    setConversionDraft(normalizeAssetConversionOverride(asset.conversion));
+  }, [asset.conversion]);
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -558,6 +758,58 @@ function AssetRow({
 
   function refreshSnapshot() {
     snapshot.mutate({ path: asset.path, force: true });
+  }
+
+  function toggleSnapshotStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
+    const scan = snapshot.data;
+    if (!scan) {
+      return;
+    }
+    const allIndexes = streamIndexesForType(scan, type);
+    const current = conversionStreamIndexes(conversionDraft, scan, type);
+    const next = keep ? normalizeNumberList([...current, index]) : safeArray(current).filter((candidate) => candidate !== index);
+    updateConversionDraftStream(type, selectedOrUndefined(next, allIndexes));
+  }
+
+  function updateConversionDraftStream(type: MediaStreamInfo['type'], indexes: number[] | undefined) {
+    setConversionDraft((current) => {
+      if (type === 'video') {
+        return { ...current, keepVideoStreams: indexes };
+      }
+      if (type === 'audio') {
+        return { ...current, keepAudioStreams: indexes };
+      }
+      return { ...current, keepSubtitleStreams: indexes };
+    });
+  }
+
+  function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
+    setConversionDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateStreamMetadata(type: 'video' | 'audio' | 'subtitle', index: number, patch: StreamMetadataOverride) {
+    setConversionDraft((current) => {
+      const key = type === 'video' ? 'videoMetadata' : type === 'audio' ? 'audioMetadata' : 'subtitleMetadata';
+      const currentMap = current[key] ?? {};
+      const nextItem = cleanStreamMetadataOverride({ ...(currentMap[String(index)] ?? {}), ...patch });
+      const nextMap = { ...currentMap };
+      if (streamMetadataOverrideEmpty(nextItem)) {
+        delete nextMap[String(index)];
+      } else {
+        nextMap[String(index)] = nextItem;
+      }
+      return { ...current, [key]: Object.keys(nextMap).length ? nextMap : undefined };
+    });
+  }
+
+  function saveConversionOverrides() {
+    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
+  }
+
+  function resetConversionOverrides() {
+    const empty: AssetConversionOverrideState = {};
+    setConversionDraft(empty);
+    updateConversion.mutate({ path: asset.path, ...empty });
   }
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
@@ -578,7 +830,7 @@ function AssetRow({
 
   function toggleAssetReview(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    const nextRequiresReview = !asset.review.requiresReview;
+    const nextRequiresReview = !assetReview.requiresReview;
     const nextReason = nextRequiresReview ? reviewReason || 'Needs manual review before conversion' : '';
     const nextTags = nextRequiresReview ? reviewTags : [];
     if (!nextRequiresReview) {
@@ -598,7 +850,7 @@ function AssetRow({
     event.stopPropagation();
     updateReview.mutate({
       path: asset.path,
-      requiresReview: asset.review.requiresReview,
+      requiresReview: assetReview.requiresReview,
       reason: reviewReason,
       source: 'manual',
       tags: reviewTags,
@@ -610,17 +862,28 @@ function AssetRow({
     updateMetadata.mutate({
       path: asset.path,
       categories: nextCategory ? [nextCategory] : [],
-      tags: asset.metadata.tags ?? [],
+      tags: safeArray(assetMetadata.tags),
     });
+  }
+
+  function recoverArchivedAsset(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const confirmed = window.confirm('Recover this original from Archive? Converted files will not be deleted.');
+    if (confirmed) {
+      recoverAsset.mutate(asset.path);
+    }
   }
 
   return (
     <>
       <TableRow hover>
         <TableCell>
-          <Stack spacing={0.4}>
-            <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-              {assetDisplayPath(asset, groupRelativePath, libraries)}
+          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+            <Typography fontWeight={700} sx={{ wordBreak: 'break-word', lineHeight: 1.25 }}>
+              {assetTitle(asset)}
+            </Typography>
+            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all', lineHeight: 1.25 }}>
+              {assetSubpath(asset, libraries)}
             </Typography>
           </Stack>
         </TableCell>
@@ -632,6 +895,9 @@ function AssetRow({
               size="small"
             />
             {isBlockedByReview ? <Chip label="Needs review" color="error" size="small" /> : null}
+            {assetHasConversionOverride(asset.conversion) ? <Chip label="Overrides" color="primary" size="small" /> : null}
+            {asset.missing ? <Chip label="Missing file" color="warning" size="small" /> : null}
+            {asset.expiresAt ? <Chip label={`Expires ${formatDate(asset.expiresAt)}`} size="small" /> : null}
           </Stack>
         </TableCell>
         <TableCell>
@@ -672,10 +938,24 @@ function AssetRow({
                 <ManageSearchIcon />
               </IconButton>
             </Tooltip>
-            {!isConverted ? (
-              <Tooltip title={asset.review.requiresReview ? 'Disable review block' : 'Enable review block'}>
+            {isArchive ? (
+              <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
+                <span>
+                  <IconButton
+                    color="primary"
+                    onClick={recoverArchivedAsset}
+                    disabled={asset.missing || recoverAsset.isPending}
+                    aria-label={`Recover ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <TaskAltIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : !isConverted ? (
+              <Tooltip title={assetReview.requiresReview ? 'Disable review block' : 'Enable review block'}>
                 <IconButton
-                  color={asset.review.requiresReview ? 'warning' : 'primary'}
+                  color={assetReview.requiresReview ? 'warning' : 'primary'}
                   onClick={toggleAssetReview}
                   disabled={updateReview.isPending}
                   aria-label={`Toggle review for ${asset.fileName}`}
@@ -696,7 +976,7 @@ function AssetRow({
                   <FactCheckIcon />
                 </IconButton>
               </Tooltip>
-            ) : (
+            ) : isArchive ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
                   color="primary"
@@ -781,10 +1061,10 @@ function AssetRow({
           <Stack spacing={2}>
             <Stack sx={{ minWidth: 0 }}>
               <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-                {relativeAssetPath(asset, libraries)}
+                {assetTitle(asset)}
               </Typography>
               <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                {asset.path}
+                {assetSubpath(asset, libraries)}
               </Typography>
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -818,28 +1098,96 @@ function AssetRow({
           </Stack>
         </DialogContent>
       </Dialog>
-      <Dialog open={showSnapshotDialog} onClose={() => setShowSnapshotDialog(false)} maxWidth="md" fullWidth>
-        <DialogTitle>Asset Snapshot</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2}>
+      <Dialog open={showSnapshotDialog} onClose={() => setShowSnapshotDialog(false)} maxWidth="lg" fullWidth>
+        <DialogTitle sx={{ pb: 0.75 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'flex-start' }} spacing={1}>
+            <Stack sx={{ minWidth: 0 }}>
+              <Typography variant="h2">Asset Snapshot</Typography>
+              <Typography color="text.secondary" variant="body2" noWrap>
+                {assetTitle(asset)}
+              </Typography>
+            </Stack>
+            <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={snapshot.isPending}>
+              Rescan
+            </Button>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <Stack spacing={1.25}>
             <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
               <Stack sx={{ minWidth: 0 }}>
-                <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-                  {relativeAssetPath(asset, libraries)}
-                </Typography>
                 <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                  {asset.path}
+                  {assetSubpath(asset, libraries)}
                 </Typography>
               </Stack>
-              <Button startIcon={<RefreshIcon />} variant="outlined" onClick={refreshSnapshot} disabled={snapshot.isPending}>
-                Rescan
-              </Button>
             </Stack>
             {snapshot.isPending ? <Alert severity="info">Reading asset snapshot...</Alert> : null}
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset. The file may not be readable from the backend container.</Alert>
             ) : null}
-            {snapshot.data ? <MediaSnapshotDetails scan={snapshot.data} /> : null}
+            {snapshot.data ? (
+              <>
+                <MediaSnapshotDetails
+                  scan={snapshot.data}
+                  streamControls={
+                    isConverted
+                      ? undefined
+                      : {
+                          video: {
+                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'video'),
+                            disabled: updateConversion.isPending,
+                            onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
+                          },
+                          audio: {
+                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'audio'),
+                            disabled: updateConversion.isPending,
+                            onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
+                          },
+                          subtitle: {
+                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'subtitle'),
+                            disabled: updateConversion.isPending,
+                            onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
+                          },
+                        }
+                  }
+                  metadataControls={
+                    isConverted
+                      ? undefined
+                      : {
+                          video: {
+                            values: conversionDraft.videoMetadata ?? {},
+                            disabled: updateConversion.isPending,
+                            onChange: (index, patch) => updateStreamMetadata('video', index, patch),
+                          },
+                          audio: {
+                            values: conversionDraft.audioMetadata ?? {},
+                            disabled: updateConversion.isPending,
+                            onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
+                          },
+                          subtitle: {
+                            values: conversionDraft.subtitleMetadata ?? {},
+                            disabled: updateConversion.isPending,
+                            onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
+                          },
+                        }
+                  }
+                />
+                {!isConverted ? (
+                  <AssetConversionOverridePanel
+                    draft={conversionDraft}
+                    profile={profiles.find((profile) => profile.id === selectedProfileId)}
+                    onChange={updateConversionDraft}
+                    onSave={saveConversionOverrides}
+                    onReset={resetConversionOverrides}
+                    saving={updateConversion.isPending}
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}
+            {updateConversion.isError ? (
+              <Alert severity="warning">Could not save conversion overrides: {updateConversion.error.message}</Alert>
+            ) : null}
             {isConverted ? (
               <FinalDetailsSummary asset={asset} job={associatedJob} compact />
             ) : null}
@@ -852,10 +1200,10 @@ function AssetRow({
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Stack>
               <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-                {assetDisplayPath(asset, groupRelativePath, libraries)}
+                {assetTitle(asset)}
               </Typography>
               <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                {asset.path}
+                {assetSubpath(asset, libraries)}
               </Typography>
             </Stack>
             {advisor.data ? (
@@ -877,10 +1225,10 @@ function AssetRow({
             <Stack spacing={2} sx={{ pt: 1 }}>
               <Stack>
                 <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-                  {assetDisplayPath(asset, groupRelativePath, libraries)}
+                  {assetTitle(asset)}
                 </Typography>
                 <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                  {asset.path}
+                  {assetSubpath(asset, libraries)}
                 </Typography>
               </Stack>
               <FinalDetailsSummary asset={asset} job={associatedJob} />
@@ -893,7 +1241,7 @@ function AssetRow({
 }
 
 function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; audioProfile?: AudioEnhancementProfile }) {
-  const primaryAudio = advisor.scan.audioStreams[0];
+  const primaryAudio = safeArray(advisor.scan.audioStreams)[0];
   const outputCodec = audioProfile?.outputCodec || advisor.profile.audioCodec;
   const sourceCodec = primaryAudio?.codec || 'unknown';
   const audioCodecChanges = outputCodec && outputCodec !== 'copy' && outputCodec.toLowerCase() !== sourceCodec.toLowerCase();
@@ -929,7 +1277,7 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
               Reasons
             </Typography>
             <Stack spacing={0.8}>
-              {advisor.reasons.map((reason) => (
+              {safeArray(advisor.reasons).map((reason) => (
                 <Typography key={reason} color="text.secondary">
                   {reason}
                 </Typography>
@@ -940,9 +1288,9 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
             <Typography variant="h3" sx={{ mb: 1 }}>
               Warnings
             </Typography>
-            {advisor.warnings.length ? (
+            {safeArray(advisor.warnings).length ? (
               <Stack spacing={0.8}>
-                {advisor.warnings.map((warning) => (
+                {safeArray(advisor.warnings).map((warning) => (
                   <Typography key={warning} color="warning.main">
                     {warning}
                   </Typography>
@@ -955,6 +1303,297 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
         </Grid>
       </Stack>
     </Box>
+  );
+}
+
+type SelectOption = {
+  value: string;
+  label: string;
+};
+
+const videoCodecOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'copy', label: 'Keep original video' },
+  { value: 'x265_10bit', label: 'HEVC / x265 10-bit' },
+  { value: 'x265', label: 'HEVC / x265' },
+  { value: 'x264', label: 'H.264 / x264' },
+];
+
+const audioCodecOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'copy', label: 'Keep original audio' },
+  { value: 'aac', label: 'AAC (best compatibility)' },
+  { value: 'ac3', label: 'AC-3 (home theater)' },
+  { value: 'opus', label: 'Opus (small files)' },
+];
+
+const speedOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'fast', label: 'Fast' },
+  { value: 'medium', label: 'Balanced' },
+  { value: 'slow', label: 'Slow / smaller file' },
+  { value: 'slower', label: 'Very slow / smallest file' },
+];
+
+const colorDepthOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'yuv420p', label: '8-bit SDR compatibility' },
+  { value: 'yuv420p10le', label: '10-bit / HDR friendly' },
+];
+
+const imageCleanupOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'bwdif=mode=send_frame', label: 'Fix interlacing' },
+  { value: 'hqdn3d=1.5:1.5:6:6', label: 'Light noise cleanup' },
+  { value: 'hqdn3d=2:2:7:7', label: 'Medium noise cleanup' },
+  { value: 'deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018', label: 'Light banding cleanup' },
+  { value: 'bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6', label: 'DVD cleanup' },
+  { value: 'hqdn3d=1.5:1.5:6:6,deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018', label: 'Anime cleanup' },
+];
+
+function AssetConversionOverridePanel({
+  draft,
+  profile,
+  onChange,
+  onSave,
+  onReset,
+  saving,
+}: {
+  draft: AssetConversionOverrideState;
+  profile?: Profile;
+  onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
+  onSave: () => void;
+  onReset: () => void;
+  saving: boolean;
+}) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
+          <Stack>
+            <Typography variant="h3">Asset Overrides</Typography>
+            <Typography color="text.secondary" variant="body2">
+              Per-asset changes applied at conversion time.
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" onClick={onReset} disabled={saving}>
+              Remove
+            </Button>
+            <Button variant="contained" onClick={onSave} disabled={saving}>
+              Save
+            </Button>
+          </Stack>
+        </Stack>
+        <Divider />
+        <Grid container spacing={1.5}>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Video codec"
+              value={draft.videoCodec ?? ''}
+              onChange={(event) => onChange('videoCodec', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              {optionItems(videoCodecOptions, draft.videoCodec).map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Audio codec"
+              value={draft.audioCodec ?? ''}
+              onChange={(event) => onChange('audioCodec', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              {optionItems(audioCodecOptions, draft.audioCodec).map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Work mode"
+              value={draft.processingMode ?? ''}
+              onChange={(event) => onChange('processingMode', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              <MenuItem value="">Profile default</MenuItem>
+              <MenuItem value="full_encode">Re-encode video</MenuItem>
+              <MenuItem value="audio_only">Audio/subtitle fixes only</MenuItem>
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Quality target"
+              value={draft.qualityValue ? String(draft.qualityValue) : ''}
+              onChange={(event) => onChange('qualityValue', numberOrUndefined(event.target.value))}
+              size="small"
+              fullWidth
+            >
+              <MenuItem value="">Profile default{profile?.qualityValue ? ` (${profile.qualityValue})` : ''}</MenuItem>
+              {[15, 18, 20, 22, 24, 26, 28].map((value) => (
+                <MenuItem key={value} value={String(value)}>
+                  {value} · {qualityLabel(value)}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Speed"
+              value={draft.videoPreset ?? ''}
+              onChange={(event) => onChange('videoPreset', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              {optionItems(speedOptions, draft.videoPreset).map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Color depth"
+              value={draft.pixFmt ?? ''}
+              onChange={(event) => onChange('pixFmt', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              {optionItems(colorDepthOptions, draft.pixFmt).map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              select
+              label="Image cleanup filters"
+              value={draft.videoFilters ?? ''}
+              onChange={(event) => onChange('videoFilters', event.target.value)}
+              size="small"
+              fullWidth
+            >
+              {optionItems(imageCleanupOptions, draft.videoFilters).map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <OverrideSwitch
+                label="Keep HDR"
+                value={draft.preserveHdr}
+                fallback={profile?.preserveHdr}
+                onChange={(value) => onChange('preserveHdr', value)}
+              />
+              <OverrideSwitch
+                label="Keep subtitles"
+                value={draft.preserveSubtitles}
+                fallback={profile?.preserveSubtitles}
+                onChange={(value) => onChange('preserveSubtitles', value)}
+              />
+              <OverrideSwitch
+                label="Keep chapters"
+                value={draft.preserveChapters}
+                fallback={profile?.preserveChapters}
+                onChange={(value) => onChange('preserveChapters', value)}
+              />
+            </Stack>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <Button
+              variant="text"
+              onClick={() => setAdvancedOpen((current) => !current)}
+              endIcon={
+                <ExpandMoreIcon
+                  sx={{
+                    transform: advancedOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: (theme) => theme.transitions.create('transform', { duration: theme.transitions.duration.shortest }),
+                  }}
+                />
+              }
+              sx={{ px: 0 }}
+            >
+              Advanced
+            </Button>
+            <Collapse in={advancedOpen} timeout="auto" unmountOnExit>
+              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, mt: 1, bgcolor: 'rgba(255,255,255,0.025)' }}>
+                <Grid container spacing={1.5}>
+                  <Grid size={{ xs: 12, md: 6 }}>
+                    <TextField
+                      label="Custom FFmpeg video filters"
+                      value={draft.videoFilters ?? ''}
+                      onChange={(event) => onChange('videoFilters', event.target.value)}
+                      placeholder={stringFromRecord(profile?.workerConfig ?? {}, 'videoFilters') || 'No custom filters'}
+                      size="small"
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid size={{ xs: 12, md: 6 }}>
+                    <TextField
+                      label="Custom x265 params"
+                      value={draft.x265Params ?? ''}
+                      onChange={(event) => onChange('x265Params', event.target.value)}
+                      placeholder={stringFromRecord(profile?.workerConfig ?? {}, 'x265Params') || 'No custom params'}
+                      size="small"
+                      fullWidth
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+            </Collapse>
+          </Grid>
+        </Grid>
+      </Stack>
+    </Box>
+  );
+}
+
+function OverrideSwitch({
+  label,
+  value,
+  fallback,
+  onChange,
+}: {
+  label: string;
+  value?: boolean;
+  fallback?: boolean;
+  onChange: (value: boolean | undefined) => void;
+}) {
+  const effective = value ?? fallback ?? false;
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ border: 1, borderColor: 'divider', borderRadius: 1, px: 1, py: 0.5 }}>
+      <Switch checked={effective} onChange={(event) => onChange(event.target.checked)} size="small" />
+      <Typography variant="body2">{label}</Typography>
+      {value === undefined ? <Chip label="Profile default" size="small" /> : <Chip label="Custom" color="primary" size="small" />}
+      {value !== undefined ? (
+        <Button size="small" onClick={() => onChange(undefined)}>
+          Use profile
+        </Button>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -1157,15 +1796,45 @@ function LibraryAutocomplete({
   );
 }
 
-function filterByText<T>(items: T[], inputValue: string, getValues: (item: T) => string[]) {
+function filterByText<T>(items: T[] | null | undefined, inputValue: string, getValues: (item: T) => Array<string | null | undefined>) {
+  const visibleItems = safeArray(items);
   const query = inputValue.trim().toLowerCase();
   if (!query) {
-    return items.slice(0, 50);
+    return visibleItems.slice(0, 50);
   }
 
-  return items
-    .filter((item) => getValues(item).some((value) => value.toLowerCase().includes(query)))
+  return visibleItems
+    .filter((item) => getValues(item).some((value) => (value ?? '').toLowerCase().includes(query)))
     .slice(0, 50);
+}
+
+function safeArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function filterAssetGroups(groups: AssetGroup[], query: string) {
+  const cleanQuery = query.trim().toLowerCase();
+  if (!cleanQuery) {
+    return groups;
+  }
+  return groups.filter((group) => {
+    const values = [
+      group.path,
+      group.relativePath,
+      group.libraryName,
+      group.status,
+      ...safeArray(group.assets).flatMap((asset) => [asset.fileName, asset.path, asset.relativePath, asset.status]),
+    ];
+    return values.some((value) => value.toLowerCase().includes(cleanQuery));
+  });
+}
+
+function sumGroupFiles(groups: AssetGroup[]) {
+  return groups.reduce((total, group) => total + (group.fileCount || safeArray(group.assets).length), 0);
+}
+
+function sumGroupBytes(groups: AssetGroup[]) {
+  return groups.reduce((total, group) => total + (Number.isFinite(group.sizeBytes) ? group.sizeBytes : 0), 0);
 }
 
 function recommendationLabel(recommendation: AdvisorResponse['recommendation']) {
@@ -1190,12 +1859,34 @@ function recommendationColor(recommendation: AdvisorResponse['recommendation']) 
   }
 }
 
-function firstCategory(categories?: string[]) {
-  return categories?.find((category) => category.trim()) ?? '';
+function statusLabel(status: Asset['status']) {
+  switch (status) {
+    case 'converted':
+      return 'Converted';
+    case 'archive':
+      return 'Archive';
+    default:
+      return 'Unprocessed';
+  }
+}
+
+function statusColor(status: Asset['status']): 'default' | 'success' | 'warning' {
+  switch (status) {
+    case 'converted':
+      return 'success';
+    case 'archive':
+      return 'default';
+    default:
+      return 'warning';
+  }
+}
+
+function firstCategory(categories?: string[] | null) {
+  return safeArray(categories).find((category) => category.trim()) ?? '';
 }
 
 function assetDisplayPath(asset: Asset, groupRelativePath: string, libraries: Library[]) {
-  const relativePath = relativeAssetPath(asset, libraries);
+  const relativePath = cleanRelativePath(relativeAssetPath(asset, libraries));
   const groupPrefix = groupRelativePath ? `${groupRelativePath}/` : '';
   if (groupPrefix && relativePath.startsWith(groupPrefix)) {
     return relativePath.slice(groupPrefix.length);
@@ -1208,9 +1899,17 @@ function assetDisplayPath(asset: Asset, groupRelativePath: string, libraries: Li
   return parts.slice(2).join('/');
 }
 
+function assetTitle(asset: Asset) {
+  return cleanRelativePath(asset.fileName || relativeAssetPath(asset, []));
+}
+
+function assetSubpath(asset: Asset, libraries: Library[]) {
+  return shortSubpath(relativeAssetPath(asset, libraries));
+}
+
 function relativeAssetPath(asset: Asset, libraries: Library[]) {
   if (asset.relativePath) {
-    return asset.relativePath;
+    return cleanRelativePath(asset.relativePath);
   }
 
   const library = libraries.find((candidate) => candidate.id === asset.libraryId);
@@ -1222,7 +1921,7 @@ function relativeAssetPath(asset: Asset, libraries: Library[]) {
 
   const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
   if (asset.path.startsWith(normalizedBase)) {
-    return asset.path.slice(normalizedBase.length);
+    return cleanRelativePath(asset.path.slice(normalizedBase.length));
   }
 
   return asset.fileName;
@@ -1230,28 +1929,59 @@ function relativeAssetPath(asset: Asset, libraries: Library[]) {
 
 function groupDisplayPath(group: AssetGroup) {
   if (group.relativePath) {
-    return group.relativePath;
+    return cleanRelativePath(group.relativePath);
   }
 
-  if (group.assets.length === 1) {
-    return group.assets[0].fileName;
+  const assets = safeArray(group.assets);
+  if (assets.length === 1) {
+    return assets[0].fileName;
   }
 
   return 'Library root';
 }
 
-function firstAssetForGroup(group: AssetGroup) {
-  return [...group.assets].sort((left, right) => left.path.localeCompare(right.path))[0];
+function groupTitle(group: AssetGroup) {
+  const relativePath = cleanRelativePath(group.relativePath || groupDisplayPath(group));
+  if (!relativePath || relativePath === 'Library root') {
+    return 'Library root';
+  }
+  const parts = relativePath.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? relativePath;
+}
+
+function groupSubpath(group: AssetGroup) {
+  const relativePath = cleanRelativePath(group.relativePath || groupDisplayPath(group));
+  if (!relativePath || relativePath === 'Library root') {
+    return '/';
+  }
+  return shortSubpath(relativePath);
+}
+
+function cleanRelativePath(value: string) {
+  return value.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+/, '');
+}
+
+function cleanPathLabel(value: string) {
+  return value.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+}
+
+function shortSubpath(value: string) {
+  const clean = cleanRelativePath(value);
+  return clean ? `/${clean}` : '/';
+}
+
+function firstAssetForGroup(assets: Asset[]) {
+  return [...safeArray(assets)].sort((left, right) => left.path.localeCompare(right.path))[0];
 }
 
 function assetHasOpenJob(asset: Asset, jobs: QueueJob[]) {
-  return jobs.some((job) => job.mediaPath === asset.path && job.status !== 'canceled' && !job.publishedAt);
+  return safeArray(jobs).some((job) => job.mediaPath === asset.path && job.status !== 'canceled' && !job.publishedAt);
 }
 
 function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
   const normalizedAssetPath = normalizePath(asset.path);
   const assetFileName = asset.fileName.toLowerCase();
-  return [...jobs]
+  return [...safeArray(jobs)]
     .sort((left, right) => right.id - left.id)
     .find((job) => {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
@@ -1289,6 +2019,9 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   }
   if (asset.status === 'converted') {
     return { label: 'Converted', color: 'success' };
+  }
+  if (asset.status === 'archive') {
+    return { label: 'Archive', color: 'default' };
   }
   return { label: 'Unprocessed', color: 'warning' };
 }
@@ -1334,6 +2067,215 @@ function modeFromNotes(notes: string) {
 function audioProfileFromNotes(notes: string) {
   const match = notes.match(/Audio (?:enhancement )?profile:\s*([^\n]+)/i);
   return match?.[1]?.trim() ?? '';
+}
+
+function normalizeAssetConversionOverride(value?: AssetConversionOverrideState): AssetConversionOverrideState {
+  if (!value) {
+    return {};
+  }
+  return cleanConversionOverride({
+    ...value,
+    keepVideoStreams: Array.isArray(value.keepVideoStreams) ? normalizeNumberList(value.keepVideoStreams) : undefined,
+    keepAudioStreams: Array.isArray(value.keepAudioStreams) ? normalizeNumberList(value.keepAudioStreams) : undefined,
+    keepSubtitleStreams: Array.isArray(value.keepSubtitleStreams) ? normalizeNumberList(value.keepSubtitleStreams) : undefined,
+  });
+}
+
+function cleanConversionOverride(value: AssetConversionOverrideState): AssetConversionOverrideState {
+  const clean: AssetConversionOverrideState = {};
+  if (Array.isArray(value.keepVideoStreams)) {
+    clean.keepVideoStreams = normalizeNumberList(value.keepVideoStreams);
+  }
+  if (Array.isArray(value.keepAudioStreams)) {
+    clean.keepAudioStreams = normalizeNumberList(value.keepAudioStreams);
+  }
+  if (Array.isArray(value.keepSubtitleStreams)) {
+    clean.keepSubtitleStreams = normalizeNumberList(value.keepSubtitleStreams);
+  }
+  const audioMetadata = cleanStreamMetadataMap(value.audioMetadata);
+  const subtitleMetadata = cleanStreamMetadataMap(value.subtitleMetadata);
+  const videoMetadata = cleanStreamMetadataMap(value.videoMetadata);
+  if (videoMetadata) {
+    clean.videoMetadata = videoMetadata;
+  }
+  if (audioMetadata) {
+    clean.audioMetadata = audioMetadata;
+  }
+  if (subtitleMetadata) {
+    clean.subtitleMetadata = subtitleMetadata;
+  }
+  ([
+    'videoCodec',
+    'audioCodec',
+    'qualityMode',
+    'videoPreset',
+    'pixFmt',
+    'videoFilters',
+    'x265Params',
+    'processingMode',
+  ] as const).forEach((key) => {
+    const text = value[key]?.trim();
+    if (text) {
+      clean[key] = text;
+    }
+  });
+  if (typeof value.qualityValue === 'number' && Number.isFinite(value.qualityValue) && value.qualityValue > 0) {
+    clean.qualityValue = value.qualityValue;
+  }
+  if (typeof value.preserveHdr === 'boolean') {
+    clean.preserveHdr = value.preserveHdr;
+  }
+  if (typeof value.preserveSubtitles === 'boolean') {
+    clean.preserveSubtitles = value.preserveSubtitles;
+  }
+  if (typeof value.preserveChapters === 'boolean') {
+    clean.preserveChapters = value.preserveChapters;
+  }
+  return clean;
+}
+
+function assetHasConversionOverride(value?: AssetConversionOverrideState) {
+  const clean = cleanConversionOverride(value ?? {});
+  return Object.keys(clean).some((key) => key !== 'updatedAt');
+}
+
+function cleanStreamMetadataMap(value?: Record<string, StreamMetadataOverride>) {
+  if (!value) {
+    return undefined;
+  }
+  const clean: Record<string, StreamMetadataOverride> = {};
+  Object.entries(value).forEach(([index, metadata]) => {
+    const numericIndex = Number(index);
+    if (!Number.isInteger(numericIndex) || numericIndex < 0) {
+      return;
+    }
+    const item = cleanStreamMetadataOverride(metadata);
+    if (!streamMetadataOverrideEmpty(item)) {
+      clean[String(numericIndex)] = item;
+    }
+  });
+  return Object.keys(clean).length ? clean : undefined;
+}
+
+function cleanStreamMetadataOverride(value: StreamMetadataOverride): StreamMetadataOverride {
+  const clean: StreamMetadataOverride = {};
+  const title = value.title?.trim();
+  const language = value.language?.trim().toLowerCase();
+  if (title) {
+    clean.title = title;
+  }
+  if (language) {
+    clean.language = language;
+  }
+  if (typeof value.default === 'boolean') {
+    clean.default = value.default;
+  }
+  if (typeof value.forced === 'boolean') {
+    clean.forced = value.forced;
+  }
+  return clean;
+}
+
+function streamMetadataOverrideEmpty(value: StreamMetadataOverride) {
+  return !value.title && !value.language && value.default === undefined && value.forced === undefined;
+}
+
+function conversionStreamIndexes(value: AssetConversionOverrideState, scan: ScanResult, type: MediaStreamInfo['type']) {
+  const allIndexes = streamIndexesForType(scan, type);
+  const selected =
+    type === 'video'
+      ? value.keepVideoStreams
+      : type === 'audio'
+        ? value.keepAudioStreams
+        : value.keepSubtitleStreams;
+  return Array.isArray(selected) ? selected : allIndexes;
+}
+
+function streamIndexesForType(scan: ScanResult, type: MediaStreamInfo['type']) {
+  const streams = type === 'video' ? scan.videoStreams : type === 'audio' ? scan.audioStreams : scan.subtitleStreams;
+  return normalizeNumberList(safeArray(streams).map((stream) => stream.index));
+}
+
+function selectedOrUndefined(selected: number[], allIndexes: number[]) {
+  const normalizedSelected = normalizeNumberList(selected);
+  const normalizedAll = normalizeNumberList(allIndexes);
+  if (normalizedSelected.length === normalizedAll.length && normalizedSelected.every((value, index) => value === normalizedAll[index])) {
+    return undefined;
+  }
+  return normalizedSelected;
+}
+
+function normalizeNumberList(values?: number[] | null) {
+  return Array.from(new Set(safeArray(values).filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
+}
+
+function numberOrUndefined(value: string) {
+  if (value.trim() === '') {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function optionItems(options: SelectOption[], currentValue?: string) {
+  const value = currentValue ?? '';
+  if (!value || options.some((option) => option.value === value)) {
+    return options;
+  }
+  return [...options, { value, label: `Custom (advanced): ${value}` }];
+}
+
+function qualityLabel(value: number) {
+  if (value <= 15) {
+    return 'Near lossless';
+  }
+  if (value <= 18) {
+    return 'Very high quality';
+  }
+  if (value <= 22) {
+    return 'Balanced';
+  }
+  if (value <= 24) {
+    return 'Smaller file';
+  }
+  return 'Smallest file';
+}
+
+function friendlyCodec(value?: string) {
+  switch ((value ?? '').toLowerCase()) {
+    case 'copy':
+      return 'Keep original';
+    case 'x265_10bit':
+    case 'libx265':
+      return 'HEVC / x265';
+    case 'x264':
+    case 'libx264':
+      return 'H.264 / x264';
+    case 'aac':
+      return 'AAC';
+    case 'ac3':
+      return 'AC-3';
+    default:
+      return value ?? '';
+  }
+}
+
+function friendlyPreset(value?: string) {
+  if (!value) {
+    return '';
+  }
+  return value.replace(/-/g, ' ');
+}
+
+function friendlyPixFmt(value?: string) {
+  switch (value) {
+    case 'yuv420p10le':
+      return '10-bit';
+    case 'yuv420p':
+      return '8-bit';
+    default:
+      return value ?? '';
+  }
 }
 
 function getAudioProfiles(settings?: AppSetting[]) {
@@ -1459,7 +2401,7 @@ function createBatchId(group: AssetGroup) {
 }
 
 function formatBytes(bytes: number) {
-  if (!bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
   }
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1473,8 +2415,12 @@ function formatBytes(bytes: number) {
 }
 
 function formatDate(value: string) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) {
+    return 'Unknown';
+  }
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(value));
+  }).format(date);
 }

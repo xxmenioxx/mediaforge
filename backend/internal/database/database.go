@@ -23,6 +23,7 @@ func Migrate(db *gorm.DB) error {
 		&models.Profile{},
 		&models.QueueJob{},
 		&models.ScanResult{},
+		&models.AssetRecord{},
 		&models.AppSetting{},
 	)
 }
@@ -34,6 +35,9 @@ func Seed(db *gorm.DB) error {
 	}
 
 	if count > 0 {
+		if err := seedRecommendedProfiles(db); err != nil {
+			return err
+		}
 		return seedSettings(db)
 	}
 
@@ -107,7 +111,135 @@ func Seed(db *gorm.DB) error {
 		return err
 	}
 
+	if err := seedRecommendedProfiles(db); err != nil {
+		return err
+	}
+
 	return seedSettings(db)
+}
+
+func seedRecommendedProfiles(db *gorm.DB) error {
+	profiles := []models.Profile{
+		{
+			Name:              "HEVC Small Size",
+			Description:       "Software x265 profile for assets where saving space matters more than speed.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      21,
+			PreserveHDR:       true,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":                 "mediaforge-v1",
+				"engine":                 "FFmpeg",
+				"preset":                 "hevc-small-size",
+				"preferredEncoder":       "software",
+				"videoEncoder":           "libx265",
+				"useHardwareIfAvailable": false,
+				"videoPreset":            "slow",
+				"pixFmt":                 "yuv420p10le",
+				"x265Params":             "aq-mode=3:aq-strength=0.8:deblock=-1,-1",
+				"processingMode":         "full_encode",
+				"addAacStereoDefault":    true,
+				"preserveOriginalAudio":  true,
+				"warnSubtitleFormats":    true,
+				"preferSrtSubtitles":     false,
+			},
+		},
+		{
+			Name:              "HEVC Balanced Fast",
+			Description:       "Hardware HEVC profile for faster queues and lower NAS pressure.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      25,
+			PreserveHDR:       true,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":                 "mediaforge-v1",
+				"engine":                 "FFmpeg",
+				"preset":                 "hevc-balanced-fast",
+				"preferredEncoder":       "hardware",
+				"videoEncoder":           "hevc_qsv",
+				"useHardwareIfAvailable": true,
+				"globalQuality":          25,
+				"videoPreset":            "medium",
+				"pixFmt":                 "yuv420p10le",
+				"processingMode":         "full_encode",
+				"addAacStereoDefault":    true,
+				"preserveOriginalAudio":  true,
+				"warnSubtitleFormats":    true,
+				"preferSrtSubtitles":     false,
+			},
+		},
+		{
+			Name:              "HEVC Archive Quality",
+			Description:       "Software x265 profile for important movies, concerts, and difficult sources.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      19,
+			PreserveHDR:       true,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":                 "mediaforge-v1",
+				"engine":                 "FFmpeg",
+				"preset":                 "hevc-archive-quality",
+				"preferredEncoder":       "software",
+				"videoEncoder":           "libx265",
+				"useHardwareIfAvailable": false,
+				"videoPreset":            "slow",
+				"pixFmt":                 "yuv420p10le",
+				"x265Params":             "aq-mode=3:aq-strength=0.9:deblock=-1,-1",
+				"processingMode":         "full_encode",
+				"addAacStereoDefault":    true,
+				"preserveOriginalAudio":  true,
+				"warnSubtitleFormats":    true,
+				"preferSrtSubtitles":     false,
+			},
+		},
+		{
+			Name:              "HEVC Bulk Convert",
+			Description:       "Hardware HEVC profile for large libraries and unattended bulk conversion.",
+			Container:         "mkv",
+			VideoCodec:        "x265_10bit",
+			AudioCodec:        "copy",
+			QualityMode:       "crf",
+			QualityValue:      27,
+			PreserveHDR:       true,
+			PreserveSubtitles: true,
+			PreserveChapters:  true,
+			WorkerConfig: models.JSONMap{
+				"source":                 "mediaforge-v1",
+				"engine":                 "FFmpeg",
+				"preset":                 "hevc-bulk-convert",
+				"preferredEncoder":       "hardware",
+				"videoEncoder":           "hevc_qsv",
+				"useHardwareIfAvailable": true,
+				"globalQuality":          27,
+				"videoPreset":            "medium",
+				"pixFmt":                 "yuv420p10le",
+				"processingMode":         "full_encode",
+				"addAacStereoDefault":    true,
+				"preserveOriginalAudio":  true,
+				"warnSubtitleFormats":    true,
+				"preferSrtSubtitles":     false,
+			},
+		},
+	}
+
+	for _, profile := range profiles {
+		if err := db.Where(models.Profile{Name: profile.Name}).FirstOrCreate(&profile).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func seedSettings(db *gorm.DB) error {
@@ -172,6 +304,14 @@ func seedSettings(db *gorm.DB) error {
 				"enabledForSuccessfulConversionsOnly": true,
 				"autoDeleteEnabled":                   false,
 				"processedOriginalsPath":              "/media/originals_archive/processed-originals",
+			},
+		},
+		{
+			Key: "assetInventory",
+			Value: models.JSONMap{
+				"autoSyncEnabled":     true,
+				"syncIntervalMinutes": 60,
+				"expireArchiveFiles":  true,
 			},
 		},
 		{

@@ -123,13 +123,13 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 		return "", err
 	}
 
-	if err := os.WriteFile(filepath.Join(logDir, "jobs.log"), []byte(allJobsLog(jobs)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(logDir, "jobs.log"), []byte(allJobsLog(h.db, jobs)), 0o644); err != nil {
 		return "", err
 	}
 
 	for _, job := range jobs {
 		name := fmt.Sprintf("job-%d.log", job.ID)
-		if err := os.WriteFile(filepath.Join(logDir, name), []byte(jobLog(job)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(logDir, name), []byte(jobLog(h.db, job)), 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -138,8 +138,12 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 }
 
 func (h LogHandler) configuredLogDir() (string, error) {
+	return configuredLogDir(h.db)
+}
+
+func configuredLogDir(db *gorm.DB) (string, error) {
 	setting := models.AppSetting{}
-	if err := h.db.First(&setting, "key = ?", "paths").Error; err != nil {
+	if err := db.First(&setting, "key = ?", "paths").Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return "", nil
 		}
@@ -148,7 +152,49 @@ func (h LogHandler) configuredLogDir() (string, error) {
 	return strings.TrimSpace(stringFromUnknown(setting.Value["logsPath"])), nil
 }
 
-func allJobsLog(jobs []models.QueueJob) string {
+func appendSystemLog(db *gorm.DB, event string, fields map[string]string, err error) {
+	logDir, dirErr := configuredLogDir(db)
+	if dirErr != nil {
+		return
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = os.Getenv("MEDIAFORGE_LOG_DIR")
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = "/media/reports/logs"
+	}
+	if mkErr := os.MkdirAll(logDir, 0o755); mkErr != nil {
+		return
+	}
+
+	payload := map[string]string{
+		"ts":    time.Now().Format(time.RFC3339),
+		"event": event,
+	}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	line, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return
+	}
+	_ = appendLine(filepath.Join(logDir, "system.log"), string(line))
+}
+
+func appendLine(path string, line string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(line + "\n")
+	return err
+}
+
+func allJobsLog(db *gorm.DB, jobs []models.QueueJob) string {
 	var builder strings.Builder
 	builder.WriteString("MediaForge job log summary\n")
 	builder.WriteString("Generated: " + time.Now().Format(time.RFC3339) + "\n\n")
@@ -172,12 +218,16 @@ func allJobsLog(jobs []models.QueueJob) string {
 		if job.Notes != "" {
 			builder.WriteString("  notes: " + strings.ReplaceAll(job.Notes, "\n", "\n  ") + "\n")
 		}
+		if conversion := assetConversionReport(conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))); conversion.HasOverrides {
+			builder.WriteString("  asset_conversion: " + strings.Join(conversion.HumanSummary, "; ") + "\n")
+		}
 	}
 
 	return builder.String()
 }
 
-func jobLog(job models.QueueJob) string {
+func jobLog(db *gorm.DB, job models.QueueJob) string {
+	conversion := assetConversionReport(conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db)))
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("MediaForge job #%d\n", job.ID))
 	builder.WriteString("Generated: " + time.Now().Format(time.RFC3339) + "\n\n")
@@ -211,6 +261,18 @@ func jobLog(job models.QueueJob) string {
 	if job.Notes != "" {
 		builder.WriteString("\nNotes\n")
 		builder.WriteString(job.Notes + "\n")
+	}
+	if conversion.HasOverrides {
+		builder.WriteString("\nAsset Conversion Overrides\n")
+		for _, item := range conversion.HumanSummary {
+			builder.WriteString("- " + item + "\n")
+		}
+		payload, err := json.MarshalIndent(conversion, "", "  ")
+		if err == nil {
+			builder.WriteString("\nAsset Conversion JSON\n")
+			builder.Write(payload)
+			builder.WriteString("\n")
+		}
 	}
 	if len(job.ValidationReport) > 0 {
 		builder.WriteString("\nValidation Report\n")

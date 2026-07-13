@@ -8,7 +8,9 @@ import type {
   AppSetting,
   AssetReviewUpdateInput,
   AssetMetadataUpdateInput,
+  AssetConversionUpdateInput,
   AssetInventory,
+  AssetSyncResult,
   AdvisorRequest,
   AdvisorResponse,
   ClaimJobInput,
@@ -42,7 +44,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed with ${response.status}`);
+    let message = `Request failed with ${response.status}`;
+    try {
+      const payload = await response.clone().json();
+      if (payload && typeof payload.error === 'string' && payload.error.trim()) {
+        message = payload.error;
+      }
+    } catch {
+      const text = await response.text().catch(() => '');
+      if (text.trim()) {
+        message = text.trim();
+      }
+    }
+    throw new Error(message);
   }
 
   return response.json() as Promise<T>;
@@ -55,6 +69,16 @@ export const api = {
   browsePaths: (root: 'raw' | 'library' | 'staging') =>
     request<PathBrowseResponse>(`/api/paths/browse?root=${encodeURIComponent(root)}`),
   assets: () => request<AssetInventory>('/api/assets'),
+  syncAssets: () =>
+    request<AssetSyncResult>('/api/assets/sync', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  recoverAsset: (path: string) =>
+    request<{ status: string; sourcePath: string; recoveredPath: string; message: string }>(`/api/assets/recover?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
     request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
       method: 'POST',
@@ -64,6 +88,11 @@ export const api = {
     request<{ path: string; metadata: unknown }>(`/api/assets/metadata?path=${encodeURIComponent(path)}`, {
       method: 'POST',
       body: JSON.stringify(metadata),
+    }),
+  updateAssetConversion: ({ path, ...conversion }: AssetConversionUpdateInput) =>
+    request<{ path: string; conversion: unknown }>(`/api/assets/conversion?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify(conversion),
     }),
   evaluateAdvisor: (advisorRequest: AdvisorRequest) =>
     request<AdvisorResponse>('/api/advisor/evaluate', {

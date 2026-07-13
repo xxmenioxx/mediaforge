@@ -1007,6 +1007,14 @@ Custom Validators
 
 Custom Publishers
 
+Multimedia Library
+
+Federated library/path filters
+
+Conversion provenance and portable manifests
+
+Library-wide Advisor recommendations
+
 ---
 
 # Long-Term Vision

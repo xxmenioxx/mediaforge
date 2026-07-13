@@ -1,4 +1,7 @@
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Autocomplete,
   Box,
@@ -29,6 +32,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditIcon from '@mui/icons-material/Edit';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -409,7 +413,7 @@ export function AudioProfilesPage() {
             <Stack spacing={2.5}>
               <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
                 <Typography color="text.secondary" variant="body2">
-                  Profiles describe the FFmpeg audio filter chain that will later be used by conversion plans and previews.
+                  Shape restoration with simple controls. Technical filters stay in Advanced.
                 </Typography>
                 <Button startIcon={<CloseIcon />} onClick={() => setShowForm(false)}>
                   Close
@@ -460,126 +464,182 @@ export function AudioProfilesPage() {
                   </Tooltip>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
-                  <Tooltip title="Codec used for the processed audio sample/output. copy preserves audio only when no filters are applied; filtered audio must be re-encoded.">
-                    <TextField
-                      label="Output codec"
-                      value={form.outputCodec}
-                      onChange={(event) => setForm((current) => ({ ...current, outputCodec: event.target.value }))}
-                      select
-                      fullWidth
-                    >
-                      {['aac', 'copy', 'flac', 'opus', 'ac3'].map((codec) => (
-                        <MenuItem key={codec} value={codec}>
-                          {codec}
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                  </Tooltip>
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField
-                    label="Channel mode"
-                    value={form.channelMode}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        channelMode: event.target.value as AudioEnhancementProfile['channelMode'],
-                      }))
-                    }
-                    select
-                    fullWidth
-                  >
-                    {channelModes.map((mode) => (
-                      <MenuItem key={mode.value} value={mode.value}>
-                        {mode.label}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Alert severity={form.channelMode === 'light-stereo' ? 'warning' : 'info'} sx={{ height: '100%' }}>
-                    {channelModes.find((mode) => mode.value === form.channelMode)?.description}
-                  </Alert>
-                </Grid>
-                {form.channelMode === 'force-stereo' ? (
-                  <>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <TextField
-                        label="Stereo method"
-                        value={form.forceStereoMode}
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={form.preserveOriginalTrack}
                         onChange={(event) =>
+                          setForm((current) => ({ ...current, preserveOriginalTrack: event.target.checked }))
+                        }
+                      />
+                    }
+                    label="Keep original audio track"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.04)' }}>
+                    <Stack spacing={2}>
+                      <Stack>
+                        <Typography variant="h3">Audio Restoration Studio</Typography>
+                        <Typography color="text.secondary" variant="body2">
+                          Each control writes a safe filter choice behind the scenes.
+                        </Typography>
+                      </Stack>
+                      <RestorationSlider
+                        label="Noise"
+                        value={managedFilterLevel(form.filters, 'noise')}
+                        onChange={(value) => setForm((current) => ({ ...current, filters: setManagedFilterLevel(current.filters, 'noise', value) }))}
+                      />
+                      <RestorationSlider
+                        label="Hum"
+                        value={managedFilterLevel(form.filters, 'hum')}
+                        onChange={(value) => setForm((current) => ({ ...current, filters: setManagedFilterLevel(current.filters, 'hum', value) }))}
+                      />
+                      <RestorationSlider
+                        label="Brightness"
+                        value={managedFilterLevel(form.filters, 'brightness')}
+                        onChange={(value) => setForm((current) => ({ ...current, filters: setManagedFilterLevel(current.filters, 'brightness', value) }))}
+                      />
+                      <RestorationSlider
+                        label="Stereo Width"
+                        value={form.stereoWidth}
+                        onChange={(value) =>
                           setForm((current) => ({
                             ...current,
-                            forceStereoMode: event.target.value as AudioEnhancementProfile['forceStereoMode'],
+                            stereoWidth: value,
+                            channelMode: value > 0 ? 'light-stereo' : 'preserve',
                           }))
                         }
-                        select
-                        fullWidth
-                      >
-                        {forceStereoModes.map((mode) => (
-                          <MenuItem key={mode.value} value={mode.value}>
-                            {mode.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Alert severity="info" sx={{ height: '100%' }}>
-                        {forceStereoModes.find((mode) => mode.value === form.forceStereoMode)?.description}
-                      </Alert>
-                    </Grid>
-                  </>
-                ) : null}
-                {form.channelMode === 'light-stereo' ? (
-                  <>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <TextField
-                        label="Stereo delay ms"
-                        type="number"
-                        value={form.stereoDelayMs}
-                        onChange={(event) => setForm((current) => ({ ...current, stereoDelayMs: Number(event.target.value) }))}
-                        inputProps={{ min: 1, max: 40 }}
-                        helperText="Small values are safer. Try 8-16 ms first."
-                        fullWidth
                       />
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <TextField
-                        label="Stereo width"
-                        type="number"
-                        value={form.stereoWidth}
-                        onChange={(event) => setForm((current) => ({ ...current, stereoWidth: Number(event.target.value) }))}
-                        inputProps={{ min: 0, max: 100 }}
-                        helperText="Higher values widen more, but can sound phasey."
-                        fullWidth
-                      />
-                    </Grid>
-                  </>
-                ) : null}
-                <Grid size={{ xs: 12 }}>
-                  <Tooltip title="Advanced FFmpeg filter chain. Use this for loudnorm, compressors, highpass, afftdn, and other audio filters.">
-                    <TextField
-                      label="Base FFmpeg audio filters"
-                      value={form.filters}
-                      onChange={(event) => setForm((current) => ({ ...current, filters: event.target.value }))}
-                      multiline
-                      minRows={3}
-                      helperText="Advanced: these filters run after ARNNDN and before the graphic EQ bands below."
-                      fullWidth
-                    />
-                  </Tooltip>
+                      <Stack spacing={0.5}>
+                        <Stack direction="row" justifyContent="space-between" alignItems="center">
+                          <Typography fontWeight={700}>Loudness</Typography>
+                          <Chip label={`${form.targetLoudness} LUFS`} size="small" />
+                        </Stack>
+                        <Slider
+                          value={form.targetLoudness}
+                          min={-28}
+                          max={-12}
+                          step={1}
+                          marks={[{ value: -24 }, { value: -18 }, { value: -14 }]}
+                          onChange={(_, value) => setForm((current) => ({ ...current, targetLoudness: Array.isArray(value) ? value[0] : value }))}
+                        />
+                      </Stack>
+                    </Stack>
+                  </Box>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <Tooltip title="Optional neural speech denoise model for FFmpeg arnndn. Best for voice noise; test carefully because it can affect music and ambience.">
-                    <TextField
-                      label="ARNNDN model path"
-                      value={form.rnnoiseModelPath}
-                      onChange={(event) => setForm((current) => ({ ...current, rnnoiseModelPath: event.target.value }))}
-                      placeholder="/mediaforge/models/audio/rnnoise-model.rnnn"
-                      helperText="Optional. Adds arnndn=m=<model> before the rest of the audio filter chain."
-                      fullWidth
-                    />
-                  </Tooltip>
+                  <Accordion variant="outlined" sx={{ bgcolor: 'transparent' }}>
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <Stack>
+                        <Typography fontWeight={700}>Advanced</Typography>
+                        <Typography color="text.secondary" variant="body2">
+                          Codec, channel layout, true peak, neural model, and exact filter chain.
+                        </Typography>
+                      </Stack>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Grid container spacing={2}>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Output codec"
+                            value={form.outputCodec}
+                            onChange={(event) => setForm((current) => ({ ...current, outputCodec: event.target.value }))}
+                            select
+                            fullWidth
+                          >
+                            {['aac', 'copy', 'flac', 'opus', 'ac3'].map((codec) => (
+                              <MenuItem key={codec} value={codec}>
+                                {codec}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Channel mode"
+                            value={form.channelMode}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                channelMode: event.target.value as AudioEnhancementProfile['channelMode'],
+                              }))
+                            }
+                            select
+                            fullWidth
+                          >
+                            {channelModes.map((mode) => (
+                              <MenuItem key={mode.value} value={mode.value}>
+                                {mode.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Stereo method"
+                            value={form.forceStereoMode}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                forceStereoMode: event.target.value as AudioEnhancementProfile['forceStereoMode'],
+                              }))
+                            }
+                            select
+                            fullWidth
+                          >
+                            {forceStereoModes.map((mode) => (
+                              <MenuItem key={mode.value} value={mode.value}>
+                                {mode.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Stereo delay ms"
+                            type="number"
+                            value={form.stereoDelayMs}
+                            onChange={(event) => setForm((current) => ({ ...current, stereoDelayMs: Number(event.target.value) }))}
+                            inputProps={{ min: 1, max: 40 }}
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="True peak dB"
+                            type="number"
+                            value={form.truePeak}
+                            onChange={(event) => setForm((current) => ({ ...current, truePeak: Number(event.target.value) }))}
+                            inputProps={{ min: -8, max: 0 }}
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="ARNNDN model path"
+                            value={form.rnnoiseModelPath}
+                            onChange={(event) => setForm((current) => ({ ...current, rnnoiseModelPath: event.target.value }))}
+                            placeholder="/mediaforge/models/audio/rnnoise-model.rnnn"
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12 }}>
+                          <TextField
+                            label="Base FFmpeg audio filters"
+                            value={form.filters}
+                            onChange={(event) => setForm((current) => ({ ...current, filters: event.target.value }))}
+                            multiline
+                            minRows={3}
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12 }}>
+                          <Alert severity="info">Preview command: {buildPreviewCommand(form)}</Alert>
+                        </Grid>
+                      </Grid>
+                    </AccordionDetails>
+                  </Accordion>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                   <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.04)' }}>
@@ -696,47 +756,6 @@ export function AudioProfilesPage() {
                     </Stack>
                   </Box>
                 </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Tooltip title="Target perceived loudness. More negative is quieter; -18 LUFS is a conservative media-friendly target.">
-                    <TextField
-                      label="Target loudness LUFS"
-                      type="number"
-                      value={form.targetLoudness}
-                      onChange={(event) => setForm((current) => ({ ...current, targetLoudness: Number(event.target.value) }))}
-                      inputProps={{ min: -32, max: -10 }}
-                      helperText="Applied automatically to preview and conversion through loudnorm."
-                      fullWidth
-                    />
-                  </Tooltip>
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Tooltip title="Peak ceiling to avoid clipping. -2 dB is a safe default for playback compatibility.">
-                    <TextField
-                      label="True peak dB"
-                      type="number"
-                      value={form.truePeak}
-                      onChange={(event) => setForm((current) => ({ ...current, truePeak: Number(event.target.value) }))}
-                      inputProps={{ min: -8, max: 0 }}
-                      helperText="Sets the loudnorm TP ceiling for preview and conversion."
-                      fullWidth
-                    />
-                  </Tooltip>
-                </Grid>
-                <Grid size={{ xs: 12 }}>
-                  <Tooltip title="When enabled, conversion can keep the original audio track alongside the enhanced one for safety.">
-                    <FormControlLabel
-                      control={
-                        <Checkbox
-                          checked={form.preserveOriginalTrack}
-                          onChange={(event) =>
-                            setForm((current) => ({ ...current, preserveOriginalTrack: event.target.checked }))
-                          }
-                        />
-                      }
-                      label="Preserve original audio track"
-                    />
-                  </Tooltip>
-                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <TextField
                     label="Notes"
@@ -746,11 +765,6 @@ export function AudioProfilesPage() {
                     minRows={2}
                     fullWidth
                   />
-                </Grid>
-                <Grid size={{ xs: 12 }}>
-                  <Alert severity="info">
-                    Preview command: {buildPreviewCommand(form)}
-                  </Alert>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                   <Button type="submit" startIcon={<SaveIcon />} variant="contained" disabled={updateSetting.isPending} fullWidth>
@@ -928,6 +942,32 @@ function drawWaveformError(canvas: HTMLCanvasElement, context: CanvasRenderingCo
   context.fillText('Waveform unavailable for this preview', 16, height / 2);
 }
 
+function RestorationSlider({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Stack spacing={0.5}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center">
+        <Typography fontWeight={700}>{label}</Typography>
+        <Chip label={value === 0 ? 'Off' : `${value}%`} size="small" />
+      </Stack>
+      <Slider
+        value={value}
+        min={0}
+        max={100}
+        step={5}
+        onChange={(_, nextValue) => onChange(Array.isArray(nextValue) ? nextValue[0] : nextValue)}
+      />
+    </Stack>
+  );
+}
+
 function getAudioProfiles(settings?: AppSetting[]) {
   const value = settings?.find((setting) => setting.key === 'audioEnhancementProfiles')?.value.profiles;
   if (!Array.isArray(value)) {
@@ -981,6 +1021,55 @@ function normalizeAudioProfile(value: unknown): AudioEnhancementProfile | null {
 function buildPreviewCommand(profile: AudioEnhancementProfile) {
   const codec = profile.outputCodec === 'copy' ? 'aac' : profile.outputCodec || 'aac';
   return `ffmpeg -i input.mkv -map 0:a:0 -af "${effectiveFilters(profile)}" -c:a ${codec} sample-audio.mka`;
+}
+
+function managedFilterLevel(filterChain: string, control: 'noise' | 'hum' | 'brightness') {
+  const filters = splitAudioFilters(filterChain);
+  if (control === 'noise') {
+    const match = filters.find((filter) => filter.startsWith('afftdn='))?.match(/(?:^|:)nf=(-?\d+(?:\.\d+)?)/);
+    const nf = Number(match?.[1]);
+    return Number.isFinite(nf) ? Math.max(0, Math.min(100, Math.round((Math.abs(nf) - 20) / 0.3))) : 0;
+  }
+  if (control === 'hum') {
+    const match = filters.find((filter) => filter.startsWith('highpass='))?.match(/(?:^|:)f=(\d+(?:\.\d+)?)/);
+    const frequency = Number(match?.[1]);
+    return Number.isFinite(frequency) ? Math.max(0, Math.min(100, Math.round(frequency - 50))) : 0;
+  }
+  const match = filters.find((filter) => filter.startsWith('treble='))?.match(/(?:^|:)g=(-?\d+(?:\.\d+)?)/);
+  const gain = Number(match?.[1]);
+  return Number.isFinite(gain) ? Math.max(0, Math.min(100, Math.round(gain * 10 + 50))) : 50;
+}
+
+function setManagedFilterLevel(filterChain: string, control: 'noise' | 'hum' | 'brightness', level: number) {
+  const cleanLevel = Math.max(0, Math.min(100, Math.round(level)));
+  const filters = splitAudioFilters(filterChain).filter((filter) => {
+    if (control === 'noise') {
+      return !filter.startsWith('afftdn=');
+    }
+    if (control === 'hum') {
+      return !filter.startsWith('highpass=');
+    }
+    return !filter.startsWith('treble=');
+  });
+
+  if (control === 'noise' && cleanLevel > 0) {
+    filters.unshift(`afftdn=nf=${trimGain(-20 - cleanLevel * 0.3)}`);
+  }
+  if (control === 'hum' && cleanLevel > 0) {
+    filters.unshift(`highpass=f=${50 + cleanLevel}`);
+  }
+  if (control === 'brightness' && cleanLevel !== 50) {
+    filters.push(`treble=g=${trimGain((cleanLevel - 50) / 10)}`);
+  }
+
+  return sanitizeAudioFilterChain(filters.join(','));
+}
+
+function splitAudioFilters(filterChain: string) {
+  return filterChain
+    .split(',')
+    .map((filter) => filter.trim())
+    .filter(Boolean);
 }
 
 function effectiveFilters(profile: AudioEnhancementProfile) {
