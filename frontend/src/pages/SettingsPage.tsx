@@ -76,6 +76,8 @@ type SettingsForm = {
   };
   pipelineAutomation: {
     autoAnalysisEnabled: boolean;
+    reviewMode: 'manual' | 'automatic' | 'conditional';
+    autoExecutionEnabled: boolean;
     autoValidationEnabled: boolean;
     autoPublisherEnabled: boolean;
   };
@@ -147,6 +149,8 @@ const initialSettings: SettingsForm = buildSettingsForm({
   },
   pipelineAutomation: {
     autoAnalysisEnabled: false,
+    reviewMode: 'conditional',
+    autoExecutionEnabled: true,
     autoValidationEnabled: false,
     autoPublisherEnabled: false,
   },
@@ -184,6 +188,7 @@ export function SettingsPage() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const [section, setSection] = useState<'assets' | 'workers' | 'validation' | 'cleanup' | 'diagnostics'>('assets');
   const [form, setForm] = useState<SettingsForm>(initialSettings);
@@ -208,6 +213,14 @@ export function SettingsPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['libraries'] });
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+
+  const refreshRuntime = useMutation({
+    mutationFn: api.refreshRuntimeSnapshot,
+    onSuccess: async (snapshot) => {
+      queryClient.setQueryData(['runtime-snapshot'], snapshot);
+      await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
     },
   });
 
@@ -277,6 +290,11 @@ export function SettingsPage() {
         autoAnalysisEnabled: booleanValue(
           pipelineAutomation.autoAnalysisEnabled,
           initialSettings.pipelineAutomation.autoAnalysisEnabled,
+        ),
+        reviewMode: stringValue(pipelineAutomation.reviewMode, initialSettings.pipelineAutomation.reviewMode) as SettingsForm['pipelineAutomation']['reviewMode'],
+        autoExecutionEnabled: booleanValue(
+          pipelineAutomation.autoExecutionEnabled,
+          initialSettings.pipelineAutomation.autoExecutionEnabled,
         ),
         autoValidationEnabled: booleanValue(
           pipelineAutomation.autoValidationEnabled,
@@ -638,6 +656,76 @@ export function SettingsPage() {
 
             {section === 'diagnostics' ? (
               <Grid container spacing={2}>
+                <Grid size={{ xs: 12 }}>
+                  <Card>
+                    <CardContent>
+                      <Stack spacing={1.5}>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+                          <Stack>
+                            <Typography variant="h3">Scheduler runtime</Typography>
+                            <Typography color="text.secondary" variant="body2">
+                              Persisted machine snapshot used to select the execution policy.
+                            </Typography>
+                          </Stack>
+                          <Button onClick={() => refreshRuntime.mutate()} disabled={refreshRuntime.isPending}>
+                            {refreshRuntime.isPending ? 'Detecting…' : 'Refresh detection'}
+                          </Button>
+                        </Stack>
+                        {runtimeSnapshot.isError ? (
+                          <Alert severity="warning">
+                            Unable to load runtime detection: {runtimeSnapshot.error instanceof Error ? runtimeSnapshot.error.message : 'unknown error'}
+                          </Alert>
+                        ) : runtimeSnapshot.isLoading ? (
+                          <Typography color="text.secondary">Detecting runtime capabilities…</Typography>
+                        ) : runtimeSnapshot.data ? (
+                          <Stack spacing={2}>
+                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                              <Chip label={`Selected: ${runtimeSnapshot.data.selectedProfile}`} color="primary" />
+                              <Chip label={`Recommended: ${runtimeSnapshot.data.recommendedProfile}`} />
+                              <Chip label={`${runtimeSnapshot.data.os}/${runtimeSnapshot.data.architecture}`} />
+                              <Chip label={`${runtimeSnapshot.data.cpuCores} CPU cores`} />
+                              <Chip label={`${formatBytes(runtimeSnapshot.data.totalMemoryBytes)} RAM total`} />
+                              <Chip label={`${formatBytes(runtimeSnapshot.data.availableMemoryBytes)} RAM available`} />
+                              <Chip label={runtimeSnapshot.data.container ? 'Container' : 'Native host'} />
+                              <Chip label={runtimeSnapshot.data.batteryPresent ? 'Battery present' : 'No battery'} />
+                            </Stack>
+
+                            <Divider />
+                            <Typography variant="h4">Storage</Typography>
+                            <Table size="small">
+                              <TableHead><TableRow><TableCell>Role</TableCell><TableCell>Path</TableCell><TableCell>Total</TableCell><TableCell>Available</TableCell></TableRow></TableHead>
+                              <TableBody>
+                                {Object.entries(safeRuntimeRecord(runtimeSnapshot.data.disks)).map(([role, rawDisk]) => {
+                                  const disk = runtimeDisk(rawDisk);
+                                  return <TableRow key={role}><TableCell>{role}</TableCell><TableCell sx={{ wordBreak: 'break-all' }}>{disk.path}</TableCell><TableCell>{formatBytes(disk.totalBytes)}</TableCell><TableCell>{formatBytes(disk.availableBytes)}</TableCell></TableRow>;
+                                })}
+                              </TableBody>
+                            </Table>
+
+                            <Typography variant="h4">FFmpeg encoders</Typography>
+                            <Table size="small">
+                              <TableHead><TableRow><TableCell>Encoder</TableCell><TableCell>Listed</TableCell><TableCell>Usable</TableCell><TableCell>Diagnostic</TableCell></TableRow></TableHead>
+                              <TableBody>
+                                {Object.entries(safeRuntimeRecord(runtimeSnapshot.data.encoders)).map(([name, rawEncoder]) => {
+                                  const encoder = runtimeEncoder(rawEncoder);
+                                  return <TableRow key={name}><TableCell>{name}</TableCell><TableCell>{encoder.listed ? 'Yes' : 'No'}</TableCell><TableCell><Chip size="small" color={encoder.usable ? 'success' : 'default'} label={encoder.usable ? 'Usable' : 'Unavailable'} /></TableCell><TableCell>{encoder.reason || 'Passed capability check'}</TableCell></TableRow>;
+                                })}
+                              </TableBody>
+                            </Table>
+
+                            {safeRuntimeList(runtimeSnapshot.data.selectionReasons).length ? <Alert severity="info">{safeRuntimeList(runtimeSnapshot.data.selectionReasons).map(String).join(' · ')}</Alert> : null}
+                            {safeRuntimeList(runtimeSnapshot.data.warnings).map((warning, index) => <Alert key={index} severity="warning">{String(warning)}</Alert>)}
+                            <Typography color="text.secondary" variant="caption">Detected {new Date(runtimeSnapshot.data.detectedAt).toLocaleString()}</Typography>
+                          </Stack>
+                        ) : (
+                          <Typography color="text.secondary">No runtime snapshot has been recorded yet.</Typography>
+                        )}
+                        {refreshRuntime.isSuccess ? <Alert severity="success">Runtime refreshed successfully. Snapshot #{refreshRuntime.data.id} was recorded.</Alert> : null}
+                        {refreshRuntime.isError ? <Alert severity="error">Refresh failed: {refreshRuntime.error instanceof Error ? refreshRuntime.error.message : 'unknown error'}</Alert> : null}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Card>
                     <CardContent>
@@ -1070,6 +1158,22 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
             }
             label="Automatic analysis"
           />
+          <TextField
+            label="Review Plan approval"
+            value={form.pipelineAutomation.reviewMode}
+            onChange={(event) => setForm((current) => ({ ...current, pipelineAutomation: { ...current.pipelineAutomation, reviewMode: event.target.value as SettingsForm['pipelineAutomation']['reviewMode'] } }))}
+            helperText="Manual waits for approval; conditional approves safe estimates; automatic approves every evaluated plan."
+            select
+            fullWidth
+          >
+            <MenuItem value="manual">Manual</MenuItem>
+            <MenuItem value="conditional">Conditional</MenuItem>
+            <MenuItem value="automatic">Automatic</MenuItem>
+          </TextField>
+          <FormControlLabel
+            control={<Switch checked={form.pipelineAutomation.autoExecutionEnabled} onChange={(event) => setForm((current) => ({ ...current, pipelineAutomation: { ...current.pipelineAutomation, autoExecutionEnabled: event.target.checked } }))} />}
+            label="Automatic execution of approved plans"
+          />
           <FormControlLabel
             control={
               <Switch
@@ -1440,6 +1544,39 @@ type SettingsCardProps = {
   setForm: Dispatch<SetStateAction<SettingsForm>>;
 };
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 'Unknown';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / 1024 ** unit).toFixed(unit >= 3 ? 1 : 0)} ${units[unit]}`;
+}
+
+function safeRuntimeList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function safeRuntimeRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function runtimeEncoder(value: unknown) {
+  const encoder = safeRuntimeRecord(value);
+  return {
+    listed: encoder.listed === true,
+    usable: encoder.usable === true,
+    reason: typeof encoder.reason === 'string' ? encoder.reason : '',
+  };
+}
+
+function runtimeDisk(value: unknown): { path: string; totalBytes: number; availableBytes: number } {
+  const disk = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    path: typeof disk.path === 'string' ? disk.path : 'Unknown',
+    totalBytes: typeof disk.totalBytes === 'number' ? disk.totalBytes : 0,
+    availableBytes: typeof disk.availableBytes === 'number' ? disk.availableBytes : 0,
+  };
+}
+
 function settingsToForm(settings: Array<{ key: string; value: Record<string, unknown> }>): SettingsForm {
   const byKey = Object.fromEntries(settings.map((setting) => [setting.key, setting.value]));
   const paths = byKey.paths ?? {};
@@ -1481,6 +1618,11 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       autoAnalysisEnabled: booleanValue(
         pipelineAutomation.autoAnalysisEnabled,
         initialSettings.pipelineAutomation.autoAnalysisEnabled,
+      ),
+      reviewMode: stringValue(pipelineAutomation.reviewMode, initialSettings.pipelineAutomation.reviewMode) as SettingsForm['pipelineAutomation']['reviewMode'],
+      autoExecutionEnabled: booleanValue(
+        pipelineAutomation.autoExecutionEnabled,
+        initialSettings.pipelineAutomation.autoExecutionEnabled,
       ),
       autoValidationEnabled: booleanValue(
         pipelineAutomation.autoValidationEnabled,

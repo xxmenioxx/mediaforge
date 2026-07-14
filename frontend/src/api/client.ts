@@ -15,6 +15,7 @@ import type {
   AdvisorResponse,
   ClaimJobInput,
   ExecuteJobInput,
+  ExecutionPlan,
   JobArtifactsResponse,
   Profile,
   ProfileInput,
@@ -23,6 +24,7 @@ import type {
   QueueJob,
   QueueJobInput,
   QueueJobUpdateInput,
+  RuntimeSnapshot,
   ScanResult,
   SoftwareVersions,
   UpdateLibraryInput,
@@ -143,6 +145,12 @@ export const api = {
       body: JSON.stringify(job),
     }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),
+  executionPlans: (jobId: number) => request<ExecutionPlan[]>(`/api/queue/jobs/${jobId}/execution-plans`),
+  reviewExecutionPlan: ({ jobId, planId, approve }: { jobId: number; planId: number; approve: boolean }) =>
+    request<ExecutionPlan>(`/api/queue/jobs/${jobId}/execution-plans/${planId}/${approve ? 'approve' : 'reject'}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   backfillAnalysisAsIsReports: () =>
     request<AnalysisBackfillResponse>('/api/analysis/backfill-as-is', {
       method: 'POST',
@@ -180,6 +188,8 @@ export const api = {
     }),
   settings: () => request<AppSetting[]>('/api/settings'),
   softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
+  runtimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime'),
+  refreshRuntimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime/refresh', { method: 'POST', body: JSON.stringify({}) }),
   updateSetting: ({ key, value }: UpdateSettingInput) =>
     request<AppSetting>(`/api/settings/${key}`, {
       method: 'POST',

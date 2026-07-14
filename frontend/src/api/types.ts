@@ -106,6 +106,7 @@ export type AssetMetadataState = {
 };
 
 export type AssetConversionOverrideState = {
+  trackProfileKey?: string;
   keepVideoStreams?: number[] | null;
   keepAudioStreams?: number[] | null;
   keepSubtitleStreams?: number[] | null;
@@ -212,6 +213,15 @@ export type Profile = {
   description: string;
   container: string;
   videoCodec: string;
+  codecFamily: string;
+  encoderPolicy: 'locked' | 'restricted' | 'automatic';
+  preferredEncoder: string;
+  allowedEncoders: string[];
+  fallbackPolicy: 'wait' | 'allowed_only';
+  bitDepth: number;
+  pixelFormat: string;
+  qualityStrategy: string;
+  profileVersion: number;
   audioCodec: string;
   qualityMode: string;
   qualityValue: number;
@@ -230,6 +240,14 @@ export type ProfileInput = {
   description: string;
   container: string;
   videoCodec: string;
+  codecFamily?: string;
+  encoderPolicy?: 'locked' | 'restricted' | 'automatic';
+  preferredEncoder?: string;
+  allowedEncoders?: string[];
+  fallbackPolicy?: 'wait' | 'allowed_only';
+  bitDepth?: number;
+  pixelFormat?: string;
+  qualityStrategy?: string;
   audioCodec: string;
   qualityMode: string;
   qualityValue: number;
@@ -274,6 +292,25 @@ export type SoftwareVersions = {
   components: SoftwareComponent[];
 };
 
+export type RuntimeSnapshot = {
+  id: number;
+  detectedAt: string;
+  os: string;
+  architecture: string;
+  container: boolean;
+  cpuCores: number;
+  totalMemoryBytes: number;
+  availableMemoryBytes: number;
+  batteryPresent: boolean;
+  disks: Record<string, unknown>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string }>;
+  recommendedProfile: string;
+  selectedProfile: string;
+  selectionReasons: unknown[];
+  warnings: unknown[];
+  createdAt: string;
+};
+
 export type QueueJob = {
   id: number;
   batchId: string;
@@ -281,6 +318,10 @@ export type QueueJob = {
   mediaPath: string;
   libraryId: number;
   profileId: number;
+  profileVersion: number;
+  profileSnapshot: Record<string, unknown>;
+  profileCapturedAt?: string;
+  activeExecutionPlanId?: number;
   audioProfileKey: string;
   priority: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
@@ -296,6 +337,43 @@ export type QueueJob = {
   publishedAt?: string;
   startedAt?: string;
   finishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExecutionPlan = {
+  id: number;
+  jobId: number;
+  version: number;
+  status: 'pending_evaluation' | 'ready' | 'waiting' | 'dispatched' | 'superseded';
+  profileVersion: number;
+  constraints: Record<string, unknown>;
+  codecFamily: string;
+  selectedEncoder: string;
+  bitDepth: number;
+  pixelFormat: string;
+  qualityMode: string;
+  qualityValue: number;
+  runtimeProfile: string;
+  runtimeSnapshotId?: number;
+  workspaceMode: string;
+  waitingState: string;
+  decisionReasons: unknown[];
+  decisionSources: Record<string, unknown>;
+  warnings: unknown[];
+  reservation: Record<string, unknown>;
+  evaluation: Record<string, unknown>;
+  outputPath: string;
+  inputSizeBytes: number;
+  estimatedOutputMinBytes: number;
+  estimatedOutputMaxBytes: number;
+  estimatedWorkspaceBytes: number;
+  estimateConfidence: string;
+  approvalStatus: 'pending' | 'auto_approved' | 'manually_approved' | 'rejected' | '';
+  approvalMode: 'manual' | 'automatic' | 'conditional' | '';
+  approvedAt?: string;
+  rejectedAt?: string;
+  supersededAt?: string;
   createdAt: string;
   updatedAt: string;
 };

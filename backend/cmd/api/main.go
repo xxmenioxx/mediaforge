@@ -7,6 +7,8 @@ import (
 	"github.com/anuelvs/mediaforge/backend/internal/database"
 	"github.com/anuelvs/mediaforge/backend/internal/handlers"
 	"github.com/anuelvs/mediaforge/backend/internal/routes"
+	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 )
 
 func main() {
@@ -25,8 +27,14 @@ func main() {
 		log.Fatalf("seed database: %v", err)
 	}
 
+	if _, err := runtimeinfo.DetectAndSave(db); err != nil {
+		log.Printf("detect runtime: %v", err)
+	}
 	router := routes.New(db)
+	runtimeinfo.StartDetector(db)
+	scheduler.StartReviewPlanner(db)
 	handlers.StartAutoWorker(db)
+	handlers.StartAutoPublisher(db)
 	handlers.StartAssetInventorySyncer(db)
 
 	if err := router.Run(cfg.Address()); err != nil {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"sync"
 
+	"github.com/anuelvs/mediaforge/backend/internal/capabilities"
 	"github.com/anuelvs/mediaforge/backend/internal/models"
 )
 
@@ -81,12 +81,6 @@ func (p AudioFilterProcessor) Validate() error {
 
 type FFmpegCommandBuilder struct{}
 
-var encoderAvailability = struct {
-	sync.Mutex
-	checked bool
-	values  map[string]bool
-}{values: map[string]bool{}}
-
 func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	args := []string{"-hide_banner"}
 	if plan.Overwrite {
@@ -98,11 +92,12 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	args = append(args, "-i", plan.InputPath)
 	selectedAudioStreams := selectedAudioStreams(plan.Streams.Audio, plan.Override)
 	addAACStereoDefault := profileWorkerBool(plan.Profile, "addAacStereoDefault", false)
+	needsAACCompatibility := addAACStereoDefault && !hasSingleAACStereoStream(selectedAudioStreams)
 	preserveOriginalAudio := profileWorkerBool(plan.Profile, "preserveOriginalAudio", true)
 	mappedAudioStreams := selectedAudioStreams
 	if planHasStreamSelection(plan.Override) {
 		args = appendSelectedStreamMaps(args, plan)
-	} else if addAACStereoDefault && !preserveOriginalAudio {
+	} else if needsAACCompatibility && !preserveOriginalAudio {
 		args = appendNonAudioStreamMaps(args, plan)
 		mappedAudioStreams = []MediaAudioStream{}
 	} else {
@@ -115,7 +110,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		enhancedAudioIndex = len(mappedAudioStreams)
 		enhancedSourceIndex := enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)
 		args = append(args, "-map", fmt.Sprintf("0:%d", enhancedSourceIndex))
-	} else if addAACStereoDefault && len(plan.Streams.Audio) > 0 {
+	} else if needsAACCompatibility && len(selectedAudioStreams) > 0 {
 		aacStereoIndex = len(mappedAudioStreams)
 		args = append(args, "-map", fmt.Sprintf("0:%d", enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)))
 	}
@@ -203,6 +198,10 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	args = append(args, plan.OutputPath)
 	return args
+}
+
+func hasSingleAACStereoStream(streams []MediaAudioStream) bool {
+	return len(streams) == 1 && strings.EqualFold(strings.TrimSpace(streams[0].Codec), "aac") && streams[0].Channels == 2
 }
 
 func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profile, audioProfile *audioEnhancementProfile, overwrite bool) (MediaJobPlan, error) {
@@ -456,9 +455,19 @@ func videoCodecArgs(profile models.Profile) []string {
 		case "hevc_nvenc":
 			args = append(args, "-cq", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
 		case "hevc_videotoolbox":
-			args = append(args, "-q:v", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
+			bitrate := workerIntValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
+			maxrate := workerIntValue(profile.WorkerConfig["videoToolboxMaxrateMbps"], max(bitrate+1, bitrate*4/3))
+			buffer := workerIntValue(profile.WorkerConfig["videoToolboxBufferMbps"], bitrate*2)
+			args = append(args, "-b:v", fmt.Sprintf("%dM", bitrate), "-maxrate", fmt.Sprintf("%dM", maxrate), "-bufsize", fmt.Sprintf("%dM", buffer))
 		case "hevc_amf":
 			args = append(args, "-qp_i", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
+		}
+	}
+	if encoder == "hevc_videotoolbox" {
+		if profileUsesTenBit(profile) {
+			args = append(args, "-profile:v", "main10", "-pix_fmt", "p010le")
+		} else {
+			args = append(args, "-profile:v", "main", "-pix_fmt", "yuv420p")
 		}
 	}
 	if isTenBitVideoCodec(profile.VideoCodec) && encoder == "libx265" {
@@ -500,15 +509,16 @@ func videoWorkerArgs(profile models.Profile) []string {
 	}
 
 	args := []string{}
+	encoder := resolvedVideoEncoder(profile)
 	if filters := workerStringValue(profile.WorkerConfig["videoFilters"]); filters != "" {
 		args = append(args, "-vf", filters)
 	}
-	if preset := workerStringValue(profile.WorkerConfig["videoPreset"]); preset != "" {
+	if preset := workerStringValue(profile.WorkerConfig["videoPreset"]); preset != "" && encoder != "hevc_videotoolbox" {
 		args = append(args, "-preset", preset)
 	} else if preset := workerStringValue(profile.WorkerConfig["preset"]); preset != "" && preset != "profile-lab" {
 		args = append(args, "-preset", preset)
 	}
-	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" {
+	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && encoder != "hevc_videotoolbox" {
 		args = append(args, "-pix_fmt", pixFmt)
 	}
 	if params := workerStringValue(profile.WorkerConfig["x265Params"]); params != "" && resolvedVideoEncoder(profile) == "libx265" {
@@ -518,23 +528,26 @@ func videoWorkerArgs(profile models.Profile) []string {
 }
 
 func ffmpegEncoderAvailable(encoder string) bool {
-	encoder = strings.TrimSpace(encoder)
-	if encoder == "" {
-		return false
+	return capabilities.CheckEncoder(encoder).Usable
+}
+
+func profileUsesTenBit(profile models.Profile) bool {
+	if profile.BitDepth >= 10 || isTenBitVideoCodec(profile.VideoCodec) {
+		return true
 	}
-	encoderAvailability.Lock()
-	defer encoderAvailability.Unlock()
-	if !encoderAvailability.checked {
-		encoderAvailability.checked = true
-		output, err := exec.Command("ffmpeg", "-hide_banner", "-encoders").CombinedOutput()
-		if err == nil {
-			text := string(output)
-			for _, candidate := range []string{"hevc_qsv", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"} {
-				encoderAvailability.values[candidate] = strings.Contains(text, candidate)
-			}
-		}
+	pixelFormat := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["pixFmt"])))
+	return strings.Contains(pixelFormat, "10") || strings.Contains(pixelFormat, "p010")
+}
+
+func defaultVideoToolboxBitrateMbps(quality int) int {
+	switch {
+	case quality > 0 && quality <= 18:
+		return 8
+	case quality >= 25:
+		return 4
+	default:
+		return 6
 	}
-	return encoderAvailability.values[encoder]
 }
 
 func isHardwareVideoEncoder(encoder string) bool {

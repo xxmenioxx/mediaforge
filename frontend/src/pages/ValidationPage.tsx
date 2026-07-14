@@ -10,11 +10,14 @@ import {
   DialogTitle,
   LinearProgress,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
+  TablePagination,
   TableRow,
+  Tabs,
   Typography,
 } from '@mui/material';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
@@ -29,13 +32,22 @@ export function ValidationPage() {
   const queryClient = useQueryClient();
   const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
   const [detailsJob, setDetailsJob] = useState<QueueJob | null>(null);
+  const [validationView, setValidationView] = useState<'pending' | 'validated'>('pending');
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
   const validateJob = useMutation({
     mutationFn: api.validateJob,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
-  const completedJobs = (jobs.data ?? []).filter((job) => job.status === 'completed');
+  const completedJobs = (jobs.data ?? [])
+    .filter((job) => job.status === 'completed' && !job.publishedAt)
+    .sort((left, right) => validationEntryTime(right).localeCompare(validationEntryTime(left)));
+  const pendingJobs = completedJobs.filter((job) => !job.validationStatus || job.validationStatus === 'pending');
+  const validatedJobs = completedJobs.filter((job) => Boolean(job.validationStatus && job.validationStatus !== 'pending'));
+  const visibleJobs = validationView === 'pending' ? pendingJobs : validatedJobs;
+  const pagedJobs = visibleJobs.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
   return (
     <>
@@ -50,60 +62,94 @@ export function ValidationPage() {
 
         <Card>
           <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
-            <Table sx={{ tableLayout: 'fixed' }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Job</TableCell>
-                  <TableCell>Output</TableCell>
-                  <TableCell>Validation</TableCell>
-                  <TableCell>Score</TableCell>
-                  <TableCell align="right">Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {completedJobs.map((job) => (
-                  <TableRow key={job.id} hover>
-                    <TableCell>
-                      <Stack spacing={0.5}>
-                        <Typography fontWeight={700}>{fileNameFromPath(job.mediaPath)}</Typography>
-                        <Typography color="text.secondary" variant="body2">
-                          Job #{job.id}
-                        </Typography>
-                      </Stack>
-                    </TableCell>
-                    <TableCell sx={{ wordBreak: 'break-all' }}>{job.outputPath || 'No output path recorded'}</TableCell>
-                    <TableCell>
-                      <ValidationChip job={job} />
-                    </TableCell>
-                    <TableCell>
-                      <Stack spacing={0.6}>
-                        <Typography>{job.validationScore || 0}/100</Typography>
-                        <LinearProgress variant="determinate" value={job.validationScore || 0} />
-                      </Stack>
-                    </TableCell>
-                  <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button
-                          startIcon={<InfoOutlinedIcon />}
-                          variant="outlined"
-                          onClick={() => setDetailsJob(job)}
-                        >
-                          Score
-                        </Button>
-                        <Button
-                          startIcon={<FactCheckIcon />}
-                          variant="contained"
-                          onClick={() => validateJob.mutate(job.id)}
-                          disabled={validateJob.isPending}
-                        >
-                          Run Checks
-                        </Button>
-                      </Stack>
-                    </TableCell>
+            <Tabs
+              value={validationView}
+              onChange={(_, value) => {
+                setValidationView(value);
+                setPage(0);
+              }}
+              sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}
+            >
+              <Tab label={`Pending validation (${pendingJobs.length})`} value="pending" />
+              <Tab label={`Validated (${validatedJobs.length})`} value="validated" />
+            </Tabs>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table sx={{ minWidth: 1120, tableLayout: 'fixed' }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ width: 190 }}>Asset</TableCell>
+                    <TableCell sx={{ width: 250 }}>Output</TableCell>
+                    <TableCell sx={{ width: 155 }}>Entered validation</TableCell>
+                    <TableCell sx={{ width: 155 }}>Validated at</TableCell>
+                    <TableCell sx={{ width: 120 }}>Validation</TableCell>
+                    <TableCell sx={{ width: 120 }}>Score</TableCell>
+                    <TableCell align="right" sx={{ width: 230 }}>Actions</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {pagedJobs.map((job) => (
+                    <TableRow key={job.id} hover>
+                      <TableCell>
+                        <Stack spacing={0.5}>
+                          <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>{fileNameFromPath(job.mediaPath)}</Typography>
+                          <Typography color="text.secondary" variant="body2">
+                            Job #{job.id}
+                          </Typography>
+                        </Stack>
+                      </TableCell>
+                      <TableCell sx={{ wordBreak: 'break-all' }}>{job.outputPath || 'No output path recorded'}</TableCell>
+                      <TableCell>{formatValidationDate(validationEntryTime(job))}</TableCell>
+                      <TableCell>{formatValidationDate(validationDate(job))}</TableCell>
+                      <TableCell>
+                        <ValidationChip job={job} />
+                      </TableCell>
+                      <TableCell>
+                        <Stack spacing={0.6}>
+                          <Typography>{job.validationScore || 0}/100</Typography>
+                          <LinearProgress variant="determinate" value={job.validationScore || 0} />
+                        </Stack>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button startIcon={<InfoOutlinedIcon />} variant="outlined" onClick={() => setDetailsJob(job)}>
+                            Score
+                          </Button>
+                          <Button
+                            startIcon={<FactCheckIcon />}
+                            variant="contained"
+                            onClick={() => validateJob.mutate(job.id)}
+                            disabled={validateJob.isPending || Boolean(job.publishedAt)}
+                          >
+                            {job.publishedAt ? 'Published' : job.validationStatus && job.validationStatus !== 'pending' ? 'Run Again' : 'Run Checks'}
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {pagedJobs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7}>
+                        <Alert severity="info">
+                          {validationView === 'pending' ? 'No assets are waiting for validation.' : 'No assets have been validated yet.'}
+                        </Alert>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </Box>
+            <TablePagination
+              component="div"
+              count={visibleJobs.length}
+              page={Math.min(page, Math.max(0, Math.ceil(visibleJobs.length / rowsPerPage) - 1))}
+              rowsPerPage={rowsPerPage}
+              rowsPerPageOptions={[10, 25, 50, 100]}
+              onPageChange={(_, nextPage) => setPage(nextPage)}
+              onRowsPerPageChange={(event) => {
+                setRowsPerPage(Number(event.target.value));
+                setPage(0);
+              }}
+            />
           </CardContent>
         </Card>
         {!jobs.isLoading && completedJobs.length === 0 ? (
@@ -130,6 +176,23 @@ function ValidationChip({ job }: { job: QueueJob }) {
 
 function fileNameFromPath(path: string) {
   return path.split('/').filter(Boolean).pop() ?? path;
+}
+
+function validationEntryTime(job: QueueJob) {
+  return job.finishedAt || job.createdAt;
+}
+
+function validationDate(job: QueueJob) {
+  const value = job.validationReport?.validatedAt;
+  return typeof value === 'string' ? value : '';
+}
+
+function formatValidationDate(value: string) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) {
+    return 'Not yet';
+  }
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 function ValidationScoreDetails({ job }: { job: QueueJob }) {

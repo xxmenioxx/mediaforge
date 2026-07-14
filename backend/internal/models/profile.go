@@ -12,6 +12,15 @@ type Profile struct {
 	Description       string         `json:"description"`
 	Container         string         `json:"container" gorm:"not null"`
 	VideoCodec        string         `json:"videoCodec" gorm:"not null"`
+	CodecFamily       string         `json:"codecFamily" gorm:"not null;default:''"`
+	EncoderPolicy     string         `json:"encoderPolicy" gorm:"not null;default:''"`
+	PreferredEncoder  string         `json:"preferredEncoder" gorm:"not null;default:''"`
+	AllowedEncoders   StringList     `json:"allowedEncoders" gorm:"type:json"`
+	FallbackPolicy    string         `json:"fallbackPolicy" gorm:"not null;default:''"`
+	BitDepth          int            `json:"bitDepth" gorm:"not null;default:0"`
+	PixelFormat       string         `json:"pixelFormat" gorm:"not null;default:''"`
+	QualityStrategy   string         `json:"qualityStrategy" gorm:"not null;default:''"`
+	ProfileVersion    int            `json:"profileVersion" gorm:"not null;default:1"`
 	AudioCodec        string         `json:"audioCodec" gorm:"not null"`
 	QualityMode       string         `json:"qualityMode" gorm:"not null"`
 	QualityValue      int            `json:"qualityValue" gorm:"not null"`

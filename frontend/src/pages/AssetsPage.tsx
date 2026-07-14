@@ -48,9 +48,11 @@ import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, Library, MediaStreamInfo, Profile, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
+import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'converted' | 'archive' | 'reports'>('unprocessed');
+  const [assetQuery, setAssetQuery] = useState('');
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
@@ -64,6 +66,7 @@ export function AssetsPage() {
     },
   });
   const audioProfiles = getAudioProfiles(settings.data);
+  const trackProfiles = getTrackProfiles(settings.data);
   const assetCategories = getAssetCategories(settings.data);
   const unprocessedCount = safeArray(assets.data?.unprocessed).length;
   const convertedCount = safeArray(assets.data?.converted).length;
@@ -71,6 +74,7 @@ export function AssetsPage() {
   const currentGroups = safeArray(
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
+  const filteredGroups = filterAssetGroups(currentGroups, assetQuery);
 
   return (
     <>
@@ -83,29 +87,62 @@ export function AssetsPage() {
         {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
 
         <Card>
-          <CardContent sx={{ pb: 0 }}>
+          <CardContent sx={{ py: 1.25 }}>
             <Stack
-              direction={{ xs: 'column', sm: 'row' }}
-              alignItems={{ xs: 'stretch', sm: 'center' }}
+              direction={{ xs: 'column', lg: 'row' }}
+              alignItems={{ xs: 'stretch', lg: 'flex-start' }}
               justifyContent="space-between"
-              spacing={1}
-              sx={{ borderBottom: 1, borderColor: 'divider' }}
+              spacing={1.5}
             >
-              <Tabs value={tab} onChange={(_, value) => setTab(value)}>
+              <Tabs
+                value={tab}
+                onChange={(_, value) => {
+                  setTab(value);
+                  setAssetQuery('');
+                }}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{ minHeight: 48, flexShrink: 0 }}
+              >
                 <Tab label={<AssetTabLabel label="Unprocessed" count={unprocessedCount} color="warning" />} value="unprocessed" />
                 <Tab label={<AssetTabLabel label="Converted" count={convertedCount} color="success" />} value="converted" />
                 <Tab label={<AssetTabLabel label="Archive" count={archiveCount} color="default" />} value="archive" />
                 <Tab label="Reports" value="reports" />
               </Tabs>
-              <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ mb: 1 }}>
-                Sync
-              </Button>
+              <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
+                  <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
+                  <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
+                    Sync
+                  </Button>
+                  {tab !== 'reports' ? (
+                    <TextField
+                      value={assetQuery}
+                      onChange={(event) => setAssetQuery(event.target.value)}
+                      placeholder="Search path, file, library, status"
+                      size="small"
+                      sx={{ width: { xs: '100%', sm: 330 } }}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  ) : null}
+                </Stack>
+                {tab !== 'reports' ? (
+                  <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
+                    <Chip label={`${filteredGroups.length}/${currentGroups.length} groups`} size="small" />
+                    <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
+                    <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
+                    {assets.data?.sync?.missingFiles ? <Chip label={`${assets.data.sync.missingFiles} missing`} color="warning" size="small" /> : null}
+                  </Stack>
+                ) : null}
+              </Stack>
             </Stack>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ py: 1 }}>
-              <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
-              {assets.data?.sync?.missingFiles ? <Chip label={`${assets.data.sync.missingFiles} missing physical files`} color="warning" size="small" /> : null}
-              {syncAssets.isSuccess ? <Chip label="Inventory synced" color="success" size="small" /> : null}
-            </Stack>
+            {syncAssets.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Inventory synced.</Alert> : null}
           </CardContent>
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
           {tab === 'reports' ? (
@@ -118,10 +155,12 @@ export function AssetsPage() {
                 libraries={libraries.data ?? []}
                 profiles={profiles.data ?? []}
                 audioProfiles={audioProfiles}
+                trackProfiles={trackProfiles}
                 settings={settings.data ?? []}
                 assetCategories={assetCategories}
                 queueJobs={jobs.data ?? []}
                 mode={tab}
+                query={assetQuery}
                 emptyLabel={
                   tab === 'archive'
                     ? 'No archived originals found in the inventory.'
@@ -237,24 +276,27 @@ function AssetTable({
   libraries,
   profiles,
   audioProfiles,
+  trackProfiles,
   settings,
   assetCategories,
   queueJobs,
   mode,
+  query,
   emptyLabel,
 }: {
   groups: AssetGroup[];
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
   mode: 'unprocessed' | 'converted' | 'archive';
+  query: string;
   emptyLabel: string;
 }) {
   const visibleGroups = safeArray(groups);
-  const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const filteredGroups = filterAssetGroups(visibleGroups, query);
@@ -274,29 +316,6 @@ function AssetTable({
 
   return (
     <>
-      <CardContent sx={{ py: 1.25 }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
-          <TextField
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search path, file, library, status"
-            size="small"
-            sx={{ maxWidth: { md: 420 } }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" />
-                </InputAdornment>
-              ),
-            }}
-          />
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip label={`${filteredGroups.length}/${visibleGroups.length} groups`} size="small" />
-            <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
-            <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
-          </Stack>
-        </Stack>
-      </CardContent>
       <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
         <Table size="small" sx={{ minWidth: 980, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
           <TableHead>
@@ -320,6 +339,7 @@ function AssetTable({
                   libraries={libraries}
                   profiles={profiles}
                   audioProfiles={audioProfiles}
+                  trackProfiles={trackProfiles}
                   settings={settings}
                   assetCategories={assetCategories}
                   queueJobs={queueJobs}
@@ -357,6 +377,7 @@ function AssetGroupRow({
   libraries,
   profiles,
   audioProfiles,
+  trackProfiles,
   settings,
   assetCategories,
   queueJobs,
@@ -366,6 +387,7 @@ function AssetGroupRow({
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
@@ -376,6 +398,8 @@ function AssetGroupRow({
   const [expanded, setExpanded] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<number>(profiles[0]?.id ?? 0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
+  const pathTrackAssignments = getTrackProfilePathAssignments(settings);
+  const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(pathTrackAssignments[normalizePath(group.path)] ?? '');
   const groupAssets = safeArray(group.assets);
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
@@ -416,10 +440,21 @@ function AssetGroupRow({
 
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-
-      return Promise.all(
-        groupAssets.map((asset) =>
-          api.createQueueJob({
+	  const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
+	  const validations = trackProfile ? await Promise.all(groupAssets.map(async (asset) => ({ asset, result: validateTrackProfile(trackProfile, await api.scan({ path: asset.path, force: false })) }))) : groupAssets.map((asset) => ({ asset, result: { applies: true, reasons: [] as string[] } }));
+	  const incompatible = validations.filter(({ result }) => !result.applies);
+	  if (trackProfile?.validationMode === 'block' && incompatible.length) {
+	    throw new Error(`Track profile blocked this path: ${incompatible.map(({ asset, result }) => `${asset.fileName}: ${result.reasons.join(', ')}`).join(' · ')}`);
+	  }
+	  if (trackProfile?.validationMode === 'review') {
+	    await Promise.all(incompatible.map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
+	  }
+	  const queueable = validations.filter(({ result }) => result.applies || trackProfile?.validationMode === 'warn');
+	  return Promise.all(queueable.map(async ({ asset, result }) => {
+	    if (trackProfile && result.applies) {
+	      await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(trackProfile), trackProfileKey: trackProfile.key });
+	    }
+	    return api.createQueueJob({
             mediaPath: asset.path,
             batchId,
             batchName,
@@ -427,10 +462,9 @@ function AssetGroupRow({
             profileId: effectiveProfileId,
             audioProfileKey: selectedAudioProfileKey,
             priority: priorityForSize(asset.sizeBytes),
-            notes: queueNotes(`Queued from folder: ${batchName}`, selectedAudioProfileKey),
-          }),
-        ),
-      );
+            notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${trackProfile?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
+          });
+	  }));
     },
     onSuccess: async () => {
       await Promise.all([
@@ -456,6 +490,14 @@ function AssetGroupRow({
       key: 'advisorAutomationPathOverrides',
       value: { disabledPaths: nextDisabledPaths },
     });
+  }
+
+  function selectPathTrackProfile(key: string) {
+	setSelectedTrackProfileKey(key);
+	const assignments = { ...pathTrackAssignments };
+	if (key) assignments[normalizePath(group.path)] = key;
+	else delete assignments[normalizePath(group.path)];
+	updateSetting.mutate({ key: 'trackProfilePathAssignments', value: { assignments } });
   }
 
   return (
@@ -531,7 +573,7 @@ function AssetGroupRow({
                       ? 'Archived originals are protected here. Recovering an original will not delete converted files.'
                       : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
                   </Alert>
-                ) : groupAssets.length > 1 ? (
+                ) : (
                   <Grid container spacing={2} alignItems="stretch">
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AssetCategorySelect
@@ -544,16 +586,19 @@ function AssetGroupRow({
                         label="Category"
                       />
                     </Grid>
-                    <Grid size={{ xs: 12, md: 3 }}>
+                    <Grid size={{ xs: 12, md: 2 }}>
                       <ProfileAutocomplete profiles={profiles} value={effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" />
                     </Grid>
-                    <Grid size={{ xs: 12, md: 3 }}>
+                    <Grid size={{ xs: 12, md: 2 }}>
                       <AudioProfileAutocomplete
                         profiles={audioProfiles}
                         value={selectedAudioProfileKey}
                         onChange={setSelectedAudioProfileKey}
                         label="Audio profile"
                       />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 2 }}>
+                      <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={selectPathTrackProfile} disabled={updateSetting.isPending} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <LibraryAutocomplete libraries={libraries} value={selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" />
@@ -578,7 +623,7 @@ function AssetGroupRow({
                       </Button>
                     </Grid>
                   </Grid>
-                ) : null}
+                )}
                 {!isConfidenceEnabled ? (
                   <Alert severity="warning">
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
@@ -591,7 +636,7 @@ function AssetGroupRow({
                 ) : null}
                 {advisor.isError ? <Alert severity="warning">Could not evaluate this path.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
-                {queueGroup.isError ? <Alert severity="warning">Could not queue this folder.</Alert> : null}
+                {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
                   <Table size="small" sx={{ minWidth: 1240, tableLayout: 'fixed' }}>
                     <TableHead>
@@ -616,6 +661,7 @@ function AssetGroupRow({
                           libraries={libraries}
                           profiles={profiles}
                           audioProfiles={audioProfiles}
+                          pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
                           groupRelativePath={group.relativePath}
                           groupCategory={groupCategory}
@@ -645,6 +691,7 @@ function AssetRow({
   libraries,
   profiles,
   audioProfiles,
+  pathTrackProfile,
   assetCategories,
   groupRelativePath,
   groupCategory,
@@ -660,6 +707,7 @@ function AssetRow({
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
+  pathTrackProfile?: TrackProfile;
   assetCategories: string[];
   groupRelativePath: string;
   groupCategory: string;
@@ -693,7 +741,24 @@ function AssetRow({
     enabled: confidenceEnabled && Boolean(selectedProfileId),
   });
   const createJob = useMutation({
-    mutationFn: api.createQueueJob,
+    mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
+      if (pathTrackProfile) {
+        const result = validateTrackProfile(pathTrackProfile, await api.scan({ path: asset.path, force: false }));
+        if (!result.applies && pathTrackProfile.validationMode === 'review') {
+          await api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] });
+          throw new Error(`Track profile does not apply; asset marked for review: ${result.reasons.join('; ')}`);
+        }
+        if (!result.applies && pathTrackProfile.validationMode === 'block') {
+          throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
+        }
+        if (result.applies) {
+          await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(pathTrackProfile), trackProfileKey: pathTrackProfile.key });
+        } else {
+          input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
+        }
+      }
+      return api.createQueueJob(input);
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
@@ -805,6 +870,7 @@ function AssetRow({
   function saveConversionOverrides() {
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
   }
+
 
   function resetConversionOverrides() {
     const empty: AssetConversionOverrideState = {};
@@ -1002,7 +1068,7 @@ function AssetRow({
       {createJob.isError ? (
         <TableRow>
           <TableCell colSpan={10} sx={{ bgcolor: 'rgba(246,180,75,0.05)' }}>
-            <Alert severity="warning">Could not queue this asset.</Alert>
+            <Alert severity="warning">{createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'}</Alert>
           </TableCell>
         </TableRow>
       ) : null}
@@ -1764,6 +1830,40 @@ function AudioProfileAutocomplete({
   );
 }
 
+function TrackProfileAutocomplete({ profiles, value, onChange, disabled }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean }) {
+  return <Autocomplete options={profiles} value={profiles.find((profile) => profile.key === value) ?? null} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label="Tracks for path" placeholder="No track policy" size="small" helperText="Validated against every asset before queue" />} fullWidth />;
+}
+
+function getTrackProfilePathAssignments(settings: AppSetting[]) {
+  const value = settings.find((setting) => setting.key === 'trackProfilePathAssignments')?.value.assignments;
+  if (!value || typeof value !== 'object') return {} as Record<string, string>;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+}
+
+function validateTrackProfile(profile: TrackProfile, scan: ScanResult) {
+  const reasons: string[] = [];
+  const checkIndexes = (label: string, requested: number[] | undefined, streams: MediaStreamInfo[]) => {
+    if (!requested) return;
+    const available = new Set(streams.map((stream) => stream.index));
+    const missing = requested.filter((index) => !available.has(index));
+    if (missing.length) reasons.push(`${label} streams missing: ${missing.join(', ')}`);
+  };
+  checkIndexes('video', profile.keepVideoStreams, scan.videoStreams);
+  checkIndexes('audio', profile.keepAudioStreams, scan.audioStreams);
+  checkIndexes('subtitle', profile.keepSubtitleStreams, scan.subtitleStreams);
+  if (profile.videoMode === 'require-one' && scan.videoStreams.length !== 1) reasons.push(`requires exactly one video stream; found ${scan.videoStreams.length}`);
+  const languages = (streams: MediaStreamInfo[]) => new Set(streams.map((stream) => stream.language.toLowerCase()).filter(Boolean));
+  if (profile.audioRequired && scan.audioStreams.length === 0) reasons.push('requires an audio stream');
+  if (profile.audioMode === 'languages' && profile.audioRequired && !profile.audioLanguages.some((language) => languages(scan.audioStreams).has(language))) reasons.push(`required audio languages not found: ${profile.audioLanguages.join(', ')}`);
+  if (profile.subtitlesRequired && scan.subtitleStreams.length === 0) reasons.push('requires a subtitle stream');
+  if ((profile.subtitleMode === 'languages' || profile.subtitleMode === 'forced-or-languages') && profile.subtitlesRequired) {
+    const hasLanguage = profile.subtitleLanguages.some((language) => languages(scan.subtitleStreams).has(language));
+    const hasForced = scan.subtitleStreams.some((stream) => stream.forced);
+    if (!hasLanguage && !(profile.subtitleMode === 'forced-or-languages' && hasForced)) reasons.push(`required subtitle languages not found: ${profile.subtitleLanguages.join(', ')}`);
+  }
+  return { applies: reasons.length === 0, reasons };
+}
+
 function LibraryAutocomplete({
   libraries,
   value,
@@ -2083,6 +2183,9 @@ function normalizeAssetConversionOverride(value?: AssetConversionOverrideState):
 
 function cleanConversionOverride(value: AssetConversionOverrideState): AssetConversionOverrideState {
   const clean: AssetConversionOverrideState = {};
+  if (value.trackProfileKey?.trim()) {
+    clean.trackProfileKey = value.trackProfileKey.trim();
+  }
   if (Array.isArray(value.keepVideoStreams)) {
     clean.keepVideoStreams = normalizeNumberList(value.keepVideoStreams);
   }

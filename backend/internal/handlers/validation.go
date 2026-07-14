@@ -46,6 +46,10 @@ func (h ValidationHandler) ValidateJob(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if job.PublishedAt != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "published jobs are immutable and cannot be validated again"})
+		return
+	}
 
 	result := validateQueueJob(job)
 	job.ValidationStatus = result.Status

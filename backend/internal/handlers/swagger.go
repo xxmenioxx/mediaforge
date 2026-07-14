@@ -353,6 +353,18 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/queue/jobs/{id}/execution-plans": gin.H{
+			"get": gin.H{
+				"tags":        []string{"Queue"},
+				"summary":     "List versioned execution plans for a queue job",
+				"operationId": "listExecutionPlans",
+				"parameters":  []gin.H{pathIDParameter()},
+				"responses": gin.H{
+					"200": jsonResponse("Execution plans", gin.H{"type": "array", "items": ref("ExecutionPlan")}),
+					"404": jsonResponse("Job not found", ref("Error")),
+				},
+			},
+		},
 		"/api/validation/jobs/{id}": gin.H{
 			"post": gin.H{
 				"tags":        []string{"Validation"},
@@ -784,6 +796,30 @@ func openAPIComponents() gin.H {
 					"audioProfileKey": gin.H{"type": "string", "example": "dialogue-clarity"},
 					"priority":        gin.H{"type": "integer", "example": 5},
 					"notes":           gin.H{"type": "string", "example": "Manual test job"},
+				},
+			},
+			"ExecutionPlan": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"id":              gin.H{"type": "integer"},
+					"jobId":           gin.H{"type": "integer"},
+					"version":         gin.H{"type": "integer"},
+					"status":          gin.H{"type": "string", "enum": []string{"pending_evaluation", "ready", "waiting", "dispatched", "superseded"}},
+					"profileVersion":  gin.H{"type": "integer"},
+					"constraints":     gin.H{"type": "object", "additionalProperties": true},
+					"codecFamily":     gin.H{"type": "string"},
+					"selectedEncoder": gin.H{"type": "string"},
+					"runtimeProfile":  gin.H{"type": "string"},
+					"workspaceMode":   gin.H{"type": "string"},
+					"waitingState":    gin.H{"type": "string"},
+					"decisionReasons": gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"decisionSources": gin.H{"type": "object", "additionalProperties": true},
+					"warnings":        gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"reservation":     gin.H{"type": "object", "additionalProperties": true},
+					"evaluation":      gin.H{"type": "object", "additionalProperties": true},
+					"supersededAt":    gin.H{"type": "string", "format": "date-time", "nullable": true},
+					"createdAt":       gin.H{"type": "string", "format": "date-time"},
+					"updatedAt":       gin.H{"type": "string", "format": "date-time"},
 				},
 			},
 			"QueueJobUpdateInput": gin.H{

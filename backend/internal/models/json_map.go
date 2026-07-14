@@ -8,6 +8,7 @@ import (
 
 type JSONMap map[string]any
 type JSONList []any
+type StringList []string
 
 func (j JSONMap) Value() (driver.Value, error) {
 	if j == nil {
@@ -77,6 +78,43 @@ func (j *JSONList) Scan(value any) error {
 
 	if len(bytes) == 0 {
 		*j = JSONList{}
+		return nil
+	}
+
+	return json.Unmarshal(bytes, j)
+}
+
+func (j StringList) Value() (driver.Value, error) {
+	if j == nil {
+		return "[]", nil
+	}
+
+	value, err := json.Marshal(j)
+	if err != nil {
+		return nil, err
+	}
+
+	return string(value), nil
+}
+
+func (j *StringList) Scan(value any) error {
+	if value == nil {
+		*j = StringList{}
+		return nil
+	}
+
+	var bytes []byte
+	switch typed := value.(type) {
+	case []byte:
+		bytes = typed
+	case string:
+		bytes = []byte(typed)
+	default:
+		return fmt.Errorf("unsupported StringList type %T", value)
+	}
+
+	if len(bytes) == 0 {
+		*j = StringList{}
 		return nil
 	}
 

@@ -745,7 +745,7 @@ function JobRow({
             Library: {job.libraryId}
           </Typography>
           <Typography color="text.secondary" variant="body2">
-            Profile: {job.profileId}
+            Profile: {job.profileId} · v{job.profileVersion || 1}
           </Typography>
           {job.audioProfileKey ? (
             <Typography color="text.secondary" variant="body2">

@@ -23,7 +23,7 @@ import { PageHeader } from '../components/PageHeader';
 
 export function PublisherPage() {
   const queryClient = useQueryClient();
-  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
+  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs, refetchInterval: 5000 });
   const [overwrite, setOverwrite] = useState(false);
   const publishJob = useMutation({
     mutationFn: api.publishJob,
@@ -32,7 +32,7 @@ export function PublisherPage() {
     },
   });
   const publishableJobs = (jobs.data ?? []).filter(
-    (job) => job.status === 'completed' && (job.validationStatus === 'passed' || job.validationStatus === 'warning'),
+    (job) => !job.publishedAt && job.status === 'completed' && (job.validationStatus === 'passed' || job.validationStatus === 'warning'),
   );
 
   return (

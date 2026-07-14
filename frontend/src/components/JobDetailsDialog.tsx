@@ -1,6 +1,7 @@
 import {
   Alert,
   Box,
+  Button,
   Chip,
   Dialog,
   DialogContent,
@@ -12,7 +13,7 @@ import {
   Tabs,
   Typography,
 } from '@mui/material';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
@@ -23,11 +24,22 @@ type JobDetailsDialogProps = {
 };
 
 export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState(0);
   const artifacts = useQuery({
     queryKey: ['jobArtifacts', job?.id],
     queryFn: () => api.jobArtifacts(job?.id ?? 0),
     enabled: Boolean(job),
+  });
+  const executionPlans = useQuery({
+    queryKey: ['executionPlans', job?.id],
+    queryFn: () => api.executionPlans(job?.id ?? 0),
+    enabled: Boolean(job),
+    refetchInterval: (query) => query.state.data?.some((plan) => plan.status === 'pending_evaluation') ? 2000 : false,
+  });
+  const reviewPlan = useMutation({
+    mutationFn: api.reviewExecutionPlan,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['executionPlans', job?.id] }),
   });
 
   if (!job) {
@@ -40,6 +52,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const outputProbe = objectValue(result, 'outputProbe');
   const resultPayload = objectValue(result, 'result');
   const profile = objectValue(asIs, 'profile');
+  const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
 
   return (
     <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
@@ -66,6 +79,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
           <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable">
             <Tab label="Original snapshot" />
             <Tab label={result ? 'Final result' : 'Planned result'} />
+            <Tab label="Execution plan" />
           </Tabs>
           {tab === 0 ? (
             <Stack spacing={2}>
@@ -89,7 +103,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               <InfoBlock title="Conversion command" value={stringValue(asIs, 'command') || commandFromNotes(job.notes)} />
               <ArtifactBlock title="AS-IS JSON" value={asIs} />
             </Stack>
-          ) : (
+          ) : tab === 1 ? (
             <Stack spacing={2}>
               {!result ? (
                 <Alert severity="info">
@@ -112,11 +126,57 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />
             </Stack>
+          ) : (
+            <Stack spacing={2}>
+              {executionPlans.isLoading ? <Alert severity="info">Loading execution plans...</Alert> : null}
+              {!activePlan && !executionPlans.isLoading ? <Alert severity="info">No execution plan has been generated for this job.</Alert> : null}
+              {activePlan ? (
+                <>
+                  <SummaryGrid
+                    items={[
+                      ['Plan version', `v${activePlan.version}`],
+                      ['Status', activePlan.status],
+                      ['Profile version', `v${activePlan.profileVersion}`],
+                      ['Codec family', activePlan.codecFamily || 'Pending'],
+                      ['Selected encoder', activePlan.selectedEncoder || 'Pending scheduler evaluation'],
+                      ['Estimated output', `${formatBytes(activePlan.estimatedOutputMinBytes)}–${formatBytes(activePlan.estimatedOutputMaxBytes)}`],
+                      ['Workspace needed', formatBytes(activePlan.estimatedWorkspaceBytes)],
+                      ['Estimate confidence', activePlan.estimateConfidence || 'Pending'],
+                      ['Approval', activePlan.approvalStatus || 'Pending'],
+                      ['Quality', `${activePlan.qualityMode.toUpperCase()} ${activePlan.qualityValue}`],
+                      ['Runtime policy', activePlan.runtimeProfile || 'Pending'],
+                      ['Waiting state', activePlan.waitingState || 'None'],
+                      ['Reserved encoder class', planString(activePlan.reservation, 'encoderClass') || 'Pending'],
+                      ['Reserved memory', formatBytes(planNumber(activePlan.reservation, 'memoryBytes'))],
+                      ['Workspace mode', activePlan.workspaceMode || 'Pending'],
+                    ]}
+                  />
+                  <Typography color="text.secondary">Output: {activePlan.outputPath || 'Pending'}</Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button variant="contained" disabled={reviewPlan.isPending || activePlan.status === 'superseded'} onClick={() => reviewPlan.mutate({ jobId: job.id, planId: activePlan.id, approve: true })}>
+                      Approve plan
+                    </Button>
+                    <Button color="error" variant="outlined" disabled={reviewPlan.isPending || activePlan.status === 'superseded'} onClick={() => reviewPlan.mutate({ jobId: job.id, planId: activePlan.id, approve: false })}>
+                      Reject
+                    </Button>
+                  </Stack>
+                  <ArtifactBlock title="Execution Plan JSON" value={activePlan as unknown as Record<string, unknown>} />
+                </>
+              ) : null}
+            </Stack>
           )}
         </Stack>
       </DialogContent>
     </Dialog>
   );
+}
+
+function planString(value: Record<string, unknown>, key: string) {
+  return typeof value?.[key] === 'string' ? value[key] as string : '';
+}
+
+function planNumber(value: Record<string, unknown>, key: string) {
+  return typeof value?.[key] === 'number' ? value[key] as number : 0;
 }
 
 function SummaryGrid({ items }: { items: Array<[string, string]> }) {
@@ -414,6 +474,13 @@ function formatDuration(totalSeconds: number) {
     return `${minutes}m ${seconds}s`;
   }
   return `${seconds}s`;
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return 'Unknown';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
 }
 
 function statusColor(status: QueueJob['status']) {

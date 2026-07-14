@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -139,14 +140,41 @@ func canClaimJob(tx *gorm.DB, limits workerLimits) error {
 
 func nextClaimableJob(tx *gorm.DB, limits workerLimits) (models.QueueJob, error) {
 	var jobs []models.QueueJob
-	if err := tx.Where("status = ?", JobStatusQueued).Order("priority asc, created_at asc").Find(&jobs).Error; err != nil {
+	if err := tx.Model(&models.QueueJob{}).
+		Joins("LEFT JOIN execution_plans ON execution_plans.id = queue_jobs.active_execution_plan_id").
+		Where("queue_jobs.status = ?", JobStatusQueued).
+		Where("queue_jobs.active_execution_plan_id IS NULL OR execution_plans.status = ?", scheduler.ExecutionPlanReady).
+		Order("queue_jobs.priority asc, queue_jobs.created_at asc").
+		Find(&jobs).Error; err != nil {
 		return models.QueueJob{}, err
 	}
 	if len(jobs) == 0 {
 		return models.QueueJob{}, gorm.ErrRecordNotFound
 	}
 
-	return jobs[0], nil
+	for _, job := range jobs {
+		if job.ActiveExecutionPlanID == nil {
+			return job, nil
+		}
+		var plan models.ExecutionPlan
+		if err := tx.First(&plan, *job.ActiveExecutionPlanID).Error; err != nil {
+			return models.QueueJob{}, err
+		}
+		allowed, reasons, err := scheduler.CanDispatch(tx, &plan)
+		if err != nil {
+			return models.QueueJob{}, err
+		}
+		if allowed {
+			return job, nil
+		}
+		plan.Status, plan.WaitingState = scheduler.ExecutionPlanWaiting, "WAITING_RESOURCES"
+		plan.Evaluation["resourceWaitReasons"] = reasons
+		plan.DecisionReasons = append(plan.DecisionReasons, "Dispatch deferred because scheduler resources are unavailable")
+		if err := tx.Save(&plan).Error; err != nil {
+			return models.QueueJob{}, err
+		}
+	}
+	return models.QueueJob{}, gorm.ErrRecordNotFound
 }
 
 func (h WorkerHandler) ClaimNext(c *gin.Context) {
@@ -215,6 +243,11 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 
 		if err := tx.Save(&job).Error; err != nil {
 			return err
+		}
+		if job.ActiveExecutionPlanID != nil {
+			if err := tx.Model(&models.ExecutionPlan{}).Where("id = ?", *job.ActiveExecutionPlanID).Updates(map[string]any{"status": scheduler.ExecutionPlanDispatched, "waiting_state": ""}).Error; err != nil {
+				return err
+			}
 		}
 
 		claimed = job
@@ -319,8 +352,8 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		return
 	}
 
-	var profile models.Profile
-	if err := h.db.First(&profile, job.ProfileID).Error; err != nil {
+	profile, err := h.profileForJob(job)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
 			return
@@ -416,8 +449,8 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	var profile models.Profile
-	if err := h.db.First(&profile, job.ProfileID).Error; err != nil {
+	profile, err := h.profileForJob(job)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return job, http.StatusNotFound, fmt.Errorf("profile not found")
 		}
@@ -487,6 +520,17 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	return job, http.StatusAccepted, nil
+}
+
+func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error) {
+	if len(job.ProfileSnapshot) > 0 {
+		return scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	}
+	var profile models.Profile
+	if err := h.db.First(&profile, job.ProfileID).Error; err != nil {
+		return models.Profile{}, err
+	}
+	return profile, nil
 }
 
 func validJobStatus(status string) bool {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"gorm.io/gorm"
 )
 
@@ -54,6 +55,9 @@ func (w *AutoWorker) tick() {
 		return
 	}
 	if !limits.AutoWorkerEnabled {
+		return
+	}
+	if !scheduler.AutoExecutionEnabled(w.handler.db) {
 		return
 	}
 

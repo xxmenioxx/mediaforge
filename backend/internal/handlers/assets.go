@@ -24,20 +24,20 @@ type AssetHandler struct {
 }
 
 type AssetInventory struct {
-	Unprocessed       []Asset      `json:"unprocessed"`
-	Converted         []Asset      `json:"converted"`
-	Archive           []Asset      `json:"archive"`
-	UnprocessedGroups []AssetGroup `json:"unprocessedGroups"`
-	ConvertedGroups   []AssetGroup `json:"convertedGroups"`
-	ArchiveGroups     []AssetGroup `json:"archiveGroups"`
-	Reports           AssetReports `json:"reports"`
+	Unprocessed       []Asset       `json:"unprocessed"`
+	Converted         []Asset       `json:"converted"`
+	Archive           []Asset       `json:"archive"`
+	UnprocessedGroups []AssetGroup  `json:"unprocessedGroups"`
+	ConvertedGroups   []AssetGroup  `json:"convertedGroups"`
+	ArchiveGroups     []AssetGroup  `json:"archiveGroups"`
+	Reports           AssetReports  `json:"reports"`
 	Sync              AssetSyncInfo `json:"sync"`
 }
 
 type AssetSyncInfo struct {
 	LastSyncedAt time.Time `json:"lastSyncedAt"`
-	TotalRecords int64    `json:"totalRecords"`
-	MissingFiles int64    `json:"missingFiles"`
+	TotalRecords int64     `json:"totalRecords"`
+	MissingFiles int64     `json:"missingFiles"`
 }
 
 type AssetReports struct {
@@ -46,11 +46,11 @@ type AssetReports struct {
 	ArchiveFiles     int   `json:"archiveFiles"`
 	ArchiveBytes     int64 `json:"archiveBytes"`
 	ExpiredArchive   int   `json:"expiredArchive"`
-	MissingFiles      int   `json:"missingFiles"`
+	MissingFiles     int   `json:"missingFiles"`
 }
 
 type AssetSyncResult struct {
-	SyncedAt          time.Time `json:"syncedAt"`
+	SyncedAt         time.Time `json:"syncedAt"`
 	UnprocessedFiles int       `json:"unprocessedFiles"`
 	ConvertedFiles   int       `json:"convertedFiles"`
 	ArchiveFiles     int       `json:"archiveFiles"`
@@ -72,6 +72,7 @@ type AssetMetadataState struct {
 }
 
 type AssetConversionOverrideState struct {
+	TrackProfileKey     string                         `json:"trackProfileKey,omitempty"`
 	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
 	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
 	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
@@ -148,6 +149,7 @@ type AssetMetadataUpdateInput struct {
 }
 
 type AssetConversionUpdateInput struct {
+	TrackProfileKey     string                         `json:"trackProfileKey"`
 	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
 	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
 	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
@@ -260,10 +262,10 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"status": "recovered",
-		"sourcePath": path,
+		"status":        "recovered",
+		"sourcePath":    path,
 		"recoveredPath": destination,
-		"message": "Archive asset recovered. Converted files were not deleted.",
+		"message":       "Archive asset recovered. Converted files were not deleted.",
 	})
 }
 
@@ -302,6 +304,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
 	override := AssetConversionOverrideState{
+		TrackProfileKey:     strings.TrimSpace(input.TrackProfileKey),
 		KeepVideoStreams:    normalizedStreamIndexes(input.KeepVideoStreams),
 		KeepAudioStreams:    normalizedStreamIndexes(input.KeepAudioStreams),
 		KeepSubtitleStreams: normalizedStreamIndexes(input.KeepSubtitleStreams),
@@ -1478,7 +1481,8 @@ func conversionOverrideForPath(path string, overrides map[string]AssetConversion
 }
 
 func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
-	return override.KeepVideoStreams == nil &&
+	return strings.TrimSpace(override.TrackProfileKey) == "" &&
+		override.KeepVideoStreams == nil &&
 		override.KeepAudioStreams == nil &&
 		override.KeepSubtitleStreams == nil &&
 		len(override.VideoMetadata) == 0 &&

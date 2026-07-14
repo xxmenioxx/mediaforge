@@ -116,6 +116,37 @@ func TestFFmpegCommandBuilderUsesSelectedStreamIndexes(t *testing.T) {
 	assertNotContains(t, command, "-map 0:5")
 }
 
+func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", BitDepth: 10, AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+			WorkerConfig: models.JSONMap{
+				"videoEncoder":            "hevc_videotoolbox",
+				"useHardwareIfAvailable":  false,
+				"videoToolboxBitrateMbps": 6,
+				"videoToolboxMaxrateMbps": 8,
+				"videoToolboxBufferMbps":  12,
+				"videoPreset":             "medium",
+				"pixFmt":                  "yuv420p10le",
+			},
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-c:v hevc_videotoolbox")
+	assertContains(t, command, "-b:v 6M")
+	assertContains(t, command, "-maxrate 8M")
+	assertContains(t, command, "-bufsize 12M")
+	assertContains(t, command, "-profile:v main10")
+	assertContains(t, command, "-pix_fmt p010le")
+	assertNotContains(t, command, "-q:v")
+	assertNotContains(t, command, "-global_quality")
+	assertNotContains(t, command, "-pix_fmt yuv420p10le")
+	assertNotContains(t, command, "-preset medium")
+}
+
 func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath:      "/media/raw/episode.mkv",
@@ -154,6 +185,24 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 	assertContains(t, command, "-disposition:a:0 0")
 	assertContains(t, command, "-disposition:a:1 default")
 	assertContains(t, command, "-c:s srt")
+}
+
+func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/episode.mkv", OutputPath: "/media/staging/episode.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 21,
+			WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "addAacStereoDefault": true, "preserveOriginalAudio": true},
+		},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{{Index: 2, Codec: "aac", Channels: 2, ChannelLayout: "stereo", Language: "jpn"}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0")
+	assertNotContains(t, command, "-map 0:2")
+	assertNotContains(t, command, "-c:a:1 aac")
+	assertNotContains(t, command, "AAC Stereo (MediaForge)")
 }
 
 func assertContains(t *testing.T, value string, expected string) {

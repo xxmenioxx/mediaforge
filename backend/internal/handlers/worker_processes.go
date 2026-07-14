@@ -133,12 +133,11 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 		"publisher":  automation.AutoPublisherEnabled,
 	}
 
-	if !automation.AutoAnalysisEnabled {
-		result["stoppedAt"] = "analysis"
-		result["message"] = "Automatic analysis is disabled."
-		return result
+	if automation.AutoAnalysisEnabled {
+		result["analysisStatus"] = "passed"
+	} else {
+		result["analysisStatus"] = "skipped"
 	}
-	result["analysisStatus"] = "passed"
 
 	if review := reviewForPath(job.MediaPath, assetReviewOverrides(h.db)); review.RequiresReview {
 		result["stoppedAt"] = "review"

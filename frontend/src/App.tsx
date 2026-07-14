@@ -16,6 +16,7 @@ import { LogsPage } from './pages/LogsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { VersionsPage } from './pages/VersionsPage';
 import { HistoryPage } from './pages/HistoryPage';
+import { TrackProfilesPage } from './pages/TrackProfilesPage';
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="profile-lab" element={<ProfileLabPage />} />
         <Route path="profiles" element={<ProfilesPage />} />
         <Route path="audio" element={<AudioProfilesPage />} />
+        <Route path="track-profiles" element={<TrackProfilesPage />} />
         <Route path="scanner" element={<ScannerPage />} />
         <Route path="queue" element={<QueuePage />} />
         <Route path="workers" element={<WorkersPage />} />

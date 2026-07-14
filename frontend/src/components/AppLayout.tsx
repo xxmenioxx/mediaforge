@@ -24,6 +24,7 @@ import PublishIcon from '@mui/icons-material/Publish';
 import SettingsIcon from '@mui/icons-material/Settings';
 import ScienceIcon from '@mui/icons-material/Science';
 import TroubleshootIcon from '@mui/icons-material/Troubleshoot';
+import AltRouteIcon from '@mui/icons-material/AltRoute';
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import packageJson from '../../package.json';
@@ -55,6 +56,7 @@ const navSections: NavSection[] = [
       { label: 'Libraries', path: '/libraries', icon: <FolderIcon /> },
       { label: 'Profiles', path: '/profiles', icon: <TuneIcon /> },
       { label: 'Audio', path: '/audio', icon: <GraphicEqIcon /> },
+      { label: 'Tracks', path: '/track-profiles', icon: <AltRouteIcon /> },
     ],
   },
   {

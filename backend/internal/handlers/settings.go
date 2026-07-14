@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -57,6 +58,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	if err := h.db.Save(&setting).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if key == "pipelineAutomation" {
+		if err := h.db.Model(&models.ExecutionPlan{}).
+			Where("status = ? AND waiting_state = ? AND approval_status = ?", scheduler.ExecutionPlanWaiting, "WAITING_REVIEW", scheduler.ApprovalPending).
+			Updates(map[string]any{"status": scheduler.ExecutionPlanPendingEvaluation, "waiting_state": ""}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, setting)

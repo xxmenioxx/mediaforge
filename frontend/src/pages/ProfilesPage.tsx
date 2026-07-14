@@ -44,6 +44,14 @@ const initialProfile: ProfileInput = {
   description: '',
   container: 'mkv',
   videoCodec: 'x265',
+  codecFamily: 'hevc',
+  encoderPolicy: 'locked',
+  preferredEncoder: 'libx265',
+  allowedEncoders: ['libx265'],
+  fallbackPolicy: 'wait',
+  bitDepth: 10,
+  pixelFormat: 'yuv420p10le',
+  qualityStrategy: 'balanced',
   audioCodec: 'copy',
   qualityMode: 'crf',
   qualityValue: 20,
@@ -58,6 +66,9 @@ const initialProfile: ProfileInput = {
     pixFmt: 'yuv420p10le',
     videoEncoder: 'auto',
     useHardwareIfAvailable: false,
+    videoToolboxBitrateMbps: 6,
+    videoToolboxMaxrateMbps: 8,
+    videoToolboxBufferMbps: 12,
     preferredEncoder: 'software',
     addAacStereoDefault: false,
     preserveOriginalAudio: true,
@@ -147,17 +158,19 @@ export function ProfilesPage() {
   });
 
   function updateField<K extends keyof ProfileInput>(field: K, value: ProfileInput[K]) {
-    setProfileForm({ ...form, [field]: value });
+    const next = { ...form, [field]: value };
+    setProfileForm(field === 'videoCodec' || field === 'qualityValue' ? synchronizeAuthoritativeContract(next) : next);
   }
 
   function updateWorkerConfig(key: string, value: unknown) {
-    setProfileForm({
+    const next = {
       ...form,
       workerConfig: {
         ...form.workerConfig,
         [key]: value,
       },
-    });
+    };
+    setProfileForm(['videoEncoder', 'useHardwareIfAvailable', 'pixFmt'].includes(key) ? synchronizeAuthoritativeContract(next) : next);
   }
 
   function updateX265Param(key: string, value: string) {
@@ -358,11 +371,11 @@ export function ProfilesPage() {
       },
     };
 
-    setProfileForm({ ...form, ...presets[preset] });
+    setProfileForm(synchronizeAuthoritativeContract({ ...form, ...presets[preset] }));
   }
 
   function applyQualityOption(option: typeof qualityOptions[number]) {
-    setProfileForm({
+    setProfileForm(synchronizeAuthoritativeContract({
       ...form,
       qualityMode: 'crf',
       qualityValue: option.crf,
@@ -371,7 +384,7 @@ export function ProfilesPage() {
         ...form.workerConfig,
         videoPreset: option.preset,
       },
-    });
+    }));
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -408,6 +421,14 @@ export function ProfilesPage() {
       description: profile.description,
       container: profile.container,
       videoCodec: profile.videoCodec,
+      codecFamily: profile.codecFamily,
+      encoderPolicy: profile.encoderPolicy,
+      preferredEncoder: profile.preferredEncoder,
+      allowedEncoders: profile.allowedEncoders,
+      fallbackPolicy: profile.fallbackPolicy,
+      bitDepth: profile.bitDepth,
+      pixelFormat: profile.pixelFormat,
+      qualityStrategy: profile.qualityStrategy,
       audioCodec: profile.audioCodec,
       qualityMode: profile.qualityMode,
       qualityValue: profile.qualityValue,
@@ -424,6 +445,14 @@ export function ProfilesPage() {
           description: profile.description,
           container: profile.container,
           videoCodec: profile.videoCodec,
+          codecFamily: profile.codecFamily,
+          encoderPolicy: profile.encoderPolicy,
+          preferredEncoder: profile.preferredEncoder,
+          allowedEncoders: profile.allowedEncoders,
+          fallbackPolicy: profile.fallbackPolicy,
+          bitDepth: profile.bitDepth,
+          pixelFormat: profile.pixelFormat,
+          qualityStrategy: profile.qualityStrategy,
           audioCodec: profile.audioCodec,
           qualityMode: profile.qualityMode,
           qualityValue: profile.qualityValue,
@@ -680,13 +709,26 @@ export function ProfilesPage() {
                             label="Hardware quality"
                             value={workerConfigNumber(form, 'globalQuality', form.qualityValue || 25)}
                             onChange={(event) => updateWorkerConfig('globalQuality', Number(event.target.value))}
-                            helperText="Used by QSV/NVENC/VideoToolbox/AMF. Lower keeps more detail."
+                            helperText="Used by QSV, NVENC, and AMF. VideoToolbox uses the bitrate controls below."
                             type="number"
                             inputProps={{ min: 15, max: 35 }}
-                            disabled={form.videoCodec === 'copy'}
+                            disabled={form.videoCodec === 'copy' || workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
                             fullWidth
                           />
                         </Grid>
+                        {workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
+                          <>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
+                            </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxMaxrateMbps', 8)} onChange={(event) => updateWorkerConfig('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} fullWidth />
+                            </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 12)} onChange={(event) => updateWorkerConfig('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} fullWidth />
+                            </Grid>
+                          </>
+                        ) : null}
                         <Grid size={{ xs: 12, md: 4 }}>
                           <FormControlLabel
                             control={
@@ -1006,7 +1048,8 @@ export function ProfilesPage() {
                     <TableCell>
                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                         <Chip label={profile.container.toUpperCase()} size="small" />
-                        <Chip label={profile.videoCodec} size="small" color="primary" />
+                        <Chip label={profile.codecFamily || profile.videoCodec} size="small" color="primary" />
+                        <Chip label={`${profile.preferredEncoder || 'legacy'} · ${profile.encoderPolicy || 'unresolved'}`} size="small" variant="outlined" />
                         <Chip label={profile.audioCodec} size="small" color="secondary" />
                       </Stack>
                     </TableCell>
@@ -1126,6 +1169,90 @@ function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
+function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
+  const codecFamily = codecFamilyFor(profile.videoCodec);
+  const qualityStrategy = profile.qualityValue > 0 && profile.qualityValue <= 18
+    ? 'high'
+    : profile.qualityValue >= 25
+      ? 'small_size'
+      : 'balanced';
+  if (codecFamily === 'copy') {
+    return {
+      ...profile,
+      codecFamily,
+      encoderPolicy: 'locked',
+      preferredEncoder: 'copy',
+      allowedEncoders: ['copy'],
+      fallbackPolicy: 'wait',
+      bitDepth: 0,
+      pixelFormat: '',
+      qualityStrategy: 'source',
+    };
+  }
+
+  const configured = workerConfigString(profile, 'videoEncoder', 'auto');
+  const software = codecFamily === 'h264' ? 'libx264' : codecFamily === 'av1' ? 'libsvtav1' : 'libx265';
+  const hardwareAllowed = workerConfigBool(profile, 'useHardwareIfAvailable');
+  const hardware = hardwareEncodersFor(codecFamily);
+  const pixelFormat = workerConfigString(profile, 'pixFmt', profile.pixelFormat || 'yuv420p');
+  const bitDepth = pixelFormat.includes('10') || profile.videoCodec.toLowerCase().includes('10bit') ? 10 : 8;
+
+  if (configured === 'auto' || configured === 'ffmpeg') {
+    return hardwareAllowed
+      ? {
+          ...profile,
+          codecFamily,
+          encoderPolicy: 'automatic',
+          preferredEncoder: hardware[0] || software,
+          allowedEncoders: [...hardware, software],
+          fallbackPolicy: 'allowed_only',
+          bitDepth,
+          pixelFormat,
+          qualityStrategy,
+        }
+      : {
+          ...profile,
+          codecFamily,
+          encoderPolicy: 'locked',
+          preferredEncoder: software,
+          allowedEncoders: [software],
+          fallbackPolicy: 'wait',
+          bitDepth,
+          pixelFormat,
+          qualityStrategy,
+        };
+  }
+
+  const isHardware = hardware.includes(configured);
+  return {
+    ...profile,
+    codecFamily,
+    encoderPolicy: isHardware && hardwareAllowed ? 'restricted' : 'locked',
+    preferredEncoder: configured,
+    allowedEncoders: isHardware && hardwareAllowed ? [configured, software] : [configured],
+    fallbackPolicy: isHardware && hardwareAllowed ? 'allowed_only' : 'wait',
+    bitDepth,
+    pixelFormat,
+    qualityStrategy,
+  };
+}
+
+function codecFamilyFor(videoCodec: string) {
+  const value = videoCodec.toLowerCase();
+  if (value === 'copy') return 'copy';
+  if (value.includes('265') || value.includes('hevc')) return 'hevc';
+  if (value.includes('264') || value === 'h264') return 'h264';
+  if (value.includes('av1')) return 'av1';
+  return value;
+}
+
+function hardwareEncodersFor(codecFamily: string) {
+  if (codecFamily === 'h264') return ['h264_qsv', 'h264_nvenc', 'h264_videotoolbox', 'h264_amf'];
+  if (codecFamily === 'av1') return ['av1_qsv', 'av1_nvenc', 'av1_amf'];
+  if (codecFamily === 'hevc') return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'];
+  return [];
+}
+
 function workerConfigBool(profile: ProfileInput, key: string, fallback = false) {
   const value = profile.workerConfig?.[key];
   if (typeof value === 'boolean') {
@@ -1187,12 +1314,15 @@ function buildDryRunCommand(profile: ProfileInput) {
   const encoder = workerConfigString(profile, 'videoEncoder', 'auto');
   const resolvedEncoder = encoder === 'auto' ? (workerConfigBool(profile, 'useHardwareIfAvailable') ? 'auto-hardware' : profile.videoCodec) : encoder;
   const isHardware = ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf', 'auto-hardware'].includes(resolvedEncoder);
+  const isVideoToolbox = resolvedEncoder === 'hevc_videotoolbox';
   const videoArgs = profile.videoCodec === 'copy' ? '-c:v copy' : `-c:v ${resolvedEncoder}`;
   const presetArgs = profile.videoCodec === 'copy' || isHardware ? '' : `-preset ${workerConfigString(profile, 'videoPreset', 'medium')}`;
-  const pixFmtArgs = profile.videoCodec === 'copy' ? '' : `-pix_fmt ${workerConfigString(profile, 'pixFmt', 'yuv420p10le')}`;
+  const pixFmtArgs = profile.videoCodec === 'copy' ? '' : isVideoToolbox ? `-profile:v ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'main10' : 'main'} -pix_fmt ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'p010le' : 'yuv420p'}` : `-pix_fmt ${workerConfigString(profile, 'pixFmt', 'yuv420p10le')}`;
   const tuneArgs = profile.videoCodec === 'copy' || !workerConfigString(profile, 'tune') ? '' : `-tune ${workerConfigString(profile, 'tune')}`;
   const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
-  const hardwareQualityArgs = isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
+  const hardwareQualityArgs = isVideoToolbox
+    ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 6)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 8)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 12)}M`
+    : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
   const aacArgs = workerConfigBool(profile, 'addAacStereoDefault') ? '-map 0:a:0 -c:a:1 aac -ac:a:1 2 -disposition:a:1 default' : '';
   const subtitleArgs = profile.preserveSubtitles ? (workerConfigBool(profile, 'preferSrtSubtitles') ? '-c:s srt' : '-c:s copy') : '-sn';

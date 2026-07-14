@@ -18,17 +18,17 @@ func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	profile := models.Profile{Container: "mkv"}
 	jobs := []models.QueueJob{
 		{
-			MediaPath:  "/media/raw/Ranma 1-2 (1989)/Season 01/title01.mkv",
-			BatchID:    "batch-ranma",
-			BatchName:  "Ranma 1-2 (1989)/Season 01",
-			LibraryID:  1,
+			MediaPath: "/media/raw/Ranma 1-2 (1989)/Season 01/title01.mkv",
+			BatchID:   "batch-ranma",
+			BatchName: "Ranma 1-2 (1989)/Season 01",
+			LibraryID: 1,
 			ProfileID: 1,
 		},
 		{
-			MediaPath:  "/media/raw/Ranma 1-2 (1989)/Season 01/title02.mkv",
-			BatchID:    "batch-ranma",
-			BatchName:  "Ranma 1-2 (1989)/Season 01",
-			LibraryID:  1,
+			MediaPath: "/media/raw/Ranma 1-2 (1989)/Season 01/title02.mkv",
+			BatchID:   "batch-ranma",
+			BatchName: "Ranma 1-2 (1989)/Season 01",
+			LibraryID: 1,
 			ProfileID: 1,
 		},
 	}
@@ -57,10 +57,10 @@ func TestPlannedOutputPathForSingleJobKeepsSourceName(t *testing.T) {
 	}
 	profile := models.Profile{Container: "mkv"}
 	job := models.QueueJob{
-		MediaPath:  "/media/raw/Ranma 1-2 (1989)/Season 01/title01.mkv",
-		BatchID:    "batch-single",
-		BatchName:  "Ranma 1-2 (1989)/Season 01",
-		LibraryID:  1,
+		MediaPath: "/media/raw/Ranma 1-2 (1989)/Season 01/title01.mkv",
+		BatchID:   "batch-single",
+		BatchName: "Ranma 1-2 (1989)/Season 01",
+		LibraryID: 1,
 		ProfileID: 1,
 	}
 	if err := db.Create(&job).Error; err != nil {
@@ -82,10 +82,10 @@ func TestPlannedOutputPathDropsRawSourceBucketForSelectedLibrary(t *testing.T) {
 	}
 	profile := models.Profile{Container: "mkv"}
 	job := models.QueueJob{
-		MediaPath:  "/media/raw/series/Rurouni Kenshin/Trust & Betrayal Act 4.mkv",
-		BatchID:    "batch-kenshin",
-		BatchName:  "series/Rurouni Kenshin",
-		LibraryID:  1,
+		MediaPath: "/media/raw/series/Rurouni Kenshin/Trust & Betrayal Act 4.mkv",
+		BatchID:   "batch-kenshin",
+		BatchName: "series/Rurouni Kenshin",
+		LibraryID: 1,
 		ProfileID: 1,
 	}
 	if err := db.Create(&job).Error; err != nil {
@@ -154,10 +154,10 @@ func TestPlannedOutputPathMovesTaggedExtrasWhenLibraryOptionEnabled(t *testing.T
 	}
 	profile := models.Profile{Container: "mkv"}
 	job := models.QueueJob{
-		MediaPath:  "/media/raw/Movie (1989)/bonus.mkv",
-		BatchID:    "batch-movie",
-		BatchName:  "Movie (1989)",
-		LibraryID:  1,
+		MediaPath: "/media/raw/Movie (1989)/bonus.mkv",
+		BatchID:   "batch-movie",
+		BatchName: "Movie (1989)",
+		LibraryID: 1,
 		ProfileID: 1,
 	}
 	if err := db.Create(&job).Error; err != nil {
@@ -183,7 +183,7 @@ func queueJobTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}); err != nil {
 		t.Fatalf("migrate test models: %v", err)
 	}
 	return db

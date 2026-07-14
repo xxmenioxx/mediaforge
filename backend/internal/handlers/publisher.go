@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -107,22 +109,42 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	}
 
 	var profile models.Profile
-	if err := h.db.First(&profile, job.ProfileID).Error; err != nil {
+	if len(job.ProfileSnapshot) > 0 {
+		var err error
+		profile, err = scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+		if err != nil {
+			return PublishResult{}, err
+		}
+	} else if err := h.db.First(&profile, job.ProfileID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return PublishResult{}, publishError{Status: http.StatusNotFound, Message: "profile not found", Err: err}
 		}
-
 		return PublishResult{}, err
 	}
 
 	destinationPath := plannedOutputPathForJob(h.db, job, library, profile)
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
-		if err := copyPublishedFile(job.OutputPath, destinationPath, overwrite); err != nil {
-			status := http.StatusInternalServerError
-			if os.IsExist(err) {
-				status = http.StatusConflict
+		alreadyPublished := false
+		if !overwrite {
+			if _, err := os.Stat(destinationPath); err == nil {
+				equal, compareErr := filesEqual(job.OutputPath, destinationPath)
+				if compareErr != nil {
+					return PublishResult{}, compareErr
+				}
+				if !equal {
+					return PublishResult{}, publishError{Status: http.StatusConflict, Message: "destination exists with different content"}
+				}
+				alreadyPublished = true
 			}
-			return PublishResult{}, publishError{Status: status, Err: err}
+		}
+		if !alreadyPublished {
+			if err := copyPublishedFile(job.OutputPath, destinationPath, overwrite); err != nil {
+				status := http.StatusInternalServerError
+				if os.IsExist(err) {
+					status = http.StatusConflict
+				}
+				return PublishResult{}, publishError{Status: status, Err: err}
+			}
 		}
 	} else if !overwrite {
 		if _, err := os.Stat(destinationPath); err != nil {
@@ -130,18 +152,24 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		}
 	}
 
-	now := time.Now()
-	job.PublishedPath = destinationPath
-	job.PublishedAt = &now
 	if archivedPath, err := h.archivePublishedOriginal(job); err != nil {
-		return PublishResult{}, err
+		job.Notes = appendNote(job.Notes, "Original archive failed: "+err.Error())
+		_ = h.db.Save(&job).Error
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "output copied but original could not be archived; publication will be retried", Err: err}
 	} else if archivedPath != "" {
 		job.Notes = appendNote(job.Notes, "Original archived: "+archivedPath)
 	}
 
-	if err := h.db.Save(&job).Error; err != nil {
-		return PublishResult{}, err
+	now := time.Now()
+	job.PublishedPath = destinationPath
+	job.PublishedAt = &now
+	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
+		if err := h.cleanupStagedJob(job); err != nil {
+			job.Notes = appendNote(job.Notes, "Staged output cleanup warning: "+err.Error())
+		}
 	}
+
+	_ = h.db.Save(&job).Error
 
 	return PublishResult{
 		JobID:         job.ID,
@@ -150,6 +178,67 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		PublishedPath: destinationPath,
 		Message:       "Output published to destination library.",
 	}, nil
+}
+
+func filesEqual(leftPath, rightPath string) (bool, error) {
+	leftInfo, err := os.Stat(leftPath)
+	if err != nil {
+		return false, err
+	}
+	rightInfo, err := os.Stat(rightPath)
+	if err != nil {
+		return false, err
+	}
+	if leftInfo.Size() != rightInfo.Size() {
+		return false, nil
+	}
+	leftHash, err := fileSHA256(leftPath)
+	if err != nil {
+		return false, err
+	}
+	rightHash, err := fileSHA256(rightPath)
+	if err != nil {
+		return false, err
+	}
+	return leftHash == rightHash, nil
+}
+
+func fileSHA256(filePath string) ([sha256.Size]byte, error) {
+	var result [sha256.Size]byte
+	file, err := os.Open(filePath)
+	if err != nil {
+		return result, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return result, err
+	}
+	copy(result[:], hash.Sum(nil))
+	return result, nil
+}
+
+func (h PublisherHandler) cleanupStagedJob(job models.QueueJob) error {
+	stagingRoot, err := settingPath(h.db, "stagingPath", "/media/staging")
+	if err != nil {
+		return err
+	}
+	root, err := filepath.Abs(stagingRoot)
+	if err != nil {
+		return err
+	}
+	output, err := filepath.Abs(job.OutputPath)
+	if err != nil {
+		return err
+	}
+	if !isInsideRoot(root, output) {
+		return fmt.Errorf("refusing to remove staged output outside %s", root)
+	}
+	jobRoot := filepath.Join(root, fmt.Sprintf("job-%d", job.ID))
+	if isInsideRoot(jobRoot, output) {
+		return os.RemoveAll(jobRoot)
+	}
+	return fmt.Errorf("output is not inside expected job directory %s", jobRoot)
 }
 
 func copyPublishedFile(source string, destination string, overwrite bool) error {
@@ -256,20 +345,26 @@ func originalsArchivePath(db *gorm.DB) (string, error) {
 		return "", err
 	}
 
-	if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(values["processedOriginalsPath"]))); value != "" {
-		return value, nil
-	}
-
 	pathsSetting := models.AppSetting{}
+	configuredArchiveRoot := ""
 	if err := db.First(&pathsSetting, "key = ?", "paths").Error; err == nil && pathsSetting.Value != nil {
-		if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["originalsArchivePath"]))); value != "" {
-			return value, nil
-		}
+		configuredArchiveRoot = normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["originalsArchivePath"])))
 		if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["trashPath"]))); value != "" {
-			return value, nil
+			configuredArchiveRoot = value
 		}
 	} else if err != nil && err != gorm.ErrRecordNotFound {
 		return "", err
+	}
+
+	if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(values["processedOriginalsPath"]))); value != "" {
+		const legacyRoot = "/media/originals_archive"
+		if configuredArchiveRoot != "" && strings.HasPrefix(value, legacyRoot+"/") && !strings.HasPrefix(configuredArchiveRoot, "/media/") {
+			return filepath.Join(configuredArchiveRoot, strings.TrimPrefix(value, legacyRoot+"/")), nil
+		}
+		return value, nil
+	}
+	if configuredArchiveRoot != "" {
+		return configuredArchiveRoot, nil
 	}
 
 	return "/media/originals_archive", nil

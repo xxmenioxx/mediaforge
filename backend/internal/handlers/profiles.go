@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -18,6 +19,14 @@ type ProfileInput struct {
 	Description       string         `json:"description"`
 	Container         string         `json:"container" binding:"required"`
 	VideoCodec        string         `json:"videoCodec" binding:"required"`
+	CodecFamily       string         `json:"codecFamily"`
+	EncoderPolicy     string         `json:"encoderPolicy"`
+	PreferredEncoder  string         `json:"preferredEncoder"`
+	AllowedEncoders   []string       `json:"allowedEncoders"`
+	FallbackPolicy    string         `json:"fallbackPolicy"`
+	BitDepth          int            `json:"bitDepth"`
+	PixelFormat       string         `json:"pixelFormat"`
+	QualityStrategy   string         `json:"qualityStrategy"`
 	AudioCodec        string         `json:"audioCodec" binding:"required"`
 	QualityMode       string         `json:"qualityMode" binding:"required"`
 	QualityValue      int            `json:"qualityValue" binding:"required"`
@@ -70,6 +79,15 @@ func (h ProfileHandler) Create(c *gin.Context) {
 		Description:       input.Description,
 		Container:         input.Container,
 		VideoCodec:        input.VideoCodec,
+		CodecFamily:       input.CodecFamily,
+		EncoderPolicy:     input.EncoderPolicy,
+		PreferredEncoder:  input.PreferredEncoder,
+		AllowedEncoders:   models.StringList(input.AllowedEncoders),
+		FallbackPolicy:    input.FallbackPolicy,
+		BitDepth:          input.BitDepth,
+		PixelFormat:       input.PixelFormat,
+		QualityStrategy:   input.QualityStrategy,
+		ProfileVersion:    1,
 		AudioCodec:        input.AudioCodec,
 		QualityMode:       input.QualityMode,
 		QualityValue:      input.QualityValue,
@@ -78,6 +96,10 @@ func (h ProfileHandler) Create(c *gin.Context) {
 		PreserveChapters:  input.PreserveChapters,
 		WorkerConfig:      input.WorkerConfig,
 		Disabled:          input.Disabled,
+	}
+	if err := scheduler.ApplyAuthoritativeContract(&profile); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	if err := h.db.Create(&profile).Error; err != nil {
@@ -120,6 +142,14 @@ func (h ProfileHandler) Update(c *gin.Context) {
 	profile.Description = input.Description
 	profile.Container = input.Container
 	profile.VideoCodec = input.VideoCodec
+	profile.CodecFamily = input.CodecFamily
+	profile.EncoderPolicy = input.EncoderPolicy
+	profile.PreferredEncoder = input.PreferredEncoder
+	profile.AllowedEncoders = models.StringList(input.AllowedEncoders)
+	profile.FallbackPolicy = input.FallbackPolicy
+	profile.BitDepth = input.BitDepth
+	profile.PixelFormat = input.PixelFormat
+	profile.QualityStrategy = input.QualityStrategy
 	profile.AudioCodec = input.AudioCodec
 	profile.QualityMode = input.QualityMode
 	profile.QualityValue = input.QualityValue
@@ -128,6 +158,11 @@ func (h ProfileHandler) Update(c *gin.Context) {
 	profile.PreserveChapters = input.PreserveChapters
 	profile.WorkerConfig = input.WorkerConfig
 	profile.Disabled = input.Disabled
+	profile.ProfileVersion = max(profile.ProfileVersion, 1) + 1
+	if err := scheduler.ApplyAuthoritativeContract(&profile); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := h.db.Save(&profile).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

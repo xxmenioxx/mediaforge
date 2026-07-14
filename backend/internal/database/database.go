@@ -3,8 +3,10 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -18,14 +20,99 @@ func Open(path string) (*gorm.DB, error) {
 }
 
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.Library{},
 		&models.Profile{},
 		&models.QueueJob{},
+		&models.ExecutionPlan{},
+		&models.RuntimeSnapshot{},
 		&models.ScanResult{},
 		&models.AssetRecord{},
 		&models.AppSetting{},
-	)
+	); err != nil {
+		return err
+	}
+
+	if err := normalizeProfileContracts(db); err != nil {
+		return err
+	}
+	if err := backfillQueueProfileSnapshots(db); err != nil {
+		return err
+	}
+	return backfillPendingExecutionPlans(db)
+}
+
+func backfillPendingExecutionPlans(db *gorm.DB) error {
+	var jobs []models.QueueJob
+	if err := db.Where("active_execution_plan_id IS NULL").Find(&jobs).Error; err != nil {
+		return err
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		if len(job.ProfileSnapshot) == 0 {
+			continue
+		}
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			_, err := scheduler.CreatePendingExecutionPlan(tx, job, "Execution plan created from migration backfill")
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backfillQueueProfileSnapshots(db *gorm.DB) error {
+	var jobs []models.QueueJob
+	if err := db.Where("profile_snapshot IS NULL OR profile_snapshot = ? OR profile_version <= 0", "{}").Find(&jobs).Error; err != nil {
+		return err
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		var profile models.Profile
+		// Historical jobs may point to a soft-deleted profile. Recover that
+		// contract when possible; Find avoids logging an expected not-found as
+		// a database error when the profile was permanently removed.
+		result := db.Unscoped().Where("id = ?", job.ProfileID).Limit(1).Find(&profile)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			continue
+		}
+		now := time.Now()
+		snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, "migration_backfill")
+		if err != nil {
+			return err
+		}
+		job.ProfileVersion = max(profile.ProfileVersion, 1)
+		job.ProfileSnapshot = snapshot
+		job.ProfileCapturedAt = &now
+		if err := db.Save(job).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeProfileContracts(db *gorm.DB) error {
+	var profiles []models.Profile
+	if err := db.Find(&profiles).Error; err != nil {
+		return err
+	}
+	for i := range profiles {
+		profile := &profiles[i]
+		if profile.CodecFamily != "" && profile.EncoderPolicy != "" && len(profile.AllowedEncoders) > 0 {
+			continue
+		}
+		if err := scheduler.ApplyAuthoritativeContract(profile); err != nil {
+			return err
+		}
+		if err := db.Save(profile).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Seed(db *gorm.DB) error {
@@ -38,7 +125,10 @@ func Seed(db *gorm.DB) error {
 		if err := seedRecommendedProfiles(db); err != nil {
 			return err
 		}
-		return seedSettings(db)
+		if err := seedSettings(db); err != nil {
+			return err
+		}
+		return normalizeProfileContracts(db)
 	}
 
 	profiles := []models.Profile{
@@ -115,7 +205,10 @@ func Seed(db *gorm.DB) error {
 		return err
 	}
 
-	return seedSettings(db)
+	if err := seedSettings(db); err != nil {
+		return err
+	}
+	return normalizeProfileContracts(db)
 }
 
 func seedRecommendedProfiles(db *gorm.DB) error {
@@ -272,8 +365,18 @@ func seedSettings(db *gorm.DB) error {
 			Key: "pipelineAutomation",
 			Value: models.JSONMap{
 				"autoAnalysisEnabled":   false,
+				"reviewMode":            "conditional",
+				"autoExecutionEnabled":  true,
 				"autoValidationEnabled": false,
 				"autoPublisherEnabled":  false,
+			},
+		},
+		{
+			Key: "runtimePolicy",
+			Value: models.JSONMap{
+				"mode":            "automatic",
+				"selectedProfile": "desktop_balanced",
+				"fallbackProfile": "desktop_safe",
 			},
 		},
 		{

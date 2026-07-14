@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -87,8 +89,18 @@ func (h QueueHandler) Create(c *gin.Context) {
 		Status:          "queued",
 		Notes:           input.Notes,
 	}
+	if err := h.captureProfile(&job, input.ProfileID, "queue_create"); err != nil {
+		h.profileCaptureError(c, err)
+		return
+	}
 
-	if err := h.db.Create(&job).Error; err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&job).Error; err != nil {
+			return err
+		}
+		_, err := scheduler.CreatePendingExecutionPlan(tx, &job, "Execution plan created from queued profile snapshot")
+		return err
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -147,7 +159,10 @@ func (h QueueHandler) Update(c *gin.Context) {
 		job.LibraryID = *input.LibraryID
 	}
 	if input.ProfileID != nil {
-		job.ProfileID = *input.ProfileID
+		if err := h.captureProfile(&job, *input.ProfileID, "queue_profile_update"); err != nil {
+			h.profileCaptureError(c, err)
+			return
+		}
 	}
 	if input.AudioProfileKey != nil {
 		job.AudioProfileKey = *input.AudioProfileKey
@@ -181,12 +196,55 @@ func (h QueueHandler) Update(c *gin.Context) {
 		}
 	}
 
-	if err := h.db.Save(&job).Error; err != nil {
+	refreshExecutionPlan := input.ProfileID != nil
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		if refreshExecutionPlan {
+			_, err := scheduler.CreatePendingExecutionPlan(tx, &job, "Execution plan replaced after explicit profile update")
+			return err
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, job)
+}
+
+var errQueueProfileDisabled = errors.New("profile is disabled")
+
+func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, source string) error {
+	var profile models.Profile
+	if err := h.db.First(&profile, profileID).Error; err != nil {
+		return err
+	}
+	if profile.Disabled {
+		return errQueueProfileDisabled
+	}
+	now := time.Now()
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, source)
+	if err != nil {
+		return err
+	}
+	job.ProfileID = profile.ID
+	job.ProfileVersion = max(profile.ProfileVersion, 1)
+	job.ProfileSnapshot = snapshot
+	job.ProfileCapturedAt = &now
+	return nil
+}
+
+func (h QueueHandler) profileCaptureError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "profile not found"})
+	case errors.Is(err, errQueueProfileDisabled):
+		c.JSON(http.StatusConflict, gin.H{"error": "profile is disabled"})
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	}
 }
 
 func queueJobConfigChanged(input QueueJobUpdateInput) bool {
