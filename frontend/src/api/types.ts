@@ -349,6 +349,12 @@ export type WorkerNode = {
   runtimeProfile: string; lastSeenAt: string; createdAt: string; updatedAt: string;
 };
 
+export type SchedulerRecoveryReport = {
+  ranAt: string; interruptedJobs: number; partialOutputsPreserved: number; reservationsReleased: number;
+  workersMarkedOffline: number; missingCompletedOutputs: number; missingPublishedOutputs: number;
+  orphanWorkspacePaths: string[]; warnings: string[];
+};
+
 export type ExecutionPlan = {
   id: number;
   jobId: number;

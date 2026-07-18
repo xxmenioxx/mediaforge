@@ -208,7 +208,7 @@ func (h QueueHandler) Update(c *gin.Context) {
 		}
 	}
 
-	refreshExecutionPlan := input.ProfileID != nil
+	refreshExecutionPlan := input.ProfileID != nil || input.Status == JobStatusQueued
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&job).Error; err != nil {
 			return err

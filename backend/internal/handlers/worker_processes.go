@@ -260,6 +260,12 @@ func unregisterRunningJobProcess(jobID uint) {
 	delete(runningJobProcesses.commands, jobID)
 }
 
+func hasRunningJobProcess(jobID uint) bool {
+	runningJobProcesses.Lock()
+	defer runningJobProcesses.Unlock()
+	return runningJobProcesses.commands[jobID] != nil
+}
+
 func cancelRunningJobProcess(jobID uint) bool {
 	runningJobProcesses.Lock()
 	cmd := runningJobProcesses.commands[jobID]

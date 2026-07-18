@@ -204,6 +204,7 @@ export function SettingsPage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const [section, setSection] = useState<'assets' | 'workers' | 'scheduler' | 'schedule' | 'storage' | 'directplay' | 'validation' | 'cleanup' | 'diagnostics'>('assets');
   const [form, setForm] = useState<SettingsForm>(initialSettings);
@@ -236,6 +237,14 @@ export function SettingsPage() {
     onSuccess: async (snapshot) => {
       queryClient.setQueryData(['runtime-snapshot'], snapshot);
       await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
+    },
+  });
+  const runRecovery = useMutation({
+    mutationFn: api.runSchedulerRecovery,
+    onSuccess: async (report) => {
+      queryClient.setQueryData(['scheduler-recovery'], report);
+      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+      await queryClient.invalidateQueries({ queryKey: ['workerNodes'] });
     },
   });
 
@@ -647,6 +656,27 @@ export function SettingsPage() {
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <WorkersCard form={form} setForm={setForm} />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Card><CardContent><Stack spacing={1.5}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+                      <Stack><Typography variant="h3">Scheduler recovery</Typography><Typography color="text.secondary" variant="body2">Conservative startup reconciliation. Partial and orphan files are reported but never deleted.</Typography></Stack>
+                      <Button onClick={() => runRecovery.mutate()} disabled={runRecovery.isPending}>{runRecovery.isPending ? 'Reconciling…' : 'Run reconciliation'}</Button>
+                    </Stack>
+                    {schedulerRecovery.data ? <>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={`${schedulerRecovery.data.interruptedJobs} interrupted jobs`} />
+                        <Chip label={`${schedulerRecovery.data.reservationsReleased} reservations released`} />
+                        <Chip label={`${schedulerRecovery.data.workersMarkedOffline} workers offline`} />
+                        <Chip label={`${schedulerRecovery.data.partialOutputsPreserved} partial outputs preserved`} />
+                        <Chip label={`${schedulerRecovery.data.orphanWorkspacePaths.length} orphan workspaces`} color={schedulerRecovery.data.orphanWorkspacePaths.length ? 'warning' : 'success'} />
+                        <Chip label={`${schedulerRecovery.data.missingCompletedOutputs} missing completed outputs`} color={schedulerRecovery.data.missingCompletedOutputs ? 'error' : 'default'} />
+                      </Stack>
+                      {schedulerRecovery.data.orphanWorkspacePaths.map((path) => <Alert severity="warning" key={path}>{path}</Alert>)}
+                      <Typography color="text.secondary" variant="caption">Last reconciliation: {new Date(schedulerRecovery.data.ranAt).toLocaleString()}</Typography>
+                    </> : schedulerRecovery.isError ? <Alert severity="warning">No recovery report is available.</Alert> : <Typography color="text.secondary">Loading recovery report…</Typography>}
+                    {runRecovery.isError ? <Alert severity="error">Recovery failed: {runRecovery.error instanceof Error ? runRecovery.error.message : 'unknown error'}</Alert> : null}
+                  </Stack></CardContent></Card>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <PipelineAutomationCard form={form} setForm={setForm} />
