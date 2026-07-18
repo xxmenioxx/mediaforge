@@ -1,7 +1,9 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
 	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
@@ -9,28 +11,102 @@ import (
 )
 
 type MachineLimits struct {
-	MaxRunningJobs, MaxVideoJobs, MaxSoftwareX265Jobs, MaxHardwareEncodeJobs  int
-	MinFreeRAMBytes, MinFreeWorkBytes, MinFreeLibraryBytes, MaxWorkspaceBytes int64
+	MaxRunningJobs        int   `json:"maxRunningJobs"`
+	MaxVideoJobs          int   `json:"maxVideoJobs"`
+	MaxSoftwareX265Jobs   int   `json:"maxSoftwareX265Jobs"`
+	MaxHardwareEncodeJobs int   `json:"maxHardwareEncodeJobs"`
+	MinFreeRAMBytes       int64 `json:"minFreeRamBytes"`
+	MinFreeWorkBytes      int64 `json:"minFreeWorkBytes"`
+	MinFreeLibraryBytes   int64 `json:"minFreeLibraryBytes"`
+	MaxWorkspaceBytes     int64 `json:"maxWorkspaceBytes"`
+	AllowDirectMode       bool  `json:"allowDirectMode"`
+}
+
+type SchedulerLimitsConfig struct {
+	UseProfileDefaults    bool  `json:"useProfileDefaults"`
+	MaxRunningJobs        int   `json:"maxRunningJobs"`
+	MaxVideoJobs          int   `json:"maxVideoJobs"`
+	MaxSoftwareX265Jobs   int   `json:"maxSoftwareX265Jobs"`
+	MaxHardwareEncodeJobs int   `json:"maxHardwareEncodeJobs"`
+	MinFreeRAMGB          int64 `json:"minFreeRamGb"`
+	MinFreeWorkGB         int64 `json:"minFreeWorkGb"`
+	MinFreeLibraryGB      int64 `json:"minFreeLibraryGb"`
+	MaxWorkspaceGB        int64 `json:"maxWorkspaceGb"`
+	AllowDirectMode       bool  `json:"allowDirectMode"`
+}
+
+type ResourceDecision struct {
+	Allowed      bool          `json:"allowed"`
+	WaitingState string        `json:"waitingState"`
+	Reasons      []string      `json:"reasons"`
+	Limits       MachineLimits `json:"limits"`
 }
 
 func LimitsForProfile(name string) MachineLimits {
 	gb := int64(1 << 30)
 	switch name {
 	case "nas_safe":
-		return MachineLimits{1, 1, 1, 1, 4 * gb, 80 * gb, 300 * gb, 250 * gb}
+		return MachineLimits{1, 1, 1, 1, 4 * gb, 80 * gb, 300 * gb, 250 * gb, false}
 	case "nas_balanced":
-		return MachineLimits{2, 2, 1, 2, 4 * gb, 80 * gb, 500 * gb, 350 * gb}
+		return MachineLimits{2, 2, 1, 2, 4 * gb, 80 * gb, 500 * gb, 350 * gb, false}
 	case "laptop_safe":
-		return MachineLimits{1, 1, 1, 1, 6 * gb, 100 * gb, 100 * gb, 150 * gb}
+		return MachineLimits{1, 1, 1, 1, 6 * gb, 100 * gb, 100 * gb, 150 * gb, true}
 	case "workstation_balanced":
-		return MachineLimits{3, 3, 2, 3, 8 * gb, 100 * gb, 100 * gb, 500 * gb}
+		return MachineLimits{3, 3, 2, 3, 8 * gb, 100 * gb, 100 * gb, 500 * gb, true}
 	case "workstation_aggressive":
-		return MachineLimits{6, 6, 4, 6, 6 * gb, 80 * gb, 80 * gb, 800 * gb}
+		return MachineLimits{6, 6, 4, 6, 6 * gb, 80 * gb, 80 * gb, 800 * gb, true}
 	case "desktop_safe":
-		return MachineLimits{1, 1, 1, 1, 4 * gb, 30 * gb, 30 * gb, 200 * gb}
+		return MachineLimits{1, 1, 1, 1, 4 * gb, 30 * gb, 30 * gb, 200 * gb, true}
 	default:
-		return MachineLimits{2, 2, 1, 2, 4 * gb, 40 * gb, 50 * gb, 300 * gb}
+		return MachineLimits{2, 2, 1, 2, 4 * gb, 40 * gb, 50 * gb, 300 * gb, true}
 	}
+}
+
+func LoadSchedulerLimits(db *gorm.DB, profile string) (MachineLimits, error) {
+	limits := LimitsForProfile(profile)
+	var setting models.AppSetting
+	result := db.Where("key = ?", "schedulerLimits").Limit(1).Find(&setting)
+	if result.Error != nil || result.RowsAffected == 0 {
+		return limits, result.Error
+	}
+	config := SchedulerLimitsConfig{UseProfileDefaults: true}
+	data, err := json.Marshal(setting.Value)
+	if err != nil {
+		return limits, err
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return limits, err
+	}
+	if config.UseProfileDefaults {
+		return limits, nil
+	}
+	gb := int64(1 << 30)
+	if config.MaxRunningJobs > 0 {
+		limits.MaxRunningJobs = config.MaxRunningJobs
+	}
+	if config.MaxVideoJobs > 0 {
+		limits.MaxVideoJobs = config.MaxVideoJobs
+	}
+	if config.MaxSoftwareX265Jobs > 0 {
+		limits.MaxSoftwareX265Jobs = config.MaxSoftwareX265Jobs
+	}
+	if config.MaxHardwareEncodeJobs > 0 {
+		limits.MaxHardwareEncodeJobs = config.MaxHardwareEncodeJobs
+	}
+	if config.MinFreeRAMGB > 0 {
+		limits.MinFreeRAMBytes = config.MinFreeRAMGB * gb
+	}
+	if config.MinFreeWorkGB > 0 {
+		limits.MinFreeWorkBytes = config.MinFreeWorkGB * gb
+	}
+	if config.MinFreeLibraryGB > 0 {
+		limits.MinFreeLibraryBytes = config.MinFreeLibraryGB * gb
+	}
+	if config.MaxWorkspaceGB > 0 {
+		limits.MaxWorkspaceBytes = config.MaxWorkspaceGB * gb
+	}
+	limits.AllowDirectMode = config.AllowDirectMode
+	return limits, nil
 }
 
 func BuildReservation(plan models.ExecutionPlan) models.JSONMap {
@@ -42,26 +118,35 @@ func BuildReservation(plan models.ExecutionPlan) models.JSONMap {
 	if class == "hardware" {
 		memory = 2 << 30
 	}
+	classification, _ := ClassifyJob(JobTypeVideoConversion)
 	return models.JSONMap{
-		"jobType": "video_conversion", "weight": "heavy", "encoder": plan.SelectedEncoder,
+		"jobType": string(classification.Type), "weight": string(classification.Weight), "requiresWorkingWindow": classification.RequiresWorkingWindow, "encoder": plan.SelectedEncoder,
 		"encoderClass": class, "memoryBytes": memory, "workspaceBytes": plan.EstimatedWorkspaceBytes,
 		"libraryBytes": plan.EstimatedOutputMaxBytes,
 	}
 }
 
 func CanDispatch(db *gorm.DB, plan *models.ExecutionPlan) (bool, []string, error) {
+	decision, err := EvaluateResources(db, plan)
+	return decision.Allowed, decision.Reasons, err
+}
+
+func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecision, error) {
 	snapshot, err := runtimeinfo.Latest(db)
 	if err != nil {
-		return false, []string{"Runtime snapshot is unavailable"}, err
+		return ResourceDecision{Reasons: []string{"Runtime snapshot is unavailable"}}, err
 	}
-	limits := LimitsForProfile(snapshot.SelectedProfile)
+	limits, err := LoadSchedulerLimits(db, snapshot.SelectedProfile)
+	if err != nil {
+		return ResourceDecision{}, err
+	}
 	plan.RuntimeProfile = snapshot.SelectedProfile
 	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
 	reasons := []string{}
 	var running int64
 	if err := db.Model(&models.QueueJob{}).Where("status = ?", "running").Count(&running).Error; err != nil {
-		return false, nil, err
+		return ResourceDecision{}, err
 	}
 	if int(running) >= limits.MaxRunningJobs {
 		reasons = append(reasons, fmt.Sprintf("Running job limit reached (%d/%d)", running, limits.MaxRunningJobs))
@@ -69,7 +154,7 @@ func CanDispatch(db *gorm.DB, plan *models.ExecutionPlan) (bool, []string, error
 
 	var runningPlans []models.ExecutionPlan
 	if err := db.Model(&models.ExecutionPlan{}).Joins("JOIN queue_jobs ON queue_jobs.active_execution_plan_id = execution_plans.id").Where("queue_jobs.status = ?", "running").Find(&runningPlans).Error; err != nil {
-		return false, nil, err
+		return ResourceDecision{}, err
 	}
 	video, software, hardware := 0, 0, 0
 	for _, item := range runningPlans {
@@ -96,16 +181,35 @@ func CanDispatch(db *gorm.DB, plan *models.ExecutionPlan) (bool, []string, error
 	if snapshot.AvailableMemoryBytes > 0 && snapshot.AvailableMemoryBytes < limits.MinFreeRAMBytes {
 		reasons = append(reasons, fmt.Sprintf("Free RAM is below policy minimum (%d bytes required)", limits.MinFreeRAMBytes))
 	}
-	if plan.EstimatedWorkspaceBytes > limits.MaxWorkspaceBytes {
+	if plan.WorkspaceMode != WorkspaceModeDirect && plan.EstimatedWorkspaceBytes > limits.MaxWorkspaceBytes {
 		reasons = append(reasons, fmt.Sprintf("Estimated workspace exceeds policy maximum (%d bytes)", limits.MaxWorkspaceBytes))
 	}
-	if freeDisk(snapshot.Disks, "workspace")-plan.EstimatedWorkspaceBytes < limits.MinFreeWorkBytes {
+	if plan.WorkspaceMode != WorkspaceModeDirect && freeDisk(snapshot.Disks, "workspace")-plan.EstimatedWorkspaceBytes < limits.MinFreeWorkBytes {
 		reasons = append(reasons, "Work disk would fall below its free-space reserve")
 	}
 	if freeDisk(snapshot.Disks, "library")-plan.EstimatedOutputMaxBytes < limits.MinFreeLibraryBytes {
 		reasons = append(reasons, "Library disk would fall below its free-space reserve")
 	}
-	return len(reasons) == 0, reasons, nil
+	waitingState := ""
+	if len(reasons) > 0 {
+		waitingState = resourceWaitingState(reasons)
+	}
+	return ResourceDecision{Allowed: len(reasons) == 0, WaitingState: waitingState, Reasons: reasons, Limits: limits}, nil
+}
+
+func resourceWaitingState(reasons []string) string {
+	for _, reason := range reasons {
+		if reason == "Work disk would fall below its free-space reserve" || strings.Contains(reason, "workspace exceeds") {
+			return "WAITING_SSD_SPACE"
+		}
+		if reason == "Library disk would fall below its free-space reserve" {
+			return "WAITING_HDD_SPACE"
+		}
+		if strings.Contains(reason, "RAM") {
+			return "WAITING_RAM"
+		}
+	}
+	return "WAITING_PROFILE_LIMIT"
 }
 
 func freeDisk(disks models.JSONMap, role string) int64 {

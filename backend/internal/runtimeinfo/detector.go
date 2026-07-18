@@ -126,6 +126,19 @@ func validProfile(value string) bool {
 
 func loadPaths(db *gorm.DB) map[string]string {
 	result := map[string]string{}
+	var roles models.AppSetting
+	if db.Where("key = ?", "storageRoles").Limit(1).Find(&roles).RowsAffected > 0 {
+		for label, role := range map[string]string{"workspace": "work", "library": "library"} {
+			if entry, ok := roles.Value[role].(map[string]any); ok {
+				if value, ok := entry["path"].(string); ok && strings.TrimSpace(value) != "" {
+					result[label] = value
+				}
+			}
+		}
+		if len(result) == 2 {
+			return result
+		}
+	}
 	var setting models.AppSetting
 	if db.First(&setting, "key = ?", "paths").Error != nil {
 		return result

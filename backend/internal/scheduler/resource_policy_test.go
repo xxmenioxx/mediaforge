@@ -22,7 +22,7 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
@@ -53,5 +53,35 @@ func TestMachineProfilesHaveSafeLimits(t *testing.T) {
 		if limits.MaxRunningJobs < 1 || limits.MinFreeRAMBytes <= 0 || limits.MaxWorkspaceBytes <= 0 {
 			t.Fatalf("invalid limits for %s: %#v", name, limits)
 		}
+	}
+}
+
+func TestLoadSchedulerLimitsAppliesCustomOverrides(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:custom-limits?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	setting := models.AppSetting{Key: "schedulerLimits", Value: models.JSONMap{"useProfileDefaults": false, "maxRunningJobs": 4, "minFreeRamGb": 12, "allowDirectMode": false}}
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	limits, err := LoadSchedulerLimits(db, "desktop_balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.MaxRunningJobs != 4 || limits.MinFreeRAMBytes != 12<<30 || limits.AllowDirectMode {
+		t.Fatalf("unexpected custom limits: %#v", limits)
+	}
+}
+
+func TestResourceWaitingStateUsesSpecificCause(t *testing.T) {
+	if state := resourceWaitingState([]string{"Free RAM is below policy minimum (1 bytes required)"}); state != "WAITING_RAM" {
+		t.Fatalf("unexpected RAM state: %s", state)
+	}
+	if state := resourceWaitingState([]string{"Library disk would fall below its free-space reserve"}); state != "WAITING_HDD_SPACE" {
+		t.Fatalf("unexpected library state: %s", state)
 	}
 }

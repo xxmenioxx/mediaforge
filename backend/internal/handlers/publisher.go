@@ -223,6 +223,11 @@ func (h PublisherHandler) cleanupStagedJob(job models.QueueJob) error {
 	if err != nil {
 		return err
 	}
+	if roles, roleErr := scheduler.LoadStorageRoles(h.db); roleErr == nil {
+		if rolePath, pathErr := roles.Path(scheduler.StorageRoleWork); pathErr == nil {
+			stagingRoot = rolePath
+		}
+	}
 	root, err := filepath.Abs(stagingRoot)
 	if err != nil {
 		return err
@@ -337,6 +342,12 @@ func (h PublisherHandler) cleanupEmptyOriginalDirs(startDir string, rawRoot stri
 }
 
 func originalsArchivePath(db *gorm.DB) (string, error) {
+	roleArchiveRoot := ""
+	if roles, err := scheduler.LoadStorageRoles(db); err == nil {
+		if rolePath, pathErr := roles.Path(scheduler.StorageRoleOriginalsArchive); pathErr == nil {
+			roleArchiveRoot = rolePath
+		}
+	}
 	setting := models.AppSetting{}
 	values := models.JSONMap{}
 	if err := db.First(&setting, "key = ?", "originalRetentionPolicy").Error; err == nil && setting.Value != nil {
@@ -346,8 +357,8 @@ func originalsArchivePath(db *gorm.DB) (string, error) {
 	}
 
 	pathsSetting := models.AppSetting{}
-	configuredArchiveRoot := ""
-	if err := db.First(&pathsSetting, "key = ?", "paths").Error; err == nil && pathsSetting.Value != nil {
+	configuredArchiveRoot := roleArchiveRoot
+	if err := db.First(&pathsSetting, "key = ?", "paths").Error; err == nil && pathsSetting.Value != nil && configuredArchiveRoot == "" {
 		configuredArchiveRoot = normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["originalsArchivePath"])))
 		if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["trashPath"]))); value != "" {
 			configuredArchiveRoot = value
@@ -358,7 +369,7 @@ func originalsArchivePath(db *gorm.DB) (string, error) {
 
 	if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(values["processedOriginalsPath"]))); value != "" {
 		const legacyRoot = "/media/originals_archive"
-		if configuredArchiveRoot != "" && strings.HasPrefix(value, legacyRoot+"/") && !strings.HasPrefix(configuredArchiveRoot, "/media/") {
+		if configuredArchiveRoot != "" && strings.HasPrefix(value, legacyRoot+"/") {
 			return filepath.Join(configuredArchiveRoot, strings.TrimPrefix(value, legacyRoot+"/")), nil
 		}
 		return value, nil

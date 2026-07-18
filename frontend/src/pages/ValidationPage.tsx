@@ -197,6 +197,8 @@ function formatValidationDate(value: string) {
 
 function ValidationScoreDetails({ job }: { job: QueueJob }) {
   const checks = reportChecks(job.validationReport);
+  const directPlay = reportObject(job.validationReport, 'directPlay');
+  const directPlayClients = reportArray(directPlay, 'clients');
   return (
     <Stack spacing={2}>
       <Alert severity="info">
@@ -207,6 +209,17 @@ function ValidationScoreDetails({ job }: { job: QueueJob }) {
         <ValidationChip job={job} />
         <Chip label={`${job.validationScore || 0}/100`} size="small" />
       </Stack>
+      {directPlay ? <>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="h4">Final DirectPlay report</Typography>
+          <Chip label={`Risk: ${reportString(directPlay, 'risk') || 'unknown'}`} color={reportString(directPlay, 'risk') === 'low' ? 'success' : reportString(directPlay, 'risk') === 'high' ? 'error' : 'warning'} size="small" />
+          <Chip label={`Lowest score: ${reportNumber(directPlay, 'lowestScore')}/100`} size="small" />
+          {directPlay.blocked === true ? <Chip label="Publishing blocked" color="error" size="small" /> : null}
+        </Stack>
+        <Table size="small"><TableHead><TableRow><TableCell>Client</TableCell><TableCell>Score</TableCell><TableCell>Risk</TableCell><TableCell>Findings</TableCell></TableRow></TableHead><TableBody>
+          {directPlayClients.map((client, index) => <TableRow key={`${reportString(client, 'client')}-${index}`}><TableCell>{reportString(client, 'client').replaceAll('_', ' ')}</TableCell><TableCell>{reportNumber(client, 'score')}/100</TableCell><TableCell>{reportString(client, 'risk')}</TableCell><TableCell>{reportStringArray(client, 'warnings').join(' · ') || 'No compatibility warnings'}</TableCell></TableRow>)}
+        </TableBody></Table>
+      </> : null}
       <Table size="small">
         <TableHead>
           <TableRow>
@@ -237,12 +250,25 @@ function ValidationScoreDetails({ job }: { job: QueueJob }) {
         </TableBody>
       </Table>
       <Alert severity="warning">
-        Current basic checks verify completion, output path, file existence, and non-empty output. Deeper media checks will
-        be added when real conversion writes staging files.
+        Safety checks validate the output file. DirectPlay scores inspect its real container and streams with ffprobe; actual device behavior can still vary by player version and hardware.
       </Alert>
     </Stack>
   );
 }
+
+function reportObject(value: Record<string, unknown> | null | undefined, key: string) {
+  const nested = value?.[key];
+  return nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, unknown> : undefined;
+}
+
+function reportArray(value: Record<string, unknown> | undefined, key: string) {
+  const list = value?.[key];
+  return Array.isArray(list) ? list.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : [];
+}
+
+function reportString(value: Record<string, unknown>, key: string) { return typeof value[key] === 'string' ? value[key] as string : ''; }
+function reportNumber(value: Record<string, unknown>, key: string) { return typeof value[key] === 'number' ? value[key] as number : 0; }
+function reportStringArray(value: Record<string, unknown>, key: string) { return Array.isArray(value[key]) ? (value[key] as unknown[]).filter((item): item is string => typeof item === 'string') : []; }
 
 function reportChecks(report: Record<string, unknown> | null | undefined) {
   const checks = report?.checks;

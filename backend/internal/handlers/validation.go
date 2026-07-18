@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -51,7 +52,7 @@ func (h ValidationHandler) ValidateJob(c *gin.Context) {
 		return
 	}
 
-	result := validateQueueJob(job)
+	result := validateQueueJob(h.db, job)
 	job.ValidationStatus = result.Status
 	job.ValidationScore = result.Score
 	job.ValidationReport = result.Report
@@ -79,7 +80,7 @@ func (h ValidationHandler) job(c *gin.Context) (models.QueueJob, bool) {
 	return job, true
 }
 
-func validateQueueJob(job models.QueueJob) ValidationResult {
+func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	checks := []CheckResult{}
 	warnings := []string{}
 	score := 100
@@ -135,12 +136,30 @@ func validateQueueJob(job models.QueueJob) ValidationResult {
 		warnings = append(warnings, "This looks like a dry-run or missing output; real validation requires a generated file.")
 	}
 
+	var directPlayReport scheduler.DirectPlayReport
+	directPlayEvaluated := false
+	if outputExists {
+		probe := ffprobeJSON(job.OutputPath)
+		if probeError, failed := probe["error"].(string); failed {
+			warnings = append(warnings, "DirectPlay analysis could not inspect the final file: "+probeError)
+		} else if report, directPlayErr := scheduler.EvaluateActualDirectPlay(db, models.JSONMap(probe)); directPlayErr != nil {
+			warnings = append(warnings, "DirectPlay analysis failed: "+directPlayErr.Error())
+		} else {
+			directPlayReport, directPlayEvaluated = report, report.Enabled
+			if report.Enabled && report.Risk != "low" {
+				warnings = append(warnings, "Final DirectPlay risk is "+report.Risk+" for at least one target client.")
+			}
+		}
+	}
+
 	if score < 0 {
 		score = 0
 	}
 
 	status := ValidationStatusPassed
-	if score < 80 {
+	if directPlayEvaluated && directPlayReport.Blocked {
+		status = ValidationStatusFailed
+	} else if score < 80 {
 		status = ValidationStatusFailed
 	} else if len(warnings) > 0 || score < 100 {
 		status = ValidationStatusWarning
@@ -150,6 +169,9 @@ func validateQueueJob(job models.QueueJob) ValidationResult {
 		"checks":      checksToJSON(checks),
 		"warnings":    warnings,
 		"validatedAt": time.Now().Format(time.RFC3339),
+	}
+	if directPlayEvaluated {
+		report["directPlay"] = directPlayReport
 	}
 
 	return ValidationResult{

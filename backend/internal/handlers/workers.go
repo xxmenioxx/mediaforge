@@ -160,15 +160,44 @@ func nextClaimableJob(tx *gorm.DB, limits workerLimits) (models.QueueJob, error)
 		if err := tx.First(&plan, *job.ActiveExecutionPlanID).Error; err != nil {
 			return models.QueueJob{}, err
 		}
-		allowed, reasons, err := scheduler.CanDispatch(tx, &plan)
+		workspaceDecision, err := scheduler.EvaluateWorkspace(tx, plan)
 		if err != nil {
 			return models.QueueJob{}, err
 		}
-		if allowed {
+		plan.Evaluation["workspace"] = workspaceDecision
+		plan.WorkspaceMode = workspaceDecision.Mode
+		if !workspaceDecision.Allowed {
+			plan.Status, plan.WaitingState = scheduler.ExecutionPlanWaiting, "WAITING_SSD_SPACE"
+			plan.DecisionReasons = append(plan.DecisionReasons, workspaceDecision.Reason)
+			if err := tx.Save(&plan).Error; err != nil {
+				return models.QueueJob{}, err
+			}
+			continue
+		}
+		workingDecision, classification, err := scheduler.EvaluatePlanWorkingHours(tx, time.Now())
+		if err != nil {
+			return models.QueueJob{}, err
+		}
+		plan.Evaluation["workingHours"] = workingDecision
+		plan.Evaluation["jobClassification"] = classification
+		if !workingDecision.Allowed {
+			plan.Status, plan.WaitingState = scheduler.ExecutionPlanWaiting, "WAITING_SCHEDULE_WINDOW"
+			plan.DecisionReasons = append(plan.DecisionReasons, workingDecision.Reason)
+			if err := tx.Save(&plan).Error; err != nil {
+				return models.QueueJob{}, err
+			}
+			continue
+		}
+		resourceDecision, err := scheduler.EvaluateResources(tx, &plan)
+		if err != nil {
+			return models.QueueJob{}, err
+		}
+		if resourceDecision.Allowed {
 			return job, nil
 		}
-		plan.Status, plan.WaitingState = scheduler.ExecutionPlanWaiting, "WAITING_RESOURCES"
-		plan.Evaluation["resourceWaitReasons"] = reasons
+		plan.Status, plan.WaitingState = scheduler.ExecutionPlanWaiting, resourceDecision.WaitingState
+		plan.Evaluation["resources"] = resourceDecision
+		plan.Evaluation["resourceWaitReasons"] = resourceDecision.Reasons
 		plan.DecisionReasons = append(plan.DecisionReasons, "Dispatch deferred because scheduler resources are unavailable")
 		if err := tx.Save(&plan).Error; err != nil {
 			return models.QueueJob{}, err
@@ -365,13 +394,25 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
-	outputPath := plannedOutputPathForJob(h.db, job, library, effectiveProfile)
+	paths, err := h.pathSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	outputPath := plannedStagingOutputPath(h.db, job, library, effectiveProfile, paths)
+	inputPath := job.MediaPath
+	if job.ActiveExecutionPlanID != nil {
+		var executionPlan models.ExecutionPlan
+		if h.db.First(&executionPlan, *job.ActiveExecutionPlanID).Error == nil && executionPlan.WorkspaceMode == scheduler.WorkspaceModeCopyToWork {
+			inputPath = filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), "_input", filepath.Base(job.MediaPath))
+		}
+	}
 	audioProfile, err := h.audioProfile(job.AudioProfileKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	plan, err := buildMediaJobPlanWithOverride(job.MediaPath, outputPath, profile, audioProfile, true, override)
+	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, profile, audioProfile, true, override)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -461,6 +502,21 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	inputPath := job.MediaPath
+	workspaceMode := scheduler.WorkspaceModeDirect
+	if job.ActiveExecutionPlanID != nil {
+		var executionPlan models.ExecutionPlan
+		if err := h.db.First(&executionPlan, *job.ActiveExecutionPlanID).Error; err == nil && executionPlan.WorkspaceMode != "" {
+			workspaceMode = executionPlan.WorkspaceMode
+		}
+	}
+	if workspaceMode == scheduler.WorkspaceModeCopyToWork {
+		inputPath = filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), "_input", filepath.Base(job.MediaPath))
+		if err := copyPublishedFile(job.MediaPath, inputPath, true); err != nil {
+			return job, http.StatusInternalServerError, fmt.Errorf("prepare workspace input: %w", err)
+		}
+		job.Notes = appendNote(job.Notes, "Workspace input copied to: "+inputPath)
+	}
 
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
@@ -479,7 +535,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	plan, err := buildMediaJobPlanWithOverride(job.MediaPath, outputPath, profile, audioProfile, overwrite, override)
+	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, profile, audioProfile, overwrite, override)
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
@@ -907,6 +963,14 @@ type pathSettings struct {
 }
 
 func (h WorkerHandler) pathSettings() (pathSettings, error) {
+	roles, roleErr := scheduler.LoadStorageRoles(h.db)
+	if roleErr == nil {
+		raw, rawErr := roles.Path(scheduler.StorageRoleRaw)
+		work, workErr := roles.Path(scheduler.StorageRoleWork)
+		if rawErr == nil && workErr == nil {
+			return pathSettings{rawRoot: raw, stagingPath: work}, nil
+		}
+	}
 	setting := models.AppSetting{}
 	values := models.JSONMap{}
 	if err := h.db.First(&setting, "key = ?", "paths").Error; err == nil && setting.Value != nil {

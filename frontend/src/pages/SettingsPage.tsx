@@ -55,6 +55,21 @@ type LibraryTypeDraft = LibraryType & {
   extensionInput: string;
 };
 
+type WorkingWindow = { name: string; days: string[]; start: string; end: string };
+type WorkingHoursValue = {
+  enabled: boolean;
+  timezone: string;
+  preset: string;
+  windows: WorkingWindow[];
+  outsideWindowPolicy: { startNewHeavyJobs: boolean; continueRunningJobs: boolean; allowAnalysisJobs: boolean; allowValidationJobs: boolean; allowPublisherJobs: boolean; allowCleanupJobs: boolean; allowLabPreviews: boolean };
+};
+type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
+type SchedulerLimitsValue = {
+  useProfileDefaults: boolean; maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number;
+  minFreeRamGb: number; minFreeWorkGb: number; minFreeLibraryGb: number; maxWorkspaceGb: number; allowDirectMode: boolean;
+};
+type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
+
 type SettingsForm = {
   paths: {
     rawRoot: string;
@@ -190,7 +205,7 @@ export function SettingsPage() {
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
-  const [section, setSection] = useState<'assets' | 'workers' | 'validation' | 'cleanup' | 'diagnostics'>('assets');
+  const [section, setSection] = useState<'assets' | 'workers' | 'scheduler' | 'schedule' | 'storage' | 'directplay' | 'validation' | 'cleanup' | 'diagnostics'>('assets');
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -490,6 +505,10 @@ export function SettingsPage() {
                 <Tabs value={section} onChange={(_, value) => setSection(value)} sx={{ minHeight: 44 }}>
                   <Tab label="Assets" value="assets" />
                   <Tab label="Workers" value="workers" />
+                  <Tab label="Scheduler" value="scheduler" />
+                  <Tab label="Working Hours" value="schedule" />
+                  <Tab label="Storage" value="storage" />
+                  <Tab label="DirectPlay" value="directplay" />
                   <Tab label="Validation" value="validation" />
                   <Tab label="Cleanup" value="cleanup" />
                   <Tab label="Diagnostics" value="diagnostics" />
@@ -641,6 +660,42 @@ export function SettingsPage() {
                   <ValidationCard form={form} setForm={setForm} />
                 </Grid>
               </Grid>
+            ) : null}
+
+            {section === 'scheduler' ? (
+              <SchedulerLimitsCard
+                value={schedulerLimitsValue(settings.data?.find((item) => item.key === 'schedulerLimits')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'schedulerLimits', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'directplay' ? (
+              <DirectPlayCard
+                value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'directPlay', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'schedule' ? (
+              <WorkingHoursCard
+                value={workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'workingHours', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'storage' ? (
+              <StorageWorkspaceCard
+                roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
+                workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(roles, workspace) => {
+                  updateSetting.mutate({ key: 'storageRoles', value: roles });
+                  updateSetting.mutate({ key: 'workspace', value: workspace as unknown as Record<string, unknown> });
+                }}
+              />
             ) : null}
 
             {section === 'cleanup' ? (
@@ -937,6 +992,148 @@ function LibraryTypesPanel({
       </CardContent>
     </Card>
   );
+}
+
+const directPlayClients = ['jellyfin_web', 'jellyfin_android_tv', 'jellyfin_roku', 'jellyfin_webos', 'apple_tv'];
+
+function directPlayValue(value: Record<string, unknown> | undefined): DirectPlayValue {
+  return {
+    enabled: booleanValue(value?.enabled, true), strategy: stringValue(value?.strategy, 'balanced'),
+    targetClients: arrayValue(value?.targetClients, directPlayClients).filter((client): client is string => typeof client === 'string'),
+    minimumScore: numberValue(value?.minimumScore, 70), enforcement: value?.enforcement === 'block' ? 'block' : 'warn',
+  };
+}
+
+function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  const toggleClient = (client: string) => setDraft((current) => ({ ...current, targetClients: current.targetClients.includes(client) ? current.targetClients.filter((item) => item !== client) : [...current.targetClients, client] }));
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">DirectPlay Policy</Typography><Typography color="text.secondary" variant="body2">Estimate playback compatibility from the planned output profile for each target client.</Typography></Stack>
+    <FormControlLabel control={<Switch checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} label="Enable DirectPlay preflight" />
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select label="Strategy" value={draft.strategy} disabled={!draft.enabled} onChange={(event) => setDraft({ ...draft, strategy: event.target.value })} fullWidth><MenuItem value="balanced">Balanced</MenuItem><MenuItem value="maximum_compatibility">Maximum compatibility</MenuItem><MenuItem value="modern_clients">Modern clients</MenuItem></TextField></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Minimum client score" value={draft.minimumScore} disabled={!draft.enabled} inputProps={{ min: 1, max: 100 }} onChange={(event) => setDraft({ ...draft, minimumScore: Math.min(100, Math.max(1, Number(event.target.value))) })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select label="Below threshold" value={draft.enforcement} disabled={!draft.enabled} onChange={(event) => setDraft({ ...draft, enforcement: event.target.value as DirectPlayValue['enforcement'] })} fullWidth><MenuItem value="warn">Warn only</MenuItem><MenuItem value="block">Require manual review</MenuItem></TextField></Grid>
+    </Grid>
+    <Stack><Typography variant="h4">Target clients</Typography><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{directPlayClients.map((client) => <FormControlLabel key={client} control={<Checkbox checked={draft.targetClients.includes(client)} disabled={!draft.enabled} onChange={() => toggleClient(client)} />} label={client.replaceAll('_', ' ')} />)}</Stack></Stack>
+    <Alert severity="info">This is a preflight estimate. MediaForge records it in the Execution Plan; definitive compatibility requires analyzing the final file.</Alert>
+    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (draft.enabled && draft.targetClients.length === 0)} onClick={() => onSave(draft)}>Save DirectPlay policy</Button>
+  </Stack></CardContent></Card>;
+}
+
+function schedulerLimitsValue(value: Record<string, unknown> | undefined): SchedulerLimitsValue {
+  return {
+    useProfileDefaults: booleanValue(value?.useProfileDefaults, true),
+    maxRunningJobs: numberValue(value?.maxRunningJobs, 2), maxVideoJobs: numberValue(value?.maxVideoJobs, 2),
+    maxSoftwareX265Jobs: numberValue(value?.maxSoftwareX265Jobs, 1), maxHardwareEncodeJobs: numberValue(value?.maxHardwareEncodeJobs, 2),
+    minFreeRamGb: numberValue(value?.minFreeRamGb, 4), minFreeWorkGb: numberValue(value?.minFreeWorkGb, 40),
+    minFreeLibraryGb: numberValue(value?.minFreeLibraryGb, 50), maxWorkspaceGb: numberValue(value?.maxWorkspaceGb, 300),
+    allowDirectMode: booleanValue(value?.allowDirectMode, true),
+  };
+}
+
+function SchedulerLimitsCard({ value, saving, onSave }: { value: SchedulerLimitsValue; saving: boolean; onSave: (value: SchedulerLimitsValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  const numericField = (key: keyof SchedulerLimitsValue, label: string) => <TextField type="number" label={label} value={draft[key]} disabled={draft.useProfileDefaults} inputProps={{ min: 1 }} onChange={(event) => setDraft({ ...draft, [key]: Math.max(1, Number(event.target.value)) })} fullWidth />;
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">Scheduler Limits</Typography><Typography color="text.secondary" variant="body2">Use the selected machine profile defaults or define explicit concurrency and storage reserves.</Typography></Stack>
+    <FormControlLabel control={<Switch checked={draft.useProfileDefaults} onChange={(event) => setDraft({ ...draft, useProfileDefaults: event.target.checked })} />} label="Use selected machine profile defaults" />
+    {draft.useProfileDefaults ? <Alert severity="info">The active runtime profile supplies these limits. Stored custom values are preserved for later use.</Alert> : null}
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxRunningJobs', 'Max running jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxVideoJobs', 'Max video jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxSoftwareX265Jobs', 'Max software x265 jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxHardwareEncodeJobs', 'Max hardware encode jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeRamGb', 'Minimum free RAM (GB)')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeWorkGb', 'Work disk reserve (GB)')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeLibraryGb', 'Library reserve (GB)')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxWorkspaceGb', 'Maximum workspace (GB)')}</Grid>
+    </Grid>
+    <FormControlLabel control={<Switch checked={draft.allowDirectMode} disabled={draft.useProfileDefaults} onChange={(event) => setDraft({ ...draft, allowDirectMode: event.target.checked })} />} label="Allow direct workspace mode" />
+    <Alert severity="info">Blocked plans now identify the concrete cause: WAITING_RAM, WAITING_SSD_SPACE, WAITING_HDD_SPACE, or WAITING_PROFILE_LIMIT.</Alert>
+    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save scheduler limits</Button>
+  </Stack></CardContent></Card>;
+}
+
+function workingHoursValue(value: Record<string, unknown> | undefined): WorkingHoursValue {
+  const policy = value?.outsideWindowPolicy && typeof value.outsideWindowPolicy === 'object' ? value.outsideWindowPolicy as Record<string, unknown> : {};
+  const windows = Array.isArray(value?.windows) ? value.windows.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const item = entry as Record<string, unknown>;
+    return [{ name: stringValue(item.name, ''), days: arrayValue(item.days, []).filter((day): day is string => typeof day === 'string'), start: stringValue(item.start, '23:00'), end: stringValue(item.end, '07:00') }];
+  }) : [];
+  return {
+    enabled: booleanValue(value?.enabled, false), timezone: stringValue(value?.timezone, 'America/Mexico_City'), preset: stringValue(value?.preset, 'custom'), windows,
+    outsideWindowPolicy: {
+      startNewHeavyJobs: booleanValue(policy.startNewHeavyJobs, true), continueRunningJobs: booleanValue(policy.continueRunningJobs, true),
+      allowAnalysisJobs: booleanValue(policy.allowAnalysisJobs, true), allowValidationJobs: booleanValue(policy.allowValidationJobs, true),
+      allowPublisherJobs: booleanValue(policy.allowPublisherJobs, true), allowCleanupJobs: booleanValue(policy.allowCleanupJobs, true), allowLabPreviews: booleanValue(policy.allowLabPreviews, true),
+    },
+  };
+}
+
+function WorkingHoursCard({ value, saving, onSave }: { value: WorkingHoursValue; saving: boolean; onSave: (value: WorkingHoursValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  const updateWindow = (index: number, patch: Partial<WorkingWindow>) => setDraft((current) => ({ ...current, windows: current.windows.map((window, position) => position === index ? { ...window, ...patch } : window) }));
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">Working Hours</Typography><Typography color="text.secondary" variant="body2">Heavy conversions only start inside allowed windows; running jobs continue.</Typography></Stack>
+    <FormControlLabel control={<Switch checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked, preset: event.target.checked ? 'custom' : 'disabled' })} />} label={draft.enabled ? 'Schedule enabled' : 'Schedule disabled'} />
+    <TextField label="Timezone" value={draft.timezone} onChange={(event) => setDraft({ ...draft, timezone: event.target.value })} helperText="IANA timezone, for example America/Mexico_City" />
+    <FormControlLabel control={<Switch checked={draft.outsideWindowPolicy.startNewHeavyJobs} onChange={(event) => setDraft({ ...draft, outsideWindowPolicy: { ...draft.outsideWindowPolicy, startNewHeavyJobs: event.target.checked } })} />} label="Allow heavy jobs outside configured windows" />
+    <Divider />
+    {draft.windows.map((window, index) => <Grid container spacing={1.5} key={`${index}-${window.name}`} alignItems="center">
+      <Grid size={{ xs: 12, md: 3 }}><TextField label="Window name" value={window.name} onChange={(event) => updateWindow(index, { name: event.target.value })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField label="Days" value={window.days.join(', ')} onChange={(event) => updateWindow(index, { days: event.target.value.split(',').map((day) => day.trim().toLowerCase()).filter(Boolean) })} helperText="mon, tue, wed, thu, fri, sat, sun" fullWidth /></Grid>
+      <Grid size={{ xs: 6, md: 2 }}><TextField label="Start" type="time" value={window.start} onChange={(event) => updateWindow(index, { start: event.target.value })} fullWidth /></Grid>
+      <Grid size={{ xs: 6, md: 2 }}><TextField label="End" type="time" value={window.end} onChange={(event) => updateWindow(index, { end: event.target.value })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 1 }}><IconButton color="error" onClick={() => setDraft((current) => ({ ...current, windows: current.windows.filter((_, position) => position !== index) }))}><DeleteIcon /></IconButton></Grid>
+    </Grid>)}
+    {!draft.windows.length ? <Alert severity="info">No conversion windows configured. With heavy jobs disabled outside windows, conversions will wait.</Alert> : null}
+    <Stack direction="row" spacing={1}><Button startIcon={<AddIcon />} onClick={() => setDraft((current) => ({ ...current, windows: [...current.windows, { name: 'New window', days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '23:00', end: '07:00' }] }))}>Add window</Button><Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save working hours</Button></Stack>
+  </Stack></CardContent></Card>;
+}
+
+const storageRoleNames = ['raw', 'library', 'originals_archive', 'work', 'cache', 'reports', 'logs'] as const;
+type StorageRoleName = typeof storageRoleNames[number];
+type StorageRolesValue = Record<StorageRoleName, { path: string }>;
+
+function storageRolesValue(value: Record<string, unknown> | undefined): StorageRolesValue {
+  const defaults: Record<StorageRoleName, string> = { raw: '/media/raw', library: '/media/library', originals_archive: '/media/originals_archive', work: '/media/staging', cache: '/mediaforge/cache', reports: '/media/reports', logs: '/media/reports/logs' };
+  return Object.fromEntries(storageRoleNames.map((role) => {
+    const entry = value?.[role] && typeof value[role] === 'object' ? value[role] as Record<string, unknown> : {};
+    return [role, { path: stringValue(entry.path, defaults[role]) }];
+  })) as StorageRolesValue;
+}
+
+function workspaceValue(value: Record<string, unknown> | undefined): WorkspaceValue {
+  return {
+    preferredMode: value?.preferredMode === 'direct_mode' ? 'direct_mode' : 'copy_to_work_disk',
+    fallbackMode: value?.fallbackMode === 'direct_mode' ? 'direct_mode' : 'wait',
+    allowDirectMode: booleanValue(value?.allowDirectMode, false), estimateRequiredSpace: booleanValue(value?.estimateRequiredSpace, true),
+  };
+}
+
+function StorageWorkspaceCard({ roles, workspace, saving, onSave }: { roles: StorageRolesValue; workspace: WorkspaceValue; saving: boolean; onSave: (roles: Record<string, unknown>, workspace: WorkspaceValue) => void }) {
+  const [roleDraft, setRoleDraft] = useState(roles);
+  const [workspaceDraft, setWorkspaceDraft] = useState(workspace);
+  useEffect(() => setRoleDraft(roles), [JSON.stringify(roles)]);
+  useEffect(() => setWorkspaceDraft(workspace), [JSON.stringify(workspace)]);
+  return <Grid container spacing={2}>
+    <Grid size={{ xs: 12, md: 7 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Storage Roles</Typography><Typography color="text.secondary" variant="body2">Scheduler paths are referenced by role instead of host-specific locations.</Typography></Stack>
+      {storageRoleNames.map((role) => <TextField key={role} label={role.replaceAll('_', ' ')} value={roleDraft[role].path} onChange={(event) => setRoleDraft((current) => ({ ...current, [role]: { path: event.target.value } }))} fullWidth />)}
+    </Stack></CardContent></Card></Grid>
+    <Grid size={{ xs: 12, md: 5 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Workspace Strategy</Typography><Typography color="text.secondary" variant="body2">Choose whether FFmpeg reads a work-disk copy or reads raw directly.</Typography></Stack>
+      <TextField select label="Preferred mode" value={workspaceDraft.preferredMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, preferredMode: event.target.value as WorkspaceValue['preferredMode'] })}><MenuItem value="copy_to_work_disk">Copy input to work disk</MenuItem><MenuItem value="direct_mode">Read raw directly</MenuItem></TextField>
+      <TextField select label="Insufficient workspace fallback" value={workspaceDraft.fallbackMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, fallbackMode: event.target.value as WorkspaceValue['fallbackMode'] })}><MenuItem value="wait">Wait for workspace</MenuItem><MenuItem value="direct_mode">Use direct mode</MenuItem></TextField>
+      <FormControlLabel control={<Switch checked={workspaceDraft.allowDirectMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, allowDirectMode: event.target.checked })} />} label="Allow direct-mode fallback" />
+      <FormControlLabel control={<Switch checked={workspaceDraft.estimateRequiredSpace} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, estimateRequiredSpace: event.target.checked })} />} label="Estimate required workspace" />
+      <Alert severity="info">Copy mode reserves input + estimated output + temporary overhead. Insufficient space produces WAITING_SSD_SPACE.</Alert>
+      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(roleDraft as unknown as Record<string, unknown>, workspaceDraft)}>Save storage settings</Button>
+    </Stack></CardContent></Card></Grid>
+  </Grid>;
 }
 
 function PathsCard({ form, setForm }: SettingsCardProps) {

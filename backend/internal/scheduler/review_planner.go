@@ -62,23 +62,114 @@ func (p *ReviewPlanner) tick() {
 		_ = EvaluateReviewPlan(p.db, &plans[i])
 	}
 	p.refreshResourceWaiters()
+	p.refreshScheduleWaiters()
+	p.refreshWorkspaceWaiters()
+}
+
+func (p *ReviewPlanner) refreshWorkspaceWaiters() {
+	var plans []models.ExecutionPlan
+	if err := p.db.Where("status = ? AND waiting_state = ? AND approval_status IN ?", ExecutionPlanWaiting, "WAITING_WORKSPACE", []string{ApprovalAutoApproved, ApprovalManual}).Limit(25).Find(&plans).Error; err != nil {
+		return
+	}
+	for i := range plans {
+		decision, err := EvaluateWorkspace(p.db, plans[i])
+		if err != nil {
+			continue
+		}
+		plans[i].Evaluation["workspace"] = decision
+		plans[i].WorkspaceMode = decision.Mode
+		if !decision.Allowed {
+			_ = p.db.Save(&plans[i]).Error
+			continue
+		}
+		workingDecision, classification, err := EvaluatePlanWorkingHours(p.db, time.Now())
+		if err != nil {
+			continue
+		}
+		plans[i].Evaluation["workingHours"], plans[i].Evaluation["jobClassification"] = workingDecision, classification
+		if !workingDecision.Allowed {
+			plans[i].WaitingState = "WAITING_SCHEDULE_WINDOW"
+		} else {
+			plans[i].Status, plans[i].WaitingState = ExecutionPlanReady, ""
+			if decision, resourceErr := EvaluateResources(p.db, &plans[i]); resourceErr == nil && !decision.Allowed {
+				applyResourceWait(&plans[i], decision)
+			}
+		}
+		_ = p.db.Save(&plans[i]).Error
+	}
+}
+
+func (p *ReviewPlanner) refreshScheduleWaiters() {
+	var plans []models.ExecutionPlan
+	if err := p.db.Where("status = ? AND waiting_state = ? AND approval_status IN ?", ExecutionPlanWaiting, "WAITING_SCHEDULE_WINDOW", []string{ApprovalAutoApproved, ApprovalManual}).Limit(25).Find(&plans).Error; err != nil {
+		return
+	}
+	for i := range plans {
+		decision, classification, err := EvaluatePlanWorkingHours(p.db, time.Now())
+		if err != nil {
+			continue
+		}
+		plans[i].Evaluation["workingHours"] = decision
+		plans[i].Evaluation["jobClassification"] = classification
+		if !decision.Allowed {
+			continue
+		}
+		workspaceDecision, workspaceErr := EvaluateWorkspace(p.db, plans[i])
+		if workspaceErr != nil {
+			continue
+		}
+		plans[i].Evaluation["workspace"], plans[i].WorkspaceMode = workspaceDecision, workspaceDecision.Mode
+		if !workspaceDecision.Allowed {
+			plans[i].WaitingState = "WAITING_SSD_SPACE"
+			_ = p.db.Save(&plans[i]).Error
+			continue
+		}
+		plans[i].Status, plans[i].WaitingState = ExecutionPlanReady, ""
+		if resourceDecision, resourceErr := EvaluateResources(p.db, &plans[i]); resourceErr == nil && !resourceDecision.Allowed {
+			applyResourceWait(&plans[i], resourceDecision)
+		} else {
+			plans[i].DecisionReasons = append(plans[i].DecisionReasons, decision.Reason)
+		}
+		_ = p.db.Save(&plans[i]).Error
+	}
 }
 
 func (p *ReviewPlanner) refreshResourceWaiters() {
 	var plans []models.ExecutionPlan
-	if err := p.db.Where("status = ? AND waiting_state = ? AND approval_status IN ?", ExecutionPlanWaiting, "WAITING_RESOURCES", []string{ApprovalAutoApproved, ApprovalManual}).Limit(25).Find(&plans).Error; err != nil {
+	resourceStates := []string{"WAITING_RESOURCES", "WAITING_RAM", "WAITING_SSD_SPACE", "WAITING_HDD_SPACE", "WAITING_PROFILE_LIMIT"}
+	if err := p.db.Where("status = ? AND waiting_state IN ? AND approval_status IN ?", ExecutionPlanWaiting, resourceStates, []string{ApprovalAutoApproved, ApprovalManual}).Limit(25).Find(&plans).Error; err != nil {
 		return
 	}
 	for i := range plans {
-		allowed, reasons, err := CanDispatch(p.db, &plans[i])
+		decision, err := EvaluateResources(p.db, &plans[i])
 		if err != nil {
 			continue
 		}
-		if allowed {
-			plans[i].Status, plans[i].WaitingState = ExecutionPlanReady, ""
-			plans[i].DecisionReasons = append(plans[i].DecisionReasons, "Required scheduler resources are available")
+		if decision.Allowed {
+			workspaceDecision, workspaceErr := EvaluateWorkspace(p.db, plans[i])
+			if workspaceErr != nil {
+				continue
+			}
+			plans[i].Evaluation["workspace"], plans[i].WorkspaceMode = workspaceDecision, workspaceDecision.Mode
+			if !workspaceDecision.Allowed {
+				plans[i].Status, plans[i].WaitingState = ExecutionPlanWaiting, "WAITING_SSD_SPACE"
+				_ = p.db.Save(&plans[i]).Error
+				continue
+			}
+			workingDecision, classification, workingErr := EvaluatePlanWorkingHours(p.db, time.Now())
+			if workingErr != nil {
+				continue
+			}
+			plans[i].Evaluation["workingHours"] = workingDecision
+			plans[i].Evaluation["jobClassification"] = classification
+			if workingDecision.Allowed {
+				plans[i].Status, plans[i].WaitingState = ExecutionPlanReady, ""
+				plans[i].DecisionReasons = append(plans[i].DecisionReasons, "Required scheduler resources are available")
+			} else {
+				plans[i].Status, plans[i].WaitingState = ExecutionPlanWaiting, "WAITING_SCHEDULE_WINDOW"
+			}
 		} else {
-			plans[i].Evaluation["resourceWaitReasons"] = reasons
+			applyResourceWait(&plans[i], decision)
 		}
 		_ = p.db.Save(&plans[i]).Error
 	}
@@ -137,6 +228,23 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		plan.Evaluation["runtimeSnapshotId"] = *plan.RuntimeSnapshotID
 	}
 	plan.Reservation = BuildReservation(*plan)
+	classification, classificationErr := ClassifyJob(JobTypeVideoConversion)
+	if classificationErr != nil {
+		return classificationErr
+	}
+	plan.Evaluation["jobClassification"] = classification
+	directPlayReport, directPlayErr := EvaluatePlannedDirectPlay(db, profile)
+	if directPlayErr != nil {
+		return directPlayErr
+	}
+	plan.Evaluation["directPlay"] = directPlayReport
+	plan.DecisionSources["directPlay"] = "profile_preflight_estimate"
+	if directPlayReport.Enabled {
+		plan.DecisionReasons = append(plan.DecisionReasons, fmt.Sprintf("Estimated DirectPlay risk is %s with a lowest client score of %d", directPlayReport.Risk, directPlayReport.LowestScore))
+		if directPlayReport.Risk != "low" {
+			plan.Warnings = append(plan.Warnings, "DirectPlay compatibility is estimated from the planned profile; validate the final output for definitive results")
+		}
+	}
 	plan.DecisionReasons = append(plan.DecisionReasons,
 		fmt.Sprintf("Estimated output range is %d-%d bytes using profile heuristics", minOutput, maxOutput),
 		"A Lab sample is required for a medium or high confidence size estimate",
@@ -165,11 +273,31 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	default:
 		plan.ApprovalStatus, plan.Status, plan.WaitingState = ApprovalPending, ExecutionPlanWaiting, "WAITING_REVIEW"
 	}
+	if directPlayReport.Blocked {
+		plan.ApprovalStatus, plan.ApprovedAt = ApprovalPending, nil
+		plan.Status, plan.WaitingState = ExecutionPlanWaiting, WaitingDirectPlayReview
+		plan.DecisionReasons = append(plan.DecisionReasons, "DirectPlay policy requires manual review because the estimated score is below its threshold")
+	}
 	if plan.Status == ExecutionPlanReady {
-		allowed, reasons, resourceErr := CanDispatch(db, plan)
-		if resourceErr == nil && !allowed {
-			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_RESOURCES"
-			plan.Evaluation["resourceWaitReasons"] = reasons
+		workspaceDecision, workspaceErr := EvaluateWorkspace(db, *plan)
+		if workspaceErr != nil {
+			return workspaceErr
+		}
+		plan.Evaluation["workspace"] = workspaceDecision
+		plan.WorkspaceMode = workspaceDecision.Mode
+		workingDecision, _, workingErr := EvaluatePlanWorkingHours(db, now)
+		if workingErr != nil {
+			return workingErr
+		}
+		plan.Evaluation["workingHours"] = workingDecision
+		if !workspaceDecision.Allowed {
+			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_SSD_SPACE"
+			plan.DecisionReasons = append(plan.DecisionReasons, workspaceDecision.Reason)
+		} else if !workingDecision.Allowed {
+			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_SCHEDULE_WINDOW"
+			plan.DecisionReasons = append(plan.DecisionReasons, workingDecision.Reason)
+		} else if decision, resourceErr := EvaluateResources(db, plan); resourceErr == nil && !decision.Allowed {
+			applyResourceWait(plan, decision)
 			plan.DecisionReasons = append(plan.DecisionReasons, "Approved plan is waiting for scheduler resources")
 		}
 	}
@@ -194,9 +322,22 @@ func SetPlanApproval(db *gorm.DB, jobID, planID uint, approve bool) (models.Exec
 		plan.ApprovalStatus, plan.ApprovedAt, plan.RejectedAt = ApprovalManual, &now, nil
 		plan.Status, plan.WaitingState = ExecutionPlanReady, ""
 		plan.DecisionReasons = append(plan.DecisionReasons, "Manually approved")
-		if allowed, reasons, resourceErr := CanDispatch(db, &plan); resourceErr == nil && !allowed {
-			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_RESOURCES"
-			plan.Evaluation["resourceWaitReasons"] = reasons
+		workingDecision, _, workingErr := EvaluatePlanWorkingHours(db, now)
+		if workingErr != nil {
+			return models.ExecutionPlan{}, workingErr
+		}
+		plan.Evaluation["workingHours"] = workingDecision
+		workspaceDecision, workspaceErr := EvaluateWorkspace(db, plan)
+		if workspaceErr != nil {
+			return models.ExecutionPlan{}, workspaceErr
+		}
+		plan.Evaluation["workspace"], plan.WorkspaceMode = workspaceDecision, workspaceDecision.Mode
+		if !workspaceDecision.Allowed {
+			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_SSD_SPACE"
+		} else if !workingDecision.Allowed {
+			plan.Status, plan.WaitingState = ExecutionPlanWaiting, "WAITING_SCHEDULE_WINDOW"
+		} else if decision, resourceErr := EvaluateResources(db, &plan); resourceErr == nil && !decision.Allowed {
+			applyResourceWait(&plan, decision)
 		}
 	} else {
 		plan.ApprovalStatus, plan.RejectedAt, plan.ApprovedAt = ApprovalRejected, &now, nil
@@ -204,6 +345,12 @@ func SetPlanApproval(db *gorm.DB, jobID, planID uint, approve bool) (models.Exec
 		plan.DecisionReasons = append(plan.DecisionReasons, "Manually rejected")
 	}
 	return plan, db.Save(&plan).Error
+}
+
+func applyResourceWait(plan *models.ExecutionPlan, decision ResourceDecision) {
+	plan.Status, plan.WaitingState = ExecutionPlanWaiting, decision.WaitingState
+	plan.Evaluation["resources"] = decision
+	plan.Evaluation["resourceWaitReasons"] = decision.Reasons
 }
 
 func ReviewMode(db *gorm.DB) string {

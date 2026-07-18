@@ -53,6 +53,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const resultPayload = objectValue(result, 'result');
   const profile = objectValue(asIs, 'profile');
   const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
+  const directPlayPlan = activePlan ? objectValue(activePlan.evaluation, 'directPlay') : undefined;
 
   return (
     <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
@@ -149,6 +150,8 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                       ['Reserved encoder class', planString(activePlan.reservation, 'encoderClass') || 'Pending'],
                       ['Reserved memory', formatBytes(planNumber(activePlan.reservation, 'memoryBytes'))],
                       ['Workspace mode', activePlan.workspaceMode || 'Pending'],
+                      ['DirectPlay risk', stringValue(directPlayPlan, 'risk') || 'Not evaluated'],
+                      ['Lowest client score', directPlayPlan ? `${numberValue(directPlayPlan, 'lowestScore')}/100` : 'Not evaluated'],
                     ]}
                   />
                   <Typography color="text.secondary">Output: {activePlan.outputPath || 'Pending'}</Typography>

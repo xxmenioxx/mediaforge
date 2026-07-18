@@ -151,7 +151,7 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 		return result
 	}
 
-	validationResult := validateQueueJob(job)
+	validationResult := validateQueueJob(h.db, job)
 	job.ValidationStatus = validationResult.Status
 	job.ValidationScore = validationResult.Score
 	job.ValidationReport = validationResult.Report

@@ -128,6 +128,9 @@ func Seed(db *gorm.DB) error {
 		if err := seedSettings(db); err != nil {
 			return err
 		}
+		if err := seedStorageRolesFromPaths(db); err != nil {
+			return err
+		}
 		return normalizeProfileContracts(db)
 	}
 
@@ -206,6 +209,9 @@ func Seed(db *gorm.DB) error {
 	}
 
 	if err := seedSettings(db); err != nil {
+		return err
+	}
+	if err := seedStorageRolesFromPaths(db); err != nil {
 		return err
 	}
 	return normalizeProfileContracts(db)
@@ -377,6 +383,31 @@ func seedSettings(db *gorm.DB) error {
 				"mode":            "automatic",
 				"selectedProfile": "desktop_balanced",
 				"fallbackProfile": "desktop_safe",
+			},
+		},
+		{
+			Key: "workingHours",
+			Value: models.JSONMap{"enabled": false, "timezone": "America/Mexico_City", "preset": "disabled", "windows": []models.JSONMap{}, "outsideWindowPolicy": models.JSONMap{
+				"startNewHeavyJobs": true, "continueRunningJobs": true, "allowAnalysisJobs": true, "allowValidationJobs": true,
+				"allowPublisherJobs": true, "allowCleanupJobs": true, "allowLabPreviews": true,
+			}},
+		},
+		{
+			Key:   "workspace",
+			Value: models.JSONMap{"preferredMode": "copy_to_work_disk", "fallbackMode": "wait", "allowDirectMode": false, "estimateRequiredSpace": true},
+		},
+		{
+			Key: "schedulerLimits",
+			Value: models.JSONMap{
+				"useProfileDefaults": true, "maxRunningJobs": 2, "maxVideoJobs": 2, "maxSoftwareX265Jobs": 1, "maxHardwareEncodeJobs": 2,
+				"minFreeRamGb": 4, "minFreeWorkGb": 40, "minFreeLibraryGb": 50, "maxWorkspaceGb": 300, "allowDirectMode": true,
+			},
+		},
+		{
+			Key: "directPlay",
+			Value: models.JSONMap{
+				"enabled": true, "strategy": "balanced", "targetClients": []string{"jellyfin_web", "jellyfin_android_tv", "jellyfin_roku", "jellyfin_webos", "apple_tv"},
+				"minimumScore": 70, "enforcement": "warn",
 			},
 		},
 		{
@@ -697,4 +728,31 @@ func seedSettings(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func seedStorageRolesFromPaths(db *gorm.DB) error {
+	var existing int64
+	if err := db.Model(&models.AppSetting{}).Where("key = ?", "storageRoles").Count(&existing).Error; err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
+	var paths models.AppSetting
+	if err := db.Where("key = ?", "paths").First(&paths).Error; err != nil {
+		return err
+	}
+	pathValue := func(key, fallback string) string {
+		if value, ok := paths.Value[key].(string); ok && value != "" {
+			return value
+		}
+		return fallback
+	}
+	reports := pathValue("resultsReportsPath", "/media/reports")
+	roles := models.JSONMap{
+		"raw": models.JSONMap{"path": pathValue("rawRoot", "/media/raw")}, "library": models.JSONMap{"path": pathValue("libraryRoot", "/media/library")},
+		"originals_archive": models.JSONMap{"path": pathValue("originalsArchivePath", "/media/originals_archive")}, "work": models.JSONMap{"path": pathValue("stagingPath", "/media/staging")},
+		"cache": models.JSONMap{"path": filepath.Join(filepath.Dir(reports), "cache")}, "reports": models.JSONMap{"path": reports}, "logs": models.JSONMap{"path": pathValue("logsPath", "/media/reports/logs")},
+	}
+	return db.Create(&models.AppSetting{Key: "storageRoles", Value: roles}).Error
 }
