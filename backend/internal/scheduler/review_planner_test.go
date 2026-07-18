@@ -16,7 +16,7 @@ func TestConditionalReviewEstimatesAndAutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -60,7 +60,7 @@ func TestManualReviewCanRejectAndApproveActivePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -91,7 +91,7 @@ func TestManualApprovalWaitsForScheduleWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -127,6 +127,9 @@ func seedReviewRuntime(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.WorkerNode{Name: "test-worker", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265", "hevc_videotoolbox", "hevc_qsv"}, LastSeenAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
 }

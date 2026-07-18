@@ -123,6 +123,9 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	}
 
 	destinationPath := plannedOutputPathForJob(h.db, job, library, profile)
+	if err := transitionJobStage(h.db, &job, JobStagePublishing); err != nil {
+		return PublishResult{}, err
+	}
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
 		alreadyPublished := false
 		if !overwrite {
@@ -152,6 +155,9 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		}
 	}
 
+	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
+		return PublishResult{}, err
+	}
 	if archivedPath, err := h.archivePublishedOriginal(job); err != nil {
 		job.Notes = appendNote(job.Notes, "Original archive failed: "+err.Error())
 		_ = h.db.Save(&job).Error
@@ -164,12 +170,17 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	job.PublishedPath = destinationPath
 	job.PublishedAt = &now
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
+		if err := transitionJobStage(h.db, &job, JobStageCleaningWorkspace); err != nil {
+			return PublishResult{}, err
+		}
 		if err := h.cleanupStagedJob(job); err != nil {
 			job.Notes = appendNote(job.Notes, "Staged output cleanup warning: "+err.Error())
 		}
 	}
 
 	_ = h.db.Save(&job).Error
+	_ = transitionJobStage(h.db, &job, JobStageCompleted)
+	_ = scheduler.ReleaseReservation(h.db, job.ID)
 
 	return PublishResult{
 		JobID:         job.ID,

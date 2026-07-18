@@ -22,11 +22,14 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.WorkerNode{Name: "test-worker", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265"}, LastSeenAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
 	runningPlan := models.ExecutionPlan{JobID: 1, Version: 1, Status: ExecutionPlanDispatched, SelectedEncoder: "libx265"}
@@ -35,6 +38,9 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	}
 	runningJob := models.QueueJob{MediaPath: "/raw/a.mkv", LibraryID: 1, ProfileID: 1, Status: "running", ActiveExecutionPlanID: &runningPlan.ID}
 	if err := db.Create(&runningJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.SchedulerReservation{JobID: runningJob.ID, AssetKey: runningJob.MediaPath, State: ReservationStateActive, Encoder: "libx265", EncoderClass: "software"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	candidate := models.ExecutionPlan{SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 10 << 30, EstimatedOutputMaxBytes: 5 << 30, Reservation: models.JSONMap{}}

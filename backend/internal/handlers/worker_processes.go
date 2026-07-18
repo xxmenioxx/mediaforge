@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"gorm.io/gorm"
 )
 
@@ -77,8 +78,10 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	if dbErr := h.db.First(&job, jobID).Error; dbErr != nil {
 		return
 	}
+	defer func() { _ = scheduler.DeactivateReservationResources(h.db, jobID) }()
 
 	if job.Status == JobStatusCanceled {
+		_ = transitionJobStage(h.db, &job, JobStageCanceled)
 		if job.FinishedAt == nil {
 			finishedAt := time.Now()
 			job.FinishedAt = &finishedAt
@@ -99,6 +102,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		job.Status = JobStatusFailed
 		job.Progress = 0
 		job.ErrorMessage = strings.TrimSpace(lastOutputLines(stderrBuffer.String(), 14))
+		_ = transitionJobStage(h.db, &job, JobStageFailed)
 		if job.ErrorMessage == "" {
 			job.ErrorMessage = fmt.Sprintf("ffmpeg exited with error: %v", err)
 		}
@@ -116,6 +120,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	job.Progress = 100
 	job.ErrorMessage = ""
 	_ = h.db.Save(&job).Error
+	_ = transitionJobStage(h.db, &job, JobStageValidating)
 	automationResult := h.runAutomatedPipeline(job)
 	_ = writeJobResultArtifact(h.db, job, map[string]any{
 		"status":     "completed",
@@ -151,6 +156,7 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 		return result
 	}
 
+	_ = transitionJobStage(h.db, &job, JobStageValidating)
 	validationResult := validateQueueJob(h.db, job)
 	job.ValidationStatus = validationResult.Status
 	job.ValidationScore = validationResult.Score
@@ -162,15 +168,18 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 	}
 	result["validationStatus"] = validationResult.Status
 	result["validationScore"] = validationResult.Score
+	_ = transitionJobStage(h.db, &job, JobStageDirectPlayAnalysis)
 
 	minimumScore := validationMinimumScore(h.db)
 	if validationResult.Status == ValidationStatusFailed || validationResult.Score < minimumScore {
+		_ = transitionJobStage(h.db, &job, JobStageFailed)
 		result["stoppedAt"] = "validation_review"
 		result["message"] = "Validation score requires human review."
 		return result
 	}
 
 	if !automation.AutoPublisherEnabled {
+		_ = transitionJobStage(h.db, &job, JobStageReadyToPublish)
 		result["stoppedAt"] = "publisher"
 		result["message"] = "Automatic publishing is disabled."
 		return result

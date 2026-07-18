@@ -136,7 +136,7 @@ func (p *ReviewPlanner) refreshScheduleWaiters() {
 
 func (p *ReviewPlanner) refreshResourceWaiters() {
 	var plans []models.ExecutionPlan
-	resourceStates := []string{"WAITING_RESOURCES", "WAITING_RAM", "WAITING_SSD_SPACE", "WAITING_HDD_SPACE", "WAITING_PROFILE_LIMIT"}
+	resourceStates := []string{"WAITING_RESOURCES", "WAITING_RAM", "WAITING_SSD_SPACE", "WAITING_HDD_SPACE", "WAITING_PROFILE_LIMIT", "WAITING_WORKER"}
 	if err := p.db.Where("status = ? AND waiting_state IN ? AND approval_status IN ?", ExecutionPlanWaiting, resourceStates, []string{ApprovalAutoApproved, ApprovalManual}).Limit(25).Find(&plans).Error; err != nil {
 		return
 	}

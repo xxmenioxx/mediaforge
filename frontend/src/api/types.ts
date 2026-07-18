@@ -325,6 +325,9 @@ export type QueueJob = {
   audioProfileKey: string;
   priority: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+  stage: string;
+  stageUpdatedAt?: string;
+  stageHistory: Array<Record<string, unknown>>;
   progress: number;
   workerName: string;
   outputPath: string;
@@ -339,6 +342,11 @@ export type QueueJob = {
   finishedAt?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type WorkerNode = {
+  id: number; name: string; status: 'online' | 'offline'; maxConcurrentJobs: number; encoders: unknown[];
+  runtimeProfile: string; lastSeenAt: string; createdAt: string; updatedAt: string;
 };
 
 export type ExecutionPlan = {

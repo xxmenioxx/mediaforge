@@ -21,6 +21,9 @@ func StartAutoWorker(db *gorm.DB) *AutoWorker {
 		handler: NewWorkerHandler(db),
 		stop:    make(chan struct{}),
 	}
+	if limits, err := worker.handler.workerLimits(); err == nil {
+		_ = worker.handler.heartbeatWorker(limits.DefaultWorkerName, limits)
+	}
 	go worker.run()
 	return worker
 }
@@ -52,6 +55,10 @@ func (w *AutoWorker) tick() {
 	limits, err := w.handler.workerLimits()
 	if err != nil {
 		log.Printf("auto worker settings error: %v", err)
+		return
+	}
+	if err := w.handler.heartbeatWorker(limits.DefaultWorkerName, limits); err != nil {
+		log.Printf("auto worker heartbeat error: %v", err)
 		return
 	}
 	if !limits.AutoWorkerEnabled {

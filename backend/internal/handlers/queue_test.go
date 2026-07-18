@@ -13,7 +13,7 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}); err != nil {
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
 		t.Fatal(err)
 	}
 	profile := authoritativeTestProfile()

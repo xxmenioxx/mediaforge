@@ -61,6 +61,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
           <Typography variant="h3">Job #{job.id}</Typography>
           <Chip label={job.status} color={statusColor(job.status)} size="small" />
+          {job.stage ? <Chip label={job.stage.replaceAll('_', ' ')} color="primary" variant="outlined" size="small" /> : null}
           <Chip label={`${job.progress}%`} color="primary" size="small" variant="outlined" />
           {job.workerName ? <Chip label={job.workerName} size="small" /> : null}
         </Stack>
@@ -114,6 +115,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               <SummaryGrid
                 items={[
                   ['Pipeline status', stringValue(resultPayload, 'status') || job.status],
+                  ['Lifecycle stage', job.stage?.replaceAll('_', ' ') || 'Unknown'],
                   ['Output path', job.publishedPath || job.outputPath || 'Pending'],
                   ['Published path', job.publishedPath || 'Not published yet'],
                   ['Validation', validationSummary(job, resultPayload)],
@@ -124,6 +126,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                 ]}
               />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
+              <ArtifactBlock title="Lifecycle history" value={{ currentStage: job.stage || job.status, stageUpdatedAt: job.stageUpdatedAt, history: job.stageHistory ?? [] }} />
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />
             </Stack>

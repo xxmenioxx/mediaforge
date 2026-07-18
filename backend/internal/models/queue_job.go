@@ -16,6 +16,9 @@ type QueueJob struct {
 	AudioProfileKey       string     `json:"audioProfileKey"`
 	Priority              int        `json:"priority" gorm:"not null;default:5"`
 	Status                string     `json:"status" gorm:"not null;default:queued"`
+	Stage                 string     `json:"stage" gorm:"not null;default:queued;index"`
+	StageUpdatedAt        *time.Time `json:"stageUpdatedAt"`
+	StageHistory          JSONList   `json:"stageHistory" gorm:"type:json"`
 	Progress              int        `json:"progress" gorm:"not null;default:0"`
 	WorkerName            string     `json:"workerName"`
 	OutputPath            string     `json:"outputPath"`

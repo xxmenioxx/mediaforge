@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
 	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
@@ -36,10 +37,11 @@ type SchedulerLimitsConfig struct {
 }
 
 type ResourceDecision struct {
-	Allowed      bool          `json:"allowed"`
-	WaitingState string        `json:"waitingState"`
-	Reasons      []string      `json:"reasons"`
-	Limits       MachineLimits `json:"limits"`
+	Allowed      bool                       `json:"allowed"`
+	WaitingState string                     `json:"waitingState"`
+	Reasons      []string                   `json:"reasons"`
+	Limits       MachineLimits              `json:"limits"`
+	Worker       WorkerAvailabilityDecision `json:"worker"`
 }
 
 func LimitsForProfile(name string) MachineLimits {
@@ -144,28 +146,25 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
 	reasons := []string{}
-	var running int64
-	if err := db.Model(&models.QueueJob{}).Where("status = ?", "running").Count(&running).Error; err != nil {
+	var activeReservations []models.SchedulerReservation
+	if err := db.Where("state = ?", ReservationStateActive).Find(&activeReservations).Error; err != nil {
 		return ResourceDecision{}, err
 	}
+	running := int64(len(activeReservations))
 	if int(running) >= limits.MaxRunningJobs {
 		reasons = append(reasons, fmt.Sprintf("Running job limit reached (%d/%d)", running, limits.MaxRunningJobs))
 	}
 
-	var runningPlans []models.ExecutionPlan
-	if err := db.Model(&models.ExecutionPlan{}).Joins("JOIN queue_jobs ON queue_jobs.active_execution_plan_id = execution_plans.id").Where("queue_jobs.status = ?", "running").Find(&runningPlans).Error; err != nil {
-		return ResourceDecision{}, err
-	}
 	video, software, hardware := 0, 0, 0
-	for _, item := range runningPlans {
-		if item.SelectedEncoder == "" || item.SelectedEncoder == "copy" {
+	for _, item := range activeReservations {
+		if item.Encoder == "" || item.Encoder == "copy" {
 			continue
 		}
 		video++
-		if item.SelectedEncoder == "libx265" {
+		if item.Encoder == "libx265" {
 			software++
 		}
-		if isHardwareEncoder(item.SelectedEncoder) {
+		if item.EncoderClass == "hardware" {
 			hardware++
 		}
 	}
@@ -190,11 +189,18 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	if freeDisk(snapshot.Disks, "library")-plan.EstimatedOutputMaxBytes < limits.MinFreeLibraryBytes {
 		reasons = append(reasons, "Library disk would fall below its free-space reserve")
 	}
+	workerDecision, workerErr := EvaluateWorkerAvailability(db, *plan, time.Now())
+	if workerErr != nil {
+		return ResourceDecision{}, workerErr
+	}
 	waitingState := ""
 	if len(reasons) > 0 {
 		waitingState = resourceWaitingState(reasons)
+	} else if !workerDecision.Available {
+		reasons = append(reasons, workerDecision.Reasons...)
+		waitingState = "WAITING_WORKER"
 	}
-	return ResourceDecision{Allowed: len(reasons) == 0, WaitingState: waitingState, Reasons: reasons, Limits: limits}, nil
+	return ResourceDecision{Allowed: len(reasons) == 0, WaitingState: waitingState, Reasons: reasons, Limits: limits, Worker: workerDecision}, nil
 }
 
 func resourceWaitingState(reasons []string) string {

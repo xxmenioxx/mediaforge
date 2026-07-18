@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -76,6 +77,66 @@ type workerLimits struct {
 
 func NewWorkerHandler(db *gorm.DB) WorkerHandler {
 	return WorkerHandler{db: db}
+}
+
+func (h WorkerHandler) ListNodes(c *gin.Context) {
+	var workers []models.WorkerNode
+	if err := h.db.Order("name asc").Find(&workers).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cutoff := time.Now().Add(-scheduler.WorkerHeartbeatTimeout)
+	for i := range workers {
+		if workers[i].LastSeenAt.Before(cutoff) && workers[i].Status != "offline" {
+			workers[i].Status = "offline"
+			_ = h.db.Model(&workers[i]).Update("status", "offline").Error
+		}
+	}
+	c.JSON(http.StatusOK, workers)
+}
+
+func (h WorkerHandler) heartbeatWorker(name string, limits workerLimits) error {
+	if strings.TrimSpace(name) == "" {
+		name = limits.DefaultWorkerName
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "local-worker"
+	}
+	encoders := models.JSONList{"libx265", "libx264"}
+	runtimeProfile := ""
+	if snapshot, err := runtimeinfo.Latest(h.db); err == nil {
+		runtimeProfile = snapshot.SelectedProfile
+		for encoder, raw := range snapshot.Encoders {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			usable, _ := entry["usable"].(bool)
+			if usable && !jsonListContains(encoders, encoder) {
+				encoders = append(encoders, encoder)
+			}
+		}
+	}
+	var worker models.WorkerNode
+	result := h.db.Where("name = ?", name).Limit(1).Find(&worker)
+	if result.Error != nil {
+		return result.Error
+	}
+	now := time.Now()
+	if result.RowsAffected == 0 {
+		worker = models.WorkerNode{Name: name, Status: "online", MaxConcurrentJobs: max(limits.MaxConcurrentJobs, 1), Encoders: encoders, RuntimeProfile: runtimeProfile, LastSeenAt: now}
+		return h.db.Create(&worker).Error
+	}
+	return h.db.Model(&worker).Updates(map[string]any{"status": "online", "max_concurrent_jobs": max(limits.MaxConcurrentJobs, 1), "encoders": encoders, "runtime_profile": runtimeProfile, "last_seen_at": now}).Error
+}
+
+func jsonListContains(values models.JSONList, expected string) bool {
+	for _, raw := range values {
+		if value, ok := raw.(string); ok && value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (h WorkerHandler) workerLimits() (workerLimits, error) {
@@ -247,6 +308,9 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 	if workerName == "" {
 		workerName = limits.DefaultWorkerName
 	}
+	if err := h.heartbeatWorker(workerName, limits); err != nil {
+		return models.QueueJob{}, err
+	}
 	if workerName == "" {
 		workerName = "local-worker"
 	}
@@ -261,6 +325,15 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 		if err != nil {
 			return err
 		}
+		plan := models.ExecutionPlan{}
+		if job.ActiveExecutionPlanID != nil {
+			if err := tx.First(&plan, *job.ActiveExecutionPlanID).Error; err != nil {
+				return err
+			}
+		}
+		if err := scheduler.ActivateReservation(tx, job, plan, workerName); err != nil {
+			return err
+		}
 
 		now := time.Now()
 		job.Status = JobStatusRunning
@@ -273,6 +346,9 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 		if err := tx.Save(&job).Error; err != nil {
 			return err
 		}
+		if err := transitionJobStage(tx, &job, JobStageClaimed); err != nil {
+			return err
+		}
 		if job.ActiveExecutionPlanID != nil {
 			if err := tx.Model(&models.ExecutionPlan{}).Where("id = ?", *job.ActiveExecutionPlanID).Updates(map[string]any{"status": scheduler.ExecutionPlanDispatched, "waiting_state": ""}).Error; err != nil {
 				return err
@@ -283,6 +359,9 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+			return models.QueueJob{}, gorm.ErrRecordNotFound
+		}
 		return models.QueueJob{}, err
 	}
 	return claimed, nil
@@ -342,6 +421,15 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 	if err := h.db.Save(&job).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if err := transitionJobStage(h.db, &job, terminalStageForStatus(job.Status)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if job.Status == JobStatusCanceled {
+		_ = scheduler.ReleaseReservation(h.db, job.ID)
+	} else if terminalJobStatus(job.Status) {
+		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
 	}
 
 	c.JSON(http.StatusOK, job)
@@ -502,6 +590,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	if err := transitionJobStage(h.db, &job, JobStagePreparingWorkspace); err != nil {
+		return job, http.StatusInternalServerError, err
+	}
 	inputPath := job.MediaPath
 	workspaceMode := scheduler.WorkspaceModeDirect
 	if job.ActiveExecutionPlanID != nil {
@@ -511,6 +602,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		}
 	}
 	if workspaceMode == scheduler.WorkspaceModeCopyToWork {
+		if err := transitionJobStage(h.db, &job, JobStageCopyingWorkspace); err != nil {
+			return job, http.StatusInternalServerError, err
+		}
 		inputPath = filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), "_input", filepath.Base(job.MediaPath))
 		if err := copyPublishedFile(job.MediaPath, inputPath, true); err != nil {
 			return job, http.StatusInternalServerError, fmt.Errorf("prepare workspace input: %w", err)
@@ -532,6 +626,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 
 	audioProfile, err := h.audioProfile(job.AudioProfileKey)
 	if err != nil {
+		return job, http.StatusInternalServerError, err
+	}
+	if err := transitionJobStage(h.db, &job, JobStageAnalyzingAsIs); err != nil {
 		return job, http.StatusInternalServerError, err
 	}
 
@@ -562,6 +659,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err := h.db.Save(&job).Error; err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	if err := transitionJobStage(h.db, &job, JobStageConverting); err != nil {
+		return job, http.StatusInternalServerError, err
+	}
 
 	if err := h.startFFmpegJob(job.ID, args); err != nil {
 		job.Status = JobStatusFailed
@@ -569,6 +669,8 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		job.ErrorMessage = err.Error()
 		finishedAt := time.Now()
 		job.FinishedAt = &finishedAt
+		_ = transitionJobStage(h.db, &job, JobStageFailed)
+		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
 		if saveErr := h.db.Save(&job).Error; saveErr != nil {
 			return job, http.StatusInternalServerError, saveErr
 		}

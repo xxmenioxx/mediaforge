@@ -87,6 +87,7 @@ func (h QueueHandler) Create(c *gin.Context) {
 		AudioProfileKey: input.AudioProfileKey,
 		Priority:        priority,
 		Status:          "queued",
+		Stage:           JobStageQueued,
 		Notes:           input.Notes,
 	}
 	if err := h.captureProfile(&job, input.ProfileID, "queue_create"); err != nil {
@@ -98,9 +99,19 @@ func (h QueueHandler) Create(c *gin.Context) {
 		if err := tx.Create(&job).Error; err != nil {
 			return err
 		}
+		if err := scheduler.LockQueuedAsset(tx, job); err != nil {
+			return err
+		}
+		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {
+			return err
+		}
 		_, err := scheduler.CreatePendingExecutionPlan(tx, &job, "Execution plan created from queued profile snapshot")
 		return err
 	}); err != nil {
+		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -138,7 +149,8 @@ func (h QueueHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "only queued, failed, or canceled jobs can be edited"})
 		return
 	}
-	if input.MediaPath != "" && input.MediaPath != job.MediaPath {
+	mediaPathChanged := input.MediaPath != "" && input.MediaPath != job.MediaPath
+	if mediaPathChanged {
 		if active, err := h.assetHasOpenJob(input.MediaPath, job.ID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -201,12 +213,31 @@ func (h QueueHandler) Update(c *gin.Context) {
 		if err := tx.Save(&job).Error; err != nil {
 			return err
 		}
+		if input.Status != "" {
+			if err := transitionJobStage(tx, &job, terminalStageForStatus(job.Status)); err != nil {
+				return err
+			}
+		}
+		if mediaPathChanged || input.Status == JobStatusQueued {
+			if err := scheduler.UpdateAssetLock(tx, job); err != nil {
+				return err
+			}
+		}
+		if job.Status == JobStatusCanceled {
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+				return err
+			}
+		}
 		if refreshExecutionPlan {
 			_, err := scheduler.CreatePendingExecutionPlan(tx, &job, "Execution plan replaced after explicit profile update")
 			return err
 		}
 		return nil
 	}); err != nil {
+		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -901,6 +901,10 @@ function normalizePath(value: string) {
 }
 
 function pipelineStage(job: QueueJob): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {
+  if (job.stage) {
+    const color = job.stage === 'completed' ? 'success' : job.stage === 'failed' ? 'error' : job.stage === 'canceled' ? 'default' : job.stage === 'queued' ? 'warning' : 'primary';
+    return { label: job.stage.replaceAll('_', ' '), color };
+  }
   if (job.publishedAt) {
     return { label: 'Publisher: published', color: 'success' };
   }

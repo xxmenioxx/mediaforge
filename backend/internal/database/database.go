@@ -26,6 +26,8 @@ func Migrate(db *gorm.DB) error {
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
 		&models.RuntimeSnapshot{},
+		&models.SchedulerReservation{},
+		&models.WorkerNode{},
 		&models.ScanResult{},
 		&models.AssetRecord{},
 		&models.AppSetting{},
@@ -39,7 +41,46 @@ func Migrate(db *gorm.DB) error {
 	if err := backfillQueueProfileSnapshots(db); err != nil {
 		return err
 	}
+	if err := backfillQueueLifecycleStages(db); err != nil {
+		return err
+	}
+	if err := scheduler.ReconcileReservations(db); err != nil {
+		return err
+	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func backfillQueueLifecycleStages(db *gorm.DB) error {
+	var jobs []models.QueueJob
+	if err := db.Find(&jobs).Error; err != nil {
+		return err
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		stage := "queued"
+		if job.PublishedAt != nil {
+			stage = "completed"
+		} else {
+			switch job.Status {
+			case "running":
+				stage = "converting"
+			case "completed":
+				stage = "ready_to_publish"
+			case "failed":
+				stage = "failed"
+			case "canceled":
+				stage = "canceled"
+			}
+		}
+		if job.Stage == stage {
+			continue
+		}
+		now := time.Now()
+		if err := db.Model(job).Updates(map[string]any{"stage": stage, "stage_updated_at": &now}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func backfillPendingExecutionPlans(db *gorm.DB) error {

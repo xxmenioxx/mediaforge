@@ -32,6 +32,7 @@ import type {
   UpdateSettingInput,
   UpdateJobStatusInput,
   ValidationResult,
+  WorkerNode,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
@@ -161,6 +162,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(claim),
     }),
+  workerNodes: () => request<WorkerNode[]>('/api/workers/nodes'),
   updateQueueJobStatus: ({ jobId, ...statusUpdate }: UpdateJobStatusInput) =>
     request<QueueJob>(`/api/workers/jobs/${jobId}/status`, {
       method: 'POST',

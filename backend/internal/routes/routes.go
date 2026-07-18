@@ -88,6 +88,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/system/runtime", runtime.Latest)
 		api.POST("/system/runtime/refresh", runtime.Refresh)
 		api.POST("/workers/claim", workers.ClaimNext)
+		api.GET("/workers/nodes", workers.ListNodes)
 		api.POST("/workers/jobs/:id/dry-run", workers.DryRun)
 		api.POST("/workers/jobs/:id/execute", workers.Execute)
 		api.POST("/workers/jobs/:id/status", workers.UpdateJobStatus)

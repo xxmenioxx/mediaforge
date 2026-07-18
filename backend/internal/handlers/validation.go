@@ -52,12 +52,28 @@ func (h ValidationHandler) ValidateJob(c *gin.Context) {
 		return
 	}
 
+	if err := transitionJobStage(h.db, &job, JobStageValidating); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	result := validateQueueJob(h.db, job)
+	if err := transitionJobStage(h.db, &job, JobStageDirectPlayAnalysis); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	job.ValidationStatus = result.Status
 	job.ValidationScore = result.Score
 	job.ValidationReport = result.Report
 
 	if err := h.db.Save(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	finalStage := JobStageReadyToPublish
+	if result.Status == ValidationStatusFailed {
+		finalStage = JobStageFailed
+	}
+	if err := transitionJobStage(h.db, &job, finalStage); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

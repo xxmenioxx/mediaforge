@@ -31,6 +31,7 @@ export function WorkersPage() {
     refetchInterval: (query) => (query.state.data?.some((job) => job.status === 'running') ? 2000 : false),
   });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const workerNodes = useQuery({ queryKey: ['workerNodes'], queryFn: api.workerNodes, refetchInterval: 5000 });
   const workerSettings = getWorkerSettings(settings.data);
   const [workerName, setWorkerName] = useState('local-worker');
   const [activePage, setActivePage] = useState(0);
@@ -96,6 +97,15 @@ export function WorkersPage() {
             Open Settings
           </Button>
         </Alert>
+
+        <Card sx={{ mb: 2 }}><CardContent><Stack spacing={1.5}>
+          <Typography variant="h3">Worker availability</Typography>
+          {workerNodes.isError ? <Alert severity="warning">Unable to load registered workers.</Alert> : null}
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {(workerNodes.data ?? []).map((worker) => <Chip key={worker.id} color={worker.status === 'online' ? 'success' : 'default'} label={`${worker.name} · ${worker.status} · ${worker.runtimeProfile || 'unknown runtime'} · ${worker.maxConcurrentJobs} slots · ${worker.encoders.filter((item): item is string => typeof item === 'string').join(', ') || 'no encoders'}`} />)}
+            {!workerNodes.isLoading && !(workerNodes.data ?? []).length ? <Typography color="text.secondary">No workers have registered a heartbeat.</Typography> : null}
+          </Stack>
+        </Stack></CardContent></Card>
 
         <Grid container spacing={2} sx={{ mb: 2 }}>
           <Grid size={{ xs: 12, md: 5 }}>
