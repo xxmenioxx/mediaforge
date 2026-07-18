@@ -42,7 +42,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { Library } from '../api/types';
+import type { HousekeepingReport, Library } from '../api/types';
 
 type LibraryType = {
   key: string;
@@ -65,10 +65,12 @@ type WorkingHoursValue = {
 };
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
 type SchedulerLimitsValue = {
-  useProfileDefaults: boolean; maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number;
+  useProfileDefaults: boolean; maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number; maxAudioJobs: number; maxLabJobs: number;
   minFreeRamGb: number; minFreeWorkGb: number; minFreeLibraryGb: number; maxWorkspaceGb: number; allowDirectMode: boolean;
 };
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
+type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number };
+type RuntimePolicyValue = { mode: 'automatic' | 'manual'; selectedProfile: string; fallbackProfile: string; pauseWhenOnBattery: boolean; preventSleepDuringJobs: boolean };
 
 type SettingsForm = {
   paths: {
@@ -247,6 +249,8 @@ export function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ['workerNodes'] });
     },
   });
+  const previewHousekeeping = useMutation({ mutationFn: api.previewHousekeeping });
+  const runHousekeeping = useMutation({ mutationFn: api.runHousekeeping, onSuccess: () => previewHousekeeping.reset() });
 
   useEffect(() => {
     if (!settings.data) {
@@ -736,11 +740,26 @@ export function SettingsPage() {
                 <Grid size={{ xs: 12, md: 6 }}>
                   <OriginalRetentionCard form={form} setForm={setForm} />
                 </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <HousekeepingCard
+                    value={housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value)}
+                    saving={updateSetting.isPending}
+                    preview={previewHousekeeping.data}
+                    result={runHousekeeping.data}
+                    busy={previewHousekeeping.isPending || runHousekeeping.isPending}
+                    onSave={(value) => updateSetting.mutate({ key: 'housekeeping', value: value as unknown as Record<string, unknown> })}
+                    onPreview={() => { runHousekeeping.reset(); previewHousekeeping.mutate(); }}
+                    onRun={() => runHousekeeping.mutate()}
+                  />
+                </Grid>
               </Grid>
             ) : null}
 
             {section === 'diagnostics' ? (
               <Grid container spacing={2}>
+                <Grid size={{ xs: 12 }}>
+                  <RuntimePolicyCard value={runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'runtimePolicy', value: value as unknown as Record<string, unknown> })} />
+                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <Card>
                     <CardContent>
@@ -769,20 +788,21 @@ export function SettingsPage() {
                               <Chip label={`Recommended: ${runtimeSnapshot.data.recommendedProfile}`} />
                               <Chip label={`${runtimeSnapshot.data.os}/${runtimeSnapshot.data.architecture}`} />
                               <Chip label={`${runtimeSnapshot.data.cpuCores} CPU cores`} />
+                              <Chip label={`Load ${runtimeSnapshot.data.cpuLoad1.toFixed(2)}`} />
                               <Chip label={`${formatBytes(runtimeSnapshot.data.totalMemoryBytes)} RAM total`} />
                               <Chip label={`${formatBytes(runtimeSnapshot.data.availableMemoryBytes)} RAM available`} />
                               <Chip label={runtimeSnapshot.data.container ? 'Container' : 'Native host'} />
-                              <Chip label={runtimeSnapshot.data.batteryPresent ? 'Battery present' : 'No battery'} />
+                              <Chip label={runtimeSnapshot.data.batteryPresent ? `${runtimeSnapshot.data.onBattery ? 'Battery' : 'AC'} · ${runtimeSnapshot.data.batteryPercent}%` : `Power: ${runtimeSnapshot.data.powerSource}`} color={runtimeSnapshot.data.onBattery ? 'warning' : 'default'} />
                             </Stack>
 
                             <Divider />
                             <Typography variant="h4">Storage</Typography>
                             <Table size="small">
-                              <TableHead><TableRow><TableCell>Role</TableCell><TableCell>Path</TableCell><TableCell>Total</TableCell><TableCell>Available</TableCell></TableRow></TableHead>
+                              <TableHead><TableRow><TableCell>Role</TableCell><TableCell>Path</TableCell><TableCell>Type</TableCell><TableCell>Total</TableCell><TableCell>Available</TableCell></TableRow></TableHead>
                               <TableBody>
                                 {Object.entries(safeRuntimeRecord(runtimeSnapshot.data.disks)).map(([role, rawDisk]) => {
                                   const disk = runtimeDisk(rawDisk);
-                                  return <TableRow key={role}><TableCell>{role}</TableCell><TableCell sx={{ wordBreak: 'break-all' }}>{disk.path}</TableCell><TableCell>{formatBytes(disk.totalBytes)}</TableCell><TableCell>{formatBytes(disk.availableBytes)}</TableCell></TableRow>;
+                                  return <TableRow key={role}><TableCell>{role}</TableCell><TableCell sx={{ wordBreak: 'break-all' }}>{disk.path}</TableCell><TableCell>{disk.type}</TableCell><TableCell>{formatBytes(disk.totalBytes)}</TableCell><TableCell>{formatBytes(disk.availableBytes)}</TableCell></TableRow>;
                                 })}
                               </TableBody>
                             </Table>
@@ -1026,6 +1046,57 @@ function LibraryTypesPanel({
 
 const directPlayClients = ['jellyfin_web', 'jellyfin_android_tv', 'jellyfin_roku', 'jellyfin_webos', 'apple_tv'];
 
+function housekeepingValue(value: Record<string, unknown> | undefined): HousekeepingValue {
+  return {
+    autoEnabled: booleanValue(value?.autoEnabled, true), intervalHours: numberValue(value?.intervalHours, 24),
+    failedRetentionDays: numberValue(value?.failedRetentionDays, 7), canceledRetentionDays: numberValue(value?.canceledRetentionDays, 3),
+    orphanRetentionDays: numberValue(value?.orphanRetentionDays, 7),
+  };
+}
+
+const runtimeProfiles = ['nas_safe', 'nas_balanced', 'desktop_safe', 'desktop_balanced', 'laptop_safe', 'workstation_balanced', 'workstation_aggressive', 'custom'];
+function runtimePolicyValue(value: Record<string, unknown> | undefined): RuntimePolicyValue {
+  return { mode: value?.mode === 'manual' ? 'manual' : 'automatic', selectedProfile: stringValue(value?.selectedProfile, 'desktop_balanced'), fallbackProfile: stringValue(value?.fallbackProfile, 'desktop_safe'), pauseWhenOnBattery: booleanValue(value?.pauseWhenOnBattery, false), preventSleepDuringJobs: booleanValue(value?.preventSleepDuringJobs, false) };
+}
+function RuntimePolicyCard({ value, saving, onSave }: { value: RuntimePolicyValue; saving: boolean; onSave: (value: RuntimePolicyValue) => void }) {
+  const [draft, setDraft] = useState(value); useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  return <Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Runtime policy</Typography><Typography color="text.secondary" variant="body2">Automatic detection is recommended. Manual mode and custom scheduler limits provide explicit overrides.</Typography></Stack>
+    <Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><TextField select label="Runtime mode" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RuntimePolicyValue['mode'] })} fullWidth><MenuItem value="automatic">Auto recommended</MenuItem><MenuItem value="manual">Manual override</MenuItem></TextField></Grid><Grid size={{ xs: 12, md: 4 }}><TextField select label="Selected profile" value={draft.selectedProfile} disabled={draft.mode !== 'manual'} onChange={(event) => setDraft({ ...draft, selectedProfile: event.target.value })} fullWidth>{runtimeProfiles.map((profile) => <MenuItem value={profile} key={profile}>{profile.replaceAll('_', ' ')}</MenuItem>)}</TextField></Grid><Grid size={{ xs: 12, md: 4 }}><TextField select label="Safe fallback" value={draft.fallbackProfile} onChange={(event) => setDraft({ ...draft, fallbackProfile: event.target.value })} fullWidth>{runtimeProfiles.filter((profile) => profile !== 'custom').map((profile) => <MenuItem value={profile} key={profile}>{profile.replaceAll('_', ' ')}</MenuItem>)}</TextField></Grid></Grid>
+    <FormControlLabel control={<Switch checked={draft.pauseWhenOnBattery} onChange={(event) => setDraft({ ...draft, pauseWhenOnBattery: event.target.checked })} />} label="Pause new jobs while running on battery" />
+    <FormControlLabel control={<Switch checked={draft.preventSleepDuringJobs} onChange={(event) => setDraft({ ...draft, preventSleepDuringJobs: event.target.checked })} />} label="Prevent sleep during active jobs (macOS)" />
+    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save runtime policy</Button>
+  </Stack></CardContent></Card>;
+}
+
+function HousekeepingCard({ value, saving, preview, result, busy, onSave, onPreview, onRun }: { value: HousekeepingValue; saving: boolean; preview?: HousekeepingReport; result?: HousekeepingReport; busy: boolean; onSave: (value: HousekeepingValue) => void; onPreview: () => void; onRun: () => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  const report = result ?? preview;
+  const daysField = (key: 'failedRetentionDays' | 'canceledRetentionDays' | 'orphanRetentionDays', label: string) => <TextField type="number" label={label} value={draft[key]} inputProps={{ min: 0 }} onChange={(event) => setDraft({ ...draft, [key]: Math.max(0, Number(event.target.value)) })} fullWidth />;
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">Workspace Housekeeping</Typography><Typography color="text.secondary" variant="body2">Only direct job-N directories inside the configured work storage role can be removed.</Typography></Stack>
+    <FormControlLabel control={<Switch checked={draft.autoEnabled} onChange={(event) => setDraft({ ...draft, autoEnabled: event.target.checked })} />} label="Enable automatic housekeeping" />
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12, md: 3 }}><TextField type="number" label="Interval (hours)" value={draft.intervalHours} inputProps={{ min: 1 }} onChange={(event) => setDraft({ ...draft, intervalHours: Math.max(1, Number(event.target.value)) })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 3 }}>{daysField('failedRetentionDays', 'Failed retention (days)')}</Grid>
+      <Grid size={{ xs: 12, md: 3 }}>{daysField('canceledRetentionDays', 'Canceled retention (days)')}</Grid>
+      <Grid size={{ xs: 12, md: 3 }}>{daysField('orphanRetentionDays', 'Orphan retention (days)')}</Grid>
+    </Grid>
+    <Alert severity="info">Completed but unpublished outputs and running/queued jobs are never housekeeping candidates. Use Preview before manual cleanup.</Alert>
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save policy</Button>
+      <Button variant="outlined" disabled={busy} onClick={onPreview}>Preview cleanup</Button>
+      <Button color="error" variant="outlined" disabled={busy || !preview?.candidates.length} onClick={onRun}>Remove previewed candidates</Button>
+    </Stack>
+    {report ? <Stack spacing={1}>
+      <Typography variant="h4">{report.dryRun ? 'Cleanup preview' : 'Cleanup result'}</Typography>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip label={`${report.candidates.length} candidates`} /><Chip label={`${formatBytes(report.dryRun ? report.candidates.reduce((sum, item) => sum + item.sizeBytes, 0) : report.recoveredBytes)} recoverable`} /><Chip label={`${report.removedPaths.length} removed`} color={report.removedPaths.length ? 'success' : 'default'} /></Stack>
+      {report.candidates.map((item) => <Alert severity={report.dryRun ? 'warning' : 'success'} key={item.path}>{item.reason}: {item.path} ({formatBytes(item.sizeBytes)})</Alert>)}
+      {report.errors.map((error) => <Alert severity="error" key={error}>{error}</Alert>)}
+    </Stack> : null}
+  </Stack></CardContent></Card>;
+}
+
 function directPlayValue(value: Record<string, unknown> | undefined): DirectPlayValue {
   return {
     enabled: booleanValue(value?.enabled, true), strategy: stringValue(value?.strategy, 'balanced'),
@@ -1057,6 +1128,7 @@ function schedulerLimitsValue(value: Record<string, unknown> | undefined): Sched
     useProfileDefaults: booleanValue(value?.useProfileDefaults, true),
     maxRunningJobs: numberValue(value?.maxRunningJobs, 2), maxVideoJobs: numberValue(value?.maxVideoJobs, 2),
     maxSoftwareX265Jobs: numberValue(value?.maxSoftwareX265Jobs, 1), maxHardwareEncodeJobs: numberValue(value?.maxHardwareEncodeJobs, 2),
+    maxAudioJobs: numberValue(value?.maxAudioJobs, 3), maxLabJobs: numberValue(value?.maxLabJobs, 1),
     minFreeRamGb: numberValue(value?.minFreeRamGb, 4), minFreeWorkGb: numberValue(value?.minFreeWorkGb, 40),
     minFreeLibraryGb: numberValue(value?.minFreeLibraryGb, 50), maxWorkspaceGb: numberValue(value?.maxWorkspaceGb, 300),
     allowDirectMode: booleanValue(value?.allowDirectMode, true),
@@ -1076,6 +1148,8 @@ function SchedulerLimitsCard({ value, saving, onSave }: { value: SchedulerLimits
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxVideoJobs', 'Max video jobs')}</Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxSoftwareX265Jobs', 'Max software x265 jobs')}</Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxHardwareEncodeJobs', 'Max hardware encode jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxAudioJobs', 'Max audio jobs')}</Grid>
+      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxLabJobs', 'Max Lab jobs')}</Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeRamGb', 'Minimum free RAM (GB)')}</Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeWorkGb', 'Work disk reserve (GB)')}</Grid>
       <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeLibraryGb', 'Library reserve (GB)')}</Grid>
@@ -1795,10 +1869,11 @@ function runtimeEncoder(value: unknown) {
   };
 }
 
-function runtimeDisk(value: unknown): { path: string; totalBytes: number; availableBytes: number } {
+function runtimeDisk(value: unknown): { path: string; type: string; totalBytes: number; availableBytes: number } {
   const disk = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
     path: typeof disk.path === 'string' ? disk.path : 'Unknown',
+    type: typeof disk.type === 'string' ? disk.type : 'unknown',
     totalBytes: typeof disk.totalBytes === 'number' ? disk.totalBytes : 0,
     availableBytes: typeof disk.availableBytes === 'number' ? disk.availableBytes : 0,
   };

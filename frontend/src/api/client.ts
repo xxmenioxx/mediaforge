@@ -34,6 +34,7 @@ import type {
   ValidationResult,
   WorkerNode,
   SchedulerRecoveryReport,
+  HousekeepingReport,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
@@ -166,6 +167,8 @@ export const api = {
   workerNodes: () => request<WorkerNode[]>('/api/workers/nodes'),
   schedulerRecovery: () => request<SchedulerRecoveryReport>('/api/system/scheduler-recovery'),
   runSchedulerRecovery: () => request<SchedulerRecoveryReport>('/api/system/scheduler-recovery/run', { method: 'POST', body: JSON.stringify({}) }),
+  previewHousekeeping: () => request<HousekeepingReport>('/api/system/housekeeping/preview'),
+  runHousekeeping: () => request<HousekeepingReport>('/api/system/housekeeping/run', { method: 'POST', body: JSON.stringify({}) }),
   updateQueueJobStatus: ({ jobId, ...statusUpdate }: UpdateJobStatusInput) =>
     request<QueueJob>(`/api/workers/jobs/${jobId}/status`, {
       method: 'POST',

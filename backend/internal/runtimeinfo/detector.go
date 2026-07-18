@@ -54,7 +54,8 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 		Disks: models.JSONMap{}, Encoders: models.JSONMap{}, Warnings: models.JSONList{}, SelectionReasons: models.JSONList{},
 	}
 	snapshot.TotalMemoryBytes, snapshot.AvailableMemoryBytes = detectMemory()
-	snapshot.BatteryPresent = detectBattery()
+	snapshot.CPULoad1 = detectCPULoad1()
+	snapshot.BatteryPresent, snapshot.PowerSource, snapshot.OnBattery, snapshot.BatteryPercent = detectPower()
 
 	paths := loadPaths(db)
 	for label, path := range paths {
@@ -156,7 +157,7 @@ func diskInfo(path string) (models.JSONMap, error) {
 	for {
 		var stat syscall.Statfs_t
 		if err := syscall.Statfs(probe, &stat); err == nil {
-			return models.JSONMap{"path": path, "totalBytes": int64(stat.Blocks) * int64(stat.Bsize), "availableBytes": int64(stat.Bavail) * int64(stat.Bsize)}, nil
+			return models.JSONMap{"path": path, "totalBytes": int64(stat.Blocks) * int64(stat.Bsize), "availableBytes": int64(stat.Bavail) * int64(stat.Bsize), "type": detectDiskType(probe)}, nil
 		}
 		parent := filepath.Dir(probe)
 		if parent == probe {
@@ -175,20 +176,122 @@ func detectContainer() bool {
 	return strings.Contains(text, "docker") || strings.Contains(text, "containerd") || strings.Contains(text, "kubepods")
 }
 
-func detectBattery() bool {
+func detectPower() (bool, string, bool, int) {
+	batteryPresent, acOnline, percent := false, false, 0
 	if entries, err := filepath.Glob("/sys/class/power_supply/*/type"); err == nil {
 		for _, entry := range entries {
 			data, _ := os.ReadFile(entry)
-			if strings.EqualFold(strings.TrimSpace(string(data)), "battery") {
-				return true
+			typeName := strings.ToLower(strings.TrimSpace(string(data)))
+			root := filepath.Dir(entry)
+			if typeName == "battery" {
+				batteryPresent = true
+				if value, err := os.ReadFile(filepath.Join(root, "capacity")); err == nil {
+					percent, _ = strconv.Atoi(strings.TrimSpace(string(value)))
+				}
+			} else if typeName == "mains" || typeName == "usb" || typeName == "usb_c" {
+				if value, err := os.ReadFile(filepath.Join(root, "online")); err == nil && strings.TrimSpace(string(value)) == "1" {
+					acOnline = true
+				}
 			}
+		}
+		if batteryPresent {
+			if acOnline {
+				return true, "ac", false, percent
+			}
+			return true, "battery", true, percent
 		}
 	}
 	if runtime.GOOS == "darwin" {
 		output, err := exec.Command("pmset", "-g", "batt").CombinedOutput()
-		return err == nil && strings.Contains(strings.ToLower(string(output)), "internalbattery")
+		if err == nil {
+			text := strings.ToLower(string(output))
+			batteryPresent = strings.Contains(text, "internalbattery")
+			onBattery := strings.Contains(text, "battery power")
+			if index := strings.Index(text, "%"); index > 0 {
+				start := index - 1
+				for start > 0 && text[start-1] >= '0' && text[start-1] <= '9' {
+					start--
+				}
+				percent, _ = strconv.Atoi(text[start:index])
+			}
+			if batteryPresent {
+				if onBattery {
+					return true, "battery", true, percent
+				}
+				return true, "ac", false, percent
+			}
+		}
 	}
-	return false
+	return false, "unknown", false, 0
+}
+
+func detectCPULoad1() float64 {
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			value, _ := strconv.ParseFloat(fields[0], 64)
+			return value
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if output, err := exec.Command("sysctl", "-n", "vm.loadavg").Output(); err == nil {
+			text := strings.Trim(string(output), "{} \n\t")
+			fields := strings.Fields(text)
+			if len(fields) > 0 {
+				value, _ := strconv.ParseFloat(fields[0], 64)
+				return value
+			}
+		}
+	}
+	return 0
+}
+
+func detectDiskType(path string) string {
+	if runtime.GOOS == "darwin" {
+		output, err := exec.Command("diskutil", "info", path).CombinedOutput()
+		if err != nil {
+			return "unknown"
+		}
+		for _, line := range strings.Split(strings.ToLower(string(output)), "\n") {
+			if strings.Contains(line, "solid state:") {
+				if strings.HasSuffix(strings.TrimSpace(line), "yes") {
+					return "ssd"
+				}
+				if strings.HasSuffix(strings.TrimSpace(line), "no") {
+					return "hdd"
+				}
+			}
+		}
+		return "unknown"
+	}
+	output, err := exec.Command("df", "-P", path).Output()
+	if err != nil {
+		return "unknown"
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return "unknown"
+	}
+	device := strings.Fields(lines[len(lines)-1])
+	if len(device) == 0 || !strings.HasPrefix(device[0], "/dev/") {
+		return "unknown"
+	}
+	name := strings.TrimPrefix(device[0], "/dev/")
+	for len(name) > 0 && name[len(name)-1] >= '0' && name[len(name)-1] <= '9' {
+		name = name[:len(name)-1]
+	}
+	name = strings.TrimSuffix(name, "p")
+	if strings.HasPrefix(name, "nvme") {
+		return "nvme"
+	}
+	rotational, err := os.ReadFile(filepath.Join("/sys/block", name, "queue/rotational"))
+	if err != nil {
+		return "unknown"
+	}
+	if strings.TrimSpace(string(rotational)) == "0" {
+		return "ssd"
+	}
+	return "hdd"
 }
 
 func detectMemory() (int64, int64) {

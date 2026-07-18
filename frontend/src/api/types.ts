@@ -299,9 +299,13 @@ export type RuntimeSnapshot = {
   architecture: string;
   container: boolean;
   cpuCores: number;
+  cpuLoad1: number;
   totalMemoryBytes: number;
   availableMemoryBytes: number;
   batteryPresent: boolean;
+  batteryPercent: number;
+  powerSource: string;
+  onBattery: boolean;
   disks: Record<string, unknown>;
   encoders: Record<string, { listed: boolean; usable: boolean; reason: string }>;
   recommendedProfile: string;
@@ -354,6 +358,9 @@ export type SchedulerRecoveryReport = {
   workersMarkedOffline: number; missingCompletedOutputs: number; missingPublishedOutputs: number;
   orphanWorkspacePaths: string[]; warnings: string[];
 };
+
+export type HousekeepingCandidate = { path: string; jobId?: number; reason: string; sizeBytes: number; modifiedAt: string };
+export type HousekeepingReport = { ranAt: string; dryRun: boolean; candidates: HousekeepingCandidate[]; removedPaths: string[]; recoveredBytes: number; errors: string[] };
 
 export type ExecutionPlan = {
   id: number;

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -77,6 +78,12 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		if err := h.db.Model(&models.QueueJob{}).
 			Where("status = ? AND published_at IS NULL", JobStatusCompleted).
 			Updates(map[string]any{"validation_status": ValidationStatusPending, "validation_score": 0, "validation_report": models.JSONMap{}}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if key == "runtimePolicy" {
+		if _, err := runtimeinfo.DetectAndSave(h.db); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

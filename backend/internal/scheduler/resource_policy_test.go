@@ -91,3 +91,30 @@ func TestResourceWaitingStateUsesSpecificCause(t *testing.T) {
 		t.Fatalf("unexpected library state: %s", state)
 	}
 }
+
+func TestEvaluateResourcesWaitsForACPower(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:battery-policy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "laptop_safe", AvailableMemoryBytes: 16 << 30, OnBattery: true, BatteryPresent: true, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "runtimePolicy", Value: models.JSONMap{"pauseWhenOnBattery": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.WorkerNode{Name: "local", Status: "online", MaxConcurrentJobs: 1, Encoders: models.JSONList{"libx265"}, LastSeenAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	decision, err := EvaluateResources(db, &models.ExecutionPlan{SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 1 << 30, EstimatedOutputMaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed || decision.WaitingState != "WAITING_POWER" {
+		t.Fatalf("unexpected power decision: %#v", decision)
+	}
+}

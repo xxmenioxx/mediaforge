@@ -40,6 +40,7 @@ func main() {
 	scheduler.StartReviewPlanner(db)
 	handlers.StartAutoWorker(db)
 	handlers.StartAutoPublisher(db)
+	handlers.StartAutoHousekeeper(db)
 	handlers.StartAssetInventorySyncer(db)
 
 	if err := router.Run(cfg.Address()); err != nil {

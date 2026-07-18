@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
@@ -22,6 +23,45 @@ func TestAssetReservationPreventsDuplicateOpenJobs(t *testing.T) {
 	}
 	if err := LockQueuedAsset(db, models.QueueJob{ID: 2, MediaPath: "/raw/show.mkv"}); !errors.Is(err, ErrAssetAlreadyReserved) {
 		t.Fatalf("expected duplicate reservation error, got %v", err)
+	}
+}
+
+func TestConcurrentAssetReservationsAllowOnlyOneLock(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:reservation-concurrent?mode=memory&cache=shared&_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for id := uint(1); id <= 2; id++ {
+		wg.Add(1)
+		go func(jobID uint) {
+			defer wg.Done()
+			<-start
+			results <- LockQueuedAsset(db, models.QueueJob{ID: jobID, MediaPath: "/raw/same.mkv"})
+		}(id)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	success := 0
+	for result := range results {
+		if result == nil {
+			success++
+		} else if !errors.Is(result, ErrAssetAlreadyReserved) {
+			t.Fatalf("unexpected lock error: %v", result)
+		}
+	}
+	var count int64
+	if err := db.Model(&models.SchedulerReservation{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if success != 1 || count != 1 {
+		t.Fatalf("expected one lock, successes=%d rows=%d", success, count)
 	}
 }
 

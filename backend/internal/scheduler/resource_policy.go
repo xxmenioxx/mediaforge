@@ -16,6 +16,8 @@ type MachineLimits struct {
 	MaxVideoJobs          int   `json:"maxVideoJobs"`
 	MaxSoftwareX265Jobs   int   `json:"maxSoftwareX265Jobs"`
 	MaxHardwareEncodeJobs int   `json:"maxHardwareEncodeJobs"`
+	MaxAudioJobs          int   `json:"maxAudioJobs"`
+	MaxLabJobs            int   `json:"maxLabJobs"`
 	MinFreeRAMBytes       int64 `json:"minFreeRamBytes"`
 	MinFreeWorkBytes      int64 `json:"minFreeWorkBytes"`
 	MinFreeLibraryBytes   int64 `json:"minFreeLibraryBytes"`
@@ -29,6 +31,8 @@ type SchedulerLimitsConfig struct {
 	MaxVideoJobs          int   `json:"maxVideoJobs"`
 	MaxSoftwareX265Jobs   int   `json:"maxSoftwareX265Jobs"`
 	MaxHardwareEncodeJobs int   `json:"maxHardwareEncodeJobs"`
+	MaxAudioJobs          int   `json:"maxAudioJobs"`
+	MaxLabJobs            int   `json:"maxLabJobs"`
 	MinFreeRAMGB          int64 `json:"minFreeRamGb"`
 	MinFreeWorkGB         int64 `json:"minFreeWorkGb"`
 	MinFreeLibraryGB      int64 `json:"minFreeLibraryGb"`
@@ -48,19 +52,19 @@ func LimitsForProfile(name string) MachineLimits {
 	gb := int64(1 << 30)
 	switch name {
 	case "nas_safe":
-		return MachineLimits{1, 1, 1, 1, 4 * gb, 80 * gb, 300 * gb, 250 * gb, false}
+		return MachineLimits{1, 1, 1, 1, 2, 1, 4 * gb, 80 * gb, 300 * gb, 250 * gb, false}
 	case "nas_balanced":
-		return MachineLimits{2, 2, 1, 2, 4 * gb, 80 * gb, 500 * gb, 350 * gb, false}
+		return MachineLimits{2, 2, 1, 2, 3, 1, 4 * gb, 80 * gb, 500 * gb, 350 * gb, false}
 	case "laptop_safe":
-		return MachineLimits{1, 1, 1, 1, 6 * gb, 100 * gb, 100 * gb, 150 * gb, true}
+		return MachineLimits{1, 1, 1, 1, 2, 1, 6 * gb, 100 * gb, 100 * gb, 150 * gb, true}
 	case "workstation_balanced":
-		return MachineLimits{3, 3, 2, 3, 8 * gb, 100 * gb, 100 * gb, 500 * gb, true}
+		return MachineLimits{3, 3, 2, 3, 4, 1, 8 * gb, 100 * gb, 100 * gb, 500 * gb, true}
 	case "workstation_aggressive":
-		return MachineLimits{6, 6, 4, 6, 6 * gb, 80 * gb, 80 * gb, 800 * gb, true}
+		return MachineLimits{6, 6, 4, 6, 6, 2, 6 * gb, 80 * gb, 80 * gb, 800 * gb, true}
 	case "desktop_safe":
-		return MachineLimits{1, 1, 1, 1, 4 * gb, 30 * gb, 30 * gb, 200 * gb, true}
+		return MachineLimits{1, 1, 1, 1, 2, 1, 4 * gb, 30 * gb, 30 * gb, 200 * gb, true}
 	default:
-		return MachineLimits{2, 2, 1, 2, 4 * gb, 40 * gb, 50 * gb, 300 * gb, true}
+		return MachineLimits{2, 2, 1, 2, 3, 1, 4 * gb, 40 * gb, 50 * gb, 300 * gb, true}
 	}
 }
 
@@ -94,6 +98,12 @@ func LoadSchedulerLimits(db *gorm.DB, profile string) (MachineLimits, error) {
 	}
 	if config.MaxHardwareEncodeJobs > 0 {
 		limits.MaxHardwareEncodeJobs = config.MaxHardwareEncodeJobs
+	}
+	if config.MaxAudioJobs > 0 {
+		limits.MaxAudioJobs = config.MaxAudioJobs
+	}
+	if config.MaxLabJobs > 0 {
+		limits.MaxLabJobs = config.MaxLabJobs
 	}
 	if config.MinFreeRAMGB > 0 {
 		limits.MinFreeRAMBytes = config.MinFreeRAMGB * gb
@@ -142,6 +152,10 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	if err != nil {
 		return ResourceDecision{}, err
 	}
+	runtimeBehavior, err := LoadRuntimeBehavior(db, snapshot.SelectedProfile)
+	if err != nil {
+		return ResourceDecision{}, err
+	}
 	plan.RuntimeProfile = snapshot.SelectedProfile
 	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
@@ -155,8 +169,14 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 		reasons = append(reasons, fmt.Sprintf("Running job limit reached (%d/%d)", running, limits.MaxRunningJobs))
 	}
 
-	video, software, hardware := 0, 0, 0
+	video, software, hardware, audio, lab := 0, 0, 0, 0, 0
 	for _, item := range activeReservations {
+		if item.JobType == string(JobTypeAudioRestoration) {
+			audio++
+		}
+		if item.JobType == string(JobTypeLabPreview) {
+			lab++
+		}
 		if item.Encoder == "" || item.Encoder == "copy" {
 			continue
 		}
@@ -177,6 +197,13 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	if isHardwareEncoder(plan.SelectedEncoder) && hardware >= limits.MaxHardwareEncodeJobs {
 		reasons = append(reasons, fmt.Sprintf("Hardware encoder limit reached (%d/%d)", hardware, limits.MaxHardwareEncodeJobs))
 	}
+	jobType := jsonString(plan.Reservation, "jobType")
+	if jobType == string(JobTypeAudioRestoration) && audio >= limits.MaxAudioJobs {
+		reasons = append(reasons, fmt.Sprintf("Audio job limit reached (%d/%d)", audio, limits.MaxAudioJobs))
+	}
+	if jobType == string(JobTypeLabPreview) && lab >= limits.MaxLabJobs {
+		reasons = append(reasons, fmt.Sprintf("Lab job limit reached (%d/%d)", lab, limits.MaxLabJobs))
+	}
 	if snapshot.AvailableMemoryBytes > 0 && snapshot.AvailableMemoryBytes < limits.MinFreeRAMBytes {
 		reasons = append(reasons, fmt.Sprintf("Free RAM is below policy minimum (%d bytes required)", limits.MinFreeRAMBytes))
 	}
@@ -194,7 +221,10 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 		return ResourceDecision{}, workerErr
 	}
 	waitingState := ""
-	if len(reasons) > 0 {
+	if snapshot.OnBattery && runtimeBehavior.PauseWhenOnBattery {
+		reasons = append([]string{"Machine is running on battery and runtime policy pauses new jobs"}, reasons...)
+		waitingState = "WAITING_POWER"
+	} else if len(reasons) > 0 {
 		waitingState = resourceWaitingState(reasons)
 	} else if !workerDecision.Available {
 		reasons = append(reasons, workerDecision.Reasons...)

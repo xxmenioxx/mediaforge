@@ -421,9 +421,11 @@ func seedSettings(db *gorm.DB) error {
 		{
 			Key: "runtimePolicy",
 			Value: models.JSONMap{
-				"mode":            "automatic",
-				"selectedProfile": "desktop_balanced",
-				"fallbackProfile": "desktop_safe",
+				"mode":                   "automatic",
+				"selectedProfile":        "desktop_balanced",
+				"fallbackProfile":        "desktop_safe",
+				"pauseWhenOnBattery":     false,
+				"preventSleepDuringJobs": false,
 			},
 		},
 		{
@@ -441,6 +443,7 @@ func seedSettings(db *gorm.DB) error {
 			Key: "schedulerLimits",
 			Value: models.JSONMap{
 				"useProfileDefaults": true, "maxRunningJobs": 2, "maxVideoJobs": 2, "maxSoftwareX265Jobs": 1, "maxHardwareEncodeJobs": 2,
+				"maxAudioJobs": 3, "maxLabJobs": 1,
 				"minFreeRamGb": 4, "minFreeWorkGb": 40, "minFreeLibraryGb": 50, "maxWorkspaceGb": 300, "allowDirectMode": true,
 			},
 		},
@@ -450,6 +453,10 @@ func seedSettings(db *gorm.DB) error {
 				"enabled": true, "strategy": "balanced", "targetClients": []string{"jellyfin_web", "jellyfin_android_tv", "jellyfin_roku", "jellyfin_webos", "apple_tv"},
 				"minimumScore": 70, "enforcement": "warn",
 			},
+		},
+		{
+			Key:   "housekeeping",
+			Value: models.JSONMap{"autoEnabled": true, "intervalHours": 24, "failedRetentionDays": 7, "canceledRetentionDays": 3, "orphanRetentionDays": 7},
 		},
 		{
 			Key: "validation",

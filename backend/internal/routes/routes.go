@@ -41,6 +41,7 @@ func New(db *gorm.DB) *gin.Engine {
 	workers := handlers.NewWorkerHandler(db)
 	runtime := handlers.NewRuntimeHandler(db)
 	recovery := handlers.NewSchedulerRecoveryHandler(db)
+	housekeeping := handlers.NewHousekeepingHandler(db)
 
 	router.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/swagger/index.html")
@@ -90,6 +91,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/system/runtime/refresh", runtime.Refresh)
 		api.GET("/system/scheduler-recovery", recovery.Latest)
 		api.POST("/system/scheduler-recovery/run", recovery.Run)
+		api.GET("/system/housekeeping/preview", housekeeping.Preview)
+		api.POST("/system/housekeeping/run", housekeeping.Run)
 		api.POST("/workers/claim", workers.ClaimNext)
 		api.GET("/workers/nodes", workers.ListNodes)
 		api.POST("/workers/jobs/:id/dry-run", workers.DryRun)

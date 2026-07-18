@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"gorm.io/gorm"
 )
@@ -41,11 +43,30 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	h.startSleepInhibitor(cmd.Process.Pid)
 
 	registerRunningJobProcess(jobID, cmd)
 	go h.monitorFFmpegJob(jobID, cmd, stdout, stderr, durationSeconds)
 
 	return nil
+}
+
+func (h WorkerHandler) startSleepInhibitor(processID int) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	snapshot, err := runtimeinfo.Latest(h.db)
+	if err != nil {
+		return
+	}
+	config, err := scheduler.LoadRuntimeBehavior(h.db, snapshot.SelectedProfile)
+	if err != nil || !config.PreventSleepDuringJobs {
+		return
+	}
+	command := exec.Command("caffeinate", "-dimsu", "-w", strconv.Itoa(processID))
+	if err := command.Start(); err == nil {
+		go func() { _ = command.Wait() }()
+	}
 }
 
 func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, durationSeconds float64) {

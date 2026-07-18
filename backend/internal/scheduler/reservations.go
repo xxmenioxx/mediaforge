@@ -52,7 +52,7 @@ func ActivateReservation(db *gorm.DB, job models.QueueJob, plan models.Execution
 	}
 	now := time.Now()
 	values := map[string]any{
-		"state": ReservationStateActive, "worker_name": workerName, "encoder": plan.SelectedEncoder, "encoder_class": jsonString(plan.Reservation, "encoderClass"),
+		"state": ReservationStateActive, "worker_name": workerName, "job_type": jsonString(plan.Reservation, "jobType"), "encoder": plan.SelectedEncoder, "encoder_class": jsonString(plan.Reservation, "encoderClass"),
 		"memory_bytes": jsonInt64(plan.Reservation, "memoryBytes"), "workspace_bytes": jsonInt64(plan.Reservation, "workspaceBytes"),
 		"library_bytes": jsonInt64(plan.Reservation, "libraryBytes"), "acquired_at": &now,
 	}
@@ -61,7 +61,7 @@ func ActivateReservation(db *gorm.DB, job models.QueueJob, plan models.Execution
 
 func DeactivateReservationResources(db *gorm.DB, jobID uint) error {
 	return db.Model(&models.SchedulerReservation{}).Where("job_id = ?", jobID).Updates(map[string]any{
-		"state": ReservationStateLocked, "worker_name": "", "encoder": "", "encoder_class": "", "memory_bytes": 0, "workspace_bytes": 0, "library_bytes": 0, "acquired_at": nil,
+		"state": ReservationStateLocked, "worker_name": "", "job_type": "", "encoder": "", "encoder_class": "", "memory_bytes": 0, "workspace_bytes": 0, "library_bytes": 0, "acquired_at": nil,
 	}).Error
 }
 
