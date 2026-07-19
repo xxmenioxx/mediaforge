@@ -1,4 +1,6 @@
-FROM node:22-alpine AS build
+# The React bundle is architecture-independent. Build it on the native CI
+# runner instead of executing Node under QEMU for every target platform.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 
 WORKDIR /app
 
