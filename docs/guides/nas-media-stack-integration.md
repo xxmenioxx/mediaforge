@@ -20,6 +20,10 @@ Si se elige este modo, `nas-media-stack` administra el servicio y no debe levant
       mediaforge.db
       backups/
       reports/
+  work/
+    mediaforge/
+      raw/
+      staging/
 
 /volume2/media/
   movies/
@@ -29,8 +33,6 @@ Si se elige este modo, `nas-media-stack` administra el servicio y no debe levant
   music/
   downloads/
   mediaforge/
-    raw/
-    staging/
     originals_archive/
 ```
 
@@ -40,9 +42,10 @@ flowchart TD
     GHCR --> STACK["/volume1/docker/nas-media-stack"]
     STACK --> CONFIG["config/mediaforge: DB, backups, reports"]
     STACK --> NETWORK["media_network"]
+    STACK --> WORK["NVMe work: raw and staging"]
     STACK --> MEDIA["/volume2/media"]
     MEDIA --> LIBRARY["movies, series, anime, music"]
-    MEDIA --> WORK["mediaforge/raw, staging, originals_archive"]
+    MEDIA --> ARCHIVE["mediaforge/originals_archive"]
 ```
 
 ## Distribución de datos
@@ -51,16 +54,16 @@ flowchart TD
 |---|---|---|---|
 | SQLite/config | `${CONFIG_ROOT}/mediaforge` | `/app/data` | Sí |
 | Reports | `${CONFIG_ROOT}/mediaforge/reports` | `/media/reports` | Sí |
-| Raw controlado | `${MEDIA_ROOT}/mediaforge/raw` | `/media/raw` | Según política de medios |
+| Raw activo | `${MEDIAFORGE_WORK_ROOT}/raw` | `/media/raw` | No; área de trabajo NVMe |
 | Movies | `${MEDIA_ROOT}/movies` | `/media/library/movies` | No en backup del stack |
 | Anime movies | `${MEDIA_ROOT}/anime-movies` | `/media/library/anime-movies` | No en backup del stack |
 | Series | `${MEDIA_ROOT}/series` | `/media/library/series` | No en backup del stack |
 | Anime | `${MEDIA_ROOT}/anime` | `/media/library/anime` | No en backup del stack |
 | Music | `${MEDIA_ROOT}/music` | `/media/library/music` | No en backup del stack |
-| Staging | `${MEDIA_ROOT}/mediaforge/staging` | `/media/staging` | No; es reconstruible |
+| Staging | `${MEDIAFORGE_WORK_ROOT}/staging` | `/media/staging` | No; área de trabajo NVMe |
 | Originales archivados | `${MEDIA_ROOT}/mediaforge/originals_archive` | `/media/originals_archive` | Según política de medios |
 
-`CONFIG_ROOT` actualmente es `/volume1/docker/nas-media-stack/config` y `MEDIA_ROOT` es `/volume2/media`.
+`CONFIG_ROOT` actualmente es `/volume1/docker/nas-media-stack/config`, `MEDIAFORGE_WORK_ROOT` es `/volume1/docker/nas-media-stack/work/mediaforge` y `MEDIA_ROOT` es `/volume2/media`.
 
 ## Módulo Compose propuesto
 
@@ -78,13 +81,13 @@ services:
       TZ: ${TZ}
     volumes:
       - ${CONFIG_ROOT}/mediaforge:/app/data
-      - ${MEDIA_ROOT}/mediaforge/raw:/media/raw
+      - ${MEDIAFORGE_WORK_ROOT}/raw:/media/raw
       - ${MEDIA_ROOT}/movies:/media/library/movies
       - ${MEDIA_ROOT}/anime-movies:/media/library/anime-movies
       - ${MEDIA_ROOT}/series:/media/library/series
       - ${MEDIA_ROOT}/anime:/media/library/anime
       - ${MEDIA_ROOT}/music:/media/library/music
-      - ${MEDIA_ROOT}/mediaforge/staging:/media/staging
+      - ${MEDIAFORGE_WORK_ROOT}/staging:/media/staging
       - ${MEDIA_ROOT}/mediaforge/originals_archive:/media/originals_archive
       - ${CONFIG_ROOT}/mediaforge/reports:/media/reports
     networks:
@@ -123,14 +126,15 @@ El alias `backend` es necesario porque el Nginx incluido en la imagen web utiliz
 ```dotenv
 MEDIAFORGE_VERSION=0.1.0
 MEDIAFORGE_PORT=8090
+MEDIAFORGE_WORK_ROOT=/volume1/docker/nas-media-stack/work/mediaforge
 ```
 
 4. Crear carpetas:
 
 ```sh
 mkdir -p /volume1/docker/nas-media-stack/config/mediaforge/reports
-mkdir -p /volume2/media/mediaforge/raw
-mkdir -p /volume2/media/mediaforge/staging
+mkdir -p /volume1/docker/nas-media-stack/work/mediaforge/raw
+mkdir -p /volume1/docker/nas-media-stack/work/mediaforge/staging
 mkdir -p /volume2/media/mediaforge/originals_archive
 ```
 
@@ -149,7 +153,7 @@ El script de backup de `nas-media-stack` ya protege `/volume1/docker/nas-media-s
 
 Antes de actualizar MediaForge, crea además un backup consistente con SQLite `.backup`; copiar el directorio mientras la base está escribiendo no sustituye ese paso.
 
-Los archivos bajo `/volume2/media` se excluyen deliberadamente del backup del stack y requieren su propia política de protección.
+El directorio `work/` del stack se excluye del backup porque contiene raw activo y staging reconstruible. Los archivos bajo `/volume2/media` también se excluyen deliberadamente y requieren su propia política de protección.
 
 ## Red y futuras integraciones
 

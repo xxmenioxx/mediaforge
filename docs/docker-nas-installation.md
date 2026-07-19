@@ -18,17 +18,16 @@ MediaForge se instala de forma independiente bajo el directorio Docker habitual 
 /volume1/docker/mediaforge
 ```
 
-Todas las rutas se configuran mediante `.env`. No existe una dependencia con `nas-media-stack`, Portainer u otro proyecto. Si el NAS separa aplicaciones y multimedia entre volúmenes, cambia los mounts sin mover el Compose.
+Todas las rutas se configuran mediante `.env`. No existe una dependencia con `nas-media-stack`, Portainer u otro proyecto. En el NAS objetivo, `volume1` es NVMe y se utiliza para raw activo y staging; `volume2` conserva las bibliotecas y el archivo de originales.
 
 ## 1. Preparar carpetas
 
 ```sh
 mkdir -p /volume1/docker/mediaforge/config
 mkdir -p /volume1/docker/mediaforge/data/raw
-mkdir -p /volume1/docker/mediaforge/data/library
 mkdir -p /volume1/docker/mediaforge/data/staging
-mkdir -p /volume1/docker/mediaforge/data/originals_archive
 mkdir -p /volume1/docker/mediaforge/reports
+mkdir -p /volume2/media/mediaforge/originals_archive
 ```
 
 ## 2. Descargar el instalador

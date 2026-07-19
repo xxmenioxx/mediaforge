@@ -116,16 +116,17 @@ La instalación independiente recomendada vive, como otras aplicaciones Docker, 
 /volume1/docker/mediaforge
 ```
 
-El layout inicial puede mantenerse autocontenido y luego mover los mounts multimedia a otro volumen editando `.env`:
+En un NAS con NVMe en `volume1` y HDD en `volume2`, utiliza el NVMe para inputs activos y staging, y el HDD para bibliotecas y archivo de originales:
 
 ```sh
 mkdir -p /volume1/docker/mediaforge/config
 mkdir -p /volume1/docker/mediaforge/data/raw
-mkdir -p /volume1/docker/mediaforge/data/library
 mkdir -p /volume1/docker/mediaforge/data/staging
-mkdir -p /volume1/docker/mediaforge/data/originals_archive
 mkdir -p /volume1/docker/mediaforge/reports
+mkdir -p /volume2/media/mediaforge/originals_archive
 ```
+
+En `.env`, `LIBRARY_PATH` apunta a `/volume2/media` y `ARCHIVE_PATH` a `/volume2/media/mediaforge/originals_archive`. Todos estos paths siguen siendo configurables para otros NAS.
 
 Configura esos paths en `.env` y ejecuta:
 

@@ -19,8 +19,15 @@ The standard standalone installation lives under the NAS Docker applications dir
     logs/
   data/
     raw/
-    library/
     staging/
+
+/volume2/media/
+  movies/
+  anime-movies/
+  series/
+  anime/
+  music/
+  mediaforge/
     originals_archive/
 ```
 
@@ -36,9 +43,9 @@ services:
     volumes:
       - /volume1/docker/mediaforge/config:/app/data
       - /volume1/docker/mediaforge/data/raw:/media/raw
-      - /volume1/docker/mediaforge/data/library:/media/library
+      - /volume2/media:/media/library
       - /volume1/docker/mediaforge/data/staging:/media/staging
-      - /volume1/docker/mediaforge/data/originals_archive:/media/originals_archive
+      - /volume2/media/mediaforge/originals_archive:/media/originals_archive
       - /volume1/docker/mediaforge/reports:/media/reports
 ```
 
