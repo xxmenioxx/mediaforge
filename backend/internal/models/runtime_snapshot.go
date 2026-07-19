@@ -23,6 +23,10 @@ type RuntimeSnapshot struct {
 	Encoders             JSONMap   `json:"encoders" gorm:"type:json"`
 	RecommendedProfile   string    `json:"recommendedProfile"`
 	SelectedProfile      string    `json:"selectedProfile"`
+	PreferredProfile     string    `json:"preferredProfile"`
+	FallbackProfile      string    `json:"fallbackProfile"`
+	AppliedOverrides     JSONList  `json:"appliedOverrides" gorm:"type:json"`
+	EffectivePolicy      JSONMap   `json:"effectivePolicy" gorm:"type:json"`
 	SelectionReasons     JSONList  `json:"selectionReasons" gorm:"type:json"`
 	Warnings             JSONList  `json:"warnings" gorm:"type:json"`
 	CreatedAt            time.Time `json:"createdAt"`

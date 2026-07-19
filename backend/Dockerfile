@@ -14,10 +14,13 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg sqlite-libs
+RUN apk add --no-cache ffmpeg sqlite
 
 COPY --from=build /out/mediaforge-api /usr/local/bin/mediaforge-api
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1
 
 CMD ["mediaforge-api"]

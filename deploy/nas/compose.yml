@@ -1,0 +1,57 @@
+name: mediaforge
+
+services:
+  backend:
+    image: ghcr.io/xxmenioxx/mediaforge-backend:${MEDIAFORGE_VERSION:-0.1.0}
+    restart: unless-stopped
+    environment:
+      MEDIAFORGE_API_HOST: 0.0.0.0
+      MEDIAFORGE_API_PORT: 8080
+      MEDIAFORGE_DB_PATH: /app/data/mediaforge.db
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${CONFIG_PATH:?Set CONFIG_PATH in .env}:/app/data
+      - ${RAW_PATH:?Set RAW_PATH in .env}:/media/raw
+      - ${LIBRARY_PATH:?Set LIBRARY_PATH in .env}:/media/library
+      - ${STAGING_PATH:?Set STAGING_PATH in .env}:/media/staging
+      - ${ARCHIVE_PATH:?Set ARCHIVE_PATH in .env}:/media/originals_archive
+      - ${REPORTS_PATH:?Set REPORTS_PATH in .env}:/media/reports
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal
+
+  web:
+    image: ghcr.io/xxmenioxx/mediaforge-web:${MEDIAFORGE_VERSION:-0.1.0}
+    restart: unless-stopped
+    ports:
+      - "${MEDIAFORGE_PORT:-8090}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge

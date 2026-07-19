@@ -310,10 +310,29 @@ export type RuntimeSnapshot = {
   encoders: Record<string, { listed: boolean; usable: boolean; reason: string }>;
   recommendedProfile: string;
   selectedProfile: string;
+  preferredProfile: string;
+  fallbackProfile: string;
+  appliedOverrides: string[];
+  effectivePolicy: Record<string, unknown>;
   selectionReasons: unknown[];
   warnings: unknown[];
   createdAt: string;
 };
+
+export type RuntimeProfileValues = {
+  maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number;
+  maxAudioJobs: number; maxLabJobs: number; minFreeRamGb: number; minFreeWorkGb: number;
+  minFreeLibraryGb: number; maxWorkspaceGb: number; allowDirectMode: boolean;
+  pauseWhenOnBattery: boolean; preventSleepDuringJobs: boolean;
+};
+
+export type RuntimeProfileDefinition = { key: string; name: string; description: string; official: boolean; values: RuntimeProfileValues };
+export type RuntimeProfileOverride = Partial<RuntimeProfileValues>;
+export type EffectiveRuntimePolicy = {
+  mode: 'automatic' | 'manual'; detectedProfile: string; preferredProfile: string; fallbackProfile: string; baseProfile: string;
+  values: RuntimeProfileValues; overrides: RuntimeProfileOverride; overriddenFields: string[]; selectionReasons: unknown[];
+};
+export type RuntimeProfilesResponse = { profiles: RuntimeProfileDefinition[]; effective: EffectiveRuntimePolicy };
 
 export type QueueJob = {
   id: number;
@@ -440,6 +459,8 @@ export type PublishResult = {
 
 export type LogFile = {
   name: string;
+  category: 'system' | 'scheduler' | 'workers' | 'pipeline' | 'jobs';
+  description: string;
   sizeBytes: number;
   modifiedAt: string;
 };

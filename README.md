@@ -56,6 +56,10 @@ converted originals for the configured number of days before any cleanup is allo
 For a production-like NAS deployment, see [docs/homelab-ugreen-nas.md](docs/homelab-ugreen-nas.md). A local reset helper is available at
 `scripts/reset-v1-preserve-reports.sh`; it preserves `media/reports` and requires explicit confirmation before deleting local working state.
 
+For an installable, release-based Docker deployment that pulls versioned images from GHCR, see
+[docs/docker-nas-installation.md](docs/docker-nas-installation.md). The distributable Compose file lives under
+[`deploy/nas`](deploy/nas) and keeps the backend private behind the web container.
+
 ## Phase 4 Scope
 
 Workers now have the first controlled execution lifecycle:

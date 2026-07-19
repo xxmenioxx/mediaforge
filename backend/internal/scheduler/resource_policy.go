@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -25,21 +24,6 @@ type MachineLimits struct {
 	AllowDirectMode       bool  `json:"allowDirectMode"`
 }
 
-type SchedulerLimitsConfig struct {
-	UseProfileDefaults    bool  `json:"useProfileDefaults"`
-	MaxRunningJobs        int   `json:"maxRunningJobs"`
-	MaxVideoJobs          int   `json:"maxVideoJobs"`
-	MaxSoftwareX265Jobs   int   `json:"maxSoftwareX265Jobs"`
-	MaxHardwareEncodeJobs int   `json:"maxHardwareEncodeJobs"`
-	MaxAudioJobs          int   `json:"maxAudioJobs"`
-	MaxLabJobs            int   `json:"maxLabJobs"`
-	MinFreeRAMGB          int64 `json:"minFreeRamGb"`
-	MinFreeWorkGB         int64 `json:"minFreeWorkGb"`
-	MinFreeLibraryGB      int64 `json:"minFreeLibraryGb"`
-	MaxWorkspaceGB        int64 `json:"maxWorkspaceGb"`
-	AllowDirectMode       bool  `json:"allowDirectMode"`
-}
-
 type ResourceDecision struct {
 	Allowed      bool                       `json:"allowed"`
 	WaitingState string                     `json:"waitingState"`
@@ -50,75 +34,22 @@ type ResourceDecision struct {
 
 func LimitsForProfile(name string) MachineLimits {
 	gb := int64(1 << 30)
-	switch name {
-	case "nas_safe":
-		return MachineLimits{1, 1, 1, 1, 2, 1, 4 * gb, 80 * gb, 300 * gb, 250 * gb, false}
-	case "nas_balanced":
-		return MachineLimits{2, 2, 1, 2, 3, 1, 4 * gb, 80 * gb, 500 * gb, 350 * gb, false}
-	case "laptop_safe":
-		return MachineLimits{1, 1, 1, 1, 2, 1, 6 * gb, 100 * gb, 100 * gb, 150 * gb, true}
-	case "workstation_balanced":
-		return MachineLimits{3, 3, 2, 3, 4, 1, 8 * gb, 100 * gb, 100 * gb, 500 * gb, true}
-	case "workstation_aggressive":
-		return MachineLimits{6, 6, 4, 6, 6, 2, 6 * gb, 80 * gb, 80 * gb, 800 * gb, true}
-	case "desktop_safe":
-		return MachineLimits{1, 1, 1, 1, 2, 1, 4 * gb, 30 * gb, 30 * gb, 200 * gb, true}
-	default:
-		return MachineLimits{2, 2, 1, 2, 3, 1, 4 * gb, 40 * gb, 50 * gb, 300 * gb, true}
+	profile, ok := runtimeinfo.RuntimeProfile(name)
+	if !ok {
+		profile, _ = runtimeinfo.RuntimeProfile("desktop_safe")
 	}
+	value := profile.Values
+	return MachineLimits{value.MaxRunningJobs, value.MaxVideoJobs, value.MaxSoftwareX265Jobs, value.MaxHardwareEncodeJobs, value.MaxAudioJobs, value.MaxLabJobs, value.MinFreeRAMGB * gb, value.MinFreeWorkGB * gb, value.MinFreeLibraryGB * gb, value.MaxWorkspaceGB * gb, value.AllowDirectMode}
 }
 
 func LoadSchedulerLimits(db *gorm.DB, profile string) (MachineLimits, error) {
-	limits := LimitsForProfile(profile)
-	var setting models.AppSetting
-	result := db.Where("key = ?", "schedulerLimits").Limit(1).Find(&setting)
-	if result.Error != nil || result.RowsAffected == 0 {
-		return limits, result.Error
-	}
-	config := SchedulerLimitsConfig{UseProfileDefaults: true}
-	data, err := json.Marshal(setting.Value)
+	effective, err := runtimeinfo.ResolveEffectiveRuntimePolicy(db, profile)
 	if err != nil {
-		return limits, err
+		return MachineLimits{}, err
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return limits, err
-	}
-	if config.UseProfileDefaults {
-		return limits, nil
-	}
+	config := effective.Values
 	gb := int64(1 << 30)
-	if config.MaxRunningJobs > 0 {
-		limits.MaxRunningJobs = config.MaxRunningJobs
-	}
-	if config.MaxVideoJobs > 0 {
-		limits.MaxVideoJobs = config.MaxVideoJobs
-	}
-	if config.MaxSoftwareX265Jobs > 0 {
-		limits.MaxSoftwareX265Jobs = config.MaxSoftwareX265Jobs
-	}
-	if config.MaxHardwareEncodeJobs > 0 {
-		limits.MaxHardwareEncodeJobs = config.MaxHardwareEncodeJobs
-	}
-	if config.MaxAudioJobs > 0 {
-		limits.MaxAudioJobs = config.MaxAudioJobs
-	}
-	if config.MaxLabJobs > 0 {
-		limits.MaxLabJobs = config.MaxLabJobs
-	}
-	if config.MinFreeRAMGB > 0 {
-		limits.MinFreeRAMBytes = config.MinFreeRAMGB * gb
-	}
-	if config.MinFreeWorkGB > 0 {
-		limits.MinFreeWorkBytes = config.MinFreeWorkGB * gb
-	}
-	if config.MinFreeLibraryGB > 0 {
-		limits.MinFreeLibraryBytes = config.MinFreeLibraryGB * gb
-	}
-	if config.MaxWorkspaceGB > 0 {
-		limits.MaxWorkspaceBytes = config.MaxWorkspaceGB * gb
-	}
-	limits.AllowDirectMode = config.AllowDirectMode
-	return limits, nil
+	return MachineLimits{config.MaxRunningJobs, config.MaxVideoJobs, config.MaxSoftwareX265Jobs, config.MaxHardwareEncodeJobs, config.MaxAudioJobs, config.MaxLabJobs, config.MinFreeRAMGB * gb, config.MinFreeWorkGB * gb, config.MinFreeLibraryGB * gb, config.MaxWorkspaceGB * gb, config.AllowDirectMode}, nil
 }
 
 func BuildReservation(plan models.ExecutionPlan) models.JSONMap {

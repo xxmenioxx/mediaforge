@@ -2,6 +2,8 @@
 
 Este documento valida el flujo completo del scheduler antes de considerar v1 lista para uso continuo. Las pruebas automatizadas cubren reglas y concurrencia; esta lista cubre además FFmpeg, filesystem, energía y reinicios reales.
 
+Para entender el flujo, los estados y cada setting antes de ejecutar estas pruebas, consulta [scheduler-v1-guide.md](scheduler-v1-guide.md).
+
 ## Preparación
 
 1. Respalda la base de datos y conserva al menos un asset pequeño de prueba.
@@ -21,6 +23,10 @@ Este documento valida el flujo completo del scheduler antes de considerar v1 lis
 
 ## Recursos y concurrencia
 
+- [ ] En Runtime Profiles, cambia entre dos presets y confirma que el formulario carga sus valores oficiales correspondientes.
+- [ ] Modifica un campo, confirma el indicador `Overridden`, guarda y verifica que el snapshot muestre el perfil efectivo y el override aplicado.
+- [ ] Usa `Reset field` y `Reset all overrides`; el valor debe volver al oficial sin modificar el catálogo.
+- [ ] Con preferencia `Auto recommended`, el perfil efectivo debe seguir al detectado; con un perfil preferido explícito, debe mostrar detectado y efectivo por separado.
 - [ ] Con un solo slot de video, encola dos transcodes: sólo uno debe quedar running.
 - [ ] Encola dos veces el mismo path: debe existir un solo lock activo para el asset.
 - [ ] Reduce artificialmente el espacio libre requerido: el plan debe esperar por disco y reanudarse al liberar la condición.

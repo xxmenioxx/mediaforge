@@ -41,6 +41,12 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	key := c.Param("key")
+	if key == "runtimePolicy" {
+		if err := runtimeinfo.ValidateRuntimePolicyValue(input.Value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	var setting models.AppSetting
 	if err := h.db.First(&setting, "key = ?", key).Error; err != nil {
 		if err != gorm.ErrRecordNotFound {

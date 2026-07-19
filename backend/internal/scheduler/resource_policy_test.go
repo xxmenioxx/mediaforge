@@ -51,6 +51,9 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	if allowed || len(reasons) == 0 {
 		t.Fatalf("expected resource wait, allowed=%v reasons=%v", allowed, reasons)
 	}
+	if candidate.SelectedEncoder != "libx265" {
+		t.Fatalf("resource saturation must not replace a locked encoder: %#v", candidate)
+	}
 }
 
 func TestMachineProfilesHaveSafeLimits(t *testing.T) {
@@ -70,7 +73,7 @@ func TestLoadSchedulerLimitsAppliesCustomOverrides(t *testing.T) {
 	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
-	setting := models.AppSetting{Key: "schedulerLimits", Value: models.JSONMap{"useProfileDefaults": false, "maxRunningJobs": 4, "minFreeRamGb": 12, "allowDirectMode": false}}
+	setting := models.AppSetting{Key: "runtimePolicy", Value: models.JSONMap{"schemaVersion": 2, "mode": "automatic", "preferredProfile": "desktop_balanced", "fallbackProfile": "desktop_safe", "overrides": models.JSONMap{"desktop_balanced": models.JSONMap{"maxRunningJobs": 4, "minFreeRamGb": 12, "allowDirectMode": false}}}}
 	if err := db.Create(&setting).Error; err != nil {
 		t.Fatal(err)
 	}

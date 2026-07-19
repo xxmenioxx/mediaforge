@@ -6,9 +6,11 @@ import {
   CardActionArea,
   CardContent,
   Chip,
+  FormControlLabel,
   Grid,
   LinearProgress,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -22,16 +24,18 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import QueueIcon from '@mui/icons-material/Queue';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import WarningIcon from '@mui/icons-material/Warning';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
-import type { AssetInventory, Library, QueueJob } from '../api/types';
+import type { AssetInventory, Library, QueueJob, RuntimeSnapshot } from '../api/types';
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [autoRefreshRuntime, setAutoRefreshRuntime] = useState(false);
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const jobs = useQuery({
@@ -40,6 +44,13 @@ export function DashboardPage() {
     refetchInterval: (query) => (query.state.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 2000 : false),
   });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
+  const runtime = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const refreshRuntime = useMutation({ mutationFn: api.refreshRuntimeSnapshot, onSuccess: (snapshot) => queryClient.setQueryData(['runtime-snapshot'], snapshot) });
+  useEffect(() => {
+    if (!autoRefreshRuntime) return undefined;
+    const timer = window.setInterval(() => refreshRuntime.mutate(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [autoRefreshRuntime]);
 
   const summary = useMemo(
     () => buildDashboardSummary(libraries.data ?? [], jobs.data ?? [], assets.data),
@@ -75,7 +86,9 @@ export function DashboardPage() {
           </Grid>
         </Grid>
 
-        <Grid container spacing={2}>
+        <RuntimeOverviewPanel snapshot={runtime.data} loading={runtime.isLoading} error={runtime.isError || refreshRuntime.isError} refreshing={refreshRuntime.isPending} autoRefresh={autoRefreshRuntime} onAutoRefresh={setAutoRefreshRuntime} onRefresh={() => refreshRuntime.mutate()} />
+
+        <Grid container spacing={2} sx={{ mt: 2 }}>
           <Grid size={{ xs: 12, lg: 7 }}>
             <Card sx={{ height: '100%' }}>
               <CardContent>
@@ -271,6 +284,27 @@ export function DashboardPage() {
   );
 }
 
+function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh }: { snapshot?: RuntimeSnapshot; loading: boolean; error: boolean; refreshing: boolean; autoRefresh: boolean; onAutoRefresh: (enabled: boolean) => void; onRefresh: () => void }) {
+  const disks = snapshot ? Object.entries(snapshot.disks ?? {}) : [];
+  const encoders = snapshot ? Object.entries(snapshot.encoders ?? {}) : [];
+  const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : 0;
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
+      <Stack><Typography variant="h2">Runtime & Host</Typography><Typography color="text.secondary" variant="body2">Effective scheduler policy and the host capabilities used for dispatch decisions.</Typography></Stack>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}><FormControlLabel control={<Switch checked={autoRefresh} onChange={(event) => onAutoRefresh(event.target.checked)} />} label="Auto refresh · 30s" /><Button variant="outlined" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Detecting…' : 'Refresh host'}</Button><Button component={RouterLink} to="/settings?section=runtime" variant="contained">Runtime settings</Button></Stack>
+    </Stack>
+    {error ? <Alert severity="warning">Runtime diagnostics are temporarily unavailable.</Alert> : loading ? <Typography color="text.secondary">Loading runtime diagnostics…</Typography> : snapshot ? <>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip color="primary" label={`Effective: ${snapshot.selectedProfile}`} /><Chip label={`Detected: ${snapshot.recommendedProfile}`} /><Chip label={`Preferred: ${snapshot.preferredProfile || 'auto'}`} />{snapshot.appliedOverrides.length ? <Chip color="warning" label={`${snapshot.appliedOverrides.length} overrides`} /> : null}<Chip label={`${snapshot.os}/${snapshot.architecture}`} /><Chip label={`${snapshot.cpuCores} CPU cores · load ${snapshot.cpuLoad1.toFixed(2)}`} /><Chip color={snapshot.onBattery ? 'warning' : 'default'} label={snapshot.batteryPresent ? `${snapshot.onBattery ? 'Battery' : 'AC'} ${snapshot.batteryPercent}%` : `Power ${snapshot.powerSource}`} /></Stack>
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Stack direction="row" justifyContent="space-between"><Typography fontWeight={700}>Available RAM</Typography><Typography color="text.secondary">{formatBytes(snapshot.availableMemoryBytes)} / {formatBytes(snapshot.totalMemoryBytes)}</Typography></Stack><LinearProgress variant="determinate" value={ramPercent} color={ramPercent < 25 ? 'warning' : 'success'} /><Typography color="text.secondary" variant="caption">{ramPercent}% available</Typography></Stack></Grid>
+        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>Storage</Typography>{disks.map(([role, raw]) => { const disk = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}; return <Stack direction="row" justifyContent="space-between" key={role}><Typography color="text.secondary" variant="body2">{role} · {String(disk.type ?? 'unknown')}</Typography><Typography variant="body2">{formatBytes(Number(disk.availableBytes ?? 0))} free</Typography></Stack>; })}{!disks.length ? <Typography color="text.secondary" variant="body2">No controlled disks detected.</Typography> : null}</Stack></Grid>
+        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>FFmpeg encoders</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{encoders.map(([name, encoder]) => <Chip key={name} size="small" color={encoder.usable ? 'success' : 'default'} variant={encoder.usable ? 'filled' : 'outlined'} label={`${name} · ${encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found'}`} title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')} />)}{!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}</Stack><Typography color="text.secondary" variant="caption">Hover an encoder to see its capability diagnostic.</Typography></Stack></Grid>
+      </Grid>
+      <Typography color="text.secondary" variant="caption">Host snapshot #{snapshot.id} · {formatDate(snapshot.detectedAt)}</Typography>
+    </> : null}
+  </Stack></CardContent></Card>;
+}
+
 function PipelineChip({
   label,
   value,
@@ -430,6 +464,15 @@ function formatDate(value: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value));
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
 function jobTiming(job: QueueJob) {

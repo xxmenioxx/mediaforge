@@ -25,6 +25,7 @@ import type {
   QueueJobInput,
   QueueJobUpdateInput,
   RuntimeSnapshot,
+  RuntimeProfilesResponse,
   ScanResult,
   SoftwareVersions,
   UpdateLibraryInput,
@@ -37,7 +38,7 @@ import type {
   HousekeepingReport,
 } from './types';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -197,6 +198,7 @@ export const api = {
   settings: () => request<AppSetting[]>('/api/settings'),
   softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
   runtimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime'),
+  runtimeProfiles: () => request<RuntimeProfilesResponse>('/api/system/runtime/profiles'),
   refreshRuntimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime/refresh', { method: 'POST', body: JSON.stringify({}) }),
   updateSetting: ({ key, value }: UpdateSettingInput) =>
     request<AppSetting>(`/api/settings/${key}`, {

@@ -2,6 +2,7 @@ package runtimeinfo
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,10 +72,20 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 		snapshot.Encoders[name] = models.JSONMap{"listed": capability.Listed, "usable": capability.Usable, "reason": capability.Reason}
 	}
 	snapshot.RecommendedProfile, snapshot.SelectionReasons = SelectProfile(snapshot)
-	snapshot.SelectedProfile = configuredProfile(db, snapshot.RecommendedProfile)
-	if snapshot.SelectedProfile != snapshot.RecommendedProfile {
-		snapshot.SelectionReasons = append(snapshot.SelectionReasons, "Runtime policy uses the explicitly selected machine profile")
+	effective, err := ResolveEffectiveRuntimePolicy(db, snapshot.RecommendedProfile)
+	if err != nil {
+		return models.RuntimeSnapshot{}, err
 	}
+	snapshot.SelectedProfile = effective.BaseProfile
+	snapshot.PreferredProfile = effective.PreferredProfile
+	snapshot.FallbackProfile = effective.FallbackProfile
+	snapshot.AppliedOverrides = models.JSONList{}
+	for _, field := range effective.OverriddenFields {
+		snapshot.AppliedOverrides = append(snapshot.AppliedOverrides, field)
+	}
+	encoded, _ := json.Marshal(effective.Values)
+	_ = json.Unmarshal(encoded, &snapshot.EffectivePolicy)
+	snapshot.SelectionReasons = effective.SelectionReasons
 	if err := db.Create(&snapshot).Error; err != nil {
 		return models.RuntimeSnapshot{}, err
 	}
@@ -101,28 +112,6 @@ func SelectProfile(snapshot models.RuntimeSnapshot) (string, models.JSONList) {
 		return "desktop_safe", models.JSONList{"Limited CPU or memory capacity detected"}
 	}
 	return "desktop_balanced", models.JSONList{"General-purpose desktop capacity detected"}
-}
-
-func configuredProfile(db *gorm.DB, recommended string) string {
-	var setting models.AppSetting
-	if db.First(&setting, "key = ?", "runtimePolicy").Error != nil {
-		return recommended
-	}
-	mode, _ := setting.Value["mode"].(string)
-	selected, _ := setting.Value["selectedProfile"].(string)
-	if strings.EqualFold(strings.TrimSpace(mode), "manual") && validProfile(selected) {
-		return selected
-	}
-	return recommended
-}
-
-func validProfile(value string) bool {
-	switch value {
-	case "nas_safe", "nas_balanced", "desktop_safe", "desktop_balanced", "laptop_safe", "workstation_balanced", "workstation_aggressive", "custom":
-		return true
-	default:
-		return false
-	}
 }
 
 func loadPaths(db *gorm.DB) map[string]string {

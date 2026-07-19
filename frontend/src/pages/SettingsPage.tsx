@@ -15,6 +15,7 @@ import {
   FormControlLabel,
   Grid,
   IconButton,
+  InputAdornment,
   MenuItem,
   Stack,
   Switch,
@@ -38,11 +39,11 @@ import InfoIcon from '@mui/icons-material/Info';
 import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { HousekeepingReport, Library } from '../api/types';
+import type { HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport } from '../api/types';
 
 type LibraryType = {
   key: string;
@@ -64,13 +65,9 @@ type WorkingHoursValue = {
   outsideWindowPolicy: { startNewHeavyJobs: boolean; continueRunningJobs: boolean; allowAnalysisJobs: boolean; allowValidationJobs: boolean; allowPublisherJobs: boolean; allowCleanupJobs: boolean; allowLabPreviews: boolean };
 };
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
-type SchedulerLimitsValue = {
-  useProfileDefaults: boolean; maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number; maxAudioJobs: number; maxLabJobs: number;
-  minFreeRamGb: number; minFreeWorkGb: number; minFreeLibraryGb: number; maxWorkspaceGb: number; allowDirectMode: boolean;
-};
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
 type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number };
-type RuntimePolicyValue = { mode: 'automatic' | 'manual'; selectedProfile: string; fallbackProfile: string; pauseWhenOnBattery: boolean; preventSleepDuringJobs: boolean };
+type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
 type SettingsForm = {
   paths: {
@@ -202,13 +199,17 @@ const emptyDraft: LibraryTypeDraft = {
 };
 
 export function SettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
-  const [section, setSection] = useState<'assets' | 'workers' | 'scheduler' | 'schedule' | 'storage' | 'directplay' | 'validation' | 'cleanup' | 'diagnostics'>('assets');
+  const requestedSection = searchParams.get('section');
+  const [section, setSection] = useState<'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations'>(() => requestedSection && ['pipeline', 'runtime', 'assets', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'runtime' | 'assets' | 'operations' : 'overview');
+  const changeSection = (next: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -223,6 +224,8 @@ export function SettingsPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
       await queryClient.invalidateQueries({ queryKey: ['libraries'] });
+      await queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
     },
   });
 
@@ -513,21 +516,7 @@ export function SettingsPage() {
 
         {tab === 'general' ? (
           <Stack spacing={2}>
-            <Card>
-              <CardContent sx={{ pb: 0 }}>
-                <Tabs value={section} onChange={(_, value) => setSection(value)} sx={{ minHeight: 44 }}>
-                  <Tab label="Assets" value="assets" />
-                  <Tab label="Workers" value="workers" />
-                  <Tab label="Scheduler" value="scheduler" />
-                  <Tab label="Working Hours" value="schedule" />
-                  <Tab label="Storage" value="storage" />
-                  <Tab label="DirectPlay" value="directplay" />
-                  <Tab label="Validation" value="validation" />
-                  <Tab label="Cleanup" value="cleanup" />
-                  <Tab label="Diagnostics" value="diagnostics" />
-                </Tabs>
-              </CardContent>
-            </Card>
+            <SettingsDomainNavigation section={section} onChange={changeSection} />
 
             {section === 'assets' ? (
               <Stack spacing={2}>
@@ -549,6 +538,15 @@ export function SettingsPage() {
                     <PathsCard form={form} setForm={setForm} />
                   </Grid>
                 </Grid>
+                <StorageWorkspaceCard
+                  roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
+                  workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
+                  saving={updateSetting.isPending}
+                  onSave={(roles, workspace) => {
+                    updateSetting.mutate({ key: 'storageRoles', value: roles });
+                    updateSetting.mutate({ key: 'workspace', value: workspace as unknown as Record<string, unknown> });
+                  }}
+                />
               </Stack>
             ) : null}
 
@@ -656,31 +654,10 @@ export function SettingsPage() {
               </DialogContent>
             </Dialog>
 
-            {section === 'workers' ? (
+            {section === 'pipeline' ? (
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <WorkersCard form={form} setForm={setForm} />
-                </Grid>
-                <Grid size={{ xs: 12 }}>
-                  <Card><CardContent><Stack spacing={1.5}>
-                    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
-                      <Stack><Typography variant="h3">Scheduler recovery</Typography><Typography color="text.secondary" variant="body2">Conservative startup reconciliation. Partial and orphan files are reported but never deleted.</Typography></Stack>
-                      <Button onClick={() => runRecovery.mutate()} disabled={runRecovery.isPending}>{runRecovery.isPending ? 'Reconciling…' : 'Run reconciliation'}</Button>
-                    </Stack>
-                    {schedulerRecovery.data ? <>
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                        <Chip label={`${schedulerRecovery.data.interruptedJobs} interrupted jobs`} />
-                        <Chip label={`${schedulerRecovery.data.reservationsReleased} reservations released`} />
-                        <Chip label={`${schedulerRecovery.data.workersMarkedOffline} workers offline`} />
-                        <Chip label={`${schedulerRecovery.data.partialOutputsPreserved} partial outputs preserved`} />
-                        <Chip label={`${schedulerRecovery.data.orphanWorkspacePaths.length} orphan workspaces`} color={schedulerRecovery.data.orphanWorkspacePaths.length ? 'warning' : 'success'} />
-                        <Chip label={`${schedulerRecovery.data.missingCompletedOutputs} missing completed outputs`} color={schedulerRecovery.data.missingCompletedOutputs ? 'error' : 'default'} />
-                      </Stack>
-                      {schedulerRecovery.data.orphanWorkspacePaths.map((path) => <Alert severity="warning" key={path}>{path}</Alert>)}
-                      <Typography color="text.secondary" variant="caption">Last reconciliation: {new Date(schedulerRecovery.data.ranAt).toLocaleString()}</Typography>
-                    </> : schedulerRecovery.isError ? <Alert severity="warning">No recovery report is available.</Alert> : <Typography color="text.secondary">Loading recovery report…</Typography>}
-                    {runRecovery.isError ? <Alert severity="error">Recovery failed: {runRecovery.error instanceof Error ? runRecovery.error.message : 'unknown error'}</Alert> : null}
-                  </Stack></CardContent></Card>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <PipelineAutomationCard form={form} setForm={setForm} />
@@ -688,7 +665,7 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            {section === 'validation' ? (
+            {section === 'pipeline' ? (
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <ValidationCard form={form} setForm={setForm} />
@@ -696,15 +673,17 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            {section === 'scheduler' ? (
-              <SchedulerLimitsCard
-                value={schedulerLimitsValue(settings.data?.find((item) => item.key === 'schedulerLimits')?.value)}
+            {section === 'runtime' ? (
+              <RuntimeProfilesCard
+                catalog={runtimeProfilesQuery.data}
+                value={runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value)}
+                detectedProfile={runtimeSnapshot.data?.recommendedProfile ?? 'desktop_safe'}
                 saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'schedulerLimits', value: value as unknown as Record<string, unknown> })}
+                onSave={(value) => updateSetting.mutate({ key: 'runtimePolicy', value: value as unknown as Record<string, unknown> })}
               />
             ) : null}
 
-            {section === 'directplay' ? (
+            {section === 'pipeline' ? (
               <DirectPlayCard
                 value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
                 saving={updateSetting.isPending}
@@ -712,7 +691,7 @@ export function SettingsPage() {
               />
             ) : null}
 
-            {section === 'schedule' ? (
+            {section === 'pipeline' ? (
               <WorkingHoursCard
                 value={workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value)}
                 saving={updateSetting.isPending}
@@ -720,20 +699,11 @@ export function SettingsPage() {
               />
             ) : null}
 
-            {section === 'storage' ? (
-              <StorageWorkspaceCard
-                roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
-                workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(roles, workspace) => {
-                  updateSetting.mutate({ key: 'storageRoles', value: roles });
-                  updateSetting.mutate({ key: 'workspace', value: workspace as unknown as Record<string, unknown> });
-                }}
-              />
-            ) : null}
-
-            {section === 'cleanup' ? (
+            {section === 'runtime' ? (
               <Grid container spacing={2}>
+                <Grid size={{ xs: 12 }}>
+                  <SchedulerRecoveryCard report={schedulerRecovery.data} loading={schedulerRecovery.isLoading} error={schedulerRecovery.isError} running={runRecovery.isPending} runError={runRecovery.error} onRun={() => runRecovery.mutate()} />
+                </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <CancellationPolicyCard form={form} setForm={setForm} />
                 </Grid>
@@ -755,11 +725,8 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            {section === 'diagnostics' ? (
+            {section === 'operations' ? (
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12 }}>
-                  <RuntimePolicyCard value={runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'runtimePolicy', value: value as unknown as Record<string, unknown> })} />
-                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <Card>
                     <CardContent>
@@ -784,8 +751,10 @@ export function SettingsPage() {
                         ) : runtimeSnapshot.data ? (
                           <Stack spacing={2}>
                             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                              <Chip label={`Selected: ${runtimeSnapshot.data.selectedProfile}`} color="primary" />
-                              <Chip label={`Recommended: ${runtimeSnapshot.data.recommendedProfile}`} />
+                              <Chip label={`Effective: ${runtimeSnapshot.data.selectedProfile}`} color="primary" />
+                              <Chip label={`Detected: ${runtimeSnapshot.data.recommendedProfile}`} />
+                              <Chip label={`Preferred: ${runtimeSnapshot.data.preferredProfile || 'auto'}`} />
+                              {runtimeSnapshot.data.appliedOverrides.length ? <Chip label={`${runtimeSnapshot.data.appliedOverrides.length} overrides`} color="warning" /> : null}
                               <Chip label={`${runtimeSnapshot.data.os}/${runtimeSnapshot.data.architecture}`} />
                               <Chip label={`${runtimeSnapshot.data.cpuCores} CPU cores`} />
                               <Chip label={`Load ${runtimeSnapshot.data.cpuLoad1.toFixed(2)}`} />
@@ -925,6 +894,30 @@ export function SettingsPage() {
   );
 }
 
+function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations') => void }) {
+  const domains = [
+    { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
+    { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
+    { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
+    { key: 'operations' as const, title: 'Operations', description: 'Recovery, cleanup, retention, runtime diagnostics and system-wide logs.', color: 'warning.main' },
+  ];
+  return <Stack spacing={2}>
+    {section !== 'overview' ? <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="h2">{domains.find((domain) => domain.key === section)?.title}</Typography><Typography color="text.secondary">{domains.find((domain) => domain.key === section)?.description}</Typography></Stack><Button onClick={() => onChange('overview')}>Back to settings dashboard</Button></Stack> : <Stack><Typography variant="h2">Configuration dashboard</Typography><Typography color="text.secondary">Choose an operational area. Related controls stay together on one page.</Typography></Stack>}
+    {section === 'overview' ? <Grid container spacing={2}>{domains.map((domain) => <Grid size={{ xs: 12, sm: 6, lg: 3 }} key={domain.key}><Card sx={{ height: '100%', borderTop: 3, borderTopColor: domain.color }}><CardContent><Stack spacing={1.5} sx={{ height: '100%' }}><Typography variant="h3">{domain.title}</Typography><Typography color="text.secondary" sx={{ flex: 1 }}>{domain.description}</Typography><Button variant="contained" onClick={() => onChange(domain.key)}>Open {domain.title}</Button>{domain.key === 'operations' ? <Button component={RouterLink} to="/logs">Open logs directly</Button> : null}</Stack></CardContent></Card></Grid>)}</Grid> : null}
+  </Stack>;
+}
+
+function SchedulerRecoveryCard({ report, loading, error, running, runError, onRun }: { report?: SchedulerRecoveryReport; loading: boolean; error: boolean; running: boolean; runError: Error | null; onRun: () => void }) {
+  return <Card><CardContent><Stack spacing={1.5}>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+      <Stack><Typography variant="h3">Scheduler recovery</Typography><Typography color="text.secondary" variant="body2">Conservative reconciliation for jobs, reservations, workers and workspaces after a restart.</Typography></Stack>
+      <Button onClick={onRun} disabled={running}>{running ? 'Reconciling…' : 'Run reconciliation'}</Button>
+    </Stack>
+    {report ? <><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip label={`${report.interruptedJobs} interrupted jobs`} /><Chip label={`${report.reservationsReleased} reservations released`} /><Chip label={`${report.workersMarkedOffline} workers offline`} /><Chip label={`${report.partialOutputsPreserved} partial outputs preserved`} /><Chip label={`${report.orphanWorkspacePaths.length} orphan workspaces`} color={report.orphanWorkspacePaths.length ? 'warning' : 'success'} /><Chip label={`${report.missingCompletedOutputs} missing outputs`} color={report.missingCompletedOutputs ? 'error' : 'default'} /></Stack>{report.orphanWorkspacePaths.map((path) => <Alert severity="warning" key={path}>{path}</Alert>)}<Typography color="text.secondary" variant="caption">Last reconciliation: {new Date(report.ranAt).toLocaleString()}</Typography></> : error ? <Alert severity="warning">No recovery report is available.</Alert> : loading ? <Typography color="text.secondary">Loading recovery report…</Typography> : null}
+    {runError ? <Alert severity="error">Recovery failed: {runError.message}</Alert> : null}
+  </Stack></CardContent></Card>;
+}
+
 function AssetCategoriesPanel({ categories, onChange }: { categories: string[]; onChange: (categories: string[]) => void }) {
   return (
     <Card>
@@ -1054,17 +1047,48 @@ function housekeepingValue(value: Record<string, unknown> | undefined): Housekee
   };
 }
 
-const runtimeProfiles = ['nas_safe', 'nas_balanced', 'desktop_safe', 'desktop_balanced', 'laptop_safe', 'workstation_balanced', 'workstation_aggressive', 'custom'];
 function runtimePolicyValue(value: Record<string, unknown> | undefined): RuntimePolicyValue {
-  return { mode: value?.mode === 'manual' ? 'manual' : 'automatic', selectedProfile: stringValue(value?.selectedProfile, 'desktop_balanced'), fallbackProfile: stringValue(value?.fallbackProfile, 'desktop_safe'), pauseWhenOnBattery: booleanValue(value?.pauseWhenOnBattery, false), preventSleepDuringJobs: booleanValue(value?.preventSleepDuringJobs, false) };
+  const overrides = value?.overrides && typeof value.overrides === 'object' ? value.overrides as Record<string, RuntimeProfileOverride> : {};
+  const legacySelected = stringValue(value?.selectedProfile, 'desktop_balanced');
+  return { schemaVersion: 2, mode: value?.mode === 'manual' ? 'manual' : 'automatic', preferredProfile: stringValue(value?.preferredProfile, value?.mode === 'manual' ? legacySelected : 'auto'), fallbackProfile: stringValue(value?.fallbackProfile, 'desktop_safe'), overrides };
 }
-function RuntimePolicyCard({ value, saving, onSave }: { value: RuntimePolicyValue; saving: boolean; onSave: (value: RuntimePolicyValue) => void }) {
-  const [draft, setDraft] = useState(value); useEffect(() => setDraft(value), [JSON.stringify(value)]);
-  return <Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Runtime policy</Typography><Typography color="text.secondary" variant="body2">Automatic detection is recommended. Manual mode and custom scheduler limits provide explicit overrides.</Typography></Stack>
-    <Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><TextField select label="Runtime mode" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RuntimePolicyValue['mode'] })} fullWidth><MenuItem value="automatic">Auto recommended</MenuItem><MenuItem value="manual">Manual override</MenuItem></TextField></Grid><Grid size={{ xs: 12, md: 4 }}><TextField select label="Selected profile" value={draft.selectedProfile} disabled={draft.mode !== 'manual'} onChange={(event) => setDraft({ ...draft, selectedProfile: event.target.value })} fullWidth>{runtimeProfiles.map((profile) => <MenuItem value={profile} key={profile}>{profile.replaceAll('_', ' ')}</MenuItem>)}</TextField></Grid><Grid size={{ xs: 12, md: 4 }}><TextField select label="Safe fallback" value={draft.fallbackProfile} onChange={(event) => setDraft({ ...draft, fallbackProfile: event.target.value })} fullWidth>{runtimeProfiles.filter((profile) => profile !== 'custom').map((profile) => <MenuItem value={profile} key={profile}>{profile.replaceAll('_', ' ')}</MenuItem>)}</TextField></Grid></Grid>
-    <FormControlLabel control={<Switch checked={draft.pauseWhenOnBattery} onChange={(event) => setDraft({ ...draft, pauseWhenOnBattery: event.target.checked })} />} label="Pause new jobs while running on battery" />
-    <FormControlLabel control={<Switch checked={draft.preventSleepDuringJobs} onChange={(event) => setDraft({ ...draft, preventSleepDuringJobs: event.target.checked })} />} label="Prevent sleep during active jobs (macOS)" />
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save runtime policy</Button>
+
+const runtimeNumericFields: Array<{ key: keyof RuntimeProfileValues; label: string; suffix?: string }> = [
+  { key: 'maxRunningJobs', label: 'Max running jobs' }, { key: 'maxVideoJobs', label: 'Max video jobs' },
+  { key: 'maxSoftwareX265Jobs', label: 'Max software x265 jobs' }, { key: 'maxHardwareEncodeJobs', label: 'Max hardware encode jobs' },
+  { key: 'maxAudioJobs', label: 'Max audio jobs' }, { key: 'maxLabJobs', label: 'Max Lab jobs' },
+  { key: 'minFreeRamGb', label: 'Minimum free RAM', suffix: 'GB' }, { key: 'minFreeWorkGb', label: 'Work disk reserve', suffix: 'GB' },
+  { key: 'minFreeLibraryGb', label: 'Library reserve', suffix: 'GB' }, { key: 'maxWorkspaceGb', label: 'Maximum workspace', suffix: 'GB' },
+];
+
+function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave }: { catalog?: RuntimeProfilesResponse; value: RuntimePolicyValue; detectedProfile: string; saving: boolean; onSave: (value: RuntimePolicyValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [JSON.stringify(value)]);
+  if (!catalog) return <Card><CardContent><Typography color="text.secondary">Loading runtime profiles…</Typography></CardContent></Card>;
+  const selectedKey = draft.preferredProfile === 'auto' ? detectedProfile : draft.preferredProfile;
+  const selected = catalog.profiles.find((profile) => profile.key === selectedKey) ?? catalog.profiles[0];
+  if (!selected) return <Alert severity="error">No default runtime profiles are available.</Alert>;
+  const override = draft.overrides[selected.key] ?? {};
+  const effective = { ...selected.values, ...override };
+  const setOverride = (key: keyof RuntimeProfileValues, next: number | boolean) => setDraft((current) => ({ ...current, overrides: { ...current.overrides, [selected.key]: { ...(current.overrides[selected.key] ?? {}), [key]: next } } }));
+  const overridden = (key: keyof RuntimeProfileValues) => Object.prototype.hasOwnProperty.call(override, key);
+  const numericField = ({ key, label, suffix }: { key: keyof RuntimeProfileValues; label: string; suffix?: string }) => { const changed = overridden(key); return <Stack spacing={1} sx={{ border: 1, borderColor: changed ? 'warning.main' : 'divider', bgcolor: changed ? 'rgba(255, 167, 38, 0.05)' : 'transparent', borderRadius: 1, p: 1.25, height: '100%' }}><Stack direction="row" spacing={0.5} alignItems="center"><Typography variant="body2" fontWeight={700}>{label}</Typography>{changed ? <Tooltip title="Changed from the profile default"><EditIcon color="warning" sx={{ fontSize: 16 }} /></Tooltip> : null}</Stack><TextField type="number" size="small" value={Number(effective[key])} inputProps={{ min: 1 }} InputProps={suffix ? { endAdornment: <InputAdornment position="end">{suffix}</InputAdornment> } : undefined} onChange={(event) => setOverride(key, Math.max(1, Number(event.target.value)))} fullWidth /></Stack>; };
+  const booleanField = (key: 'allowDirectMode' | 'pauseWhenOnBattery' | 'preventSleepDuringJobs', label: string) => { const changed = overridden(key); return <Stack spacing={0.75} sx={{ border: 1, borderColor: changed ? 'warning.main' : 'divider', bgcolor: changed ? 'rgba(255, 167, 38, 0.05)' : 'transparent', borderRadius: 1, px: 1.25, py: 1, height: '100%' }}><Stack direction="row" spacing={0.5} alignItems="center"><Typography variant="body2" fontWeight={700}>{label}</Typography>{changed ? <Tooltip title="Changed from the profile default"><EditIcon color="warning" sx={{ fontSize: 16 }} /></Tooltip> : null}</Stack><Switch size="small" checked={Boolean(effective[key])} onChange={(event) => setOverride(key, event.target.checked)} sx={{ alignSelf: 'flex-start' }} /></Stack>; };
+  return <Card><CardContent><Stack spacing={2.5}>
+    <Stack><Typography variant="h3">Effective Runtime Profiles</Typography><Typography color="text.secondary" variant="body2">Profile defaults remain unchanged. Editing a field creates a custom value only for the selected base profile.</Typography></Stack>
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select label="Detection mode" value={draft.mode} onChange={(event) => { const mode = event.target.value as RuntimePolicyValue['mode']; setDraft({ ...draft, mode, preferredProfile: mode === 'manual' && draft.preferredProfile === 'auto' ? detectedProfile : draft.preferredProfile }); }} fullWidth><MenuItem value="automatic">Automatic</MenuItem><MenuItem value="manual">Manual</MenuItem></TextField></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select label="Preferred base profile" value={draft.preferredProfile} onChange={(event) => setDraft({ ...draft, preferredProfile: event.target.value })} fullWidth><MenuItem value="auto">Auto recommended ({detectedProfile.replaceAll('_', ' ')})</MenuItem>{catalog.profiles.map((profile) => <MenuItem value={profile.key} key={profile.key}>{profile.name}</MenuItem>)}</TextField></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select label="Safe fallback" value={draft.fallbackProfile} onChange={(event) => setDraft({ ...draft, fallbackProfile: event.target.value })} fullWidth>{catalog.profiles.map((profile) => <MenuItem value={profile.key} key={profile.key}>{profile.name}</MenuItem>)}</TextField></Grid>
+    </Grid>
+    <Alert severity="info">Detected: {detectedProfile.replaceAll('_', ' ')} · Base: {selected.name} · Effective overrides: {Object.keys(override).length}</Alert>
+    <Stack><Typography variant="h4">{selected.name}</Typography><Typography color="text.secondary" variant="body2">{selected.description}</Typography></Stack>
+    <Grid container spacing={2} alignItems="flex-start">
+      <Grid size={{ xs: 12, lg: 6 }}><Stack spacing={1}><Typography variant="h4">Concurrency</Typography><Grid container spacing={1}>{runtimeNumericFields.slice(0, 6).map((field) => <Grid size={{ xs: 12, sm: 6 }} key={field.key}>{numericField(field)}</Grid>)}</Grid></Stack></Grid>
+      <Grid size={{ xs: 12, lg: 6 }}><Stack spacing={1}><Typography variant="h4">Resource reserves</Typography><Grid container spacing={1}>{runtimeNumericFields.slice(6).map((field) => <Grid size={{ xs: 12, sm: 6 }} key={field.key}>{numericField(field)}</Grid>)}</Grid></Stack></Grid>
+    </Grid>
+    <Stack spacing={1}><Typography variant="h4">Runtime behavior</Typography><Grid container spacing={1}><Grid size={{ xs: 12, sm: 6 }}>{booleanField('allowDirectMode', 'Allow direct workspace mode')}</Grid><Grid size={{ xs: 12, sm: 6 }}>{booleanField('pauseWhenOnBattery', 'Pause new jobs while on battery')}</Grid><Grid size={{ xs: 12, sm: 6 }}>{booleanField('preventSleepDuringJobs', 'Prevent sleep during active jobs (macOS)')}</Grid></Grid></Stack>
+    <Stack direction="row" spacing={1}><Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save effective runtime policy</Button><Button disabled={!Object.keys(override).length} onClick={() => setDraft((current) => { const overrides = { ...current.overrides }; delete overrides[selected.key]; return { ...current, overrides }; })}>Restore profile defaults</Button></Stack>
   </Stack></CardContent></Card>;
 }
 
@@ -1120,44 +1144,6 @@ function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; sav
     <Stack><Typography variant="h4">Target clients</Typography><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{directPlayClients.map((client) => <FormControlLabel key={client} control={<Checkbox checked={draft.targetClients.includes(client)} disabled={!draft.enabled} onChange={() => toggleClient(client)} />} label={client.replaceAll('_', ' ')} />)}</Stack></Stack>
     <Alert severity="info">This is a preflight estimate. MediaForge records it in the Execution Plan; definitive compatibility requires analyzing the final file.</Alert>
     <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (draft.enabled && draft.targetClients.length === 0)} onClick={() => onSave(draft)}>Save DirectPlay policy</Button>
-  </Stack></CardContent></Card>;
-}
-
-function schedulerLimitsValue(value: Record<string, unknown> | undefined): SchedulerLimitsValue {
-  return {
-    useProfileDefaults: booleanValue(value?.useProfileDefaults, true),
-    maxRunningJobs: numberValue(value?.maxRunningJobs, 2), maxVideoJobs: numberValue(value?.maxVideoJobs, 2),
-    maxSoftwareX265Jobs: numberValue(value?.maxSoftwareX265Jobs, 1), maxHardwareEncodeJobs: numberValue(value?.maxHardwareEncodeJobs, 2),
-    maxAudioJobs: numberValue(value?.maxAudioJobs, 3), maxLabJobs: numberValue(value?.maxLabJobs, 1),
-    minFreeRamGb: numberValue(value?.minFreeRamGb, 4), minFreeWorkGb: numberValue(value?.minFreeWorkGb, 40),
-    minFreeLibraryGb: numberValue(value?.minFreeLibraryGb, 50), maxWorkspaceGb: numberValue(value?.maxWorkspaceGb, 300),
-    allowDirectMode: booleanValue(value?.allowDirectMode, true),
-  };
-}
-
-function SchedulerLimitsCard({ value, saving, onSave }: { value: SchedulerLimitsValue; saving: boolean; onSave: (value: SchedulerLimitsValue) => void }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [JSON.stringify(value)]);
-  const numericField = (key: keyof SchedulerLimitsValue, label: string) => <TextField type="number" label={label} value={draft[key]} disabled={draft.useProfileDefaults} inputProps={{ min: 1 }} onChange={(event) => setDraft({ ...draft, [key]: Math.max(1, Number(event.target.value)) })} fullWidth />;
-  return <Card><CardContent><Stack spacing={2}>
-    <Stack><Typography variant="h3">Scheduler Limits</Typography><Typography color="text.secondary" variant="body2">Use the selected machine profile defaults or define explicit concurrency and storage reserves.</Typography></Stack>
-    <FormControlLabel control={<Switch checked={draft.useProfileDefaults} onChange={(event) => setDraft({ ...draft, useProfileDefaults: event.target.checked })} />} label="Use selected machine profile defaults" />
-    {draft.useProfileDefaults ? <Alert severity="info">The active runtime profile supplies these limits. Stored custom values are preserved for later use.</Alert> : null}
-    <Grid container spacing={2}>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxRunningJobs', 'Max running jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxVideoJobs', 'Max video jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxSoftwareX265Jobs', 'Max software x265 jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxHardwareEncodeJobs', 'Max hardware encode jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxAudioJobs', 'Max audio jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxLabJobs', 'Max Lab jobs')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeRamGb', 'Minimum free RAM (GB)')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeWorkGb', 'Work disk reserve (GB)')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('minFreeLibraryGb', 'Library reserve (GB)')}</Grid>
-      <Grid size={{ xs: 12, sm: 6, md: 3 }}>{numericField('maxWorkspaceGb', 'Maximum workspace (GB)')}</Grid>
-    </Grid>
-    <FormControlLabel control={<Switch checked={draft.allowDirectMode} disabled={draft.useProfileDefaults} onChange={(event) => setDraft({ ...draft, allowDirectMode: event.target.checked })} />} label="Allow direct workspace mode" />
-    <Alert severity="info">Blocked plans now identify the concrete cause: WAITING_RAM, WAITING_SSD_SPACE, WAITING_HDD_SPACE, or WAITING_PROFILE_LIMIT.</Alert>
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save scheduler limits</Button>
   </Stack></CardContent></Card>;
 }
 

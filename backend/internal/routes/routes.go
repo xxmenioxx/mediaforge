@@ -88,6 +88,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/import/mwp", imports.ImportMWP)
 		api.GET("/system/versions", handlers.Versions)
 		api.GET("/system/runtime", runtime.Latest)
+		api.GET("/system/runtime/profiles", runtime.Profiles)
 		api.POST("/system/runtime/refresh", runtime.Refresh)
 		api.GET("/system/scheduler-recovery", recovery.Latest)
 		api.POST("/system/scheduler-recovery/run", recovery.Run)

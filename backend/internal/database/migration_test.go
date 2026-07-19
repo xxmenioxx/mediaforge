@@ -47,3 +47,37 @@ func TestMigrateUpgradesLegacyQueueWithoutLosingJob(t *testing.T) {
 		t.Fatalf("reservation was not backfilled: %#v", reservation)
 	}
 }
+
+func TestMigrateRuntimePolicyPreservesLegacyCustomLimitsAsOverrides(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "runtime.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "runtimePolicy", Value: models.JSONMap{"mode": "manual", "selectedProfile": "workstation_balanced", "fallbackProfile": "desktop_safe", "preventSleepDuringJobs": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "schedulerLimits", Value: models.JSONMap{"useProfileDefaults": false, "maxRunningJobs": 4, "minFreeRamGb": 12, "allowDirectMode": false}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", "runtimePolicy").Error; err != nil {
+		t.Fatal(err)
+	}
+	if intFromJSON(setting.Value["schemaVersion"]) != 2 || setting.Value["preferredProfile"] != "workstation_balanced" {
+		t.Fatalf("runtime policy was not migrated: %#v", setting.Value)
+	}
+	overrides, ok := setting.Value["overrides"].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime overrides missing: %#v", setting.Value)
+	}
+	profile, ok := overrides["workstation_balanced"].(map[string]any)
+	if !ok || intFromJSON(profile["maxRunningJobs"]) != 4 || intFromJSON(profile["minFreeRamGb"]) != 12 || profile["preventSleepDuringJobs"] != true {
+		t.Fatalf("legacy values not preserved: %#v", overrides)
+	}
+}

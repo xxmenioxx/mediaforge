@@ -22,9 +22,11 @@ type LogHandler struct {
 }
 
 type LogFile struct {
-	Name       string    `json:"name"`
-	SizeBytes  int64     `json:"sizeBytes"`
-	ModifiedAt time.Time `json:"modifiedAt"`
+	Name        string    `json:"name"`
+	Category    string    `json:"category"`
+	Description string    `json:"description"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	ModifiedAt  time.Time `json:"modifiedAt"`
 }
 
 type LogFileContent struct {
@@ -62,9 +64,11 @@ func (h LogHandler) ListFiles(c *gin.Context) {
 		}
 
 		files = append(files, LogFile{
-			Name:       entry.Name(),
-			SizeBytes:  info.Size(),
-			ModifiedAt: info.ModTime(),
+			Name:        entry.Name(),
+			Category:    logFileCategory(entry.Name()),
+			Description: logFileDescription(entry.Name()),
+			SizeBytes:   info.Size(),
+			ModifiedAt:  info.ModTime(),
 		})
 	}
 
@@ -126,6 +130,20 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 	if err := os.WriteFile(filepath.Join(logDir, "jobs.log"), []byte(allJobsLog(h.db, jobs)), 0o644); err != nil {
 		return "", err
 	}
+	if err := os.WriteFile(filepath.Join(logDir, "scheduler.log"), []byte(schedulerLog(h.db)), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "workers.log"), []byte(workersLog(h.db)), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "pipeline.log"), []byte(pipelineLog(jobs)), 0o644); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(logDir, "system.log")); os.IsNotExist(err) {
+		if err := os.WriteFile(filepath.Join(logDir, "system.log"), []byte(""), 0o644); err != nil {
+			return "", err
+		}
+	}
 
 	for _, job := range jobs {
 		name := fmt.Sprintf("job-%d.log", job.ID)
@@ -135,6 +153,94 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 	}
 
 	return logDir, nil
+}
+
+func logFileCategory(name string) string {
+	switch name {
+	case "system.log":
+		return "system"
+	case "scheduler.log":
+		return "scheduler"
+	case "workers.log":
+		return "workers"
+	case "pipeline.log":
+		return "pipeline"
+	default:
+		return "jobs"
+	}
+}
+
+func logFileDescription(name string) string {
+	switch name {
+	case "system.log":
+		return "Application and subsystem events"
+	case "scheduler.log":
+		return "Plans, reservations and runtime decisions"
+	case "workers.log":
+		return "Worker heartbeats, capacity and active claims"
+	case "pipeline.log":
+		return "Lifecycle, validation and publishing activity"
+	case "jobs.log":
+		return "Summary of every queue job"
+	default:
+		return "Detailed job diagnostics"
+	}
+}
+
+func schedulerLog(db *gorm.DB) string {
+	var plans []models.ExecutionPlan
+	var reservations []models.SchedulerReservation
+	var snapshots []models.RuntimeSnapshot
+	_ = db.Order("updated_at desc").Limit(200).Find(&plans).Error
+	_ = db.Order("updated_at desc").Limit(200).Find(&reservations).Error
+	_ = db.Order("detected_at desc").Limit(20).Find(&snapshots).Error
+	var builder strings.Builder
+	builder.WriteString("MediaForge scheduler log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nExecution plans\n")
+	for _, plan := range plans {
+		builder.WriteString(fmt.Sprintf("[%s] plan=%d job=%d v=%d status=%s waiting=%s encoder=%s runtime=%s approval=%s output=%s\n", plan.UpdatedAt.Format(time.RFC3339), plan.ID, plan.JobID, plan.Version, plan.Status, emptyLabel(plan.WaitingState), plan.SelectedEncoder, plan.RuntimeProfile, plan.ApprovalStatus, plan.OutputPath))
+	}
+	builder.WriteString("\nReservations\n")
+	for _, item := range reservations {
+		builder.WriteString(fmt.Sprintf("[%s] job=%d asset=%s state=%s worker=%s type=%s encoder=%s class=%s\n", item.UpdatedAt.Format(time.RFC3339), item.JobID, item.AssetKey, item.State, emptyLabel(item.WorkerName), emptyLabel(item.JobType), emptyLabel(item.Encoder), emptyLabel(item.EncoderClass)))
+	}
+	builder.WriteString("\nRuntime snapshots\n")
+	for _, item := range snapshots {
+		builder.WriteString(fmt.Sprintf("[%s] detected=%s effective=%s preferred=%s overrides=%v warnings=%v\n", item.DetectedAt.Format(time.RFC3339), item.RecommendedProfile, item.SelectedProfile, emptyLabel(item.PreferredProfile), item.AppliedOverrides, item.Warnings))
+	}
+	return builder.String()
+}
+
+func workersLog(db *gorm.DB) string {
+	var workers []models.WorkerNode
+	var jobs []models.QueueJob
+	_ = db.Order("name asc").Find(&workers).Error
+	_ = db.Where("status IN ?", []string{JobStatusQueued, JobStatusRunning}).Order("priority asc, created_at asc").Find(&jobs).Error
+	var builder strings.Builder
+	builder.WriteString("MediaForge workers log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nWorkers\n")
+	for _, worker := range workers {
+		builder.WriteString(fmt.Sprintf("[%s] worker=%s status=%s slots=%d runtime=%s encoders=%v\n", worker.LastSeenAt.Format(time.RFC3339), worker.Name, worker.Status, worker.MaxConcurrentJobs, worker.RuntimeProfile, worker.Encoders))
+	}
+	builder.WriteString("\nQueued and active claims\n")
+	for _, job := range jobs {
+		builder.WriteString(fmt.Sprintf("[%s] job=%d status=%s stage=%s worker=%s priority=%d media=%s\n", job.UpdatedAt.Format(time.RFC3339), job.ID, job.Status, job.Stage, emptyLabel(job.WorkerName), job.Priority, job.MediaPath))
+	}
+	return builder.String()
+}
+
+func pipelineLog(jobs []models.QueueJob) string {
+	var builder strings.Builder
+	builder.WriteString("MediaForge pipeline log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\n")
+	for _, job := range jobs {
+		builder.WriteString(fmt.Sprintf("[%s] job=%d status=%s stage=%s validation=%s score=%d published=%s\n", job.UpdatedAt.Format(time.RFC3339), job.ID, job.Status, job.Stage, emptyLabel(job.ValidationStatus), job.ValidationScore, emptyLabel(job.PublishedPath)))
+		if len(job.StageHistory) > 0 {
+			payload, _ := json.Marshal(job.StageHistory)
+			builder.WriteString("  lifecycle: " + string(payload) + "\n")
+		}
+		if job.ErrorMessage != "" {
+			builder.WriteString("  error: " + job.ErrorMessage + "\n")
+		}
+	}
+	return builder.String()
 }
 
 func (h LogHandler) configuredLogDir() (string, error) {

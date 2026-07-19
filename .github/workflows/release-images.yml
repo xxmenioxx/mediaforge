@@ -1,0 +1,112 @@
+name: Release container images
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Validate NAS Compose
+        env:
+          CONFIG_PATH: /tmp/mediaforge/config
+          RAW_PATH: /tmp/mediaforge/raw
+          LIBRARY_PATH: /tmp/mediaforge/library
+          STAGING_PATH: /tmp/mediaforge/staging
+          ARCHIVE_PATH: /tmp/mediaforge/archive
+          REPORTS_PATH: /tmp/mediaforge/reports
+        run: docker compose -f deploy/nas/compose.yml config --quiet
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            image: ghcr.io/xxmenioxx/mediaforge-backend
+            context: ./backend
+            target: ""
+          - name: web
+            image: ghcr.io/xxmenioxx/mediaforge-web
+            context: ./frontend
+            target: production
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=MediaForge ${{ matrix.name }}
+            org.opencontainers.image.description=MediaForge self-hosted media processing platform
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package NAS installer
+        run: |
+          cp deploy/nas/compose.yml mediaforge-compose.yml
+          cp deploy/nas/.env.example mediaforge.env.example
+          cp deploy/nas/backup.sh mediaforge-backup.sh
+          release_version="${GITHUB_REF_NAME#v}"
+          sed -i "s/^MEDIAFORGE_VERSION=.*/MEDIAFORGE_VERSION=${release_version}/" mediaforge.env.example
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          mediaforge-compose.yml
+          mediaforge.env.example
+          mediaforge-backup.sh
+          --generate-notes
+          --title "MediaForge $GITHUB_REF_NAME"

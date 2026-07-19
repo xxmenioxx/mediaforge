@@ -11,6 +11,11 @@ import (
 
 type RuntimeHandler struct{ db *gorm.DB }
 
+type RuntimeProfilesResponse struct {
+	Profiles  []runtimeinfo.RuntimeProfileDefinition `json:"profiles"`
+	Effective runtimeinfo.EffectiveRuntimePolicy     `json:"effective"`
+}
+
 func NewRuntimeHandler(db *gorm.DB) RuntimeHandler { return RuntimeHandler{db: db} }
 
 func (h RuntimeHandler) Latest(c *gin.Context) {
@@ -33,4 +38,17 @@ func (h RuntimeHandler) Refresh(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, snapshot)
+}
+
+func (h RuntimeHandler) Profiles(c *gin.Context) {
+	detected := "desktop_safe"
+	if snapshot, err := runtimeinfo.Latest(h.db); err == nil && snapshot.RecommendedProfile != "" {
+		detected = snapshot.RecommendedProfile
+	}
+	effective, err := runtimeinfo.ResolveEffectiveRuntimePolicy(h.db, detected)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, RuntimeProfilesResponse{Profiles: runtimeinfo.OfficialRuntimeProfiles(), Effective: effective})
 }

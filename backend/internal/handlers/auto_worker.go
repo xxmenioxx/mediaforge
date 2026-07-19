@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -55,10 +56,12 @@ func (w *AutoWorker) tick() {
 	limits, err := w.handler.workerLimits()
 	if err != nil {
 		log.Printf("auto worker settings error: %v", err)
+		appendSystemLog(w.handler.db, "auto_worker_settings_failed", nil, err)
 		return
 	}
 	if err := w.handler.heartbeatWorker(limits.DefaultWorkerName, limits); err != nil {
 		log.Printf("auto worker heartbeat error: %v", err)
+		appendSystemLog(w.handler.db, "worker_heartbeat_failed", map[string]string{"worker": limits.DefaultWorkerName}, err)
 		return
 	}
 	if !limits.AutoWorkerEnabled {
@@ -75,11 +78,13 @@ func (w *AutoWorker) tick() {
 				return
 			}
 			log.Printf("auto worker claim error: %v", err)
+			appendSystemLog(w.handler.db, "auto_worker_claim_failed", map[string]string{"worker": limits.DefaultWorkerName}, err)
 			return
 		}
 
 		if _, _, err := w.handler.executeQueueJob(job, true); err != nil {
 			log.Printf("auto worker execute job %d error: %v", job.ID, err)
+			appendSystemLog(w.handler.db, "auto_worker_execution_failed", map[string]string{"worker": limits.DefaultWorkerName, "jobId": fmt.Sprint(job.ID)}, err)
 			return
 		}
 	}

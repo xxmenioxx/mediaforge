@@ -1,11 +1,13 @@
 package database
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -34,6 +36,9 @@ func Migrate(db *gorm.DB) error {
 	); err != nil {
 		return err
 	}
+	if err := migrateRuntimePolicy(db); err != nil {
+		return err
+	}
 
 	if err := normalizeProfileContracts(db); err != nil {
 		return err
@@ -48,6 +53,91 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func migrateRuntimePolicy(db *gorm.DB) error {
+	var setting models.AppSetting
+	result := db.Where("key = ?", "runtimePolicy").Limit(1).Find(&setting)
+	if result.Error != nil || result.RowsAffected == 0 || intFromJSON(setting.Value["schemaVersion"]) >= 2 {
+		return result.Error
+	}
+	mode, _ := setting.Value["mode"].(string)
+	selected, _ := setting.Value["selectedProfile"].(string)
+	if _, ok := runtimeinfo.RuntimeProfile(selected); !ok {
+		selected = "desktop_balanced"
+	}
+	preferred := "auto"
+	if mode == "manual" {
+		preferred = selected
+	}
+	config := runtimeinfo.RuntimePolicyConfig{SchemaVersion: 2, Mode: mode, PreferredProfile: preferred, FallbackProfile: "desktop_safe", Overrides: map[string]runtimeinfo.RuntimeProfileOverride{}}
+	if fallback, ok := setting.Value["fallbackProfile"].(string); ok && runtimeinfo.ValidRuntimeProfile(fallback) && fallback != "auto" {
+		config.FallbackProfile = fallback
+	}
+	override := runtimeinfo.RuntimeProfileOverride{}
+	if value, exists := setting.Value["pauseWhenOnBattery"]; exists {
+		parsed := boolFromJSON(value)
+		override.PauseWhenOnBattery = &parsed
+	}
+	if value, exists := setting.Value["preventSleepDuringJobs"]; exists {
+		parsed := boolFromJSON(value)
+		override.PreventSleepDuringJobs = &parsed
+	}
+	var limits models.AppSetting
+	if db.Where("key = ?", "schedulerLimits").Limit(1).Find(&limits).RowsAffected > 0 && !boolFromJSON(limits.Value["useProfileDefaults"]) {
+		override.MaxRunningJobs = intPointer(limits.Value["maxRunningJobs"])
+		override.MaxVideoJobs = intPointer(limits.Value["maxVideoJobs"])
+		override.MaxSoftwareX265Jobs = intPointer(limits.Value["maxSoftwareX265Jobs"])
+		override.MaxHardwareEncodeJobs = intPointer(limits.Value["maxHardwareEncodeJobs"])
+		override.MaxAudioJobs = intPointer(limits.Value["maxAudioJobs"])
+		override.MaxLabJobs = intPointer(limits.Value["maxLabJobs"])
+		override.MinFreeRAMGB = int64Pointer(limits.Value["minFreeRamGb"])
+		override.MinFreeWorkGB = int64Pointer(limits.Value["minFreeWorkGb"])
+		override.MinFreeLibraryGB = int64Pointer(limits.Value["minFreeLibraryGb"])
+		override.MaxWorkspaceGB = int64Pointer(limits.Value["maxWorkspaceGb"])
+		if value, exists := limits.Value["allowDirectMode"]; exists {
+			parsed := boolFromJSON(value)
+			override.AllowDirectMode = &parsed
+		}
+	}
+	config.Overrides[selected] = override
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	var value models.JSONMap
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return err
+	}
+	setting.Value = value
+	return db.Save(&setting).Error
+}
+
+func intFromJSON(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	case int64:
+		return int(v)
+	}
+	return 0
+}
+func boolFromJSON(value any) bool { parsed, _ := value.(bool); return parsed }
+func intPointer(value any) *int {
+	parsed := intFromJSON(value)
+	if parsed <= 0 {
+		return nil
+	}
+	return &parsed
+}
+func int64Pointer(value any) *int64 {
+	parsed := int64(intFromJSON(value))
+	if parsed <= 0 {
+		return nil
+	}
+	return &parsed
 }
 
 func backfillQueueLifecycleStages(db *gorm.DB) error {
@@ -421,11 +511,11 @@ func seedSettings(db *gorm.DB) error {
 		{
 			Key: "runtimePolicy",
 			Value: models.JSONMap{
-				"mode":                   "automatic",
-				"selectedProfile":        "desktop_balanced",
-				"fallbackProfile":        "desktop_safe",
-				"pauseWhenOnBattery":     false,
-				"preventSleepDuringJobs": false,
+				"schemaVersion":    2,
+				"mode":             "automatic",
+				"preferredProfile": "auto",
+				"fallbackProfile":  "desktop_safe",
+				"overrides":        models.JSONMap{},
 			},
 		},
 		{
@@ -438,14 +528,6 @@ func seedSettings(db *gorm.DB) error {
 		{
 			Key:   "workspace",
 			Value: models.JSONMap{"preferredMode": "copy_to_work_disk", "fallbackMode": "wait", "allowDirectMode": false, "estimateRequiredSpace": true},
-		},
-		{
-			Key: "schedulerLimits",
-			Value: models.JSONMap{
-				"useProfileDefaults": true, "maxRunningJobs": 2, "maxVideoJobs": 2, "maxSoftwareX265Jobs": 1, "maxHardwareEncodeJobs": 2,
-				"maxAudioJobs": 3, "maxLabJobs": 1,
-				"minFreeRamGb": 4, "minFreeWorkGb": 40, "minFreeLibraryGb": 50, "maxWorkspaceGb": 300, "allowDirectMode": true,
-			},
 		},
 		{
 			Key: "directPlay",
