@@ -18,15 +18,15 @@ También conserva:
 
 ```mermaid
 flowchart LR
-    RAW[/media/raw] --> ANALYZE[Discovery y Analysis]
+    RAW["/media/raw"] --> ANALYZE[Discovery y Analysis]
     ANALYZE --> QUEUE[Queue]
     QUEUE --> WORKER[Worker]
-    WORKER --> STAGING[/media/staging]
+    WORKER --> STAGING["/media/staging"]
     STAGING --> VALIDATE[Validation]
     VALIDATE --> PUBLISH[Publisher]
-    PUBLISH --> LIBRARY[/media/library]
-    PUBLISH --> ARCHIVE[/media/originals_archive]
-    ANALYZE --> REPORTS[/media/reports]
+    PUBLISH --> LIBRARY["/media/library"]
+    PUBLISH --> ARCHIVE["/media/originals_archive"]
+    ANALYZE --> REPORTS["/media/reports"]
     WORKER --> REPORTS
     VALIDATE --> REPORTS
 ```

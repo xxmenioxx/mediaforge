@@ -16,7 +16,7 @@ flowchart LR
     BACKEND --> RELEASE[GitHub Release]
     WEB --> RELEASE
     RELEASE --> ASSETS[Compose + env + backup]
-    ASSETS --> NAS[PC / HomeLab / NAS]
+    ASSETS --> NAS["PC / HomeLab / NAS"]
 ```
 
 ## Componentes del repositorio

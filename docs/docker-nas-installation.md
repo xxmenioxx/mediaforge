@@ -10,17 +10,25 @@ Esta es la ruta de instalación recomendada para ejecutar una versión publicada
 
 No expongas MediaForge directamente a Internet. Para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
 
+## Instalación estándar
+
+MediaForge se instala de forma independiente bajo el directorio Docker habitual del NAS:
+
+```text
+/volume1/docker/mediaforge
+```
+
+Todas las rutas se configuran mediante `.env`. No existe una dependencia con `nas-media-stack`, Portainer u otro proyecto. Si el NAS separa aplicaciones y multimedia entre volúmenes, cambia los mounts sin mover el Compose.
+
 ## 1. Preparar carpetas
 
-Adapta `/volume1` al path real del NAS:
-
 ```sh
-mkdir -p /volume1/mediaforge/config
-mkdir -p /volume1/mediaforge/raw
-mkdir -p /volume1/mediaforge/library
-mkdir -p /volume1/mediaforge/staging
-mkdir -p /volume1/mediaforge/originals_archive
-mkdir -p /volume1/mediaforge/reports
+mkdir -p /volume1/docker/mediaforge/config
+mkdir -p /volume1/docker/mediaforge/data/raw
+mkdir -p /volume1/docker/mediaforge/data/library
+mkdir -p /volume1/docker/mediaforge/data/staging
+mkdir -p /volume1/docker/mediaforge/data/originals_archive
+mkdir -p /volume1/docker/mediaforge/reports
 ```
 
 ## 2. Descargar el instalador
@@ -31,7 +39,7 @@ Desde el release elegido descarga:
 - `mediaforge.env.example`
 - `mediaforge-backup.sh`
 
-Guárdalos en una carpeta dedicada, por ejemplo `/volume1/docker/mediaforge`, y renombra la configuración:
+Guárdalos en `/volume1/docker/mediaforge` y renombra la configuración:
 
 ```sh
 mv mediaforge-compose.yml compose.yml
@@ -40,6 +48,8 @@ chmod +x mediaforge-backup.sh
 ```
 
 Edita `.env` y configura la versión, el puerto, la zona horaria y los paths absolutos del NAS. No uses `latest`; conserva una versión explícita como `0.1.0`.
+
+Para levantar MediaForge como parte del stack personal en lugar de una aplicación independiente, consulta [Integración opcional con nas-media-stack](guides/nas-media-stack-integration.md).
 
 ## 3. Instalar
 

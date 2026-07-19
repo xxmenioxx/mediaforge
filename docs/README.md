@@ -5,10 +5,11 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 ## Para usuarios
 
 1. [Instalación Docker en NAS, HomeLab o servidor](docker-nas-installation.md)
-2. [Cómo usar MediaForge](guides/using-mediaforge.md)
-3. [Perfiles de video, audio y tracks](guides/profiles.md)
-4. [Cómo funciona el scheduler](guides/scheduler.md)
-5. [Checklist de validación del scheduler](scheduler-v1-validation.md)
+2. [Integración con nas-media-stack](guides/nas-media-stack-integration.md)
+3. [Cómo usar MediaForge](guides/using-mediaforge.md)
+4. [Perfiles de video, audio y tracks](guides/profiles.md)
+5. [Cómo funciona el scheduler](guides/scheduler.md)
+6. [Checklist de validación del scheduler](scheduler-v1-validation.md)
 
 ## Para mantenedores
 
@@ -36,7 +37,7 @@ flowchart TD
     USER --> PROFILES[Perfiles]
     USER --> SCHEDULER[Scheduler]
     MAINTAINER --> RELEASES[GitHub Releases y GHCR]
-    MAINTAINER --> SPEC[Especificaciones v1/v2]
+    MAINTAINER --> SPEC["Especificaciones v1/v2"]
     ROADMAP --> NEXT[Próximo ciclo]
     ROADMAP --> FUTURE[Visión futura]
 ```

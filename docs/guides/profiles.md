@@ -6,7 +6,7 @@ Los perfiles son contratos reproducibles. Definen cómo debe procesarse un asset
 
 ```mermaid
 flowchart TD
-    ASSET[Asset analizado] --> VIDEO[Perfil de video/conversión]
+    ASSET[Asset analizado] --> VIDEO["Perfil de video/conversión"]
     ASSET --> AUDIO[Perfil de audio]
     ASSET --> TRACK[Perfil de tracks]
     VIDEO --> SNAPSHOT[Profile snapshot]
@@ -96,7 +96,7 @@ Se administra en **Audio**. Puede describir:
 flowchart LR
     ORIGINAL[Audio original] --> SAMPLE[Muestra corta]
     PROFILE[Perfil de audio] --> SAMPLE
-    SAMPLE --> AB[Comparación A/B]
+    SAMPLE --> AB["Comparación A/B"]
     AB --> CHECK{Mejora sin artefactos?}
     CHECK -- No --> TUNE[Ajustar filtros]
     TUNE --> SAMPLE

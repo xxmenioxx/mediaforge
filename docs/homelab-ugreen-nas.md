@@ -4,18 +4,24 @@ This guide is for running MediaForge against persistent NAS folders while keepin
 
 ## Folder Layout
 
-Create these folders on the NAS before starting MediaForge:
+The standard standalone installation lives under the NAS Docker applications directory:
 
 ```text
-/volume1/mediaforge/
-  raw/
-  library/
-  staging/
-  originals_archive/
+/volume1/docker/mediaforge/
+  compose.yml
+  .env
+  config/
+    mediaforge.db
+    backups/
   reports/
     as-is/
     results/
     logs/
+  data/
+    raw/
+    library/
+    staging/
+    originals_archive/
 ```
 
 Use the real UGreen path exposed by your NAS. Examples may look like `/volume1/...`, `/mnt/ugreen/...`, or another host-mounted path depending on your setup.
@@ -28,12 +34,12 @@ Map the NAS folders into the containers like this:
 services:
   backend:
     volumes:
-      - mediaforge-db:/app/data
-      - /volume1/mediaforge/raw:/media/raw
-      - /volume1/mediaforge/library:/media/library
-      - /volume1/mediaforge/staging:/media/staging
-      - /volume1/mediaforge/originals_archive:/media/originals_archive
-      - /volume1/mediaforge/reports:/media/reports
+      - /volume1/docker/mediaforge/config:/app/data
+      - /volume1/docker/mediaforge/data/raw:/media/raw
+      - /volume1/docker/mediaforge/data/library:/media/library
+      - /volume1/docker/mediaforge/data/staging:/media/staging
+      - /volume1/docker/mediaforge/data/originals_archive:/media/originals_archive
+      - /volume1/docker/mediaforge/reports:/media/reports
 ```
 
 Keep `/media/reports` persistent. It stores:
@@ -98,4 +104,4 @@ Do not run this against production NAS folders unless you have intentionally bac
 - Keep `dryRunOnly` enabled until conversion commands look correct.
 - Start with one worker and one job at a time.
 - Keep originals for at least 30 days while testing.
-- Never mount unrelated NAS roots directly into `/media/raw` or `/media/library`; mount dedicated MediaForge folders.
+- Register only the intended destination folders under `/media/library`; do not register downloads or the MediaForge work folders as published libraries.

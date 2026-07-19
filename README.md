@@ -11,7 +11,7 @@ flowchart LR
     ANALYSIS --> CONVERT[Conversión controlada]
     CONVERT --> VALIDATE[Validación]
     VALIDATE --> LIBRARY[Biblioteca publicada]
-    LIBRARY --> SERVER[Jellyfin / Plex / Emby]
+    LIBRARY --> SERVER["Jellyfin / Plex / Emby"]
     MF --> REPORTS[Reportes, logs y procedencia]
 ```
 
@@ -108,15 +108,23 @@ En Windows, configura los paths desde Docker Desktop y usa rutas absolutas acces
 
 ## Instalación en HomeLab, servidor Docker o NAS
 
-El mismo paquete funciona en equipos `linux/amd64` y `linux/arm64`. En el NAS crea primero carpetas persistentes; adapta `/volume1` al path real del equipo:
+El mismo paquete funciona en equipos `linux/amd64` y `linux/arm64`.
+
+La instalación independiente recomendada vive, como otras aplicaciones Docker, en un directorio propio:
+
+```text
+/volume1/docker/mediaforge
+```
+
+El layout inicial puede mantenerse autocontenido y luego mover los mounts multimedia a otro volumen editando `.env`:
 
 ```sh
-mkdir -p /volume1/mediaforge/config
-mkdir -p /volume1/mediaforge/raw
-mkdir -p /volume1/mediaforge/library
-mkdir -p /volume1/mediaforge/staging
-mkdir -p /volume1/mediaforge/originals_archive
-mkdir -p /volume1/mediaforge/reports
+mkdir -p /volume1/docker/mediaforge/config
+mkdir -p /volume1/docker/mediaforge/data/raw
+mkdir -p /volume1/docker/mediaforge/data/library
+mkdir -p /volume1/docker/mediaforge/data/staging
+mkdir -p /volume1/docker/mediaforge/data/originals_archive
+mkdir -p /volume1/docker/mediaforge/reports
 ```
 
 Configura esos paths en `.env` y ejecuta:
@@ -129,7 +137,7 @@ docker compose --env-file .env -f compose.yml ps
 
 Accede mediante `http://IP-DEL-SERVIDOR:8090`. No expongas MediaForge directamente a Internet; para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
 
-Consulta la [guía completa de instalación Docker y NAS](docs/docker-nas-installation.md) para backups, actualizaciones, rollback e imágenes privadas.
+La instalación estándar no depende de ningún stack externo. Para este HomeLab existe además una [integración opcional con nas-media-stack](docs/guides/nas-media-stack-integration.md). Consulta la [guía completa de instalación Docker y NAS](docs/docker-nas-installation.md) para backups, actualizaciones, rollback e imágenes privadas.
 
 ## Primera ejecución segura
 
@@ -189,6 +197,7 @@ Empieza por el [índice de documentación](docs/README.md):
 - [Perfiles de video, audio y tracks](docs/guides/profiles.md)
 - [Cómo funciona el scheduler](docs/guides/scheduler.md)
 - [Cómo configurar releases en GitHub y GHCR](docs/guides/github-releases.md)
+- [Integración con nas-media-stack](docs/guides/nas-media-stack-integration.md)
 - [Checklist de validación del scheduler](docs/scheduler-v1-validation.md)
 - [Próximos pasos y roadmap](docs/roadmap/README.md)
 

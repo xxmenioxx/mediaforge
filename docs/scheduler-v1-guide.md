@@ -49,7 +49,7 @@ flowchart LR
     X --> F[FFmpeg]
     F --> V[Validation]
     V --> U{Output válido?}
-    U -- No --> ER[Failed / Needs review]
+    U -- No --> ER["Failed / Needs review"]
     U -- Sí --> PB[Publisher]
     PB --> AR[Archivar original]
     AR --> H[Housekeeping]
@@ -102,7 +102,7 @@ La aprobación no fuerza una ejecución. Un plan aprobado todavía debe cumplir 
 flowchart TD
     P[Execution Plan pendiente] --> EN{Encoder compatible?}
     EN -- No --> WE[WAITING_ENCODER]
-    EN -- Sí --> RV{Review / DirectPlay aprobados?}
+    EN -- Sí --> RV{"Review / DirectPlay aprobados?"}
     RV -- No --> WR[WAITING_REVIEW]
     RV -- Sí --> WS{Workspace permitido y suficiente?}
     WS -- No --> WSS[WAITING_WORKSPACE o SSD_SPACE]
@@ -111,7 +111,7 @@ flowchart TD
     WH -- Sí --> PW{Energía permitida?}
     PW -- No --> WP[WAITING_POWER]
     PW -- Sí --> RS{RAM, discos y slots disponibles?}
-    RS -- No --> WRS[WAITING_RAM / HDD_SPACE / PROFILE_LIMIT]
+    RS -- No --> WRS["WAITING_RAM / HDD_SPACE / PROFILE_LIMIT"]
     RS -- Sí --> WK{Worker disponible?}
     WK -- No --> WW[WAITING_WORKER]
     WK -- Sí --> RD[Plan READY]
@@ -202,7 +202,7 @@ flowchart TD
     AW -- Sí --> AE{autoExecutionEnabled?}
     AE -- No --> M
     AE -- Sí --> DR{dryRunOnly?}
-    DR -- Sí --> D[Simular / verificar sin FFmpeg real]
+    DR -- Sí --> D["Simular / verificar sin FFmpeg real"]
     DR -- No --> AP{Plan aprobado?}
     AP -- No --> R[WAITING_REVIEW]
     AP -- Sí --> L{Worker y scheduler tienen slot?}

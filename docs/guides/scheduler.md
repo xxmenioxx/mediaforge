@@ -22,7 +22,7 @@ flowchart TD
     RESERVE --> WORKER[Worker]
     WORKER --> VALIDATE[Validation]
     VALIDATE --> PUBLISH[Publisher]
-    WORKER --> RECOVERY[Recovery / reconciliation]
+    WORKER --> RECOVERY["Recovery / reconciliation"]
 ```
 
 ## Del job al plan
@@ -132,7 +132,7 @@ flowchart TD
     PROCESS -- Sí --> REATTACH[Conservar lock y reconciliar]
     PROCESS -- No --> OUTPUT{Existe output válido?}
     OUTPUT -- Sí --> ADVANCE[Avanzar a validación]
-    OUTPUT -- No --> FAIL[Marcar recuperable/fallido con causa]
+    OUTPUT -- No --> FAIL["Marcar recuperable/fallido con causa"]
     REATTACH --> CLEAN
     ADVANCE --> CLEAN
     FAIL --> HOUSE[Housekeeping preview]
