@@ -188,9 +188,11 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	if err != nil {
 		return err
 	}
+	runtimeEncoders := models.JSONMap{}
 	if snapshot, runtimeErr := runtimeinfo.Latest(db); runtimeErr == nil {
 		plan.RuntimeSnapshotID = &snapshot.ID
 		plan.RuntimeProfile = snapshot.SelectedProfile
+		runtimeEncoders = snapshot.Encoders
 		plan.DecisionSources["runtimeProfile"] = "runtime_snapshot"
 		plan.DecisionReasons = append(plan.DecisionReasons, snapshot.SelectionReasons...)
 	} else {
@@ -200,7 +202,10 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	}
 	encoderFailure := ""
 	for _, candidate := range uniqueStrings(append([]string{profile.PreferredEncoder}, []string(profile.AllowedEncoders)...)) {
-		capability := capabilities.CheckEncoder(candidate)
+		capability, recorded := recordedEncoderCapability(runtimeEncoders, candidate)
+		if !recorded {
+			capability = capabilities.CheckEncoder(candidate)
+		}
 		if capability.Usable {
 			plan.SelectedEncoder = candidate
 			break
@@ -302,6 +307,29 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		}
 	}
 	return db.Save(plan).Error
+}
+
+func recordedEncoderCapability(encoders models.JSONMap, encoder string) (capabilities.EncoderCapability, bool) {
+	raw, ok := encoders[encoder]
+	if !ok {
+		return capabilities.EncoderCapability{}, false
+	}
+	var value map[string]any
+	switch typed := raw.(type) {
+	case models.JSONMap:
+		value = typed
+	case map[string]any:
+		value = typed
+	default:
+		return capabilities.EncoderCapability{}, false
+	}
+	listed, listedOK := value["listed"].(bool)
+	usable, usableOK := value["usable"].(bool)
+	if !listedOK || !usableOK {
+		return capabilities.EncoderCapability{}, false
+	}
+	reason, _ := value["reason"].(string)
+	return capabilities.EncoderCapability{Listed: listed, Usable: usable, Reason: reason}, true
 }
 
 func SetPlanApproval(db *gorm.DB, jobID, planID uint, approve bool) (models.ExecutionPlan, error) {

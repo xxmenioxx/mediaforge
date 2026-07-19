@@ -126,7 +126,12 @@ func TestManualApprovalWaitsForScheduleWindow(t *testing.T) {
 func seedReviewRuntime(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
-	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+	encoders := models.JSONMap{
+		"libx265":           models.JSONMap{"listed": true, "usable": true, "reason": ""},
+		"hevc_videotoolbox": models.JSONMap{"listed": true, "usable": true, "reason": ""},
+		"hevc_qsv":          models.JSONMap{"listed": true, "usable": true, "reason": ""},
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.WorkerNode{Name: "test-worker", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265", "hevc_videotoolbox", "hevc_qsv"}, LastSeenAt: time.Now()}).Error; err != nil {
