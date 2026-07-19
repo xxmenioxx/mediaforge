@@ -1,266 +1,201 @@
 # MediaForge
 
-MediaForge is an open-source, self-hosted media processing platform for preparing personal media libraries before publishing them to media servers like Jellyfin, Plex, or Emby.
+MediaForge es una plataforma self-hosted para analizar, preparar, convertir, validar y publicar archivos multimedia antes de incorporarlos a Jellyfin, Plex, Emby u otra biblioteca.
 
-It is not a media server. It is the orchestration layer between raw media files and a final, validated media library.
+No es un servidor multimedia ni reemplaza a Jellyfin. MediaForge es la capa de procesamiento entre los archivos originales y la biblioteca final.
 
-## Phase 1 Scope
-
-This initial scaffold includes:
-
-* Go REST API with Gin, GORM, and SQLite
-* React + Vite + TypeScript frontend
-* Material UI dark interface with left navigation
-* Initial modules for Dashboard, Libraries, Profiles, Scanner, Queue, Workers, Validation, Publisher, and Settings
-* Dockerfiles and Docker Compose
-* Seed conversion profiles inspired by the media worker pipeline configuration model
-
-## Phase 2 Scope
-
-The current UI supports the first manual workflow:
-
-* Create destination libraries
-* List unprocessed and converted assets from library paths
-* Evaluate assets with a deterministic pre-conversion advisor
-* Create worker-ready conversion profiles
-* Submit queue jobs by choosing media path, library, profile, and priority
-* Test the same workflow through Swagger UI
-
-## Phase 3 Scope
-
-The scanner now uses `ffprobe` inside the backend container to inspect readable media files.
-
-By default, Docker Compose mounts MediaForge-controlled host folders into the backend container:
-
-* `./media/raw` -> `/media/raw` as read-only input media
-* `./media/library` -> `/media/library` as converted/published media
-* `./media/staging` -> `/media/staging` as temporary controlled output
-* `./media/originals_archive` -> `/media/originals_archive` as the archive for originals after successful publish
-* `./media/reports` -> `/media/reports` as persistent AS-IS, result, and log storage
-
-Create destination library folders on the host first, similar to Jellyfin/Radarr style volume mapping. MediaForge reads
-all originals from the single `/media/raw` source root and lists existing destination folders under `/media/library`
-when creating or editing libraries.
-
-Place test files under `media/raw` and scan them using container paths such as:
-
-```sh
-/media/raw/movies/example.mkv
+```mermaid
+flowchart LR
+    RAW[Archivos originales] --> MF[MediaForge]
+    MF --> ANALYSIS[Análisis y planificación]
+    ANALYSIS --> CONVERT[Conversión controlada]
+    CONVERT --> VALIDATE[Validación]
+    VALIDATE --> LIBRARY[Biblioteca publicada]
+    LIBRARY --> SERVER[Jellyfin / Plex / Emby]
+    MF --> REPORTS[Reportes, logs y procedencia]
 ```
 
-Scanner results are persisted in SQLite and can be used from the UI to queue a conversion manually.
+## Funciones principales
 
-Original retention is configurable in Settings. The conversion worker will use that policy later to preserve successfully
-converted originals for the configured number of days before any cleanup is allowed.
+- Inventario y análisis técnico mediante FFprobe.
+- Perfiles reproducibles de video, audio y selección de tracks.
+- Profile Lab para probar muestras antes de procesar archivos completos.
+- Cola, planificación, límites de recursos y horarios de trabajo.
+- Ejecución FFmpeg con dry run y revisión previa.
+- Validación antes de publicar.
+- Archivo de originales y reportes persistentes.
+- Recuperación del scheduler después de reinicios.
+- Instalación Docker versionada para PC, laptop, HomeLab y NAS.
 
-For a production-like NAS deployment, see [docs/homelab-ugreen-nas.md](docs/homelab-ugreen-nas.md). A local reset helper is available at
-`scripts/reset-v1-preserve-reports.sh`; it preserves `media/reports` and requires explicit confirmation before deleting local working state.
+## Flujo de trabajo
 
-For an installable, release-based Docker deployment that pulls versioned images from GHCR, see
-[docs/docker-nas-installation.md](docs/docker-nas-installation.md). The distributable Compose file lives under
-[`deploy/nas`](deploy/nas) and keeps the backend private behind the web container.
-
-## Phase 4 Scope
-
-Workers now have the first controlled execution lifecycle:
-
-* Claim the next queued job by priority and creation time
-* Mark jobs as running, completed, failed, or canceled
-* Track progress, worker name, output path, errors, start time, and finish time
-* Operate the lifecycle from the Workers UI
-* Test worker lifecycle endpoints through Swagger UI
-
-This phase does not run destructive media conversions yet. It establishes the queue and worker state machine before enabling FFmpeg or HandBrake execution.
-
-## Phase 4.5 Scope
-
-Core configuration is now editable before enabling real conversion execution:
-
-* Libraries can be edited after creation
-* Conversion profiles can be edited after creation
-* Settings has a real persisted configuration screen
-* App settings include staging paths, worker defaults, and validation defaults
-* Library types are configurable globally through a friendly editor and consumed by Libraries
-* Settings includes software version visibility for runtime and dependency troubleshooting
-* Profiles can be imported/exported as JSON
-* Profiles show a dry-run worker command preview
-* Profile creation now starts with guided, human-readable presets while keeping technical controls in Advanced
-* Audio enhancement profiles can be edited for FFmpeg-based loudness normalization, dialogue clarity, and old source cleanup
-* Swagger exposes update and settings endpoints for testing
-
-## Phase 5 Scope
-
-Workers can now complete a controlled dry-run execution from a claimed job:
-
-* A running job can generate a planned FFmpeg command without modifying media files
-* The planned output path is calculated from the job media path, destination library, and conversion profile
-* Dry-run completion stores the command in the job notes and marks progress as complete
-* The Workers UI exposes the dry-run action before real FFmpeg or HandBrake execution is enabled
-
-## Phase 6 Scope
-
-Queue jobs now support basic folder batches:
-
-* Queue Folder creates individual jobs that share a common `batchId` and `batchName`
-* Single-file jobs remain supported without a batch
-* The Queue UI groups jobs by folder batch or single job
-* Each group shows aggregate progress, completed count, queued count, running count, and failures
-* Groups can be expanded to inspect the individual jobs created from that folder
-
-## Phase 7 Scope
-
-Validation and Publisher now provide the safety layer before real conversion execution:
-
-* Completed jobs can be validated before publishing
-* Validation stores status, score, warnings, and check results on the queue job
-* Publisher only accepts completed jobs that passed validation or have validation warnings
-* Publisher writes the final published path and timestamp to the job
-* Overwrites are disabled by default
-* Dry-runs do not pass file validation because they do not generate a real output file
-
-This phase prepares the workflow for real conversion:
-
-```text
-Raw asset -> Queue -> Worker -> Staging output -> Validation -> Publisher -> Destination library
+```mermaid
+flowchart TD
+    A[Registrar carpetas y librerías] --> B[Descubrir o escanear assets]
+    B --> C[Analizar asset]
+    C --> D[Seleccionar perfiles]
+    D --> E[Probar muestra en Profile Lab]
+    E --> F[Crear job]
+    F --> G[Revisar execution plan]
+    G --> H{Dry run?}
+    H -- Sí --> I[Inspeccionar comando sin modificar archivos]
+    H -- No --> J[Convertir en staging]
+    J --> K[Validar output]
+    K --> L{Resultado aceptable?}
+    L -- No --> M[Revisar logs y ajustar perfil]
+    L -- Sí --> N[Publicar en library]
+    N --> O[Archivar original según política]
 ```
 
-## Future Experimental AI Subtitle Translation
+## Instalación en PC o laptop
 
-MediaForge should later explore an opt-in AI workflow for assets that do not include Spanish subtitles.
+### Requisitos
 
-Planned phases:
+- Docker Desktop en macOS o Windows, o Docker Engine con Compose v2 en Linux.
+- Una versión publicada de MediaForge.
+- Carpetas dedicadas para configuración, originales, staging, biblioteca, archivo y reportes.
 
-* Detect missing Spanish subtitles, distinguishing Latin American Spanish and Castilian Spanish when possible
-* Extract audio and generate timestamped source-language transcripts
-* Translate dialogue naturally, preserving intent, tone, humor, and readability
-* Provide a review workspace for editing text, timing, confidence warnings, and preview
-* Export reviewed subtitles as `.srt` sidecars, optionally mux them into MKV, or publish/export them to Jellyfin or Plex when configured
-* Store provenance such as model, language target, confidence, date, and reviewer
+### Instalación recomendada
 
-This feature must remain optional, reviewable, and safe by default.
+1. Descarga del [release más reciente](https://github.com/xxmenioxx/mediaforge/releases) estos archivos:
 
-## Future Pipeline Map / Stage Inspector
+   - `mediaforge-compose.yml`
+   - `mediaforge.env.example`
+   - `mediaforge-backup.sh`
 
-MediaForge should later show a visual stage map for every worker execution.
-
-The map should display stages such as input path, preflight checks, probe/snapshot, advisor, profile resolution,
-conversion plan, transcode/remux, output validation, publish/move, media-server refresh, and final path.
-
-Each stage should expose status, worker name, duration, inputs, outputs, effective configuration, generated command,
-logs, warnings, errors, retries, and generated artifacts.
-
-This view should be available from Workers, Queue, History, and Assets, and should also support future AI subtitle
-translation stages such as extract audio, transcribe, translate, review, export sidecar, mux, and publish to Jellyfin or Plex.
-
-## Future Queue Management Controls
-
-MediaForge should later add queue actions for canceling jobs, deleting/removing jobs, editing priority, moving jobs up or
-down, retrying failed jobs, and requeueing completed jobs with confirmation.
-
-For folder batches, the Queue should support cancel batch, delete batch, edit batch priority, retry failed jobs in batch,
-remove one file from a batch, and add batch notes.
-
-Canceling and cleanup should remain separate. Canceling preserves logs and diagnostics by default; cleanup should be an
-explicit action and only remove artifacts inside MediaForge-controlled paths such as staging, work, temp, or registered
-artifact paths.
-
-## Future Episode Splitter
-
-MediaForge should later include an optional splitter for series, anime, or DVD/Blu-ray sources where multiple episodes are
-contained inside a single MKV.
-
-The splitter should detect candidate multi-episode files, read chapters and stream metadata, suggest episode boundaries,
-allow manual timestamp edits, preview split points, generate staged MKV outputs, validate each episode, and then allow the
-user to queue conversion or publish the staged episodes.
-
-Possible strategies include chapter-based split, manual timestamp split, duration-pattern split, and future AI-assisted
-scene or intro/outro detection.
-
-## Future Profile Lab / Comparison Lab
-
-MediaForge should later add a Lab workspace for testing and comparing audio/video profiles before queueing full
-conversions.
-
-The Lab should support selecting a raw asset, choosing a start timestamp and sample duration, previewing the original
-sample, previewing samples with selected video and audio profiles, comparing estimated size, codecs before/after,
-container, bitrate, resolution, HDR, audio layout, language tracks, subtitles, screenshots/frames, and effective worker
-commands.
-
-When a result is good enough, the user should be able to save the tuned profile or fork an existing profile into a new
-variant.
-
-This can later become part of AI Copilot, where the assistant suggests profile changes, explains tradeoffs, and helps
-tune difficult assets while keeping final approval with the user.
-
-Profiles should also be designed for future community sharing through exportable/importable bundles with descriptions,
-intended use cases, tool requirements, compatibility notes, versioning, provenance, and safety warnings. Shared profiles
-should always be reviewed and tested before being enabled.
-
-## Future Multimedia Library
-
-MediaForge should later add a **Multimedia Library** workspace for browsing assets across registered filesystem libraries
-without becoming a media server or metadata scraper.
-
-The workspace should support library tabs or an equivalent library selector, filters by registered library and path,
-search, technical media filters, and an aggregate "All libraries" view. External roots must be explicitly registered and
-remain read-only during browsing and analysis.
-
-Each asset should show whether MediaForge processed it and, when known, the MediaForge version, job, profile/profile
-version, processing date, and source fingerprint. The database and job history are the authoritative provenance record.
-MediaForge may also write portable embedded metadata when the output container supports it and a sidecar manifest when it
-does not; provenance detection must not depend only on embedded tags because other tools can remove them.
-
-The existing Advisor should be available from this workspace and support filtering or sorting by recommendation. Its
-summary should explain whether conversion is worthwhile, estimated space saved or added, compatibility improvements,
-quality or restoration opportunities, risks, confidence, and the recommended profile. Analysis remains non-destructive
-and conversion always requires the normal queue/approval policy.
-
-## Local Development
-
-MediaForge is Docker-first. You do not need Go, Node.js, or npm installed on the host machine for the normal development path.
-
-### Docker Compose
+2. Colócalos en una carpeta dedicada y renombra los dos primeros:
 
 ```sh
+mkdir -p mediaforge
+cd mediaforge
+mv mediaforge-compose.yml compose.yml
+mv mediaforge.env.example .env
+chmod +x mediaforge-backup.sh
+```
+
+3. Crea las carpetas de datos. En macOS o Linux, por ejemplo:
+
+```sh
+mkdir -p data/config data/raw data/library data/staging data/originals_archive data/reports
+```
+
+4. Edita `.env` y utiliza paths absolutos. Ejemplo para macOS o Linux:
+
+```dotenv
+MEDIAFORGE_VERSION=0.1.0
+MEDIAFORGE_PORT=8090
+TZ=America/Mexico_City
+
+CONFIG_PATH=/ruta/absoluta/mediaforge/data/config
+RAW_PATH=/ruta/absoluta/mediaforge/data/raw
+LIBRARY_PATH=/ruta/absoluta/mediaforge/data/library
+STAGING_PATH=/ruta/absoluta/mediaforge/data/staging
+ARCHIVE_PATH=/ruta/absoluta/mediaforge/data/originals_archive
+REPORTS_PATH=/ruta/absoluta/mediaforge/data/reports
+```
+
+5. Inicia MediaForge:
+
+```sh
+docker compose --env-file .env -f compose.yml pull
+docker compose --env-file .env -f compose.yml up -d
+docker compose --env-file .env -f compose.yml ps
+```
+
+6. Abre [http://localhost:8090](http://localhost:8090).
+
+En Windows, configura los paths desde Docker Desktop y usa rutas absolutas accesibles para Docker. WSL2 es la opción recomendada para ejecutar los comandos de shell y el script de backup.
+
+## Instalación en HomeLab, servidor Docker o NAS
+
+El mismo paquete funciona en equipos `linux/amd64` y `linux/arm64`. En el NAS crea primero carpetas persistentes; adapta `/volume1` al path real del equipo:
+
+```sh
+mkdir -p /volume1/mediaforge/config
+mkdir -p /volume1/mediaforge/raw
+mkdir -p /volume1/mediaforge/library
+mkdir -p /volume1/mediaforge/staging
+mkdir -p /volume1/mediaforge/originals_archive
+mkdir -p /volume1/mediaforge/reports
+```
+
+Configura esos paths en `.env` y ejecuta:
+
+```sh
+docker compose --env-file .env -f compose.yml pull
+docker compose --env-file .env -f compose.yml up -d
+docker compose --env-file .env -f compose.yml ps
+```
+
+Accede mediante `http://IP-DEL-SERVIDOR:8090`. No expongas MediaForge directamente a Internet; para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
+
+Consulta la [guía completa de instalación Docker y NAS](docs/docker-nas-installation.md) para backups, actualizaciones, rollback e imágenes privadas.
+
+## Primera ejecución segura
+
+Antes de procesar una colección:
+
+1. Mantén `dryRunOnly` activado.
+2. Usa un worker y un job simultáneo.
+3. Mantén validación y publicación automáticas desactivadas.
+4. Prueba con un archivo pequeño y descartable.
+5. Revisa el execution plan y el comando generado.
+6. Activa conversión real sólo después de validar los mounts y FFmpeg.
+7. Conserva originales y reportes durante el piloto.
+
+## Actualizar y respaldar
+
+Antes de actualizar, confirma que no haya jobs ejecutándose y crea un backup consistente de SQLite:
+
+```sh
+./mediaforge-backup.sh
+```
+
+Cambia `MEDIAFORGE_VERSION` en `.env` y ejecuta:
+
+```sh
+docker compose --env-file .env -f compose.yml pull
+docker compose --env-file .env -f compose.yml up -d
+```
+
+Nunca dependas de `latest` para una instalación estable.
+
+## Desarrollo local
+
+El entorno de desarrollo usa Vite y el backend Go directamente desde sus Dockerfiles:
+
+```sh
+git clone https://github.com/xxmenioxx/mediaforge.git
+cd mediaforge
 docker compose up --build
 ```
 
-Frontend: `http://localhost:5173`
+- UI: [http://localhost:5173](http://localhost:5173)
+- API: [http://localhost:8080](http://localhost:8080)
+- Swagger: [http://localhost:8080/swagger/index.html](http://localhost:8080/swagger/index.html)
 
-Backend: `http://localhost:8080`
+Validaciones principales:
 
-Swagger UI: `http://localhost:8080/swagger/index.html`
+```sh
+cd backend && go test ./...
+cd ../frontend && npm ci && npm run build
+```
 
-OpenAPI JSON: `http://localhost:8080/openapi.json`
+## Documentación
 
-### Runtime Versions
+Empieza por el [índice de documentación](docs/README.md):
 
-The current development containers use:
+- [Cómo usar MediaForge](docs/guides/using-mediaforge.md)
+- [Perfiles de video, audio y tracks](docs/guides/profiles.md)
+- [Cómo funciona el scheduler](docs/guides/scheduler.md)
+- [Cómo configurar releases en GitHub y GHCR](docs/guides/github-releases.md)
+- [Checklist de validación del scheduler](docs/scheduler-v1-validation.md)
+- [Próximos pasos y roadmap](docs/roadmap/README.md)
 
-* Backend: `golang:1.25-alpine` build image and `alpine:3.22` runtime
-* Frontend: `node:22-alpine`
+## Estado del proyecto
 
-Frontend dependencies are pinned in `package.json` and locked in `package-lock.json`.
+MediaForge está en desarrollo activo. La versión `0.1.x` debe tratarse como un piloto controlado: conserva backups, procesa primero copias o archivos descartables y revisa manualmente los resultados antes de automatizar la publicación de una colección completa.
 
-## API Endpoints
+## Licencia
 
-* `GET /health`
-* `GET /openapi.json`
-* `GET /swagger/index.html`
-* `GET /api/libraries`
-* `POST /api/libraries`
-* `POST /api/libraries/:id`
-* `GET /api/assets`
-* `POST /api/advisor/evaluate`
-* `GET /api/profiles`
-* `POST /api/profiles`
-* `POST /api/profiles/:id`
-* `GET /api/queue/jobs`
-* `POST /api/queue/jobs`
-* `GET /api/settings`
-* `POST /api/settings/:key`
-* `GET /api/system/versions`
-* `POST /api/workers/claim`
-* `POST /api/workers/jobs/:id/dry-run`
-* `POST /api/workers/jobs/:id/status`
-* `POST /api/scan`
+El repositorio aún debe declarar explícitamente su archivo de licencia antes de una distribución pública estable.
