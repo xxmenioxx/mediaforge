@@ -162,14 +162,15 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
 				"videoEncoder":          "libx265",
-				"addAacStereoDefault":   true,
+				"addAacStereoTrack":     true,
+				"aacStereoDefault":      false,
 				"preserveOriginalAudio": true,
 				"preferSrtSubtitles":    true,
 			},
 		},
 		Streams: MediaStreamInventory{
 			Video:    []MediaStream{{Index: 0}},
-			Audio:    []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6, ChannelLayout: "5.1"}},
+			Audio:    []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6, ChannelLayout: "5.1", Default: true}},
 			Subtitle: []MediaStream{{Index: 2, Codec: "ass"}},
 		},
 	}
@@ -182,9 +183,44 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 	assertContains(t, command, "-crf 21")
 	assertContains(t, command, "-c:a:1 aac")
 	assertContains(t, command, "-ac:a:1 2")
-	assertContains(t, command, "-disposition:a:0 0")
-	assertContains(t, command, "-disposition:a:1 default")
+	assertContains(t, command, "-disposition:a:0 default")
+	assertContains(t, command, "-disposition:a:1 0")
 	assertContains(t, command, "-c:s srt")
+}
+
+func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {
+	makeDefault := true
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"addAacStereoTrack": true, "aacStereoDefault": false},
+		},
+		Override: AssetConversionOverrideState{AACStereoDefault: &makeDefault},
+		Streams:  MediaStreamInventory{Audio: []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-c:a:1 aac")
+	assertContains(t, command, "-disposition:a:1 default")
+}
+
+func TestFFmpegCommandBuilderAllowsAssetToDisableAACCompatibility(t *testing.T) {
+	disabled := false
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"addAacStereoTrack": true, "aacStereoDefault": false},
+		},
+		Override: AssetConversionOverrideState{AddAACStereoTrack: &disabled},
+		Streams:  MediaStreamInventory{Audio: []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "AAC Stereo (MediaForge)")
 }
 
 func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) {
@@ -203,6 +239,26 @@ func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) 
 	assertNotContains(t, command, "-map 0:2")
 	assertNotContains(t, command, "-c:a:1 aac")
 	assertNotContains(t, command, "AAC Stereo (MediaForge)")
+}
+
+func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"addAacStereoTrack": true, "aacStereoDefault": false},
+		},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{
+			{Index: 1, Codec: "truehd", Channels: 8, Language: "eng"},
+			{Index: 2, Codec: "aac", Channels: 2, Language: "spa"},
+			{Index: 3, Codec: "aac", Channels: 1, Language: "jpn"},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "AAC Stereo (MediaForge)")
+	assertNotContains(t, command, "-map 0:1 -c copy")
 }
 
 func assertContains(t *testing.T, value string, expected string) {

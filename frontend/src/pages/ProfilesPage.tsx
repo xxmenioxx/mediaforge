@@ -70,7 +70,8 @@ const initialProfile: ProfileInput = {
     videoToolboxMaxrateMbps: 8,
     videoToolboxBufferMbps: 12,
     preferredEncoder: 'software',
-    addAacStereoDefault: false,
+    addAacStereoTrack: false,
+    aacStereoDefault: false,
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
     warnSubtitleFormats: true,
@@ -207,7 +208,8 @@ export function ProfilesPage() {
           videoEncoder: 'libx265',
           preferredEncoder: 'software',
           useHardwareIfAvailable: false,
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           preferSrtSubtitles: false,
           warnSubtitleFormats: true,
@@ -230,7 +232,8 @@ export function ProfilesPage() {
           videoEncoder: 'auto',
           preferredEncoder: 'hardware',
           useHardwareIfAvailable: true,
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           preferSrtSubtitles: true,
           warnSubtitleFormats: true,
@@ -253,7 +256,8 @@ export function ProfilesPage() {
           videoEncoder: 'libx265',
           preferredEncoder: 'software',
           useHardwareIfAvailable: false,
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           preferSrtSubtitles: false,
           warnSubtitleFormats: true,
@@ -292,7 +296,8 @@ export function ProfilesPage() {
           useHardwareIfAvailable: false,
           videoPreset: 'slow',
           pixFmt: 'yuv420p10le',
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           warnSubtitleFormats: true,
           preferSrtSubtitles: false,
@@ -316,7 +321,8 @@ export function ProfilesPage() {
           globalQuality: 25,
           videoPreset: 'medium',
           pixFmt: 'yuv420p10le',
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           warnSubtitleFormats: true,
           preferSrtSubtitles: false,
@@ -339,7 +345,8 @@ export function ProfilesPage() {
           useHardwareIfAvailable: false,
           videoPreset: 'slow',
           pixFmt: 'yuv420p10le',
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           warnSubtitleFormats: true,
           preferSrtSubtitles: false,
@@ -363,7 +370,8 @@ export function ProfilesPage() {
           globalQuality: 27,
           videoPreset: 'medium',
           pixFmt: 'yuv420p10le',
-          addAacStereoDefault: true,
+          addAacStereoTrack: true,
+          aacStereoDefault: false,
           preserveOriginalAudio: true,
           warnSubtitleFormats: true,
           preferSrtSubtitles: false,
@@ -744,11 +752,23 @@ export function ProfilesPage() {
                           <FormControlLabel
                             control={
                               <Checkbox
-                                checked={workerConfigBool(form, 'addAacStereoDefault')}
-                                onChange={(event) => updateWorkerConfig('addAacStereoDefault', event.target.checked)}
+                                checked={aacTrackEnabled(form)}
+                                onChange={(event) => updateWorkerConfig('addAacStereoTrack', event.target.checked)}
                               />
                             }
-                            label="Add AAC stereo default"
+                            label="Add AAC stereo track"
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={aacTrackDefault(form)}
+                                disabled={!aacTrackEnabled(form)}
+                                onChange={(event) => updateWorkerConfig('aacStereoDefault', event.target.checked)}
+                              />
+                            }
+                            label="Make AAC stereo default"
                           />
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
@@ -1264,6 +1284,16 @@ function workerConfigBool(profile: ProfileInput, key: string, fallback = false) 
   return fallback;
 }
 
+function aacTrackEnabled(profile: ProfileInput) {
+  return profile.workerConfig && 'addAacStereoTrack' in profile.workerConfig
+    ? workerConfigBool(profile, 'addAacStereoTrack')
+    : workerConfigBool(profile, 'addAacStereoDefault');
+}
+
+function aacTrackDefault(profile: ProfileInput) {
+  return workerConfigBool(profile, 'aacStereoDefault');
+}
+
 function workerConfigNumber(profile: ProfileInput, key: string, fallback: number) {
   const value = profile.workerConfig?.[key];
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
@@ -1324,7 +1354,8 @@ function buildDryRunCommand(profile: ProfileInput) {
     ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 6)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 8)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 12)}M`
     : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
-  const aacArgs = workerConfigBool(profile, 'addAacStereoDefault') ? '-map 0:a:0 -c:a:1 aac -ac:a:1 2 -disposition:a:1 default' : '';
+  const aacDisposition = aacTrackDefault(profile) ? 'default' : '0';
+  const aacArgs = aacTrackEnabled(profile) ? `-map 0:a:0 -c:a:1 aac -ac:a:1 2 -disposition:a:1 ${aacDisposition}` : '';
   const subtitleArgs = profile.preserveSubtitles ? (workerConfigBool(profile, 'preferSrtSubtitles') ? '-c:s srt' : '-c:s copy') : '-sn';
   const chapterArgs = profile.preserveChapters ? '-map_chapters 0' : '-map_chapters -1';
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';

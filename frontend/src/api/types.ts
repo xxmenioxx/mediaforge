@@ -125,6 +125,8 @@ export type AssetConversionOverrideState = {
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;
+  addAacStereoTrack?: boolean;
+  aacStereoDefault?: boolean;
   updatedAt?: string;
 };
 

@@ -1586,6 +1586,18 @@ function AssetConversionOverridePanel({
                 fallback={profile?.preserveChapters}
                 onChange={(value) => onChange('preserveChapters', value)}
               />
+              <OverrideSwitch
+                label="Add AAC stereo track"
+                value={draft.addAacStereoTrack}
+                fallback={profileAACTrackEnabled(profile)}
+                onChange={(value) => onChange('addAacStereoTrack', value)}
+              />
+              <OverrideSwitch
+                label="Make AAC stereo default"
+                value={draft.aacStereoDefault}
+                fallback={profileAACTrackDefault(profile)}
+                onChange={(value) => onChange('aacStereoDefault', value)}
+              />
             </Stack>
           </Grid>
           <Grid size={{ xs: 12 }}>
@@ -2234,7 +2246,27 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.preserveChapters === 'boolean') {
     clean.preserveChapters = value.preserveChapters;
   }
+  if (typeof value.addAacStereoTrack === 'boolean') {
+    clean.addAacStereoTrack = value.addAacStereoTrack;
+  }
+  if (typeof value.aacStereoDefault === 'boolean') {
+    clean.aacStereoDefault = value.aacStereoDefault;
+  }
   return clean;
+}
+
+function profileAACTrackEnabled(profile?: Profile) {
+  if (!profile) return false;
+  const config = profile.workerConfig ?? {};
+  return typeof config.addAacStereoTrack === 'boolean'
+    ? config.addAacStereoTrack
+    : config.addAacStereoDefault === true;
+}
+
+function profileAACTrackDefault(profile?: Profile) {
+  if (!profile) return false;
+  const config = profile.workerConfig ?? {};
+  return config.aacStereoDefault === true;
 }
 
 function assetHasConversionOverride(value?: AssetConversionOverrideState) {

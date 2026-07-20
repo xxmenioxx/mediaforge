@@ -405,6 +405,12 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.PreserveChapters != nil {
 		values["preserveChapters"] = *override.PreserveChapters
 	}
+	if override.AddAACStereoTrack != nil {
+		values["addAacStereoTrack"] = *override.AddAACStereoTrack
+	}
+	if override.AACStereoDefault != nil {
+		values["aacStereoDefault"] = *override.AACStereoDefault
+	}
 	if len(values) == 0 {
 		return nil
 	}

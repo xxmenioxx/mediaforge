@@ -91,8 +91,9 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	args = append(args, "-i", plan.InputPath)
 	selectedAudioStreams := selectedAudioStreams(plan.Streams.Audio, plan.Override)
-	addAACStereoDefault := profileWorkerBool(plan.Profile, "addAacStereoDefault", false)
-	needsAACCompatibility := addAACStereoDefault && !hasSingleAACStereoStream(selectedAudioStreams)
+	addAACStereoTrack := effectiveAACOption(plan, plan.Override.AddAACStereoTrack, "addAacStereoTrack", "addAacStereoDefault", false)
+	aacStereoDefault := effectiveAACOption(plan, plan.Override.AACStereoDefault, "aacStereoDefault", "", false)
+	needsAACCompatibility := addAACStereoTrack && !hasAACStereoStream(selectedAudioStreams)
 	preserveOriginalAudio := profileWorkerBool(plan.Profile, "preserveOriginalAudio", true)
 	mappedAudioStreams := selectedAudioStreams
 	if planHasStreamSelection(plan.Override) {
@@ -136,11 +137,15 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 			fmt.Sprintf("-disposition:a:%d", enhancedAudioIndex), "default",
 		)
 	} else if aacStereoIndex >= 0 {
+		disposition := "0"
+		if aacStereoDefault {
+			disposition = "default"
+		}
 		args = append(args,
 			fmt.Sprintf("-c:a:%d", aacStereoIndex), "aac",
 			fmt.Sprintf("-ac:a:%d", aacStereoIndex), "2",
 			fmt.Sprintf("-metadata:s:a:%d", aacStereoIndex), "title=AAC Stereo (MediaForge)",
-			fmt.Sprintf("-disposition:a:%d", aacStereoIndex), "default",
+			fmt.Sprintf("-disposition:a:%d", aacStereoIndex), disposition,
 		)
 	} else {
 		args = appendAudioCodecArgs(args, plan.Profile)
@@ -169,7 +174,11 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		if metadata.Language != "" {
 			args = append(args, fmt.Sprintf("-metadata:s:a:%d", index), "language="+metadata.Language)
 		}
-		args = append(args, fmt.Sprintf("-disposition:a:%d", index), streamDisposition(metadata, false, false))
+		originalDefault := stream.Default
+		if enhancedAudioIndex >= 0 || (aacStereoIndex >= 0 && aacStereoDefault) {
+			originalDefault = false
+		}
+		args = append(args, fmt.Sprintf("-disposition:a:%d", index), streamDisposition(metadata, originalDefault, stream.Forced))
 	}
 
 	for index, stream := range selectedSubtitleStreams(plan) {
@@ -200,8 +209,30 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	return args
 }
 
-func hasSingleAACStereoStream(streams []MediaAudioStream) bool {
-	return len(streams) == 1 && strings.EqualFold(strings.TrimSpace(streams[0].Codec), "aac") && streams[0].Channels == 2
+func effectiveAACOption(plan MediaJobPlan, override *bool, key, legacyKey string, fallback bool) bool {
+	if override != nil {
+		return *override
+	}
+	if plan.Profile.WorkerConfig != nil {
+		if _, exists := plan.Profile.WorkerConfig[key]; exists {
+			return profileWorkerBool(plan.Profile, key, fallback)
+		}
+		if legacyKey != "" {
+			if _, exists := plan.Profile.WorkerConfig[legacyKey]; exists {
+				return profileWorkerBool(plan.Profile, legacyKey, fallback)
+			}
+		}
+	}
+	return fallback
+}
+
+func hasAACStereoStream(streams []MediaAudioStream) bool {
+	for _, stream := range streams {
+		if strings.EqualFold(strings.TrimSpace(stream.Codec), "aac") && stream.Channels == 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profile, audioProfile *audioEnhancementProfile, overwrite bool) (MediaJobPlan, error) {

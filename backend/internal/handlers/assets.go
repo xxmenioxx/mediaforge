@@ -91,6 +91,8 @@ type AssetConversionOverrideState struct {
 	PreserveHDR         *bool                          `json:"preserveHdr,omitempty"`
 	PreserveSubtitles   *bool                          `json:"preserveSubtitles,omitempty"`
 	PreserveChapters    *bool                          `json:"preserveChapters,omitempty"`
+	AddAACStereoTrack   *bool                          `json:"addAacStereoTrack,omitempty"`
+	AACStereoDefault    *bool                          `json:"aacStereoDefault,omitempty"`
 	UpdatedAt           *time.Time                     `json:"updatedAt,omitempty"`
 }
 
@@ -168,6 +170,8 @@ type AssetConversionUpdateInput struct {
 	PreserveHDR         *bool                          `json:"preserveHdr"`
 	PreserveSubtitles   *bool                          `json:"preserveSubtitles"`
 	PreserveChapters    *bool                          `json:"preserveChapters"`
+	AddAACStereoTrack   *bool                          `json:"addAacStereoTrack"`
+	AACStereoDefault    *bool                          `json:"aacStereoDefault"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -323,6 +327,8 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		PreserveHDR:         input.PreserveHDR,
 		PreserveSubtitles:   input.PreserveSubtitles,
 		PreserveChapters:    input.PreserveChapters,
+		AddAACStereoTrack:   input.AddAACStereoTrack,
+		AACStereoDefault:    input.AACStereoDefault,
 	}
 	if assetConversionOverrideEmpty(override) {
 		delete(entries, cleanPath)
@@ -1499,7 +1505,9 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.ProcessingMode) == "" &&
 		override.PreserveHDR == nil &&
 		override.PreserveSubtitles == nil &&
-		override.PreserveChapters == nil
+		override.PreserveChapters == nil &&
+		override.AddAACStereoTrack == nil &&
+		override.AACStereoDefault == nil
 }
 
 func normalizedStreamMetadata(metadata map[int]StreamMetadataOverride) map[int]StreamMetadataOverride {

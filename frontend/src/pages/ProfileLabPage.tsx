@@ -278,7 +278,8 @@ const videoStarterPresets = [
         crop: 'off',
         videoFilters: '',
         x265Params: 'aq-mode=3:aq-strength=0.8:deblock=-1,-1',
-        addAacStereoDefault: true,
+        addAacStereoTrack: true,
+        aacStereoDefault: false,
         preserveOriginalAudio: true,
         warnSubtitleFormats: true,
         preferSrtSubtitles: false,
@@ -304,7 +305,8 @@ const videoStarterPresets = [
         crop: 'off',
         videoFilters: '',
         x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
-        addAacStereoDefault: true,
+        addAacStereoTrack: true,
+        aacStereoDefault: false,
         preserveOriginalAudio: true,
         warnSubtitleFormats: true,
         preferSrtSubtitles: false,
@@ -331,7 +333,8 @@ const videoStarterPresets = [
         crop: 'off',
         videoFilters: '',
         x265Params: '',
-        addAacStereoDefault: true,
+        addAacStereoTrack: true,
+        aacStereoDefault: false,
         preserveOriginalAudio: true,
         warnSubtitleFormats: true,
         preferSrtSubtitles: false,
@@ -358,7 +361,8 @@ const videoStarterPresets = [
         crop: 'off',
         videoFilters: '',
         x265Params: '',
-        addAacStereoDefault: true,
+        addAacStereoTrack: true,
+        aacStereoDefault: false,
         preserveOriginalAudio: true,
         warnSubtitleFormats: true,
         preferSrtSubtitles: false,
@@ -394,7 +398,8 @@ const emptyVideoDraft: ProfileInput = {
     cropValue: '',
     videoFilters: '',
     x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
-    addAacStereoDefault: false,
+    addAacStereoTrack: false,
+    aacStereoDefault: false,
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
     warnSubtitleFormats: true,
@@ -980,11 +985,23 @@ export function ProfileLabPage() {
                             <FormControlLabel
                               control={
                                 <Checkbox
-                                  checked={videoWorkerBool(videoDraft, 'addAacStereoDefault')}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'addAacStereoDefault', event.target.checked)}
+                                  checked={videoAACTrackEnabled(videoDraft)}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'addAacStereoTrack', event.target.checked)}
                                 />
                               }
-                              label="AAC stereo default"
+                              label="Add AAC stereo track"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={videoAACTrackDefault(videoDraft)}
+                                  disabled={!videoAACTrackEnabled(videoDraft)}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoDefault', event.target.checked)}
+                                />
+                              }
+                              label="Make AAC stereo default"
                             />
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2086,7 +2103,8 @@ function videoPreviewOptions(draft: ProfileInput) {
     pixFmt: videoWorkerValue(draft, 'pixFmt', isTenBitDraft(draft) ? 'yuv420p10le' : 'yuv420p'),
     videoFilters: videoWorkerValue(draft, 'videoFilters'),
     x265Params: videoWorkerValue(draft, 'x265Params'),
-    addAacStereoDefault: videoWorkerBool(draft, 'addAacStereoDefault'),
+    addAacStereoTrack: videoAACTrackEnabled(draft),
+    aacStereoDefault: videoAACTrackDefault(draft),
     preserveOriginalAudio: videoWorkerBool(draft, 'preserveOriginalAudio', true),
     preferSrtSubtitles: videoWorkerBool(draft, 'preferSrtSubtitles'),
     warnSubtitleFormats: videoWorkerBool(draft, 'warnSubtitleFormats', true),
@@ -2111,6 +2129,16 @@ function videoWorkerBool(draft: ProfileInput, key: string, fallback = false) {
     return ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase());
   }
   return fallback;
+}
+
+function videoAACTrackEnabled(draft: ProfileInput) {
+  return draft.workerConfig && 'addAacStereoTrack' in draft.workerConfig
+    ? videoWorkerBool(draft, 'addAacStereoTrack')
+    : videoWorkerBool(draft, 'addAacStereoDefault');
+}
+
+function videoAACTrackDefault(draft: ProfileInput) {
+  return videoWorkerBool(draft, 'aacStereoDefault');
 }
 
 function numberWorkerValue(draft: ProfileInput, key: string, fallback: number) {

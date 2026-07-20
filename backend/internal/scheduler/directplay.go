@@ -224,7 +224,10 @@ func evaluateDirectPlayClient(client string, profile models.Profile) DirectPlayC
 	if strings.ToLower(profile.Container) == "mkv" && client == "apple_tv" {
 		penalize(10, "MKV support depends on the Apple TV player")
 	}
-	addAAC, _ := profile.WorkerConfig["addAacStereoDefault"].(bool)
+	addAAC, exists := profile.WorkerConfig["addAacStereoTrack"].(bool)
+	if !exists {
+		addAAC, _ = profile.WorkerConfig["addAacStereoDefault"].(bool)
+	}
 	if !addAAC && strings.ToLower(profile.AudioCodec) != "aac" {
 		penalize(15, "No AAC stereo compatibility track is guaranteed")
 	}
