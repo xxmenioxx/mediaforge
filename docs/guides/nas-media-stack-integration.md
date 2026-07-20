@@ -90,6 +90,9 @@ services:
       - ${MEDIAFORGE_WORK_ROOT}/staging:/media/staging
       - ${MEDIA_ROOT}/mediaforge/originals_archive:/media/originals_archive
       - ${CONFIG_ROOT}/mediaforge/reports:/media/reports
+    # Habilita este device sólo en hosts Intel con /dev/dri disponible.
+    devices:
+      - /dev/dri:/dev/dri
     networks:
       media_network:
         aliases:
@@ -114,6 +117,11 @@ services:
       - media_network
     restart: unless-stopped
 ```
+
+El bloque `devices` es necesario para Intel Quick Sync (`hevc_qsv`). Elimínalo
+en hosts sin `/dev/dri`; MediaForge marcará QSV como no usable y utilizará un
+encoder permitido alternativo. Después de cambiar devices, recrea el backend y
+ejecuta **Refresh host**.
 
 El alias `backend` es necesario porque el Nginx incluido en la imagen web utiliza ese hostname para el proxy interno.
 

@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
@@ -19,6 +24,34 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 		if actual := logicalAssetGroupPath(input); actual != expected {
 			t.Fatalf("logicalAssetGroupPath(%q) = %q, expected %q", input, actual, expected)
 		}
+	}
+}
+
+func TestMediaForgeOutputPathsRequireCompletedOrPublishedJobEvidence(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-provenance?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	jobs := []models.QueueJob{
+		{MediaPath: "/raw/a.mkv", Status: JobStatusCompleted, OutputPath: "/library/a.mkv"},
+		{MediaPath: "/raw/b.mkv", Status: JobStatusFailed, OutputPath: "/library/b.mkv"},
+		{MediaPath: "/raw/c.mkv", Status: JobStatusCompleted, OutputPath: "/work/c.mkv", PublishedPath: "/library/c.mkv"},
+	}
+	for _, job := range jobs {
+		if err := db.Create(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	paths := mediaForgeOutputPaths(db)
+	if !paths[filepath.Clean("/library/a.mkv")] || !paths[filepath.Clean("/library/c.mkv")] {
+		t.Fatalf("expected completed and published outputs, got %v", paths)
+	}
+	if paths[filepath.Clean("/library/b.mkv")] {
+		t.Fatal("failed job output must remain unverified")
 	}
 }
 

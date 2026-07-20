@@ -51,7 +51,7 @@ import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, 
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 export function AssetsPage() {
-  const [tab, setTab] = useState<'unprocessed' | 'converted' | 'archive' | 'reports'>('unprocessed');
+  const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
   const [assetQuery, setAssetQuery] = useState('');
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
@@ -69,10 +69,11 @@ export function AssetsPage() {
   const trackProfiles = getTrackProfiles(settings.data);
   const assetCategories = getAssetCategories(settings.data);
   const unprocessedCount = safeArray(assets.data?.unprocessed).length;
+  const libraryCount = safeArray(assets.data?.library).length;
   const convertedCount = safeArray(assets.data?.converted).length;
   const archiveCount = safeArray(assets.data?.archive).length;
   const currentGroups = safeArray(
-    tab === 'archive' ? assets.data?.archiveGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
+    tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
   const filteredGroups = filterAssetGroups(currentGroups, assetQuery);
 
@@ -80,7 +81,7 @@ export function AssetsPage() {
     <>
       <PageHeader title="Assets" eyebrow="Media inventory">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Originals are listed from the global source root. Converted assets are listed from each configured destination library.
+          Library assets come from destination paths. Only outputs with MediaForge job provenance are marked Converted; the rest remain Unverified.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
@@ -105,6 +106,7 @@ export function AssetsPage() {
                 sx={{ minHeight: 48, flexShrink: 0 }}
               >
                 <Tab label={<AssetTabLabel label="Unprocessed" count={unprocessedCount} color="warning" />} value="unprocessed" />
+                <Tab label={<AssetTabLabel label="Library" count={libraryCount} color="primary" />} value="library" />
                 <Tab label={<AssetTabLabel label="Converted" count={convertedCount} color="success" />} value="converted" />
                 <Tab label={<AssetTabLabel label="Archive" count={archiveCount} color="default" />} value="archive" />
                 <Tab label="Reports" value="reports" />
@@ -166,7 +168,7 @@ export function AssetsPage() {
                     ? 'No archived originals found in the inventory.'
                     : tab === 'unprocessed'
                       ? 'No pending asset groups found.'
-                      : 'No converted asset groups found.'
+                      : tab === 'library' ? 'No library asset groups found.' : 'No MediaForge-converted asset groups found.'
                 }
               />
             </AssetsErrorBoundary>
@@ -177,7 +179,7 @@ export function AssetsPage() {
   );
 }
 
-function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' | 'default' }) {
+function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' | 'primary' | 'default' }) {
   return (
     <Stack direction="row" alignItems="center" spacing={1}>
       <Typography fontWeight={700}>{label}</Typography>
@@ -203,7 +205,10 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
           <ReportTile label="Unprocessed" value={String(reports.unprocessedFiles)} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <ReportTile label="Converted records" value={String(reports.convertedFiles)} />
+          <ReportTile label="Library assets" value={String(reports.libraryFiles)} helper={`${reports.unverifiedFiles} unverified`} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Converted by MediaForge" value={String(reports.convertedFiles)} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <ReportTile label="Archive originals" value={String(reports.archiveFiles)} helper={formatBytes(reports.archiveBytes)} />
@@ -292,7 +297,7 @@ function AssetTable({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
-  mode: 'unprocessed' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
   query: string;
   emptyLabel: string;
 }) {
@@ -391,7 +396,7 @@ function AssetGroupRow({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
-  mode: 'unprocessed' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -407,7 +412,7 @@ function AssetGroupRow({
   const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
   const effectiveProfileId = selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets);
-  const isConvertedGroup = group.status === 'converted';
+  const isConvertedGroup = group.status === 'converted' || group.status === 'unverified' || group.status === 'library';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
@@ -717,7 +722,7 @@ function AssetRow({
   groupLibraryId: number;
   hasOpenJob: boolean;
   queueJobs: QueueJob[];
-  mode: 'unprocessed' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
   const [selectedProfileId, setSelectedProfileId] = useState<number>(groupProfileId);
@@ -791,7 +796,7 @@ function AssetRow({
     },
   });
   const isBlockedByReview = assetReview.requiresReview;
-  const isConverted = asset.status === 'converted';
+  const isConverted = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || isConverted || isArchive;
@@ -1975,6 +1980,10 @@ function statusLabel(status: Asset['status']) {
   switch (status) {
     case 'converted':
       return 'Converted';
+    case 'library':
+      return 'Library';
+    case 'unverified':
+      return 'Unverified';
     case 'archive':
       return 'Archive';
     default:
@@ -1986,6 +1995,10 @@ function statusColor(status: Asset['status']): 'default' | 'success' | 'warning'
   switch (status) {
     case 'converted':
       return 'success';
+    case 'library':
+      return 'default';
+    case 'unverified':
+      return 'warning';
     case 'archive':
       return 'default';
     default:
@@ -2025,7 +2038,7 @@ function relativeAssetPath(asset: Asset, libraries: Library[]) {
   }
 
   const library = libraries.find((candidate) => candidate.id === asset.libraryId);
-  const basePath = asset.status === 'converted' ? library?.destinationPath : library?.sourcePath;
+  const basePath = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library' ? library?.destinationPath : library?.sourcePath;
 
   if (!basePath) {
     return asset.fileName;
@@ -2131,6 +2144,9 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   }
   if (asset.status === 'converted') {
     return { label: 'Converted', color: 'success' };
+  }
+  if (asset.status === 'unverified' || asset.status === 'library') {
+    return { label: 'Unverified', color: 'warning' };
   }
   if (asset.status === 'archive') {
     return { label: 'Archive', color: 'default' };

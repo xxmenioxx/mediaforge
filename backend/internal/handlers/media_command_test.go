@@ -261,6 +261,18 @@ func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *tes
 	assertNotContains(t, command, "-map 0:1 -c copy")
 }
 
+func TestApplySelectedEncoderUsesExecutionPlanWithoutMutatingSnapshot(t *testing.T) {
+	original := models.Profile{WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "videoPreset": "medium"}}
+	effective := applySelectedEncoder(original, "libx265")
+
+	if got := workerStringValue(effective.WorkerConfig["videoEncoder"]); got != "libx265" {
+		t.Fatalf("effective encoder=%q", got)
+	}
+	if got := workerStringValue(original.WorkerConfig["videoEncoder"]); got != "hevc_qsv" {
+		t.Fatalf("profile snapshot was mutated: %q", got)
+	}
+}
+
 func assertContains(t *testing.T, value string, expected string) {
 	t.Helper()
 	if !strings.Contains(value, expected) {

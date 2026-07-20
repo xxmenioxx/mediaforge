@@ -1,9 +1,11 @@
 package capabilities
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 type EncoderCapability struct {
@@ -57,14 +59,32 @@ func CheckEncoder(encoder string) EncoderCapability {
 		return result
 	}
 	result := EncoderCapability{Listed: true, Usable: true}
-	if encoder == "hevc_videotoolbox" && !videoToolboxSmokeTest() {
+	if isHardwareEncoder(encoder) && !hardwareEncoderSmokeTest(encoder) {
 		result.Usable = false
-		result.Reason = "VideoToolbox is listed but could not open an HEVC encoding session"
+		result.Reason = encoder + " is listed but could not open an HEVC Main10 encoding session"
 	}
 	encoderCache.probed[encoder] = result
 	return result
 }
 
-func videoToolboxSmokeTest() bool {
-	return exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=1", "-frames:v", "1", "-an", "-c:v", "hevc_videotoolbox", "-b:v", "1M", "-pix_fmt", "yuv420p", "-f", "null", "-").Run() == nil
+func isHardwareEncoder(encoder string) bool {
+	switch encoder {
+	case "hevc_videotoolbox", "hevc_qsv", "hevc_nvenc", "hevc_amf":
+		return true
+	default:
+		return false
+	}
+}
+
+func hardwareEncoderSmokeTest(encoder string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=128x128:rate=1", "-frames:v", "1", "-an", "-c:v", encoder, "-b:v", "1M"}
+	if encoder == "hevc_videotoolbox" {
+		args = append(args, "-profile:v", "main10", "-pix_fmt", "p010le")
+	} else {
+		args = append(args, "-pix_fmt", "p010le")
+	}
+	args = append(args, "-f", "null", "-")
+	return exec.CommandContext(ctx, "ffmpeg", args...).Run() == nil
 }

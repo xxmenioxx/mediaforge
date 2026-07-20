@@ -125,7 +125,9 @@ export function DashboardPage() {
                     </Typography>
                   </Stack>
                   <Stack spacing={1.2}>
-                    <CoverageRow label="Converted" value={summary.convertedAssets} total={summary.totalAssets} color="success" />
+                    <CoverageRow label="Library Assets" value={summary.libraryAssets} total={summary.totalAssets} color="primary" />
+                    <CoverageRow label="Converted" value={summary.convertedAssets} total={summary.libraryAssets} color="success" />
+                    <CoverageRow label="Unverified in Library" value={summary.unverifiedAssets} total={summary.libraryAssets} color="warning" />
                     <CoverageRow label="Unprocessed" value={summary.unprocessedAssets} total={summary.totalAssets} color="warning" />
                   </Stack>
                 </Stack>
@@ -343,7 +345,7 @@ function CoverageRow({
   label: string;
   value: number;
   total: number;
-  color: 'success' | 'warning';
+  color: 'primary' | 'success' | 'warning';
 }) {
   const percent = total > 0 ? Math.round((value / total) * 100) : 0;
   return (
@@ -366,8 +368,10 @@ function CoverageRow({
 
 function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: AssetInventory) {
   const unprocessedAssets = assets?.unprocessed.length ?? 0;
+  const libraryAssets = assets?.library?.length ?? assets?.converted.length ?? 0;
   const convertedAssets = assets?.converted.length ?? 0;
-  const totalAssets = unprocessedAssets + convertedAssets;
+  const unverifiedAssets = assets?.unverified?.length ?? Math.max(0, libraryAssets - convertedAssets);
+  const totalAssets = unprocessedAssets + libraryAssets;
   const queuedJobs = jobs.filter((job) => job.status === 'queued').length;
   const runningJobs = jobs.filter((job) => job.status === 'running').length;
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
@@ -391,6 +395,7 @@ function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: 
       ? { message: `${unprocessedAssets} unprocessed assets are not queued yet.`, to: '/assets' }
       : null,
     failedJobs > 0 ? { message: `${failedJobs} jobs have failed and need review.`, to: '/queue?status=failed' } : null,
+    unverifiedAssets > 0 ? { message: `${unverifiedAssets} library assets have not been verified by MediaForge.`, to: '/assets' } : null,
     activeJobs > 0 && activeWorkers === 0
       ? { message: 'Queued jobs are waiting for a worker.', to: '/workers' }
       : null,
@@ -399,7 +404,9 @@ function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: 
 
   return {
     unprocessedAssets,
+    libraryAssets,
     convertedAssets,
+    unverifiedAssets,
     totalAssets,
     queuedJobs,
     runningJobs,

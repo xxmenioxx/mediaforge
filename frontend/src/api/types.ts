@@ -66,7 +66,7 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'converted' | 'archive';
+  status: 'unprocessed' | 'library' | 'converted' | 'unverified' | 'archive';
   missing: boolean;
   expiresAt?: string;
   review: AssetReviewState;
@@ -80,7 +80,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'converted' | 'archive';
+  status: 'unprocessed' | 'library' | 'converted' | 'unverified' | 'archive';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;
@@ -157,10 +157,14 @@ export type AssetConversionUpdateInput = AssetConversionOverrideState & {
 
 export type AssetInventory = {
   unprocessed: Asset[];
+  library: Asset[];
   converted: Asset[];
+  unverified: Asset[];
   archive: Asset[];
   unprocessedGroups: AssetGroup[];
+  libraryGroups: AssetGroup[];
   convertedGroups: AssetGroup[];
+  unverifiedGroups: AssetGroup[];
   archiveGroups: AssetGroup[];
   reports: AssetReports;
   sync: AssetSyncInfo;
@@ -168,7 +172,9 @@ export type AssetInventory = {
 
 export type AssetReports = {
   unprocessedFiles: number;
+  libraryFiles: number;
   convertedFiles: number;
+  unverifiedFiles: number;
   archiveFiles: number;
   archiveBytes: number;
   expiredArchive: number;
@@ -184,7 +190,9 @@ export type AssetSyncInfo = {
 export type AssetSyncResult = {
   syncedAt: string;
   unprocessedFiles: number;
+  libraryFiles: number;
   convertedFiles: number;
+  unverifiedFiles: number;
   archiveFiles: number;
   expiredDeleted: number;
 };

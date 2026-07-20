@@ -608,6 +608,24 @@ func profileWorkerBool(profile models.Profile, key string, fallback bool) bool {
 	return fallback
 }
 
+func cloneWorkerConfig(config models.JSONMap) models.JSONMap {
+	cloned := models.JSONMap{}
+	for key, value := range config {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func applySelectedEncoder(profile models.Profile, selectedEncoder string) models.Profile {
+	selectedEncoder = strings.TrimSpace(selectedEncoder)
+	if selectedEncoder == "" {
+		return profile
+	}
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["videoEncoder"] = selectedEncoder
+	return profile
+}
+
 func workerIntValue(value interface{}, fallback int) int {
 	number := workerNumberValue(value, float64(fallback))
 	if number <= 0 {

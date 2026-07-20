@@ -199,6 +199,21 @@ Si pasa, utiliza **Publisher** manualmente. Confirma:
 - **Logs**: diagnóstico.
 - **Settings**: políticas globales.
 
+### Estados del inventario
+
+La ubicación y la procedencia son conceptos distintos:
+
+- **Library assets**: todos los medios encontrados en destination paths.
+- **Converted**: library assets cuyo path coincide con un output completado o
+  publicado por MediaForge.
+- **Unverified**: library assets existentes sin evidencia de un job de
+  MediaForge. No significa que estén mal codificados; primero deben analizarse
+  para decidir si conviene convertirlos.
+- **Unprocessed**: medios encontrados bajo el raw root.
+
+La carpeta por sí sola nunca demuestra una conversión. Usa Analysis/Advisor
+sobre los assets unverified antes de crear batches.
+
 ## Detener y actualizar
 
 Antes de una actualización:

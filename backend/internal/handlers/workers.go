@@ -611,10 +611,14 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 	inputPath := job.MediaPath
 	workspaceMode := scheduler.WorkspaceModeDirect
+	selectedEncoder := ""
 	if job.ActiveExecutionPlanID != nil {
 		var executionPlan models.ExecutionPlan
-		if err := h.db.First(&executionPlan, *job.ActiveExecutionPlanID).Error; err == nil && executionPlan.WorkspaceMode != "" {
-			workspaceMode = executionPlan.WorkspaceMode
+		if err := h.db.First(&executionPlan, *job.ActiveExecutionPlanID).Error; err == nil {
+			if executionPlan.WorkspaceMode != "" {
+				workspaceMode = executionPlan.WorkspaceMode
+			}
+			selectedEncoder = strings.TrimSpace(executionPlan.SelectedEncoder)
 		}
 	}
 	if workspaceMode == scheduler.WorkspaceModeCopyToWork {
@@ -630,6 +634,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
+	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
 	outputPath := plannedStagingOutputPath(h.db, job, library, effectiveProfile, paths)
 	if !overwrite {
 		if _, err := os.Stat(outputPath); err == nil {
@@ -648,7 +653,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, profile, audioProfile, overwrite, override)
+	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, effectiveProfile, audioProfile, overwrite, override)
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}

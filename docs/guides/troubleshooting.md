@@ -105,6 +105,41 @@ Después de corregir mounts o librerías:
 El tipo físico puede aparecer como `unknown` dentro de un contenedor; la ruta y
 la capacidad disponible son los valores que gobiernan la decisión de espacio.
 
+## `Error creating a MFX session: -9` con `hevc_qsv`
+
+FFmpeg puede listar `hevc_qsv` aunque el contenedor no tenga acceso a Intel
+Quick Sync. MediaForge prueba una codificación HEVC Main10 real antes de marcar
+el encoder como usable. Si la prueba falla, el runtime snapshot debe mostrar
+QSV como no usable y el scheduler puede seleccionar `libx265` cuando el perfil
+lo permita.
+
+Para utilizar QSV en Linux, comprueba primero el host:
+
+```sh
+ls -l /dev/dri
+```
+
+Después expón el dispositivo al backend:
+
+```yaml
+services:
+  backend:
+    devices:
+      - /dev/dri:/dev/dri
+```
+
+La imagen `linux/amd64` incluye el Intel Media Driver (`iHD`) y el runtime Intel
+Media SDK de Alpine. Esos paquetes sólo se instalan en x86_64 para conservar el
+build multi-arquitectura; ARM64 no anuncia QSV.
+
+Recrea el contenedor, pulsa **Refresh host** y confirma que `hevc_qsv` aparezca
+como usable. Si continúa fallando, utiliza temporalmente `libx265`; no fuerces
+QSV sólo porque aparezca en `ffmpeg -encoders`.
+
+La línea `ac3 -> aac` no indica este fallo: demuestra que la pista AAC empezó a
+codificarse. `Nothing was written into output file` es la consecuencia de que
+el encoder de video no produjo ningún frame.
+
 ## Información mínima para reportar un problema
 
 Incluye:

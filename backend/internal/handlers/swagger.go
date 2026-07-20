@@ -651,7 +651,7 @@ func openAPIComponents() gin.H {
 			},
 			"AssetInventory": gin.H{
 				"type":     "object",
-				"required": []string{"unprocessed", "converted", "unprocessedGroups", "convertedGroups"},
+				"required": []string{"unprocessed", "library", "converted", "unverified", "unprocessedGroups", "libraryGroups", "convertedGroups"},
 				"properties": gin.H{
 					"unprocessed": gin.H{
 						"type":  "array",
@@ -661,11 +661,23 @@ func openAPIComponents() gin.H {
 						"type":  "array",
 						"items": ref("Asset"),
 					},
+					"library": gin.H{
+						"type":  "array",
+						"items": ref("Asset"),
+					},
+					"unverified": gin.H{
+						"type":  "array",
+						"items": ref("Asset"),
+					},
 					"unprocessedGroups": gin.H{
 						"type":  "array",
 						"items": ref("AssetGroup"),
 					},
 					"convertedGroups": gin.H{
+						"type":  "array",
+						"items": ref("AssetGroup"),
+					},
+					"libraryGroups": gin.H{
 						"type":  "array",
 						"items": ref("AssetGroup"),
 					},
@@ -683,7 +695,7 @@ func openAPIComponents() gin.H {
 					"extension":    gin.H{"type": "string", "example": ".mkv"},
 					"sizeBytes":    gin.H{"type": "integer", "format": "int64", "example": 7340032000},
 					"modifiedAt":   gin.H{"type": "string", "format": "date-time"},
-					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "converted"}},
+					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "converted", "archive"}},
 				},
 			},
 			"AssetGroup": gin.H{
@@ -694,7 +706,7 @@ func openAPIComponents() gin.H {
 					"libraryName":  gin.H{"type": "string", "example": "Movies"},
 					"path":         gin.H{"type": "string", "example": "/media/raw/movies/The Matrix"},
 					"relativePath": gin.H{"type": "string", "example": "The Matrix"},
-					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "converted"}},
+					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "converted", "archive"}},
 					"fileCount":    gin.H{"type": "integer", "example": 3},
 					"sizeBytes":    gin.H{"type": "integer", "format": "int64", "example": 7340032000},
 					"modifiedAt":   gin.H{"type": "string", "format": "date-time"},

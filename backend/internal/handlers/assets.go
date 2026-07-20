@@ -25,10 +25,14 @@ type AssetHandler struct {
 
 type AssetInventory struct {
 	Unprocessed       []Asset       `json:"unprocessed"`
+	Library           []Asset       `json:"library"`
 	Converted         []Asset       `json:"converted"`
+	Unverified        []Asset       `json:"unverified"`
 	Archive           []Asset       `json:"archive"`
 	UnprocessedGroups []AssetGroup  `json:"unprocessedGroups"`
+	LibraryGroups     []AssetGroup  `json:"libraryGroups"`
 	ConvertedGroups   []AssetGroup  `json:"convertedGroups"`
+	UnverifiedGroups  []AssetGroup  `json:"unverifiedGroups"`
 	ArchiveGroups     []AssetGroup  `json:"archiveGroups"`
 	Reports           AssetReports  `json:"reports"`
 	Sync              AssetSyncInfo `json:"sync"`
@@ -42,7 +46,9 @@ type AssetSyncInfo struct {
 
 type AssetReports struct {
 	UnprocessedFiles int   `json:"unprocessedFiles"`
+	LibraryFiles     int   `json:"libraryFiles"`
 	ConvertedFiles   int   `json:"convertedFiles"`
+	UnverifiedFiles  int   `json:"unverifiedFiles"`
 	ArchiveFiles     int   `json:"archiveFiles"`
 	ArchiveBytes     int64 `json:"archiveBytes"`
 	ExpiredArchive   int   `json:"expiredArchive"`
@@ -52,7 +58,9 @@ type AssetReports struct {
 type AssetSyncResult struct {
 	SyncedAt         time.Time `json:"syncedAt"`
 	UnprocessedFiles int       `json:"unprocessedFiles"`
+	LibraryFiles     int       `json:"libraryFiles"`
 	ConvertedFiles   int       `json:"convertedFiles"`
+	UnverifiedFiles  int       `json:"unverifiedFiles"`
 	ArchiveFiles     int       `json:"archiveFiles"`
 	ExpiredDeleted   int       `json:"expiredDeleted"`
 }
@@ -949,17 +957,29 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 
 	inventory := AssetInventory{
 		Unprocessed:       []Asset{},
+		Library:           []Asset{},
 		Converted:         []Asset{},
+		Unverified:        []Asset{},
 		Archive:           []Asset{},
 		UnprocessedGroups: []AssetGroup{},
+		LibraryGroups:     []AssetGroup{},
 		ConvertedGroups:   []AssetGroup{},
+		UnverifiedGroups:  []AssetGroup{},
 		ArchiveGroups:     []AssetGroup{},
 	}
+	mediaForgeOutputs := mediaForgeOutputPaths(h.db)
 	for _, record := range records {
 		asset := assetFromRecord(record)
 		switch record.Status {
 		case "converted":
-			inventory.Converted = append(inventory.Converted, asset)
+			if mediaForgeOutputs[filepath.Clean(record.Path)] {
+				asset.Status = "converted"
+				inventory.Converted = append(inventory.Converted, asset)
+			} else {
+				asset.Status = "unverified"
+				inventory.Unverified = append(inventory.Unverified, asset)
+			}
+			inventory.Library = append(inventory.Library, asset)
 		case "archive":
 			inventory.Archive = append(inventory.Archive, asset)
 		default:
@@ -973,22 +993,34 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	metadata := assetMetadataOverrides(h.db)
 	conversion := assetConversionOverrides(h.db)
 	applyAssetReviews(inventory.Unprocessed, reviews)
+	applyAssetReviews(inventory.Library, reviews)
 	applyAssetReviews(inventory.Converted, reviews)
+	applyAssetReviews(inventory.Unverified, reviews)
 	applyAssetReviews(inventory.Archive, reviews)
 	applyAssetMetadata(inventory.Unprocessed, metadata)
+	applyAssetMetadata(inventory.Library, metadata)
 	applyAssetMetadata(inventory.Converted, metadata)
+	applyAssetMetadata(inventory.Unverified, metadata)
 	applyAssetMetadata(inventory.Archive, metadata)
 	applyAssetConversionOverrides(inventory.Unprocessed, conversion)
+	applyAssetConversionOverrides(inventory.Library, conversion)
 	applyAssetConversionOverrides(inventory.Converted, conversion)
+	applyAssetConversionOverrides(inventory.Unverified, conversion)
 	applyAssetConversionOverrides(inventory.Archive, conversion)
 	sortAssets(inventory.Unprocessed)
+	sortAssets(inventory.Library)
 	sortAssets(inventory.Converted)
+	sortAssets(inventory.Unverified)
 	sortAssets(inventory.Archive)
 	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
+	inventory.LibraryGroups = groupAssets(inventory.Library, reviews, metadata)
 	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
+	inventory.UnverifiedGroups = groupAssets(inventory.Unverified, reviews, metadata)
 	inventory.ArchiveGroups = groupAssets(inventory.Archive, reviews, metadata)
 	sortAssetGroups(inventory.UnprocessedGroups)
+	sortAssetGroups(inventory.LibraryGroups)
 	sortAssetGroups(inventory.ConvertedGroups)
+	sortAssetGroups(inventory.UnverifiedGroups)
 	sortAssetGroups(inventory.ArchiveGroups)
 	inventory.Reports = assetReports(inventory)
 
@@ -999,6 +1031,23 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	_ = h.db.Model(&models.AssetRecord{}).Count(&inventory.Sync.TotalRecords).Error
 	_ = h.db.Model(&models.AssetRecord{}).Where("missing = ?", true).Count(&inventory.Sync.MissingFiles).Error
 	return inventory, nil
+}
+
+func mediaForgeOutputPaths(db *gorm.DB) map[string]bool {
+	paths := map[string]bool{}
+	var jobs []models.QueueJob
+	_ = db.Where("published_path <> '' OR status = ?", JobStatusCompleted).Find(&jobs).Error
+	for _, job := range jobs {
+		if value := strings.TrimSpace(job.PublishedPath); value != "" {
+			paths[filepath.Clean(value)] = true
+		}
+		if job.Status == JobStatusCompleted {
+			if value := strings.TrimSpace(job.OutputPath); value != "" {
+				paths[filepath.Clean(value)] = true
+			}
+		}
+	}
+	return paths
 }
 
 func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
@@ -1031,6 +1080,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 
 	seenDestinations := map[string]struct{}{}
+	mediaForgeOutputs := mediaForgeOutputPaths(h.db)
 	for _, library := range libraries {
 		destinationPath := strings.TrimSpace(library.DestinationPath)
 		if destinationPath == "" {
@@ -1045,7 +1095,12 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 			if err := upsertAssetRecord(h.db, record); err != nil {
 				return result, err
 			}
-			result.ConvertedFiles++
+			result.LibraryFiles++
+			if mediaForgeOutputs[filepath.Clean(record.Path)] {
+				result.ConvertedFiles++
+			} else {
+				result.UnverifiedFiles++
+			}
 		}
 	}
 
@@ -1159,11 +1214,13 @@ func assetFromRecord(record models.AssetRecord) Asset {
 func assetReports(inventory AssetInventory) AssetReports {
 	report := AssetReports{
 		UnprocessedFiles: len(inventory.Unprocessed),
+		LibraryFiles:     len(inventory.Library),
 		ConvertedFiles:   len(inventory.Converted),
+		UnverifiedFiles:  len(inventory.Unverified),
 		ArchiveFiles:     len(inventory.Archive),
 	}
 	now := time.Now()
-	for _, asset := range append(append([]Asset{}, inventory.Converted...), inventory.Archive...) {
+	for _, asset := range append(append([]Asset{}, inventory.Library...), inventory.Archive...) {
 		if asset.Missing {
 			report.MissingFiles++
 		}
