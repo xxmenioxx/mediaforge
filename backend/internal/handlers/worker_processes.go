@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anuelvs/mediaforge/backend/internal/applog"
 	"github.com/anuelvs/mediaforge/backend/internal/models"
 	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
@@ -41,8 +42,10 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string) error {
 	}
 
 	if err := cmd.Start(); err != nil {
+		applog.Event("error", "ffmpeg", "process_start_failed", map[string]any{"jobId": jobID}, err)
 		return err
 	}
+	applog.Event("info", "ffmpeg", "process_started", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
 	h.startSleepInhibitor(cmd.Process.Pid)
 
 	registerRunningJobProcess(jobID, cmd)
@@ -128,6 +131,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 			job.ErrorMessage = fmt.Sprintf("ffmpeg exited with error: %v", err)
 		}
 		_ = h.db.Save(&job).Error
+		applog.Event("error", "ffmpeg", "process_failed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid, "stderr": job.ErrorMessage}, err)
 		_ = writeJobResultArtifact(h.db, job, map[string]any{
 			"status":   "failed",
 			"error":    job.ErrorMessage,
@@ -140,6 +144,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	job.Status = JobStatusCompleted
 	job.Progress = 100
 	job.ErrorMessage = ""
+	applog.Event("info", "ffmpeg", "process_completed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
 	_ = h.db.Save(&job).Error
 	_ = transitionJobStage(h.db, &job, JobStageValidating)
 	automationResult := h.runAutomatedPipeline(job)

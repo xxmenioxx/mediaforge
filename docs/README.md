@@ -8,8 +8,9 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 2. [Integración con nas-media-stack](guides/nas-media-stack-integration.md)
 3. [Cómo usar MediaForge](guides/using-mediaforge.md)
 4. [Perfiles de video, audio y tracks](guides/profiles.md)
-5. [Cómo funciona el scheduler](guides/scheduler.md)
-6. [Checklist de validación del scheduler](scheduler-v1-validation.md)
+5. [Recomendaciones prácticas de perfiles](guides/profile-recommendations.md)
+6. [Cómo funciona el scheduler](guides/scheduler.md)
+7. [Checklist de validación del scheduler](scheduler-v1-validation.md)
 
 ## Para mantenedores
 

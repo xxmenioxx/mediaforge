@@ -1,15 +1,49 @@
 package runtimeinfo
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestParseMemInfo(t *testing.T) {
 	total, available := parseMemInfo("MemTotal: 16384 kB\nMemAvailable: 4096 kB\n")
 	if total != 16384*1024 || available != 4096*1024 {
 		t.Fatalf("unexpected memory: %d %d", total, available)
+	}
+}
+
+func TestLoadDiskProbePathsUsesRegisteredLibraryDestinations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:runtime-disk-paths?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.Library{}); err != nil {
+		t.Fatal(err)
+	}
+	roles := models.AppSetting{Key: "storageRoles", Value: models.JSONMap{
+		"work":    models.JSONMap{"path": "/media/staging"},
+		"library": models.JSONMap{"path": "/media/library"},
+	}}
+	if err := db.Create(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/media/library/anime-movies", "/media/library/movies", "/media/library/anime-movies"} {
+		library := models.Library{Name: path, SourcePath: "/media/raw", DestinationPath: path, Type: "movies"}
+		if err := db.Create(&library).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := loadDiskProbePaths(db)
+	if want := []string{"/media/staging"}; !reflect.DeepEqual(got["workspace"], want) {
+		t.Fatalf("workspace paths=%v want=%v", got["workspace"], want)
+	}
+	if want := []string{"/media/library/anime-movies", "/media/library/movies"}; !reflect.DeepEqual(got["library"], want) {
+		t.Fatalf("library paths=%v want=%v", got["library"], want)
 	}
 }
 

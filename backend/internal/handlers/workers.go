@@ -277,7 +277,15 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 	claimed, err := h.claimNextJob(input.WorkerName)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "no queued jobs available"})
+			message := "no runnable queued jobs are available"
+			var job models.QueueJob
+			if h.db.Where("status = ?", JobStatusQueued).Order("priority asc, created_at asc").First(&job).Error == nil && job.ActiveExecutionPlanID != nil {
+				var plan models.ExecutionPlan
+				if h.db.First(&plan, *job.ActiveExecutionPlanID).Error == nil && plan.WaitingState != "" {
+					message = fmt.Sprintf("queued job %d is blocked in %s", job.ID, plan.WaitingState)
+				}
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": message})
 			return
 		}
 		if err == errWorkerLimitReached {

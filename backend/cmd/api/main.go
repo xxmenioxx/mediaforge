@@ -26,6 +26,9 @@ func main() {
 	if err := database.Seed(db); err != nil {
 		log.Fatalf("seed database: %v", err)
 	}
+	if err := handlers.ConfigureApplicationLogging(db); err != nil {
+		log.Printf("configure persistent logging: %v", err)
+	}
 
 	if _, err := runtimeinfo.DetectAndSave(db); err != nil {
 		log.Printf("detect runtime: %v", err)

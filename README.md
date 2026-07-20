@@ -183,6 +183,24 @@ docker compose up --build
 - API: [http://localhost:8080](http://localhost:8080)
 - Swagger: [http://localhost:8080/swagger/index.html](http://localhost:8080/swagger/index.html)
 
+También puedes ejecutar ambos procesos directamente en la laptop. Vite envía
+automáticamente `/api`, `/health` y `/swagger` al backend local en el puerto
+`8080`:
+
+```sh
+# Terminal 1
+cd backend
+MEDIAFORGE_API_HOST=0.0.0.0 go run ./cmd/api
+
+# Terminal 2
+cd frontend
+npm ci
+npm run dev
+```
+
+Si el backend de desarrollo se encuentra en otra dirección, define
+`VITE_DEV_PROXY_TARGET`, por ejemplo `http://192.168.1.20:8080`.
+
 Validaciones principales:
 
 ```sh
@@ -196,6 +214,7 @@ Empieza por el [índice de documentación](docs/README.md):
 
 - [Cómo usar MediaForge](docs/guides/using-mediaforge.md)
 - [Perfiles de video, audio y tracks](docs/guides/profiles.md)
+- [Recomendaciones prácticas de perfiles](docs/guides/profile-recommendations.md)
 - [Cómo funciona el scheduler](docs/guides/scheduler.md)
 - [Cómo configurar releases en GitHub y GHCR](docs/guides/github-releases.md)
 - [Integración con nas-media-stack](docs/guides/nas-media-stack-integration.md)

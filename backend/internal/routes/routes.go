@@ -1,8 +1,13 @@
 package routes
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
+	"runtime/debug"
+	"time"
 
+	"github.com/anuelvs/mediaforge/backend/internal/applog"
 	"github.com/anuelvs/mediaforge/backend/internal/handlers"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -10,7 +15,8 @@ import (
 )
 
 func New(db *gorm.DB) *gin.Engine {
-	router := gin.Default()
+	router := gin.New()
+	router.Use(productionLogger(), productionRecovery())
 	if err := router.SetTrustedProxies(nil); err != nil {
 		panic(err)
 	}
@@ -104,4 +110,58 @@ func New(db *gorm.DB) *gin.Engine {
 	}
 
 	return router
+}
+
+func productionLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		started := time.Now()
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			var value [12]byte
+			if _, err := rand.Read(value[:]); err == nil {
+				requestID = hex.EncodeToString(value[:])
+			} else {
+				requestID = time.Now().UTC().Format("20060102150405.000000000")
+			}
+		}
+		c.Set("requestId", requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+
+		level := "info"
+		if c.Writer.Status() >= 500 {
+			level = "error"
+		} else if c.Writer.Status() >= 400 {
+			level = "warn"
+		}
+		applog.Event(level, "http", "request_completed", map[string]any{
+			"requestId":  requestID,
+			"method":     c.Request.Method,
+			"path":       c.Request.URL.Path,
+			"query":      c.Request.URL.RawQuery,
+			"status":     c.Writer.Status(),
+			"durationMs": time.Since(started).Milliseconds(),
+			"clientIp":   c.ClientIP(),
+			"errors":     c.Errors.Errors(),
+		}, nil)
+	}
+}
+
+func productionRecovery() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				requestID, _ := c.Get("requestId")
+				applog.Event("error", "http", "panic_recovered", map[string]any{
+					"requestId": requestID,
+					"method":    c.Request.Method,
+					"path":      c.Request.URL.Path,
+					"panic":     recovered,
+					"stack":     string(debug.Stack()),
+				}, nil)
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error", "requestId": requestID})
+			}
+		}()
+		c.Next()
+	}
 }

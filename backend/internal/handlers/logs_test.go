@@ -11,7 +11,7 @@ import (
 )
 
 func TestLogFileCategoriesCoverSystemAndPipelineSources(t *testing.T) {
-	tests := map[string]string{"system.log": "system", "scheduler.log": "scheduler", "workers.log": "workers", "pipeline.log": "pipeline", "jobs.log": "jobs", "job-42.log": "jobs"}
+	tests := map[string]string{"backend.log": "backend", "system.log": "system", "scheduler.log": "scheduler", "workers.log": "workers", "pipeline.log": "pipeline", "jobs.log": "jobs", "job-42.log": "jobs"}
 	for name, expected := range tests {
 		if actual := logFileCategory(name); actual != expected {
 			t.Fatalf("%s category=%s expected=%s", name, actual, expected)

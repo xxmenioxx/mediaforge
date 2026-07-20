@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anuelvs/mediaforge/backend/internal/applog"
 	"github.com/anuelvs/mediaforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -37,6 +38,20 @@ type LogFileContent struct {
 
 func NewLogHandler(db *gorm.DB) LogHandler {
 	return LogHandler{db: db}
+}
+
+func ConfigureApplicationLogging(db *gorm.DB) error {
+	logDir, err := configuredLogDir(db)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = os.Getenv("MEDIAFORGE_LOG_DIR")
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = "/media/reports/logs"
+	}
+	return applog.Initialize(logDir)
 }
 
 func (h LogHandler) ListFiles(c *gin.Context) {
@@ -159,6 +174,8 @@ func logFileCategory(name string) string {
 	switch name {
 	case "system.log":
 		return "system"
+	case "backend.log":
+		return "backend"
 	case "scheduler.log":
 		return "scheduler"
 	case "workers.log":
@@ -174,6 +191,8 @@ func logFileDescription(name string) string {
 	switch name {
 	case "system.log":
 		return "Application and subsystem events"
+	case "backend.log":
+		return "Persistent backend requests, errors and panics"
 	case "scheduler.log":
 		return "Plans, reservations and runtime decisions"
 	case "workers.log":
@@ -198,6 +217,9 @@ func schedulerLog(db *gorm.DB) string {
 	builder.WriteString("MediaForge scheduler log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nExecution plans\n")
 	for _, plan := range plans {
 		builder.WriteString(fmt.Sprintf("[%s] plan=%d job=%d v=%d status=%s waiting=%s encoder=%s runtime=%s approval=%s output=%s\n", plan.UpdatedAt.Format(time.RFC3339), plan.ID, plan.JobID, plan.Version, plan.Status, emptyLabel(plan.WaitingState), plan.SelectedEncoder, plan.RuntimeProfile, plan.ApprovalStatus, plan.OutputPath))
+		if len(plan.DecisionReasons) > 0 || len(plan.Warnings) > 0 || len(plan.Evaluation) > 0 {
+			builder.WriteString(fmt.Sprintf("  reasons=%v warnings=%v evaluation=%v\n", plan.DecisionReasons, plan.Warnings, plan.Evaluation))
+		}
 	}
 	builder.WriteString("\nReservations\n")
 	for _, item := range reservations {
@@ -205,7 +227,7 @@ func schedulerLog(db *gorm.DB) string {
 	}
 	builder.WriteString("\nRuntime snapshots\n")
 	for _, item := range snapshots {
-		builder.WriteString(fmt.Sprintf("[%s] detected=%s effective=%s preferred=%s overrides=%v warnings=%v\n", item.DetectedAt.Format(time.RFC3339), item.RecommendedProfile, item.SelectedProfile, emptyLabel(item.PreferredProfile), item.AppliedOverrides, item.Warnings))
+		builder.WriteString(fmt.Sprintf("[%s] detected=%s effective=%s preferred=%s overrides=%v disks=%v warnings=%v\n", item.DetectedAt.Format(time.RFC3339), item.RecommendedProfile, item.SelectedProfile, emptyLabel(item.PreferredProfile), item.AppliedOverrides, item.Disks, item.Warnings))
 	}
 	return builder.String()
 }
@@ -223,6 +245,12 @@ func workersLog(db *gorm.DB) string {
 	builder.WriteString("\nQueued and active claims\n")
 	for _, job := range jobs {
 		builder.WriteString(fmt.Sprintf("[%s] job=%d status=%s stage=%s worker=%s priority=%d media=%s\n", job.UpdatedAt.Format(time.RFC3339), job.ID, job.Status, job.Stage, emptyLabel(job.WorkerName), job.Priority, job.MediaPath))
+		if job.ActiveExecutionPlanID != nil {
+			var plan models.ExecutionPlan
+			if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil {
+				builder.WriteString(fmt.Sprintf("  plan=%d status=%s waiting=%s reasons=%v\n", plan.ID, plan.Status, emptyLabel(plan.WaitingState), plan.DecisionReasons))
+			}
+		}
 	}
 	return builder.String()
 }
@@ -259,6 +287,16 @@ func configuredLogDir(db *gorm.DB) (string, error) {
 }
 
 func appendSystemLog(db *gorm.DB, event string, fields map[string]string, err error) {
+	structuredFields := make(map[string]any, len(fields))
+	for key, value := range fields {
+		structuredFields[key] = value
+	}
+	level := "info"
+	if err != nil {
+		level = "error"
+	}
+	applog.Event(level, "system", event, structuredFields, err)
+
 	logDir, dirErr := configuredLogDir(db)
 	if dirErr != nil {
 		return

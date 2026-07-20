@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +42,9 @@ func (d *Detector) run() {
 	for {
 		select {
 		case <-ticker.C:
-			_, _ = DetectAndSave(d.db)
+			if _, err := DetectAndSave(d.db); err != nil {
+				log.Printf("runtime detector: %v", err)
+			}
 		case <-d.stop:
 			return
 		}
@@ -58,9 +61,9 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	snapshot.CPULoad1 = detectCPULoad1()
 	snapshot.BatteryPresent, snapshot.PowerSource, snapshot.OnBattery, snapshot.BatteryPercent = detectPower()
 
-	paths := loadPaths(db)
-	for label, path := range paths {
-		info, err := diskInfo(path)
+	paths := loadDiskProbePaths(db)
+	for label, probePaths := range paths {
+		info, err := diskInfoForPaths(probePaths)
 		if err != nil {
 			snapshot.Warnings = append(snapshot.Warnings, fmt.Sprintf("%s disk: %v", label, err))
 			continue
@@ -90,6 +93,64 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 		return models.RuntimeSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// loadDiskProbePaths prefers registered library destinations because Docker
+// deployments commonly bind-mount each library below an unmounted parent such
+// as /media/library. Probing that parent reports the container filesystem, not
+// the disk that will receive the converted file.
+func loadDiskProbePaths(db *gorm.DB) map[string][]string {
+	configured := loadPaths(db)
+	result := map[string][]string{}
+	for label, path := range configured {
+		if strings.TrimSpace(path) != "" {
+			result[label] = []string{path}
+		}
+	}
+
+	var libraries []models.Library
+	if err := db.Order("id asc").Find(&libraries).Error; err == nil {
+		seen := map[string]bool{}
+		var destinations []string
+		for _, library := range libraries {
+			path := strings.TrimSpace(library.DestinationPath)
+			if path != "" && !seen[path] {
+				seen[path] = true
+				destinations = append(destinations, path)
+			}
+		}
+		if len(destinations) > 0 {
+			result["library"] = destinations
+		}
+	}
+	return result
+}
+
+func diskInfoForPaths(paths []string) (models.JSONMap, error) {
+	var selected models.JSONMap
+	var selectedAvailable int64
+	probed := models.JSONList{}
+	warnings := models.JSONList{}
+	for _, path := range paths {
+		info, err := diskInfo(path)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: %v", path, err))
+			continue
+		}
+		probed = append(probed, path)
+		available, _ := info["availableBytes"].(int64)
+		if selected == nil || available < selectedAvailable {
+			selected, selectedAvailable = info, available
+		}
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("none of the configured paths are accessible: %v", paths)
+	}
+	selected["probePaths"] = probed
+	if len(warnings) > 0 {
+		selected["probeWarnings"] = warnings
+	}
+	return selected, nil
 }
 
 func Latest(db *gorm.DB) (models.RuntimeSnapshot, error) {

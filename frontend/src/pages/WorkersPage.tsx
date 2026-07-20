@@ -135,7 +135,7 @@ export function WorkersPage() {
                       Claim
                     </Button>
                   </Stack>
-                  {claimJob.isError ? <Alert severity="info">No queued jobs are available right now.</Alert> : null}
+                  {claimJob.isError ? <Alert severity="info">{claimJob.error instanceof Error ? claimJob.error.message : 'No runnable queued jobs are available right now.'}</Alert> : null}
                 </Stack>
               </CardContent>
             </Card>
