@@ -305,6 +305,13 @@ Los workspaces publicados pueden limpiarse inmediatamente. Nunca son candidatos 
 
 Al crear un job se bloquea su path para evitar dos jobs abiertos sobre el mismo asset. Al hacer claim se activa una reserva con worker, tipo, encoder, clase de encoder, memoria y espacio estimado. La operación es transaccional: dos workers no pueden reclamar el mismo job ni exceder correctamente un único slot.
 
+El claim local serializa en una sección crítica la comprobación del slot, la
+selección del job, la activación de la reserva y la transición a `running`. La
+conexión SQLite utiliza WAL, `busy_timeout=5000` y un único writer para evitar
+que los servicios periódicos compitan por escrituras. Esta garantía cubre una
+instancia backend; dos procesos contra el mismo archivo SQLite no están
+soportados.
+
 Las reservas se liberan al finalizar, fallar o cancelar. En el arranque, la reconciliación repara reservas antiguas y detecta jobs que quedaron running durante un reinicio.
 
 ## 7. Reinicio y recuperación
@@ -354,7 +361,13 @@ Si un job no comienza:
 
 Si el job termina pero no aparece en la librería, el problema ya no es dispatch: revisa Validation, `autoPublisherEnabled`, el path publicado, el archive del original y luego Housekeeping.
 
-La página **Logs** reúne cinco categorías: eventos del sistema, decisiones del scheduler, workers y claims, lifecycle general del pipeline y detalle por job. Los logs consolidados de scheduler, workers y pipeline se reconstruyen desde la DB para conservar contexto operativo aunque un evento no se haya escrito originalmente como archivo.
+La página **Logs** reúne backend HTTP/pánicos, eventos del sistema, decisiones
+del scheduler, workers y claims, lifecycle general del pipeline y detalle por
+job. `backend.log` es persistente y rotado; los logs consolidados de scheduler,
+workers y pipeline se reconstruyen desde la DB para conservar contexto
+operativo aunque un evento no se haya escrito originalmente como archivo. Para
+procedimientos concretos consulta
+[Diagnóstico y troubleshooting](guides/troubleshooting.md).
 
 ## 10. Runtime Profiles efectivos
 

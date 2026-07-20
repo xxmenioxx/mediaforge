@@ -105,6 +105,20 @@ Antes de ejecutar, MediaForge reserva:
 
 El asset lock evita ejecutar dos conversiones activas sobre el mismo path. Una reserva no debe sobrevivir indefinidamente a un job terminado o perdido; recovery y housekeeping reconcilian estos casos.
 
+### Concurrencia del claim y SQLite
+
+Comprobar el slot, seleccionar el siguiente job, activar su reserva y cambiarlo a
+`running` forman una sola sección crítica. MediaForge serializa esa operación
+entre el worker automático y los claims manuales del mismo backend. Así, con
+`maxConcurrentJobs: 1`, dos solicitudes simultáneas no pueden ocupar el mismo
+slot ni dejar una reserva a medio activar.
+
+La instalación SQLite se abre con journal mode `WAL`, un `busy_timeout` de cinco
+segundos y un único writer en el pool de conexiones. SQLite continúa siendo una
+base para una sola instancia de MediaForge. No ejecutes dos contenedores backend
+contra el mismo archivo `mediaforge.db`: la sección crítica protege goroutines
+del mismo proceso, no procesos o hosts independientes.
+
 ## Working Hours
 
 Los trabajos pesados pueden restringirse a ventanas horarias. Los jobs que ya están corriendo continúan salvo que una política explícita indique otra cosa; la ventana controla principalmente nuevos inicios.
@@ -173,3 +187,8 @@ Cada plan conserva:
 - `RuntimeSnapshotID`: entorno usado para decidir.
 
 No diagnostiques únicamente por el estado final. Lee razones, fuentes, snapshot, logs y filesystem juntos.
+
+Si aparece `database table is locked`, consulta la
+[guía de troubleshooting](troubleshooting.md#database-table-is-locked). No
+reencoles ni edites reservas directamente antes de revisar Queue, Workers y
+Scheduler Recovery.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
@@ -18,7 +19,24 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	return gorm.Open(sqlite.Open(path), &gorm.Config{})
+	dsn := path
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	dsn += separator + "_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=on"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	// SQLite has a single writer. Serializing writes at the connection pool
+	// prevents SQLITE_BUSY/SQLITE_LOCKED failures across background services.
+	sqlDB.SetMaxOpenConns(1)
+	return db, nil
 }
 
 func Migrate(db *gorm.DB) error {

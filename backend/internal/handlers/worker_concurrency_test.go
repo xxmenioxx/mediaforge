@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +14,8 @@ import (
 )
 
 func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:claim-concurrent?mode=memory&cache=shared&_busy_timeout=5000"), &gorm.Config{})
+	dsn := fmt.Sprintf("file:claim-concurrent-%d?mode=memory&cache=shared&_busy_timeout=5000", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,13 +50,33 @@ func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
 		}
 	}
 	start := make(chan struct{})
+	results := make(chan error, 2)
 	var wg sync.WaitGroup
 	for index := 0; index < 2; index++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); <-start; _, _ = NewWorkerHandler(db).claimNextJob("local") }()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, claimErr := NewWorkerHandler(db).claimNextJob("local")
+			results <- claimErr
+		}()
 	}
 	close(start)
 	wg.Wait()
+	close(results)
+	successes := 0
+	for claimErr := range results {
+		if claimErr == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(claimErr, errWorkerLimitReached) && !errors.Is(claimErr, gorm.ErrRecordNotFound) {
+			t.Fatalf("unexpected concurrent claim error: %v", claimErr)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one successful claim, got %d", successes)
+	}
 	var running int64
 	if err := db.Model(&models.QueueJob{}).Where("status = ?", JobStatusRunning).Count(&running).Error; err != nil {
 		t.Fatal(err)

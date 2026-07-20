@@ -83,6 +83,16 @@ Para inspeccionar problemas:
 docker compose --env-file .env -f compose.yml logs -f --tail=200
 ```
 
+MediaForge utiliza SQLite con WAL, espera limitada ante locks y un único writer.
+Ejecuta exactamente una réplica del servicio `backend` por archivo
+`mediaforge.db`. Dos contenedores apuntando al mismo archivo no constituyen una
+configuración soportada y pueden producir `database table is locked`.
+
+El log persistente se encuentra en `/media/reports/logs/backend.log`; en el host
+corresponde al directorio `reports/logs` configurado en Compose. Consulta la
+[guía de troubleshooting](guides/troubleshooting.md) antes de modificar la base
+o reencolar jobs bloqueados.
+
 ## Backup de SQLite
 
 Ejecuta el backup antes de cada actualización:

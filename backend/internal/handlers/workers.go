@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
@@ -31,6 +32,7 @@ var (
 	errWorkerLimitReached        = errors.New("worker claim limit reached")
 	errWorkerDelayActive         = errors.New("worker delay between jobs is still active")
 	errWorkerBatchCooldownActive = errors.New("worker batch cooldown is still active")
+	claimJobMu                   sync.Mutex
 )
 
 type WorkerHandler struct {
@@ -309,6 +311,12 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 }
 
 func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) {
+	// SQLite only permits one writer at a time. More importantly, slot checks,
+	// reservation activation, and the job transition must be atomic from the
+	// perspective of every manual and automatic worker in this process.
+	claimJobMu.Lock()
+	defer claimJobMu.Unlock()
+
 	limits, err := h.workerLimits()
 	if err != nil {
 		return models.QueueJob{}, err

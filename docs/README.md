@@ -11,6 +11,7 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 5. [Recomendaciones prácticas de perfiles](guides/profile-recommendations.md)
 6. [Cómo funciona el scheduler](guides/scheduler.md)
 7. [Checklist de validación del scheduler](scheduler-v1-validation.md)
+8. [Diagnóstico y troubleshooting](guides/troubleshooting.md)
 
 ## Para mantenedores
 

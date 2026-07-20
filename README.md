@@ -216,6 +216,7 @@ Empieza por el [índice de documentación](docs/README.md):
 - [Perfiles de video, audio y tracks](docs/guides/profiles.md)
 - [Recomendaciones prácticas de perfiles](docs/guides/profile-recommendations.md)
 - [Cómo funciona el scheduler](docs/guides/scheduler.md)
+- [Diagnóstico y troubleshooting](docs/guides/troubleshooting.md)
 - [Cómo configurar releases en GitHub y GHCR](docs/guides/github-releases.md)
 - [Integración con nas-media-stack](docs/guides/nas-media-stack-integration.md)
 - [Checklist de validación del scheduler](docs/scheduler-v1-validation.md)

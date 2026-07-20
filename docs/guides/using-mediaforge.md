@@ -218,9 +218,13 @@ Antes de una actualización:
 | Asset no aparece | Mount raw, permisos y path interno |
 | `WAITING_ENCODER` | Runtime snapshot y encoders permitidos por el perfil |
 | `WAITING_SSD_SPACE` | Espacio libre y workspace strategy |
+| `WAITING_HDD_SPACE` | Destino real de la librería y reserva de espacio |
 | `WAITING_SCHEDULE_WINDOW` | Working Hours y zona horaria |
-| Job no inicia | Aprobación, dry run, auto execution y recursos |
+| Job queued no inicia | Execution plan, waiting state, auto execution y recursos |
+| `database table is locked` | Instancias backend, SQLite y reservas activas |
 | Output no se publica | Validation, publisher y destination path |
 | Estado extraño tras reinicio | Scheduler Recovery y logs |
 
 Para las pruebas de aceptación completas consulta [Scheduler v1 — checklist de validación](../scheduler-v1-validation.md).
+Para comandos y procedimientos de recuperación consulta
+[Diagnóstico y troubleshooting](troubleshooting.md).
