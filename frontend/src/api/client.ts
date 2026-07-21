@@ -86,6 +86,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  deleteConvertedAsset: (path: string) =>
+    request<{ status: string; convertedPath: string; archivedOriginalPath: string; restoredPath: string; jobId: number; message: string }>(`/api/assets/delete-converted?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
     request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
       method: 'POST',

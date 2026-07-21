@@ -6,7 +6,7 @@ type AssetRecord struct {
 	ID          uint       `json:"id" gorm:"primaryKey"`
 	Path        string     `json:"path" gorm:"not null;uniqueIndex"`
 	RootPath    string     `json:"rootPath"`
-	RelativePath string    `json:"relativePath" gorm:"index"`
+	RelativePath string     `json:"relativePath" gorm:"index"`
 	GroupPath   string     `json:"groupPath" gorm:"index"`
 	FileName    string     `json:"fileName" gorm:"not null"`
 	Extension   string     `json:"extension"`

@@ -40,6 +40,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -413,7 +414,7 @@ function AssetGroupRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
   const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
-  const representativeAsset = firstAssetForGroup(groupAssets);
+  const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
   const isLibraryGroup = group.status === 'unverified' || group.status === 'library';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
@@ -648,7 +649,8 @@ function AssetGroupRow({
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
                   </Alert>
                 ) : null}
-                {advisor.isError ? <Alert severity="warning">Could not evaluate this path.</Alert> : null}
+                {advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
+                {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
@@ -806,6 +808,15 @@ function AssetRow({
     mutationFn: api.recoverAsset,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const deleteConvertedAsset = useMutation({
+    mutationFn: api.deleteConvertedAsset,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
     },
   });
   const isBlockedByReview = assetReview.requiresReview;
@@ -983,6 +994,14 @@ function AssetRow({
     }
   }
 
+  function safelyDeleteConvertedAsset(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const confirmed = window.confirm('Delete this converted Library asset? MediaForge will proceed only if its archived original exists and can be restored to the original Raw path. Reports, logs, and job history will be preserved.');
+    if (confirmed) {
+      deleteConvertedAsset.mutate(asset.path);
+    }
+  }
+
   return (
     <>
       <TableRow hover>
@@ -1075,16 +1094,25 @@ function AssetRow({
               </Tooltip>
             ) : null}
             {isConverted ? (
-              <Tooltip title="Final details">
-                <IconButton
-                  color="primary"
-                  onClick={() => setShowFinalDetailsDialog(true)}
-                  aria-label={`Final details for ${asset.fileName}`}
-                  sx={actionIconSx}
-                >
-                  <FactCheckIcon />
-                </IconButton>
-              </Tooltip>
+              <>
+                <Tooltip title="Final details">
+                  <IconButton
+                    color="primary"
+                    onClick={() => setShowFinalDetailsDialog(true)}
+                    aria-label={`Final details for ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <FactCheckIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
+                  <span onClick={(event) => event.stopPropagation()}>
+                    <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                      <DeleteForeverIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </>
             ) : isArchive ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
@@ -1126,6 +1154,16 @@ function AssetRow({
           <TableCell colSpan={10} sx={{ bgcolor: 'rgba(246,180,75,0.05)' }}>
             <Alert severity="warning">{createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'}</Alert>
           </TableCell>
+        </TableRow>
+      ) : null}
+      {deleteConvertedAsset.isSuccess ? (
+        <TableRow>
+          <TableCell colSpan={10}><Alert severity="success">{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
+        </TableRow>
+      ) : null}
+      {deleteConvertedAsset.isError ? (
+        <TableRow>
+          <TableCell colSpan={10}><Alert severity="warning">Safe deletion was blocked: {deleteConvertedAsset.error instanceof Error ? deleteConvertedAsset.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {isBlockedByReview || reviewReason || reviewTags.length > 0 ? (

@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,6 +27,20 @@ func TestProductionMiddlewareAddsRequestIDAndRecoversPanics(t *testing.T) {
 	if response.Header().Get("X-Request-ID") == "" {
 		t.Fatal("missing X-Request-ID response header")
 	}
+}
+
+func TestSafeDeleteRouteIsRegistered(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:routes-safe-delete?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(db)
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/assets/delete-converted" {
+			return
+		}
+	}
+	t.Fatal("POST /api/assets/delete-converted is not registered")
 }
 
 func TestProductionMiddlewarePreservesIncomingRequestID(t *testing.T) {

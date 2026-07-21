@@ -157,7 +157,7 @@ func recoverSchedulerState(db *gorm.DB, startup bool) (SchedulerRecoveryReport, 
 	}
 
 	var published []models.QueueJob
-	if err := db.Where("published_at IS NOT NULL AND published_path <> ''").Find(&published).Error; err != nil {
+	if err := db.Where("published_at IS NOT NULL AND published_path <> '' AND publication_retired_at IS NULL").Find(&published).Error; err != nil {
 		return report, err
 	}
 	for i := range published {

@@ -55,7 +55,7 @@ func (p *AutoPublisher) tick() {
 
 func (p *AutoPublisher) reconcilePublishedJobs() {
 	var jobs []models.QueueJob
-	if err := p.db.Where("published_at IS NOT NULL AND published_path <> ''").Order("published_at desc").Limit(100).Find(&jobs).Error; err != nil {
+	if err := p.db.Where("published_at IS NOT NULL AND published_path <> '' AND publication_retired_at IS NULL").Order("published_at desc").Limit(100).Find(&jobs).Error; err != nil {
 		return
 	}
 	for _, job := range jobs {

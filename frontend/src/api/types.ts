@@ -396,6 +396,7 @@ export type QueueJob = {
   validationReport: Record<string, unknown>;
   publishedPath: string;
   publishedAt?: string;
+  publicationRetiredAt?: string;
   replacementTargetPath: string;
   originalArchivedPath: string;
   startedAt?: string;

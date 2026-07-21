@@ -172,6 +172,7 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "output copied but original could not be archived; publication will be retried", Err: err}
 	} else if archivedPath != "" {
 		job.Notes = appendNote(job.Notes, "Original archived: "+archivedPath)
+		job.OriginalArchivedPath = archivedPath
 	}
 
 	now := time.Now()
@@ -432,7 +433,7 @@ func (h PublisherHandler) cleanupEmptyOriginalDirs(startDir string, rawRoot stri
 
 	for {
 		parent := filepath.Dir(current)
-		if current == rawRootAbs || parent == rawRootAbs || !isInsideRoot(rawRootAbs, current) {
+		if current == rawRootAbs || !isInsideRoot(rawRootAbs, current) {
 			return nil
 		}
 

@@ -30,6 +30,7 @@ type QueueJob struct {
 	ValidationReport      JSONMap    `json:"validationReport" gorm:"type:json"`
 	PublishedPath         string     `json:"publishedPath"`
 	PublishedAt           *time.Time `json:"publishedAt"`
+	PublicationRetiredAt  *time.Time `json:"publicationRetiredAt" gorm:"index"`
 	ReplacementTargetPath string     `json:"replacementTargetPath"`
 	OriginalArchivedPath  string     `json:"originalArchivedPath"`
 	StartedAt             *time.Time `json:"startedAt"`

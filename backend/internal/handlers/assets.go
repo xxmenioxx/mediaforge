@@ -283,6 +283,143 @@ func (h AssetHandler) Recover(c *gin.Context) {
 	})
 }
 
+func (h AssetHandler) DeleteConverted(c *gin.Context) {
+	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if path == "." || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset not found in inventory"})
+		return
+	}
+	if record.Status != "converted" {
+		c.JSON(http.StatusConflict, gin.H{"error": "only a MediaForge converted asset can use this recovery-safe delete flow"})
+		return
+	}
+	convertedExists := false
+	if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+		convertedExists = true
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
+		return
+	}
+
+	var job models.QueueJob
+	if err := h.db.Where("published_path = ?", path).Order("published_at desc, id desc").First(&job).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "no publishing job links this converted asset to an archived original"})
+		return
+	}
+	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	archivePath := archivedOriginalForJob(job, rawRoot, archiveRoot)
+	if archivePath == "" || !pathIsInside(archivePath, archiveRoot) {
+		c.JSON(http.StatusConflict, gin.H{"error": "the archived original could not be resolved safely"})
+		return
+	}
+	if info, statErr := os.Stat(archivePath); statErr != nil || info.IsDir() {
+		c.JSON(http.StatusConflict, gin.H{"error": "the archived original is missing; converted asset was not deleted"})
+		return
+	}
+	restorePath := filepath.Clean(job.MediaPath)
+	if !pathIsInside(restorePath, rawRoot) {
+		c.JSON(http.StatusConflict, gin.H{"error": "the original Raw destination is outside the configured Raw root"})
+		return
+	}
+	if _, statErr := os.Stat(restorePath); statErr == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "an asset already exists at the original Raw path; converted asset was not deleted"})
+		return
+	} else if !os.IsNotExist(statErr) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
+		return
+	}
+
+	retiredAt := time.Now()
+	job.PublicationRetiredAt = &retiredAt
+	job.Notes = appendNote(job.Notes, "Safe deletion retired this publication before restoring its archived original")
+	if err := h.db.Save(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not lock the publication against automatic reconciliation: " + err.Error()})
+		return
+	}
+	quarantine := ""
+	if convertedExists {
+		quarantine = fmt.Sprintf("%s.mediaforge-delete-%d", path, time.Now().UnixNano())
+		if err := os.Rename(path, quarantine); err != nil {
+			job.PublicationRetiredAt = nil
+			_ = h.db.Save(&job).Error
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not prepare converted asset for safe deletion: " + err.Error()})
+			return
+		}
+	}
+	if err := moveFile(archivePath, restorePath); err != nil {
+		if quarantine != "" {
+			_ = os.Rename(quarantine, path)
+		}
+		job.PublicationRetiredAt = nil
+		_ = h.db.Save(&job).Error
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "original restoration failed; converted asset was restored: " + err.Error()})
+		return
+	}
+	if quarantine != "" {
+		if err := os.Remove(quarantine); err != nil {
+			rollbackArchive := moveFile(restorePath, archivePath)
+			rollbackConverted := os.Rename(quarantine, path)
+			job.PublicationRetiredAt = nil
+			_ = h.db.Save(&job).Error
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("converted deletion failed; rollback archive=%v converted=%v: %v", rollbackArchive, rollbackConverted, err)})
+			return
+		}
+	}
+	libraryRoot := filepath.Clean(strings.TrimSpace(record.RootPath))
+	if libraryRoot != "." && libraryRoot != "" && pathIsInside(filepath.Dir(path), libraryRoot) {
+		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), libraryRoot); err != nil {
+			appendSystemLog(h.db, "converted_asset_empty_library_path_cleanup_failed", map[string]string{"convertedPath": path, "libraryRoot": libraryRoot}, err)
+		}
+	}
+
+	job.Notes = appendNote(job.Notes, "Converted asset deleted after archived original was restored to Raw: "+restorePath)
+	_ = h.db.Save(&job).Error
+	if err := h.db.Delete(&record).Error; err != nil {
+		appendSystemLog(h.db, "converted_asset_inventory_record_delete_failed", map[string]string{"convertedPath": path}, err)
+	}
+	if _, syncErr := h.syncAssetInventory(); syncErr != nil {
+		appendSystemLog(h.db, "converted_asset_deleted_inventory_sync_failed", map[string]string{"convertedPath": path, "restoredPath": restorePath}, syncErr)
+	}
+	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
+	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+}
+
+func archivedOriginalForJob(job models.QueueJob, rawRoot string, archiveRoot string) string {
+	if value := strings.TrimSpace(job.OriginalArchivedPath); value != "" {
+		return filepath.Clean(value)
+	}
+	for _, line := range strings.Split(job.Notes, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Original archived:") {
+			continue
+		}
+		if value := strings.TrimSpace(strings.TrimPrefix(line, "Original archived:")); value != "" {
+			return filepath.Clean(value)
+		}
+	}
+	if pathIsInside(job.MediaPath, rawRoot) {
+		relative, err := filepath.Rel(rawRoot, job.MediaPath)
+		if err == nil {
+			return filepath.Join(archiveRoot, relative)
+		}
+	}
+	return ""
+}
+
 func (h AssetHandler) UpdateConversion(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	if path == "" {
@@ -1039,7 +1176,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 func mediaForgeOutputPaths(db *gorm.DB) map[string]bool {
 	paths := map[string]bool{}
 	var jobs []models.QueueJob
-	_ = db.Where("published_path <> '' OR status = ?", JobStatusCompleted).Find(&jobs).Error
+	_ = db.Where("publication_retired_at IS NULL AND (published_path <> '' OR status = ?)", JobStatusCompleted).Find(&jobs).Error
 	for _, job := range jobs {
 		if value := strings.TrimSpace(job.PublishedPath); value != "" {
 			paths[filepath.Clean(value)] = true
