@@ -94,6 +94,7 @@ type AssetConversionOverrideState struct {
 	VideoPreset         string                         `json:"videoPreset,omitempty"`
 	PixFmt              string                         `json:"pixFmt,omitempty"`
 	VideoFilters        string                         `json:"videoFilters,omitempty"`
+	DeinterlaceMode     string                         `json:"deinterlaceMode,omitempty"`
 	X265Params          string                         `json:"x265Params,omitempty"`
 	ProcessingMode      string                         `json:"processingMode,omitempty"`
 	PreserveHDR         *bool                          `json:"preserveHdr,omitempty"`
@@ -173,6 +174,7 @@ type AssetConversionUpdateInput struct {
 	VideoPreset         string                         `json:"videoPreset"`
 	PixFmt              string                         `json:"pixFmt"`
 	VideoFilters        string                         `json:"videoFilters"`
+	DeinterlaceMode     string                         `json:"deinterlaceMode"`
 	X265Params          string                         `json:"x265Params"`
 	ProcessingMode      string                         `json:"processingMode"`
 	PreserveHDR         *bool                          `json:"preserveHdr"`
@@ -330,6 +332,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoPreset:         strings.TrimSpace(input.VideoPreset),
 		PixFmt:              strings.TrimSpace(input.PixFmt),
 		VideoFilters:        strings.TrimSpace(input.VideoFilters),
+		DeinterlaceMode:     strings.TrimSpace(input.DeinterlaceMode),
 		X265Params:          strings.TrimSpace(input.X265Params),
 		ProcessingMode:      strings.TrimSpace(input.ProcessingMode),
 		PreserveHDR:         input.PreserveHDR,
@@ -1558,6 +1561,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.VideoPreset) == "" &&
 		strings.TrimSpace(override.PixFmt) == "" &&
 		strings.TrimSpace(override.VideoFilters) == "" &&
+		strings.TrimSpace(override.DeinterlaceMode) == "" &&
 		strings.TrimSpace(override.X265Params) == "" &&
 		strings.TrimSpace(override.ProcessingMode) == "" &&
 		override.PreserveHDR == nil &&

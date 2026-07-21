@@ -99,12 +99,28 @@ func TestPlannedOutputPathDropsRawSourceBucketForSelectedLibrary(t *testing.T) {
 	}
 }
 
-func TestPlannedStagingOutputPathDropsRawSourceBucket(t *testing.T) {
+func TestPlannedOutputPathDoesNotDuplicateDestinationCategory(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{
+		Name:            "Anime Movies",
 		SourcePath:      "/media/raw",
-		DestinationPath: "/media/library/movies",
+		DestinationPath: "/media/library/anime-movies",
 	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		MediaPath: "/media/raw/anime-movies/Akira (1988)/Akira (1988).mkv",
+		LibraryID: 1,
+		ProfileID: 1,
+	}
+
+	outputPath := plannedOutputPathForJob(db, job, library, profile)
+
+	if outputPath != "/media/library/anime-movies/Akira (1988)/Akira (1988).mkv" {
+		t.Fatalf("unexpected output path: %s", outputPath)
+	}
+}
+
+func TestPlannedStagingOutputPathUsesFlatJobWorkspace(t *testing.T) {
 	profile := models.Profile{Container: "mkv"}
 	job := models.QueueJob{
 		ID:        7,
@@ -113,10 +129,21 @@ func TestPlannedStagingOutputPathDropsRawSourceBucket(t *testing.T) {
 		ProfileID: 1,
 	}
 
-	outputPath := plannedStagingOutputPath(db, job, library, profile, pathSettings{rawRoot: "/media/raw", stagingPath: "/media/staging"})
+	outputPath := plannedStagingOutputPath(job, profile, pathSettings{rawRoot: "/media/raw", stagingPath: "/media/staging"})
 
-	if outputPath != "/media/staging/job-7/Movie (1989)/feature.mkv" {
+	if outputPath != "/media/staging/job-7/feature.mkv" {
 		t.Fatalf("unexpected staging output path: %s", outputPath)
+	}
+}
+
+func TestPlannedStagingOutputPathIsolatesMatchingNamesByJob(t *testing.T) {
+	profile := models.Profile{Container: "mkv"}
+	paths := pathSettings{stagingPath: "/media/staging"}
+	first := plannedStagingOutputPath(models.QueueJob{ID: 7, MediaPath: "/raw/anime/Movie/feature.mp4"}, profile, paths)
+	second := plannedStagingOutputPath(models.QueueJob{ID: 8, MediaPath: "/raw/movies/Other/feature.mp4"}, profile, paths)
+
+	if first != "/media/staging/job-7/feature.mkv" || second != "/media/staging/job-8/feature.mkv" {
+		t.Fatalf("matching names must remain isolated by job: first=%s second=%s", first, second)
 	}
 }
 

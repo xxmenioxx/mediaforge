@@ -390,6 +390,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if strings.TrimSpace(override.VideoFilters) != "" {
 		values["videoFilters"] = override.VideoFilters
 	}
+	if strings.TrimSpace(override.DeinterlaceMode) != "" {
+		values["deinterlaceMode"] = override.DeinterlaceMode
+	}
 	if strings.TrimSpace(override.X265Params) != "" {
 		values["x265Params"] = override.X265Params
 	}

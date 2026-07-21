@@ -7,7 +7,6 @@ import { AnalysisPage } from './pages/AnalysisPage';
 import { AudioProfilesPage } from './pages/AudioProfilesPage';
 import { ProfileLabPage } from './pages/ProfileLabPage';
 import { ProfilesPage } from './pages/ProfilesPage';
-import { ScannerPage } from './pages/ScannerPage';
 import { QueuePage } from './pages/QueuePage';
 import { WorkersPage } from './pages/WorkersPage';
 import { ValidationPage } from './pages/ValidationPage';
@@ -30,7 +29,7 @@ export default function App() {
         <Route path="profiles" element={<ProfilesPage />} />
         <Route path="audio" element={<AudioProfilesPage />} />
         <Route path="track-profiles" element={<TrackProfilesPage />} />
-        <Route path="scanner" element={<ScannerPage />} />
+        <Route path="scanner" element={<Navigate to="/analysis" replace />} />
         <Route path="queue" element={<QueuePage />} />
         <Route path="workers" element={<WorkersPage />} />
         <Route path="history" element={<HistoryPage />} />

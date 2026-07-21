@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,8 +22,9 @@ type ScannerHandler struct {
 }
 
 type ScanRequest struct {
-	Path  string `json:"path" binding:"required"`
-	Force bool   `json:"force"`
+	Path            string `json:"path" binding:"required"`
+	Force           bool   `json:"force"`
+	AnalysisSeconds int    `json:"analysisSeconds"`
 }
 
 type FFProbeResult struct {
@@ -65,6 +67,7 @@ type FFProbeStream struct {
 	CodecLongName      string            `json:"codec_long_name"`
 	SampleRate         string            `json:"sample_rate"`
 	BitDepth           int               `json:"bits_per_sample"`
+	FieldOrder         string            `json:"field_order"`
 }
 
 func NewScannerHandler(db *gorm.DB) ScannerHandler {
@@ -83,6 +86,7 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
 	}
+	path = resolveMediaPath(h.db, path)
 
 	var existing models.ScanResult
 	if !request.Force {
@@ -105,7 +109,7 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 
 	info, err := os.Stat(path)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "media path is not readable from the backend container"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": mediaPathReadError(err)})
 		return
 	}
 
@@ -114,7 +118,7 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 		return
 	}
 
-	probe, raw, err := runFFProbe(path)
+	probe, raw, err := runFFProbe(path, normalizedAnalysisSeconds(request.AnalysisSeconds))
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
@@ -129,7 +133,56 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 	c.JSON(http.StatusAccepted, result)
 }
 
-func runFFProbe(path string) (FFProbeResult, models.JSONMap, error) {
+func mediaPathReadError(err error) string {
+	if os.IsNotExist(err) {
+		return "media file no longer exists at the indexed path; synchronize Assets and verify the backend media mount"
+	}
+	if os.IsPermission(err) {
+		return "backend does not have permission to read this media file or one of its parent folders"
+	}
+	return fmt.Sprintf("backend cannot read the media path: %v", err)
+}
+
+func resolveMediaPath(db *gorm.DB, path string) string {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "." || filepath.IsAbs(clean) {
+		return clean
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return clean
+	}
+
+	var record models.AssetRecord
+	if err := db.Where("relative_path = ? AND missing = ?", filepath.ToSlash(clean), false).
+		Order("CASE status WHEN 'unprocessed' THEN 0 WHEN 'library' THEN 1 WHEN 'converted' THEN 2 WHEN 'archive' THEN 3 ELSE 4 END").
+		First(&record).Error; err == nil {
+		if info, statErr := os.Stat(record.Path); statErr == nil && !info.IsDir() {
+			return filepath.Clean(record.Path)
+		}
+	}
+
+	roots := [][2]string{
+		{"rawRoot", "/media/raw"},
+		{"libraryRoot", "/media/library"},
+		{"originalsArchivePath", "/media/originals_archive"},
+		{"stagingPath", "/media/staging"},
+	}
+	for _, configured := range roots {
+		root, err := settingPath(db, configured[0], configured[1])
+		if err != nil || strings.TrimSpace(root) == "" {
+			continue
+		}
+		candidate := filepath.Join(root, clean)
+		if pathIsInside(candidate, root) {
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return clean
+}
+
+func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap, error) {
 	ctxTimeout := 60 * time.Second
 	cmd := exec.Command(
 		"ffprobe",
@@ -170,6 +223,8 @@ func runFFProbe(path string) (FFProbeResult, models.JSONMap, error) {
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		raw = models.JSONMap{}
 	}
+	video := firstStream(probe.Streams, "video")
+	raw["interlaceAnalysis"] = detectInterlace(path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
 
 	return probe, raw, nil
 }
@@ -183,31 +238,41 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	}
 
 	return models.ScanResult{
-		Path:            path,
-		FileName:        filepath.Base(path),
-		Container:       probe.Format.FormatName,
-		SizeBytes:       size,
-		Duration:        duration,
-		Bitrate:         bitrate,
-		VideoCodec:      video.CodecName,
-		Width:           video.Width,
-		Height:          video.Height,
-		HDR:             isHDR(video),
-		AudioTracks:     countStreams(probe.Streams, "audio"),
-		SubtitleTracks:  countStreams(probe.Streams, "subtitle"),
-		Chapters:        len(probe.Chapters),
-		VideoStreams:    streamSummaries(probe.Streams, "video"),
-		AudioStreams:    streamSummaries(probe.Streams, "audio"),
-		SubtitleStreams: streamSummaries(probe.Streams, "subtitle"),
-		RawProbe:        raw,
+		Path:              path,
+		FileName:          filepath.Base(path),
+		Container:         probe.Format.FormatName,
+		SizeBytes:         size,
+		Duration:          duration,
+		Bitrate:           bitrate,
+		VideoCodec:        video.CodecName,
+		Width:             video.Width,
+		Height:            video.Height,
+		HDR:               isHDR(video),
+		AudioTracks:       countStreams(probe.Streams, "audio"),
+		SubtitleTracks:    countStreams(probe.Streams, "subtitle"),
+		Chapters:          len(probe.Chapters),
+		VideoStreams:      streamSummaries(probe.Streams, "video"),
+		AudioStreams:      streamSummaries(probe.Streams, "audio"),
+		SubtitleStreams:   streamSummaries(probe.Streams, "subtitle"),
+		RawProbe:          raw,
+		InterlaceAnalysis: interlaceAnalysisFromRaw(raw),
 	}
 }
 
 func enrichCachedScan(result *models.ScanResult) {
-	if len(result.VideoStreams) > 0 || len(result.AudioStreams) > 0 || len(result.SubtitleStreams) > 0 {
-		return
+	if result.RawProbe == nil {
+		result.RawProbe = models.JSONMap{}
 	}
-
+	if len(result.InterlaceAnalysis) == 0 {
+		result.InterlaceAnalysis = interlaceAnalysisFromRaw(result.RawProbe)
+		if len(result.InterlaceAnalysis) == 0 {
+			fieldOrder := fieldOrderFromRawProbe(result.RawProbe)
+			analysis := detectInterlace(result.Path, fieldOrder, result.Duration, 20)
+			encoded, _ := json.Marshal(analysis)
+			_ = json.Unmarshal(encoded, &result.InterlaceAnalysis)
+			result.RawProbe["interlaceAnalysis"] = analysis
+		}
+	}
 	rawStreams, ok := result.RawProbe["streams"].([]any)
 	if !ok {
 		return
@@ -221,10 +286,38 @@ func enrichCachedScan(result *models.ScanResult) {
 	if err := json.Unmarshal(bytes, &streams); err != nil {
 		return
 	}
+	result.HDR = isHDR(firstStream(streams, "video"))
+	if len(result.VideoStreams) > 0 || len(result.AudioStreams) > 0 || len(result.SubtitleStreams) > 0 {
+		return
+	}
 
 	result.VideoStreams = streamSummaries(streams, "video")
 	result.AudioStreams = streamSummaries(streams, "audio")
 	result.SubtitleStreams = streamSummaries(streams, "subtitle")
+}
+
+func normalizedAnalysisSeconds(value int) int {
+	if value == 10 {
+		return 10
+	}
+	return 20
+}
+
+func fieldOrderFromRawProbe(raw models.JSONMap) string {
+	rawStreams, ok := raw["streams"].([]any)
+	if !ok {
+		return "unknown"
+	}
+	for _, value := range rawStreams {
+		stream, ok := value.(map[string]any)
+		if !ok || stream["codec_type"] != "video" {
+			continue
+		}
+		if fieldOrder, ok := stream["field_order"].(string); ok {
+			return fieldOrder
+		}
+	}
+	return "unknown"
 }
 
 func firstStream(streams []FFProbeStream, codecType string) FFProbeStream {
@@ -281,6 +374,7 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 			summary["sampleAspectRatio"] = stream.SampleAspectRatio
 			summary["displayAspectRatio"] = stream.DisplayAspectRatio
 			summary["hdr"] = isHDR(stream)
+			summary["fieldOrder"] = normalizeFieldOrder(stream.FieldOrder)
 		}
 
 		if codecType == "audio" {
@@ -294,6 +388,22 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 	}
 
 	return summaries
+}
+
+func interlaceAnalysisFromRaw(raw models.JSONMap) models.JSONMap {
+	value, ok := raw["interlaceAnalysis"]
+	if !ok {
+		return models.JSONMap{}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return models.JSONMap{}
+	}
+	result := models.JSONMap{}
+	if json.Unmarshal(encoded, &result) != nil {
+		return models.JSONMap{}
+	}
+	return result
 }
 
 func tagValue(tags map[string]string, key string, fallback string) string {
@@ -317,14 +427,15 @@ func dispositionValue(disposition map[string]int, key string) int {
 }
 
 func isHDR(stream FFProbeStream) bool {
-	if strings.Contains(stream.ColorTransfer, "smpte2084") || strings.Contains(stream.ColorTransfer, "arib-std-b67") {
+	transfer := strings.ToLower(stream.ColorTransfer)
+	if strings.Contains(transfer, "smpte2084") || strings.Contains(transfer, "arib-std-b67") {
 		return true
 	}
-	if strings.Contains(stream.ColorPrimaries, "bt2020") {
-		return true
-	}
-	if strings.Contains(stream.PixFmt, "10") && strings.Contains(strings.ToLower(stream.Profile), "main 10") {
-		return true
+	for _, sideData := range stream.SideDataList {
+		kind := strings.ToLower(fmt.Sprint(sideData["side_data_type"]))
+		if strings.Contains(kind, "mastering display") || strings.Contains(kind, "content light") || strings.Contains(kind, "dovi") || strings.Contains(kind, "dolby vision") {
+			return true
+		}
 	}
 	return false
 }

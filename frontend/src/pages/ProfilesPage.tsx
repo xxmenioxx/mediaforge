@@ -16,6 +16,7 @@ import {
   FormControlLabel,
   Grid,
   MenuItem,
+  Slider,
   Stack,
   Table,
   TableBody,
@@ -51,7 +52,7 @@ const initialProfile: ProfileInput = {
   fallbackPolicy: 'wait',
   bitDepth: 10,
   pixelFormat: 'yuv420p10le',
-  qualityStrategy: 'balanced',
+  qualityStrategy: 'crf',
   audioCodec: 'copy',
   qualityMode: 'crf',
   qualityValue: 20,
@@ -71,6 +72,7 @@ const initialProfile: ProfileInput = {
     videoToolboxBufferMbps: 12,
     preferredEncoder: 'software',
     addAacStereoTrack: false,
+    aacStereoBitrateKbps: 192,
     aacStereoDefault: false,
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
@@ -97,13 +99,6 @@ const videoEncoderOptions = [
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
   { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
   { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
-] as const;
-
-const qualityOptions = [
-  { value: 'maximum', label: 'Maximum', description: 'Use when quality matters more than size.', crf: 15, preset: 'slow' },
-  { value: 'high', label: 'High', description: 'Excellent quality with reasonable file sizes.', crf: 18, preset: 'medium' },
-  { value: 'balanced', label: 'Balanced', description: 'Good default for most libraries.', crf: 22, preset: 'medium' },
-  { value: 'small', label: 'Small', description: 'Prioritize smaller files.', crf: 25, preset: 'slow' },
 ] as const;
 
 export function ProfilesPage() {
@@ -382,29 +377,16 @@ export function ProfilesPage() {
     setProfileForm(synchronizeAuthoritativeContract({ ...form, ...presets[preset] }));
   }
 
-  function applyQualityOption(option: typeof qualityOptions[number]) {
-    setProfileForm(synchronizeAuthoritativeContract({
-      ...form,
-      qualityMode: 'crf',
-      qualityValue: option.crf,
-      videoCodec: form.videoCodec === 'copy' ? 'x265' : form.videoCodec,
-      workerConfig: {
-        ...form.workerConfig,
-        videoPreset: option.preset,
-      },
-    }));
-  }
-
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const payload = {
+    const payload = synchronizeAuthoritativeContract({
       ...form,
       workerConfig: {
         ...form.workerConfig,
         encoder: 'ffmpeg',
         preset: form.workerConfig?.preset || form.name.toLowerCase().replaceAll(' ', '-'),
       },
-    };
+    });
 
     if (editingId) {
       updateProfile.mutate({ id: editingId, ...payload });
@@ -618,29 +600,10 @@ export function ProfilesPage() {
                     <Stack spacing={1.25}>
                       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
                         <Typography fontWeight={700}>Quality</Typography>
-                        <Chip label={qualityLabel(form.qualityValue, form.videoCodec)} size="small" />
+                        <Chip label={form.videoCodec === 'copy' ? 'Original' : `CRF ${form.qualityValue}`} size="small" />
                       </Stack>
-                      <Grid container spacing={1}>
-                        {qualityOptions.map((option) => {
-                          const selected = qualityChoiceForValue(form.qualityValue, form.videoCodec) === option.value;
-                          return (
-                            <Grid key={option.value} size={{ xs: 12, sm: 6 }}>
-                              <Button
-                                type="button"
-                                variant={selected ? 'contained' : 'outlined'}
-                                onClick={() => applyQualityOption(option)}
-                                disabled={form.videoCodec === 'copy'}
-                                title={option.description}
-                                fullWidth
-                                sx={{ minHeight: 54, justifyContent: 'space-between' }}
-                              >
-                                <span>{option.label}</span>
-                                <Chip label={`CRF ${option.crf}`} size="small" sx={{ ml: 1 }} />
-                              </Button>
-                            </Grid>
-                          );
-                        })}
-                      </Grid>
+                      <Slider value={form.qualityValue} min={14} max={30} step={1} marks={[{ value: 14, label: '14' }, { value: 22, label: '22' }, { value: 30, label: '30' }]} disabled={form.videoCodec === 'copy'} onChange={(_, value) => updateField('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="on" />
+                      <Typography variant="body2" color="text.secondary">Lower CRF preserves more detail; higher CRF reduces file size.</Typography>
                     </Stack>
                   </Grid>
                   <Grid size={{ xs: 12, md: 5 }}>
@@ -760,6 +723,21 @@ export function ProfilesPage() {
                           />
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="AAC compatibility quality"
+                            value={workerConfigNumber(form, 'aacStereoBitrateKbps', 192)}
+                            onChange={(event) => updateWorkerConfig('aacStereoBitrateKbps', Number(event.target.value))}
+                            disabled={!aacTrackEnabled(form)}
+                            helperText="192 kb/s is recommended for movies."
+                            select
+                            fullWidth
+                          >
+                            {[128, 160, 192, 224, 256].map((value) => (
+                              <MenuItem key={value} value={value}>{value} kb/s</MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
                           <FormControlLabel
                             control={
                               <Checkbox
@@ -865,15 +843,10 @@ export function ProfilesPage() {
                             </TextField>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              label="Exact CRF"
-                              value={form.qualityValue}
-                              onChange={(event) => updateField('qualityValue', Number(event.target.value))}
-                              type="number"
-                              inputProps={{ min: 0, max: 51 }}
-                              required
-                              fullWidth
-                            />
+                            <Stack spacing={0.5}>
+                              <Typography variant="body2">CRF {form.qualityValue}</Typography>
+                              <Slider value={form.qualityValue} min={14} max={30} step={1} disabled={form.videoCodec === 'copy'} onChange={(_, value) => updateField('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" />
+                            </Stack>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
@@ -907,6 +880,21 @@ export function ProfilesPage() {
                                   {option.label}
                                 </MenuItem>
                               ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="Deinterlacing"
+                              value={workerConfigString(form, 'deinterlaceMode', 'auto')}
+                              onChange={(event) => updateWorkerConfig('deinterlaceMode', event.target.value)}
+                              helperText="Auto analyzes the asset before encoding."
+                              disabled={form.videoCodec === 'copy'}
+                              select
+                              fullWidth
+                            >
+                              <MenuItem value="auto">Auto detect</MenuItem>
+                              <MenuItem value="off">Off</MenuItem>
+                              <MenuItem value="force">Force</MenuItem>
                             </TextField>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -1054,7 +1042,7 @@ export function ProfilesPage() {
                         <Typography fontWeight={700}>{profile.name}</Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                           <Chip label={`${profile.qualityMode.toUpperCase()} ${profile.qualityValue}`} size="small" />
-                          <Chip label={qualityLabel(profile.qualityValue, profile.videoCodec)} size="small" />
+                          <Chip label={profile.videoCodec === 'copy' ? 'Original quality' : `CRF ${profile.qualityValue}`} size="small" />
                           {profile.disabled ? <Chip label="Disabled" size="small" color="warning" /> : null}
                           {profile.deletedAt ? <Chip label="Deleted" size="small" color="default" /> : null}
                         </Stack>
@@ -1142,38 +1130,6 @@ function GuidedPresetButton({
   );
 }
 
-function qualityLabel(qualityValue: number, videoCodec: string) {
-  if (videoCodec === 'copy') {
-    return 'Original';
-  }
-
-  if (qualityValue <= 19) {
-    return 'Best quality';
-  }
-
-  if (qualityValue <= 23) {
-    return 'Balanced';
-  }
-
-  return 'Smaller file';
-}
-
-function qualityChoiceForValue(qualityValue: number, videoCodec: string) {
-  if (videoCodec === 'copy') {
-    return 'original';
-  }
-  if (qualityValue <= 16) {
-    return 'maximum';
-  }
-  if (qualityValue <= 19) {
-    return 'high';
-  }
-  if (qualityValue <= 23) {
-    return 'balanced';
-  }
-  return 'small';
-}
-
 function preservationSummary(profile: Profile) {
   const preserved = [
     profile.preserveHdr ? 'HDR' : null,
@@ -1191,11 +1147,7 @@ function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
 
 function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const codecFamily = codecFamilyFor(profile.videoCodec);
-  const qualityStrategy = profile.qualityValue > 0 && profile.qualityValue <= 18
-    ? 'high'
-    : profile.qualityValue >= 25
-      ? 'small_size'
-      : 'balanced';
+  const qualityStrategy = profile.videoCodec === 'copy' ? 'source' : 'crf';
   if (codecFamily === 'copy') {
     return {
       ...profile,
@@ -1355,7 +1307,7 @@ function buildDryRunCommand(profile: ProfileInput) {
     : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
   const aacDisposition = aacTrackDefault(profile) ? 'default' : '0';
-  const aacArgs = aacTrackEnabled(profile) ? `-map 0:a:0 -c:a:1 aac -ac:a:1 2 -disposition:a:1 ${aacDisposition}` : '';
+  const aacArgs = aacTrackEnabled(profile) ? `-map 0:a:0 -c:a:1 aac -b:a:1 ${workerConfigNumber(profile, 'aacStereoBitrateKbps', 192)}k -ac:a:1 2 -disposition:a:1 ${aacDisposition}` : '';
   const subtitleArgs = profile.preserveSubtitles ? (workerConfigBool(profile, 'preferSrtSubtitles') ? '-c:s srt' : '-c:s copy') : '-sn';
   const chapterArgs = profile.preserveChapters ? '-map_chapters 0' : '-map_chapters -1';
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';

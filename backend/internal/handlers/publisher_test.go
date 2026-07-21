@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,5 +110,74 @@ func TestCleanupStagedJobRemovesWholeJobDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(jobRoot); !os.IsNotExist(err) {
 		t.Fatalf("job directory still exists: %v", err)
+	}
+}
+
+func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:library-replacement?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.AppSetting{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library")
+	archiveRoot := filepath.Join(root, "archive")
+	stagingRoot := filepath.Join(root, "staging")
+	original := filepath.Join(libraryRoot, "Anime", "Movie", "movie.mkv")
+	output := filepath.Join(stagingRoot, "job-1", "movie.mkv")
+	if err := os.MkdirAll(filepath.Dir(original), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, []byte("converted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Anime", SourcePath: libraryRoot, DestinationPath: libraryRoot, Type: "movies"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"stagingPath": stagingRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: original, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1, Status: JobStatusCompleted, Stage: JobStageValidating, OutputPath: output, ValidationStatus: ValidationStatusPassed}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (PublisherHandler{db: db}).publishLibraryReplacement(job, library, models.Profile{Container: "mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PublishedPath != original {
+		t.Fatalf("published path=%q want=%q", result.PublishedPath, original)
+	}
+	got, err := os.ReadFile(original)
+	if err != nil || string(got) != "converted" {
+		t.Fatalf("replacement content=%q err=%v", got, err)
+	}
+	archived := filepath.Join(archiveRoot, "library-replacements", fmt.Sprintf("library-%d", library.ID), "Anime", "Movie", "movie.mkv")
+	got, err = os.ReadFile(archived)
+	if err != nil || string(got) != "original" {
+		t.Fatalf("archive content=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Dir(output)); !os.IsNotExist(err) {
+		t.Fatalf("workspace was not cleaned: %v", err)
+	}
+}
+
+func TestPathIsInsideRejectsSiblingPrefix(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "library")
+	if !pathIsInside(filepath.Join(root, "movie.mkv"), root) {
+		t.Fatal("expected library child to be accepted")
+	}
+	if pathIsInside(filepath.Join(root+"-other", "movie.mkv"), root) {
+		t.Fatal("sibling prefix must not be accepted")
 	}
 }

@@ -17,6 +17,11 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	PublishModeStandard       = "standard"
+	PublishModeReplaceLibrary = "replace_library_asset"
+)
+
 type PublisherHandler struct {
 	db *gorm.DB
 }
@@ -123,6 +128,9 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	}
 
 	destinationPath := plannedOutputPathForJob(h.db, job, library, profile)
+	if job.PublishMode == PublishModeReplaceLibrary {
+		return h.publishLibraryReplacement(job, library, profile)
+	}
 	if err := transitionJobStage(h.db, &job, JobStagePublishing); err != nil {
 		return PublishResult{}, err
 	}
@@ -189,6 +197,100 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		PublishedPath: destinationPath,
 		Message:       "Output published to destination library.",
 	}, nil
+}
+
+func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library models.Library, profile models.Profile) (PublishResult, error) {
+	if !pathIsInside(job.MediaPath, library.DestinationPath) {
+		return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "library replacement source is outside the selected library destination"}
+	}
+	target := outputFileRelativePath(job.MediaPath, profile)
+	if path.Clean(target) != path.Clean(job.MediaPath) {
+		if _, err := os.Stat(target); err == nil {
+			return PublishResult{}, publishError{Status: http.StatusConflict, Message: "replacement destination already exists"}
+		}
+	}
+	if err := transitionJobStage(h.db, &job, JobStagePublishing); err != nil {
+		return PublishResult{}, err
+	}
+	temporary := filepath.Join(filepath.Dir(target), fmt.Sprintf(".%s.mediaforge-job-%d.tmp", filepath.Base(target), job.ID))
+	if err := copyPublishedFile(job.OutputPath, temporary, true); err != nil {
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "could not prepare replacement beside library asset", Err: err}
+	}
+	equal, err := filesEqual(job.OutputPath, temporary)
+	if err != nil || !equal {
+		_ = os.Remove(temporary)
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "prepared replacement failed integrity verification", Err: err}
+	}
+	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
+		_ = os.Remove(temporary)
+		return PublishResult{}, err
+	}
+	archivedPath, err := h.libraryOriginalArchivePath(job, library)
+	if err != nil {
+		_ = os.Remove(temporary)
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
+	}
+	job.ReplacementTargetPath = target
+	job.OriginalArchivedPath = archivedPath
+	if err := h.db.Save(&job).Error; err != nil {
+		_ = os.Remove(temporary)
+		return PublishResult{}, err
+	}
+	if err := moveFile(job.MediaPath, archivedPath); err != nil {
+		_ = os.Remove(temporary)
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		rollbackErr := moveFile(archivedPath, job.MediaPath)
+		if rollbackErr != nil {
+			return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed and original rollback also failed", Err: fmt.Errorf("replace: %v; rollback: %v", err, rollbackErr)}
+		}
+		job.ReplacementTargetPath = ""
+		job.OriginalArchivedPath = ""
+		_ = h.db.Save(&job).Error
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed; original was restored", Err: err}
+	}
+	job.Notes = appendNote(job.Notes, "Library original archived: "+archivedPath)
+	job.PublishedPath = target
+	now := time.Now()
+	job.PublishedAt = &now
+	if err := h.db.Save(&job).Error; err != nil {
+		return PublishResult{}, err
+	}
+	if err := transitionJobStage(h.db, &job, JobStageCleaningWorkspace); err == nil {
+		if cleanupErr := h.cleanupStagedJob(job); cleanupErr != nil {
+			job.Notes = appendNote(job.Notes, "Staged output cleanup warning: "+cleanupErr.Error())
+		}
+	}
+	_ = h.db.Save(&job).Error
+	_ = transitionJobStage(h.db, &job, JobStageCompleted)
+	_ = scheduler.ReleaseReservation(h.db, job.ID)
+	return PublishResult{JobID: job.ID, Status: "published", SourcePath: job.OutputPath, PublishedPath: target, Message: "Library asset safely replaced; original archived."}, nil
+}
+
+func (h PublisherHandler) libraryOriginalArchivePath(job models.QueueJob, library models.Library) (string, error) {
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(library.DestinationPath, job.MediaPath)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid library asset path")
+	}
+	destination := uniqueArchivePath(filepath.Join(archiveRoot, "library-replacements", fmt.Sprintf("library-%d", library.ID), relative))
+	return destination, nil
+}
+
+func pathIsInside(candidate string, root string) bool {
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	return candidateAbs != rootAbs && isInsideRoot(rootAbs, candidateAbs)
 }
 
 func filesEqual(leftPath, rightPath string) (bool, error) {

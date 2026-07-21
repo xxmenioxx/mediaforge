@@ -299,6 +299,33 @@ DirectPlay es un preflight, no una garantía del archivo final.
 | `canceledRetentionDays` | `3` | Conservación de cancelados. |
 | `orphanRetentionDays` | `7` | Conservación de directorios sin job. |
 
+Cada job utiliza un workspace aislado y plano. Al copiar al disco de trabajo no
+se replica la jerarquía completa de la librería:
+
+```text
+/media/staging/job-42/_input/pelicula.mkv  # copia del asset original
+/media/staging/job-42/pelicula.mkv         # output de conversión
+```
+
+El ID del job evita colisiones aunque dos assets tengan el mismo nombre. La ruta
+final de la librería se calcula al publicar usando la biblioteca y el path del
+asset original; por eso staging no necesita conservar carpetas como
+`anime-movies/Pelicula/`.
+
+Publisher elimina también el primer segmento relativo cuando ya coincide con
+el nombre o la carpeta destino de la Library. Por ejemplo, con destino
+`/media/library/anime-movies`, un source relativo
+`anime-movies/Akira (1988)/Akira (1988).mkv` se publica como
+`/media/library/anime-movies/Akira (1988)/Akira (1988).mkv`, sin crear un segundo
+directorio `anime-movies`.
+
+Para un asset `unverified` que ya reside en Library, el job persiste
+`publishMode=replace_library_asset`. Después de validar, Publisher prepara el
+nuevo archivo junto al destino, archiva el original y hace un rename atómico a
+la misma ruta. Los paths de reemplazo y archive quedan registrados antes de
+mover archivos para que Scheduler Recovery pueda completar o revertir una
+publicación interrumpida.
+
 Los workspaces publicados pueden limpiarse inmediatamente. Nunca son candidatos los jobs queued/running ni los completed sin publicar. La limpieza manual exige un preview fresco —máximo 15 minutos— antes de eliminar.
 
 ## 6. Reservas, locks y concurrencia

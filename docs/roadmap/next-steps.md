@@ -167,8 +167,60 @@ Estado: `propuesto`.
 - [ ] Controles completos de cola: cancelar, retry, prioridad y batch actions.
 - [ ] Pipeline Map / Stage Inspector.
 - [ ] Profile Lab con comparación visual y métricas ampliadas.
-- [ ] Notificaciones de jobs y revisión requerida.
+- [ ] Widget global y persistente de conversiones activas.
+- [ ] Centro de notificaciones dentro de MediaForge.
+- [ ] Notificaciones opcionales por correo para jobs, batches y revisiones.
 - [ ] Housekeeping con políticas y previews más claros.
+
+### Widget global de conversiones
+
+El layout principal mostrará un widget flotante y minimizable, similar al panel
+de transferencias de Google Drive o MEGA. Debe permanecer visible al navegar
+entre Dashboard, Assets, Queue, Workers y Settings.
+
+Por cada conversión activa mostrará:
+
+- Nombre del asset y job.
+- Worker que lo está procesando, por ejemplo NAS o MacBook.
+- Etapa actual: análisis, conversión, validación o publicación.
+- Progreso, tiempo transcurrido y ETA cuando pueda calcularse.
+- Encoder efectivo y estado del worker.
+- Accesos directos al detalle, logs y página Workers.
+- Estado de finalización, error, cancelación o espera.
+
+El widget podrá expandirse, minimizarse y ocultar jobs terminados. Minimizarlo no
+detendrá la conversión. Los jobs activos deben conservarse tras recargar la
+página y actualizarse por eventos del servidor; polling será el fallback.
+
+### Notificaciones de jobs
+
+MediaForge incorporará un centro de notificaciones persistente y canales
+opcionales de navegador y correo. El usuario podrá activar cada canal y evento
+por separado.
+
+Eventos iniciales:
+
+- Job completado, fallido o cancelado.
+- Batch completado o completado con errores.
+- Worker desconectado, sin heartbeat o necesitando atención.
+- Job esperando revisión, espacio, encoder o worker.
+- Validación o publicación completada o fallida.
+
+El correo será opt-in y requerirá configuración SMTP, destinatarios de prueba,
+TLS y un botón **Send test email**. No se almacenará la contraseña SMTP en texto
+plano en logs ni respuestas de la API. Para evitar ruido debe soportar eventos
+configurables, horas silenciosas y resúmenes por batch.
+
+Cada notificación incluirá job, asset, resultado, worker, duración y un enlace
+al detalle correspondiente. Los enlaces externos sólo se generarán cuando el
+administrador configure explícitamente la URL pública/base de MediaForge.
+
+### Criterio de aceptación
+
+Mientras existe una conversión activa, el operador puede ver desde cualquier
+página qué worker procesa qué asset y abrir sus detalles. Al terminar o fallar
+el job aparece una notificación interna y, si SMTP está habilitado para ese
+evento, se envía exactamente un correo incluso después de reintentos o reinicios.
 
 ## P3 — Producto V2
 

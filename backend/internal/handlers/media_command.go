@@ -25,21 +25,25 @@ type MediaJobPlan struct {
 	ProcessingMode string
 	Streams        MediaStreamInventory
 	Override       AssetConversionOverrideState
+	Interlace      InterlaceAnalysis
 }
 
 type MediaStreamInventory struct {
-	Video    []MediaStream
-	Audio    []MediaAudioStream
-	Subtitle []MediaStream
+	Video        []MediaStream
+	Audio        []MediaAudioStream
+	Subtitle     []MediaStream
+	Duration     float64
+	ChapterCount int
 }
 
 type MediaStream struct {
-	Index    int
-	Codec    string
-	Language string
-	Title    string
-	Default  bool
-	Forced   bool
+	Index      int
+	Codec      string
+	FieldOrder string
+	Language   string
+	Title      string
+	Default    bool
+	Forced     bool
 }
 
 type MediaAudioStream struct {
@@ -118,8 +122,9 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	args = append(args, "-c", "copy")
 	if plan.ProcessingMode == ProcessingModeFullEncode {
-		args = append(args, videoCodecArgs(plan.Profile)...)
-		args = append(args, videoWorkerArgs(plan.Profile)...)
+		effectiveProfile := profileWithAutomaticDeinterlace(plan.Profile, plan.Interlace)
+		args = append(args, videoCodecArgs(effectiveProfile)...)
+		args = append(args, videoWorkerArgs(effectiveProfile)...)
 	} else {
 		args = append(args, "-c:v", "copy")
 	}
@@ -143,6 +148,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		}
 		args = append(args,
 			fmt.Sprintf("-c:a:%d", aacStereoIndex), "aac",
+			fmt.Sprintf("-b:a:%d", aacStereoIndex), fmt.Sprintf("%dk", aacStereoBitrateKbps(plan.Profile)),
 			fmt.Sprintf("-ac:a:%d", aacStereoIndex), "2",
 			fmt.Sprintf("-metadata:s:a:%d", aacStereoIndex), "title=AAC Stereo (MediaForge)",
 			fmt.Sprintf("-disposition:a:%d", aacStereoIndex), disposition,
@@ -194,19 +200,68 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		}
 	}
 
-	if !planHasStreamSelection(plan.Override) && !plan.Profile.PreserveSubtitles {
+	sourceHasSubtitles := len(plan.Streams.Subtitle) > 0
+	hasSelectedSubtitles := len(selectedSubtitleStreams(plan)) > 0
+	if sourceHasSubtitles && !planHasStreamSelection(plan.Override) && !plan.Profile.PreserveSubtitles {
 		args = append(args, "-sn")
-	} else if plan.Profile.PreserveSubtitles && profileWorkerBool(plan.Profile, "preferSrtSubtitles", false) {
-		args = append(args, "-c:s", "srt")
+	} else if hasSelectedSubtitles && plan.Profile.PreserveSubtitles && profileWorkerBool(plan.Profile, "preferSrtSubtitles", false) {
+		for index, stream := range selectedSubtitleStreams(plan) {
+			if subtitleCanConvertToSRT(stream.Codec) {
+				args = append(args, fmt.Sprintf("-c:s:%d", index), "srt")
+			}
+		}
 	}
-	if plan.Profile.PreserveChapters {
+	if plan.Streams.ChapterCount > 0 && plan.Profile.PreserveChapters {
 		args = append(args, "-map_chapters", "0")
-	} else {
+	} else if plan.Streams.ChapterCount > 0 {
 		args = append(args, "-map_chapters", "-1")
 	}
 
 	args = append(args, plan.OutputPath)
 	return args
+}
+
+func aacStereoBitrateKbps(profile models.Profile) int {
+	bitrate := workerIntValue(profile.WorkerConfig["aacStereoBitrateKbps"], 192)
+	if bitrate < 64 {
+		return 64
+	}
+	if bitrate > 512 {
+		return 512
+	}
+	return bitrate
+}
+
+func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceAnalysis) models.Profile {
+	mode := workerStringValue(profile.WorkerConfig["deinterlaceMode"])
+	if mode == "" {
+		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
+	}
+	filter := effectiveDeinterlaceFilter(mode, analysis)
+	if filter == "" {
+		return profile
+	}
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+	if existing != "" && !strings.Contains(existing, "bwdif=") && !strings.Contains(existing, "yadif=") {
+		filter += "," + existing
+	} else if existing != "" {
+		filter = existing
+	}
+	profile.WorkerConfig["videoFilters"] = filter
+	return profile
+}
+
+// FFmpeg can transcode text subtitles to SRT, but it cannot OCR bitmap
+// subtitles such as DVD/VobSub or Blu-ray PGS. Since the command starts with
+// "-c copy", leaving those streams untouched preserves them in MKV output.
+func subtitleCanConvertToSRT(codec string) bool {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "ass", "ssa", "subrip", "srt", "text", "mov_text", "webvtt", "microdvd", "mpl2", "jacosub", "sami", "realtext", "subviewer", "subviewer1", "vplayer":
+		return true
+	default:
+		return false
+	}
 }
 
 func effectiveAACOption(plan MediaJobPlan, override *bool, key, legacyKey string, fallback bool) bool {
@@ -241,14 +296,24 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 		return MediaJobPlan{}, err
 	}
 
+	fieldOrder := "unknown"
+	if len(streams.Video) > 0 {
+		fieldOrder = streams.Video[0].FieldOrder
+	}
+	processingMode := mediaProcessingMode(profile, audioProfile)
+	analysis := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
+	if processingMode == ProcessingModeFullEncode {
+		analysis = detectInterlace(inputPath, fieldOrder, streams.Duration, 20)
+	}
 	return MediaJobPlan{
 		InputPath:      inputPath,
 		OutputPath:     outputPath,
 		Profile:        profile,
 		AudioProfile:   audioProfile,
 		Overwrite:      overwrite,
-		ProcessingMode: mediaProcessingMode(profile, audioProfile),
+		ProcessingMode: processingMode,
 		Streams:        streams,
+		Interlace:      analysis,
 	}, nil
 }
 
@@ -307,6 +372,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := strings.TrimSpace(override.ProcessingMode); value != "" {
 		workerConfig["processingMode"] = value
+	}
+	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
+		workerConfig["deinterlaceMode"] = value
 	}
 	profile.WorkerConfig = workerConfig
 	return profile
@@ -687,7 +755,8 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 	cmd := exec.Command(
 		"ffprobe",
 		"-v", "error",
-		"-show_entries", "stream=index,codec_type,codec_name,channels,channel_layout:stream_tags=language,title:stream_disposition=default,forced",
+		"-show_entries", "format=duration:stream=index,codec_type,codec_name,channels,channel_layout,field_order:stream_tags=language,title:stream_disposition=default,forced",
+		"-show_chapters",
 		"-of", "json",
 		inputPath,
 	)
@@ -704,32 +773,40 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 	}
 
 	var response struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
 		Streams []struct {
 			Index         int               `json:"index"`
 			CodecType     string            `json:"codec_type"`
 			CodecName     string            `json:"codec_name"`
 			Channels      int               `json:"channels"`
 			ChannelLayout string            `json:"channel_layout"`
+			FieldOrder    string            `json:"field_order"`
 			Tags          map[string]string `json:"tags"`
 			Disposition   struct {
 				Default int `json:"default"`
 				Forced  int `json:"forced"`
 			} `json:"disposition"`
 		} `json:"streams"`
+		Chapters []struct {
+			ID int `json:"id"`
+		} `json:"chapters"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
 		return MediaStreamInventory{}, err
 	}
 
-	inventory := MediaStreamInventory{Video: []MediaStream{}, Audio: []MediaAudioStream{}, Subtitle: []MediaStream{}}
+	inventory := MediaStreamInventory{Video: []MediaStream{}, Audio: []MediaAudioStream{}, Subtitle: []MediaStream{}, Duration: parseFloat(response.Format.Duration), ChapterCount: len(response.Chapters)}
 	for _, stream := range response.Streams {
 		common := MediaStream{
-			Index:    stream.Index,
-			Codec:    stream.CodecName,
-			Language: stream.Tags["language"],
-			Title:    stream.Tags["title"],
-			Default:  stream.Disposition.Default == 1,
-			Forced:   stream.Disposition.Forced == 1,
+			Index:      stream.Index,
+			Codec:      stream.CodecName,
+			FieldOrder: stream.FieldOrder,
+			Language:   stream.Tags["language"],
+			Title:      stream.Tags["title"],
+			Default:    stream.Disposition.Default == 1,
+			Forced:     stream.Disposition.Forced == 1,
 		}
 		switch stream.CodecType {
 		case "video":

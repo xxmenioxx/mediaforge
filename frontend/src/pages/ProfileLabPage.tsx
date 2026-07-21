@@ -140,16 +140,10 @@ const videoEncoderOptions = [
   { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
 ] as const;
 
-const qualityOptions = [
-  { value: 'maximum', label: 'Maximum', description: 'Near-lossless drafts. Larger files, best for masters.', crf: 15, preset: 'slow' },
-  { value: 'high', label: 'High', description: 'Very high quality for favorite sources.', crf: 18, preset: 'medium' },
-  { value: 'balanced', label: 'Balanced', description: 'Good default for most anime and series.', crf: 22, preset: 'medium' },
-  { value: 'small', label: 'Small', description: 'Prioritizes smaller files.', crf: 25, preset: 'slow' },
-] as const;
-
 const deinterlaceOptions = [
   { value: 'off', label: 'Off' },
-  { value: 'auto', label: 'Auto' },
+  { value: 'auto', label: 'Auto detect' },
+  { value: 'force', label: 'Force' },
 ] as const;
 
 const denoiseOptions = [
@@ -184,7 +178,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
         crop: 'off',
@@ -206,7 +200,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'auto',
+        deinterlaceMode: 'auto',
         denoise: 'light',
         deband: 'off',
         crop: 'off',
@@ -228,7 +222,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'slow',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'light',
         crop: 'off',
@@ -250,7 +244,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
         crop: 'off',
@@ -272,7 +266,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'slow',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
         crop: 'off',
@@ -299,7 +293,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'slow',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'light',
         crop: 'off',
@@ -327,7 +321,7 @@ const videoStarterPresets = [
         globalQuality: 25,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
         crop: 'off',
@@ -355,7 +349,7 @@ const videoStarterPresets = [
         globalQuality: 27,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlace: 'off',
+        deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
         crop: 'off',
@@ -391,7 +385,7 @@ const emptyVideoDraft: ProfileInput = {
     globalQuality: 25,
     videoPreset: 'medium',
     pixFmt: 'yuv420p10le',
-    deinterlace: 'off',
+    deinterlaceMode: 'off',
     denoise: 'off',
     deband: 'off',
     crop: 'off',
@@ -399,6 +393,7 @@ const emptyVideoDraft: ProfileInput = {
     videoFilters: '',
     x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
     addAacStereoTrack: false,
+    aacStereoBitrateKbps: 192,
     aacStereoDefault: false,
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
@@ -993,6 +988,21 @@ export function ProfileLabPage() {
                             />
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
+                              label="AAC compatibility quality"
+                              value={numberWorkerValue(videoDraft, 'aacStereoBitrateKbps', 192)}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoBitrateKbps', Number(event.target.value))}
+                              disabled={!videoAACTrackEnabled(videoDraft)}
+                              helperText="192 kb/s recommended"
+                              select
+                              fullWidth
+                            >
+                              {[128, 160, 192, 224, 256].map((value) => (
+                                <MenuItem key={value} value={value}>{value} kb/s</MenuItem>
+                              ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <FormControlLabel
                               control={
                                 <Checkbox
@@ -1045,20 +1055,19 @@ export function ProfileLabPage() {
                         <Stack spacing={0.5}>
                           <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
                             <Typography fontWeight={700}>Quality</Typography>
-                            <Tooltip title="Lower keeps more detail. Higher creates smaller files. Exact CRF is available in Advanced.">
-                              <Chip label={`${qualityLabel(videoDraft.qualityValue, videoDraft.videoCodec)} · ${videoDraft.videoCodec === 'copy' ? 'Original' : `CRF ${videoDraft.qualityValue}`}`} size="small" />
+                            <Tooltip title="Lower CRF keeps more detail. Higher CRF creates smaller files.">
+                              <Chip label={videoDraft.videoCodec === 'copy' ? 'Original' : `CRF ${videoDraft.qualityValue}`} size="small" />
                             </Tooltip>
                           </Stack>
                           <Slider
                             value={videoDraft.qualityValue}
-                            min={15}
-                            max={28}
+                            min={14}
+                            max={30}
                             step={1}
                             marks={[
-                              { value: 15, label: 'Max' },
-                              { value: 18, label: 'High' },
-                              { value: 22, label: 'Bal' },
-                              { value: 25, label: 'Small' },
+                              { value: 14, label: '14' },
+                              { value: 22, label: '22' },
+                              { value: 30, label: '30' },
                             ]}
                             disabled={videoDraft.videoCodec === 'copy'}
                             onChange={(_, value) => setVideoDraft({ ...videoDraft, qualityValue: Array.isArray(value) ? value[0] : value })}
@@ -1146,8 +1155,8 @@ export function ProfileLabPage() {
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                   <TextField
                                     label="Deinterlace"
-                                    value={videoFilterControlValue(videoDraft, 'deinterlace', 'off')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deinterlace', event.target.value)}
+                                    value={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deinterlaceMode', event.target.value)}
                                     select
                                     fullWidth
                                   >
@@ -2104,6 +2113,7 @@ function videoPreviewOptions(draft: ProfileInput) {
     videoFilters: videoWorkerValue(draft, 'videoFilters'),
     x265Params: videoWorkerValue(draft, 'x265Params'),
     addAacStereoTrack: videoAACTrackEnabled(draft),
+    aacStereoBitrateKbps: numberWorkerValue(draft, 'aacStereoBitrateKbps', 192),
     aacStereoDefault: videoAACTrackDefault(draft),
     preserveOriginalAudio: videoWorkerBool(draft, 'preserveOriginalAudio', true),
     preferSrtSubtitles: videoWorkerBool(draft, 'preferSrtSubtitles'),
@@ -2173,51 +2183,6 @@ function videoEncoderDescription(value: string) {
   return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
 }
 
-function qualityLabel(qualityValue: number, videoCodec: string) {
-  if (videoCodec === 'copy') {
-    return 'Original';
-  }
-  if (qualityValue <= 18) {
-    return 'Best quality';
-  }
-  if (qualityValue <= 23) {
-    return 'Balanced';
-  }
-  return 'Smaller file';
-}
-
-function qualityChoiceForValue(qualityValue: number, videoCodec: string) {
-  if (videoCodec === 'copy') {
-    return 'original';
-  }
-  if (qualityValue <= 16) {
-    return 'maximum';
-  }
-  if (qualityValue <= 19) {
-    return 'high';
-  }
-  if (qualityValue <= 23) {
-    return 'balanced';
-  }
-  return 'small';
-}
-
-function applyVideoQualityOption(
-  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
-  option: typeof qualityOptions[number],
-) {
-  setVideoDraft((current) => ({
-    ...current,
-    videoCodec: current.videoCodec === 'copy' ? 'x265' : current.videoCodec,
-    qualityMode: 'crf',
-    qualityValue: option.crf,
-    workerConfig: {
-      ...current.workerConfig,
-      videoPreset: option.preset,
-    },
-  }));
-}
-
 function videoFilterControlValue(draft: ProfileInput, key: string, fallback = '') {
   return videoWorkerValue(draft, key, fallback);
 }
@@ -2244,7 +2209,6 @@ function updateVideoFilterControl(
 
 function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
-  const deinterlace = stringValue(workerConfig.deinterlace, 'off');
   const denoise = stringValue(workerConfig.denoise, 'off');
   const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
@@ -2256,9 +2220,6 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const temperature = numericWorkerConfigValue(workerConfig, 'temperature', 0);
   const tint = numericWorkerConfigValue(workerConfig, 'tint', 0);
 
-  if (deinterlace === 'auto') {
-    filters.push('bwdif=mode=send_frame');
-  }
   if (denoise === 'light') {
     filters.push('hqdn3d=1.5:1.5:6:6');
   } else if (denoise === 'medium') {

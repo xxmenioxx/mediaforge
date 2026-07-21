@@ -40,6 +40,8 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls }:
         <SnapshotChip label="Bitrate" value={formatBitrate(scan.bitrate)} />
         <SnapshotChip label="Size" value={formatBytes(scan.sizeBytes)} />
         <SnapshotChip label="Range" value={scan.hdr ? 'HDR' : 'SDR'} />
+        <SnapshotChip label="Scan type" value={interlaceLabel(scan)} />
+        <SnapshotChip label="Motion sample" value={interlaceWindowLabel(scan)} />
         <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
         <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
       </Stack>
@@ -67,6 +69,33 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls }:
       />
     </Stack>
   );
+}
+
+function interlaceLabel(scan: ScanResult) {
+  const status = scan.interlaceAnalysis?.status ?? 'unknown';
+  const fieldOrder = scan.interlaceAnalysis?.fieldOrder;
+  switch (status) {
+    case 'interlaced': return `Interlaced${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
+    case 'mixed': return 'Mixed · review';
+    case 'telecine_suspected': return 'Telecine suspected';
+    case 'progressive': return 'Progressive';
+    default: return 'Unknown';
+  }
+}
+
+function interlaceWindowLabel(scan: ScanResult) {
+  const seconds = scan.interlaceAnalysis?.windowSeconds;
+  const start = scan.interlaceAnalysis?.windowStart;
+  if (!seconds) return 'Legacy sample';
+  return `${seconds}s from ${formatClock(start ?? 0)}`;
+}
+
+function formatClock(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const remaining = whole % 60;
+  return [hours, minutes, remaining].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
 function StreamSection({

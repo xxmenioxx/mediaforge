@@ -7,6 +7,7 @@ type QueueJob struct {
 	BatchID               string     `json:"batchId" gorm:"index"`
 	BatchName             string     `json:"batchName"`
 	MediaPath             string     `json:"mediaPath" gorm:"not null"`
+	PublishMode           string     `json:"publishMode" gorm:"not null;default:standard"`
 	LibraryID             uint       `json:"libraryId" gorm:"not null"`
 	ProfileID             uint       `json:"profileId" gorm:"not null"`
 	ProfileVersion        int        `json:"profileVersion" gorm:"not null;default:1"`
@@ -29,6 +30,8 @@ type QueueJob struct {
 	ValidationReport      JSONMap    `json:"validationReport" gorm:"type:json"`
 	PublishedPath         string     `json:"publishedPath"`
 	PublishedAt           *time.Time `json:"publishedAt"`
+	ReplacementTargetPath string     `json:"replacementTargetPath"`
+	OriginalArchivedPath  string     `json:"originalArchivedPath"`
 	StartedAt             *time.Time `json:"startedAt"`
 	FinishedAt            *time.Time `json:"finishedAt"`
 	CreatedAt             time.Time  `json:"createdAt"`

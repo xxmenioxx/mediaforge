@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
@@ -19,6 +21,35 @@ type AdvisorHandler struct {
 type AdvisorRequest struct {
 	MediaPath string `json:"mediaPath" binding:"required"`
 	ProfileID uint   `json:"profileId" binding:"required"`
+}
+
+type ProfileSuggestionRequest struct {
+	MediaPath string `json:"mediaPath" binding:"required"`
+}
+
+type ProfileCandidate struct {
+	Profile models.Profile `json:"profile"`
+	Score   int            `json:"score"`
+	Reasons []string       `json:"reasons"`
+}
+
+type ProfileSuggestionResponse struct {
+	MatchType        string             `json:"matchType"`
+	Summary          string             `json:"summary"`
+	Scan             models.ScanResult  `json:"scan"`
+	SuggestedProfile *models.Profile    `json:"suggestedProfile,omitempty"`
+	Candidates       []ProfileCandidate `json:"candidates"`
+	ProposedProfile  ProfileInput       `json:"proposedProfile"`
+	Insights         AnalysisInsights   `json:"insights"`
+}
+
+type AnalysisInsights struct {
+	RecommendedCRF       int      `json:"recommendedCrf"`
+	EstimatedMinBytes    int64    `json:"estimatedMinBytes"`
+	EstimatedMaxBytes    int64    `json:"estimatedMaxBytes"`
+	EstimatedSavingsLow  int      `json:"estimatedSavingsLow"`
+	EstimatedSavingsHigh int      `json:"estimatedSavingsHigh"`
+	Recommendations      []string `json:"recommendations"`
 }
 
 type AdvisorResponse struct {
@@ -61,26 +92,200 @@ func (h AdvisorHandler) Evaluate(c *gin.Context) {
 		return
 	}
 
-	response := evaluateConversion(scan, profile)
+	response := evaluateConversion(scan, profile, h.isLibraryAsset(request.MediaPath))
 	c.JSON(http.StatusOK, response)
 }
 
+func (h AdvisorHandler) Suggest(c *gin.Context) {
+	var request ProfileSuggestionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	scan, err := h.scanForPath(request.MediaPath)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+
+	proposal := proposedProfileForScan(scan)
+	var profiles []models.Profile
+	if err := h.db.Where("disabled = ? OR disabled IS NULL", false).Order("name asc").Find(&profiles).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	candidates := make([]ProfileCandidate, 0, len(profiles))
+	for _, profile := range profiles {
+		score, reasons := profileFit(profile, proposal, scan)
+		candidates = append(candidates, ProfileCandidate{Profile: profile, Score: score, Reasons: reasons})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Score > candidates[j].Score })
+	if len(candidates) > 3 {
+		candidates = candidates[:3]
+	}
+
+	response := ProfileSuggestionResponse{MatchType: "create", Summary: "No existing profile covers the detected technical requirements closely enough.", Scan: scan, Candidates: candidates, ProposedProfile: proposal}
+	if len(candidates) > 0 && candidates[0].Score >= 80 {
+		response.MatchType = "existing"
+		response.SuggestedProfile = &candidates[0].Profile
+		response.Summary = fmt.Sprintf("%s is the closest existing profile for this source.", candidates[0].Profile.Name)
+	}
+	targetCRF := proposal.QualityValue
+	if response.SuggestedProfile != nil && response.SuggestedProfile.QualityValue > 0 {
+		targetCRF = response.SuggestedProfile.QualityValue
+	}
+	response.Insights = analysisInsights(scan, targetCRF)
+	c.JSON(http.StatusOK, response)
+}
+
+func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
+	videoKbps := 3500.0
+	switch {
+	case scan.Width >= 3840 || scan.Height >= 2160:
+		videoKbps = 12000
+	case scan.Width <= 720 && scan.Height <= 576:
+		videoKbps = 1200
+	case scan.Width <= 1280 && scan.Height <= 720:
+		videoKbps = 2200
+	}
+	videoKbps *= math.Pow(2, float64(21-crf)/6.0)
+	totalKbps := videoKbps + 512
+	center := int64(scan.Duration * totalKbps * 1000 / 8)
+	minBytes, maxBytes := int64(float64(center)*0.75), int64(float64(center)*1.35)
+	low, high := 0, 0
+	if scan.SizeBytes > 0 {
+		low = int(math.Round((1 - float64(maxBytes)/float64(scan.SizeBytes)) * 100))
+		high = int(math.Round((1 - float64(minBytes)/float64(scan.SizeBytes)) * 100))
+	}
+	recommendations := []string{fmt.Sprintf("CRF %d is the technical starting point for this resolution; validate a representative motion-heavy scene before processing the full asset.", crf)}
+	if codecFamily(scan.VideoCodec) == "hevc" {
+		recommendations = append(recommendations, "The source is already HEVC. Re-encoding may lose detail and may not reduce size; prefer video copy unless there is a verified correction goal.")
+	}
+	if status, _ := scan.InterlaceAnalysis["status"].(string); status == "progressive" {
+		recommendations = append(recommendations, "The analyzed window is progressive; no deinterlacing filter is recommended.")
+	} else if status == "interlaced" {
+		recommendations = append(recommendations, "Interlacing was detected. Apply bwdif before encoding and inspect motion in a preview.")
+	} else if status == "mixed" {
+		recommendations = append(recommendations, "Mixed progressive/interlaced frames were detected. Validate a motion-heavy preview before deciding whether to force deinterlacing.")
+	} else if status == "telecine_suspected" {
+		recommendations = append(recommendations, "Telecine cadence is suspected. Validate fieldmatch/decimate in LAB instead of applying ordinary deinterlacing blindly.")
+	} else {
+		recommendations = append(recommendations, "Motion structure could not be classified reliably; inspect a preview before conversion.")
+	}
+	if scan.HDR {
+		recommendations = append(recommendations, "Preserve HDR metadata and 10-bit output; otherwise highlights and color may change.")
+	}
+	if high <= 0 {
+		recommendations = append(recommendations, "The estimated output is not smaller than the source, so conversion is not recommended for storage savings alone.")
+	}
+	return AnalysisInsights{RecommendedCRF: crf, EstimatedMinBytes: minBytes, EstimatedMaxBytes: maxBytes, EstimatedSavingsLow: low, EstimatedSavingsHigh: high, Recommendations: recommendations}
+}
+
+func proposedProfileForScan(scan models.ScanResult) ProfileInput {
+	crf := 20
+	if scan.Width >= 3840 || scan.Height >= 2160 || scan.HDR {
+		crf = 18
+	}
+	if scan.Width > 0 && scan.Width <= 720 && scan.Height <= 576 {
+		crf = 21
+	}
+	name := fmt.Sprintf("Suggested %s CRF %d", strings.ToUpper(fallback(codecFamily(scan.VideoCodec), "source")), crf)
+	return ProfileInput{
+		Name: name, Description: "Generated from Scan/Analysis technical metadata. Review before saving.",
+		Container: "mkv", VideoCodec: "x265", CodecFamily: "hevc", EncoderPolicy: "locked",
+		PreferredEncoder: "libx265", AllowedEncoders: []string{"libx265"}, FallbackPolicy: "wait",
+		BitDepth: 10, PixelFormat: "yuv420p10le", QualityStrategy: "crf", AudioCodec: "copy",
+		QualityMode: "crf", QualityValue: crf, PreserveHDR: scan.HDR,
+		PreserveSubtitles: scan.SubtitleTracks > 0, PreserveChapters: scan.Chapters > 0,
+		WorkerConfig: models.JSONMap{"encoder": "ffmpeg", "videoEncoder": "libx265", "videoPreset": "medium", "pixFmt": "yuv420p10le", "deinterlaceMode": "auto", "preserveOriginalAudio": true, "addAacStereoTrack": false, "aacStereoBitrateKbps": 192},
+	}
+}
+
+func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanResult) (int, []string) {
+	score := 100
+	reasons := []string{}
+	if codecFamily(profile.CodecFamily) != codecFamily(proposal.CodecFamily) && codecFamily(profile.VideoCodec) != codecFamily(proposal.CodecFamily) {
+		score -= 35
+		reasons = append(reasons, "Video codec family differs from the suggested HEVC target.")
+	}
+	if profile.Container != proposal.Container {
+		score -= 8
+		reasons = append(reasons, "Container differs from the suggested MKV container.")
+	}
+	if profile.QualityMode != "crf" {
+		score -= 15
+		reasons = append(reasons, "Profile does not use a CRF quality target.")
+	} else if delta := profile.QualityValue - proposal.QualityValue; delta < -3 || delta > 3 {
+		score -= min(20, abs(delta)*3)
+		reasons = append(reasons, fmt.Sprintf("CRF %d differs from the analyzed CRF %d target.", profile.QualityValue, proposal.QualityValue))
+	}
+	if scan.HDR && !profile.PreserveHDR {
+		score -= 35
+		reasons = append(reasons, "HDR would not be preserved.")
+	}
+	if scan.SubtitleTracks > 0 && !profile.PreserveSubtitles {
+		score -= 20
+		reasons = append(reasons, "Subtitle tracks would not be preserved.")
+	}
+	if scan.Chapters > 0 && !profile.PreserveChapters {
+		score -= 10
+		reasons = append(reasons, "Chapters would not be preserved.")
+	}
+	if profile.BitDepth > 0 && profile.BitDepth < proposal.BitDepth {
+		score -= 10
+		reasons = append(reasons, "Bit depth is below the proposed 10-bit output.")
+	}
+	interlaceStatus, _ := scan.InterlaceAnalysis["status"].(string)
+	deinterlaceMode, _ := profile.WorkerConfig["deinterlaceMode"].(string)
+	if (interlaceStatus == "interlaced" || interlaceStatus == "mixed" || interlaceStatus == "telecine_suspected") && deinterlaceMode == "off" {
+		score -= 25
+		reasons = append(reasons, "Interlacing was detected but this profile explicitly disables correction.")
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "Codec, CRF and required preservation options match the scan.")
+	}
+	return clamp(score, 0, 100), reasons
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func (h AdvisorHandler) isLibraryAsset(mediaPath string) bool {
+	var libraries []models.Library
+	if err := h.db.Find(&libraries).Error; err != nil {
+		return false
+	}
+	for _, library := range libraries {
+		if pathIsInside(mediaPath, library.DestinationPath) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
+	path = resolveMediaPath(h.db, path)
 	var existing models.ScanResult
 	if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+		enrichCachedScan(&existing)
+		_ = h.db.Save(&existing).Error
 		return existing, nil
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		return models.ScanResult{}, fmt.Errorf("media path is not readable from the backend container")
+		return models.ScanResult{}, fmt.Errorf("%s", mediaPathReadError(err))
 	}
 
 	if info.IsDir() {
 		return models.ScanResult{}, fmt.Errorf("media path must point to a file")
 	}
 
-	probe, raw, err := runFFProbe(path)
+	probe, raw, err := runFFProbe(path, 20)
 	if err != nil {
 		return models.ScanResult{}, err
 	}
@@ -93,20 +298,24 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 	return scan, nil
 }
 
-func evaluateConversion(scan models.ScanResult, profile models.Profile) AdvisorResponse {
+func evaluateConversion(scan models.ScanResult, profile models.Profile, libraryAsset bool) AdvisorResponse {
 	score := 50
 	reasons := []string{}
 	warnings := []string{}
 
 	sourceCodec := strings.ToLower(scan.VideoCodec)
 	targetCodec := strings.ToLower(profile.VideoCodec)
+	targetFamily := profile.CodecFamily
+	if targetFamily == "" {
+		targetFamily = targetCodec
+	}
 
 	if targetCodec == "copy" {
 		score -= 15
 		reasons = append(reasons, "The selected profile copies video, so it will not reduce video bitrate or change compatibility.")
-	} else if codecMatches(sourceCodec, targetCodec) {
+	} else if codecMatches(sourceCodec, targetFamily) {
 		score -= 20
-		reasons = append(reasons, "The source video codec already matches the selected profile.")
+		reasons = append(reasons, "The source video is already in the same codec family as the selected profile. Re-encoding it would introduce another lossy generation.")
 	} else {
 		score += 20
 		reasons = append(reasons, fmt.Sprintf("The profile would convert video from %s to %s.", fallback(sourceCodec, "unknown"), profile.VideoCodec))
@@ -144,6 +353,11 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile) AdvisorR
 	if scan.AudioTracks > 1 && strings.ToLower(profile.AudioCodec) != "copy" {
 		warnings = append(warnings, "Multiple audio tracks are present; verify the profile keeps the tracks you care about.")
 	}
+	if libraryAsset {
+		score = 0
+		reasons = append([]string{"This asset already lives in Library. MediaForge assumes it may have been converted previously and does not recommend another video encode without a verified size, compatibility, or quality objective."}, reasons...)
+		warnings = append(warnings, "Re-encoding an already compressed Library asset can reduce quality. Prefer video copy when only audio, subtitles, metadata, or track layout needs to change.")
+	}
 
 	score = clamp(score, 0, 100)
 	recommendation := recommendationForScore(score)
@@ -165,13 +379,18 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile) AdvisorR
 }
 
 func codecMatches(source string, target string) bool {
-	switch target {
-	case "x264":
-		return source == "h264"
-	case "x265":
-		return source == "hevc" || source == "h265"
+	return codecFamily(source) == codecFamily(target)
+}
+
+func codecFamily(codec string) string {
+	normalized := strings.ToLower(strings.TrimSpace(codec))
+	switch {
+	case normalized == "hevc", normalized == "h265", normalized == "h.265", strings.Contains(normalized, "x265"), strings.HasPrefix(normalized, "hevc_"):
+		return "hevc"
+	case normalized == "h264", normalized == "h.264", normalized == "avc", strings.Contains(normalized, "x264"), strings.HasPrefix(normalized, "h264_"):
+		return "h264"
 	default:
-		return source == target
+		return normalized
 	}
 }
 

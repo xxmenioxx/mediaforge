@@ -120,6 +120,7 @@ export type AssetConversionOverrideState = {
   videoPreset?: string;
   pixFmt?: string;
   videoFilters?: string;
+  deinterlaceMode?: 'auto' | 'off' | 'force';
   x265Params?: string;
   processingMode?: string;
   preserveHdr?: boolean;
@@ -215,6 +216,29 @@ export type AdvisorResponse = {
   };
   scan: ScanResult;
   profile: Profile;
+};
+
+export type ProfileCandidate = {
+  profile: Profile;
+  score: number;
+  reasons: string[];
+};
+
+export type ProfileSuggestion = {
+  matchType: 'existing' | 'create';
+  summary: string;
+  scan: ScanResult;
+  suggestedProfile?: Profile;
+  candidates: ProfileCandidate[];
+  proposedProfile: ProfileInput;
+  insights: {
+    recommendedCrf: number;
+    estimatedMinBytes: number;
+    estimatedMaxBytes: number;
+    estimatedSavingsLow: number;
+    estimatedSavingsHigh: number;
+    recommendations: string[];
+  };
 };
 
 export type Profile = {
@@ -349,6 +373,7 @@ export type QueueJob = {
   batchId: string;
   batchName: string;
   mediaPath: string;
+  publishMode: 'standard' | 'replace_library_asset';
   libraryId: number;
   profileId: number;
   profileVersion: number;
@@ -371,6 +396,8 @@ export type QueueJob = {
   validationReport: Record<string, unknown>;
   publishedPath: string;
   publishedAt?: string;
+  replacementTargetPath: string;
+  originalArchivedPath: string;
   startedAt?: string;
   finishedAt?: string;
   createdAt: string;
@@ -483,6 +510,7 @@ export type LogFileContent = {
 
 export type QueueJobInput = {
   mediaPath: string;
+  publishMode?: 'standard' | 'replace_library_asset';
   batchId?: string;
   batchName?: string;
   libraryId: number;
@@ -545,6 +573,7 @@ export type MediaStreamInfo = {
   sampleAspectRatio?: string;
   displayAspectRatio?: string;
   hdr?: boolean;
+  fieldOrder?: string;
   channels?: number;
   channelLayout?: string;
   sampleRate?: number;
@@ -569,6 +598,20 @@ export type ScanResult = {
   videoStreams: MediaStreamInfo[];
   audioStreams: MediaStreamInfo[];
   subtitleStreams: MediaStreamInfo[];
+  interlaceAnalysis: {
+    status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';
+    fieldOrder?: string;
+    source?: string;
+    confidence?: number;
+    tff?: number;
+    bff?: number;
+    progressive?: number;
+    undetermined?: number;
+    sampledFrames?: number;
+    recommendedFilter?: string;
+    windowStart?: number;
+    windowSeconds?: number;
+  };
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

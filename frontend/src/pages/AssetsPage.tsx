@@ -15,6 +15,7 @@ import {
   IconButton,
   InputAdornment,
   MenuItem,
+  Slider,
   Stack,
   Switch,
   Tab,
@@ -47,6 +48,7 @@ import { api } from '../api/client';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
+import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, Library, MediaStreamInfo, Profile, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
@@ -410,9 +412,10 @@ function AssetGroupRow({
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
-  const effectiveProfileId = selectedProfileId || profiles[0]?.id || 0;
+  const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets);
-  const isConvertedGroup = group.status === 'converted' || group.status === 'unverified' || group.status === 'library';
+  const isConvertedGroup = group.status === 'converted';
+  const isLibraryGroup = group.status === 'unverified' || group.status === 'library';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
@@ -461,9 +464,10 @@ function AssetGroupRow({
 	    }
 	    return api.createQueueJob({
             mediaPath: asset.path,
+            publishMode: isLibraryGroup ? 'replace_library_asset' : 'standard',
             batchId,
             batchName,
-            libraryId: selectedLibraryId,
+            libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
             profileId: effectiveProfileId,
             audioProfileKey: selectedAudioProfileKey,
             priority: priorityForSize(asset.sizeBytes),
@@ -576,7 +580,9 @@ function AssetGroupRow({
                   <Alert severity="info">
                     {isArchiveGroup
                       ? 'Archived originals are protected here. Recovering an original will not delete converted files.'
-                      : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
+                      : group.status === 'unverified' || group.status === 'library'
+                        ? 'Unverified library assets can be queued individually for safe replacement. MediaForge converts in staging and archives the original before publishing.'
+                        : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
                   </Alert>
                 ) : (
                   <Grid container spacing={2} alignItems="stretch">
@@ -592,7 +598,7 @@ function AssetGroupRow({
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <ProfileAutocomplete profiles={profiles} value={effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" />
+                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" allowNone={mode === 'unprocessed' || mode === 'library'} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AudioProfileAutocomplete
@@ -606,14 +612,17 @@ function AssetGroupRow({
                       <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={selectPathTrackProfile} disabled={updateSetting.isPending} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <LibraryAutocomplete libraries={libraries} value={selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" />
+                      <LibraryAutocomplete libraries={libraries} value={isLibraryGroup ? group.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" disabled={isLibraryGroup} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <Button
                         startIcon={<PlaylistAddIcon />}
                         variant="contained"
                         size="small"
-                        onClick={() => queueGroup.mutate()}
+                        onClick={() => {
+                          if (isLibraryGroup && !window.confirm(`Convert and safely replace ${groupAssets.length} Library asset(s) after validation? Every original will be archived.`)) return;
+                          queueGroup.mutate();
+                        }}
                         disabled={
                           queueGroup.isPending ||
                           !effectiveProfileId ||
@@ -671,7 +680,7 @@ function AssetGroupRow({
                           groupRelativePath={group.relativePath}
                           groupCategory={groupCategory}
                           confidenceEnabled={isConfidenceEnabled}
-                          groupProfileId={effectiveProfileId}
+                          groupProfileId={selectedProfileId < 0 ? -1 : effectiveProfileId}
                           groupAudioProfileKey={selectedAudioProfileKey}
                           groupLibraryId={selectedLibraryId}
                           hasOpenJob={queueGroup.isPending || assetHasOpenJob(asset, queueJobs)}
@@ -739,11 +748,15 @@ function AssetRow({
   const [reviewTags, setReviewTags] = useState<string[]>(safeArray(assetReview.tags));
   const [category, setCategory] = useState<string>(firstCategory(assetMetadata.categories) || groupCategory);
   const [conversionDraft, setConversionDraft] = useState<AssetConversionOverrideState>(() => normalizeAssetConversionOverride(asset.conversion));
-  const snapshot = useMutation({ mutationFn: api.scan });
+  const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
+  const snapshot = useMutation({
+    mutationFn: api.scan,
+    onSuccess: (scan) => profileSuggestion.mutate(scan.path),
+  });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: selectedProfileId }),
-    enabled: confidenceEnabled && Boolean(selectedProfileId),
+    enabled: confidenceEnabled && selectedProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -796,10 +809,11 @@ function AssetRow({
     },
   });
   const isBlockedByReview = assetReview.requiresReview;
-  const isConverted = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library';
+  const isConverted = asset.status === 'converted';
+  const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const associatedJob = associatedJobForAsset(asset, queueJobs);
-  const rowLocked = hasOpenJob || createJob.isPending || isConverted || isArchive;
+  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
 
   useEffect(() => {
@@ -815,7 +829,7 @@ function AssetRow({
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     setShowSnapshotDialog(true);
-    if (!snapshot.data && !snapshot.isPending) {
+    if (!asset.missing && !snapshot.data && !snapshot.isPending) {
       snapshot.mutate({ path: asset.path });
     }
   }
@@ -827,7 +841,27 @@ function AssetRow({
   }
 
   function refreshSnapshot() {
+    if (asset.missing) {
+      return;
+    }
     snapshot.mutate({ path: asset.path, force: true });
+  }
+
+  async function applySnapshotMotionRecommendation(status: ScanResult['interlaceAnalysis']['status']) {
+    if (status === 'mixed' || status === 'unknown' || !status) {
+      await updateReview.mutateAsync({ path: asset.path, requiresReview: true, source: 'snapshot-motion', reason: `Motion analysis result requires review: ${status ?? 'unknown'}.`, tags: Array.from(new Set([...reviewTags, 'motion-review'])) });
+      return 'Asset marked for motion review; no filter was applied.';
+    }
+    const patch = status === 'progressive'
+      ? { deinterlaceMode: 'off' as const, videoFilters: withoutMotionFilters(conversionDraft.videoFilters) }
+      : status === 'interlaced'
+        ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(conversionDraft.videoFilters) }
+        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters('fieldmatch,decimate', withoutMotionFilters(conversionDraft.videoFilters)) };
+    await updateConversion.mutateAsync({ path: asset.path, ...conversionDraft, ...patch });
+    setConversionDraft((current) => ({ ...current, ...patch }));
+    if (status === 'progressive') return 'Saved: deinterlacing disabled for this asset.';
+    if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
+    return 'Saved: fieldmatch and decimate will run before encoding.';
   }
 
   function toggleSnapshotStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
@@ -885,13 +919,17 @@ function AssetRow({
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    if (!selectedProfileId || !selectedLibraryId) {
+    if (selectedProfileId <= 0 || !selectedLibraryId) {
+      return;
+    }
+    if (isLibraryReplacement && !window.confirm('Convert this Library asset and replace it only after validation? The current file will be moved to Originals Archive.')) {
       return;
     }
 
     createJob.mutate({
       mediaPath: asset.path,
-      libraryId: selectedLibraryId,
+      publishMode: isLibraryReplacement ? 'replace_library_asset' : 'standard',
+      libraryId: isLibraryReplacement ? asset.libraryId : selectedLibraryId,
       profileId: selectedProfileId,
       audioProfileKey: selectedAudioProfileKey,
       priority: priorityForSize(asset.sizeBytes),
@@ -989,13 +1027,13 @@ function AssetRow({
           <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
         </TableCell>
         <TableCell sx={{ minWidth: 220 }}>
-          <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} />
+          <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone={mode === 'unprocessed' || mode === 'library'} />
         </TableCell>
         <TableCell sx={{ minWidth: 220 }}>
           <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
         </TableCell>
         <TableCell sx={{ minWidth: 220 }}>
-          <LibraryAutocomplete libraries={libraries} value={selectedLibraryId} onChange={setSelectedLibraryId} label="Destination" size="small" disabled={rowLocked} />
+          <LibraryAutocomplete libraries={libraries} value={isLibraryReplacement ? asset.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination" size="small" disabled={rowLocked || isLibraryReplacement} />
         </TableCell>
         <TableCell align="center">
           <Stack direction="row" spacing={1} justifyContent="center">
@@ -1023,7 +1061,7 @@ function AssetRow({
                   </IconButton>
                 </span>
               </Tooltip>
-            ) : !isConverted ? (
+            ) : !isConverted || isLibraryReplacement ? (
               <Tooltip title={assetReview.requiresReview ? 'Disable review block' : 'Enable review block'}>
                 <IconButton
                   color={assetReview.requiresReview ? 'warning' : 'primary'}
@@ -1052,7 +1090,7 @@ function AssetRow({
                 <IconButton
                   color="primary"
                   onClick={queueAsset}
-                  disabled={createJob.isPending || !selectedProfileId || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+                  disabled={createJob.isPending || selectedProfileId <= 0 || !selectedLibraryId || isBlockedByReview || hasOpenJob}
                   aria-label={`Queue ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -1060,6 +1098,19 @@ function AssetRow({
                 </IconButton>
               </Tooltip>
             )}
+            {isLibraryReplacement ? (
+              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Convert and safely replace this library asset'}>
+                <IconButton
+                  color="warning"
+                  onClick={queueAsset}
+                  disabled={createJob.isPending || selectedProfileId <= 0 || isBlockedByReview || hasOpenJob}
+                  aria-label={`Replace ${asset.fileName}`}
+                  sx={actionIconSx}
+                >
+                  <PlaylistAddIcon />
+                </IconButton>
+              </Tooltip>
+            ) : null}
           </Stack>
         </TableCell>
       </TableRow>
@@ -1178,7 +1229,7 @@ function AssetRow({
                 {assetTitle(asset)}
               </Typography>
             </Stack>
-            <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={snapshot.isPending}>
+            <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={asset.missing || snapshot.isPending}>
               Rescan
             </Button>
           </Stack>
@@ -1192,9 +1243,10 @@ function AssetRow({
                 </Typography>
               </Stack>
             </Stack>
+            {asset.missing ? <Alert severity="warning">This indexed asset is marked as missing. Synchronize Assets and verify that the backend media mount contains the file before scanning it.</Alert> : null}
             {snapshot.isPending ? <Alert severity="info">Reading asset snapshot...</Alert> : null}
             {snapshot.isError ? (
-              <Alert severity="warning">Could not scan this asset. The file may not be readable from the backend container.</Alert>
+              <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
             {snapshot.data ? (
               <>
@@ -1243,7 +1295,18 @@ function AssetRow({
                         }
                   }
                 />
-                {!isConverted ? (
+                {profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
+                {profileSuggestion.isError ? (
+                  <Alert severity="warning">The snapshot was created, but a profile could not be suggested: {profileSuggestion.error instanceof Error ? profileSuggestion.error.message : 'unknown backend error'}</Alert>
+                ) : null}
+                {profileSuggestion.data ? (
+                  <ProfileSuggestionCard
+                    suggestion={profileSuggestion.data}
+                    onSelect={isArchive ? undefined : (profile) => setSelectedProfileId(profile.id)}
+                    onApplyMotionRecommendation={isArchive || isConverted ? undefined : applySnapshotMotionRecommendation}
+                  />
+                ) : null}
+                {!isConverted || isLibraryReplacement ? (
                   <AssetConversionOverridePanel
                     draft={conversionDraft}
                     profile={profiles.find((profile) => profile.id === selectedProfileId)}
@@ -1322,7 +1385,7 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
       <Stack spacing={2}>
         <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
           <Chip label={recommendationLabel(advisor.recommendation)} color={recommendationColor(advisor.recommendation)} />
-          <Typography variant="h2">{advisor.score}/100</Typography>
+          <Typography variant="h2">{advisor.score}%</Typography>
           <Typography color="text.secondary">{advisor.summary}</Typography>
         </Stack>
         <Grid container spacing={2}>
@@ -1422,6 +1485,13 @@ const imageCleanupOptions: SelectOption[] = [
   { value: 'hqdn3d=1.5:1.5:6:6,deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018', label: 'Anime cleanup' },
 ];
 
+const deinterlaceOptions: SelectOption[] = [
+  { value: '', label: 'Profile default' },
+  { value: 'auto', label: 'Auto detect (recommended)' },
+  { value: 'off', label: 'Never deinterlace' },
+  { value: 'force', label: 'Force deinterlace' },
+];
+
 function AssetConversionOverridePanel({
   draft,
   profile,
@@ -1507,21 +1577,13 @@ function AssetConversionOverridePanel({
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, md: 3 }}>
-            <TextField
-              select
-              label="Quality target"
-              value={draft.qualityValue ? String(draft.qualityValue) : ''}
-              onChange={(event) => onChange('qualityValue', numberOrUndefined(event.target.value))}
-              size="small"
-              fullWidth
-            >
-              <MenuItem value="">Profile default{profile?.qualityValue ? ` (${profile.qualityValue})` : ''}</MenuItem>
-              {[15, 18, 20, 22, 24, 26, 28].map((value) => (
-                <MenuItem key={value} value={String(value)}>
-                  {value} · {qualityLabel(value)}
-                </MenuItem>
-              ))}
-            </TextField>
+            <Stack spacing={0.25}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Typography variant="body2">CRF {draft.qualityValue ?? profile?.qualityValue ?? 22}</Typography>
+                {draft.qualityValue ? <Button size="small" onClick={() => onChange('qualityValue', undefined)}>Use profile</Button> : <Chip label="Profile default" size="small" />}
+              </Stack>
+              <Slider value={draft.qualityValue ?? profile?.qualityValue ?? 22} min={14} max={30} step={1} marks={[{ value: 14, label: '14' }, { value: 22, label: '22' }, { value: 30, label: '30' }]} onChange={(_, value) => onChange('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" size="small" />
+            </Stack>
           </Grid>
           <Grid size={{ xs: 12, md: 3 }}>
             <TextField
@@ -1568,6 +1630,20 @@ function AssetConversionOverridePanel({
                 <MenuItem key={option.value} value={option.value}>
                   {option.label}
                 </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <TextField
+              select
+              label="Deinterlacing"
+              value={draft.deinterlaceMode ?? ''}
+              onChange={(event) => onChange('deinterlaceMode', event.target.value as AssetConversionOverrideState['deinterlaceMode'])}
+              size="small"
+              fullWidth
+            >
+              {optionItems(deinterlaceOptions, draft.deinterlaceMode).map((option) => (
+                <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
               ))}
             </TextField>
           </Grid>
@@ -1778,6 +1854,7 @@ function ProfileAutocomplete({
   label,
   size,
   disabled,
+  allowNone = false,
 }: {
   profiles: Profile[];
   value: number;
@@ -1785,22 +1862,21 @@ function ProfileAutocomplete({
   label: string;
   size?: 'small' | 'medium';
   disabled?: boolean;
+  allowNone?: boolean;
 }) {
+  const options = [
+    ...(allowNone ? [{ id: -1, name: 'None', videoCodec: 'No video profile', search: 'none no profile' }] : []),
+    ...profiles.map((profile) => ({ id: profile.id, name: profile.name, videoCodec: profile.videoCodec, search: `${profile.name} ${profile.description} ${profile.container} ${profile.videoCodec} ${profile.audioCodec}` })),
+  ];
   return (
     <Autocomplete
-      options={profiles}
-      value={profiles.find((profile) => profile.id === value) ?? null}
+      options={options}
+      value={options.find((profile) => profile.id === value) ?? null}
       onChange={(_, profile) => onChange(profile?.id ?? 0)}
-      getOptionLabel={(profile) => `${profile.name} · ${profile.videoCodec}`}
+      getOptionLabel={(profile) => profile.id === -1 ? 'None' : `${profile.name} · ${profile.videoCodec}`}
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
-        filterByText(options, state.inputValue, (profile) => [
-          profile.name,
-          profile.description,
-          profile.container,
-          profile.videoCodec,
-          profile.audioCodec,
-        ])
+        filterByText(options, state.inputValue, (profile) => [profile.search])
       }
       disabled={disabled}
       renderInput={(params) => <TextField {...params} label={label} size={size} />}
@@ -2250,6 +2326,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
       clean[key] = text;
     }
   });
+  if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force') {
+    clean.deinterlaceMode = value.deinterlaceMode;
+  }
   if (typeof value.qualityValue === 'number' && Number.isFinite(value.qualityValue) && value.qualityValue > 0) {
     clean.qualityValue = value.qualityValue;
   }
@@ -2376,20 +2455,12 @@ function optionItems(options: SelectOption[], currentValue?: string) {
   return [...options, { value, label: `Custom (advanced): ${value}` }];
 }
 
-function qualityLabel(value: number) {
-  if (value <= 15) {
-    return 'Near lossless';
-  }
-  if (value <= 18) {
-    return 'Very high quality';
-  }
-  if (value <= 22) {
-    return 'Balanced';
-  }
-  if (value <= 24) {
-    return 'Smaller file';
-  }
-  return 'Smallest file';
+function withoutMotionFilters(value?: string) {
+  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && item !== 'fieldmatch' && item !== 'decimate').join(',');
+}
+
+function joinFilters(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).filter(Boolean).join(',');
 }
 
 function friendlyCodec(value?: string) {

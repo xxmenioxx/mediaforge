@@ -43,6 +43,46 @@ func recoverSchedulerState(db *gorm.DB, startup bool) (SchedulerRecoveryReport, 
 	}
 	report.WorkersMarkedOffline = int(result.RowsAffected)
 
+	var replacements []models.QueueJob
+	if err := db.Where("publish_mode = ? AND published_at IS NULL AND original_archived_path <> ''", PublishModeReplaceLibrary).Find(&replacements).Error; err != nil {
+		return report, err
+	}
+	for i := range replacements {
+		job := &replacements[i]
+		target := strings.TrimSpace(job.ReplacementTargetPath)
+		archive := strings.TrimSpace(job.OriginalArchivedPath)
+		if target != "" && fileHasBytes(target) && fileHasBytes(archive) {
+			if equal, compareErr := filesEqual(job.OutputPath, target); compareErr == nil && equal {
+				now := report.RanAt
+				job.PublishedPath, job.PublishedAt = target, &now
+				job.Notes = appendNote(job.Notes, "Scheduler recovery finalized an interrupted Library replacement")
+				if err := db.Save(job).Error; err != nil {
+					return report, err
+				}
+				_ = (PublisherHandler{db: db}).cleanupStagedJob(*job)
+				continue
+			}
+		}
+		if fileHasBytes(archive) && !fileHasBytes(job.MediaPath) {
+			if err := moveFile(archive, job.MediaPath); err != nil {
+				report.Warnings = append(report.Warnings, "Library replacement rollback failed for job "+strconv.FormatUint(uint64(job.ID), 10)+": "+err.Error())
+				continue
+			}
+		}
+		if target != "" {
+			temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mediaforge-job-"+strconv.FormatUint(uint64(job.ID), 10)+".tmp")
+			_ = os.Remove(temporary)
+		}
+		job.Status = JobStatusFailed
+		job.ErrorMessage = "Interrupted while replacing a Library asset; original was restored when necessary"
+		job.Notes = appendNote(job.Notes, "Scheduler recovery stopped an incomplete Library replacement")
+		job.ReplacementTargetPath, job.OriginalArchivedPath = "", ""
+		if err := db.Save(job).Error; err != nil {
+			return report, err
+		}
+		report.InterruptedJobs++
+	}
+
 	var running []models.QueueJob
 	if err := db.Where("status = ?", JobStatusRunning).Find(&running).Error; err != nil {
 		return report, err

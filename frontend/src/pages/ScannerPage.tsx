@@ -19,6 +19,7 @@ import { FormEvent, useState } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { Asset, Library, Profile, QueueJobInput } from '../api/types';
 
 export function ScannerPage() {
@@ -29,10 +30,13 @@ export function ScannerPage() {
     profileId: 0,
     priority: 5,
   });
-  const scan = useMutation({ mutationFn: api.scan });
+  const suggestion = useMutation({ mutationFn: api.suggestProfile });
+  const scan = useMutation({ mutationFn: api.scan, onSuccess: (result) => suggestion.mutate(result.path) });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
+  const availableAssets = (assets.data?.unprocessed ?? []).filter((asset) => !asset.missing);
+  const resolvedPath = availableAssets.find((asset) => asset.path === path || asset.relativePath === path)?.path ?? path;
   const createJob = useMutation({
     mutationFn: api.createQueueJob,
     onSuccess: async () => {
@@ -66,17 +70,21 @@ export function ScannerPage() {
         <Card sx={{ mb: 2 }}>
           <CardContent>
             <Stack spacing={2}>
-              <AssetAutocomplete assets={assets.data?.unprocessed ?? []} value={path} onChange={setPath} />
+              <AssetAutocomplete assets={availableAssets} value={path} onChange={setPath} />
               <Button
                 startIcon={<SearchIcon />}
                 variant="contained"
                 disabled={!path || scan.isPending}
-                onClick={() => scan.mutate({ path })}
+                onClick={() => scan.mutate({ path: resolvedPath })}
                 sx={{ alignSelf: 'flex-start' }}
               >
                 Scan
               </Button>
-              {scan.isError ? <Alert severity="warning">Scan request failed.</Alert> : null}
+              {scan.isError ? (
+                <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => scan.mutate({ path: resolvedPath, force: true })}>Retry</Button>}>
+                  Scan failed: {requestErrorMessage(scan.error)}
+                </Alert>
+              ) : null}
             </Stack>
           </CardContent>
         </Card>
@@ -100,6 +108,11 @@ export function ScannerPage() {
               </Card>
             </Grid>
             <Grid size={{ xs: 12, lg: 5 }}>
+              {suggestion.data ? (
+                <Box sx={{ mb: 2 }}>
+                  <ProfileSuggestionCard suggestion={suggestion.data} onSelect={(profile) => setJobDraft((current) => ({ ...current, profileId: profile.id }))} />
+                </Box>
+              ) : suggestion.isPending ? <Alert severity="info" sx={{ mb: 2 }}>Comparing the scan with available profiles…</Alert> : suggestion.isError ? <Alert severity="warning" sx={{ mb: 2 }}>The scan completed, but profile suggestions are unavailable.</Alert> : null}
               <Card>
                 <CardContent>
                   <Box component="form" onSubmit={submitJob}>
@@ -225,4 +238,8 @@ function filterByText<T>(items: T[], inputValue: string, getValues: (item: T) =>
   return items
     .filter((item) => getValues(item).some((value) => value.toLowerCase().includes(query)))
     .slice(0, 50);
+}
+
+function requestErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim() ? error.message : 'Unknown backend error.';
 }

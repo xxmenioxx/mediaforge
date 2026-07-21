@@ -474,8 +474,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		return
 	}
 
-	var library models.Library
-	if err := h.db.First(&library, job.LibraryID).Error; err != nil {
+	if err := h.db.First(&models.Library{}, job.LibraryID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 			return
@@ -503,7 +502,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	outputPath := plannedStagingOutputPath(h.db, job, library, effectiveProfile, paths)
+	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	inputPath := job.MediaPath
 	if job.ActiveExecutionPlanID != nil {
 		var executionPlan models.ExecutionPlan
@@ -586,8 +585,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusBadRequest, fmt.Errorf("input media is not readable: %v", err)
 	}
 
-	var library models.Library
-	if err := h.db.First(&library, job.LibraryID).Error; err != nil {
+	if err := h.db.First(&models.Library{}, job.LibraryID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return job, http.StatusNotFound, fmt.Errorf("library not found")
 		}
@@ -635,7 +633,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
-	outputPath := plannedStagingOutputPath(h.db, job, library, effectiveProfile, paths)
+	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	if !overwrite {
 		if _, err := os.Stat(outputPath); err == nil {
 			return job, http.StatusConflict, fmt.Errorf("staging output already exists; retry with overwrite enabled")
@@ -746,11 +744,11 @@ func normalizedProgress(status string, progress int) int {
 }
 
 func plannedOutputPath(mediaPath string, library models.Library, profile models.Profile) string {
-	return path.Join(library.DestinationPath, outputFileRelativePath(libraryOutputBaseRelativePath(libraryRelativeMediaPath(mediaPath, library)), profile))
+	return path.Join(library.DestinationPath, outputFileRelativePath(libraryOutputBaseRelativePath(libraryRelativeMediaPath(mediaPath, library), library), profile))
 }
 
 func plannedOutputPathForJob(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile) string {
-	relative := libraryOutputRelativePathForJob(db, job, library, libraryOutputBaseRelativePath(libraryRelativeMediaPath(job.MediaPath, library)))
+	relative := libraryOutputRelativePathForJob(db, job, library, libraryOutputBaseRelativePath(libraryRelativeMediaPath(job.MediaPath, library), library))
 	return path.Join(library.DestinationPath, outputFileRelativePath(relative, profile))
 }
 
@@ -762,20 +760,29 @@ func libraryRelativeMediaPath(mediaPath string, library models.Library) string {
 	return relative
 }
 
-func libraryOutputBaseRelativePath(relative string) string {
+func libraryOutputBaseRelativePath(relative string, library models.Library) string {
 	parts := pathSegments(relative)
 	if len(parts) <= 1 {
 		return relative
 	}
-	if isSourceBucketSegment(parts[0]) {
+	first := normalizedLibrarySegment(parts[0])
+	destinationCategory := normalizedLibrarySegment(path.Base(path.Clean(library.DestinationPath)))
+	libraryCategory := normalizedLibrarySegment(library.Name)
+	if isSourceBucketSegment(parts[0]) || first == destinationCategory || first == libraryCategory {
 		return path.Join(parts[1:]...)
 	}
 	return relative
 }
 
+func normalizedLibrarySegment(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("_", "-", " ", "-").Replace(value)
+	return strings.Trim(value, "-")
+}
+
 func isSourceBucketSegment(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "movie", "movies", "series", "anime", "documentary", "documentaries", "concert", "concerts", "music-video", "music-videos":
+	case "movie", "movies", "series", "anime", "anime-movie", "anime-movies", "documentary", "documentaries", "concert", "concerts", "music-video", "music-videos":
 		return true
 	default:
 		return false
@@ -1108,16 +1115,9 @@ func (h WorkerHandler) pathSettings() (pathSettings, error) {
 	}, nil
 }
 
-func plannedStagingOutputPath(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile, paths pathSettings) string {
-	relative := relativeMediaPath(job.MediaPath, paths.rawRoot)
-	if relative == path.Base(job.MediaPath) && library.SourcePath != "" {
-		relative = relativeMediaPath(job.MediaPath, library.SourcePath)
-	}
-
-	relative = libraryOutputBaseRelativePath(relative)
-	relative = libraryOutputRelativePathForJob(db, job, library, relative)
-	base := outputFileRelativePath(relative, profile)
-	return filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), filepath.FromSlash(base))
+func plannedStagingOutputPath(job models.QueueJob, profile models.Profile, paths pathSettings) string {
+	base := outputFileRelativePath(filepath.Base(job.MediaPath), profile)
+	return filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), base)
 }
 
 func libraryEpisodeNamingEnabled(library models.Library) bool {

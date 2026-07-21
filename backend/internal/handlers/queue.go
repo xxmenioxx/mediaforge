@@ -19,6 +19,7 @@ type QueueHandler struct {
 
 type QueueJobInput struct {
 	MediaPath       string `json:"mediaPath" binding:"required"`
+	PublishMode     string `json:"publishMode"`
 	BatchID         string `json:"batchId"`
 	BatchName       string `json:"batchName"`
 	LibraryID       uint   `json:"libraryId" binding:"required"`
@@ -72,6 +73,25 @@ func (h QueueHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
 		return
 	}
+	publishMode := input.PublishMode
+	if publishMode == "" {
+		publishMode = PublishModeStandard
+	}
+	if publishMode != PublishModeStandard && publishMode != PublishModeReplaceLibrary {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid publish mode"})
+		return
+	}
+	if publishMode == PublishModeReplaceLibrary {
+		var library models.Library
+		if err := h.db.First(&library, input.LibraryID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "library not found"})
+			return
+		}
+		if !pathIsInside(input.MediaPath, library.DestinationPath) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "library replacement source must be inside the selected library destination"})
+			return
+		}
+	}
 
 	priority := input.Priority
 	if priority == 0 {
@@ -80,6 +100,7 @@ func (h QueueHandler) Create(c *gin.Context) {
 
 	job := models.QueueJob{
 		MediaPath:       input.MediaPath,
+		PublishMode:     publishMode,
 		BatchID:         input.BatchID,
 		BatchName:       input.BatchName,
 		LibraryID:       input.LibraryID,
@@ -169,6 +190,17 @@ func (h QueueHandler) Update(c *gin.Context) {
 	}
 	if input.LibraryID != nil {
 		job.LibraryID = *input.LibraryID
+	}
+	if job.PublishMode == PublishModeReplaceLibrary && (mediaPathChanged || input.LibraryID != nil) {
+		var library models.Library
+		if err := h.db.First(&library, job.LibraryID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "library not found"})
+			return
+		}
+		if !pathIsInside(job.MediaPath, library.DestinationPath) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "library replacement source must remain inside the selected library destination"})
+			return
+		}
 	}
 	if input.ProfileID != nil {
 		if err := h.captureProfile(&job, *input.ProfileID, "queue_profile_update"); err != nil {

@@ -768,10 +768,11 @@ Future queue metadata:
 
 ---
 
-# Future Browser And Push Notifications
+# Future Job Notifications
 
-MediaForge should add optional browser or push notifications for long-running
-workflows so users do not need to keep the Queue or Workers page open.
+MediaForge should add in-app, email, browser, or push notifications for
+long-running workflows so users do not need to keep the Queue or Workers page
+open.
 
 Notifications should be opt-in and user-controlled.
 
@@ -788,14 +789,46 @@ The first version should support browser notifications for:
 The notification system should include:
 
 * A Settings section for enabling notifications
+* An in-app notification center with read and unread state
 * Browser permission request flow
 * Per-event toggles
 * Quiet hours or do-not-disturb window
-* In-app notification center as a fallback when browser notifications are disabled
+* Optional SMTP configuration with TLS, recipients, and a test-email action
+* Email delivery that is idempotent across retries and backend restarts
+* Batch summaries to avoid one email per asset when configured
 * Links from notifications to the relevant Queue job, Worker view, Validation result, or Logs file
+* A configured public/base URL before external links are included in email
+
+SMTP credentials must never be returned by the API or written to application
+logs. Email notifications must be disabled by default and configurable per
+event.
 
 Later versions can add push notifications through a self-hosted notification
 gateway, mobile app integration, ntfy, Gotify, Apprise, or webhook providers.
+
+---
+
+# Future Global Conversion Activity Widget
+
+MediaForge should show a persistent, minimizable activity widget in the main
+application layout, similar to the transfer panels used by Google Drive or
+MEGA. It should remain available while navigating between pages and must not
+require the Queue or Workers page to stay open.
+
+For every active conversion it should show:
+
+* Asset and job name
+* Assigned worker
+* Current pipeline stage
+* Progress, elapsed time, and ETA when available
+* Effective encoder
+* Waiting, completed, failed, or canceled state
+* Links to job details, worker status, and logs
+
+The widget should restore active jobs after a browser reload, receive live
+updates through server events with polling as a fallback, and briefly retain
+terminal jobs until the user dismisses them. Minimizing or dismissing the UI
+must never cancel the underlying job.
 
 ---
 

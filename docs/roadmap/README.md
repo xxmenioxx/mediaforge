@@ -19,6 +19,8 @@ timeline
     Experiencia : Pipeline inspector
                 : Profile Lab ampliado
                 : Multimedia Library
+                : Widget global de conversiones
+                : Notificaciones internas y por correo
     Inteligencia opcional : Recomendaciones explicables
                            : Subtítulos asistidos por IA
                            : Perfiles comunitarios

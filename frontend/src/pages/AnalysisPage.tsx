@@ -23,12 +23,14 @@ import {
 import SaveIcon from '@mui/icons-material/Save';
 import SearchIcon from '@mui/icons-material/Search';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { AppSetting, Asset, ScanResult } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { PageHeader } from '../components/PageHeader';
 
 type AnalysisRecord = {
@@ -46,6 +48,8 @@ export function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const records = useMemo(() => getAnalysisRecords(settings.data), [settings.data]);
   const rawAssets = assets.data?.unprocessed ?? [];
   const queuedAssetPath = searchParams.get('asset') ?? '';
@@ -54,6 +58,10 @@ export function AnalysisPage() {
   const [decision, setDecision] = useState('needs-profile-review');
   const [notes, setNotes] = useState('');
   const [currentScan, setCurrentScan] = useState<ScanResult | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState(0);
+  const [selectedLibraryId, setSelectedLibraryId] = useState(0);
+  const [priority, setPriority] = useState(5);
+  const [analysisSeconds, setAnalysisSeconds] = useState<10 | 20>(20);
   const [selectedRecord, setSelectedRecord] = useState<AnalysisRecord | null>(null);
   const [recordSearch, setRecordSearch] = useState('');
   const [recordsPerPage, setRecordsPerPage] = useState(10);
@@ -67,9 +75,18 @@ export function AnalysisPage() {
   const totalRecordPages = Math.max(1, Math.ceil(filteredRecords.length / recordsPerPage));
   const pagedRecords = filteredRecords.slice((recordPage - 1) * recordsPerPage, recordPage * recordsPerPage);
 
+  const suggestion = useMutation({
+    mutationFn: api.suggestProfile,
+    onSuccess: (result) => {
+      if (result.suggestedProfile) setSelectedProfileId(result.suggestedProfile.id);
+    },
+  });
   const scanAsset = useMutation({
     mutationFn: api.scan,
-    onSuccess: (scan) => setCurrentScan(scan),
+    onSuccess: (scan) => {
+      setCurrentScan(scan);
+      suggestion.mutate(scan.path);
+    },
   });
 
   const updateSetting = useMutation({
@@ -77,6 +94,11 @@ export function AnalysisPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
+  });
+
+  const createJob = useMutation({
+    mutationFn: api.createQueueJob,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
   });
 
   const backfillAsIsReports = useMutation({
@@ -107,11 +129,11 @@ export function AnalysisPage() {
     if (searchParams.get('autorun') !== '1' || !assetPath || scanAsset.isPending || currentScan?.path === assetPath) {
       return;
     }
-    scanAsset.mutate({ path: assetPath, force: false });
+    scanAsset.mutate({ path: assetPath, force: true, analysisSeconds });
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('autorun');
     setSearchParams(nextParams, { replace: true });
-  }, [assetPath, currentScan?.path, scanAsset, searchParams, setSearchParams]);
+  }, [analysisSeconds, assetPath, currentScan?.path, scanAsset, searchParams, setSearchParams]);
 
   useEffect(() => {
     setRecordPage(1);
@@ -145,6 +167,7 @@ export function AnalysisPage() {
     setDecision(record.decision);
     setNotes(record.notes);
     setCurrentScan(record.scan);
+    suggestion.mutate(record.assetPath);
     setSelectedRecord(null);
   }
 
@@ -153,7 +176,27 @@ export function AnalysisPage() {
     setDecision(record.decision);
     setNotes(record.notes);
     setSelectedRecord(null);
-    scanAsset.mutate({ path: record.assetPath, force: true });
+    scanAsset.mutate({ path: record.assetPath, force: true, analysisSeconds });
+  }
+
+  async function applyMotionRecommendation(status: ScanResult['interlaceAnalysis']['status']) {
+    if (!currentScan) throw new Error('Analyze the asset first.');
+    if (status === 'mixed' || status === 'unknown' || !status) {
+      await api.updateAssetReview({ path: currentScan.path, requiresReview: true, source: 'analysis-motion', reason: `Motion analysis result requires review: ${status ?? 'unknown'}.`, tags: ['motion-review'] });
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+      return 'Asset marked for motion review; no filter was applied.';
+    }
+    const current = selectedAsset?.conversion ?? {};
+    const patch = status === 'progressive'
+      ? { deinterlaceMode: 'off' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
+      : status === 'interlaced'
+        ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
+        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters('fieldmatch,decimate', withoutMotionFilters(current.videoFilters)) };
+    await api.updateAssetConversion({ path: currentScan.path, ...current, ...patch });
+    await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    if (status === 'progressive') return 'Saved: deinterlacing disabled for this asset.';
+    if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
+    return 'Saved: fieldmatch and decimate will run before encoding.';
   }
 
   return (
@@ -168,7 +211,7 @@ export function AnalysisPage() {
           <CardContent>
             <Stack spacing={2}>
               <Grid container spacing={2} alignItems="stretch">
-                <Grid size={{ xs: 12, md: 6 }}>
+                <Grid size={{ xs: 12, md: 5 }}>
                   <AssetAutocomplete assets={assetOptions} value={selectedAsset ?? assetOptionFromPath(assetPath)} onChange={(asset) => setAssetPath(asset?.path ?? '')} />
                 </Grid>
                 <Grid size={{ xs: 12, md: 3 }}>
@@ -181,12 +224,18 @@ export function AnalysisPage() {
                     <MenuItem value="reject-source">Reject source</MenuItem>
                   </TextField>
                 </Grid>
-                <Grid size={{ xs: 12, md: 3 }}>
+                <Grid size={{ xs: 12, md: 2 }}>
+                  <TextField label="Motion sample" value={analysisSeconds} onChange={(event) => setAnalysisSeconds(Number(event.target.value) as 10 | 20)} select fullWidth>
+                    <MenuItem value={10}>10 seconds</MenuItem>
+                    <MenuItem value={20}>20 seconds</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 2 }}>
                   <Button
                     startIcon={<SearchIcon />}
                     variant="contained"
                     disabled={!assetPath || scanAsset.isPending}
-                    onClick={() => scanAsset.mutate({ path: assetPath, force: false })}
+                    onClick={() => scanAsset.mutate({ path: assetPath, force: true, analysisSeconds })}
                     fullWidth
                     sx={{ height: '100%' }}
                   >
@@ -205,7 +254,11 @@ export function AnalysisPage() {
                   />
                 </Grid>
               </Grid>
-              {scanAsset.isError ? <Alert severity="warning">Could not analyze this asset.</Alert> : null}
+              {scanAsset.isError ? (
+                <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => scanAsset.mutate({ path: assetPath, force: true, analysisSeconds })}>Retry</Button>}>
+                  Analysis failed: {requestErrorMessage(scanAsset.error)}
+                </Alert>
+              ) : null}
               {backfillAsIsReports.data?.imported ? (
                 <Alert severity="success">
                   Imported {backfillAsIsReports.data.imported} historical AS-IS report
@@ -220,6 +273,32 @@ export function AnalysisPage() {
                     <Chip label={decision} color="warning" size="small" />
                   </Stack>
                   <MediaSnapshotDetails scan={currentScan} />
+                  {suggestion.data ? <ProfileSuggestionCard suggestion={suggestion.data} onSelect={(profile) => setSelectedProfileId(profile.id)} onApplyMotionRecommendation={applyMotionRecommendation} /> : suggestion.isPending ? <Alert severity="info">Comparing this analysis with available profiles…</Alert> : suggestion.isError ? <Alert severity="warning">Profile suggestions are unavailable for this analysis.</Alert> : null}
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Stack spacing={1.5}>
+                        <Typography variant="h3">Queue conversion</Typography>
+                        <Grid container spacing={1.5}>
+                          <Grid size={{ xs: 12, md: 5 }}>
+                            <TextField label="Profile" value={selectedProfileId || ''} onChange={(event) => setSelectedProfileId(Number(event.target.value))} select fullWidth>
+                              {(profiles.data ?? []).map((profile) => <MenuItem key={profile.id} value={profile.id}>{profile.name} · CRF {profile.qualityValue}</MenuItem>)}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, md: 4 }}>
+                            <TextField label="Library" value={selectedLibraryId || ''} onChange={(event) => setSelectedLibraryId(Number(event.target.value))} select fullWidth>
+                              {(libraries.data ?? []).map((library) => <MenuItem key={library.id} value={library.id}>{library.name}</MenuItem>)}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, md: 3 }}>
+                            <TextField label="Priority" type="number" value={priority} onChange={(event) => setPriority(Number(event.target.value))} inputProps={{ min: 1, max: 10 }} fullWidth />
+                          </Grid>
+                        </Grid>
+                        <Button startIcon={<PlaylistAddIcon />} variant="contained" disabled={createJob.isPending || !selectedProfileId || !selectedLibraryId} onClick={() => createJob.mutate({ mediaPath: currentScan.path, profileId: selectedProfileId, libraryId: selectedLibraryId, priority, notes: `Created from Analysis scan ${currentScan.id}` })} sx={{ alignSelf: 'flex-start' }}>Queue conversion</Button>
+                        {createJob.isSuccess ? <Alert severity="success">Conversion queued for manual processing.</Alert> : null}
+                        {createJob.isError ? <Alert severity="warning">Could not queue conversion: {createJob.error instanceof Error ? createJob.error.message : 'unknown error'}</Alert> : null}
+                      </Stack>
+                    </CardContent>
+                  </Card>
                   <Button startIcon={<SaveIcon />} variant="contained" disabled={updateSetting.isPending} onClick={saveRecord}>
                     Save Analysis Record
                   </Button>
@@ -340,6 +419,18 @@ export function AnalysisPage() {
       />
     </>
   );
+}
+
+function requestErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim() ? error.message : 'Unknown backend error.';
+}
+
+function withoutMotionFilters(value?: string) {
+  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && item !== 'fieldmatch' && item !== 'decimate').join(',');
+}
+
+function joinFilters(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).filter(Boolean).join(',');
 }
 
 function AnalysisRecordDialog({

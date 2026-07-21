@@ -13,6 +13,7 @@ import type {
   AssetSyncResult,
   AdvisorRequest,
   AdvisorResponse,
+  ProfileSuggestion,
   ClaimJobInput,
   ExecuteJobInput,
   ExecutionPlan,
@@ -104,6 +105,11 @@ export const api = {
     request<AdvisorResponse>('/api/advisor/evaluate', {
       method: 'POST',
       body: JSON.stringify(advisorRequest),
+    }),
+  suggestProfile: (mediaPath: string) =>
+    request<ProfileSuggestion>('/api/advisor/suggest', {
+      method: 'POST',
+      body: JSON.stringify({ mediaPath }),
     }),
   createLibrary: (library: LibraryInput) =>
     request<Library>('/api/libraries', {
@@ -210,10 +216,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  scan: ({ path, force = false }: { path: string; force?: boolean }) =>
+  scan: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
     request<ScanResult>('/api/scan', {
       method: 'POST',
-      body: JSON.stringify({ path, force }),
+      body: JSON.stringify({ path, force, analysisSeconds }),
   }),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
   compatibleAssetPreviewUrl: ({

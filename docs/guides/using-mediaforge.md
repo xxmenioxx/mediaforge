@@ -7,7 +7,8 @@ Esta guía describe el recorrido recomendado desde una instalación nueva hasta 
 MediaForge controla tres tipos de ubicación:
 
 - **Raw**: archivos originales que entran al flujo.
-- **Staging/work**: outputs temporales y workspaces de conversión.
+- **Staging/work**: workspaces temporales aislados por job. Cada workspace copia
+  sólo el asset y guarda el output sin replicar el árbol completo de la fuente.
 - **Library/published**: archivos finales aceptados por Jellyfin, Plex o Emby.
 
 También conserva:
@@ -15,6 +16,35 @@ También conserva:
 - **Originals archive**: originales archivados después de publicar, según la política configurada.
 - **Reports**: snapshots AS-IS, resultados, logs y diagnósticos.
 - **Config**: SQLite y backups.
+
+### Convertir un asset no verificado que ya vive en Library
+
+Los assets `unverified` pueden encolarse individualmente con el modo **Library
+replacement**. MediaForge nunca ejecuta FFmpeg directamente sobre el archivo de
+Library:
+
+1. Copia únicamente el asset al workspace NVMe del job.
+2. Convierte y valida el resultado en staging.
+3. Prepara una copia temporal junto al destino y verifica su contenido.
+4. Mueve el original a
+   `originals_archive/library-replacements/library-ID/...`.
+5. Renombra atómicamente el temporal a la ruta original.
+6. Registra procedencia y limpia el workspace.
+
+La UI exige confirmación antes de encolar. Si el reemplazo falla, se restaura el
+original; si MediaForge reinicia durante la publicación, Scheduler Recovery
+finaliza un reemplazo ya aplicado o restaura el original cuando quedó incompleto.
+
+Advisor usa una política conservadora para Library: muestra `0%` y no recomienda
+otra codificación de video por defecto, porque el asset puede haber sido
+comprimido previamente. `hevc`, `h265`, `x265_10bit`, `libx265` y los encoders
+HEVC de hardware se comparan como la misma familia; cambiar entre esas etiquetas
+no es por sí solo una razón para recodificar. Si sólo cambian audio, subtítulos,
+metadata o tracks, conviene usar un perfil que copie video.
+
+Los assets Unprocessed y Library ofrecen **None** en el selector de perfil. Con
+None se puede inspeccionar el asset, pero Advisor y Queue permanecen desactivados
+hasta seleccionar explícitamente un perfil de video.
 
 ```mermaid
 flowchart LR

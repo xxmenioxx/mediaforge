@@ -15,7 +15,6 @@ import FolderIcon from '@mui/icons-material/Folder';
 import VideoLibraryIcon from '@mui/icons-material/VideoLibrary';
 import TuneIcon from '@mui/icons-material/Tune';
 import GraphicEqIcon from '@mui/icons-material/GraphicEq';
-import SearchIcon from '@mui/icons-material/Search';
 import QueueIcon from '@mui/icons-material/Queue';
 import MemoryIcon from '@mui/icons-material/Memory';
 import HistoryIcon from '@mui/icons-material/History';
@@ -62,7 +61,6 @@ const navSections: NavSection[] = [
   {
     label: 'Pipeline',
     items: [
-      { label: 'Scanner', path: '/scanner', icon: <SearchIcon /> },
       { label: 'Queue', path: '/queue', icon: <QueueIcon /> },
       { label: 'Workers', path: '/workers', icon: <MemoryIcon /> },
       { label: 'Validation', path: '/validation', icon: <FactCheckIcon /> },

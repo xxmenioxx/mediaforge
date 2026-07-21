@@ -76,6 +76,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/analysis/backfill-as-is", handlers.BackfillAnalysisFromAsIsReports(db))
 		api.GET("/paths/browse", paths.Browse)
 		api.POST("/advisor/evaluate", advisor.Evaluate)
+		api.POST("/advisor/suggest", advisor.Suggest)
 		api.GET("/profiles", profiles.List)
 		api.POST("/profiles", profiles.Create)
 		api.POST("/profiles/:id", profiles.Update)

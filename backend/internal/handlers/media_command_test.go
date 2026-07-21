@@ -31,6 +31,7 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 			EQBands:        map[string]float64{"12000": -1},
 		},
 		Streams: MediaStreamInventory{
+			ChapterCount: 1,
 			Audio: []MediaAudioStream{
 				{Index: 1, Codec: "ac3", Channels: 1, ChannelLayout: "mono", Default: true},
 			},
@@ -75,6 +76,68 @@ func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	assertContains(t, command, "-c:v libx265")
 	assertContains(t, command, "-pix_fmt yuv420p10le")
 	assertContains(t, command, "-crf 20")
+}
+
+func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "deinterlaceMode": "auto"},
+		},
+		Interlace: InterlaceAnalysis{Status: "interlaced", FieldOrder: "tt"},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-vf bwdif=mode=send_frame:parity=auto:deint=all")
+}
+
+func TestFFmpegCommandBuilderDoesNotAutomaticallyFilterTelecine(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"},
+		},
+		Interlace: InterlaceAnalysis{Status: "telecine_suspected"},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "bwdif")
+}
+
+func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/plain.mkv", OutputPath: "/media/staging/plain.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy", PreserveSubtitles: true, PreserveChapters: true,
+			WorkerConfig: models.JSONMap{"preferSrtSubtitles": true},
+		},
+		Streams: MediaStreamInventory{},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-c:s")
+	assertNotContains(t, command, "-sn")
+	assertNotContains(t, command, "-map_chapters")
+}
+
+func TestFFmpegCommandBuilderDisablesOnlyExistingUnwantedFeatures(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "x265_10bit", AudioCodec: "copy"},
+		Streams: MediaStreamInventory{
+			Subtitle: []MediaStream{{Index: 2, Codec: "dvd_subtitle"}}, ChapterCount: 4,
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-sn")
+	assertContains(t, command, "-map_chapters -1")
 }
 
 func TestFFmpegCommandBuilderUsesSelectedStreamIndexes(t *testing.T) {
@@ -163,6 +226,7 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 			WorkerConfig: models.JSONMap{
 				"videoEncoder":          "libx265",
 				"addAacStereoTrack":     true,
+				"aacStereoBitrateKbps":  224,
 				"aacStereoDefault":      false,
 				"preserveOriginalAudio": true,
 				"preferSrtSubtitles":    true,
@@ -182,10 +246,60 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 	assertContains(t, command, "-c:v libx265")
 	assertContains(t, command, "-crf 21")
 	assertContains(t, command, "-c:a:1 aac")
+	assertContains(t, command, "-b:a:1 224k")
 	assertContains(t, command, "-ac:a:1 2")
 	assertContains(t, command, "-disposition:a:0 default")
 	assertContains(t, command, "-disposition:a:1 0")
-	assertContains(t, command, "-c:s srt")
+	assertContains(t, command, "-c:s:0 srt")
+}
+
+func TestFFmpegCommandBuilderUsesDefaultAACCompatibilityBitrate(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "copy", AudioCodec: "copy", WorkerConfig: models.JSONMap{"addAacStereoTrack": true}},
+		Streams:        MediaStreamInventory{Audio: []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-b:a:1 192k")
+}
+
+func TestFFmpegCommandBuilderCopiesBitmapSubtitlesWhenSRTIsPreferred(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy", PreserveSubtitles: true,
+			WorkerConfig: models.JSONMap{"preferSrtSubtitles": true},
+		},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 4, Codec: "dvd_subtitle"},
+			{Index: 5, Codec: "hdmv_pgs_subtitle"},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-c:s")
+}
+
+func TestFFmpegCommandBuilderConvertsOnlyTextSubtitlesToSRT(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy", PreserveSubtitles: true,
+			WorkerConfig: models.JSONMap{"preferSrtSubtitles": true},
+		},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 4, Codec: "dvd_subtitle"},
+			{Index: 5, Codec: "ass"},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-c:s:0 srt")
+	assertContains(t, command, "-c:s:1 srt")
 }
 
 func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {
