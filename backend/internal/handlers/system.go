@@ -17,7 +17,7 @@ type SoftwareComponent struct {
 
 func Versions(c *gin.Context) {
 	components := []SoftwareComponent{
-		{Name: "MediaForge API", Version: "0.1.7", Source: "backend"},
+		{Name: "MediaForge API", Version: "0.1.8", Source: "backend"},
 		{Name: "Go", Version: runtime.Version(), Source: "runtime"},
 		{Name: "FFmpeg", Version: commandVersion("ffmpeg", "-version"), Source: "container"},
 		{Name: "FFprobe", Version: commandVersion("ffprobe", "-version"), Source: "container"},

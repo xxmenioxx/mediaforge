@@ -92,7 +92,7 @@ func (h AdvisorHandler) Evaluate(c *gin.Context) {
 		return
 	}
 
-	response := evaluateConversion(scan, profile, h.isLibraryAsset(request.MediaPath))
+	response := evaluateConversion(scan, profile, h.hasMediaForgeConversion(request.MediaPath))
 	c.JSON(http.StatusOK, response)
 }
 
@@ -254,17 +254,13 @@ func abs(value int) int {
 	return value
 }
 
-func (h AdvisorHandler) isLibraryAsset(mediaPath string) bool {
-	var libraries []models.Library
-	if err := h.db.Find(&libraries).Error; err != nil {
-		return false
-	}
-	for _, library := range libraries {
-		if pathIsInside(mediaPath, library.DestinationPath) {
-			return true
-		}
-	}
-	return false
+func (h AdvisorHandler) hasMediaForgeConversion(mediaPath string) bool {
+	clean := filepath.Clean(strings.TrimSpace(mediaPath))
+	var count int64
+	err := h.db.Model(&models.QueueJob{}).
+		Where("publication_retired_at IS NULL AND ((published_path = ? AND published_path <> '') OR (published_path = '' AND status = ? AND output_path = ?))", clean, JobStatusCompleted, clean).
+		Count(&count).Error
+	return err == nil && count > 0
 }
 
 func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
@@ -298,7 +294,7 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 	return scan, nil
 }
 
-func evaluateConversion(scan models.ScanResult, profile models.Profile, libraryAsset bool) AdvisorResponse {
+func evaluateConversion(scan models.ScanResult, profile models.Profile, previouslyConverted bool) AdvisorResponse {
 	score := 50
 	reasons := []string{}
 	warnings := []string{}
@@ -353,10 +349,12 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, libraryA
 	if scan.AudioTracks > 1 && strings.ToLower(profile.AudioCodec) != "copy" {
 		warnings = append(warnings, "Multiple audio tracks are present; verify the profile keeps the tracks you care about.")
 	}
-	if libraryAsset {
-		score = 0
-		reasons = append([]string{"This asset already lives in Library. MediaForge assumes it may have been converted previously and does not recommend another video encode without a verified size, compatibility, or quality objective."}, reasons...)
-		warnings = append(warnings, "Re-encoding an already compressed Library asset can reduce quality. Prefer video copy when only audio, subtitles, metadata, or track layout needs to change.")
+	if previouslyConverted {
+		reasons = append([]string{"MediaForge publication history confirms that this asset was converted previously. The recommendation still evaluates its current codec, bitrate, preservation needs, and selected target profile."}, reasons...)
+		if targetCodec != "copy" {
+			score -= 15
+			warnings = append(warnings, "This would add another lossy video generation. Conversion should proceed only when the analysis shows a measurable compatibility, size, or correction advantage.")
+		}
 	}
 
 	score = clamp(score, 0, 100)

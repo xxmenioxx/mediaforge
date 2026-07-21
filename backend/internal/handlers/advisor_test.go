@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestCodecMatchesTreatsHEVCEncoderLabelsAsSameFamily(t *testing.T) {
@@ -17,17 +21,60 @@ func TestCodecMatchesTreatsHEVCEncoderLabelsAsSameFamily(t *testing.T) {
 	}
 }
 
-func TestLibraryAssetAdvisorIsConservative(t *testing.T) {
+func TestAdvisorProvenanceUsesMediaForgeJobAndIgnoresRetiredPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:advisor-provenance?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/library/movie.mkv"
+	job := models.QueueJob{MediaPath: "/raw/movie.mkv", LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: path}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewAdvisorHandler(db)
+	if !handler.hasMediaForgeConversion(path) {
+		t.Fatal("published MediaForge job was not recognized")
+	}
+	now := time.Now()
+	job.PublicationRetiredAt = &now
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if handler.hasMediaForgeConversion(path) {
+		t.Fatal("retired publication must not count as current conversion provenance")
+	}
+}
+
+func TestPreviouslyConvertedAssetIsRejectedOnlyWhenAnalysisShowsNoAdvantage(t *testing.T) {
 	response := evaluateConversion(
 		models.ScanResult{VideoCodec: "hevc", Bitrate: 20_000_000, Width: 3840, Height: 2160},
 		models.Profile{VideoCodec: "x265_10bit", CodecFamily: "hevc", AudioCodec: "copy"},
 		true,
 	)
-	if response.Score != 0 || response.Recommendation != "not_recommended" {
-		t.Fatalf("unexpected library recommendation: score=%d recommendation=%s", response.Score, response.Recommendation)
+	if response.Score <= 0 || response.Recommendation != "not_recommended" {
+		t.Fatalf("unexpected prior-conversion recommendation: score=%d recommendation=%s", response.Score, response.Recommendation)
 	}
 	if len(response.Reasons) == 0 || len(response.Warnings) == 0 {
 		t.Fatal("library recommendation must explain generational quality risk")
+	}
+}
+
+func TestUnverifiedLibraryAssetCanBeRecommendedFromTechnicalEvidence(t *testing.T) {
+	response := evaluateConversion(
+		models.ScanResult{VideoCodec: "h264", Bitrate: 12_000_000, Width: 1920, Height: 1080},
+		models.Profile{VideoCodec: "x265_10bit", CodecFamily: "hevc", AudioCodec: "copy"},
+		false,
+	)
+	if response.Recommendation != "worth_it" || response.Score < 70 {
+		t.Fatalf("unverified Library asset should be judged on evidence: score=%d recommendation=%s", response.Score, response.Recommendation)
+	}
+	for _, reason := range response.Reasons {
+		if strings.Contains(reason, "already lives in Library") {
+			t.Fatalf("location-only assumption remains in reasons: %q", reason)
+		}
 	}
 }
 
