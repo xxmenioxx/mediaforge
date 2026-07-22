@@ -592,8 +592,10 @@ func resolvedVideoEncoder(profile models.Profile) string {
 		return ffmpegCodecName(profile.VideoCodec)
 	}
 	encoder := ffmpegCodecName(selected)
-	if isHardwareVideoEncoder(encoder) && profileWorkerBool(profile, "useHardwareIfAvailable", true) && !ffmpegEncoderAvailable(encoder) {
-		return "libx265"
+	if isHardwareVideoEncoder(encoder) {
+		if !profileWorkerBool(profile, "useHardwareIfAvailable", false) || !ffmpegEncoderAvailable(encoder) {
+			return "libx265"
+		}
 	}
 	return encoder
 }
@@ -617,7 +619,7 @@ func videoWorkerArgs(profile models.Profile) []string {
 	} else if preset := workerStringValue(profile.WorkerConfig["preset"]); preset != "" && preset != "profile-lab" {
 		args = append(args, "-preset", preset)
 	}
-	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && encoder != "hevc_videotoolbox" {
+	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && pixFmt != "auto" && encoder != "hevc_videotoolbox" {
 		args = append(args, "-pix_fmt", pixFmt)
 	}
 	if params := workerStringValue(profile.WorkerConfig["x265Params"]); params != "" && resolvedVideoEncoder(profile) == "libx265" {

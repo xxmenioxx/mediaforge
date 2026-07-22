@@ -242,6 +242,10 @@ export const api = {
     pixFmt = '',
     videoFilters = '',
     x265Params = '',
+    videoEncoder = 'auto',
+    useHardwareIfAvailable = false,
+    globalQuality = 25,
+    mode = 'quick',
   }: {
     path: string;
     profileId?: number;
@@ -253,20 +257,26 @@ export const api = {
     pixFmt?: string;
     videoFilters?: string;
     x265Params?: string;
+    videoEncoder?: string;
+    useHardwareIfAvailable?: boolean;
+    globalQuality?: number;
+    mode?: 'quick' | 'quality';
   }) =>
-    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}`,
+    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&mode=${mode}`,
   audioPreviewUrl: ({
     path,
     profileKey = '',
     start = '00:00:00',
     seconds = 20,
     filters = '',
+    compatibility = false,
   }: {
     path: string;
     profileKey?: string;
     start?: string;
     seconds?: number;
     filters?: string;
+    compatibility?: boolean;
   }) =>
-    `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}`,
+    `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}&compatibility=${compatibility}`,
 };

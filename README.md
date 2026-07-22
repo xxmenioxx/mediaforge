@@ -82,7 +82,7 @@ mkdir -p data/config data/raw data/library data/staging data/originals_archive d
 4. Edita `.env` y utiliza paths absolutos. Ejemplo para macOS o Linux:
 
 ```dotenv
-MVFORGE_VERSION=0.2.5
+MVFORGE_VERSION=0.2.6
 MVFORGE_PORT=8090
 TZ=America/Mexico_City
 

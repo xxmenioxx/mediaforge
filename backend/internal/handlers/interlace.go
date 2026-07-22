@@ -130,6 +130,10 @@ func effectiveDeinterlaceFilter(profileMode string, analysis InterlaceAnalysis) 
 	switch strings.ToLower(strings.TrimSpace(profileMode)) {
 	case "off", "disabled", "none":
 		return ""
+	case "ivtc", "ivtc_bff", "inverse_telecine":
+		// IVTC is carried in videoFilters so it can preserve the selected
+		// field order and must not be prefixed with ordinary deinterlacing.
+		return ""
 	case "force", "forced", "on":
 		return "bwdif=mode=send_frame:parity=auto:deint=all"
 	default:

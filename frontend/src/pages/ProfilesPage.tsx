@@ -88,6 +88,7 @@ const encoderPresetOptions = [
 ] as const;
 
 const pixelFormatOptions = [
+  { value: 'auto', label: 'Auto / codec default', description: 'Lets MVForge choose a compatible pixel format from the codec and encoder.' },
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265, anime, and DVD sources. Helps reduce banding.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or simple compatibility-focused outputs.' },
 ] as const;
@@ -159,11 +160,14 @@ export function ProfilesPage() {
   }
 
   function updateWorkerConfig(key: string, value: unknown) {
+    const disablingHardware = key === 'useHardwareIfAvailable' && value === false;
     const next = {
       ...form,
+      ...(key === 'pixFmt' ? { videoCodec: displayVideoCodec(form.videoCodec) } : {}),
       workerConfig: {
         ...form.workerConfig,
         [key]: value,
+        ...(disablingHardware ? { videoEncoder: 'libx265', preferredEncoder: 'software' } : {}),
       },
     };
     setProfileForm(['videoEncoder', 'useHardwareIfAvailable', 'pixFmt'].includes(key) ? synchronizeAuthoritativeContract(next) : next);
@@ -654,7 +658,7 @@ export function ProfilesPage() {
                             fullWidth
                           >
                             {videoEncoderOptions.map((option) => (
-                              <MenuItem key={option.value} value={option.value}>
+                              <MenuItem key={option.value} value={option.value} disabled={isHardwareEncoderOption(option.value) && !workerConfigBool(form, 'useHardwareIfAvailable')}>
                                 {option.label}
                               </MenuItem>
                             ))}
@@ -666,7 +670,7 @@ export function ProfilesPage() {
                             value={workerConfigString(form, 'preferredEncoder', 'software')}
                             onChange={(event) => updateWorkerConfig('preferredEncoder', event.target.value)}
                             helperText="Hardware is faster for bulk queues; software x265 is better for careful archival compression."
-                            disabled={form.videoCodec === 'copy'}
+                            disabled={form.videoCodec === 'copy' || !workerConfigBool(form, 'useHardwareIfAvailable')}
                             select
                             fullWidth
                           >
@@ -680,14 +684,14 @@ export function ProfilesPage() {
                             label="Hardware quality"
                             value={workerConfigNumber(form, 'globalQuality', form.qualityValue || 25)}
                             onChange={(event) => updateWorkerConfig('globalQuality', Number(event.target.value))}
-                            helperText="Used by QSV, NVENC, and AMF. VideoToolbox uses the bitrate controls below."
+                            helperText={hardwareQualityHelper(form.qualityValue)}
                             type="number"
                             inputProps={{ min: 15, max: 35 }}
-                            disabled={form.videoCodec === 'copy' || workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
+                            disabled={form.videoCodec === 'copy' || !workerConfigBool(form, 'useHardwareIfAvailable') || workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
                             fullWidth
                           />
                         </Grid>
-                        {workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
+                        {workerConfigBool(form, 'useHardwareIfAvailable') && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
@@ -815,16 +819,14 @@ export function ProfilesPage() {
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
                               label="Video codec"
-                              value={form.videoCodec}
+                              value={displayVideoCodec(form.videoCodec)}
                               onChange={(event) => updateField('videoCodec', event.target.value)}
                               select
                               fullWidth
                             >
-                              {['x264', 'x265', 'x265_10bit', 'copy'].map((value) => (
-                                <MenuItem key={value} value={value}>
-                                  {value}
-                                </MenuItem>
-                              ))}
+                              <MenuItem value="x264">H.264 / x264</MenuItem>
+                              <MenuItem value="x265">HEVC / x265</MenuItem>
+                              <MenuItem value="copy">Keep original video</MenuItem>
                             </TextField>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -1167,7 +1169,7 @@ function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const hardwareAllowed = workerConfigBool(profile, 'useHardwareIfAvailable');
   const hardware = hardwareEncodersFor(codecFamily);
   const pixelFormat = workerConfigString(profile, 'pixFmt', profile.pixelFormat || 'yuv420p');
-  const bitDepth = pixelFormat.includes('10') || profile.videoCodec.toLowerCase().includes('10bit') ? 10 : 8;
+  const bitDepth = pixelFormat === 'auto' ? 0 : pixelFormat.includes('10') || profile.videoCodec.toLowerCase().includes('10bit') ? 10 : 8;
 
   if (configured === 'auto' || configured === 'ffmpeg') {
     return hardwareAllowed
@@ -1290,6 +1292,19 @@ function videoEncoderDescription(value: string) {
   return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
 }
 
+function displayVideoCodec(value: string) {
+  return value.toLowerCase().includes('x265') || value.toLowerCase().includes('hevc') || value.toLowerCase().includes('h265') ? 'x265' : value;
+}
+
+function isHardwareEncoderOption(value: string) {
+  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+}
+
+function hardwareQualityHelper(softwareCRF: number) {
+  const suggested = Math.min(35, Math.max(15, softwareCRF + 5));
+  return `Approximate starting point: software CRF ${softwareCRF} ≈ hardware quality ${suggested}. Encoder-dependent; lower means higher quality.`;
+}
+
 function buildDryRunCommand(profile: ProfileInput) {
   const input = '<input>';
   const output = `<output>.${profile.container}`;
@@ -1299,7 +1314,8 @@ function buildDryRunCommand(profile: ProfileInput) {
   const isVideoToolbox = resolvedEncoder === 'hevc_videotoolbox';
   const videoArgs = profile.videoCodec === 'copy' ? '-c:v copy' : `-c:v ${resolvedEncoder}`;
   const presetArgs = profile.videoCodec === 'copy' || isHardware ? '' : `-preset ${workerConfigString(profile, 'videoPreset', 'medium')}`;
-  const pixFmtArgs = profile.videoCodec === 'copy' ? '' : isVideoToolbox ? `-profile:v ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'main10' : 'main'} -pix_fmt ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'p010le' : 'yuv420p'}` : `-pix_fmt ${workerConfigString(profile, 'pixFmt', 'yuv420p10le')}`;
+  const configuredPixFmt = workerConfigString(profile, 'pixFmt', 'yuv420p10le');
+  const pixFmtArgs = profile.videoCodec === 'copy' || configuredPixFmt === 'auto' ? '' : isVideoToolbox ? `-profile:v ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'main10' : 'main'} -pix_fmt ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'p010le' : 'yuv420p'}` : `-pix_fmt ${configuredPixFmt}`;
   const tuneArgs = profile.videoCodec === 'copy' || !workerConfigString(profile, 'tune') ? '' : `-tune ${workerConfigString(profile, 'tune')}`;
   const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
   const hardwareQualityArgs = isVideoToolbox

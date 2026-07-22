@@ -100,7 +100,6 @@ const forceStereoModes = [
 ] as const;
 
 const videoCodecOptions = [
-  { value: 'x265_10bit', label: 'HEVC / x265 10-bit' },
   { value: 'x265', label: 'HEVC / x265' },
   { value: 'x264', label: 'H.264 / x264' },
   { value: 'copy', label: 'Keep original video' },
@@ -127,6 +126,7 @@ const encoderPresetOptions = [
 ] as const;
 
 const pixelFormatOptions = [
+  { value: 'auto', label: 'Auto / codec default', description: 'Lets MVForge choose a compatible pixel format from the codec and encoder.' },
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265/anime/DVD. Helps reduce banding while staying widely playable.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or codecs that do not need 10-bit output.' },
 ] as const;
@@ -144,6 +144,7 @@ const deinterlaceOptions = [
   { value: 'off', label: 'Off' },
   { value: 'auto', label: 'Auto detect' },
   { value: 'force', label: 'Force' },
+  { value: 'ivtc_bff', label: 'Inverse telecine (BFF DVD)' },
 ] as const;
 
 const denoiseOptions = [
@@ -450,6 +451,8 @@ export function ProfileLabPage() {
   const [assetPath, setAssetPath] = useState('');
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
+  const [previewMode, setPreviewMode] = useState<'quick' | 'quality'>('quick');
+  const [previewTarget, setPreviewTarget] = useState<'draft' | 'jellyfin-plex'>('draft');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
@@ -469,6 +472,7 @@ export function ProfileLabPage() {
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const selectedAsset = rawAssets.find((asset) => asset.path === assetPath) ?? null;
+  const effectivePreviewSeconds = previewMode === 'quick' ? Math.min(seconds, 8) : seconds;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
 
@@ -735,8 +739,8 @@ export function ProfileLabPage() {
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Grid container spacing={1.5} alignItems="stretch">
-              <Grid size={{ xs: 12, lg: 6 }}>
+            <Grid container spacing={1.5} alignItems="flex-start">
+              <Grid size={{ xs: 12, lg: 4.75 }}>
                 <AssetAutocomplete
                   assets={rawAssets}
                   value={selectedAsset}
@@ -746,41 +750,81 @@ export function ProfileLabPage() {
                   }}
                 />
               </Grid>
-              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
+              <Grid size={{ xs: 7, sm: 3, lg: 1.25 }}>
                 <TextField
                   label="Start"
+                  size="small"
                   value={start}
                   onChange={(event) => {
                     setStart(event.target.value);
                     resetProcessedPreviews();
                   }}
-                  helperText="HH:MM:SS"
+                  placeholder="HH:MM:SS"
+                  fullWidth
+                />
+              </Grid>
+              <Grid size={{ xs: 5, sm: 2, lg: 0.75 }}>
+                <TextField
+                  label="Seconds"
+                  size="small"
+                  value={seconds}
+                  type="number"
+                  inputProps={{ min: 5, max: 60 }}
+                  onChange={(event) => {
+                    setSeconds(Math.min(60, Number(event.target.value)));
+                    resetProcessedPreviews();
+                  }}
+                  onBlur={() => setSeconds((current) => Math.max(5, Math.min(60, current || 5)))}
                   fullWidth
                 />
               </Grid>
               <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
                 <TextField
-                  label="Seconds"
-                  value={seconds}
-                  type="number"
-                  inputProps={{ min: 5, max: 120 }}
+                  label="Preview mode"
+                  size="small"
+                  value={previewMode}
                   onChange={(event) => {
-                    setSeconds(Number(event.target.value));
+                    setPreviewMode(event.target.value as 'quick' | 'quality');
                     resetProcessedPreviews();
                   }}
+                  select
                   fullWidth
-                />
+                >
+                  <MenuItem value="quick">Quick iteration</MenuItem>
+                  <MenuItem value="quality">Quality check</MenuItem>
+                </TextField>
               </Grid>
-              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
+              <Grid size={{ xs: 12, sm: 5, lg: 2.25 }}>
+                <TextField
+                  label="Preview target"
+                  size="small"
+                  value={previewTarget}
+                  onChange={(event) => {
+                    setPreviewTarget(event.target.value as 'draft' | 'jellyfin-plex');
+                    resetProcessedPreviews();
+                  }}
+                  select
+                  fullWidth
+                >
+                  <MenuItem value="draft">Current draft</MenuItem>
+                  <MenuItem value="jellyfin-plex">Jellyfin / Plex standard</MenuItem>
+                </TextField>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 2, lg: 1 }}>
                 <Button
                   startIcon={<PlayArrowIcon />}
                   variant="contained"
+                  size="small"
                   disabled={!assetPath}
                   onClick={() => {
                     setPreviewNonce((current) => current + 1);
+                    if (previewTarget === 'jellyfin-plex') {
+                      setVideoPreviewStatus('loading');
+                      setVideoPreviewNonce((current) => current + 1);
+                    }
                   }}
                   fullWidth
-                  sx={{ height: '100%', minHeight: 54 }}
+                  sx={{ minHeight: 40 }}
                 >
                   Preview
                 </Button>
@@ -791,38 +835,64 @@ export function ProfileLabPage() {
         <Box ref={previewsRef} sx={{ scrollMarginTop: 16, mb: 2 }}>
           <Stack spacing={2}>
               {assetPath && previewNonce > 0 ? (
+                <Alert severity={previewMode === 'quick' ? 'warning' : 'success'}>
+                  {previewMode === 'quick'
+                    ? 'Sample A remains the untouched original. Sample B is an 8-second, reduced-resolution proxy for fast iteration; use Quality check for final visual comparisons.'
+                    : 'Sample A remains the untouched original. Sample B uses the requested duration, source resolution, and exact profile settings for a fidelity comparison.'}
+                </Alert>
+              ) : null}
+              {assetPath && previewNonce > 0 ? (
                 <Grid container spacing={2} alignItems="stretch">
                   <Grid size={{ xs: 12, lg: 6 }}>
-                    <SampleCard title="Sample A" subtitle="Original source, browser-safe preview">
+                    <SampleCard title="Sample A" subtitle="Original source stream, no conversion">
                       <Stack spacing={2}>
-                        <VideoPreview label="Original video" src={`${api.compatibleAssetPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
-                        <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
+                        <VideoPreview key={`original-${previewNonce}`} label="Original video" src={originalPreviewUrl(assetPath, start, effectivePreviewSeconds)} direct />
+                        <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds })}&nonce=${previewNonce}`} />
                       </Stack>
                     </SampleCard>
                   </Grid>
                   <Grid size={{ xs: 12, lg: 6 }}>
-                    <SampleCard title="Sample B" subtitle="Current video and audio profile drafts">
+                    <SampleCard title="Sample B" subtitle={previewTarget === 'jellyfin-plex' ? 'Jellyfin / Plex compatibility reference' : 'Current video and audio profile drafts'}>
                       <Stack spacing={2}>
                         {videoPreviewNonce > 0 ? (
                           <VideoPreview
-                            label="Video draft"
-                            src={`${api.compatibleAssetPreviewUrl({
+                            key={`draft-${videoPreviewNonce}-${previewMode}-${previewTarget}`}
+                            label={previewTarget === 'jellyfin-plex' ? 'Jellyfin / Plex standard video' : 'Video draft'}
+                            src={api.compatibleAssetPreviewUrl(previewTarget === 'jellyfin-plex' ? {
                               path: assetPath,
                               start,
-                              seconds,
+                              seconds: effectivePreviewSeconds,
+                              mode: previewMode,
+                              videoCodec: 'x264',
+                              qualityValue: 20,
+                              videoPreset: previewMode === 'quality' ? 'medium' : 'veryfast',
+                              pixFmt: 'yuv420p',
+                              videoEncoder: 'libx264',
+                              useHardwareIfAvailable: false,
+                              globalQuality: 25,
+                            } : {
+                              path: assetPath,
+                              start,
+                              seconds: effectivePreviewSeconds,
                               videoCodec: processedVideoCodec,
                               qualityValue: processedVideoQualityValue,
+                              mode: previewMode,
                               ...processedVideoOptions,
-                            })}&nonce=${videoPreviewNonce}`}
+                            })}
                             onStatusChange={setVideoPreviewStatus}
                           />
                         ) : (
                           <Alert severity="info">Process video after choosing the video profile settings to generate Sample B video.</Alert>
                         )}
-                        {audioPreviewNonce > 0 ? (
+                        {previewTarget === 'jellyfin-plex' ? (
+                          <AudioPreview
+                            label="Jellyfin / Plex standard audio · AAC stereo 192 kbps"
+                            src={api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, compatibility: true })}
+                          />
+                        ) : audioPreviewNonce > 0 ? (
                           <AudioPreview
                             label="Audio draft"
-                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds, filters: processedAudioFilters })}&nonce=${audioPreviewNonce}`}
+                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, filters: processedAudioFilters })}&nonce=${audioPreviewNonce}`}
                             onStatusChange={setAudioPreviewStatus}
                           />
                         ) : (
@@ -890,7 +960,7 @@ export function ProfileLabPage() {
                       <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} fullWidth />
                     </Grid>
                     <Grid size={{ xs: 12, md: 5 }}>
-                      <TextField label="Video codec" value={videoDraft.videoCodec} onChange={(event) => setVideoDraft({ ...videoDraft, videoCodec: event.target.value })} select fullWidth>
+                      <TextField label="Video codec" value={displayVideoCodec(videoDraft.videoCodec)} onChange={(event) => setVideoDraft({ ...videoDraft, videoCodec: event.target.value })} select fullWidth>
                         {videoCodecOptions.map((codec) => (
                           <MenuItem key={codec.value} value={codec.value}>
                             {codec.label}
@@ -946,7 +1016,7 @@ export function ProfileLabPage() {
                               fullWidth
                             >
                               {videoEncoderOptions.map((encoder) => (
-                                <MenuItem key={encoder.value} value={encoder.value}>
+                                <MenuItem key={encoder.value} value={encoder.value} disabled={isHardwareEncoderOption(encoder.value) && !videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}>
                                   {encoder.label}
                                 </MenuItem>
                               ))}
@@ -959,9 +1029,9 @@ export function ProfileLabPage() {
                               onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'globalQuality', Number(event.target.value))}
                               type="number"
                               inputProps={{ min: 15, max: 35 }}
-                              helperText="QSV/NVENC/VT/AMF"
+                              helperText={hardwareQualityHelper(videoDraft.qualityValue)}
                               size="small"
-                              disabled={videoDraft.videoCodec === 'copy'}
+                              disabled={videoDraft.videoCodec === 'copy' || !videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}
                               fullWidth
                             />
                           </Grid>
@@ -970,7 +1040,7 @@ export function ProfileLabPage() {
                               control={
                                 <Checkbox
                                   checked={videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'useHardwareIfAvailable', event.target.checked)}
+                                  onChange={(event) => setVideoDraft((current) => ({ ...current, workerConfig: { ...current.workerConfig, useHardwareIfAvailable: event.target.checked, ...(event.target.checked ? {} : { videoEncoder: 'libx265', preferredEncoder: 'software' }) } }))}
                                 />
                               }
                               label="Use hardware if available"
@@ -1895,26 +1965,86 @@ function ImageAdjustmentSlider({
 function VideoPreview({
   label,
   src,
+  direct = false,
   onStatusChange,
 }: {
   label: string;
   src: string;
+  direct?: boolean;
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
 }) {
+  const [videoSrc, setVideoSrc] = useState('');
+  const [metrics, setMetrics] = useState<{ cache: string; mode: string; generationMs: number; bytes: number } | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl = '';
+    setVideoSrc('');
+    setMetrics(null);
+    onStatusChange?.('loading');
+    if (direct) {
+      setVideoSrc(src);
+      return () => controller.abort();
+    }
+    fetch(src, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Preview failed with ${response.status}`);
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        setMetrics({
+          cache: response.headers.get('X-MVForge-Preview-Cache') ?? 'unknown',
+          mode: response.headers.get('X-MVForge-Preview-Mode') ?? 'unknown',
+          generationMs: Number(response.headers.get('X-MVForge-Preview-Generation-Ms') ?? 0),
+          bytes: blob.size,
+        });
+        setVideoSrc(objectUrl);
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        onStatusChange?.('error');
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [direct, src]);
+
   return (
     <Stack spacing={1}>
-      <Typography fontWeight={700}>{label}</Typography>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Typography fontWeight={700}>{label}</Typography>
+        {direct ? <Chip size="small" label="Original stream · no conversion" color="success" /> : null}
+        {metrics ? <Chip size="small" label={`${metrics.mode} · ${metrics.cache}`} /> : null}
+        {metrics ? <Chip size="small" label={`${(metrics.generationMs / 1000).toFixed(2)}s · ${formatPreviewBytes(metrics.bytes)}`} /> : null}
+      </Stack>
       <Box
         component="video"
         controls
-        src={src}
-        onLoadStart={() => onStatusChange?.('loading')}
+        src={videoSrc}
         onCanPlay={() => onStatusChange?.('ready')}
         onError={() => onStatusChange?.('error')}
         sx={{ width: '100%', maxHeight: 420, aspectRatio: '16 / 9', bgcolor: 'black', borderRadius: 1 }}
       />
     </Stack>
   );
+}
+
+function originalPreviewUrl(path: string, start: string, seconds: number) {
+  const startSeconds = previewStartSeconds(start);
+  const endSeconds = startSeconds + Math.max(1, seconds);
+  return `${api.assetPreviewUrl(path)}#t=${startSeconds},${endSeconds}`;
+}
+
+function previewStartSeconds(value: string) {
+  if (/^\d+$/.test(value.trim())) return Number(value);
+  const parts = value.split(':').map((part) => Number(part));
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return 0;
+  return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
+}
+
+function formatPreviewBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function AudioPreview({
@@ -2164,6 +2294,7 @@ function updateVideoWorkerConfig(
 ) {
   setVideoDraft((current) => ({
     ...current,
+    ...(key === 'pixFmt' ? { videoCodec: displayVideoCodec(current.videoCodec) } : {}),
     workerConfig: {
       ...current.workerConfig,
       [key]: value,
@@ -2181,6 +2312,19 @@ function pixelFormatDescription(value: string) {
 
 function videoEncoderDescription(value: string) {
   return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
+}
+
+function displayVideoCodec(value: string) {
+  return value.toLowerCase().includes('x265') || value.toLowerCase().includes('hevc') || value.toLowerCase().includes('h265') ? 'x265' : value;
+}
+
+function isHardwareEncoderOption(value: string) {
+  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+}
+
+function hardwareQualityHelper(softwareCRF: number) {
+  const suggested = Math.min(35, Math.max(15, softwareCRF + 5));
+  return `Approximate starting point: software CRF ${softwareCRF} ≈ hardware quality ${suggested}. Encoder-dependent; lower means higher quality.`;
 }
 
 function videoFilterControlValue(draft: ProfileInput, key: string, fallback = '') {
@@ -2209,6 +2353,7 @@ function updateVideoFilterControl(
 
 function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
+  const deinterlaceMode = stringValue(workerConfig.deinterlaceMode, 'auto');
   const denoise = stringValue(workerConfig.denoise, 'off');
   const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
@@ -2220,6 +2365,11 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const temperature = numericWorkerConfigValue(workerConfig, 'temperature', 0);
   const tint = numericWorkerConfigValue(workerConfig, 'tint', 0);
 
+  if (deinterlaceMode === 'force') {
+    filters.push('bwdif=mode=send_frame:parity=auto:deint=all');
+  } else if (deinterlaceMode === 'ivtc_bff') {
+    filters.push('fieldmatch=order=bff,decimate');
+  }
   if (denoise === 'light') {
     filters.push('hqdn3d=1.5:1.5:6:6');
   } else if (denoise === 'medium') {
@@ -2408,7 +2558,7 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
           )
           .slice(0, 50);
       }}
-      renderInput={(params) => <TextField {...params} label="Raw asset" />}
+      renderInput={(params) => <TextField {...params} label="Raw asset" size="small" />}
       renderOption={(props, asset) => (
         <Box component="li" {...props} key={asset.path}>
           <Stack sx={{ minWidth: 0 }}>

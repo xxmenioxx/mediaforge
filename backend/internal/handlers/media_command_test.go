@@ -78,6 +78,22 @@ func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	assertContains(t, command, "-crf 20")
 }
 
+func TestFFmpegCommandBuilderUsesSoftwareAndCodecDefaultWhenHardwareIsDisabled(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+			WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "useHardwareIfAvailable": false, "pixFmt": "auto"},
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-c:v libx265")
+	assertNotContains(t, command, "hevc_qsv")
+	assertNotContains(t, command, "-pix_fmt")
+}
+
 func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
@@ -187,7 +203,7 @@ func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 			VideoCodec: "x265_10bit", BitDepth: 10, AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
 			WorkerConfig: models.JSONMap{
 				"videoEncoder":            "hevc_videotoolbox",
-				"useHardwareIfAvailable":  false,
+				"useHardwareIfAvailable":  true,
 				"videoToolboxBitrateMbps": 6,
 				"videoToolboxMaxrateMbps": 8,
 				"videoToolboxBufferMbps":  12,
@@ -198,6 +214,11 @@ func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	if !ffmpegEncoderAvailable("hevc_videotoolbox") {
+		assertContains(t, command, "-c:v libx265")
+		assertNotContains(t, command, "-c:v hevc_videotoolbox")
+		return
+	}
 	assertContains(t, command, "-c:v hevc_videotoolbox")
 	assertContains(t, command, "-b:v 6M")
 	assertContains(t, command, "-maxrate 8M")

@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -22,6 +25,16 @@ import (
 type AssetHandler struct {
 	db *gorm.DB
 }
+
+type previewGeneration struct {
+	done chan struct{}
+	err  error
+}
+
+var previewCacheState = struct {
+	sync.Mutex
+	inFlight map[string]*previewGeneration
+}{inFlight: map[string]*previewGeneration{}}
 
 type AssetInventory struct {
 	Unprocessed       []Asset       `json:"unprocessed"`
@@ -654,12 +667,19 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	pixFmtOverride := strings.TrimSpace(c.Query("pixFmt"))
 	videoFiltersOverride := strings.TrimSpace(c.Query("videoFilters"))
 	x265ParamsOverride := strings.TrimSpace(c.Query("x265Params"))
+	videoEncoderOverride := strings.TrimSpace(c.Query("videoEncoder"))
+	useHardwareOverride, _ := strconv.ParseBool(c.Query("useHardwareIfAvailable"))
+	globalQualityOverride, _ := strconv.Atoi(c.Query("globalQuality"))
+	previewMode := normalizedPreviewMode(c.Query("mode"))
 	start, ok := boundedPreviewStart(c.Query("start"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "start must be HH:MM:SS or seconds"})
 		return
 	}
 	seconds := boundedPreviewSeconds(c.Query("seconds"))
+	if previewMode == "quick" && seconds > 8 {
+		seconds = 8
+	}
 	if path == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
@@ -691,23 +711,26 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		return
 	}
 
+	analyzeSize := "100M"
+	if previewMode == "quick" {
+		analyzeSize = "10M"
+		videoPresetOverride = "veryfast"
+		x265ParamsOverride = ""
+	}
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
-		"-analyzeduration", "100M",
-		"-probesize", "100M",
+		"-analyzeduration", analyzeSize,
+		"-probesize", analyzeSize,
 		"-ss", start,
 		"-t", strconv.Itoa(seconds),
 		"-i", path,
 		"-map", "0:v:0?",
-		"-map", "0:a:0?",
-		"-vf", previewVideoFilterChain(videoFiltersOverride),
+		"-vf", previewVideoFilterChain(videoFiltersOverride, previewMode),
 	}
-	args = append(args, previewVideoCodecArgs(h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride)...)
+	args = append(args, previewVideoCodecArgs(h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride, videoEncoderOverride, useHardwareOverride, globalQualityOverride)...)
 	args = append(args,
-		"-c:a", "aac",
-		"-b:a", "160k",
-		"-ac", "2",
+		"-an",
 		"-sn",
 		"-dn",
 		"-map_metadata", "-1",
@@ -717,7 +740,73 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		"pipe:1",
 	)
 
-	cmd := exec.CommandContext(c.Request.Context(), "ffmpeg", args...)
+	info, _ := os.Stat(path)
+	cacheKey := previewCacheKey(path, info, args)
+	cachePath := filepath.Join(os.TempDir(), "mvforge-preview-cache", cacheKey+".mp4")
+	started := time.Now()
+	cacheHit, err := generateCachedPreview(c.Request.Context(), cacheKey, cachePath, args)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Header("Content-Type", "video/mp4")
+	c.Header("Content-Disposition", `inline; filename="`+strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+`-preview.mp4"`)
+	c.Header("Cache-Control", "private, max-age=0, must-revalidate")
+	c.Header("ETag", `"`+cacheKey+`"`)
+	c.Header("X-MVForge-Preview-Mode", previewMode)
+	c.Header("X-MVForge-Preview-Cache", map[bool]string{true: "hit", false: "miss"}[cacheHit])
+	c.Header("X-MVForge-Preview-Generation-Ms", strconv.FormatInt(time.Since(started).Milliseconds(), 10))
+	c.File(cachePath)
+}
+
+func normalizedPreviewMode(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "quality") {
+		return "quality"
+	}
+	return "quick"
+}
+
+func previewCacheKey(path string, info os.FileInfo, args []string) string {
+	identity := path + "\x00" + strings.Join(args, "\x00")
+	if info != nil {
+		identity += fmt.Sprintf("\x00%d\x00%d", info.Size(), info.ModTime().UnixNano())
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
+}
+
+func generateCachedPreview(ctx context.Context, key string, destination string, args []string) (bool, error) {
+	if info, err := os.Stat(destination); err == nil && info.Size() > 0 {
+		return true, nil
+	}
+
+	previewCacheState.Lock()
+	if active := previewCacheState.inFlight[key]; active != nil {
+		previewCacheState.Unlock()
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-active.done:
+			return true, active.err
+		}
+	}
+	active := &previewGeneration{done: make(chan struct{})}
+	previewCacheState.inFlight[key] = active
+	previewCacheState.Unlock()
+
+	defer func() {
+		previewCacheState.Lock()
+		delete(previewCacheState.inFlight, key)
+		close(active.done)
+		previewCacheState.Unlock()
+	}()
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		active.err = err
+		return false, err
+	}
+	cleanupPreviewCache(filepath.Dir(destination), 24*time.Hour)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	stderr := bytes.Buffer{}
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -726,16 +815,37 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		if message == "" {
 			message = err.Error()
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
-		return
+		active.err = fmt.Errorf("%s", message)
+		return false, active.err
 	}
-
-	c.Header("Content-Type", "video/mp4")
-	c.Header("Content-Disposition", `inline; filename="`+strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+`-preview.mp4"`)
-	c.Data(http.StatusOK, "video/mp4", output)
+	temporary := destination + ".partial"
+	if err := os.WriteFile(temporary, output, 0o644); err != nil {
+		active.err = err
+		return false, err
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		_ = os.Remove(temporary)
+		active.err = err
+		return false, err
+	}
+	return false, nil
 }
 
-func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride string, qualityValueOverride string, videoPresetOverride string, pixFmtOverride string, x265ParamsOverride string) []string {
+func cleanupPreviewCache(directory string, maxAge time.Duration) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr == nil && !entry.IsDir() && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(directory, entry.Name()))
+		}
+	}
+}
+
+func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride string, qualityValueOverride string, videoPresetOverride string, pixFmtOverride string, x265ParamsOverride string, hardwareOverrides ...any) []string {
 	videoCodec := strings.TrimSpace(videoCodecOverride)
 	qualityValue := 24
 	videoPreset := strings.TrimSpace(videoPresetOverride)
@@ -774,28 +884,52 @@ func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride str
 		videoCodec = "x264"
 	}
 
-	args := []string{"-c:v", ffmpegCodecName(videoCodec)}
+	videoEncoder := "auto"
+	useHardware := false
+	globalQuality := qualityValue + 5
+	if len(hardwareOverrides) > 0 {
+		videoEncoder, _ = hardwareOverrides[0].(string)
+	}
+	if len(hardwareOverrides) > 1 {
+		useHardware, _ = hardwareOverrides[1].(bool)
+	}
+	if len(hardwareOverrides) > 2 {
+		if value, ok := hardwareOverrides[2].(int); ok && value > 0 {
+			globalQuality = value
+		}
+	}
 	if videoPreset == "" {
 		videoPreset = "veryfast"
 	}
-	args = append(args, "-preset", videoPreset)
 	if pixFmt == "" {
 		pixFmt = "yuv420p"
 		if isTenBitVideoCodec(videoCodec) {
 			pixFmt = "yuv420p10le"
 		}
 	}
-	args = append(args, "-pix_fmt", pixFmt)
-	if x265Params != "" && strings.Contains(ffmpegCodecName(videoCodec), "265") {
-		args = append(args, "-x265-params", x265Params)
+	profile := models.Profile{
+		VideoCodec: videoCodec, QualityMode: "crf", QualityValue: qualityValue,
+		BitDepth: map[bool]int{true: 10, false: 8}[strings.Contains(pixFmt, "10")],
+		WorkerConfig: models.JSONMap{
+			"videoEncoder": videoEncoder, "useHardwareIfAvailable": useHardware,
+			"globalQuality": globalQuality, "videoPreset": videoPreset,
+			"pixFmt": pixFmt, "x265Params": x265Params,
+		},
 	}
-	args = append(args, "-crf", strconv.Itoa(qualityValue))
-	return args
+	args := videoCodecArgs(profile)
+	return append(args, videoWorkerArgs(profile)...)
 }
 
-func previewVideoFilterChain(videoFilters string) string {
-	scale := "scale='min(1280,iw)':-2"
+func previewVideoFilterChain(videoFilters string, previewMode ...string) string {
+	qualityMode := len(previewMode) > 0 && previewMode[0] == "quality"
 	videoFilters = strings.TrimSpace(videoFilters)
+	if qualityMode {
+		if videoFilters == "" {
+			return "null"
+		}
+		return videoFilters
+	}
+	scale := "scale='min(854,iw)':-2"
 	if videoFilters == "" {
 		return scale
 	}
@@ -806,6 +940,7 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	profileKey := strings.TrimSpace(c.Query("profileKey"))
 	filterOverride := strings.TrimSpace(c.Query("filters"))
+	compatibilityPreview, _ := strconv.ParseBool(c.Query("compatibility"))
 	start, ok := boundedPreviewStart(c.Query("start"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "start must be HH:MM:SS or seconds"})
@@ -858,9 +993,7 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 	}
 	filterChain = sanitizeAudioFilterChain(filterChain)
 
-	cmd := exec.CommandContext(
-		c.Request.Context(),
-		"ffmpeg",
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
 		"-ss", start,
@@ -869,10 +1002,17 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 		"-map", "0:a:0?",
 		"-vn",
 		"-af", filterChain,
-		"-c:a", "pcm_s16le",
-		"-f", "wav",
-		"pipe:1",
-	)
+	}
+	contentType := "audio/wav"
+	extension := "wav"
+	if compatibilityPreview {
+		args = append(args, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
+		contentType = "audio/mp4"
+		extension = "m4a"
+	} else {
+		args = append(args, "-c:a", "pcm_s16le", "-f", "wav", "pipe:1")
+	}
+	cmd := exec.CommandContext(c.Request.Context(), "ffmpeg", args...)
 
 	stderr := bytes.Buffer{}
 	cmd.Stderr = &stderr
@@ -886,9 +1026,9 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Type", "audio/wav")
-	c.Header("Content-Disposition", `inline; filename="`+strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+`-audio-preview.wav"`)
-	c.Data(http.StatusOK, "audio/wav", output)
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", `inline; filename="`+strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+`-audio-preview.`+extension+`"`)
+	c.Data(http.StatusOK, contentType, output)
 }
 
 var afftdnNoiseFloorPattern = regexp.MustCompile(`afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)`)

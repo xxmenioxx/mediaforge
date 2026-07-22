@@ -70,6 +70,39 @@ func TestManualReviewApprovalIsPersistedAfterDisablingBlock(t *testing.T) {
 	}
 }
 
+func TestPreviewModesUseFastProxyAndExactQualityFilters(t *testing.T) {
+	if got := previewVideoFilterChain("", "quick"); !strings.Contains(got, "854") {
+		t.Fatalf("quick preview filter=%q", got)
+	}
+	if got := previewVideoFilterChain("eq=contrast=1.1", "quality"); got != "eq=contrast=1.1" {
+		t.Fatalf("quality preview changed filters: %q", got)
+	}
+	if got := previewVideoFilterChain("", "quality"); got != "null" {
+		t.Fatalf("quality preview should preserve resolution: %q", got)
+	}
+}
+
+func TestPreviewCacheKeyChangesWithSourceAndOptions(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, _ := os.Stat(mediaPath)
+	first := previewCacheKey(mediaPath, firstInfo, []string{"-crf", "20"})
+	changedOption := previewCacheKey(mediaPath, firstInfo, []string{"-crf", "21"})
+	if first == changedOption {
+		t.Fatal("preview options must participate in cache identity")
+	}
+	if err := os.WriteFile(mediaPath, []byte("different source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, _ := os.Stat(mediaPath)
+	if first == previewCacheKey(mediaPath, secondInfo, []string{"-crf", "20"}) {
+		t.Fatal("source size and modification time must participate in cache identity")
+	}
+}
+
 func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "success")
 	relative := filepath.Join("movies", "movie.mkv")
