@@ -452,7 +452,7 @@ export function ProfileLabPage() {
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
   const [previewMode, setPreviewMode] = useState<'quick' | 'quality'>('quick');
-  const [previewTarget, setPreviewTarget] = useState<'draft' | 'jellyfin-plex'>('draft');
+  const [originalPreviewMode, setOriginalPreviewMode] = useState<'direct' | 'compatible'>('direct');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
@@ -796,18 +796,18 @@ export function ProfileLabPage() {
               </Grid>
               <Grid size={{ xs: 12, sm: 5, lg: 2.25 }}>
                 <TextField
-                  label="Preview target"
+                  label="Original playback"
                   size="small"
-                  value={previewTarget}
+                  value={originalPreviewMode}
                   onChange={(event) => {
-                    setPreviewTarget(event.target.value as 'draft' | 'jellyfin-plex');
+                    setOriginalPreviewMode(event.target.value as 'direct' | 'compatible');
                     resetProcessedPreviews();
                   }}
                   select
                   fullWidth
                 >
-                  <MenuItem value="draft">Current draft</MenuItem>
-                  <MenuItem value="jellyfin-plex">Jellyfin / Plex standard</MenuItem>
+                  <MenuItem value="direct">Direct original</MenuItem>
+                  <MenuItem value="compatible">Browser compatible (Jellyfin / Plex)</MenuItem>
                 </TextField>
               </Grid>
               <Grid size={{ xs: 12, sm: 2, lg: 1 }}>
@@ -816,13 +816,7 @@ export function ProfileLabPage() {
                   variant="contained"
                   size="small"
                   disabled={!assetPath}
-                  onClick={() => {
-                    setPreviewNonce((current) => current + 1);
-                    if (previewTarget === 'jellyfin-plex') {
-                      setVideoPreviewStatus('loading');
-                      setVideoPreviewNonce((current) => current + 1);
-                    }
-                  }}
+                  onClick={() => setPreviewNonce((current) => current + 1)}
                   fullWidth
                   sx={{ minHeight: 40 }}
                 >
@@ -835,42 +829,63 @@ export function ProfileLabPage() {
         <Box ref={previewsRef} sx={{ scrollMarginTop: 16, mb: 2 }}>
           <Stack spacing={2}>
               {assetPath && previewNonce > 0 ? (
-                <Alert severity={previewMode === 'quick' ? 'warning' : 'success'}>
-                  {previewMode === 'quick'
-                    ? 'Sample A remains the untouched original. Sample B is an 8-second, reduced-resolution proxy for fast iteration; use Quality check for final visual comparisons.'
-                    : 'Sample A remains the untouched original. Sample B uses the requested duration, source resolution, and exact profile settings for a fidelity comparison.'}
+                <Alert severity={originalPreviewMode === 'compatible' || previewMode === 'quick' ? 'warning' : 'success'}>
+                  {originalPreviewMode === 'compatible'
+                    ? 'Sample A is a temporary H.264/AAC browser-compatible proxy of the original. It does not change the source file, but it is not a bit-exact visual reference.'
+                    : previewMode === 'quick'
+                      ? 'Sample A is the untouched original. Sample B is an 8-second, reduced-resolution proxy for fast iteration; use Quality check for final visual comparisons.'
+                      : 'Sample A is the untouched original. Sample B uses the requested duration, source resolution, and exact profile settings for a fidelity comparison.'}
                 </Alert>
               ) : null}
               {assetPath && previewNonce > 0 ? (
                 <Grid container spacing={2} alignItems="stretch">
                   <Grid size={{ xs: 12, lg: 6 }}>
-                    <SampleCard title="Sample A" subtitle="Original source stream, no conversion">
+                    <SampleCard
+                      title="Sample A"
+                      subtitle={originalPreviewMode === 'compatible' ? 'Original content transcoded temporarily for browser playback' : 'Original source stream, no conversion'}
+                    >
                       <Stack spacing={2}>
-                        <VideoPreview key={`original-${previewNonce}`} label="Original video" src={originalPreviewUrl(assetPath, start, effectivePreviewSeconds)} direct />
-                        <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds })}&nonce=${previewNonce}`} />
+                        {originalPreviewMode === 'compatible' ? (
+                          <>
+                            <VideoPreview
+                              key={`original-compatible-${previewNonce}`}
+                              label="Original · browser-compatible H.264 proxy"
+                              src={api.compatibleAssetPreviewUrl({
+                                path: assetPath,
+                                start,
+                                seconds,
+                                mode: 'quality',
+                                videoCodec: 'x264',
+                                qualityValue: 20,
+                                videoPreset: 'medium',
+                                pixFmt: 'yuv420p',
+                                videoEncoder: 'libx264',
+                                useHardwareIfAvailable: false,
+                                globalQuality: 25,
+                              })}
+                            />
+                            <AudioPreview
+                              label="Original · browser-compatible AAC stereo 192 kbps"
+                              src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true })}
+                            />
+                          </>
+                        ) : (
+                          <>
+                            <VideoPreview key={`original-${previewNonce}`} label="Original video" src={originalPreviewUrl(assetPath, start, seconds)} direct />
+                            <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
+                          </>
+                        )}
                       </Stack>
                     </SampleCard>
                   </Grid>
                   <Grid size={{ xs: 12, lg: 6 }}>
-                    <SampleCard title="Sample B" subtitle={previewTarget === 'jellyfin-plex' ? 'Jellyfin / Plex compatibility reference' : 'Current video and audio profile drafts'}>
+                    <SampleCard title="Sample B" subtitle="Current video and audio profile drafts">
                       <Stack spacing={2}>
                         {videoPreviewNonce > 0 ? (
                           <VideoPreview
-                            key={`draft-${videoPreviewNonce}-${previewMode}-${previewTarget}`}
-                            label={previewTarget === 'jellyfin-plex' ? 'Jellyfin / Plex standard video' : 'Video draft'}
-                            src={api.compatibleAssetPreviewUrl(previewTarget === 'jellyfin-plex' ? {
-                              path: assetPath,
-                              start,
-                              seconds: effectivePreviewSeconds,
-                              mode: previewMode,
-                              videoCodec: 'x264',
-                              qualityValue: 20,
-                              videoPreset: previewMode === 'quality' ? 'medium' : 'veryfast',
-                              pixFmt: 'yuv420p',
-                              videoEncoder: 'libx264',
-                              useHardwareIfAvailable: false,
-                              globalQuality: 25,
-                            } : {
+                            key={`draft-${videoPreviewNonce}-${previewMode}`}
+                            label="Video draft"
+                            src={api.compatibleAssetPreviewUrl({
                               path: assetPath,
                               start,
                               seconds: effectivePreviewSeconds,
@@ -884,12 +899,7 @@ export function ProfileLabPage() {
                         ) : (
                           <Alert severity="info">Process video after choosing the video profile settings to generate Sample B video.</Alert>
                         )}
-                        {previewTarget === 'jellyfin-plex' ? (
-                          <AudioPreview
-                            label="Jellyfin / Plex standard audio · AAC stereo 192 kbps"
-                            src={api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, compatibility: true })}
-                          />
-                        ) : audioPreviewNonce > 0 ? (
+                        {audioPreviewNonce > 0 ? (
                           <AudioPreview
                             label="Audio draft"
                             src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, filters: processedAudioFilters })}&nonce=${audioPreviewNonce}`}
