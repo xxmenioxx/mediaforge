@@ -495,7 +495,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		return
 	}
 
-	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
+	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	paths, err := h.pathSettings()
 	if err != nil {
@@ -630,7 +630,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		job.Notes = appendNote(job.Notes, "Workspace input copied to: "+inputPath)
 	}
 
-	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(h.db))
+	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
 	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
@@ -708,6 +708,14 @@ func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error
 		return models.Profile{}, err
 	}
 	return profile, nil
+}
+
+func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+	override := conversionOverrideForPath(job.MediaPath, entries)
+	if mode := normalizeQueueProcessingMode(job.ProcessingMode); mode != "" {
+		override.ProcessingMode = mode
+	}
+	return override
 }
 
 func validJobStatus(status string) bool {

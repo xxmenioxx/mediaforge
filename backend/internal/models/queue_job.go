@@ -15,6 +15,8 @@ type QueueJob struct {
 	ProfileCapturedAt     *time.Time `json:"profileCapturedAt"`
 	ActiveExecutionPlanID *uint      `json:"activeExecutionPlanId" gorm:"index"`
 	AudioProfileKey       string     `json:"audioProfileKey"`
+	TrackProfileKey       string     `json:"trackProfileKey"`
+	ProcessingMode        string     `json:"processingMode"`
 	Priority              int        `json:"priority" gorm:"not null;default:5"`
 	Status                string     `json:"status" gorm:"not null;default:queued"`
 	Stage                 string     `json:"stage" gorm:"not null;default:queued;index"`
@@ -35,6 +37,7 @@ type QueueJob struct {
 	OriginalArchivedPath  string     `json:"originalArchivedPath"`
 	StartedAt             *time.Time `json:"startedAt"`
 	FinishedAt            *time.Time `json:"finishedAt"`
+	DismissedAt           *time.Time `json:"dismissedAt" gorm:"index"`
 	CreatedAt             time.Time  `json:"createdAt"`
 	UpdatedAt             time.Time  `json:"updatedAt"`
 }

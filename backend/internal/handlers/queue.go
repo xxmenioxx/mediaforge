@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -25,6 +26,8 @@ type QueueJobInput struct {
 	LibraryID       uint   `json:"libraryId" binding:"required"`
 	ProfileID       uint   `json:"profileId" binding:"required"`
 	AudioProfileKey string `json:"audioProfileKey"`
+	TrackProfileKey string `json:"trackProfileKey"`
+	ProcessingMode  string `json:"processingMode"`
 	Priority        int    `json:"priority"`
 	Notes           string `json:"notes"`
 }
@@ -34,6 +37,8 @@ type QueueJobUpdateInput struct {
 	LibraryID       *uint   `json:"libraryId"`
 	ProfileID       *uint   `json:"profileId"`
 	AudioProfileKey *string `json:"audioProfileKey"`
+	TrackProfileKey *string `json:"trackProfileKey"`
+	ProcessingMode  *string `json:"processingMode"`
 	Priority        *int    `json:"priority"`
 	Status          string  `json:"status"`
 	Notes           string  `json:"notes"`
@@ -45,12 +50,57 @@ func NewQueueHandler(db *gorm.DB) QueueHandler {
 
 func (h QueueHandler) List(c *gin.Context) {
 	var jobs []models.QueueJob
-	if err := h.db.Order("priority asc, created_at asc").Find(&jobs).Error; err != nil {
+	if err := h.db.Where("dismissed_at IS NULL").Order("priority asc, created_at asc").Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, jobs)
+}
+
+func (h QueueHandler) Dismiss(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job id"})
+		return
+	}
+	var job models.QueueJob
+	if err := h.db.First(&job, uint(id)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if job.DismissedAt != nil {
+		c.JSON(http.StatusOK, job)
+		return
+	}
+	if job.Status == JobStatusRunning || job.Status == JobStatusCompleted {
+		c.JSON(http.StatusConflict, gin.H{"error": "running or completed jobs cannot be removed from queue"})
+		return
+	}
+	now := time.Now()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if job.Status == JobStatusQueued {
+			job.Status = JobStatusCanceled
+			job.FinishedAt = &now
+			if err := transitionJobStage(tx, &job, JobStageCanceled); err != nil {
+				return err
+			}
+		}
+		job.DismissedAt = &now
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		return scheduler.ReleaseReservation(tx, job.ID)
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, job)
 }
 
 func (h QueueHandler) Create(c *gin.Context) {
@@ -81,6 +131,11 @@ func (h QueueHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid publish mode"})
 		return
 	}
+	processingMode := normalizeQueueProcessingMode(input.ProcessingMode)
+	if strings.TrimSpace(input.ProcessingMode) != "" && processingMode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid processing mode"})
+		return
+	}
 	if publishMode == PublishModeReplaceLibrary {
 		var library models.Library
 		if err := h.db.First(&library, input.LibraryID).Error; err != nil {
@@ -106,6 +161,8 @@ func (h QueueHandler) Create(c *gin.Context) {
 		LibraryID:       input.LibraryID,
 		ProfileID:       input.ProfileID,
 		AudioProfileKey: input.AudioProfileKey,
+		TrackProfileKey: input.TrackProfileKey,
+		ProcessingMode:  processingMode,
 		Priority:        priority,
 		Status:          "queued",
 		Stage:           JobStageQueued,
@@ -211,6 +268,17 @@ func (h QueueHandler) Update(c *gin.Context) {
 	if input.AudioProfileKey != nil {
 		job.AudioProfileKey = *input.AudioProfileKey
 	}
+	if input.TrackProfileKey != nil {
+		job.TrackProfileKey = *input.TrackProfileKey
+	}
+	if input.ProcessingMode != nil {
+		mode := normalizeQueueProcessingMode(*input.ProcessingMode)
+		if strings.TrimSpace(*input.ProcessingMode) != "" && mode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid processing mode"})
+			return
+		}
+		job.ProcessingMode = mode
+	}
 
 	if input.Notes != "" {
 		job.Notes = input.Notes
@@ -311,7 +379,18 @@ func (h QueueHandler) profileCaptureError(c *gin.Context, err error) {
 }
 
 func queueJobConfigChanged(input QueueJobUpdateInput) bool {
-	return input.MediaPath != "" || input.LibraryID != nil || input.ProfileID != nil || input.AudioProfileKey != nil
+	return input.MediaPath != "" || input.LibraryID != nil || input.ProfileID != nil || input.AudioProfileKey != nil || input.TrackProfileKey != nil || input.ProcessingMode != nil
+}
+
+func normalizeQueueProcessingMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "full_encode", "full-encode", "fullencode":
+		return ProcessingModeFullEncode
+	case "audio_only", "audio-only", "audioonly":
+		return ProcessingModeAudioOnly
+	default:
+		return ""
+	}
 }
 
 func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, error) {
@@ -319,6 +398,7 @@ func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, e
 	var count int64
 	query := h.db.Model(&models.QueueJob{}).
 		Where("media_path = ?", cleanPath).
+		Where("dismissed_at IS NULL").
 		Where("status <> ?", JobStatusCanceled).
 		Where("published_at IS NULL")
 	if excludeID != 0 {

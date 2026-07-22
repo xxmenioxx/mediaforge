@@ -27,6 +27,7 @@ import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import ReplayIcon from '@mui/icons-material/Replay';
+import RemoveCircleOutlineIcon from '@mui/icons-material/RemoveCircleOutline';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
@@ -119,7 +120,7 @@ export function QueuePage() {
         subtitleMetadata: undefined,
       }),
       trackProfileKey: trackProfile?.key,
-      processingMode: form.profileId > 0 ? 'full_encode' : 'audio_only',
+      processingMode: input.processingMode,
     });
   }
 
@@ -133,12 +134,24 @@ export function QueuePage() {
       setEditingJob(null);
       setSelectedTrackProfileKey('');
       setIsJobDialogOpen(false);
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
     },
   });
   const editJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.updateQueueJob>[0]) => {
-      await applyQueueSelections({ ...form, mediaPath: input.mediaPath ?? form.mediaPath });
+      await applyQueueSelections({
+        ...form,
+        mediaPath: input.mediaPath ?? form.mediaPath,
+        libraryId: input.libraryId ?? form.libraryId,
+        profileId: input.profileId ?? form.profileId,
+        audioProfileKey: input.audioProfileKey ?? form.audioProfileKey,
+        trackProfileKey: input.trackProfileKey ?? form.trackProfileKey,
+        processingMode: input.processingMode ?? form.processingMode,
+        priority: input.priority ?? form.priority,
+      });
       return api.updateQueueJob(input);
     },
     onSuccess: async () => {
@@ -146,7 +159,10 @@ export function QueuePage() {
       setEditingJob(null);
       setSelectedTrackProfileKey('');
       setIsJobDialogOpen(false);
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
     },
   });
 
@@ -158,7 +174,12 @@ export function QueuePage() {
     event.preventDefault();
     const technicalProfileId = form.profileId > 0 ? form.profileId : editingJob?.profileId || profiles.data?.[0]?.id || 0;
     if (!technicalProfileId || (!form.profileId && !form.audioProfileKey && !selectedTrackProfileKey)) return;
-    const input = { ...form, profileId: technicalProfileId };
+    const input: QueueJobInput = {
+      ...form,
+      profileId: technicalProfileId,
+      trackProfileKey: selectedTrackProfileKey,
+      processingMode: form.profileId > 0 ? 'full_encode' : 'audio_only',
+    };
     if (editingJob) {
       editJob.mutate({ jobId: editingJob.id, ...input });
       return;
@@ -176,11 +197,13 @@ export function QueuePage() {
   function openEditJobDialog(job: QueueJob) {
     const conversion = findQueueAsset(assets.data, job.mediaPath)?.conversion;
     setEditingJob(job);
-    setSelectedTrackProfileKey(conversion?.trackProfileKey ?? '');
+    setSelectedTrackProfileKey(job.trackProfileKey || conversion?.trackProfileKey || '');
     setForm({
       mediaPath: job.mediaPath,
       libraryId: job.libraryId,
-      profileId: conversion?.processingMode === 'audio_only' ? 0 : job.profileId,
+      profileId: (job.processingMode || conversion?.processingMode) === 'audio_only' ? 0 : job.profileId,
+      trackProfileKey: job.trackProfileKey,
+      processingMode: job.processingMode || undefined,
       audioProfileKey: job.audioProfileKey,
       priority: job.priority,
       notes: job.notes,
@@ -605,6 +628,15 @@ function QueueGroupCard({
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
+  const dismissJob = useMutation({
+    mutationFn: api.dismissQueueJob,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
+    },
+  });
 
   function updatePriority(job: QueueJob, nextPriority: number) {
     updateJob.mutate({ jobId: job.id, priority: nextPriority });
@@ -622,6 +654,11 @@ function QueueGroupCard({
     group.jobs
       .filter((job) => job.status === 'failed')
       .forEach((job) => updateJob.mutate({ jobId: job.id, status: 'queued' }));
+  }
+
+  function removeJob(job: QueueJob) {
+    if (!window.confirm(`Remove Job #${job.id} from Queue? Its database record, logs, and reports will be preserved.`)) return;
+    dismissJob.mutate(job.id);
   }
 
   useEffect(() => {
@@ -642,6 +679,7 @@ function QueueGroupCard({
     <Card sx={{ overflow: 'hidden' }}>
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
         <Stack spacing={1}>
+          {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
           <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
               <Typography variant="h3" sx={{ wordBreak: 'break-word' }}>
@@ -689,11 +727,12 @@ function QueueGroupCard({
                 <JobRow
                   key={job.id}
                   job={job}
-                  isUpdating={updateJob.isPending}
+                  isUpdating={updateJob.isPending || dismissJob.isPending}
                   onCancel={cancelJob}
                   onEdit={onEditJob}
                   onPriorityChange={updatePriority}
                   onRequeue={requeueJob}
+                  onRemove={removeJob}
                 />
               ))}
               {visibleJobsCount < group.jobs.length ? (
@@ -716,6 +755,7 @@ function JobRow({
   onEdit,
   onPriorityChange,
   onRequeue,
+  onRemove,
 }: {
   job: QueueJob;
   isUpdating: boolean;
@@ -723,11 +763,13 @@ function JobRow({
   onEdit: (job: QueueJob) => void;
   onPriorityChange: (job: QueueJob, nextPriority: number) => void;
   onRequeue: (job: QueueJob) => void;
+  onRemove: (job: QueueJob) => void;
 }) {
   const [, setSearchParams] = useSearchParams();
   const canCancel = job.status === 'queued' || job.status === 'running';
   const canRequeue = job.status === 'failed' || job.status === 'canceled';
   const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
+  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
   const stage = pipelineStage(job);
   const timing = jobTiming(job);
 
@@ -807,6 +849,16 @@ function JobRow({
             >
               Requeue
             </Button>
+            <Button
+              startIcon={<RemoveCircleOutlineIcon />}
+              color="error"
+              variant="outlined"
+              size="small"
+              disabled={isUpdating || !canRemove}
+              onClick={() => onRemove(job)}
+            >
+              Remove
+            </Button>
           </Stack>
         </Stack>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -821,11 +873,16 @@ function JobRow({
             Library: {job.libraryId}
           </Typography>
           <Typography color="text.secondary" variant="body2">
-            Profile: {job.profileId} · v{job.profileVersion || 1}
+            Video: {job.processingMode === 'audio_only' ? 'None (copy)' : `Profile ${job.profileId} · v${job.profileVersion || 1}`}
           </Typography>
           {job.audioProfileKey ? (
             <Typography color="text.secondary" variant="body2">
               Audio: {job.audioProfileKey}
+            </Typography>
+          ) : null}
+          {job.trackProfileKey ? (
+            <Typography color="text.secondary" variant="body2">
+              Tracks: {job.trackProfileKey}
             </Typography>
           ) : null}
           {timing.elapsed ? (

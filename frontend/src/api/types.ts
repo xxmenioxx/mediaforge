@@ -381,6 +381,8 @@ export type QueueJob = {
   profileCapturedAt?: string;
   activeExecutionPlanId?: number;
   audioProfileKey: string;
+  trackProfileKey: string;
+  processingMode: 'full_encode' | 'audio_only' | '';
   priority: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
   stage: string;
@@ -401,6 +403,7 @@ export type QueueJob = {
   originalArchivedPath: string;
   startedAt?: string;
   finishedAt?: string;
+  dismissedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -518,6 +521,8 @@ export type QueueJobInput = {
   libraryId: number;
   profileId: number;
   audioProfileKey?: string;
+  trackProfileKey?: string;
+  processingMode?: 'full_encode' | 'audio_only';
   priority: number;
   notes?: string;
 };
@@ -540,6 +545,8 @@ export type QueueJobUpdateInput = {
   libraryId?: number;
   profileId?: number;
   audioProfileKey?: string;
+  trackProfileKey?: string;
+  processingMode?: 'full_encode' | 'audio_only';
   priority?: number;
   status?: QueueJob['status'];
   notes?: string;

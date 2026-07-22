@@ -159,6 +159,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(job),
     }),
+  dismissQueueJob: (jobId: number) =>
+    request<QueueJob>(`/api/queue/jobs/${jobId}`, {
+      method: 'DELETE',
+    }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),
   executionPlans: (jobId: number) => request<ExecutionPlan[]>(`/api/queue/jobs/${jobId}/execution-plans`),
   reviewExecutionPlan: ({ jobId, planId, approve }: { jobId: number; planId: number; approve: boolean }) =>

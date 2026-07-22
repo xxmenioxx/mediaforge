@@ -446,7 +446,7 @@ function AssetGroupRow({
       const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
       const hasSelectedOperation = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(trackProfile);
       const queueProfileId = effectiveProfileId || (hasSelectedOperation ? profiles[0]?.id ?? 0 : 0);
-      const copyVideo = selectedProfileId < 0 && Boolean(trackProfile);
+      const copyVideo = selectedProfileId < 0;
       if (!queueProfileId || !selectedLibraryId) {
         return [];
       }
@@ -474,6 +474,8 @@ function AssetGroupRow({
             libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
             profileId: queueProfileId,
             audioProfileKey: selectedAudioProfileKey,
+            trackProfileKey: trackProfile?.key ?? '',
+            processingMode: copyVideo ? 'audio_only' : 'full_encode',
             priority: priorityForSize(asset.sizeBytes),
             notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${trackProfile?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
           });
@@ -948,6 +950,8 @@ function AssetRow({
       libraryId: isLibraryReplacement ? asset.libraryId : selectedLibraryId,
       profileId: queueProfileId,
       audioProfileKey: selectedAudioProfileKey,
+      trackProfileKey: pathTrackProfile?.key ?? '',
+      processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode',
       priority: priorityForSize(asset.sizeBytes),
       notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, selectedAudioProfileKey),
     });

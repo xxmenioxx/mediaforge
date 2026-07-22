@@ -1,12 +1,105 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestDismissQueueJobPreservesRecordAndReleasesReservation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-dismiss?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: "/media/raw/remove.mkv", LibraryID: 1, ProfileID: 1, Status: JobStatusQueued, Stage: JobStageQueued}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.LockQueuedAsset(db, job); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/queue/jobs/:id", NewQueueHandler(db).Dismiss)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/queue/jobs/1", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var stored models.QueueJob
+	if err := db.First(&stored, job.ID).Error; err != nil {
+		t.Fatalf("dismissed job was deleted: %v", err)
+	}
+	if stored.DismissedAt == nil || stored.Status != JobStatusCanceled {
+		t.Fatalf("unexpected dismissed job: %#v", stored)
+	}
+	var reservations int64
+	if err := db.Model(&models.SchedulerReservation{}).Where("job_id = ?", job.ID).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 0 {
+		t.Fatalf("reservations=%d", reservations)
+	}
+
+	router.GET("/api/queue/jobs", NewQueueHandler(db).List)
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/api/queue/jobs", nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var visible []models.QueueJob
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &visible); err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 0 {
+		t.Fatalf("dismissed jobs remain visible: %#v", visible)
+	}
+}
+
+func TestDismissQueueJobRejectsRunningAndCompleted(t *testing.T) {
+	for _, status := range []string{JobStatusRunning, JobStatusCompleted} {
+		t.Run(status, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open("file:queue-dismiss-"+status+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+				t.Fatal(err)
+			}
+			job := models.QueueJob{MediaPath: "/media/raw/" + status + ".mkv", LibraryID: 1, ProfileID: 1, Status: status, Stage: status}
+			if err := db.Create(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.DELETE("/api/queue/jobs/:id", NewQueueHandler(db).Dismiss)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/queue/jobs/1", nil))
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var stored models.QueueJob
+			if err := db.First(&stored, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.DismissedAt != nil || stored.Status != status {
+				t.Fatalf("protected job changed: %#v", stored)
+			}
+		})
+	}
+}
 
 func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-snapshot?mode=memory&cache=shared"), &gorm.Config{})
@@ -68,6 +161,19 @@ func TestQueueProfileSnapshotRejectsDisabledProfile(t *testing.T) {
 	err = NewQueueHandler(db).captureProfile(&models.QueueJob{}, profile.ID, "queue_create")
 	if err != errQueueProfileDisabled {
 		t.Fatalf("expected disabled profile error, got %v", err)
+	}
+}
+
+func TestQueueProcessingSelectionIsNormalizedAndOverridesAssetMode(t *testing.T) {
+	job := models.QueueJob{MediaPath: "/media/raw/movie.mkv", ProcessingMode: "audio_only", TrackProfileKey: "japanese-only"}
+	override := conversionOverrideForJob(job, map[string]AssetConversionOverrideState{
+		job.MediaPath: {ProcessingMode: ProcessingModeFullEncode},
+	})
+	if override.ProcessingMode != ProcessingModeAudioOnly {
+		t.Fatalf("processing mode=%q", override.ProcessingMode)
+	}
+	if normalized := normalizeQueueProcessingMode("full-encode"); normalized != ProcessingModeFullEncode {
+		t.Fatalf("normalized mode=%q", normalized)
 	}
 }
 

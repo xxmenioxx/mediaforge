@@ -91,6 +91,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/queue/jobs/:id/execution-plans/:planId/reject", executionPlans.Reject)
 		api.POST("/queue/jobs", queue.Create)
 		api.POST("/queue/jobs/:id", queue.Update)
+		api.DELETE("/queue/jobs/:id", queue.Dismiss)
 		api.GET("/settings", settings.List)
 		api.POST("/settings/:key", settings.Update)
 		api.POST("/import/mwp", imports.ImportMWP)

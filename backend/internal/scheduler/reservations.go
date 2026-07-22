@@ -74,7 +74,7 @@ func ReconcileReservations(db *gorm.DB) error {
 		return err
 	}
 	var jobs []models.QueueJob
-	if err := db.Where("status <> ? AND published_at IS NULL", "canceled").Find(&jobs).Error; err != nil {
+	if err := db.Where("status <> ? AND published_at IS NULL AND dismissed_at IS NULL", "canceled").Find(&jobs).Error; err != nil {
 		return err
 	}
 	for _, job := range jobs {
@@ -87,7 +87,7 @@ func ReconcileReservations(db *gorm.DB) error {
 			return err
 		}
 	}
-	return db.Where("job_id IN (?)", db.Model(&models.QueueJob{}).Select("id").Where("status = ? OR published_at IS NOT NULL", "canceled")).Delete(&models.SchedulerReservation{}).Error
+	return db.Where("job_id IN (?)", db.Model(&models.QueueJob{}).Select("id").Where("status = ? OR published_at IS NOT NULL OR dismissed_at IS NOT NULL", "canceled")).Delete(&models.SchedulerReservation{}).Error
 }
 
 func jsonString(value models.JSONMap, key string) string {
