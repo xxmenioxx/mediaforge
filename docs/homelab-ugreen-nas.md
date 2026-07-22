@@ -1,17 +1,17 @@
-# MediaForge V1 Home Lab / UGreen NAS Setup
+# MVForge V1 Home Lab / UGreen NAS Setup
 
-This guide is for running MediaForge against persistent NAS folders while keeping reports and logs safe across app updates.
+This guide is for running MVForge against persistent NAS folders while keeping reports and logs safe across app updates.
 
 ## Folder Layout
 
 The standard standalone installation lives under the NAS Docker applications directory:
 
 ```text
-/volume1/docker/mediaforge/
+/volume1/docker/mvforge/
   compose.yml
   .env
   config/
-    mediaforge.db
+    mvforge.db
     backups/
   reports/
     as-is/
@@ -27,7 +27,7 @@ The standard standalone installation lives under the NAS Docker applications dir
   series/
   anime/
   music/
-  mediaforge/
+  mvforge/
     originals_archive/
 ```
 
@@ -41,12 +41,12 @@ Map the NAS folders into the containers like this:
 services:
   backend:
     volumes:
-      - /volume1/docker/mediaforge/config:/app/data
-      - /volume1/docker/mediaforge/data/raw:/media/raw
+      - /volume1/docker/mvforge/config:/app/data
+      - /volume1/docker/mvforge/data/raw:/media/raw
       - /volume2/media:/media/library
-      - /volume1/docker/mediaforge/data/staging:/media/staging
-      - /volume2/media/mediaforge/originals_archive:/media/originals_archive
-      - /volume1/docker/mediaforge/reports:/media/reports
+      - /volume1/docker/mvforge/data/staging:/media/staging
+      - /volume2/media/mvforge/originals_archive:/media/originals_archive
+      - /volume1/docker/mvforge/reports:/media/reports
 ```
 
 Keep `/media/reports` persistent. It stores:
@@ -60,7 +60,7 @@ Those files are useful for debugging and later AI/Copilot analysis.
 ## First Production-Like Test
 
 1. Place a small real asset under `raw/`.
-2. Start MediaForge.
+2. Start MVForge.
 3. Create destination libraries that point under `/media/library`.
 4. Run `Analysis` on the asset.
 5. Preview in `Profile Lab`.
@@ -98,7 +98,7 @@ For production batches, preview audio in `Profile Lab` before using restoration 
 For local/dev cleanup, use:
 
 ```bash
-CONFIRM_MEDIAFORGE_RESET=YES sh scripts/reset-v1-preserve-reports.sh
+CONFIRM_MVFORGE_RESET=YES sh scripts/reset-v1-preserve-reports.sh
 ```
 
 This removes the local SQLite Docker volume and clears local working media folders, but preserves `media/reports`.
@@ -111,4 +111,4 @@ Do not run this against production NAS folders unless you have intentionally bac
 - Keep `dryRunOnly` enabled until conversion commands look correct.
 - Start with one worker and one job at a time.
 - Keep originals for at least 30 days while testing.
-- Register only the intended destination folders under `/media/library`; do not register downloads or the MediaForge work folders as published libraries.
+- Register only the intended destination folders under `/media/library`; do not register downloads or the MVForge work folders as published libraries.

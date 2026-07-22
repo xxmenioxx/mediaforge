@@ -3,8 +3,8 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/anuelvs/mediaforge/backend/internal/capabilities"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

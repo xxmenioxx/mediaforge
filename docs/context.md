@@ -1,4 +1,4 @@
-# MediaForge - Project Context
+# MVForge - Project Context
 
 Version: 0.1
 
@@ -10,9 +10,9 @@ Status: Greenfield Project
 
 # Vision
 
-MediaForge is an open-source, self-hosted media processing platform designed to manage, optimize and validate personal media libraries before they are published into media servers such as Jellyfin, Plex or Emby.
+MVForge is an open-source, self-hosted media processing platform designed to manage, optimize and validate personal media libraries before they are published into media servers such as Jellyfin, Plex or Emby.
 
-MediaForge is **not** a media server.
+MVForge is **not** a media server.
 
 It is the orchestration layer between raw media files and the final media library.
 
@@ -26,7 +26,7 @@ The philosophy is:
 
 # Design Principles
 
-MediaForge must be:
+MVForge must be:
 
 * Self-hosted
 * Open Source
@@ -71,7 +71,7 @@ Support future AI assistance.
 
 # Product Philosophy
 
-Unlike Tdarr, FileFlows or Unmanic, MediaForge should prioritize **decision support** instead of **automation**.
+Unlike Tdarr, FileFlows or Unmanic, MVForge should prioritize **decision support** instead of **automation**.
 
 Every conversion should answer one question:
 
@@ -170,7 +170,7 @@ Instead, follow the same usability principles:
 * Minimal clicks
 * Fast navigation
 
-Users familiar with Jellyfin should immediately understand MediaForge.
+Users familiar with Jellyfin should immediately understand MVForge.
 
 The application should feel like it belongs in the same ecosystem while maintaining its own identity.
 
@@ -258,7 +258,7 @@ Profiles should be exportable/importable.
 Profiles should use the ideas and configuration model discussed in the
 `media worker pipeline` project as their foundation.
 
-MediaForge should treat that prior pipeline work as the baseline for:
+MVForge should treat that prior pipeline work as the baseline for:
 
 * Conversion presets
 * Worker-compatible encoding options
@@ -372,7 +372,7 @@ Emby
 
 # Intelligent Conversion Advisor
 
-MediaForge should implement a pre-conversion analysis engine.
+MVForge should implement a pre-conversion analysis engine.
 
 Before creating a job, the system should estimate:
 
@@ -394,7 +394,7 @@ The recommendation must always explain *why*.
 
 # Hardware Awareness
 
-MediaForge should detect available hardware.
+MVForge should detect available hardware.
 
 Examples:
 
@@ -416,7 +416,7 @@ Recommendations should adapt automatically.
 
 # AI Copilot
 
-MediaForge should be designed to support local AI models.
+MVForge should be designed to support local AI models.
 
 Supported providers (future):
 
@@ -490,7 +490,7 @@ This makes the AI deterministic and trustworthy.
 
 # Experimental AI Subtitle Translation
 
-MediaForge should eventually explore an optional AI-assisted workflow for films
+MVForge should eventually explore an optional AI-assisted workflow for films
 or episodes that do not include Spanish subtitles.
 
 The first target languages should be:
@@ -589,7 +589,7 @@ This feature should be designed as a pipeline with cached intermediate artifacts
 
 # Future Profile Lab / Comparison Lab
 
-MediaForge should include a dedicated Lab workspace for testing and comparing
+MVForge should include a dedicated Lab workspace for testing and comparing
 audio and video profiles before queueing full conversions.
 
 The current Audio Test Bench is the first small step in this direction, but the
@@ -613,7 +613,7 @@ The Lab should support:
 * Forking an existing profile into a tuned variant for a specific source type
 
 The Lab should remain review-first and temporary by default. Generated samples
-should live inside MediaForge-controlled staging or cache paths and should be
+should live inside MVForge-controlled staging or cache paths and should be
 cleanable without touching originals or published libraries.
 
 In the future, this Lab can become part of AI Copilot:
@@ -648,7 +648,7 @@ reviewed, tested in the Lab, and explicitly enabled by the user.
 
 # Future Pipeline Map / Stage Inspector
 
-MediaForge should include a visual process map for every queued job and worker
+MVForge should include a visual process map for every queued job and worker
 execution.
 
 The goal is to show exactly where a conversion or media workflow is in the
@@ -714,7 +714,7 @@ so FFmpeg and HandBrake execution remains transparent and easy to debug.
 
 # Future Queue Management Controls
 
-MediaForge should add explicit queue-management actions before enabling real
+MVForge should add explicit queue-management actions before enabling real
 destructive conversion execution.
 
 The queue should support:
@@ -741,7 +741,7 @@ Canceling a job should preserve logs, diagnostics, notes, commands, snapshots,
 and metadata by default.
 
 Cleanup should be explicit and should only remove artifacts inside
-MediaForge-controlled paths.
+MVForge-controlled paths.
 
 Suggested settings:
 
@@ -770,7 +770,7 @@ Future queue metadata:
 
 # Future Job Notifications
 
-MediaForge should add in-app, email, browser, or push notifications for
+MVForge should add in-app, email, browser, or push notifications for
 long-running workflows so users do not need to keep the Queue or Workers page
 open.
 
@@ -810,7 +810,7 @@ gateway, mobile app integration, ntfy, Gotify, Apprise, or webhook providers.
 
 # Future Global Conversion Activity Widget
 
-MediaForge should show a persistent, minimizable activity widget in the main
+MVForge should show a persistent, minimizable activity widget in the main
 application layout, similar to the transfer panels used by Google Drive or
 MEGA. It should remain available while navigating between pages and must not
 require the Queue or Workers page to stay open.
@@ -834,7 +834,7 @@ must never cancel the underlying job.
 
 # Manual Analysis And Profile Lab
 
-MediaForge should separate quick filesystem scanning from deeper manual
+MVForge should separate quick filesystem scanning from deeper manual
 analysis and profile experimentation.
 
 Scanner remains the fast inventory layer:
@@ -883,7 +883,7 @@ Future agents should consume:
 
 # Future Episode Splitter
 
-MediaForge should include an optional splitter workflow for series, anime, or
+MVForge should include an optional splitter workflow for series, anime, or
 DVD/Blu-ray sources where multiple episodes are contained inside a single MKV.
 
 This feature should be review-first and should not cut or overwrite files
@@ -928,7 +928,7 @@ original file.
 
 # Future Phase: Observability With Prometheus And Grafana
 
-MediaForge should include an optional observability stack for technical users
+MVForge should include an optional observability stack for technical users
 who want to monitor server load and media pipeline behavior over time.
 
 Suggested stack:
@@ -936,7 +936,7 @@ Suggested stack:
 * Prometheus for metrics collection
 * Grafana for dashboards
 * Node exporter or container metrics for CPU, memory, disk, and IO
-* MediaForge application metrics exposed from the backend
+* MVForge application metrics exposed from the backend
 
 System metrics:
 
@@ -947,7 +947,7 @@ System metrics:
 * Container/service health
 * Worker resource consumption
 
-MediaForge metrics:
+MVForge metrics:
 
 * Jobs queued, running, completed, failed, canceled
 * Job duration by profile, library, asset type, and worker
@@ -969,7 +969,7 @@ Dashboards should help answer:
 * Are validation scores improving or degrading?
 * Which libraries are generating the most work?
 
-This should be optional and self-hosted. MediaForge should still work without
+This should be optional and self-hosted. MVForge should still work without
 Grafana or Prometheus.
 
 ---
@@ -1052,10 +1052,10 @@ Library-wide Advisor recommendations
 
 # Long-Term Vision
 
-MediaForge should become the central operating system for self-hosted media processing.
+MVForge should become the central operating system for self-hosted media processing.
 
 Jellyfin, Plex and Emby remain responsible for playback.
 
-MediaForge becomes responsible for everything that happens before a media file reaches those servers.
+MVForge becomes responsible for everything that happens before a media file reaches those servers.
 
 The ultimate goal is to create an intelligent media pipeline that combines high-quality conversion, validation, analytics, hardware optimization and AI-assisted decision making while remaining transparent, modular and completely self-hosted.

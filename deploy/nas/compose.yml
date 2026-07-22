@@ -1,13 +1,12 @@
-name: mediaforge
+name: mvforge
 
 services:
   backend:
-    image: ghcr.io/xxmenioxx/mediaforge-backend:${MEDIAFORGE_VERSION:-0.1.9}
+    image: ghcr.io/xxmenioxx/mvforge-backend:${MVFORGE_VERSION:-0.2.0}
     restart: unless-stopped
     environment:
-      MEDIAFORGE_API_HOST: 0.0.0.0
-      MEDIAFORGE_API_PORT: 8080
-      MEDIAFORGE_DB_PATH: /app/data/mediaforge.db
+      MVFORGE_API_HOST: 0.0.0.0
+      MVFORGE_API_PORT: 8080
       TZ: ${TZ:-UTC}
     volumes:
       - ${CONFIG_PATH:?Set CONFIG_PATH in .env}:/app/data
@@ -31,10 +30,10 @@ services:
       - internal
 
   web:
-    image: ghcr.io/xxmenioxx/mediaforge-web:${MEDIAFORGE_VERSION:-0.1.9}
+    image: ghcr.io/xxmenioxx/mvforge-web:${MVFORGE_VERSION:-0.2.0}
     restart: unless-stopped
     ports:
-      - "${MEDIAFORGE_PORT:-8090}:80"
+      - "${MVFORGE_PORT:-8090}:80"
     depends_on:
       backend:
         condition: service_healthy

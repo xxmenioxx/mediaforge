@@ -1,6 +1,6 @@
-# MediaForge Scheduler v1
+# MVForge Scheduler v1
 
-Esta guía describe cómo funciona el scheduler implementado en MediaForge, cómo toma decisiones y qué controla cada setting. Para las pruebas de aceptación consulta también [scheduler-v1-validation.md](scheduler-v1-validation.md).
+Esta guía describe cómo funciona el scheduler implementado en MVForge, cómo toma decisiones y qué controla cada setting. Para las pruebas de aceptación consulta también [scheduler-v1-validation.md](scheduler-v1-validation.md).
 
 ## 1. Qué hace el scheduler
 
@@ -59,7 +59,7 @@ La cola se ordena por `priority` ascendente y luego por fecha de creación. Por 
 
 ### Profile Snapshot
 
-Al crear o reconfigurar un job, MediaForge captura el perfil. Una edición posterior del perfil global no cambia silenciosamente el contrato de un job existente. Si cambia la configuración del job, se crea una nueva versión del plan y la anterior queda reemplazada.
+Al crear o reconfigurar un job, MVForge captura el perfil. Una edición posterior del perfil global no cambia silenciosamente el contrato de un job existente. Si cambia la configuración del job, se crea una nueva versión del plan y la anterior queda reemplazada.
 
 ### Execution Plan
 
@@ -343,7 +343,7 @@ Las reservas se liberan al finalizar, fallar o cancelar. En el arranque, la reco
 
 ## 7. Reinicio y recuperación
 
-MediaForge no reinicia automáticamente un FFmpeg perdido. Al arrancar:
+MVForge no reinicia automáticamente un FFmpeg perdido. Al arrancar:
 
 - Marca como interrumpidos los jobs que figuraban running sin proceso controlado.
 - Libera reservas inconsistentes.
@@ -465,7 +465,7 @@ local-worker maxConcurrentJobs = 1
 Resultado: local-worker ejecuta 1 job.
 ```
 
-Con dos workers de capacidad 2 y un límite global de 3, MediaForge podrá ejecutar como máximo 3 jobs entre ambos, nunca 4.
+Con dos workers de capacidad 2 y un límite global de 3, MVForge podrá ejecutar como máximo 3 jobs entre ambos, nunca 4.
 
 Los Worker Settings se reorganizarán así:
 
@@ -506,7 +506,7 @@ Un encoder alternativo solo puede seleccionarse si aparece explícitamente en `a
 
 ## 11. Fase posterior — Worker Registry y enrolamiento
 
-Actualmente MediaForge solo tiene un worker administrado realmente: `local-worker`. El backend registra su heartbeat, detecta sus encoders y ejecuta FFmpeg en la misma máquina. El campo de nombre del claim manual únicamente asigna un nombre al claim; no instala, registra ni conecta otro ejecutor.
+Actualmente MVForge solo tiene un worker administrado realmente: `local-worker`. El backend registra su heartbeat, detecta sus encoders y ejecuta FFmpeg en la misma máquina. El campo de nombre del claim manual únicamente asigna un nombre al claim; no instala, registra ni conecta otro ejecutor.
 
 Esta fase permitirá agregar workers desde la UI y distinguir dos modalidades:
 
@@ -515,7 +515,7 @@ Local managed worker
   → corre dentro del backend actual
 
 Remote worker agent
-  → corre MediaForge Agent en otra máquina
+  → corre MVForge Agent en otra máquina
   → se enrola con un token temporal
   → reporta capacidades y reclama jobs compatibles
 ```
@@ -536,8 +536,8 @@ La transferencia automática de archivos entre nodos se deja para Distributed Wo
 ```mermaid
 sequenceDiagram
     actor U as Usuario
-    participant UI as MediaForge UI
-    participant API as MediaForge API
+    participant UI as MVForge UI
+    participant API as MVForge API
     participant A as Worker Agent
 
     U->>UI: Add worker
@@ -557,7 +557,7 @@ El wizard **Add Worker** mostrará:
 
 1. Nombre y descripción.
 2. Tipo `Remote agent`.
-3. URL que el agent utilizará para conectar con MediaForge.
+3. URL que el agent utilizará para conectar con MVForge.
 4. Token temporal con expiración corta y uso único.
 5. Comando Docker o binario para iniciar el agent.
 6. Confirmación de heartbeat.
@@ -635,7 +635,7 @@ Los endpoints del agent deben autenticar cada petición, limitar el worker al jo
 1. Endurecer `WorkerNode` como registro persistente administrable.
 2. Separar heartbeat local del protocolo autenticado de agentes.
 3. Invitaciones de un uso y credenciales revocables.
-4. MediaForge Agent mínimo con detección de capacidades.
+4. MVForge Agent mínimo con detección de capacidades.
 5. Claim filtrado por encoder, capacidad y acceso a storage.
 6. Heartbeat, progreso, complete y fail idempotentes.
 7. Path mappings y prueba de lectura/escritura.

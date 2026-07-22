@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
@@ -48,7 +48,7 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 	assertContains(t, command, "-filter:a:1")
 	assertContains(t, command, "-c:a:1 aac")
 	assertContains(t, command, "-metadata:s:a:0 \"title=Original Mono\"")
-	assertContains(t, command, "-metadata:s:a:1 \"title=Stereo Enhanced (MediaForge)\"")
+	assertContains(t, command, "-metadata:s:a:1 \"title=Stereo Enhanced (MVForge)\"")
 	assertContains(t, command, "-disposition:a:0 0")
 	assertContains(t, command, "-disposition:a:1 default")
 	assertContains(t, command, "-map_chapters 0")
@@ -334,7 +334,7 @@ func TestFFmpegCommandBuilderAllowsAssetToDisableAACCompatibility(t *testing.T) 
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "AAC Stereo (MediaForge)")
+	assertNotContains(t, command, "AAC Stereo (MVForge)")
 }
 
 func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) {
@@ -352,7 +352,7 @@ func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) 
 	assertContains(t, command, "-map 0")
 	assertNotContains(t, command, "-map 0:2")
 	assertNotContains(t, command, "-c:a:1 aac")
-	assertNotContains(t, command, "AAC Stereo (MediaForge)")
+	assertNotContains(t, command, "AAC Stereo (MVForge)")
 }
 
 func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *testing.T) {
@@ -371,7 +371,7 @@ func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *tes
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "AAC Stereo (MediaForge)")
+	assertNotContains(t, command, "AAC Stereo (MVForge)")
 	assertNotContains(t, command, "-map 0:1 -c copy")
 }
 

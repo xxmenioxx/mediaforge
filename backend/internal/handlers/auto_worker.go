@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"gorm.io/gorm"
 )
 

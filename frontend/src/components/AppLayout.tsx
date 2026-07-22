@@ -116,14 +116,14 @@ export function AppLayout() {
             {isExpanded ? (
               <Stack spacing={0.2} sx={{ minWidth: 0 }}>
                 <Typography variant="h2" noWrap>
-                  MediaForge
+                  MVForge
                 </Typography>
                 <Typography color="text.secondary" variant="body2" noWrap>
                   Manual media workflows
                 </Typography>
               </Stack>
             ) : null}
-            {!isExpanded ? <Typography variant="h2">MF</Typography> : null}
+            {!isExpanded ? <Typography variant="h2">MVF</Typography> : null}
           </Toolbar>
           <Divider />
           <List sx={{ px: 1, py: 1.5, flex: 1, overflowY: 'auto' }}>
@@ -185,7 +185,7 @@ export function AppLayout() {
           <Divider />
           <Box sx={{ px: isExpanded ? 2 : 1, py: 1.25, textAlign: isExpanded ? 'left' : 'center' }}>
             <Typography color="text.secondary" variant="caption" noWrap>
-              {isExpanded ? `MediaForge v${packageJson.version}` : `v${packageJson.version}`}
+              {isExpanded ? `MVForge · Media & Video Forge · v${packageJson.version}` : `v${packageJson.version}`}
             </Typography>
           </Box>
         </Stack>

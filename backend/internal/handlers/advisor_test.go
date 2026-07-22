@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -21,7 +21,7 @@ func TestCodecMatchesTreatsHEVCEncoderLabelsAsSameFamily(t *testing.T) {
 	}
 }
 
-func TestAdvisorProvenanceUsesMediaForgeJobAndIgnoresRetiredPublication(t *testing.T) {
+func TestAdvisorProvenanceUsesMVForgeJobAndIgnoresRetiredPublication(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:advisor-provenance?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -35,15 +35,15 @@ func TestAdvisorProvenanceUsesMediaForgeJobAndIgnoresRetiredPublication(t *testi
 		t.Fatal(err)
 	}
 	handler := NewAdvisorHandler(db)
-	if !handler.hasMediaForgeConversion(path) {
-		t.Fatal("published MediaForge job was not recognized")
+	if !handler.hasMVForgeConversion(path) {
+		t.Fatal("published MVForge job was not recognized")
 	}
 	now := time.Now()
 	job.PublicationRetiredAt = &now
 	if err := db.Save(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	if handler.hasMediaForgeConversion(path) {
+	if handler.hasMVForgeConversion(path) {
 		t.Fatal("retired publication must not count as current conversion provenance")
 	}
 }

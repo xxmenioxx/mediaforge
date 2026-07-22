@@ -1,4 +1,4 @@
-# Roadmap de MediaForge
+# Roadmap de MVForge
 
 Esta ruta guarda trabajo futuro y decisiones pendientes. No debe usarse como documentación de funciones disponibles.
 
@@ -6,7 +6,7 @@ Esta ruta guarda trabajo futuro y decisiones pendientes. No debe usarse como doc
 
 ```mermaid
 timeline
-    title Evolución propuesta de MediaForge
+    title Evolución propuesta de MVForge
     Piloto 0.1.x : Validación real en NAS
                  : Backups y rollback
                  : Seguridad básica
@@ -33,7 +33,7 @@ timeline
 ## Documentos de visión relacionados
 
 - [Product Vision](../vision.md)
-- [MediaForge V2](../v2_mediaforge.md)
+- [MVForge V2](../v2_mvforge.md)
 - [Discovery & Analysis V2](../v2-discovery-analysis.md)
 - [Project Context](../context.md)
 

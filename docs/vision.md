@@ -1,12 +1,12 @@
-# MediaForge - Product Vision
+# MVForge - Product Vision
 
 ## Vision
 
-MediaForge is a self-hosted media processing platform designed to help users analyze, enhance, convert, validate, and publish multimedia assets.
+MVForge is a self-hosted media processing platform designed to help users analyze, enhance, convert, validate, and publish multimedia assets.
 
 Its goal is **not** to replace Jellyfin, Plex, Radarr, Sonarr or similar applications.
 
-Instead, MediaForge complements those tools by providing a complete processing pipeline between media acquisition and media consumption.
+Instead, MVForge complements those tools by providing a complete processing pipeline between media acquisition and media consumption.
 
 ```
 Acquisition
@@ -16,7 +16,7 @@ Acquisition
 
         ▼
 
-    MediaForge
+    MVForge
 
         │
 
@@ -25,19 +25,19 @@ Acquisition
 Jellyfin / Plex / Archive
 ```
 
-MediaForge should eventually become the operating system for media processing, where every decision, conversion, restoration, validation and publication is reproducible and traceable.
+MVForge should eventually become the operating system for media processing, where every decision, conversion, restoration, validation and publication is reproducible and traceable.
 
 ---
 
 # Product Philosophy
 
-Every feature added to MediaForge should answer one simple question:
+Every feature added to MVForge should answer one simple question:
 
 > Does this help produce a better version of a media asset?
 
 If the answer is no, it probably belongs in another application.
 
-MediaForge focuses on media processing, not media management.
+MVForge focuses on media processing, not media management.
 
 ---
 
@@ -65,7 +65,7 @@ Running the same profile over the same asset should generate the same output.
 
 ## Transparency
 
-MediaForge should never behave like a black box.
+MVForge should never behave like a black box.
 
 Users should always understand:
 
@@ -97,7 +97,7 @@ The application should start manual-first while collecting high-quality data.
 
 # Long-Term Architecture
 
-MediaForge should evolve into a modular pipeline.
+MVForge should evolve into a modular pipeline.
 
 ```
 Discovery
@@ -158,7 +158,7 @@ Components
 - History
 - Reports
 
-At the end of this phase MediaForge should reliably process assets from start to finish.
+At the end of this phase MVForge should reliably process assets from start to finish.
 
 No AI.
 
@@ -170,7 +170,7 @@ Everything user controlled.
 
 # Phase 2 - Media Enhancement
 
-This phase transforms MediaForge from a transcoding application into a media enhancement platform.
+This phase transforms MVForge from a transcoding application into a media enhancement platform.
 
 ## Video Enhancement Studio
 
@@ -224,7 +224,7 @@ Provide visual controls for:
 
 ## Profile Lab
 
-The Profile Lab becomes the heart of MediaForge.
+The Profile Lab becomes the heart of MVForge.
 
 Instead of converting an entire movie, users generate previews.
 
@@ -306,7 +306,7 @@ Examples
 
 ## Smart Recommendations
 
-MediaForge begins suggesting profiles based on previous successful conversions.
+MVForge begins suggesting profiles based on previous successful conversions.
 
 Still user approved.
 
@@ -382,27 +382,27 @@ Users should be able to:
 
 Paths outside configured roots must never be scanned implicitly.
 
-## MediaForge Provenance
+## MVForge Provenance
 
 Every successfully processed output should have a durable provenance record.
-The MediaForge database and immutable job report are authoritative and should
+The MVForge database and immutable job report are authoritative and should
 store at least:
 
-- processed by MediaForge
-- MediaForge application version
+- processed by MVForge
+- MVForge application version
 - job ID and processing timestamp
 - profile ID and profile version
 - source fingerprint and output fingerprint
 - effective processing pipeline and validation result
 
-For portability, MediaForge should also write equivalent embedded container
+For portability, MVForge should also write equivalent embedded container
 metadata when the format supports safe custom tags. When it does not, it should
 write a versioned sidecar manifest. Embedded tags and sidecars are useful hints,
 but must not be the only source of truth because files can be remuxed, copied,
 renamed, or stripped of metadata.
 
 The UI should distinguish verified provenance, imported/unverified provenance,
-and assets with no known MediaForge history.
+and assets with no known MVForge history.
 
 ## Library Advisor
 
@@ -426,7 +426,7 @@ automation, and safety policies.
 
 # Future Vision
 
-MediaForge should eventually become much more than a FFmpeg frontend.
+MVForge should eventually become much more than a FFmpeg frontend.
 
 It should become a complete Media Processing Platform capable of:
 
@@ -444,9 +444,9 @@ while remaining fully self-hosted and reproducible.
 
 ---
 
-# What MediaForge is NOT
+# What MVForge is NOT
 
-MediaForge is not:
+MVForge is not:
 
 - a media server
 - a downloader
@@ -459,13 +459,13 @@ MediaForge is not:
 
 Those applications already solve those problems well.
 
-MediaForge focuses on what happens after the media has been acquired and before it is consumed.
+MVForge focuses on what happens after the media has been acquired and before it is consumed.
 
 ---
 
 # Guiding Principle
 
-MediaForge should help users answer one question with confidence:
+MVForge should help users answer one question with confidence:
 
 > "How can I create the best possible version of this media asset?"
 

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 type Config struct {
@@ -13,9 +14,9 @@ type Config struct {
 
 func Load() Config {
 	return Config{
-		Host:         env("MEDIAFORGE_API_HOST", "127.0.0.1"),
-		Port:         env("MEDIAFORGE_API_PORT", "8080"),
-		DatabasePath: env("MEDIAFORGE_DB_PATH", "data/mediaforge.db"),
+		Host:         compatibleEnv("MVFORGE_API_HOST", "MEDIAFORGE_API_HOST", "127.0.0.1"),
+		Port:         compatibleEnv("MVFORGE_API_PORT", "MEDIAFORGE_API_PORT", "8080"),
+		DatabasePath: compatibleEnv("MVFORGE_DB_PATH", "MEDIAFORGE_DB_PATH", defaultDatabasePath()),
 	}
 }
 
@@ -30,4 +31,19 @@ func env(key string, fallback string) string {
 	}
 
 	return value
+}
+
+func compatibleEnv(key string, legacyKey string, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return env(legacyKey, fallback)
+}
+
+func defaultDatabasePath() string {
+	legacy := filepath.Join("data", "mediaforge.db")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return filepath.Join("data", "mvforge.db")
 }

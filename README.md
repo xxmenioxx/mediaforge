@@ -1,18 +1,18 @@
-# MediaForge
+# MVForge — Media & Video Forge
 
-MediaForge es una plataforma self-hosted para analizar, preparar, convertir, validar y publicar archivos multimedia antes de incorporarlos a Jellyfin, Plex, Emby u otra biblioteca.
+MVForge (Media & Video Forge) es una plataforma self-hosted para analizar, preparar, convertir, validar y publicar archivos multimedia antes de incorporarlos a Jellyfin, Plex, Emby u otra biblioteca.
 
-No es un servidor multimedia ni reemplaza a Jellyfin. MediaForge es la capa de procesamiento entre los archivos originales y la biblioteca final.
+No es un servidor multimedia ni reemplaza a Jellyfin. MVForge es la capa de procesamiento entre los archivos originales y la biblioteca final.
 
 ```mermaid
 flowchart LR
-    RAW[Archivos originales] --> MF[MediaForge]
-    MF --> ANALYSIS[Análisis y planificación]
+    RAW[Archivos originales] --> MVF[MVForge]
+    MVF --> ANALYSIS[Análisis y planificación]
     ANALYSIS --> CONVERT[Conversión controlada]
     CONVERT --> VALIDATE[Validación]
     VALIDATE --> LIBRARY[Biblioteca publicada]
     LIBRARY --> SERVER["Jellyfin / Plex / Emby"]
-    MF --> REPORTS[Reportes, logs y procedencia]
+    MVF --> REPORTS[Reportes, logs y procedencia]
 ```
 
 ## Funciones principales
@@ -52,25 +52,25 @@ flowchart TD
 ### Requisitos
 
 - Docker Desktop en macOS o Windows, o Docker Engine con Compose v2 en Linux.
-- Una versión publicada de MediaForge.
+- Una versión publicada de MVForge.
 - Carpetas dedicadas para configuración, originales, staging, biblioteca, archivo y reportes.
 
 ### Instalación recomendada
 
-1. Descarga del [release más reciente](https://github.com/xxmenioxx/mediaforge/releases) estos archivos:
+1. Descarga del [release más reciente](https://github.com/xxmenioxx/mvforge/releases) estos archivos:
 
-   - `mediaforge-compose.yml`
-   - `mediaforge.env.example`
-   - `mediaforge-backup.sh`
+   - `mvforge-compose.yml`
+   - `mvforge.env.example`
+   - `mvforge-backup.sh`
 
 2. Colócalos en una carpeta dedicada y renombra los dos primeros:
 
 ```sh
-mkdir -p mediaforge
-cd mediaforge
-mv mediaforge-compose.yml compose.yml
-mv mediaforge.env.example .env
-chmod +x mediaforge-backup.sh
+mkdir -p mvforge
+cd mvforge
+mv mvforge-compose.yml compose.yml
+mv mvforge.env.example .env
+chmod +x mvforge-backup.sh
 ```
 
 3. Crea las carpetas de datos. En macOS o Linux, por ejemplo:
@@ -82,19 +82,19 @@ mkdir -p data/config data/raw data/library data/staging data/originals_archive d
 4. Edita `.env` y utiliza paths absolutos. Ejemplo para macOS o Linux:
 
 ```dotenv
-MEDIAFORGE_VERSION=0.1.9
-MEDIAFORGE_PORT=8090
+MVFORGE_VERSION=0.2.0
+MVFORGE_PORT=8090
 TZ=America/Mexico_City
 
-CONFIG_PATH=/ruta/absoluta/mediaforge/data/config
-RAW_PATH=/ruta/absoluta/mediaforge/data/raw
-LIBRARY_PATH=/ruta/absoluta/mediaforge/data/library
-STAGING_PATH=/ruta/absoluta/mediaforge/data/staging
-ARCHIVE_PATH=/ruta/absoluta/mediaforge/data/originals_archive
-REPORTS_PATH=/ruta/absoluta/mediaforge/data/reports
+CONFIG_PATH=/ruta/absoluta/mvforge/data/config
+RAW_PATH=/ruta/absoluta/mvforge/data/raw
+LIBRARY_PATH=/ruta/absoluta/mvforge/data/library
+STAGING_PATH=/ruta/absoluta/mvforge/data/staging
+ARCHIVE_PATH=/ruta/absoluta/mvforge/data/originals_archive
+REPORTS_PATH=/ruta/absoluta/mvforge/data/reports
 ```
 
-5. Inicia MediaForge:
+5. Inicia MVForge:
 
 ```sh
 docker compose --env-file .env -f compose.yml pull
@@ -113,20 +113,20 @@ El mismo paquete funciona en equipos `linux/amd64` y `linux/arm64`.
 La instalación independiente recomendada vive, como otras aplicaciones Docker, en un directorio propio:
 
 ```text
-/volume1/docker/mediaforge
+/volume1/docker/mvforge
 ```
 
 En un NAS con NVMe en `volume1` y HDD en `volume2`, utiliza el NVMe para inputs activos y staging, y el HDD para bibliotecas y archivo de originales:
 
 ```sh
-mkdir -p /volume1/docker/mediaforge/config
-mkdir -p /volume1/docker/mediaforge/data/raw
-mkdir -p /volume1/docker/mediaforge/data/staging
-mkdir -p /volume1/docker/mediaforge/reports
-mkdir -p /volume2/media/mediaforge/originals_archive
+mkdir -p /volume1/docker/mvforge/config
+mkdir -p /volume1/docker/mvforge/data/raw
+mkdir -p /volume1/docker/mvforge/data/staging
+mkdir -p /volume1/docker/mvforge/reports
+mkdir -p /volume2/media/mvforge/originals_archive
 ```
 
-En `.env`, `LIBRARY_PATH` apunta a `/volume2/media` y `ARCHIVE_PATH` a `/volume2/media/mediaforge/originals_archive`. Todos estos paths siguen siendo configurables para otros NAS.
+En `.env`, `LIBRARY_PATH` apunta a `/volume2/media` y `ARCHIVE_PATH` a `/volume2/media/mvforge/originals_archive`. Todos estos paths siguen siendo configurables para otros NAS.
 
 Configura esos paths en `.env` y ejecuta:
 
@@ -136,7 +136,7 @@ docker compose --env-file .env -f compose.yml up -d
 docker compose --env-file .env -f compose.yml ps
 ```
 
-Accede mediante `http://IP-DEL-SERVIDOR:8090`. No expongas MediaForge directamente a Internet; para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
+Accede mediante `http://IP-DEL-SERVIDOR:8090`. No expongas MVForge directamente a Internet; para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
 
 La instalación estándar no depende de ningún stack externo. Para este HomeLab existe además una [integración opcional con nas-media-stack](docs/guides/nas-media-stack-integration.md). Consulta la [guía completa de instalación Docker y NAS](docs/docker-nas-installation.md) para backups, actualizaciones, rollback e imágenes privadas.
 
@@ -157,10 +157,10 @@ Antes de procesar una colección:
 Antes de actualizar, confirma que no haya jobs ejecutándose y crea un backup consistente de SQLite:
 
 ```sh
-./mediaforge-backup.sh
+./mvforge-backup.sh
 ```
 
-Cambia `MEDIAFORGE_VERSION` en `.env` y ejecuta:
+Cambia `MVFORGE_VERSION` en `.env` y ejecuta:
 
 ```sh
 docker compose --env-file .env -f compose.yml pull
@@ -174,8 +174,8 @@ Nunca dependas de `latest` para una instalación estable.
 El entorno de desarrollo usa Vite y el backend Go directamente desde sus Dockerfiles:
 
 ```sh
-git clone https://github.com/xxmenioxx/mediaforge.git
-cd mediaforge
+git clone https://github.com/xxmenioxx/mvforge.git
+cd mvforge
 docker compose up --build
 ```
 
@@ -190,7 +190,7 @@ automáticamente `/api`, `/health` y `/swagger` al backend local en el puerto
 ```sh
 # Terminal 1
 cd backend
-MEDIAFORGE_API_HOST=0.0.0.0 go run ./cmd/api
+MVFORGE_API_HOST=0.0.0.0 go run ./cmd/api
 
 # Terminal 2
 cd frontend
@@ -212,7 +212,7 @@ cd ../frontend && npm ci && npm run build
 
 Empieza por el [índice de documentación](docs/README.md):
 
-- [Cómo usar MediaForge](docs/guides/using-mediaforge.md)
+- [Cómo usar MVForge](docs/guides/using-mvforge.md)
 - [Perfiles de video, audio y tracks](docs/guides/profiles.md)
 - [Recomendaciones prácticas de perfiles](docs/guides/profile-recommendations.md)
 - [Cómo funciona el scheduler](docs/guides/scheduler.md)
@@ -224,7 +224,7 @@ Empieza por el [índice de documentación](docs/README.md):
 
 ## Estado del proyecto
 
-MediaForge está en desarrollo activo. La versión `0.1.x` debe tratarse como un piloto controlado: conserva backups, procesa primero copias o archivos descartables y revisa manualmente los resultados antes de automatizar la publicación de una colección completa.
+MVForge está en desarrollo activo. La versión `0.1.x` debe tratarse como un piloto controlado: conserva backups, procesa primero copias o archivos descartables y revisa manualmente los resultados antes de automatizar la publicación de una colección completa.
 
 ## Licencia
 

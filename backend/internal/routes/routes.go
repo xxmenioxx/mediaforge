@@ -7,8 +7,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/applog"
-	"github.com/anuelvs/mediaforge/backend/internal/handlers"
+	"github.com/anuelvs/mvforge/backend/internal/applog"
+	"github.com/anuelvs/mvforge/backend/internal/handlers"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"

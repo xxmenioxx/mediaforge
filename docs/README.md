@@ -1,4 +1,4 @@
-# Documentación de MediaForge
+# Documentación de MVForge
 
 Este directorio separa las guías operativas, las especificaciones técnicas y el trabajo futuro.
 
@@ -6,7 +6,7 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 
 1. [Instalación Docker en NAS, HomeLab o servidor](docker-nas-installation.md)
 2. [Integración con nas-media-stack](guides/nas-media-stack-integration.md)
-3. [Cómo usar MediaForge](guides/using-mediaforge.md)
+3. [Cómo usar MVForge](guides/using-mvforge.md)
 4. [Perfiles de video, audio y tracks](guides/profiles.md)
 5. [Recomendaciones prácticas de perfiles](guides/profile-recommendations.md)
 6. [Cómo funciona el scheduler](guides/scheduler.md)
@@ -19,7 +19,7 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 - [Guía técnica completa del Scheduler v1](scheduler-v1-guide.md)
 - [Contexto general del proyecto](context.md)
 - [Visión de producto](vision.md)
-- [Visión V2](v2_mediaforge.md)
+- [Visión V2](v2_mvforge.md)
 - [Discovery & Analysis V2](v2-discovery-analysis.md)
 
 ## Próximos pasos

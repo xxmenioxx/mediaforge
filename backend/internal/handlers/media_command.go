@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/anuelvs/mediaforge/backend/internal/capabilities"
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 const (
@@ -150,7 +150,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 			fmt.Sprintf("-c:a:%d", aacStereoIndex), "aac",
 			fmt.Sprintf("-b:a:%d", aacStereoIndex), fmt.Sprintf("%dk", aacStereoBitrateKbps(plan.Profile)),
 			fmt.Sprintf("-ac:a:%d", aacStereoIndex), "2",
-			fmt.Sprintf("-metadata:s:a:%d", aacStereoIndex), "title=AAC Stereo (MediaForge)",
+			fmt.Sprintf("-metadata:s:a:%d", aacStereoIndex), "title=AAC Stereo (MVForge)",
 			fmt.Sprintf("-disposition:a:%d", aacStereoIndex), disposition,
 		)
 	} else {
@@ -849,11 +849,11 @@ func originalAudioTitle(stream MediaAudioStream) string {
 func enhancedAudioTitle(profile audioEnhancementProfile) string {
 	switch profile.ChannelMode {
 	case "dual-mono", "force-stereo", "light-stereo":
-		return "Stereo Enhanced (MediaForge)"
+		return "Stereo Enhanced (MVForge)"
 	case "downmix-mono":
-		return "Mono Enhanced (MediaForge)"
+		return "Mono Enhanced (MVForge)"
 	default:
-		return "Enhanced Audio (MediaForge)"
+		return "Enhanced Audio (MVForge)"
 	}
 }
 

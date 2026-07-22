@@ -1,8 +1,8 @@
-# Próximos pasos después de MediaForge v0.1.0
+# Próximos pasos después de MVForge v0.1.0
 
 Estado general: `planificado`.
 
-El objetivo inmediato no es aumentar automatización, sino demostrar que MediaForge puede operar de forma segura y recuperable en el NAS objetivo.
+El objetivo inmediato no es aumentar automatización, sino demostrar que MVForge puede operar de forma segura y recuperable en el NAS objetivo.
 
 ## Flujo de prioridades
 
@@ -168,7 +168,7 @@ Estado: `propuesto`.
 - [ ] Pipeline Map / Stage Inspector.
 - [ ] Profile Lab con comparación visual y métricas ampliadas.
 - [ ] Widget global y persistente de conversiones activas.
-- [ ] Centro de notificaciones dentro de MediaForge.
+- [ ] Centro de notificaciones dentro de MVForge.
 - [ ] Notificaciones opcionales por correo para jobs, batches y revisiones.
 - [ ] Housekeeping con políticas y previews más claros.
 
@@ -194,7 +194,7 @@ página y actualizarse por eventos del servidor; polling será el fallback.
 
 ### Notificaciones de jobs
 
-MediaForge incorporará un centro de notificaciones persistente y canales
+MVForge incorporará un centro de notificaciones persistente y canales
 opcionales de navegador y correo. El usuario podrá activar cada canal y evento
 por separado.
 
@@ -213,7 +213,7 @@ configurables, horas silenciosas y resúmenes por batch.
 
 Cada notificación incluirá job, asset, resultado, worker, duración y un enlace
 al detalle correspondiente. Los enlaces externos sólo se generarán cuando el
-administrador configure explícitamente la URL pública/base de MediaForge.
+administrador configure explícitamente la URL pública/base de MVForge.
 
 ### Criterio de aceptación
 

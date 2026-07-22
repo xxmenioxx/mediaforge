@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -174,7 +174,7 @@ func writeTestFile(t *testing.T, path string, content string) {
 	}
 }
 
-func TestMediaForgeOutputPathsRequireCompletedOrPublishedJobEvidence(t *testing.T) {
+func TestMVForgeOutputPathsRequireCompletedOrPublishedJobEvidence(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:asset-provenance?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestMediaForgeOutputPathsRequireCompletedOrPublishedJobEvidence(t *testing.
 		}
 	}
 
-	paths := mediaForgeOutputPaths(db)
+	paths := mvForgeOutputPaths(db)
 	if !paths[filepath.Clean("/library/a.mkv")] || !paths[filepath.Clean("/library/c.mkv")] {
 		t.Fatalf("expected completed and published outputs, got %v", paths)
 	}

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -296,7 +296,7 @@ func Seed(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":         "mediaforge-v1",
+				"source":         "mvforge-v1",
 				"engine":         "FFmpeg",
 				"preset":         "dvd-archive-main10",
 				"videoPreset":    "medium",
@@ -317,7 +317,7 @@ func Seed(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":         "mediaforge-v1",
+				"source":         "mvforge-v1",
 				"engine":         "FFmpeg",
 				"preset":         "anime-dvd-main10",
 				"videoPreset":    "medium",
@@ -338,7 +338,7 @@ func Seed(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":         "mediaforge-v1",
+				"source":         "mvforge-v1",
 				"engine":         "FFmpeg",
 				"preset":         "series-balanced-main10",
 				"videoPreset":    "medium",
@@ -380,7 +380,7 @@ func seedRecommendedProfiles(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":                 "mediaforge-v1",
+				"source":                 "mvforge-v1",
 				"engine":                 "FFmpeg",
 				"preset":                 "hevc-small-size",
 				"preferredEncoder":       "software",
@@ -409,7 +409,7 @@ func seedRecommendedProfiles(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":                 "mediaforge-v1",
+				"source":                 "mvforge-v1",
 				"engine":                 "FFmpeg",
 				"preset":                 "hevc-balanced-fast",
 				"preferredEncoder":       "hardware",
@@ -438,7 +438,7 @@ func seedRecommendedProfiles(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":                 "mediaforge-v1",
+				"source":                 "mvforge-v1",
 				"engine":                 "FFmpeg",
 				"preset":                 "hevc-archive-quality",
 				"preferredEncoder":       "software",
@@ -467,7 +467,7 @@ func seedRecommendedProfiles(db *gorm.DB) error {
 			PreserveSubtitles: true,
 			PreserveChapters:  true,
 			WorkerConfig: models.JSONMap{
-				"source":                 "mediaforge-v1",
+				"source":                 "mvforge-v1",
 				"engine":                 "FFmpeg",
 				"preset":                 "hevc-bulk-convert",
 				"preferredEncoder":       "hardware",
@@ -579,7 +579,7 @@ func seedSettings(db *gorm.DB) error {
 					"/media/staging",
 					"/mwp/work",
 					"/mwp/work/temp",
-					"/tmp/mediaforge",
+					"/tmp/mvforge",
 				},
 			},
 		},
@@ -661,7 +661,7 @@ func seedSettings(db *gorm.DB) error {
 						"description":           "Uses FFmpeg arnndn with an external speech denoise model, then normalizes loudness.",
 						"intent":                "Reduce speech noise with a neural model",
 						"filters":               "loudnorm=I=-18:TP=-2:LRA=10",
-						"rnnoiseModelPath":      "/mediaforge/models/audio/rnnoise-model.rnnn",
+						"rnnoiseModelPath":      "/mvforge/models/audio/rnnoise-model.rnnn",
 						"channelMode":           "preserve",
 						"forceStereoMode":       "auto",
 						"stereoDelayMs":         12,

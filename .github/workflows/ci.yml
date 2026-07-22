@@ -52,7 +52,7 @@ jobs:
         with:
           context: ./backend
           push: false
-          tags: mediaforge-backend:ci
+          tags: mvforge-backend:ci
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
       - name: Build web image
@@ -61,15 +61,15 @@ jobs:
           context: ./frontend
           target: production
           push: false
-          tags: mediaforge-web:ci
+          tags: mvforge-web:ci
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
       - name: Validate NAS Compose
         env:
-          CONFIG_PATH: /tmp/mediaforge/config
-          RAW_PATH: /tmp/mediaforge/raw
-          LIBRARY_PATH: /tmp/mediaforge/library
-          STAGING_PATH: /tmp/mediaforge/staging
-          ARCHIVE_PATH: /tmp/mediaforge/archive
-          REPORTS_PATH: /tmp/mediaforge/reports
+          CONFIG_PATH: /tmp/mvforge/config
+          RAW_PATH: /tmp/mvforge/raw
+          LIBRARY_PATH: /tmp/mvforge/library
+          STAGING_PATH: /tmp/mvforge/staging
+          ARCHIVE_PATH: /tmp/mvforge/archive
+          REPORTS_PATH: /tmp/mvforge/reports
         run: docker compose -f deploy/nas/compose.yml config --quiet

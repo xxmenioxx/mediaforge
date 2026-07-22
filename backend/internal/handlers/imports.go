@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/anuelvs/mediaforge/backend/internal/migrations"
+	"github.com/anuelvs/mvforge/backend/internal/migrations"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

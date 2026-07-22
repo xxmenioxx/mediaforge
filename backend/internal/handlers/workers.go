@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

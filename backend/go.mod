@@ -1,4 +1,4 @@
-module github.com/anuelvs/mediaforge/backend
+module github.com/anuelvs/mvforge/backend
 
 go 1.25
 

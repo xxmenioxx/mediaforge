@@ -104,7 +104,7 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
     case 'telecine_suspected':
       return { title: `Telecine suspected${confidence}`, detail: `Validate cadence in LAB before choosing deinterlacing or IVTC${window}.`, severity: 'warning', action: 'Apply fieldmatch + decimate' };
     default:
-      return { title: 'Scan type unknown', detail: `MediaForge could not classify motion structure reliably; inspect a preview before conversion${window}.`, severity: 'info', action: 'Mark for review' };
+      return { title: 'Scan type unknown', detail: `MVForge could not classify motion structure reliably; inspect a preview before conversion${window}.`, severity: 'info', action: 'Mark for review' };
   }
 }
 

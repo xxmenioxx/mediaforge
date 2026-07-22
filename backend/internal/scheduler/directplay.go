@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/gorm"
 )
 

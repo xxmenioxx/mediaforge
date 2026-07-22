@@ -1,11 +1,11 @@
-# Recomendaciones de perfiles de MediaForge
+# Recomendaciones de perfiles de MVForge
 
 Esta guía documenta perfiles prácticos de video, audio y tracks para usar
-MediaForge en una biblioteca personal o HomeLab. Complementa la guía conceptual
+MVForge en una biblioteca personal o HomeLab. Complementa la guía conceptual
 [Perfiles de video, audio y tracks](profiles.md) con ejemplos operativos y
 recomendaciones por tipo de contenido.
 
-Los perfiles son contratos reproducibles. Cuando se crea un job, MediaForge
+Los perfiles son contratos reproducibles. Cuando se crea un job, MVForge
 guarda un snapshot de los perfiles seleccionados; cambiar el perfil original
 después no debe modificar silenciosamente un job ya planificado.
 
@@ -22,7 +22,7 @@ Empieza con el perfil menos destructivo que resuelva el problema real:
 
 ## Perfiles de video incluidos en v0.1.2
 
-Una base limpia de MediaForge v0.1.2 incluye perfiles conservadores MKV/x265
+Una base limpia de MVForge v0.1.2 incluye perfiles conservadores MKV/x265
 Main10. Son buenos puntos de partida para un NAS.
 
 | Perfil | Recomendado para | Objetivo | Notas |

@@ -1,21 +1,21 @@
-# MediaForge — instalación Docker en NAS
+# MVForge — instalación Docker en NAS
 
-Esta es la ruta de instalación recomendada para ejecutar una versión publicada de MediaForge sin clonar ni compilar el repositorio.
+Esta es la ruta de instalación recomendada para ejecutar una versión publicada de MVForge sin clonar ni compilar el repositorio.
 
 ## Requisitos
 
 - NAS `linux/amd64` o `linux/arm64` con Docker y Docker Compose v2.
-- Carpetas dedicadas para MediaForge con permisos de lectura y escritura para Docker.
+- Carpetas dedicadas para MVForge con permisos de lectura y escritura para Docker.
 - Acceso al puerto elegido desde la red local.
 
-No expongas MediaForge directamente a Internet. Para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
+No expongas MVForge directamente a Internet. Para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
 
 ## Instalación estándar
 
-MediaForge se instala de forma independiente bajo el directorio Docker habitual del NAS:
+MVForge se instala de forma independiente bajo el directorio Docker habitual del NAS:
 
 ```text
-/volume1/docker/mediaforge
+/volume1/docker/mvforge
 ```
 
 Todas las rutas se configuran mediante `.env`. No existe una dependencia con `nas-media-stack`, Portainer u otro proyecto. En el NAS objetivo, `volume1` es NVMe y se utiliza para raw activo y staging; `volume2` conserva las bibliotecas y el archivo de originales.
@@ -23,32 +23,32 @@ Todas las rutas se configuran mediante `.env`. No existe una dependencia con `na
 ## 1. Preparar carpetas
 
 ```sh
-mkdir -p /volume1/docker/mediaforge/config
-mkdir -p /volume1/docker/mediaforge/data/raw
-mkdir -p /volume1/docker/mediaforge/data/staging
-mkdir -p /volume1/docker/mediaforge/reports
-mkdir -p /volume2/media/mediaforge/originals_archive
+mkdir -p /volume1/docker/mvforge/config
+mkdir -p /volume1/docker/mvforge/data/raw
+mkdir -p /volume1/docker/mvforge/data/staging
+mkdir -p /volume1/docker/mvforge/reports
+mkdir -p /volume2/media/mvforge/originals_archive
 ```
 
 ## 2. Descargar el instalador
 
 Desde el release elegido descarga:
 
-- `mediaforge-compose.yml`
-- `mediaforge.env.example`
-- `mediaforge-backup.sh`
+- `mvforge-compose.yml`
+- `mvforge.env.example`
+- `mvforge-backup.sh`
 
-Guárdalos en `/volume1/docker/mediaforge` y renombra la configuración:
+Guárdalos en `/volume1/docker/mvforge` y renombra la configuración:
 
 ```sh
-mv mediaforge-compose.yml compose.yml
-mv mediaforge.env.example .env
-chmod +x mediaforge-backup.sh
+mv mvforge-compose.yml compose.yml
+mv mvforge.env.example .env
+chmod +x mvforge-backup.sh
 ```
 
 Edita `.env` y configura la versión, el puerto, la zona horaria y los paths absolutos del NAS. No uses `latest`; conserva una versión explícita como `0.1.0`.
 
-Para levantar MediaForge como parte del stack personal en lugar de una aplicación independiente, consulta [Integración opcional con nas-media-stack](guides/nas-media-stack-integration.md).
+Para levantar MVForge como parte del stack personal en lugar de una aplicación independiente, consulta [Integración opcional con nas-media-stack](guides/nas-media-stack-integration.md).
 
 ## 3. Instalar
 
@@ -66,7 +66,7 @@ Si todavía son privadas, crea un personal access token de GitHub con acceso de 
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u TU_USUARIO --password-stdin
 ```
 
-Abre `http://IP-DEL-NAS:8090`, sustituyendo el puerto si cambiaste `MEDIAFORGE_PORT`.
+Abre `http://IP-DEL-NAS:8090`, sustituyendo el puerto si cambiaste `MVFORGE_PORT`.
 
 ## 4. Primera prueba segura
 
@@ -83,9 +83,9 @@ Para inspeccionar problemas:
 docker compose --env-file .env -f compose.yml logs -f --tail=200
 ```
 
-MediaForge utiliza SQLite con WAL, espera limitada ante locks y un único writer.
+MVForge utiliza SQLite con WAL, espera limitada ante locks y un único writer.
 Ejecuta exactamente una réplica del servicio `backend` por archivo
-`mediaforge.db`. Dos contenedores apuntando al mismo archivo no constituyen una
+`mvforge.db`. Dos contenedores apuntando al mismo archivo no constituyen una
 configuración soportada y pueden producir `database table is locked`.
 
 El log persistente se encuentra en `/media/reports/logs/backend.log`; en el host
@@ -98,13 +98,13 @@ o reencolar jobs bloqueados.
 Ejecuta el backup antes de cada actualización:
 
 ```sh
-COMPOSE_FILE=compose.yml ./mediaforge-backup.sh
+COMPOSE_FILE=compose.yml ./mvforge-backup.sh
 ```
 
 El script utiliza la operación `.backup` de SQLite dentro del contenedor y escribe una copia consistente en:
 
 ```text
-CONFIG_PATH/backups/mediaforge-YYYYMMDDTHHMMSSZ.db
+CONFIG_PATH/backups/mvforge-YYYYMMDDTHHMMSSZ.db
 ```
 
 Conserva además una copia de `reports` y de `.env` fuera del volumen principal.
@@ -114,7 +114,7 @@ Conserva además una copia de `reports` y de `.env` fuera del volumen principal.
 1. Confirma que no haya jobs ejecutándose.
 2. Ejecuta el backup.
 3. Anota la versión actual de `.env`.
-4. Cambia `MEDIAFORGE_VERSION` a la nueva versión.
+4. Cambia `MVFORGE_VERSION` a la nueva versión.
 5. Descarga y recrea los servicios:
 
 ```sh
@@ -153,8 +153,8 @@ git push origin v0.1.0
 El workflow publica:
 
 ```text
-ghcr.io/xxmenioxx/mediaforge-backend:0.1.0
-ghcr.io/xxmenioxx/mediaforge-web:0.1.0
+ghcr.io/xxmenioxx/mvforge-backend:0.1.0
+ghcr.io/xxmenioxx/mvforge-web:0.1.0
 ```
 
 En GitHub, comprueba que Actions tenga permiso para crear packages y que ambos packages estén conectados al repositorio. Para una instalación sin login, cambia la visibilidad de los packages a pública después del primer release.

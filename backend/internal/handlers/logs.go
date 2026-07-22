@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/applog"
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/applog"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -46,7 +46,7 @@ func ConfigureApplicationLogging(db *gorm.DB) error {
 		return err
 	}
 	if strings.TrimSpace(logDir) == "" {
-		logDir = os.Getenv("MEDIAFORGE_LOG_DIR")
+		logDir = os.Getenv("MVFORGE_LOG_DIR")
 	}
 	if strings.TrimSpace(logDir) == "" {
 		logDir = "/media/reports/logs"
@@ -127,7 +127,7 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(logDir) == "" {
-		logDir = os.Getenv("MEDIAFORGE_LOG_DIR")
+		logDir = os.Getenv("MVFORGE_LOG_DIR")
 	}
 	if strings.TrimSpace(logDir) == "" {
 		logDir = "/media/reports/logs"
@@ -214,7 +214,7 @@ func schedulerLog(db *gorm.DB) string {
 	_ = db.Order("updated_at desc").Limit(200).Find(&reservations).Error
 	_ = db.Order("detected_at desc").Limit(20).Find(&snapshots).Error
 	var builder strings.Builder
-	builder.WriteString("MediaForge scheduler log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nExecution plans\n")
+	builder.WriteString("MVForge scheduler log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nExecution plans\n")
 	for _, plan := range plans {
 		builder.WriteString(fmt.Sprintf("[%s] plan=%d job=%d v=%d status=%s waiting=%s encoder=%s runtime=%s approval=%s output=%s\n", plan.UpdatedAt.Format(time.RFC3339), plan.ID, plan.JobID, plan.Version, plan.Status, emptyLabel(plan.WaitingState), plan.SelectedEncoder, plan.RuntimeProfile, plan.ApprovalStatus, plan.OutputPath))
 		if len(plan.DecisionReasons) > 0 || len(plan.Warnings) > 0 || len(plan.Evaluation) > 0 {
@@ -238,7 +238,7 @@ func workersLog(db *gorm.DB) string {
 	_ = db.Order("name asc").Find(&workers).Error
 	_ = db.Where("status IN ?", []string{JobStatusQueued, JobStatusRunning}).Order("priority asc, created_at asc").Find(&jobs).Error
 	var builder strings.Builder
-	builder.WriteString("MediaForge workers log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nWorkers\n")
+	builder.WriteString("MVForge workers log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nWorkers\n")
 	for _, worker := range workers {
 		builder.WriteString(fmt.Sprintf("[%s] worker=%s status=%s slots=%d runtime=%s encoders=%v\n", worker.LastSeenAt.Format(time.RFC3339), worker.Name, worker.Status, worker.MaxConcurrentJobs, worker.RuntimeProfile, worker.Encoders))
 	}
@@ -257,7 +257,7 @@ func workersLog(db *gorm.DB) string {
 
 func pipelineLog(jobs []models.QueueJob) string {
 	var builder strings.Builder
-	builder.WriteString("MediaForge pipeline log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\n")
+	builder.WriteString("MVForge pipeline log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\n")
 	for _, job := range jobs {
 		builder.WriteString(fmt.Sprintf("[%s] job=%d status=%s stage=%s validation=%s score=%d published=%s\n", job.UpdatedAt.Format(time.RFC3339), job.ID, job.Status, job.Stage, emptyLabel(job.ValidationStatus), job.ValidationScore, emptyLabel(job.PublishedPath)))
 		if len(job.StageHistory) > 0 {
@@ -302,7 +302,7 @@ func appendSystemLog(db *gorm.DB, event string, fields map[string]string, err er
 		return
 	}
 	if strings.TrimSpace(logDir) == "" {
-		logDir = os.Getenv("MEDIAFORGE_LOG_DIR")
+		logDir = os.Getenv("MVFORGE_LOG_DIR")
 	}
 	if strings.TrimSpace(logDir) == "" {
 		logDir = "/media/reports/logs"
@@ -340,7 +340,7 @@ func appendLine(path string, line string) error {
 
 func allJobsLog(db *gorm.DB, jobs []models.QueueJob) string {
 	var builder strings.Builder
-	builder.WriteString("MediaForge job log summary\n")
+	builder.WriteString("MVForge job log summary\n")
 	builder.WriteString("Generated: " + time.Now().Format(time.RFC3339) + "\n\n")
 
 	for _, job := range jobs {
@@ -373,7 +373,7 @@ func allJobsLog(db *gorm.DB, jobs []models.QueueJob) string {
 func jobLog(db *gorm.DB, job models.QueueJob) string {
 	conversion := assetConversionReport(conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db)))
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("MediaForge job #%d\n", job.ID))
+	builder.WriteString(fmt.Sprintf("MVForge job #%d\n", job.ID))
 	builder.WriteString("Generated: " + time.Now().Format(time.RFC3339) + "\n\n")
 	builder.WriteString(fmt.Sprintf("Batch ID: %s\n", emptyLabel(job.BatchID)))
 	builder.WriteString(fmt.Sprintf("Batch Name: %s\n", emptyLabel(job.BatchName)))

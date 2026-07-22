@@ -13,7 +13,7 @@ export function PlaceholderPage({ title }: PlaceholderPageProps) {
         <Card sx={{ maxWidth: 760 }}>
           <CardContent>
             <Typography color="text.secondary">
-              This module is part of the MediaForge roadmap and will be implemented after the
+              This module is part of the MVForge roadmap and will be implemented after the
               first manual scan, profile, and queue workflow is stable.
             </Typography>
           </CardContent>

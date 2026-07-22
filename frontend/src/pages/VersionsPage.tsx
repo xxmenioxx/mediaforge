@@ -74,7 +74,7 @@ export function VersionsPage() {
 
 function frontendSoftwareVersions() {
   return [
-    { name: 'MediaForge Frontend', version: packageJson.version, source: 'frontend' },
+    { name: 'MVForge Frontend', version: packageJson.version, source: 'frontend' },
     { name: 'React', version: packageJson.dependencies.react, source: 'npm' },
     { name: 'Material UI', version: packageJson.dependencies['@mui/material'], source: 'npm' },
     { name: 'TanStack Query', version: packageJson.dependencies['@tanstack/react-query'], source: 'npm' },
@@ -96,14 +96,14 @@ type EnrichedVersionComponent = VersionComponent & {
 };
 
 const componentDetails: Record<string, Omit<EnrichedVersionComponent, keyof VersionComponent>> = {
-  'MediaForge API': {
+  'MVForge API': {
     description: 'Backend service that exposes the REST API, queue, scanner, advisor, settings, and worker controls.',
   },
-  'MediaForge Frontend': {
+  'MVForge Frontend': {
     description: 'The local web interface used to manage libraries, assets, profiles, queue operations, and settings.',
   },
   Go: {
-    description: 'Programming language and runtime used to build the MediaForge backend service.',
+    description: 'Programming language and runtime used to build the MVForge backend service.',
     website: 'https://go.dev/',
     repository: 'https://github.com/golang/go',
   },
@@ -128,12 +128,12 @@ const componentDetails: Record<string, Omit<EnrichedVersionComponent, keyof Vers
     repository: 'https://github.com/go-gorm/gorm',
   },
   'GORM SQLite Driver': {
-    description: 'SQLite adapter used by GORM so MediaForge can run with a simple local database.',
+    description: 'SQLite adapter used by GORM so MVForge can run with a simple local database.',
     website: 'https://gorm.io/docs/connecting_to_the_database.html#SQLite',
     repository: 'https://github.com/go-gorm/sqlite',
   },
   React: {
-    description: 'UI library used to build the interactive MediaForge frontend.',
+    description: 'UI library used to build the interactive MVForge frontend.',
     website: 'https://react.dev/',
     repository: 'https://github.com/facebook/react',
   },
@@ -163,7 +163,7 @@ function enrichComponent(component: VersionComponent): EnrichedVersionComponent 
   const details = componentDetails[component.name];
   return {
     ...component,
-    description: details?.description ?? 'Software component used by MediaForge.',
+    description: details?.description ?? 'Software component used by MVForge.',
     website: details?.website,
     repository: details?.repository,
   };

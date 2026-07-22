@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -295,7 +295,7 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		return
 	}
 	if record.Status != "converted" {
-		c.JSON(http.StatusConflict, gin.H{"error": "only a MediaForge converted asset can use this recovery-safe delete flow"})
+		c.JSON(http.StatusConflict, gin.H{"error": "only a MVForge converted asset can use this recovery-safe delete flow"})
 		return
 	}
 	convertedExists := false
@@ -352,7 +352,7 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	quarantine := ""
 	if convertedExists {
-		quarantine = fmt.Sprintf("%s.mediaforge-delete-%d", path, time.Now().UnixNano())
+		quarantine = fmt.Sprintf("%s.mvforge-delete-%d", path, time.Now().UnixNano())
 		if err := os.Rename(path, quarantine); err != nil {
 			job.PublicationRetiredAt = nil
 			_ = h.db.Save(&job).Error
@@ -1107,12 +1107,12 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		UnverifiedGroups:  []AssetGroup{},
 		ArchiveGroups:     []AssetGroup{},
 	}
-	mediaForgeOutputs := mediaForgeOutputPaths(h.db)
+	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	for _, record := range records {
 		asset := assetFromRecord(record)
 		switch record.Status {
 		case "converted":
-			if mediaForgeOutputs[filepath.Clean(record.Path)] {
+			if mvForgeOutputs[filepath.Clean(record.Path)] {
 				asset.Status = "converted"
 				inventory.Converted = append(inventory.Converted, asset)
 			} else {
@@ -1173,7 +1173,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	return inventory, nil
 }
 
-func mediaForgeOutputPaths(db *gorm.DB) map[string]bool {
+func mvForgeOutputPaths(db *gorm.DB) map[string]bool {
 	paths := map[string]bool{}
 	var jobs []models.QueueJob
 	_ = db.Where("publication_retired_at IS NULL AND (published_path <> '' OR status = ?)", JobStatusCompleted).Find(&jobs).Error
@@ -1220,7 +1220,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 
 	seenDestinations := map[string]struct{}{}
-	mediaForgeOutputs := mediaForgeOutputPaths(h.db)
+	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	for _, library := range libraries {
 		destinationPath := strings.TrimSpace(library.DestinationPath)
 		if destinationPath == "" {
@@ -1236,7 +1236,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 				return result, err
 			}
 			result.LibraryFiles++
-			if mediaForgeOutputs[filepath.Clean(record.Path)] {
+			if mvForgeOutputs[filepath.Clean(record.Path)] {
 				result.ConvertedFiles++
 			} else {
 				result.UnverifiedFiles++

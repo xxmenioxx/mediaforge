@@ -2,7 +2,7 @@
 
 El scheduler convierte la intención de un job en una ejecución controlada. Decide qué puede ejecutarse, dónde, con qué encoder y bajo qué límites, conservando evidencia de cada decisión.
 
-Para la referencia completa de settings, estados y modelos consulta [MediaForge Scheduler v1](../scheduler-v1-guide.md).
+Para la referencia completa de settings, estados y modelos consulta [MVForge Scheduler v1](../scheduler-v1-guide.md).
 
 ## Componentes
 
@@ -95,7 +95,7 @@ Un worker online también declara encoders y concurrencia. El perfil autoriza; e
 
 ## Reservas y locks
 
-Antes de ejecutar, MediaForge reserva:
+Antes de ejecutar, MVForge reserva:
 
 - Job y asset.
 - Encoder y clase de encoder.
@@ -108,15 +108,15 @@ El asset lock evita ejecutar dos conversiones activas sobre el mismo path. Una r
 ### Concurrencia del claim y SQLite
 
 Comprobar el slot, seleccionar el siguiente job, activar su reserva y cambiarlo a
-`running` forman una sola sección crítica. MediaForge serializa esa operación
+`running` forman una sola sección crítica. MVForge serializa esa operación
 entre el worker automático y los claims manuales del mismo backend. Así, con
 `maxConcurrentJobs: 1`, dos solicitudes simultáneas no pueden ocupar el mismo
 slot ni dejar una reserva a medio activar.
 
 La instalación SQLite se abre con journal mode `WAL`, un `busy_timeout` de cinco
 segundos y un único writer en el pool de conexiones. SQLite continúa siendo una
-base para una sola instancia de MediaForge. No ejecutes dos contenedores backend
-contra el mismo archivo `mediaforge.db`: la sección crítica protege goroutines
+base para una sola instancia de MVForge. No ejecutes dos contenedores backend
+contra el mismo archivo `mvforge.db`: la sección crítica protege goroutines
 del mismo proceso, no procesos o hosts independientes.
 
 ## Working Hours

@@ -178,7 +178,7 @@ const initialSettings: SettingsForm = buildSettingsForm({
     keepLogsAndDiagnostics: true,
     deleteGeneratedFiles: false,
     deletePartialOutputFromStaging: false,
-    controlledRoots: ['/media/staging', '/mwp/work', '/mwp/work/temp', '/tmp/mediaforge'],
+    controlledRoots: ['/media/staging', '/mwp/work', '/mwp/work/temp', '/tmp/mvforge'],
   },
   originalRetentionPolicy: {
     keepOriginalsDays: 30,
@@ -823,7 +823,7 @@ export function SettingsPage() {
                         <InfoIcon color="primary" />
                         <Typography variant="h3">Versions</Typography>
                         <Typography color="text.secondary">
-                          Review MediaForge, frontend, backend, FFmpeg, and dependency versions.
+                          Review MVForge, frontend, backend, FFmpeg, and dependency versions.
                         </Typography>
                         <Button component={RouterLink} to="/versions" variant="contained" sx={{ alignSelf: 'flex-start' }}>
                           Open Versions
@@ -1142,7 +1142,7 @@ function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; sav
       <Grid size={{ xs: 12, md: 4 }}><TextField select label="Below threshold" value={draft.enforcement} disabled={!draft.enabled} onChange={(event) => setDraft({ ...draft, enforcement: event.target.value as DirectPlayValue['enforcement'] })} fullWidth><MenuItem value="warn">Warn only</MenuItem><MenuItem value="block">Require manual review</MenuItem></TextField></Grid>
     </Grid>
     <Stack><Typography variant="h4">Target clients</Typography><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{directPlayClients.map((client) => <FormControlLabel key={client} control={<Checkbox checked={draft.targetClients.includes(client)} disabled={!draft.enabled} onChange={() => toggleClient(client)} />} label={client.replaceAll('_', ' ')} />)}</Stack></Stack>
-    <Alert severity="info">This is a preflight estimate. MediaForge records it in the Execution Plan; definitive compatibility requires analyzing the final file.</Alert>
+    <Alert severity="info">This is a preflight estimate. MVForge records it in the Execution Plan; definitive compatibility requires analyzing the final file.</Alert>
     <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (draft.enabled && draft.targetClients.length === 0)} onClick={() => onSave(draft)}>Save DirectPlay policy</Button>
   </Stack></CardContent></Card>;
 }
@@ -1191,7 +1191,7 @@ type StorageRoleName = typeof storageRoleNames[number];
 type StorageRolesValue = Record<StorageRoleName, { path: string }>;
 
 function storageRolesValue(value: Record<string, unknown> | undefined): StorageRolesValue {
-  const defaults: Record<StorageRoleName, string> = { raw: '/media/raw', library: '/media/library', originals_archive: '/media/originals_archive', work: '/media/staging', cache: '/mediaforge/cache', reports: '/media/reports', logs: '/media/reports/logs' };
+  const defaults: Record<StorageRoleName, string> = { raw: '/media/raw', library: '/media/library', originals_archive: '/media/originals_archive', work: '/media/staging', cache: '/mvforge/cache', reports: '/media/reports', logs: '/media/reports/logs' };
   return Object.fromEntries(storageRoleNames.map((role) => {
     const entry = value?.[role] && typeof value[role] === 'object' ? value[role] as Record<string, unknown> : {};
     return [role, { path: stringValue(entry.path, defaults[role]) }];
@@ -1527,7 +1527,7 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
                 },
               }))
             }
-            helperText="How often MediaForge refreshes raw/library/archive inventory in the DB."
+            helperText="How often MVForge refreshes raw/library/archive inventory in the DB."
             inputProps={{ min: 5, max: 10080 }}
             fullWidth
           />
@@ -1590,7 +1590,7 @@ function ValidationCard({ form, setForm }: SettingsCardProps) {
                 },
               }))
             }
-            helperText="Where MediaForge should move converted originals before retention cleanup or reuse."
+            helperText="Where MVForge should move converted originals before retention cleanup or reuse."
             fullWidth
           />
           <FormControlLabel
@@ -1676,7 +1676,7 @@ function CancellationPolicyCard({ form, setForm }: SettingsCardProps) {
             label="Delete partial output from staging"
           />
           <Alert severity="info">
-            Cleanup can only remove artifacts inside MediaForge-controlled paths.
+            Cleanup can only remove artifacts inside MVForge-controlled paths.
           </Alert>
           <Stack spacing={0.75}>
             <Typography color="text.secondary" variant="body2">
@@ -1733,7 +1733,7 @@ function OriginalRetentionCard({ form, setForm }: SettingsCardProps) {
                 },
               }))
             }
-            helperText="Where MediaForge should move converted originals before retention cleanup or reuse."
+            helperText="Where MVForge should move converted originals before retention cleanup or reuse."
             fullWidth
           />
           <FormControlLabel
@@ -1771,7 +1771,7 @@ function OriginalRetentionCard({ form, setForm }: SettingsCardProps) {
             label="Enable automatic deletion later"
           />
           <Alert severity="info">
-            Cleanup will only apply to originals tracked by MediaForge after a successful conversion.
+            Cleanup will only apply to originals tracked by MVForge after a successful conversion.
           </Alert>
         </Stack>
       </CardContent>

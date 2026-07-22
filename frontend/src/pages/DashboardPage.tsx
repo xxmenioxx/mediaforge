@@ -97,7 +97,7 @@ export function DashboardPage() {
                     <Stack>
                       <Typography variant="h2">Pipeline Progress</Typography>
                       <Typography color="text.secondary" variant="body2">
-                        Completed jobs compared with all jobs currently known by MediaForge.
+                        Completed jobs compared with all jobs currently known by MVForge.
                       </Typography>
                     </Stack>
                     <Chip label={`${summary.completedPercent}% complete`} color="success" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }} />
@@ -395,7 +395,7 @@ function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: 
       ? { message: `${unprocessedAssets} unprocessed assets are not queued yet.`, to: '/assets' }
       : null,
     failedJobs > 0 ? { message: `${failedJobs} jobs have failed and need review.`, to: '/queue?status=failed' } : null,
-    unverifiedAssets > 0 ? { message: `${unverifiedAssets} library assets have not been verified by MediaForge.`, to: '/assets' } : null,
+    unverifiedAssets > 0 ? { message: `${unverifiedAssets} library assets have not been verified by MVForge.`, to: '/assets' } : null,
     activeJobs > 0 && activeWorkers === 0
       ? { message: 'Queued jobs are waiting for a worker.', to: '/workers' }
       : null,

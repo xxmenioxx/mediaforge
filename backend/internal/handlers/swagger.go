@@ -10,8 +10,8 @@ func OpenAPI(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"openapi": "3.0.3",
 		"info": gin.H{
-			"title":       "MediaForge API",
-			"version":     "0.1.9",
+			"title":       "MVForge API",
+			"version":     "0.2.0",
 			"description": "Manual media workflow orchestration API.",
 		},
 		"servers": []gin.H{
@@ -40,7 +40,7 @@ func openAPITags() []gin.H {
 		},
 		{
 			"name":        "Paths",
-			"description": "Safe browsing for Docker-mounted MediaForge folders.",
+			"description": "Safe browsing for Docker-mounted MVForge folders.",
 		},
 		{
 			"name":        "Assets",
@@ -145,7 +145,7 @@ func openAPIPaths() gin.H {
 		"/api/paths/browse": gin.H{
 			"get": gin.H{
 				"tags":        []string{"Paths"},
-				"summary":     "Browse folders under a configured MediaForge root",
+				"summary":     "Browse folders under a configured MVForge root",
 				"operationId": "browsePaths",
 				"parameters": []gin.H{
 					{
@@ -1075,7 +1075,7 @@ const swaggerHTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MediaForge API Swagger</title>
+    <title>MVForge API Swagger</title>
     <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
     <style>
       body { margin: 0; background: #0e1116; }

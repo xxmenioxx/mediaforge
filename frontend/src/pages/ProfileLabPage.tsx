@@ -132,7 +132,7 @@ const pixelFormatOptions = [
 ] as const;
 
 const videoEncoderOptions = [
-  { value: 'auto', label: 'Auto', description: 'MediaForge chooses software unless hardware fallback is enabled and available.' },
+  { value: 'auto', label: 'Auto', description: 'MVForge chooses software unless hardware fallback is enabled and available.' },
   { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
   { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },

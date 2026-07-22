@@ -1,6 +1,6 @@
 # Diagnóstico y troubleshooting
 
-Esta guía reúne procedimientos seguros para investigar MediaForge en una
+Esta guía reúne procedimientos seguros para investigar MVForge en una
 instalación local o NAS. Conserva primero la evidencia: no borres SQLite,
 workspaces, reports ni reservas mientras investigas.
 
@@ -17,8 +17,8 @@ Revisa en este orden:
 En Docker:
 
 ```sh
-docker logs --tail 200 mediaforge
-docker logs -f mediaforge
+docker logs --tail 200 mvforge
+docker logs -f mvforge
 ```
 
 El archivo persistente se guarda dentro del contenedor en:
@@ -32,7 +32,7 @@ status HTTP y cualquier pánico o error relacionado en `backend.log`.
 
 ## `database table is locked`
 
-Este mensaje indica contención de escritura en SQLite. El claim de MediaForge
+Este mensaje indica contención de escritura en SQLite. El claim de MVForge
 serializa la comprobación de capacidad, la reserva y la transición del job. La
 conexión de producción usa WAL, `busy_timeout=5000` y un único writer.
 
@@ -41,11 +41,11 @@ conexión de producción usa WAL, `busy_timeout=5000` y un único writer.
 1. Confirma que sólo exista un contenedor backend:
 
    ```sh
-   docker ps --filter name=mediaforge
+   docker ps --filter name=mvforge
    ```
 
 2. Confirma que ninguna instalación anterior continúe usando el mismo
-   `mediaforge.db`.
+   `mvforge.db`.
 3. Revisa si el contenedor fue reiniciado durante un claim.
 4. Abre **Scheduler Recovery** y ejecuta la reconciliación antes de reencolar.
 5. Conserva `backend.log`, `scheduler.log` y `workers.log` para el reporte.
@@ -92,7 +92,7 @@ FFprobe haya fallado.
 
 En Docker, `/media/library` puede ser sólo un directorio padre mientras cada
 librería está montada individualmente, por ejemplo `/media/library/movies`.
-MediaForge consulta los `DestinationPath` registrados y utiliza de forma
+MVForge consulta los `DestinationPath` registrados y utiliza de forma
 conservadora el menor espacio disponible.
 
 Después de corregir mounts o librerías:
@@ -108,7 +108,7 @@ la capacidad disponible son los valores que gobiernan la decisión de espacio.
 ## `Error creating a MFX session: -9` con `hevc_qsv`
 
 FFmpeg puede listar `hevc_qsv` aunque el contenedor no tenga acceso a Intel
-Quick Sync. MediaForge prueba una codificación HEVC Main10 real antes de marcar
+Quick Sync. MVForge prueba una codificación HEVC Main10 real antes de marcar
 el encoder como usable. Si la prueba falla, el runtime snapshot debe mostrar
 QSV como no usable y el scheduler puede seleccionar `libx265` cuando el perfil
 lo permita.
@@ -144,7 +144,7 @@ el encoder de video no produjo ningún frame.
 
 Incluye:
 
-- versión de MediaForge e imagen utilizada;
+- versión de MVForge e imagen utilizada;
 - arquitectura (`linux/amd64` o `linux/arm64`);
 - timestamp y zona horaria;
 - `requestId`, `jobId` y `planId`, cuando existan;

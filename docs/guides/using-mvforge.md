@@ -1,10 +1,10 @@
-# Cómo usar MediaForge
+# Cómo usar MVForge
 
 Esta guía describe el recorrido recomendado desde una instalación nueva hasta una publicación validada.
 
 ## Modelo mental
 
-MediaForge controla tres tipos de ubicación:
+MVForge controla tres tipos de ubicación:
 
 - **Raw**: archivos originales que entran al flujo.
 - **Staging/work**: workspaces temporales aislados por job. Cada workspace copia
@@ -20,7 +20,7 @@ También conserva:
 ### Convertir un asset no verificado que ya vive en Library
 
 Los assets `unverified` pueden encolarse individualmente con el modo **Library
-replacement**. MediaForge nunca ejecuta FFmpeg directamente sobre el archivo de
+replacement**. MVForge nunca ejecuta FFmpeg directamente sobre el archivo de
 Library:
 
 1. Copia únicamente el asset al workspace NVMe del job.
@@ -32,7 +32,7 @@ Library:
 6. Registra procedencia y limpia el workspace.
 
 La UI exige confirmación antes de encolar. Si el reemplazo falla, se restaura el
-original; si MediaForge reinicia durante la publicación, Scheduler Recovery
+original; si MVForge reinicia durante la publicación, Scheduler Recovery
 finaliza un reemplazo ya aplicado o restaura el original cuando quedó incompleto.
 
 Advisor usa una política conservadora para Library: muestra `0%` y no recomienda
@@ -108,7 +108,7 @@ En **Libraries** registra los destinos bajo `/media/library`. Ejemplos:
 /media/library/anime
 ```
 
-No registres el root completo del NAS. Monta y registra únicamente carpetas dedicadas a MediaForge.
+No registres el root completo del NAS. Monta y registra únicamente carpetas dedicadas a MVForge.
 
 ## 4. Incorporar y descubrir assets
 
@@ -118,7 +118,7 @@ Coloca un archivo pequeño bajo el path raw del host. Dentro del contenedor apar
 /media/raw/movies/example.mkv
 ```
 
-Usa **Scanner**, **Assets** o **Analysis** para inspeccionarlo. MediaForge obtiene streams, codecs, resolución, audio, subtítulos, capítulos y datos necesarios para planificar.
+Usa **Scanner**, **Assets** o **Analysis** para inspeccionarlo. MVForge obtiene streams, codecs, resolución, audio, subtítulos, capítulos y datos necesarios para planificar.
 
 ## 5. Revisar el análisis
 
@@ -148,7 +148,7 @@ Una muestra útil debe representar una escena exigente: movimiento, grano, diál
 
 ## 7. Crear y revisar un job
 
-Encola un solo asset. MediaForge captura un **profile snapshot** y genera un **execution plan**.
+Encola un solo asset. MVForge captura un **profile snapshot** y genera un **execution plan**.
 
 ```mermaid
 sequenceDiagram
@@ -235,9 +235,9 @@ La ubicación y la procedencia son conceptos distintos:
 
 - **Library assets**: todos los medios encontrados en destination paths.
 - **Converted**: library assets cuyo path coincide con un output completado o
-  publicado por MediaForge.
+  publicado por MVForge.
 - **Unverified**: library assets existentes sin evidencia de un job de
-  MediaForge. No significa que estén mal codificados; primero deben analizarse
+  MVForge. No significa que estén mal codificados; primero deben analizarse
   para decidir si conviene convertirlos.
 - **Unprocessed**: medios encontrados bajo el raw root.
 

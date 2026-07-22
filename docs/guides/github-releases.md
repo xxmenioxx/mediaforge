@@ -1,6 +1,6 @@
-# Releases de MediaForge con GitHub Actions y GHCR
+# Releases de MVForge con GitHub Actions y GHCR
 
-Esta guía reproduce la configuración usada para publicar versiones instalables de MediaForge sin mantener un registry propio.
+Esta guía reproduce la configuración usada para publicar versiones instalables de MVForge sin mantener un registry propio.
 
 ## Arquitectura de publicación
 
@@ -21,7 +21,7 @@ flowchart LR
 
 ## Componentes del repositorio
 
-MediaForge utiliza:
+MVForge utiliza:
 
 - `.github/workflows/ci.yml` para validar cambios en pull requests y `main`.
 - `.github/workflows/release-images.yml` para publicar tags `v*.*.*`.
@@ -50,14 +50,14 @@ permissions:
 Las imágenes publicadas son:
 
 ```text
-ghcr.io/xxmenioxx/mediaforge-backend:X.Y.Z
-ghcr.io/xxmenioxx/mediaforge-web:X.Y.Z
+ghcr.io/xxmenioxx/mvforge-backend:X.Y.Z
+ghcr.io/xxmenioxx/mvforge-web:X.Y.Z
 ```
 
 Después de la primera publicación, abre cada package y comprueba:
 
 1. **Package settings**.
-2. El repositorio `xxmenioxx/mediaforge` aparece bajo acceso de Actions.
+2. El repositorio `xxmenioxx/mvforge` aparece bajo acceso de Actions.
 3. La visibilidad es la deseada.
 
 Un package público se puede descargar sin `docker login`. GitHub advierte que un package público no puede volver a hacerse privado; decide esto antes de distribuirlo.
@@ -106,7 +106,7 @@ git status
 El árbol debe estar limpio y la CI de `main` debe estar verde. Crea un tag anotado:
 
 ```sh
-git tag -a v0.1.0 -m "MediaForge v0.1.0"
+git tag -a v0.1.0 -m "MVForge v0.1.0"
 git push origin v0.1.0
 ```
 
@@ -117,10 +117,10 @@ No reutilices ni muevas un tag que ya fue publicado. Si un release tiene un defe
 Para `v0.1.0`:
 
 ```text
-ghcr.io/xxmenioxx/mediaforge-backend:0.1.0
-ghcr.io/xxmenioxx/mediaforge-backend:0.1
-ghcr.io/xxmenioxx/mediaforge-web:0.1.0
-ghcr.io/xxmenioxx/mediaforge-web:0.1
+ghcr.io/xxmenioxx/mvforge-backend:0.1.0
+ghcr.io/xxmenioxx/mvforge-backend:0.1
+ghcr.io/xxmenioxx/mvforge-web:0.1.0
+ghcr.io/xxmenioxx/mvforge-web:0.1
 ```
 
 También genera tags por SHA y construye manifests para `linux/amd64` y `linux/arm64`.
@@ -128,12 +128,12 @@ También genera tags por SHA y construye manifests para `linux/amd64` y `linux/a
 El GitHub Release adjunta:
 
 ```text
-mediaforge-compose.yml
-mediaforge.env.example
-mediaforge-backup.sh
+mvforge-compose.yml
+mvforge.env.example
+mvforge-backup.sh
 ```
 
-El workflow sustituye automáticamente `MEDIAFORGE_VERSION` en el `.env` adjunto por la versión publicada.
+El workflow sustituye automáticamente `MVFORGE_VERSION` en el `.env` adjunto por la versión publicada.
 
 ## Validación posterior
 
@@ -149,7 +149,7 @@ El workflow sustituye automáticamente `MEDIAFORGE_VERSION` en el `.env` adjunto
 No muevas tags de imágenes. Cambia la versión en `.env`:
 
 ```dotenv
-MEDIAFORGE_VERSION=0.1.0
+MVFORGE_VERSION=0.1.0
 ```
 
 Después:
@@ -167,7 +167,7 @@ Si la versión nueva migró SQLite de forma incompatible, restaura también el b
 
 - Confirma que el tag de `.env` exista en ambos packages.
 - Comprueba que el workflow de publicación terminó.
-- Evita anteponer `v` en `MEDIAFORGE_VERSION`; la imagen usa `0.1.0`, no `v0.1.0`.
+- Evita anteponer `v` en `MVFORGE_VERSION`; la imagen usa `0.1.0`, no `v0.1.0`.
 
 ### `denied` o `unauthorized`
 

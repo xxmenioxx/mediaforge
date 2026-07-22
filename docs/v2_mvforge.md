@@ -1,4 +1,4 @@
-# MediaForge V2 - Product Vision
+# MVForge V2 - Product Vision
 
 Version: 2.0 Draft
 
@@ -6,11 +6,11 @@ Version: 2.0 Draft
 
 # Overview
 
-MediaForge is evolving from a media transcoding application into a complete **Media Processing Platform**.
+MVForge is evolving from a media transcoding application into a complete **Media Processing Platform**.
 
 Its mission is to provide a reproducible, modular and user-friendly workspace where multimedia assets can be analyzed, enhanced, converted, validated and published.
 
-MediaForge does **not** replace Jellyfin, Plex, Radarr or Sonarr.
+MVForge does **not** replace Jellyfin, Plex, Radarr or Sonarr.
 
 Instead, it fills the gap between media acquisition and media consumption.
 
@@ -22,7 +22,7 @@ Acquisition
 
         ▼
 
-     MediaForge
+     MVForge
 
         │
 
@@ -35,21 +35,21 @@ Acquisition
 
 # Product Philosophy
 
-Every feature added to MediaForge should answer one question:
+Every feature added to MVForge should answer one question:
 
 > Does this improve the quality, reproducibility or confidence of media processing?
 
 If not, it probably belongs in another application.
 
-MediaForge is a **Media Processing Platform**, not a media server.
+MVForge is a **Media Processing Platform**, not a media server.
 
 ---
 
 # Inspiration
 
-MediaForge is inspired by professional photography workflows.
+MVForge is inspired by professional photography workflows.
 
-Just as photographers prepare images before publishing them, MediaForge prepares multimedia assets before they are consumed.
+Just as photographers prepare images before publishing them, MVForge prepares multimedia assets before they are consumed.
 
 The project can be thought of as:
 
@@ -57,13 +57,13 @@ The project can be thought of as:
 - a Media Processing Platform
 - a reproducible multimedia workspace
 
-Internally we often compare the workflow to Lightroom, but MediaForge extends beyond image editing by covering the entire media processing lifecycle.
+Internally we often compare the workflow to Lightroom, but MVForge extends beyond image editing by covering the entire media processing lifecycle.
 
 ---
 
 # Long-Term Vision
 
-MediaForge should eventually become the operating system for multimedia processing.
+MVForge should eventually become the operating system for multimedia processing.
 
 Every media asset follows the same pipeline.
 
@@ -139,7 +139,7 @@ Every pipeline should produce deterministic results.
 
 ## Transparency
 
-MediaForge should always explain:
+MVForge should always explain:
 
 - what happened
 - why it happened
@@ -327,7 +327,7 @@ Never delete outside managed paths.
 
 # Phase 2 - Media Enhancement
 
-MediaForge evolves beyond transcoding.
+MVForge evolves beyond transcoding.
 
 The goal becomes improving media.
 
@@ -397,7 +397,7 @@ Future integrations:
 
 The Profile Lab evolves into **Forge**.
 
-Forge becomes the central workspace of MediaForge.
+Forge becomes the central workspace of MVForge.
 
 Instead of directly converting files, users experiment safely.
 
@@ -485,14 +485,14 @@ Stages may be enabled or disabled independently.
 
 # Plugin Architecture
 
-One of the core architectural goals of V2 is complete decoupling between MediaForge Core and processing tools.
+One of the core architectural goals of V2 is complete decoupling between MVForge Core and processing tools.
 
-MediaForge should never directly depend on FFmpeg.
+MVForge should never directly depend on FFmpeg.
 
 Instead:
 
 ```
-MediaForge Core
+MVForge Core
 
 ↓
 
@@ -719,7 +719,7 @@ Shared Enhancement Chains
 
 # Long-Term Goal
 
-MediaForge should become the definitive self-hosted platform for media processing.
+MVForge should become the definitive self-hosted platform for media processing.
 
 Not because it has the most filters.
 
@@ -727,6 +727,6 @@ Not because it wraps FFmpeg.
 
 But because it provides the safest, most reproducible and most intuitive workflow for preparing multimedia assets.
 
-Every feature should move MediaForge closer to answering one question:
+Every feature should move MVForge closer to answering one question:
 
 > How can I produce the best possible version of this media asset?

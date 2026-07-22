@@ -93,7 +93,7 @@ const pixelFormatOptions = [
 ] as const;
 
 const videoEncoderOptions = [
-  { value: 'auto', label: 'Auto', description: 'MediaForge chooses software unless hardware fallback is enabled and available.' },
+  { value: 'auto', label: 'Auto', description: 'MVForge chooses software unless hardware fallback is enabled and available.' },
   { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
   { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
@@ -576,7 +576,7 @@ export function ProfilesPage() {
                 <Grid container spacing={2}>
                   <Grid size={{ xs: 12 }}>
                     <Alert severity="info">
-                      Choose the result you want. MediaForge will translate it into encoder settings; Advanced is only for exact technical overrides.
+                      Choose the result you want. MVForge will translate it into encoder settings; Advanced is only for exact technical overrides.
                     </Alert>
                   </Grid>
                   <Grid size={{ xs: 12, md: 4 }}>

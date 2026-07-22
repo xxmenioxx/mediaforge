@@ -84,7 +84,7 @@ export function AssetsPage() {
     <>
       <PageHeader title="Assets" eyebrow="Media inventory">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Library assets come from destination paths. Only outputs with MediaForge job provenance are marked Converted; the rest remain Unverified.
+          Library assets come from destination paths. Only outputs with MVForge job provenance are marked Converted; the rest remain Unverified.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
@@ -171,7 +171,7 @@ export function AssetsPage() {
                     ? 'No archived originals found in the inventory.'
                     : tab === 'unprocessed'
                       ? 'No pending asset groups found.'
-                      : tab === 'library' ? 'No library asset groups found.' : 'No MediaForge-converted asset groups found.'
+                      : tab === 'library' ? 'No library asset groups found.' : 'No MVForge-converted asset groups found.'
                 }
               />
             </AssetsErrorBoundary>
@@ -211,7 +211,7 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
           <ReportTile label="Library assets" value={String(reports.libraryFiles)} helper={`${reports.unverifiedFiles} unverified`} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <ReportTile label="Converted by MediaForge" value={String(reports.convertedFiles)} />
+          <ReportTile label="Converted by MVForge" value={String(reports.convertedFiles)} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <ReportTile label="Archive originals" value={String(reports.archiveFiles)} helper={formatBytes(reports.archiveBytes)} />
@@ -585,7 +585,7 @@ function AssetGroupRow({
                     {isArchiveGroup
                       ? 'Archived originals are protected here. Recovering an original will not delete converted files.'
                       : group.status === 'unverified' || group.status === 'library'
-                        ? 'Unverified library assets can be queued individually for safe replacement. MediaForge converts in staging and archives the original before publishing.'
+                        ? 'Unverified library assets can be queued individually for safe replacement. MVForge converts in staging and archives the original before publishing.'
                         : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
                   </Alert>
                 ) : (
@@ -1001,7 +1001,7 @@ function AssetRow({
 
   function safelyDeleteConvertedAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    const confirmed = window.confirm('Delete this converted Library asset? MediaForge will proceed only if its archived original exists and can be restored to the original Raw path. Reports, logs, and job history will be preserved.');
+    const confirmed = window.confirm('Delete this converted Library asset? MVForge will proceed only if its archived original exists and can be restored to the original Raw path. Reports, logs, and job history will be preserved.');
     if (confirmed) {
       deleteConvertedAsset.mutate(asset.path);
     }

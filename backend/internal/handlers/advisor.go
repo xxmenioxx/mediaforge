@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -92,7 +92,7 @@ func (h AdvisorHandler) Evaluate(c *gin.Context) {
 		return
 	}
 
-	response := evaluateConversion(scan, profile, h.hasMediaForgeConversion(request.MediaPath))
+	response := evaluateConversion(scan, profile, h.hasMVForgeConversion(request.MediaPath))
 	c.JSON(http.StatusOK, response)
 }
 
@@ -254,7 +254,7 @@ func abs(value int) int {
 	return value
 }
 
-func (h AdvisorHandler) hasMediaForgeConversion(mediaPath string) bool {
+func (h AdvisorHandler) hasMVForgeConversion(mediaPath string) bool {
 	clean := filepath.Clean(strings.TrimSpace(mediaPath))
 	var count int64
 	err := h.db.Model(&models.QueueJob{}).
@@ -350,7 +350,7 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 		warnings = append(warnings, "Multiple audio tracks are present; verify the profile keeps the tracks you care about.")
 	}
 	if previouslyConverted {
-		reasons = append([]string{"MediaForge publication history confirms that this asset was converted previously. The recommendation still evaluates its current codec, bitrate, preservation needs, and selected target profile."}, reasons...)
+		reasons = append([]string{"MVForge publication history confirms that this asset was converted previously. The recommendation still evaluates its current codec, bitrate, preservation needs, and selected target profile."}, reasons...)
 		if targetCodec != "copy" {
 			score -= 15
 			warnings = append(warnings, "This would add another lossy video generation. Conversion should proceed only when the analysis shows a measurable compatibility, size, or correction advantage.")

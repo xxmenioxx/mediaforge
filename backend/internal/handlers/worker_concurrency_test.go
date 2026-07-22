@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

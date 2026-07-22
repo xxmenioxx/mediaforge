@@ -72,7 +72,7 @@ export const starterAudioProfiles: AudioEnhancementProfile[] = [
     description: 'Uses FFmpeg arnndn with an external speech denoise model, then normalizes loudness.',
     intent: 'Reduce speech noise with a neural model',
     filters: 'loudnorm=I=-18:TP=-2:LRA=10',
-    rnnoiseModelPath: '/mediaforge/models/audio/rnnoise-model.rnnn',
+    rnnoiseModelPath: '/mvforge/models/audio/rnnoise-model.rnnn',
     channelMode: 'preserve',
     forceStereoMode: 'auto',
     stereoDelayMs: 12,

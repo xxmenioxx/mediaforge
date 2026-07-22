@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -148,7 +148,7 @@ func appendAnalysisRecordForJob(db *gorm.DB, job models.QueueJob, sourceProbe ma
 		"assetPath":  job.MediaPath,
 		"assetName":  scan.FileName,
 		"decision":   "queued-conversion-as-is",
-		"notes":      "Automatically captured before MediaForge job #" + strconv.FormatUint(uint64(job.ID), 10),
+		"notes":      "Automatically captured before MVForge job #" + strconv.FormatUint(uint64(job.ID), 10),
 		"scan":       scan,
 		"conversion": conversion,
 		"createdAt":  time.Now().UTC().Format(time.RFC3339),
@@ -337,7 +337,7 @@ func analysisRecordFromAsIsReport(path string, fileName string) (models.JSONMap,
 		"assetPath":  assetPath,
 		"assetName":  scan.FileName,
 		"decision":   "queued-conversion-as-is",
-		"notes":      "Imported from AS-IS report for MediaForge job #" + jobID + ".",
+		"notes":      "Imported from AS-IS report for MVForge job #" + jobID + ".",
 		"scan":       scan,
 		"conversion": artifact.AssetConversion,
 		"createdAt":  generatedAt.UTC().Format(time.RFC3339),

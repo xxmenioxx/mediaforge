@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -49,7 +49,7 @@ func LoadStorageRoles(db *gorm.DB) (StorageRoles, error) {
 	fallbacks := map[StorageRole]string{
 		StorageRoleRaw: legacyString(legacy, "rawRoot", "/media/raw"), StorageRoleLibrary: legacyString(legacy, "libraryRoot", "/media/library"),
 		StorageRoleOriginalsArchive: legacyString(legacy, "originalsArchivePath", "/media/originals_archive"), StorageRoleWork: legacyString(legacy, "stagingPath", "/media/staging"),
-		StorageRoleCache: "/mediaforge/cache", StorageRoleReports: legacyString(legacy, "resultsReportsPath", "/media/reports"), StorageRoleLogs: legacyString(legacy, "logsPath", "/media/reports/logs"),
+		StorageRoleCache: "/mvforge/cache", StorageRoleReports: legacyString(legacy, "resultsReportsPath", "/media/reports"), StorageRoleLogs: legacyString(legacy, "logsPath", "/media/reports/logs"),
 	}
 	for role, path := range fallbacks {
 		if roles[role].Path == "" {

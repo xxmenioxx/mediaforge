@@ -620,7 +620,7 @@ export function AudioProfilesPage() {
                             label="ARNNDN model path"
                             value={form.rnnoiseModelPath}
                             onChange={(event) => setForm((current) => ({ ...current, rnnoiseModelPath: event.target.value }))}
-                            placeholder="/mediaforge/models/audio/rnnoise-model.rnnn"
+                            placeholder="/mvforge/models/audio/rnnoise-model.rnnn"
                             fullWidth
                           />
                         </Grid>

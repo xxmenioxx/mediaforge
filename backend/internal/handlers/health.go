@@ -10,7 +10,7 @@ import (
 func Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "ok",
-		"service":   "mediaforge-api",
+		"service":   "mvforge-api",
 		"timestamp": time.Now().UTC(),
 	})
 }

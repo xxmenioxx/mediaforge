@@ -261,7 +261,7 @@ export function LibrariesPage() {
                         label="Advanced: type custom destination path"
                     />
                     <Alert severity="info" sx={{ mt: 1 }}>
-                      MediaForge only lists destination folders that exist inside the mounted library root. Create folders on the host
+                      MVForge only lists destination folders that exist inside the mounted library root. Create folders on the host
                       under media/library before selecting them here.
                     </Alert>
                   </Grid>

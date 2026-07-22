@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -70,7 +70,7 @@ func recoverSchedulerState(db *gorm.DB, startup bool) (SchedulerRecoveryReport, 
 			}
 		}
 		if target != "" {
-			temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mediaforge-job-"+strconv.FormatUint(uint64(job.ID), 10)+".tmp")
+			temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mvforge-job-"+strconv.FormatUint(uint64(job.ID), 10)+".tmp")
 			_ = os.Remove(temporary)
 		}
 		job.Status = JobStatusFailed
@@ -97,7 +97,7 @@ func recoverSchedulerState(db *gorm.DB, startup bool) (SchedulerRecoveryReport, 
 			job.Notes = appendNote(job.Notes, "Recovery preserved the partial output for diagnosis: "+job.OutputPath)
 		}
 		job.Status, job.Progress, job.ValidationStatus = JobStatusFailed, 0, ValidationStatusPending
-		job.ErrorMessage = "MediaForge restarted while this job was running; automatic resume is not supported"
+		job.ErrorMessage = "MVForge restarted while this job was running; automatic resume is not supported"
 		job.FinishedAt = &report.RanAt
 		job.Notes = appendNote(job.Notes, "Scheduler recovery marked the interrupted job as failed")
 		if err := db.Save(job).Error; err != nil {

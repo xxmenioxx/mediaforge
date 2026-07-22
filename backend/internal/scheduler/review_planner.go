@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/capabilities"
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"gorm.io/gorm"
 )
 

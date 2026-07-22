@@ -1,18 +1,18 @@
-# MediaForge — Contexto V2: Discovery & Analysis Pipeline
+# MVForge — Contexto V2: Discovery & Analysis Pipeline
 
 ## 1. Contexto general del proyecto
 
-MediaForge es una aplicación local/self-hosted para gestionar, analizar, convertir, restaurar y publicar assets de video/audio.
+MVForge es una aplicación local/self-hosted para gestionar, analizar, convertir, restaurar y publicar assets de video/audio.
 
 La aplicación corre en Docker, usa almacenamiento persistente en NAS y está pensada para usuarios técnicos y no técnicos que quieren convertir bibliotecas multimedia de forma controlada.
 
-MediaForge no busca reemplazar Radarr, Sonarr, Jellyfin o Plex.
+MVForge no busca reemplazar Radarr, Sonarr, Jellyfin o Plex.
 
 Su rol es complementar el flujo multimedia:
 
 * Radarr/Sonarr: adquisición y organización.
 * Jellyfin/Plex: reproducción.
-* MediaForge: análisis, perfilado, conversión, restauración, validación, publicación y auditoría.
+* MVForge: análisis, perfilado, conversión, restauración, validación, publicación y auditoría.
 
 Stack actual:
 
@@ -56,7 +56,7 @@ Esta fase busca separar claramente dos responsabilidades del pipeline:
    * Sugerir perfiles de video/audio.
    * Decidir si el asset puede pasar a Queue, Needs Review o Lab.
 
-La idea es que MediaForge sea seguro por defecto:
+La idea es que MVForge sea seguro por defecto:
 
 ```text
 Discovery = automático y no destructivo.
@@ -122,9 +122,9 @@ Discovery no debe:
 
 Discovery debe correr en tres momentos:
 
-#### A. Al iniciar MediaForge
+#### A. Al iniciar MVForge
 
-Cuando MediaForge inicia, debe escanear `/media/raw` y comparar el filesystem contra la base de datos.
+Cuando MVForge inicia, debe escanear `/media/raw` y comparar el filesystem contra la base de datos.
 
 Objetivo:
 
@@ -135,7 +135,7 @@ Reconstruir estado si el usuario movió, agregó o eliminó archivos manualmente
 Flujo:
 
 ```text
-MediaForge starts
+MVForge starts
   ↓
 Scan /media/raw
   ↓
@@ -299,7 +299,7 @@ Analysis debe correr automáticamente después de Discovery si:
 * El archivo está estable.
 * La extensión está soportada.
 * El archivo existe.
-* El archivo está dentro de paths controlados por MediaForge.
+* El archivo está dentro de paths controlados por MVForge.
 * El asset no está marcado manualmente como ignored.
 * El asset no está ya analizado con el mismo file signature.
 
@@ -553,7 +553,7 @@ CRITICAL:
 
 ## 7. Decision Engine
 
-Después de Analysis, MediaForge debe decidir el siguiente estado del asset.
+Después de Analysis, MVForge debe decidir el siguiente estado del asset.
 
 Flujo:
 
@@ -929,7 +929,7 @@ Responsabilidades:
 
 ## 14. Reglas de seguridad
 
-MediaForge debe ser estricto con filesystem safety.
+MVForge debe ser estricto con filesystem safety.
 
 Reglas:
 
@@ -982,7 +982,7 @@ Primera etapa recomendada:
 ```text
 AI suggests.
 User approves.
-MediaForge executes.
+MVForge executes.
 ```
 
 ---
@@ -1116,16 +1116,16 @@ Entregables:
 
 ## 17. Resultado esperado
 
-Al terminar esta fase, MediaForge debe operar así:
+Al terminar esta fase, MVForge debe operar así:
 
 ```text
 1. Usuario copia archivos a /media/raw.
-2. MediaForge detecta archivos nuevos.
+2. MVForge detecta archivos nuevos.
 3. Discovery registra assets.
 4. Analysis inspecciona assets con ffprobe.
 5. Se genera reporte AS-IS.
 6. Se calculan warnings y confidence score.
-7. MediaForge sugiere perfil y destino.
+7. MVForge sugiere perfil y destino.
 8. Assets seguros quedan Ready to Queue.
 9. Assets dudosos van a Needs Review o Lab.
 10. Usuario mantiene control antes de convertir o publicar.
@@ -1134,7 +1134,7 @@ Al terminar esta fase, MediaForge debe operar así:
 La experiencia ideal para el usuario:
 
 ```text
-MediaForge me dice qué tengo, qué tan confiable es, qué perfil usar, qué necesita revisión y cuál es el siguiente paso.
+MVForge me dice qué tengo, qué tan confiable es, qué perfil usar, qué necesita revisión y cuál es el siguiente paso.
 ```
 
 ---
@@ -1152,7 +1152,7 @@ UI limpia > Detalles técnicos saturados
 Automatización configurable > Automatización forzada
 ```
 
-MediaForge debe sentirse como un Lightroom de multimedia/video:
+MVForge debe sentirse como un Lightroom de multimedia/video:
 
 ```text
 Importar → Analizar → Comparar → Ajustar → Procesar → Validar → Publicar

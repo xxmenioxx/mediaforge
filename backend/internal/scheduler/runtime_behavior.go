@@ -1,7 +1,7 @@
 package scheduler
 
 import (
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"gorm.io/gorm"
 )
 

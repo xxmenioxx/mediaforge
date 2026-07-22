@@ -3,12 +3,12 @@ package main
 import (
 	"log"
 
-	"github.com/anuelvs/mediaforge/backend/internal/config"
-	"github.com/anuelvs/mediaforge/backend/internal/database"
-	"github.com/anuelvs/mediaforge/backend/internal/handlers"
-	"github.com/anuelvs/mediaforge/backend/internal/routes"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/config"
+	"github.com/anuelvs/mvforge/backend/internal/database"
+	"github.com/anuelvs/mvforge/backend/internal/handlers"
+	"github.com/anuelvs/mvforge/backend/internal/routes"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 )
 
 func main() {

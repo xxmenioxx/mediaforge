@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -213,7 +213,7 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 	if err := transitionJobStage(h.db, &job, JobStagePublishing); err != nil {
 		return PublishResult{}, err
 	}
-	temporary := filepath.Join(filepath.Dir(target), fmt.Sprintf(".%s.mediaforge-job-%d.tmp", filepath.Base(target), job.ID))
+	temporary := filepath.Join(filepath.Dir(target), fmt.Sprintf(".%s.mvforge-job-%d.tmp", filepath.Base(target), job.ID))
 	if err := copyPublishedFile(job.OutputPath, temporary, true); err != nil {
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "could not prepare replacement beside library asset", Err: err}
 	}

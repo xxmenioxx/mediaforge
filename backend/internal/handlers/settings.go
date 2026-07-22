@@ -4,11 +4,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/anuelvs/mediaforge/backend/internal/models"
-	"github.com/anuelvs/mediaforge/backend/internal/runtimeinfo"
-	"github.com/anuelvs/mediaforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type SettingsHandler struct {
@@ -47,22 +48,15 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			return
 		}
 	}
-	var setting models.AppSetting
+	setting := models.AppSetting{Key: key, Value: input.Value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := h.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&setting).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.db.First(&setting, "key = ?", key).Error; err != nil {
-		if err != gorm.ErrRecordNotFound {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		setting = models.AppSetting{Key: key}
-	}
-
-	setting.Value = input.Value
-	if setting.CreatedAt.IsZero() {
-		setting.CreatedAt = time.Now()
-	}
-
-	if err := h.db.Save(&setting).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
