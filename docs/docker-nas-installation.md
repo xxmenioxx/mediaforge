@@ -4,7 +4,7 @@ Esta es la ruta de instalación recomendada para ejecutar una versión publicada
 
 ## Requisitos
 
-- NAS `linux/amd64` o `linux/arm64` con Docker y Docker Compose v2.
+- NAS Intel `linux/amd64` con Docker y Docker Compose v2.
 - Carpetas dedicadas para MVForge con permisos de lectura y escritura para Docker.
 - Acceso al puerto elegido desde la red local.
 
@@ -141,7 +141,7 @@ Si la versión nueva modificó la base de datos de forma incompatible, detén pr
 Los workflows se dividen en:
 
 - `.github/workflows/ci.yml`: tests de Go, race detector, vet, lint/build del frontend y builds Docker en cada PR o push a `main`.
-- `.github/workflows/release-images.yml`: publicación multi-arquitectura en GHCR y creación del release al enviar un tag semántico.
+- `.github/workflows/release-images.yml`: publicación `linux/amd64` en GHCR y creación del release al enviar un tag semántico.
 
 Para publicar la primera versión:
 

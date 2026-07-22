@@ -33,7 +33,8 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { PageHeader } from '../components/PageHeader';
-import type { AppSetting, Asset, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
+import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
+import { emptyTrackProfile, getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 const initialJob: QueueJobInput = {
   mediaPath: '',
@@ -56,10 +57,12 @@ export function QueuePage() {
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const audioProfiles = getAudioProfiles(settings.data);
+  const trackProfiles = getTrackProfiles(settings.data);
   const workerSettings = getWorkerSettings(settings.data);
   const [form, setForm] = useState<QueueJobInput>(initialJob);
   const [isJobDialogOpen, setIsJobDialogOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<QueueJob | null>(null);
+  const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState('');
   const [jobSearch, setJobSearch] = useState('');
   const [jobSortDirection, setJobSortDirection] = useState<'asc' | 'desc'>('desc');
   const [jobsPerPage, setJobsPerPage] = useState(10);
@@ -101,20 +104,47 @@ export function QueuePage() {
     setJobPage(1);
   }, [batchFilter, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter]);
 
+  async function applyQueueSelections(input: QueueJobInput) {
+    const asset = findQueueAsset(assets.data, input.mediaPath);
+    const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
+    await api.updateAssetConversion({
+      path: input.mediaPath,
+      ...(asset?.conversion ?? {}),
+      ...(trackProfile ? trackProfileOverride(trackProfile) : {
+        keepVideoStreams: null,
+        keepAudioStreams: null,
+        keepSubtitleStreams: null,
+        videoMetadata: undefined,
+        audioMetadata: undefined,
+        subtitleMetadata: undefined,
+      }),
+      trackProfileKey: trackProfile?.key,
+      processingMode: form.profileId > 0 ? 'full_encode' : 'audio_only',
+    });
+  }
+
   const createJob = useMutation({
-    mutationFn: api.createQueueJob,
+    mutationFn: async (input: QueueJobInput) => {
+      await applyQueueSelections(input);
+      return api.createQueueJob(input);
+    },
     onSuccess: async () => {
       setForm(initialJob);
       setEditingJob(null);
+      setSelectedTrackProfileKey('');
       setIsJobDialogOpen(false);
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
   const editJob = useMutation({
-    mutationFn: api.updateQueueJob,
+    mutationFn: async (input: Parameters<typeof api.updateQueueJob>[0]) => {
+      await applyQueueSelections({ ...form, mediaPath: input.mediaPath ?? form.mediaPath });
+      return api.updateQueueJob(input);
+    },
     onSuccess: async () => {
       setForm(initialJob);
       setEditingJob(null);
+      setSelectedTrackProfileKey('');
       setIsJobDialogOpen(false);
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
@@ -126,25 +156,31 @@ export function QueuePage() {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const technicalProfileId = form.profileId > 0 ? form.profileId : editingJob?.profileId || profiles.data?.[0]?.id || 0;
+    if (!technicalProfileId || (!form.profileId && !form.audioProfileKey && !selectedTrackProfileKey)) return;
+    const input = { ...form, profileId: technicalProfileId };
     if (editingJob) {
-      editJob.mutate({ jobId: editingJob.id, ...form });
+      editJob.mutate({ jobId: editingJob.id, ...input });
       return;
     }
-    createJob.mutate(form);
+    createJob.mutate(input);
   }
 
   function openCreateJobDialog() {
     setEditingJob(null);
     setForm(initialJob);
+    setSelectedTrackProfileKey('');
     setIsJobDialogOpen(true);
   }
 
   function openEditJobDialog(job: QueueJob) {
+    const conversion = findQueueAsset(assets.data, job.mediaPath)?.conversion;
     setEditingJob(job);
+    setSelectedTrackProfileKey(conversion?.trackProfileKey ?? '');
     setForm({
       mediaPath: job.mediaPath,
       libraryId: job.libraryId,
-      profileId: job.profileId,
+      profileId: conversion?.processingMode === 'audio_only' ? 0 : job.profileId,
       audioProfileKey: job.audioProfileKey,
       priority: job.priority,
       notes: job.notes,
@@ -156,6 +192,7 @@ export function QueuePage() {
     setIsJobDialogOpen(false);
     setEditingJob(null);
     setForm(initialJob);
+    setSelectedTrackProfileKey('');
   }
 
   return (
@@ -265,7 +302,7 @@ export function QueuePage() {
           <Box component="form" onSubmit={submit}>
             <DialogContent>
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12, md: 5 }}>
+                <Grid size={{ xs: 12, md: 4 }}>
                   <AssetAutocomplete
                     assets={availableQueueAssets(assets.data?.unprocessed ?? [], allJobs, editingJob?.mediaPath)}
                     value={form.mediaPath}
@@ -291,6 +328,13 @@ export function QueuePage() {
                     profiles={audioProfiles}
                     value={form.audioProfileKey ?? ''}
                     onChange={(audioProfileKey) => updateField('audioProfileKey', audioProfileKey)}
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+                  <TrackProfileAutocomplete
+                    profiles={trackProfiles}
+                    value={selectedTrackProfileKey}
+                    onChange={setSelectedTrackProfileKey}
                   />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 1 }}>
@@ -325,7 +369,7 @@ export function QueuePage() {
             </DialogContent>
             <DialogActions>
               <Button onClick={closeJobDialog}>Cancel</Button>
-              <Button type="submit" variant="contained" disabled={createJob.isPending || editJob.isPending || !form.mediaPath || !form.libraryId || !form.profileId}>
+              <Button type="submit" variant="contained" disabled={createJob.isPending || editJob.isPending || !form.mediaPath || !form.libraryId || (!form.profileId && !form.audioProfileKey && !selectedTrackProfileKey)}>
                 {editingJob ? 'Save' : 'Queue'}
               </Button>
             </DialogActions>
@@ -421,12 +465,14 @@ function LibraryAutocomplete({ libraries, value, onChange }: { libraries: Librar
 }
 
 function ProfileAutocomplete({ profiles, value, onChange }: { profiles: Profile[]; value: number; onChange: (id: number) => void }) {
+  const none = { id: 0, name: 'None', videoCodec: 'copy', description: '', container: '', audioCodec: '', none: true };
+  const options = [none, ...profiles];
   return (
     <Autocomplete
-      options={profiles}
-      value={profiles.find((profile) => profile.id === value) ?? null}
+      options={options}
+      value={options.find((profile) => profile.id === value) ?? none}
       onChange={(_, profile) => onChange(profile?.id ?? 0)}
-      getOptionLabel={(profile) => `${profile.name} · ${profile.videoCodec}`}
+      getOptionLabel={(profile) => profile.id ? `${profile.name} · ${profile.videoCodec}` : 'None'}
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [
@@ -437,7 +483,7 @@ function ProfileAutocomplete({ profiles, value, onChange }: { profiles: Profile[
           profile.audioCodec,
         ])
       }
-      renderInput={(params) => <TextField {...params} label="Profile" required />}
+      renderInput={(params) => <TextField {...params} label="Video profile" />}
       fullWidth
     />
   );
@@ -452,12 +498,18 @@ function AudioProfileAutocomplete({
   value: string;
   onChange: (key: string) => void;
 }) {
+  const none: AudioEnhancementProfile = {
+    key: '', name: 'None', description: '', intent: '', filters: '', rnnoiseModelPath: '', channelMode: 'preserve',
+    forceStereoMode: 'auto', stereoDelayMs: 0, stereoWidth: 0, eqBands: {}, preserveOriginalTrack: true,
+    outputCodec: 'copy', targetLoudness: 0, truePeak: 0, notes: '',
+  };
+  const options = [none, ...profiles];
   return (
     <Autocomplete
-      options={profiles}
-      value={profiles.find((profile) => profile.key === value) ?? null}
+      options={options}
+      value={options.find((profile) => profile.key === value) ?? none}
       onChange={(_, profile) => onChange(profile?.key ?? '')}
-      getOptionLabel={(profile) => `${profile.name} · ${profile.outputCodec || 'copy'}`}
+      getOptionLabel={(profile) => profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'None'}
       isOptionEqualToValue={(option, selected) => option.key === selected.key}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [
@@ -474,12 +526,36 @@ function AudioProfileAutocomplete({
   );
 }
 
+function TrackProfileAutocomplete({ profiles, value, onChange }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void }) {
+  const none: TrackProfile = { ...emptyTrackProfile, key: '', name: 'None', audioRequired: false, subtitlesRequired: false };
+  const options = [none, ...profiles];
+  return (
+    <Autocomplete
+      options={options}
+      value={options.find((profile) => profile.key === value) ?? none}
+      onChange={(_, profile) => onChange(profile?.key ?? '')}
+      getOptionLabel={(profile) => profile.name}
+      isOptionEqualToValue={(option, selected) => option.key === selected.key}
+      filterOptions={(items, state) => filterByText(items, state.inputValue, (profile) => [profile.name, profile.description, profile.key])}
+      renderInput={(params) => <TextField {...params} label="Track profile" />}
+      fullWidth
+    />
+  );
+}
+
 function filterAssets(assets: Asset[], inputValue: string) {
   return filterByText(assets, inputValue, (asset) => [asset.fileName, asset.relativePath, asset.path, asset.extension]);
 }
 
 function availableQueueAssets(assets: Asset[], jobs: QueueJob[], currentPath = '') {
   return assets.filter((asset) => asset.path === currentPath || !jobIsOpenForPath(jobs, asset.path));
+}
+
+function findQueueAsset(inventory: AssetInventory | undefined, mediaPath: string) {
+  if (!inventory) return undefined;
+  return [inventory.unprocessed, inventory.library, inventory.unverified, inventory.converted, inventory.archive]
+    .flat()
+    .find((asset) => asset.path === mediaPath);
 }
 
 function jobIsOpenForPath(jobs: QueueJob[], mediaPath: string) {

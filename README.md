@@ -82,7 +82,7 @@ mkdir -p data/config data/raw data/library data/staging data/originals_archive d
 4. Edita `.env` y utiliza paths absolutos. Ejemplo para macOS o Linux:
 
 ```dotenv
-MVFORGE_VERSION=0.2.0
+MVFORGE_VERSION=0.2.1
 MVFORGE_PORT=8090
 TZ=America/Mexico_City
 
@@ -108,7 +108,7 @@ En Windows, configura los paths desde Docker Desktop y usa rutas absolutas acces
 
 ## Instalación en HomeLab, servidor Docker o NAS
 
-El mismo paquete funciona en equipos `linux/amd64` y `linux/arm64`.
+La imagen de prueba actual está optimizada para el NAS Intel objetivo y se publica para `linux/amd64`.
 
 La instalación independiente recomendada vive, como otras aplicaciones Docker, en un directorio propio:
 

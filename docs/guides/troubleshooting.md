@@ -129,8 +129,8 @@ services:
 ```
 
 La imagen `linux/amd64` incluye el Intel Media Driver (`iHD`) y el runtime Intel
-Media SDK de Alpine. Esos paquetes sólo se instalan en x86_64 para conservar el
-build multi-arquitectura; ARM64 no anuncia QSV.
+Media SDK de Alpine. La imagen de prueba se publica para x86_64 porque el NAS
+objetivo usa Quick Sync; ARM64 no está incluido temporalmente.
 
 Recrea el contenedor, pulsa **Refresh host** y confirma que `hevc_qsv` aparezca
 como usable. Si continúa fallando, utiliza temporalmente `libx265`; no fuerces
@@ -145,7 +145,7 @@ el encoder de video no produjo ningún frame.
 Incluye:
 
 - versión de MVForge e imagen utilizada;
-- arquitectura (`linux/amd64` o `linux/arm64`);
+- arquitectura (`linux/amd64`);
 - timestamp y zona horaria;
 - `requestId`, `jobId` y `planId`, cuando existan;
 - waiting state o status HTTP;

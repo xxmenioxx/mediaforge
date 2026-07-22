@@ -10,7 +10,7 @@ flowchart LR
     CI -->|verde| MAIN[main]
     MAIN --> TAG[Tag vX.Y.Z]
     TAG --> VERIFY[Verificar tests y build]
-    VERIFY --> BUILD[Docker Buildx amd64 + arm64]
+    VERIFY --> BUILD[Docker Buildx amd64]
     BUILD --> BACKEND[GHCR backend:X.Y.Z]
     BUILD --> WEB[GHCR web:X.Y.Z]
     BACKEND --> RELEASE[GitHub Release]
@@ -123,7 +123,7 @@ ghcr.io/xxmenioxx/mvforge-web:0.1.0
 ghcr.io/xxmenioxx/mvforge-web:0.1
 ```
 
-También genera tags por SHA y construye manifests para `linux/amd64` y `linux/arm64`.
+También genera tags por SHA y publica la imagen `linux/amd64` usada por el NAS Intel objetivo.
 
 El GitHub Release adjunta:
 
@@ -175,11 +175,11 @@ Si la versión nueva migró SQLite de forma incompatible, restaura también el b
 - El token no tiene `read:packages`.
 - El package no está conectado al repositorio que ejecuta Actions.
 
-### Un job de una arquitectura falla
+### El build de arquitectura falla
 
 - Revisa el build de Buildx/QEMU.
-- Comprueba que las imágenes base soporten la arquitectura.
-- No publiques el release como estable si falta una arquitectura anunciada.
+- Comprueba que las imágenes base soporten `linux/amd64`.
+- No publiques el release como estable si falta la arquitectura anunciada.
 
 ## Referencias oficiales
 
