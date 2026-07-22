@@ -235,7 +235,7 @@ export function QueuePage() {
         </Alert>
         <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="space-between" useFlexGap sx={{ mb: 2 }}>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {(['all', 'queued', 'running', 'completed', 'failed', 'canceled'] as const).map((status) => (
+            {(['queued', 'running', 'completed', 'failed', 'canceled', 'all'] as const).map((status) => (
               <Button
                 key={status}
                 variant={statusFilter === status ? 'contained' : 'outlined'}
@@ -243,9 +243,7 @@ export function QueuePage() {
                 size="small"
                 onClick={() => {
                   const nextParams = new URLSearchParams();
-                  if (status !== 'all') {
-                    nextParams.set('status', status);
-                  }
+                  nextParams.set('status', status);
                   if (batchFilter) {
                     nextParams.set('batch', batchFilter);
                   }
@@ -1136,9 +1134,9 @@ function summarizeStatusCounts(jobs: QueueJob[]): QueueStatusCounts {
 }
 
 function normalizeStatusFilter(value: string | null): QueueJob['status'] | 'all' {
-  return value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled'
+  return value === 'all' || value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled'
     ? value
-    : 'all';
+    : 'queued';
 }
 
 function statusLabel(status: QueueJob['status'] | 'all') {
