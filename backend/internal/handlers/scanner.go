@@ -287,10 +287,6 @@ func enrichCachedScan(result *models.ScanResult) {
 		return
 	}
 	result.HDR = isHDR(firstStream(streams, "video"))
-	if len(result.VideoStreams) > 0 || len(result.AudioStreams) > 0 || len(result.SubtitleStreams) > 0 {
-		return
-	}
-
 	result.VideoStreams = streamSummaries(streams, "video")
 	result.AudioStreams = streamSummaries(streams, "audio")
 	result.SubtitleStreams = streamSummaries(streams, "subtitle")
@@ -376,6 +372,13 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 			summary["hdr"] = isHDR(stream)
 			summary["fieldOrder"] = normalizeFieldOrder(stream.FieldOrder)
 		}
+		if sizeBytes := streamSizeBytes(stream); sizeBytes > 0 {
+			summary["sizeBytes"] = sizeBytes
+			summary["sizeEstimated"] = false
+		} else if bitrate := streamBitrate(stream); bitrate > 0 && parseFloat(stream.Duration) > 0 {
+			summary["sizeBytes"] = int64(float64(bitrate) * parseFloat(stream.Duration) / 8)
+			summary["sizeEstimated"] = true
+		}
 
 		if codecType == "audio" {
 			summary["channels"] = stream.Channels
@@ -388,6 +391,27 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 	}
 
 	return summaries
+}
+
+func streamSizeBytes(stream FFProbeStream) int64 {
+	for _, key := range []string{"NUMBER_OF_BYTES", "NUMBER_OF_BYTES-eng"} {
+		if value := parseInt(tagValue(stream.Tags, key, "")); value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func streamBitrate(stream FFProbeStream) int64 {
+	if value := parseInt(stream.Bitrate); value > 0 {
+		return value
+	}
+	for _, key := range []string{"BPS", "BPS-eng"} {
+		if value := parseInt(tagValue(stream.Tags, key, "")); value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func interlaceAnalysisFromRaw(raw models.JSONMap) models.JSONMap {

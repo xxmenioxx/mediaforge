@@ -39,3 +39,21 @@ func TestJobArtifactMatchesJobRequiresSameIDAndMediaPath(t *testing.T) {
 		t.Fatalf("expected artifact with different job id to be ignored")
 	}
 }
+
+func TestNormalizeAnalysisRecordHDRCorrectsTenBitSDR(t *testing.T) {
+	records := []any{map[string]any{
+		"scan": map[string]any{
+			"hdr": true,
+			"rawProbe": map[string]any{"streams": []any{map[string]any{
+				"codec_type": "video", "codec_name": "hevc", "profile": "Main 10", "pix_fmt": "yuv420p10le", "color_range": "tv",
+			}}},
+		},
+	}}
+	if corrected := normalizeAnalysisRecordHDR(records); corrected != 1 {
+		t.Fatalf("corrected=%d want=1", corrected)
+	}
+	scan := records[0].(map[string]any)["scan"].(map[string]any)
+	if hdr, _ := scan["hdr"].(bool); hdr {
+		t.Fatal("10-bit SDR historical snapshot still marked HDR")
+	}
+}

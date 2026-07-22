@@ -20,3 +20,13 @@ func TestIsHDRDetectsPQAndHDRMetadata(t *testing.T) {
 		t.Fatal("mastering display metadata must be classified as HDR")
 	}
 }
+
+func TestStreamSizeBytesUsesMatroskaStatistics(t *testing.T) {
+	stream := FFProbeStream{Tags: map[string]string{"NUMBER_OF_BYTES-eng": "46764973", "BPS-eng": "252532"}}
+	if got := streamSizeBytes(stream); got != 46764973 {
+		t.Fatalf("size=%d", got)
+	}
+	if got := streamBitrate(stream); got != 252532 {
+		t.Fatalf("bitrate=%d", got)
+	}
+}

@@ -57,9 +57,10 @@ type jobArtifactsResponse struct {
 }
 
 type analysisBackfillResponse struct {
-	Imported int `json:"imported"`
-	Skipped  int `json:"skipped"`
-	Total    int `json:"total"`
+	Imported  int `json:"imported"`
+	Corrected int `json:"corrected"`
+	Skipped   int `json:"skipped"`
+	Total     int `json:"total"`
 }
 
 func JobArtifacts(db *gorm.DB) gin.HandlerFunc {
@@ -205,6 +206,7 @@ func backfillAnalysisRecordsFromAsIsReports(db *gorm.DB) (analysisBackfillRespon
 	if err != nil {
 		return response, err
 	}
+	response.Corrected = normalizeAnalysisRecordHDR(records)
 
 	imported := []any{}
 	for _, file := range files {
@@ -228,7 +230,7 @@ func backfillAnalysisRecordsFromAsIsReports(db *gorm.DB) (analysisBackfillRespon
 		response.Imported++
 	}
 
-	if response.Imported == 0 {
+	if response.Imported == 0 && response.Corrected == 0 {
 		return response, nil
 	}
 
@@ -247,6 +249,41 @@ func backfillAnalysisRecordsFromAsIsReports(db *gorm.DB) (analysisBackfillRespon
 	}
 	setting.Value = value
 	return response, db.Save(&setting).Error
+}
+
+func normalizeAnalysisRecordHDR(records []any) int {
+	corrected := 0
+	for _, value := range records {
+		record, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		scan, ok := record["scan"].(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, ok := scan["rawProbe"].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var probe FFProbeResult
+		if json.Unmarshal(content, &probe) != nil {
+			continue
+		}
+		hdr := isHDR(firstStream(probe.Streams, "video"))
+		current, _ := scan["hdr"].(bool)
+		if current == hdr {
+			continue
+		}
+		scan["hdr"] = hdr
+		scan["videoStreams"] = streamSummaries(probe.Streams, "video")
+		corrected++
+	}
+	return corrected
 }
 
 func analysisRecordFromAsIsReport(path string, fileName string) (models.JSONMap, bool) {

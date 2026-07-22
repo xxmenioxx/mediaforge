@@ -467,6 +467,7 @@ export type JobArtifactsResponse = {
 
 export type AnalysisBackfillResponse = {
   imported: number;
+  corrected: number;
   skipped: number;
   total: number;
 };
@@ -559,6 +560,8 @@ export type MediaStreamInfo = {
   title: string;
   duration: number;
   bitrate: number;
+  sizeBytes?: number;
+  sizeEstimated?: boolean;
   default: boolean;
   forced: boolean;
   comment: boolean;

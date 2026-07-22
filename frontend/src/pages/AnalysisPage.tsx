@@ -104,7 +104,7 @@ export function AnalysisPage() {
   const backfillAsIsReports = useMutation({
     mutationFn: api.backfillAnalysisAsIsReports,
     onSuccess: async (result) => {
-      if (result.imported > 0) {
+      if (result.imported > 0 || result.corrected > 0) {
         await queryClient.invalidateQueries({ queryKey: ['settings'] });
       }
     },
@@ -264,6 +264,9 @@ export function AnalysisPage() {
                   Imported {backfillAsIsReports.data.imported} historical AS-IS report
                   {backfillAsIsReports.data.imported === 1 ? '' : 's'} into Analysis.
                 </Alert>
+              ) : null}
+              {backfillAsIsReports.data?.corrected ? (
+                <Alert severity="success">Corrected HDR classification in {backfillAsIsReports.data.corrected} historical Analysis record{backfillAsIsReports.data.corrected === 1 ? '' : 's'}.</Alert>
               ) : null}
               {currentScan ? (
                 <Stack spacing={2}>

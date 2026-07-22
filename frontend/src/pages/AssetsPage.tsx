@@ -443,13 +443,16 @@ function AssetGroupRow({
   });
   const queueGroup = useMutation({
     mutationFn: async () => {
-      if (!effectiveProfileId || !selectedLibraryId) {
+      const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
+      const hasSelectedOperation = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(trackProfile);
+      const queueProfileId = effectiveProfileId || (hasSelectedOperation ? profiles[0]?.id ?? 0 : 0);
+      const copyVideo = selectedProfileId < 0 && Boolean(trackProfile);
+      if (!queueProfileId || !selectedLibraryId) {
         return [];
       }
 
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-	  const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
 	  const validations = trackProfile ? await Promise.all(groupAssets.map(async (asset) => ({ asset, result: validateTrackProfile(trackProfile, await api.scan({ path: asset.path, force: false })) }))) : groupAssets.map((asset) => ({ asset, result: { applies: true, reasons: [] as string[] } }));
 	  const incompatible = validations.filter(({ result }) => !result.applies);
 	  if (trackProfile?.validationMode === 'block' && incompatible.length) {
@@ -461,7 +464,7 @@ function AssetGroupRow({
 	  const queueable = validations.filter(({ result }) => result.applies || trackProfile?.validationMode === 'warn');
 	  return Promise.all(queueable.map(async ({ asset, result }) => {
 	    if (trackProfile && result.applies) {
-	      await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(trackProfile), trackProfileKey: trackProfile.key });
+	      await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
 	    }
 	    return api.createQueueJob({
             mediaPath: asset.path,
@@ -469,7 +472,7 @@ function AssetGroupRow({
             batchId,
             batchName,
             libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
-            profileId: effectiveProfileId,
+            profileId: queueProfileId,
             audioProfileKey: selectedAudioProfileKey,
             priority: priorityForSize(asset.sizeBytes),
             notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${trackProfile?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
@@ -599,7 +602,7 @@ function AssetGroupRow({
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" allowNone={mode === 'unprocessed' || mode === 'library'} />
+                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" allowNone />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AudioProfileAutocomplete
@@ -626,7 +629,7 @@ function AssetGroupRow({
                         }}
                         disabled={
                           queueGroup.isPending ||
-                          !effectiveProfileId ||
+                          (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) ||
                           !selectedLibraryId ||
                           groupAssets.length === 0 ||
                           groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))
@@ -772,7 +775,7 @@ function AssetRow({
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
         if (result.applies) {
-          await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(pathTrackProfile), trackProfileKey: pathTrackProfile.key });
+          await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
         } else {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
@@ -826,6 +829,7 @@ function AssetRow({
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
+  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile);
 
   useEffect(() => {
     if (!firstCategory(assetMetadata.categories)) {
@@ -930,7 +934,8 @@ function AssetRow({
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    if (selectedProfileId <= 0 || !selectedLibraryId) {
+    const queueProfileId = selectedProfileId > 0 ? selectedProfileId : canQueueWithSelection ? profiles[0]?.id ?? 0 : 0;
+    if (!queueProfileId || !selectedLibraryId) {
       return;
     }
     if (isLibraryReplacement && !window.confirm('Convert this Library asset and replace it only after validation? The current file will be moved to Originals Archive.')) {
@@ -941,7 +946,7 @@ function AssetRow({
       mediaPath: asset.path,
       publishMode: isLibraryReplacement ? 'replace_library_asset' : 'standard',
       libraryId: isLibraryReplacement ? asset.libraryId : selectedLibraryId,
-      profileId: selectedProfileId,
+      profileId: queueProfileId,
       audioProfileKey: selectedAudioProfileKey,
       priority: priorityForSize(asset.sizeBytes),
       notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, selectedAudioProfileKey),
@@ -1046,7 +1051,7 @@ function AssetRow({
           <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
         </TableCell>
         <TableCell sx={{ minWidth: 220 }}>
-          <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone={mode === 'unprocessed' || mode === 'library'} />
+          <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone />
         </TableCell>
         <TableCell sx={{ minWidth: 220 }}>
           <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
@@ -1118,7 +1123,7 @@ function AssetRow({
                 <IconButton
                   color="primary"
                   onClick={queueAsset}
-                  disabled={createJob.isPending || selectedProfileId <= 0 || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+                  disabled={createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
                   aria-label={`Queue ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -1131,7 +1136,7 @@ function AssetRow({
                 <IconButton
                   color="warning"
                   onClick={queueAsset}
-                  disabled={createJob.isPending || selectedProfileId <= 0 || isBlockedByReview || hasOpenJob}
+                  disabled={createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
                   aria-label={`Replace ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -1938,12 +1943,18 @@ function AudioProfileAutocomplete({
   size?: 'small' | 'medium';
   disabled?: boolean;
 }) {
+  const none: AudioEnhancementProfile = {
+    key: '', name: 'None', description: '', intent: '', filters: '', rnnoiseModelPath: '', channelMode: 'preserve',
+    forceStereoMode: 'auto', stereoDelayMs: 0, stereoWidth: 0, eqBands: {}, preserveOriginalTrack: true,
+    outputCodec: 'copy', targetLoudness: 0, truePeak: 0, notes: '',
+  };
+  const options = [none, ...profiles];
   return (
     <Autocomplete
-      options={profiles}
-      value={profiles.find((profile) => profile.key === value) ?? null}
+      options={options}
+      value={options.find((profile) => profile.key === value) ?? none}
       onChange={(_, profile) => onChange(profile?.key ?? '')}
-      getOptionLabel={(profile) => `${profile.name} · ${profile.outputCodec || 'copy'}`}
+      getOptionLabel={(profile) => profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'None'}
       isOptionEqualToValue={(option, selected) => option.key === selected.key}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [
@@ -1962,7 +1973,13 @@ function AudioProfileAutocomplete({
 }
 
 function TrackProfileAutocomplete({ profiles, value, onChange, disabled }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean }) {
-  return <Autocomplete options={profiles} value={profiles.find((profile) => profile.key === value) ?? null} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label="Tracks for path" placeholder="No track policy" size="small" helperText="Validated against every asset before queue" />} fullWidth />;
+  const none: TrackProfile = {
+    key: '', name: 'None', description: '', videoMode: 'first', audioMode: 'all', audioLanguages: [], audioRequired: false,
+    dropCommentary: false, defaultAudioLanguage: '', subtitleMode: 'all', subtitleLanguages: [], subtitlesRequired: false,
+    defaultSubtitleLanguage: '', validationMode: 'warn', notes: '',
+  };
+  const options = [none, ...profiles];
+  return <Autocomplete options={options} value={options.find((profile) => profile.key === value) ?? none} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label="Tracks for path" size="small" />} fullWidth />;
 }
 
 function getTrackProfilePathAssignments(settings: AppSetting[]) {

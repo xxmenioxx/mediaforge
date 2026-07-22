@@ -11,7 +11,7 @@ func OpenAPI(c *gin.Context) {
 		"openapi": "3.0.3",
 		"info": gin.H{
 			"title":       "MediaForge API",
-			"version":     "0.1.8",
+			"version":     "0.1.9",
 			"description": "Manual media workflow orchestration API.",
 		},
 		"servers": []gin.H{

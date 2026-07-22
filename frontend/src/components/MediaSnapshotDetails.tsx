@@ -44,6 +44,7 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls }:
         <SnapshotChip label="Motion sample" value={interlaceWindowLabel(scan)} />
         <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
         <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
+        {streamControls ? <SnapshotChip label="Selection savings" value={selectionSavingsLabel(scan, streamControls)} /> : null}
       </Stack>
 
       <StreamSection
@@ -115,7 +116,7 @@ function StreamSection({
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.25, py: 0.9, bgcolor: 'rgba(255,255,255,0.025)' }}>
         <Typography fontWeight={700}>{title}</Typography>
-        {control ? <Typography color="text.secondary" variant="body2">{control.selected.length}/{streams.length} kept</Typography> : null}
+        {control ? <Typography color="text.secondary" variant="body2">{control.selected.length}/{streams.length} kept · {removedSavingsLabel(streams, control.selected)}</Typography> : null}
       </Stack>
       {streams.length ? (
         <Stack>
@@ -272,10 +273,40 @@ function streamDetails(stream: MediaStreamInfo) {
     stream.sampleRate ? `${stream.sampleRate} Hz` : '',
     stream.bitDepth ? `${stream.bitDepth}-bit` : '',
     stream.bitrate ? formatBitrate(stream.bitrate) : '',
+    stream.sizeBytes ? `${stream.sizeEstimated ? '≈ ' : ''}${formatBytes(stream.sizeBytes)}` : '',
     stream.duration ? formatDuration(stream.duration) : '',
   ];
 
   return details.filter(Boolean);
+}
+
+function streamRemovalSize(stream: MediaStreamInfo, duration: number) {
+  if (stream.sizeBytes && stream.sizeBytes > 0) return { bytes: stream.sizeBytes, estimated: Boolean(stream.sizeEstimated) };
+  if (stream.bitrate && duration > 0) return { bytes: stream.bitrate * duration / 8, estimated: true };
+  return { bytes: 0, estimated: true };
+}
+
+function removedSavingsLabel(streams: MediaStreamInfo[], selected: number[]) {
+  const removed = streams.filter((stream) => !selected.includes(stream.index));
+  if (!removed.length) return 'no tracks removed';
+  const known = removed.filter((stream) => Boolean(stream.sizeBytes));
+  const bytes = known.reduce((total, stream) => total + (stream.sizeBytes ?? 0), 0);
+  if (!bytes) return 'saving unknown';
+  return `save ${known.some((stream) => stream.sizeEstimated) || known.length !== removed.length ? '≈ ' : ''}${formatBytes(bytes)}`;
+}
+
+function selectionSavingsLabel(scan: ScanResult, controls: StreamControls) {
+  const groups = [
+    { streams: scan.videoStreams ?? [], selected: controls.video.selected },
+    { streams: scan.audioStreams ?? [], selected: controls.audio.selected },
+    { streams: scan.subtitleStreams ?? [], selected: controls.subtitle.selected },
+  ];
+  const removed = groups.flatMap(({ streams, selected }) => streams.filter((stream) => !selected.includes(stream.index)));
+  if (!removed.length) return '0 B';
+  const values = removed.map((stream) => streamRemovalSize(stream, scan.duration));
+  const bytes = values.reduce((total, value) => total + value.bytes, 0);
+  if (!bytes) return 'unknown';
+  return `${values.some((value) => value.estimated) ? '≈ ' : ''}${formatBytes(bytes)} (${Math.min(100, bytes / Math.max(scan.sizeBytes, 1) * 100).toFixed(1)}%)`;
 }
 
 function streamFlags(stream: MediaStreamInfo) {
