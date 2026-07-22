@@ -574,10 +574,11 @@ func (h AssetHandler) UpdateReview(c *gin.Context) {
 
 	reviews := assetReviewOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
-	if !input.RequiresReview && strings.TrimSpace(input.Reason) == "" && len(input.Tags) == 0 {
+	source := strings.TrimSpace(input.Source)
+	manualApproval := !input.RequiresReview && source == "manual"
+	if !manualApproval && !input.RequiresReview && strings.TrimSpace(input.Reason) == "" && len(input.Tags) == 0 {
 		delete(reviews, cleanPath)
 	} else {
-		source := strings.TrimSpace(input.Source)
 		if source == "" {
 			source = "manual"
 		}

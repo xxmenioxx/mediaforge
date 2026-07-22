@@ -459,9 +459,9 @@ function AssetGroupRow({
 	    throw new Error(`Track profile blocked this path: ${incompatible.map(({ asset, result }) => `${asset.fileName}: ${result.reasons.join(', ')}`).join(' · ')}`);
 	  }
 	  if (trackProfile?.validationMode === 'review') {
-	    await Promise.all(incompatible.map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
+	    await Promise.all(incompatible.filter(({ asset }) => !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
 	  }
-	  const queueable = validations.filter(({ result }) => result.applies || trackProfile?.validationMode === 'warn');
+	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
 	  return Promise.all(queueable.map(async ({ asset, result }) => {
 	    if (trackProfile && result.applies) {
 	      await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
@@ -769,7 +769,7 @@ function AssetRow({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
       if (pathTrackProfile) {
         const result = validateTrackProfile(pathTrackProfile, await api.scan({ path: asset.path, force: false }));
-        if (!result.applies && pathTrackProfile.validationMode === 'review') {
+        if (!result.applies && pathTrackProfile.validationMode === 'review' && !assetReviewApproved(asset)) {
           await api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] });
           throw new Error(`Track profile does not apply; asset marked for review: ${result.reasons.join('; ')}`);
         }
@@ -2244,6 +2244,10 @@ function firstAssetForGroup(assets: Asset[]) {
 
 function assetHasOpenJob(asset: Asset, jobs: QueueJob[]) {
   return safeArray(jobs).some((job) => job.mediaPath === asset.path && job.status !== 'canceled' && !job.publishedAt);
+}
+
+function assetReviewApproved(asset: Asset) {
+  return !asset.review?.requiresReview && asset.review?.source === 'manual' && Boolean(asset.review.updatedAt);
 }
 
 function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {

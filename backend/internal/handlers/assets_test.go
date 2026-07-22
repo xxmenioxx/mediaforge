@@ -33,6 +33,43 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestManualReviewApprovalIsPersistedAfterDisablingBlock(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:manual-review-approval?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	assetPath := filepath.Join(root, "Baccano", "Season0", "NCED Calling.mkv")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetPath, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Library{Name: "Anime", SourcePath: root, DestinationPath: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/review", NewAssetHandler(db).UpdateReview)
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/review?path="+url.QueryEscape(assetPath), strings.NewReader(`{"requiresReview":false,"source":"manual","reason":"","tags":[]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	review := reviewForPath(assetPath, assetReviewOverrides(db))
+	if review.RequiresReview || review.Source != "manual" || review.UpdatedAt.IsZero() {
+		t.Fatalf("manual approval was not persisted: %#v", review)
+	}
+}
+
 func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "success")
 	relative := filepath.Join("movies", "movie.mkv")

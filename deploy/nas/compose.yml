@@ -2,7 +2,7 @@ name: mvforge
 
 services:
   backend:
-    image: ghcr.io/xxmenioxx/mvforge-backend:${MVFORGE_VERSION:-0.2.4}
+    image: ghcr.io/xxmenioxx/mvforge-backend:${MVFORGE_VERSION:-0.2.5}
     restart: unless-stopped
     environment:
       MVFORGE_API_HOST: 0.0.0.0
@@ -30,7 +30,7 @@ services:
       - internal
 
   web:
-    image: ghcr.io/xxmenioxx/mvforge-web:${MVFORGE_VERSION:-0.2.4}
+    image: ghcr.io/xxmenioxx/mvforge-web:${MVFORGE_VERSION:-0.2.5}
     restart: unless-stopped
     ports:
       - "${MVFORGE_PORT:-8090}:80"
