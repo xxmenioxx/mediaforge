@@ -49,6 +49,28 @@ func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	}
 }
 
+func TestPlannedOutputPathUsesNestedSeasonAndExistingEpisodeIdentity(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{SourcePath: "/media/raw", DestinationPath: "/media/library/anime", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	profile := models.Profile{Container: "mkv"}
+	jobs := []models.QueueJob{
+		{MediaPath: "/media/raw/anime/Baccano/Season0/Baccano! S00E01 (OAV01) source.mkv", BatchID: "baccano", BatchName: "anime/Baccano"},
+		{MediaPath: "/media/raw/anime/Baccano/Season0/Baccano! S00E02 (OAV02) source.mkv", BatchID: "baccano", BatchName: "anime/Baccano"},
+		{MediaPath: "/media/raw/anime/Baccano/Season0/NCED Calling [B6126979].mkv", BatchID: "baccano", BatchName: "anime/Baccano"},
+	}
+	for index := range jobs {
+		if err := db.Create(&jobs[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := plannedOutputPathForJob(db, jobs[0], library, profile); got != "/media/library/anime/Baccano/Season0/Season0-S00E01.mkv" {
+		t.Fatalf("unexpected OAV path: %s", got)
+	}
+	if got := plannedOutputPathForJob(db, jobs[2], library, profile); got != "/media/library/anime/Baccano/Season0/Season0-NCED Calling.mkv" {
+		t.Fatalf("unexpected credit path: %s", got)
+	}
+}
+
 func TestPlannedOutputPathForSingleJobKeepsSourceName(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

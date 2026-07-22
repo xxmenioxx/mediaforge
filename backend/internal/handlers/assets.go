@@ -250,7 +250,7 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "raw asset already exists; converted files were not changed"})
 		return
 	}
-	if err := os.Rename(record.Path, destination); err != nil {
+	if err := moveFile(record.Path, destination); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

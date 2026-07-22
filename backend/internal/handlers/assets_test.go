@@ -85,6 +85,35 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	}
 }
 
+func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
+	db, rawRoot, _, archiveRoot := safeDeleteTestDB(t, "recover-archive")
+	relative := filepath.Join("anime", "Baccano", "episode.mkv")
+	archivePath := filepath.Join(archiveRoot, "processed-originals", relative)
+	rawPath := filepath.Join(rawRoot, relative)
+	writeTestFile(t, archivePath, "original")
+	record := models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: filepath.ToSlash(relative), FileName: "episode.mkv", Status: "archive", LibraryName: "Original Archive"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/recover", NewAssetHandler(db).Recover)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/recover?path="+url.QueryEscape(archivePath), nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(rawPath)
+	if err != nil || string(content) != "original" {
+		t.Fatalf("recovered content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archive source still exists: %v", err)
+	}
+}
+
 func TestDeleteConvertedCanResumeWhenConvertedAlreadyWentMissing(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "resume")
 	convertedPath := filepath.Join(libraryRoot, "movie.mkv")

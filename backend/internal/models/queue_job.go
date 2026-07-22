@@ -25,6 +25,7 @@ type QueueJob struct {
 	Progress              int        `json:"progress" gorm:"not null;default:0"`
 	WorkerName            string     `json:"workerName"`
 	OutputPath            string     `json:"outputPath"`
+	PlannedPublishedPath  string     `json:"plannedPublishedPath"`
 	ErrorMessage          string     `json:"errorMessage"`
 	Notes                 string     `json:"notes"`
 	ValidationStatus      string     `json:"validationStatus"`

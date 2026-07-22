@@ -474,7 +474,8 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.First(&models.Library{}, job.LibraryID).Error; err != nil {
+	var library models.Library
+	if err := h.db.First(&library, job.LibraryID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 			return
@@ -528,6 +529,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		job.Progress = 5
 	}
 	job.OutputPath = outputPath
+	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Dry-run command: "+command)
 	if !assetConversionOverrideEmpty(override) {
@@ -585,7 +587,8 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusBadRequest, fmt.Errorf("input media is not readable: %v", err)
 	}
 
-	if err := h.db.First(&models.Library{}, job.LibraryID).Error; err != nil {
+	var library models.Library
+	if err := h.db.First(&library, job.LibraryID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return job, http.StatusNotFound, fmt.Errorf("library not found")
 		}
@@ -660,6 +663,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	now := time.Now()
 	job.Progress = 5
 	job.OutputPath = outputPath
+	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
 	if !assetConversionOverrideEmpty(override) {
@@ -1184,11 +1188,83 @@ func multiEpisodeOutputRelativePath(db *gorm.DB, job models.QueueJob, fallbackRe
 	}
 
 	dir := path.Dir(fallbackRelative)
-	fileName := fmt.Sprintf("%s - S%02dE%02d%s", sanitizeMediaFileName(spec.SeriesTitle), spec.Season, spec.Episode, path.Ext(fallbackRelative))
+	title := sanitizeMediaFileName(spec.SeriesTitle)
+	episodeID := fmt.Sprintf("S%02dE%02d", spec.Season, spec.Episode)
+	if nested := nestedAssetPathLabel(job); nested != "" {
+		title = nested
+		if sourceEpisodeID := episodeIdentifierFromName(path.Base(job.MediaPath)); sourceEpisodeID != "" {
+			episodeID = sourceEpisodeID
+		} else if creditName := nonEpisodeCreditName(path.Base(job.MediaPath)); creditName != "" {
+			return path.Join(dir, fmt.Sprintf("%s-%s%s", title, creditName, path.Ext(fallbackRelative)))
+		}
+	}
+	fileName := fmt.Sprintf("%s-%s%s", title, episodeID, path.Ext(fallbackRelative))
+	if nestedAssetPathLabel(job) == "" {
+		fileName = fmt.Sprintf("%s - %s%s", title, episodeID, path.Ext(fallbackRelative))
+	}
 	if dir == "." || dir == "/" {
 		return fileName
 	}
 	return path.Join(dir, fileName)
+}
+
+func nonEpisodeCreditName(fileName string) string {
+	stem := strings.TrimSuffix(fileName, path.Ext(fileName))
+	upper := strings.ToUpper(strings.TrimSpace(stem))
+	if !strings.HasPrefix(upper, "NCOP") && !strings.HasPrefix(upper, "NCED") {
+		return ""
+	}
+	if bracket := strings.LastIndex(stem, "["); bracket > 0 && strings.HasSuffix(strings.TrimSpace(stem), "]") {
+		stem = strings.TrimSpace(stem[:bracket])
+	}
+	return sanitizeMediaFileName(stem)
+}
+
+func nestedAssetPathLabel(job models.QueueJob) string {
+	mediaParts := pathSegments(path.Dir(job.MediaPath))
+	batchParts := pathSegments(job.BatchName)
+	if len(mediaParts) == 0 || len(batchParts) == 0 {
+		return ""
+	}
+	for start := len(mediaParts) - len(batchParts); start >= 0; start-- {
+		matches := true
+		for index := range batchParts {
+			if !strings.EqualFold(mediaParts[start+index], batchParts[index]) {
+				matches = false
+				break
+			}
+		}
+		if matches && start+len(batchParts) < len(mediaParts) {
+			return sanitizeMediaFileName(strings.Join(mediaParts[start+len(batchParts):], "-"))
+		}
+	}
+	return ""
+}
+
+func episodeIdentifierFromName(fileName string) string {
+	upper := strings.ToUpper(fileName)
+	for start := 0; start < len(upper); start++ {
+		if upper[start] != 'S' {
+			continue
+		}
+		seasonEnd := start + 1
+		for seasonEnd < len(upper) && upper[seasonEnd] >= '0' && upper[seasonEnd] <= '9' {
+			seasonEnd++
+		}
+		if seasonEnd == start+1 || seasonEnd >= len(upper) || upper[seasonEnd] != 'E' {
+			continue
+		}
+		episodeEnd := seasonEnd + 1
+		for episodeEnd < len(upper) && upper[episodeEnd] >= '0' && upper[episodeEnd] <= '9' {
+			episodeEnd++
+		}
+		if episodeEnd > seasonEnd+1 {
+			season, _ := strconv.Atoi(upper[start+1 : seasonEnd])
+			episode, _ := strconv.Atoi(upper[seasonEnd+1 : episodeEnd])
+			return fmt.Sprintf("S%02dE%02d", season, episode)
+		}
+	}
+	return ""
 }
 
 func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeNameSpec, bool) {

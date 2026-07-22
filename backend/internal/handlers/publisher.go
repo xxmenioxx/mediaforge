@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -21,6 +22,11 @@ const (
 	PublishModeStandard       = "standard"
 	PublishModeReplaceLibrary = "replace_library_asset"
 )
+
+// Publishing can be triggered manually while the automatic publisher is also
+// reconciling jobs. Serialize original archival so two publishers cannot both
+// copy the same source across different mounts before either removes it.
+var originalArchiveMu sync.Mutex
 
 type PublisherHandler struct {
 	db *gorm.DB
@@ -127,7 +133,11 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		return PublishResult{}, err
 	}
 
-	destinationPath := plannedOutputPathForJob(h.db, job, library, profile)
+	destinationPath := strings.TrimSpace(job.PlannedPublishedPath)
+	if destinationPath == "" {
+		destinationPath = plannedOutputPathForJob(h.db, job, library, profile)
+		job.PlannedPublishedPath = destinationPath
+	}
 	if job.PublishMode == PublishModeReplaceLibrary {
 		return h.publishLibraryReplacement(job, library, profile)
 	}
@@ -391,6 +401,9 @@ func copyPublishedFile(source string, destination string, overwrite bool) error 
 }
 
 func (h PublisherHandler) archivePublishedOriginal(job models.QueueJob) (string, error) {
+	originalArchiveMu.Lock()
+	defer originalArchiveMu.Unlock()
+
 	if strings.TrimSpace(job.MediaPath) == "" {
 		return "", nil
 	}

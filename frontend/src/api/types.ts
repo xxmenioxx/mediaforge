@@ -391,6 +391,7 @@ export type QueueJob = {
   progress: number;
   workerName: string;
   outputPath: string;
+  plannedPublishedPath: string;
   errorMessage: string;
   notes: string;
   validationStatus: 'pending' | 'passed' | 'warning' | 'failed' | '';

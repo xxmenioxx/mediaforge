@@ -116,8 +116,11 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                 items={[
                   ['Pipeline status', stringValue(resultPayload, 'status') || job.status],
                   ['Lifecycle stage', job.stage?.replaceAll('_', ' ') || 'Unknown'],
+                  ['Original path', job.mediaPath],
+                  ['Planned Library path', job.plannedPublishedPath || job.publishedPath || 'Pending'],
                   ['Output path', job.publishedPath || job.outputPath || 'Pending'],
                   ['Published path', job.publishedPath || 'Not published yet'],
+                  ['Archived original', job.originalArchivedPath || 'Not archived yet'],
                   ['Validation', validationSummary(job, resultPayload)],
                   ['Elapsed', elapsedSummary(job, resultPayload)],
                   ['Final video', streamSummary(firstStream(outputProbe, 'video')) || expectedVideoSummary(profile)],

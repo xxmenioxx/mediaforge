@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -79,6 +80,68 @@ func TestOriginalsArchivePathMapsLegacyContainerPathToConfiguredHostRoot(t *test
 	want := filepath.Join(hostRoot, "processed-originals")
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestConcurrentOriginalArchivalCreatesOnlyOneArchive(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:concurrent-original-archive?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	archiveRoot := filepath.Join(root, "archive")
+	original := filepath.Join(rawRoot, "anime", "Baccano", "episode.mkv")
+	if err := os.MkdirAll(filepath.Dir(original), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	handler := PublisherHandler{db: db}
+	job := models.QueueJob{MediaPath: original}
+	results := make(chan string, 2)
+	errors := make(chan error, 2)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	for range 2 {
+		go func() {
+			defer workers.Done()
+			archived, archiveErr := handler.archivePublishedOriginal(job)
+			results <- archived
+			errors <- archiveErr
+		}()
+	}
+	workers.Wait()
+	close(results)
+	close(errors)
+	for archiveErr := range errors {
+		if archiveErr != nil {
+			t.Fatalf("concurrent archive failed: %v", archiveErr)
+		}
+	}
+	nonEmptyResults := 0
+	for archived := range results {
+		if archived != "" {
+			nonEmptyResults++
+		}
+	}
+	if nonEmptyResults != 1 {
+		t.Fatalf("archive operations returning a path=%d want=1", nonEmptyResults)
+	}
+	entries, err := os.ReadDir(filepath.Join(archiveRoot, "anime", "Baccano"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("archive entries=%d want=1", len(entries))
 	}
 }
 

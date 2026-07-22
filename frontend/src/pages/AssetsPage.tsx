@@ -659,11 +659,11 @@ function AssetGroupRow({
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
-                  <Table size="small" sx={{ minWidth: 1240, tableLayout: 'fixed' }}>
+                  <Table size="small" sx={{ minWidth: 1320, tableLayout: 'fixed' }}>
                     <TableHead>
                       <TableRow>
                         <TableCell sx={{ width: 230 }}>Asset</TableCell>
-                        <TableCell sx={{ width: 118 }}>Status</TableCell>
+                        <TableCell sx={{ width: 198 }}>Status</TableCell>
                         <TableCell sx={{ width: 95 }}>Score</TableCell>
                         <TableCell sx={{ width: 100 }}>Size</TableCell>
                         <TableCell sx={{ width: 128 }}>Modified</TableCell>
@@ -1034,7 +1034,15 @@ function AssetRow({
             {isBlockedByReview ? <Chip label="Needs review" color="error" size="small" /> : null}
             {assetHasConversionOverride(asset.conversion) ? <Chip label="Overrides" color="primary" size="small" /> : null}
             {asset.missing ? <Chip label="Missing file" color="warning" size="small" /> : null}
-            {asset.expiresAt ? <Chip label={`Expires ${formatDate(asset.expiresAt)}`} size="small" /> : null}
+            {asset.expiresAt ? (
+              <Tooltip title={asset.expiresAt}>
+                <Chip
+                  label={`Expires ${formatDate(asset.expiresAt)}`}
+                  size="small"
+                  sx={{ height: 'auto', maxWidth: '100%', '& .MuiChip-label': { display: 'block', whiteSpace: 'normal', py: 0.5 } }}
+                />
+              </Tooltip>
+            ) : null}
           </Stack>
         </TableCell>
         <TableCell>
@@ -1807,7 +1815,7 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const report = job?.validationReport ?? {};
   const mode = stringFromRecord(report, 'processingMode') || modeFromNotes(job?.notes ?? '');
   const audioProfile = job?.audioProfileKey || audioProfileFromNotes(job?.notes ?? '');
-  const status = job?.publishedAt ? 'Published' : job?.status === 'completed' ? 'Converted' : job?.status || 'Converted';
+  const status = job?.publishedAt && !job.publicationRetiredAt ? 'Published' : job?.publicationRetiredAt ? 'Publication retired' : job?.status === 'completed' ? 'Converted' : job?.status || 'Converted';
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2243,6 +2251,7 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
   const assetFileName = asset.fileName.toLowerCase();
   return [...safeArray(jobs)]
     .sort((left, right) => right.id - left.id)
+    .filter((job) => !job.publicationRetiredAt)
     .find((job) => {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
       if (candidates.includes(normalizedAssetPath)) {
@@ -2256,7 +2265,7 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   if (pendingQueue) {
     return { label: 'Queueing', color: 'primary' };
   }
-  if (job?.publishedAt) {
+  if (job?.publishedAt && !job.publicationRetiredAt) {
     return { label: 'Published', color: 'success' };
   }
   if (job?.status === 'running') {
