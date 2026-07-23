@@ -894,7 +894,7 @@ export function ProfilesPage() {
                               select
                               fullWidth
                             >
-                              <MenuItem value="auto">Auto detect</MenuItem>
+                              <MenuItem value="auto">Auto at conversion (uses Analysis)</MenuItem>
                               <MenuItem value="off">Off</MenuItem>
                               <MenuItem value="force">Force</MenuItem>
                             </TextField>

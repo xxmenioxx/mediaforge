@@ -337,6 +337,29 @@ func TestAssetKeySetUsesRelativePathToAvoidBasenameCollisions(t *testing.T) {
 	}
 }
 
+func TestClassifyMissingRecordsSeparatesMovedAndActionableFiles(t *testing.T) {
+	records := []models.AssetRecord{
+		{Path: "/raw/moved.mkv", FileName: "moved.mkv", Status: "unprocessed", SizeBytes: 100, Missing: true},
+		{Path: "/archive/moved.mkv", FileName: "moved.mkv", Status: "archive", SizeBytes: 100},
+		{Path: "/raw/lost.mkv", FileName: "lost.mkv", Status: "unprocessed", SizeBytes: 200, Missing: true},
+		{Path: "/library/movie-new.mkv", FileName: "movie-new.mkv", Status: "converted", SizeBytes: 300, Missing: true},
+		{Path: "/library/movie.mkv", FileName: "movie.mkv", Status: "converted", SizeBytes: 250},
+	}
+
+	classification := classifyMissingRecords(records)
+	if classification.Total != 3 || classification.Historical != 2 || classification.Actionable != 1 {
+		t.Fatalf("unexpected missing classification: %#v", classification)
+	}
+}
+
+func TestMissingMediaIdentityNormalizesRenamedSpanishTitle(t *testing.T) {
+	legacy := missingMediaIdentity("El increíble castillo vagabundo\uf00a (2004)_Ttitle.mkv")
+	current := missingMediaIdentity("El increible Castillo Vagabundo (2004)-new.mkv")
+	if legacy != current {
+		t.Fatalf("expected matching identities, got %q and %q", legacy, current)
+	}
+}
+
 func TestArchivedOriginalForJobUsesRecordedPathThenLegacyNote(t *testing.T) {
 	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", OriginalArchivedPath: "/archive/exact.mkv", Notes: "Original archived: /archive/legacy.mkv"}
 	if actual := archivedOriginalForJob(job, "/raw", "/archive"); actual != "/archive/exact.mkv" {

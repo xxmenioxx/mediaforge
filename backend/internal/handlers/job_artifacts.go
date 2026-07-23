@@ -451,6 +451,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.AACStereoDefault != nil {
 		values["aacStereoDefault"] = *override.AACStereoDefault
 	}
+	if override.EnhancedAudioSourceStreamIndex != nil {
+		values["enhancedAudioSourceStreamIndex"] = *override.EnhancedAudioSourceStreamIndex
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -467,6 +470,9 @@ func assetConversionHumanSummary(override AssetConversionOverrideState) []string
 	}
 	if override.KeepSubtitleStreams != nil {
 		summary = append(summary, "Selected subtitle streams: "+intListLabel(override.KeepSubtitleStreams))
+	}
+	if override.EnhancedAudioSourceStreamIndex != nil {
+		summary = append(summary, fmt.Sprintf("Enhanced audio source stream: %d", *override.EnhancedAudioSourceStreamIndex))
 	}
 	if len(override.AudioMetadata) > 0 {
 		summary = append(summary, "Audio track metadata edited")

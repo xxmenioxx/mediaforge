@@ -270,6 +270,7 @@ export const api = {
     seconds = 20,
     filters = '',
     compatibility = false,
+    streamIndex,
   }: {
     path: string;
     profileKey?: string;
@@ -277,6 +278,7 @@ export const api = {
     seconds?: number;
     filters?: string;
     compatibility?: boolean;
+    streamIndex?: number;
   }) =>
-    `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}&compatibility=${compatibility}`,
+    `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}&compatibility=${compatibility}${streamIndex === undefined ? '' : `&streamIndex=${streamIndex}`}`,
 };

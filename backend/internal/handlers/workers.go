@@ -777,13 +777,16 @@ func libraryOutputBaseRelativePath(relative string, library models.Library) stri
 	if len(parts) <= 1 {
 		return relative
 	}
-	first := normalizedLibrarySegment(parts[0])
 	destinationCategory := normalizedLibrarySegment(path.Base(path.Clean(library.DestinationPath)))
 	libraryCategory := normalizedLibrarySegment(library.Name)
-	if isSourceBucketSegment(parts[0]) || first == destinationCategory || first == libraryCategory {
-		return path.Join(parts[1:]...)
+	for len(parts) > 1 {
+		first := normalizedLibrarySegment(parts[0])
+		if !isSourceBucketSegment(parts[0]) && first != destinationCategory && first != libraryCategory {
+			break
+		}
+		parts = parts[1:]
 	}
-	return relative
+	return path.Join(parts...)
 }
 
 func normalizedLibrarySegment(value string) string {

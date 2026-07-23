@@ -142,7 +142,7 @@ const videoEncoderOptions = [
 
 const deinterlaceOptions = [
   { value: 'off', label: 'Off' },
-  { value: 'auto', label: 'Auto detect' },
+  { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
   { value: 'force', label: 'Force' },
   { value: 'ivtc_bff', label: 'Inverse telecine (BFF DVD)' },
 ] as const;
@@ -201,7 +201,7 @@ const videoStarterPresets = [
         useHardwareIfAvailable: false,
         videoPreset: 'medium',
         pixFmt: 'yuv420p10le',
-        deinterlaceMode: 'auto',
+        deinterlaceMode: 'force',
         denoise: 'light',
         deband: 'off',
         crop: 'off',
@@ -460,14 +460,17 @@ export function ProfileLabPage() {
   const [processedVideoOptions, setProcessedVideoOptions] = useState(videoPreviewOptions(emptyVideoDraft));
   const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
+  const [audioPreviewStreamIndex, setAudioPreviewStreamIndex] = useState<number | null>(null);
   const [processedAudioFilters, setProcessedAudioFilters] = useState('');
   const [processedAudioChannelMode, setProcessedAudioChannelMode] = useState<AudioEnhancementProfile['channelMode']>('preserve');
   const [audioFilterChain, setAudioFilterChain] = useState(effectiveAudioFilters(emptyAudioDraft));
   const [audioFilterChainEdited, setAudioFilterChainEdited] = useState(false);
   const [audioPreviewStatus, setAudioPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [videoDraft, setVideoDraft] = useState<ProfileInput>(emptyVideoDraft);
+  const [selectedVideoStarterPreset, setSelectedVideoStarterPreset] = useState('');
   const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
+  const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
   const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
   const previewsRef = useRef<HTMLDivElement | null>(null);
@@ -495,12 +498,22 @@ export function ProfileLabPage() {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
+  const updateAudioSourceStream = useMutation({
+    mutationFn: api.updateAssetConversion,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
 
   const trackSnapshot = useMutation({ mutationFn: api.scan });
+  const availableAudioStreams = trackSnapshot.data?.audioStreams ?? [];
+  const selectedAudioStreamIndex = availableAudioStreams.some((stream) => stream.index === audioPreviewStreamIndex)
+    ? audioPreviewStreamIndex ?? undefined
+    : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
 
   useEffect(() => {
     setTrackConversionDraft({});
-    if (labSection === 'tracks' && assetPath) {
+    if ((labSection === 'audio' || labSection === 'tracks') && assetPath) {
       trackSnapshot.reset();
       trackSnapshot.mutate({ path: assetPath });
     }
@@ -511,6 +524,7 @@ export function ProfileLabPage() {
     if (!profile) {
       return;
     }
+    setSelectedVideoStarterPreset('');
     setVideoDraft({
       name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
       description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
@@ -531,18 +545,25 @@ export function ProfileLabPage() {
     if (!preset) {
       return;
     }
-    setVideoDraft((current) => ({
-      ...current,
-      name: selectedAsset?.fileName ? `${preset.label} - ${selectedAsset.fileName}` : preset.label,
-      description: `${preset.description}${selectedAsset ? ` Asset base: ${selectedAsset.relativePath || selectedAsset.fileName}.` : ''}`,
-      videoCodec: preset.draft.videoCodec,
-      qualityValue: preset.draft.qualityValue,
-      workerConfig: {
+    setSelectedVideoStarterPreset(presetKey);
+    setVideoDraft((current) => {
+      const workerConfig = {
         ...current.workerConfig,
         ...preset.draft.workerConfig,
         starterPreset: preset.key,
-      },
-    }));
+      };
+      return {
+        ...current,
+        name: selectedAsset?.fileName ? `${preset.label} - ${selectedAsset.fileName}` : preset.label,
+        description: `${preset.description}${selectedAsset ? ` Asset base: ${selectedAsset.relativePath || selectedAsset.fileName}.` : ''}`,
+        videoCodec: preset.draft.videoCodec,
+        qualityValue: preset.draft.qualityValue,
+        workerConfig: {
+          ...workerConfig,
+          videoFilters: buildVideoFilterChain(workerConfig),
+        },
+      };
+    });
   }
 
   function selectAudioProfile(profileKey: string) {
@@ -550,6 +571,7 @@ export function ProfileLabPage() {
     if (!profile) {
       return;
     }
+    setSelectedAudioStarterPreset('');
     const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
     setAudioDraft({
       ...profile,
@@ -566,6 +588,7 @@ export function ProfileLabPage() {
     if (!profile) {
       return;
     }
+    setSelectedAudioStarterPreset(profileKey);
     const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
     setAudioDraft({
       ...profile,
@@ -746,6 +769,7 @@ export function ProfileLabPage() {
                   value={selectedAsset}
                   onChange={(asset) => {
                     setAssetPath(asset?.path ?? '');
+                    setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
                     resetProcessedPreviews();
                   }}
                 />
@@ -866,13 +890,13 @@ export function ProfileLabPage() {
                             />
                             <AudioPreview
                               label="Original · browser-compatible AAC stereo 192 kbps"
-                              src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true })}
+                              src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true, streamIndex: selectedAudioStreamIndex })}
                             />
                           </>
                         ) : (
                           <>
                             <VideoPreview key={`original-${previewNonce}`} label="Original video" src={originalPreviewUrl(assetPath, start, seconds)} direct />
-                            <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds })}&nonce=${previewNonce}`} />
+                            <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds, streamIndex: selectedAudioStreamIndex })}&nonce=${previewNonce}`} />
                           </>
                         )}
                       </Stack>
@@ -902,7 +926,7 @@ export function ProfileLabPage() {
                         {audioPreviewNonce > 0 ? (
                           <AudioPreview
                             label="Audio draft"
-                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, filters: processedAudioFilters })}&nonce=${audioPreviewNonce}`}
+                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, filters: processedAudioFilters, streamIndex: selectedAudioStreamIndex })}&nonce=${audioPreviewNonce}`}
                             onStatusChange={setAudioPreviewStatus}
                           />
                         ) : (
@@ -942,9 +966,33 @@ export function ProfileLabPage() {
               <Card>
               <CardContent>
                 <Stack spacing={2}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <TuneIcon color="primary" />
-                    <Typography variant="h3">Video Profile Draft</Typography>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <TuneIcon color="primary" />
+                      <Typography variant="h3">Video Profile Draft</Typography>
+                    </Stack>
+                    <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                      <Button
+                        startIcon={<PlayArrowIcon />}
+                        variant="contained"
+                        size="small"
+                        disabled={!assetPath || previewNonce === 0 || videoPreviewStatus === 'loading'}
+                        onClick={processVideoPreview}
+                        sx={{ minHeight: 32 }}
+                      >
+                        {videoPreviewStatus === 'loading' ? 'Processing...' : 'Process Video'}
+                      </Button>
+                      <Button
+                        startIcon={<SaveIcon />}
+                        variant="outlined"
+                        size="small"
+                        disabled={!videoDraft.name || createVideoProfile.isPending}
+                        onClick={saveVideoProfile}
+                        sx={{ minHeight: 32 }}
+                      >
+                        Save Profile
+                      </Button>
+                    </Stack>
                   </Stack>
                   <Alert severity="info">
                     <strong>copy</strong> keeps the original stream untouched. Use it to preserve quality; choose x264/x265 or another codec when
@@ -952,7 +1000,7 @@ export function ProfileLabPage() {
                   </Alert>
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 12, md: 4 }}>
-                      <TextField label="Starter preset" value="" onChange={(event) => applyStarterVideoPreset(event.target.value)} select fullWidth>
+                      <TextField label="Starter preset" value={selectedVideoStarterPreset} onChange={(event) => applyStarterVideoPreset(event.target.value)} select fullWidth>
                         <MenuItem value="" disabled>
                           Choose a video preset
                         </MenuItem>
@@ -1443,14 +1491,6 @@ export function ProfileLabPage() {
                       <TextField label="Description" value={videoDraft.description} onChange={(event) => setVideoDraft({ ...videoDraft, description: event.target.value })} multiline minRows={2} fullWidth />
                     </Grid>
                   </Grid>
-                  <Button
-                    startIcon={<PlayArrowIcon />}
-                    variant="contained"
-                    disabled={!assetPath || previewNonce === 0 || videoPreviewStatus === 'loading'}
-                    onClick={processVideoPreview}
-                  >
-                    {videoPreviewStatus === 'loading' ? 'Processing Video...' : 'Process Video'}
-                  </Button>
                   {videoPreviewStatus === 'ready' ? (
                     <Alert severity="success">Video sample ready in Sample B.</Alert>
                   ) : null}
@@ -1462,9 +1502,6 @@ export function ProfileLabPage() {
                   {videoPreviewStatus === 'error' ? (
                     <Alert severity="warning">Video sample could not be processed.</Alert>
                   ) : null}
-                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!videoDraft.name || createVideoProfile.isPending} onClick={saveVideoProfile}>
-                    Save Video Profile
-                  </Button>
                   {createVideoProfile.isSuccess ? <Alert severity="success">Video profile saved.</Alert> : null}
                 </Stack>
               </CardContent>
@@ -1475,20 +1512,58 @@ export function ProfileLabPage() {
               <Card>
               <CardContent>
                 <Stack spacing={2}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <GraphicEqIcon color="primary" />
-                    <Typography variant="h3">Audio Profile Draft</Typography>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <GraphicEqIcon color="primary" />
+                      <Typography variant="h3">Audio Profile Draft</Typography>
+                    </Stack>
+                    <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                      <Button
+                        startIcon={<PlayArrowIcon />}
+                        variant="contained"
+                        size="small"
+                        disabled={!assetPath || previewNonce === 0 || audioPreviewStatus === 'loading'}
+                        onClick={processAudioPreview}
+                        sx={{ minHeight: 32 }}
+                      >
+                        {audioPreviewStatus === 'loading' ? 'Processing...' : 'Process Audio'}
+                      </Button>
+                      <Button
+                        startIcon={<SaveIcon />}
+                        variant="outlined"
+                        size="small"
+                        disabled={!audioDraft.name || updateSetting.isPending}
+                        onClick={saveAudioProfile}
+                        sx={{ minHeight: 32 }}
+                      >
+                        Save Profile
+                      </Button>
+                    </Stack>
                   </Stack>
                   <Alert severity="info">
                     <strong>copy</strong> cannot apply loudness, EQ, denoise, or filters. For restored audio, keep the original track and output the
                     enhanced copy as AAC, Opus, AC3, or FLAC.
                   </Alert>
-                  <Grid container spacing={2}>
-                    <Grid size={{ xs: 12, md: 4 }}>
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: {
+                        xs: 'minmax(0, 1fr)',
+                        lg: 'minmax(0, 5fr) minmax(0, 7fr)',
+                        xl: 'minmax(360px, 1fr) 760px',
+                      },
+                      gap: 2,
+                      alignItems: 'start',
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Grid container spacing={1.5}>
+                    <Grid size={{ xs: 12, sm: 6 }}>
                       <TextField
                         label="Starter preset"
-                        value=""
+                        value={selectedAudioStarterPreset}
                         onChange={(event) => applyStarterAudioProfile(event.target.value)}
+                        size="small"
                         select
                         fullWidth
                       >
@@ -1502,14 +1577,50 @@ export function ProfileLabPage() {
                         ))}
                       </TextField>
                     </Grid>
-                    <Grid size={{ xs: 12, md: 4 }}>
+                    <Grid size={{ xs: 12, sm: 6 }}>
                       <AudioProfileAutocomplete profiles={audioProfiles} onChange={(profile) => profile ? selectAudioProfile(profile.key) : undefined} />
                     </Grid>
-                    <Grid size={{ xs: 12, md: 4 }}>
-                      <TextField label="New audio profile name" value={audioDraft.name} onChange={(event) => setAudioDraft({ ...audioDraft, name: event.target.value, key: slugify(event.target.value) })} fullWidth />
+                    <Grid size={{ xs: 12 }}>
+                      <TextField label="New audio profile name" value={audioDraft.name} onChange={(event) => setAudioDraft({ ...audioDraft, name: event.target.value, key: slugify(event.target.value) })} size="small" fullWidth />
                     </Grid>
-                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                      <TextField label="Output codec" value={audioDraft.outputCodec} onChange={(event) => setAudioDraft({ ...audioDraft, outputCodec: event.target.value })} select fullWidth>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField
+                        label="Audio track for A/B preview"
+                        value={selectedAudioStreamIndex ?? ''}
+                        onChange={(event) => {
+                          const streamIndex = Number(event.target.value);
+                          setAudioPreviewStreamIndex(streamIndex);
+                          resetProcessedAudioPreview();
+                          if (selectedAsset) {
+                            updateAudioSourceStream.mutate({
+                              path: selectedAsset.path,
+                              ...selectedAsset.conversion,
+                              enhancedAudioSourceStreamIndex: streamIndex,
+                            });
+                          }
+                        }}
+                        disabled={!assetPath || trackSnapshot.isPending || updateAudioSourceStream.isPending || availableAudioStreams.length === 0}
+                        helperText={trackSnapshot.isPending
+                          ? 'Scanning audio tracks…'
+                          : availableAudioStreams.length === 0
+                            ? 'No audio tracks are available for this asset.'
+                            : updateAudioSourceStream.isError
+                              ? 'Could not save the selected source track for final conversion.'
+                              : 'Used by Sample A, Sample B, and the final enhanced-audio conversion for this asset.'}
+                        size="small"
+                        select
+                        fullWidth
+                      >
+                        {availableAudioStreams.map((stream) => (
+                          <MenuItem key={stream.index} value={stream.index}>
+                            #{stream.index} · {stream.language || 'und'} · {stream.title || 'Untitled'} · {stream.codec || 'unknown'}
+                            {stream.channels ? ` · ${stream.channels} ch` : ''}{stream.default ? ' · Default' : ''}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: 6 }}>
+                      <TextField label="Output codec" value={audioDraft.outputCodec} onChange={(event) => setAudioDraft({ ...audioDraft, outputCodec: event.target.value })} size="small" select fullWidth>
                         {['aac', 'copy', 'flac', 'opus', 'ac3'].map((codec) => (
                           <MenuItem key={codec} value={codec}>
                             {codec}
@@ -1517,7 +1628,7 @@ export function ProfileLabPage() {
                         ))}
                       </TextField>
                     </Grid>
-                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                    <Grid size={{ xs: 12, sm: 6 }}>
                       <TextField
                         label="Channel mode"
                         value={audioDraft.channelMode}
@@ -1527,6 +1638,7 @@ export function ProfileLabPage() {
                             channelMode: event.target.value as AudioEnhancementProfile['channelMode'],
                           })
                         }
+                        size="small"
                         select
                         fullWidth
                       >
@@ -1537,17 +1649,17 @@ export function ProfileLabPage() {
                         ))}
                       </TextField>
                     </Grid>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Alert severity={audioDraft.channelMode === 'light-stereo' ? 'warning' : 'info'} sx={{ height: '100%' }}>
+                    <Grid size={{ xs: 12 }}>
+                      <Alert severity={audioDraft.channelMode === 'light-stereo' ? 'warning' : 'info'}>
                         {channelModes.find((mode) => mode.value === audioDraft.channelMode)?.description}
                       </Alert>
                     </Grid>
                     {audioDraft.channelMode === 'force-stereo' ? (
-                      <>
-                        <Grid size={{ xs: 12, md: 5 }}>
-                          <TextField
+                      <Grid size={{ xs: 12 }}>
+                        <TextField
                             label="Stereo method"
                             value={audioDraft.forceStereoMode}
+                            size="small"
                             onChange={(event) =>
                               setAudioDraft({
                                 ...audioDraft,
@@ -1556,55 +1668,51 @@ export function ProfileLabPage() {
                             }
                             select
                             fullWidth
-                          >
+                        >
                             {forceStereoModes.map((mode) => (
                               <MenuItem key={mode.value} value={mode.value}>
                                 {mode.label}
                               </MenuItem>
                             ))}
-                          </TextField>
-                        </Grid>
-                        <Grid size={{ xs: 12, md: 7 }}>
-                          <Alert severity="info" sx={{ height: '100%' }}>
-                            {forceStereoModes.find((mode) => mode.value === audioDraft.forceStereoMode)?.description}
-                          </Alert>
-                        </Grid>
-                      </>
+                        </TextField>
+                      </Grid>
                     ) : null}
                     {audioDraft.channelMode === 'light-stereo' ? (
                       <>
-                        <Grid size={{ xs: 12, md: 6 }}>
-                          <TextField
-                            label="Stereo delay ms"
-                            value={audioDraft.stereoDelayMs}
-                            type="number"
-                            onChange={(event) => setAudioDraft({ ...audioDraft, stereoDelayMs: Number(event.target.value) })}
-                            inputProps={{ min: 1, max: 40 }}
-                            helperText="Small values are safer. Try 8-16 ms first."
-                            fullWidth
-                          />
-                        </Grid>
-                        <Grid size={{ xs: 12, md: 6 }}>
-                          <TextField
-                            label="Stereo width"
-                            value={audioDraft.stereoWidth}
-                            type="number"
-                            onChange={(event) => setAudioDraft({ ...audioDraft, stereoWidth: Number(event.target.value) })}
-                            inputProps={{ min: 0, max: 100 }}
-                            helperText="Higher values widen more, but can sound phasey."
-                            fullWidth
-                          />
-                        </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField
+                                label="Stereo delay ms"
+                                value={audioDraft.stereoDelayMs}
+                                type="number"
+                                onChange={(event) => setAudioDraft({ ...audioDraft, stereoDelayMs: Number(event.target.value) })}
+                                inputProps={{ min: 1, max: 40 }}
+                                helperText="Small values are safer. Try 8-16 ms first."
+                                size="small"
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField
+                                label="Stereo width"
+                                value={audioDraft.stereoWidth}
+                                type="number"
+                                onChange={(event) => setAudioDraft({ ...audioDraft, stereoWidth: Number(event.target.value) })}
+                                inputProps={{ min: 0, max: 100 }}
+                                helperText="Higher values widen more, but can sound phasey."
+                                size="small"
+                                fullWidth
+                              />
+                            </Grid>
                       </>
                     ) : null}
-                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                      <TextField label="Target loudness LUFS" value={audioDraft.targetLoudness} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, targetLoudness: Number(event.target.value) })} fullWidth />
+                    <Grid size={{ xs: 12, sm: 6 }}>
+                      <TextField label="Target loudness LUFS" value={audioDraft.targetLoudness} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, targetLoudness: Number(event.target.value) })} size="small" fullWidth />
                     </Grid>
-                    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                      <TextField label="True peak dB" value={audioDraft.truePeak} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, truePeak: Number(event.target.value) })} fullWidth />
+                    <Grid size={{ xs: 12, sm: 6 }}>
+                      <TextField label="True peak dB" value={audioDraft.truePeak} type="number" onChange={(event) => setAudioDraft({ ...audioDraft, truePeak: Number(event.target.value) })} size="small" fullWidth />
                     </Grid>
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" sx={{ height: '100%', minHeight: 54 }}>
+                    <Grid size={{ xs: 12 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ minHeight: 40 }}>
                         <Checkbox
                           checked={audioDraft.preserveOriginalTrack}
                           onChange={(event) => setAudioDraft({ ...audioDraft, preserveOriginalTrack: event.target.checked })}
@@ -1612,7 +1720,7 @@ export function ProfileLabPage() {
                         <Typography>Preserve original audio track</Typography>
                       </Stack>
                     </Grid>
-                    <Grid size={{ xs: 12, lg: 6 }}>
+                    <Grid size={{ xs: 12 }}>
                       <TextField
                         label="FFmpeg audio filter chain"
                         value={audioFilterChain}
@@ -1628,10 +1736,23 @@ export function ProfileLabPage() {
                         multiline
                         minRows={5}
                         helperText="Auto-generated from the controls until edited. Process Audio uses this exact chain for Sample B."
+                        size="small"
                         fullWidth
                       />
                     </Grid>
-                    <Grid size={{ xs: 12, lg: 6 }}>
+                    <Grid size={{ xs: 12 }}>
+                      <TextField label="Notes" value={audioDraft.notes} onChange={(event) => setAudioDraft({ ...audioDraft, notes: event.target.value })} multiline minRows={2} size="small" fullWidth />
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={audioFilterChainEdited ? 'Edited chain' : 'Auto chain'} size="small" />
+                        <Chip label={`Preview: ${previewAudioFilters || 'anull'}`} size="small" />
+                        <Chip label={audioDraft.preserveOriginalTrack ? 'Preserve original' : 'Replace audio'} size="small" />
+                      </Stack>
+                    </Grid>
+                      </Grid>
+                    </Box>
+                    <Box sx={{ minWidth: 0, position: { lg: 'sticky' }, top: { lg: 88 }, alignSelf: 'flex-start' }}>
                       <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
                         <Stack spacing={2}>
                           <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
@@ -1704,14 +1825,6 @@ export function ProfileLabPage() {
                               })}
                             </Stack>
                           </Box>
-                          <Button
-                            startIcon={<PlayArrowIcon />}
-                            variant="contained"
-                            disabled={!assetPath || previewNonce === 0 || audioPreviewStatus === 'loading'}
-                            onClick={processAudioPreview}
-                          >
-                            {audioPreviewStatus === 'loading' ? 'Processing Audio...' : 'Process Audio'}
-                          </Button>
                           {audioPreviewStatus === 'ready' ? (
                             <Alert severity="success">Audio sample ready in Sample B.</Alert>
                           ) : null}
@@ -1726,21 +1839,8 @@ export function ProfileLabPage() {
                           ) : null}
                         </Stack>
                       </Box>
-                    </Grid>
-                    <Grid size={{ xs: 12 }}>
-                      <TextField label="Notes" value={audioDraft.notes} onChange={(event) => setAudioDraft({ ...audioDraft, notes: event.target.value })} multiline minRows={2} fullWidth />
-                    </Grid>
-                    <Grid size={{ xs: 12 }}>
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                        <Chip label={audioFilterChainEdited ? 'Edited chain' : 'Auto chain'} size="small" />
-                        <Chip label={`Preview: ${previewAudioFilters || 'anull'}`} size="small" />
-                        <Chip label={audioDraft.preserveOriginalTrack ? 'Preserve original' : 'Replace audio'} size="small" />
-                      </Stack>
-                    </Grid>
-                  </Grid>
-                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!audioDraft.name || updateSetting.isPending} onClick={saveAudioProfile}>
-                    Save Audio Profile
-                  </Button>
+                    </Box>
+                  </Box>
                   {updateSetting.isSuccess ? <Alert severity="success">Audio profile saved.</Alert> : null}
                 </Stack>
               </CardContent>
@@ -1750,9 +1850,29 @@ export function ProfileLabPage() {
             <Card>
               <CardContent>
                 <Stack spacing={2}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <FactCheckIcon color="primary" />
-                    <Typography variant="h3">Track Profile Draft</Typography>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <FactCheckIcon color="primary" />
+                      <Typography variant="h3">Track Profile Draft</Typography>
+                    </Stack>
+                    <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                      <Button size="small" variant="outlined" disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(false)} sx={{ minHeight: 32 }}>
+                        Scan
+                      </Button>
+                      <Button size="small" variant="outlined" disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(true)} sx={{ minHeight: 32 }}>
+                        Rescan
+                      </Button>
+                      <Button
+                        startIcon={<SaveIcon />}
+                        variant="contained"
+                        size="small"
+                        disabled={!trackDraft.name || updateSetting.isPending}
+                        onClick={saveTrackProfile}
+                        sx={{ minHeight: 32 }}
+                      >
+                        Save Profile
+                      </Button>
+                    </Stack>
                   </Stack>
                   <Alert severity="info">
                     Start from a real asset snapshot, choose the tracks to keep, edit audio/subtitle metadata, then save those choices as a reusable track profile.
@@ -1788,21 +1908,11 @@ export function ProfileLabPage() {
 
                     <Grid size={{ xs: 12 }}>
                       <Stack spacing={1.5}>
-                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between">
-                          <Stack sx={{ minWidth: 0 }}>
-                            <Typography fontWeight={700}>Current asset tracks</Typography>
-                            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                              {selectedAsset?.relativePath || selectedAsset?.path || 'Select an asset in the Lab header to inspect its tracks.'}
-                            </Typography>
-                          </Stack>
-                          <Stack direction="row" spacing={1}>
-                            <Button disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(false)}>
-                              Scan
-                            </Button>
-                            <Button disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(true)}>
-                              Rescan
-                            </Button>
-                          </Stack>
+                        <Stack sx={{ minWidth: 0 }}>
+                          <Typography fontWeight={700}>Current asset tracks</Typography>
+                          <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
+                            {selectedAsset?.relativePath || selectedAsset?.path || 'Select an asset in the Lab header to inspect its tracks.'}
+                          </Typography>
                         </Stack>
                         {!assetPath ? <Alert severity="warning">Choose an asset first so the Lab can show real video, audio, and subtitle tracks.</Alert> : null}
                         {trackSnapshot.isPending ? <Alert severity="info">Reading track snapshot...</Alert> : null}
@@ -1877,9 +1987,6 @@ export function ProfileLabPage() {
                       </Stack>
                     </Grid>
                   </Grid>
-                  <Button startIcon={<SaveIcon />} variant="contained" disabled={!trackDraft.name || updateSetting.isPending} onClick={saveTrackProfile}>
-                    Save Track Profile
-                  </Button>
                   {updateSetting.isSuccess ? <Alert severity="success">Track profile saved.</Alert> : null}
                 </Stack>
               </CardContent>
@@ -2531,7 +2638,7 @@ function AudioProfileAutocomplete({
           )
           .slice(0, 50);
       }}
-      renderInput={(params) => <TextField {...params} label="Search audio profile" />}
+      renderInput={(params) => <TextField {...params} label="Search audio profile" size="small" />}
       renderOption={(props, profile) => (
         <Box component="li" {...props} key={profile.key}>
           <Stack sx={{ minWidth: 0 }}>

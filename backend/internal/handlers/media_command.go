@@ -484,7 +484,19 @@ func streamDisposition(metadata StreamMetadataOverride, defaultValue bool, force
 }
 
 func enhancedAudioSourceIndex(streams []MediaAudioStream, override AssetConversionOverrideState) int {
+	if override.EnhancedAudioSourceStreamIndex != nil {
+		for _, stream := range streams {
+			if stream.Index == *override.EnhancedAudioSourceStreamIndex {
+				return stream.Index
+			}
+		}
+	}
 	selected := selectedAudioStreams(streams, override)
+	for _, stream := range selected {
+		if stream.Default {
+			return stream.Index
+		}
+	}
 	if len(selected) > 0 {
 		return selected[0].Index
 	}

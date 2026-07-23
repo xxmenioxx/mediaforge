@@ -14,7 +14,7 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg sqlite \
+RUN apk add --no-cache ffmpeg sqlite tzdata \
     && if [ "$(apk --print-arch)" = "x86_64" ]; then \
          apk add --no-cache intel-media-driver intel-media-sdk; \
        fi

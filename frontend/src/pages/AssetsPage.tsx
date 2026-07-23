@@ -31,7 +31,6 @@ import {
   Typography,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import FactCheckIcon from '@mui/icons-material/FactCheck';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ManageSearchIcon from '@mui/icons-material/ManageSearch';
 import PlayCircleIcon from '@mui/icons-material/PlayCircle';
@@ -46,7 +45,6 @@ import { Component, useEffect, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
@@ -142,12 +140,18 @@ export function AssetsPage() {
                     <Chip label={`${filteredGroups.length}/${currentGroups.length} groups`} size="small" />
                     <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
                     <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
-                    {assets.data?.sync?.missingFiles ? <Chip label={`${assets.data.sync.missingFiles} missing`} color="warning" size="small" /> : null}
+                    {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
+                    {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
                   </Stack>
                 ) : null}
               </Stack>
             </Stack>
             {syncAssets.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Inventory synced.</Alert> : null}
+            {tab === 'archive' ? (
+              <Alert severity="info" sx={{ mt: 1 }}>
+                Archived originals are protected here. Recovering an original will not delete converted files.
+              </Alert>
+            ) : null}
           </CardContent>
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
           {tab === 'reports' ? (
@@ -200,6 +204,8 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
       </CardContent>
     );
   }
+  const missingActionable = reports.missingActionable ?? reports.missingFiles ?? 0;
+  const missingHistorical = reports.missingHistorical ?? 0;
 
   return (
     <CardContent>
@@ -217,9 +223,44 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
           <ReportTile label="Archive originals" value={String(reports.archiveFiles)} helper={formatBytes(reports.archiveBytes)} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <ReportTile label="Needs attention" value={String(reports.missingFiles + reports.expiredArchive)} helper={`${reports.missingFiles} missing / ${reports.expiredArchive} expired`} />
+          <ReportTile label="Needs attention" value={String(missingActionable + reports.expiredArchive)} helper={`${missingActionable} missing / ${reports.expiredArchive} expired`} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile label="Historical paths" value={String(missingHistorical)} helper="Moved, renamed, or archived records retained for provenance" />
         </Grid>
       </Grid>
+      {safeArray(inventory?.missing).length ? (
+        <Box sx={{ mt: 2, border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+          <Box sx={{ px: 2, py: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
+            <Typography fontWeight={700}>Missing assets requiring attention</Typography>
+            <Typography color="text.secondary" variant="body2">
+              These paths have no verified file of the same size and are not classified as renamed or archived history.
+            </Typography>
+          </Box>
+          <Box sx={{ overflowX: 'auto' }}>
+            <Table size="small" sx={{ minWidth: 760 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Expected path</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Source</TableCell>
+                  <TableCell align="right">Recorded size</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {safeArray(inventory?.missing).map((asset) => (
+                  <TableRow key={`${asset.status}-${asset.path}`}>
+                    <TableCell sx={{ wordBreak: 'break-all' }}>{asset.path}</TableCell>
+                    <TableCell><Chip label={statusLabel(asset.status)} color={statusColor(asset.status)} size="small" /></TableCell>
+                    <TableCell>{asset.libraryName || 'Unknown'}</TableCell>
+                    <TableCell align="right">{formatBytes(asset.sizeBytes)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        </Box>
+      ) : null}
     </CardContent>
   );
 }
@@ -309,6 +350,7 @@ function AssetTable({
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const filteredGroups = filterAssetGroups(visibleGroups, query);
   const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const showConfidence = mode !== 'archive' && mode !== 'converted';
 
   useEffect(() => {
     setPage(0);
@@ -331,7 +373,7 @@ function AssetTable({
               <TableCell sx={{ width: 390 }}>Asset group</TableCell>
               <TableCell sx={{ width: 130 }}>Library</TableCell>
               <TableCell sx={{ width: 140 }}>Status</TableCell>
-              <TableCell sx={{ width: 130 }}>Confidence</TableCell>
+              {showConfidence ? <TableCell sx={{ width: 130 }}>Confidence</TableCell> : null}
               <TableCell sx={{ width: 70 }}>Files</TableCell>
               <TableCell sx={{ width: 120 }}>Size</TableCell>
               <TableCell sx={{ width: 165 }}>Modified</TableCell>
@@ -356,7 +398,7 @@ function AssetTable({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={showConfidence ? 8 : 7}>
                   <Alert severity="info">No asset groups match this search.</Alert>
                 </TableCell>
               </TableRow>
@@ -418,6 +460,7 @@ function AssetGroupRow({
   const isConvertedGroup = group.status === 'converted';
   const isLibraryGroup = group.status === 'unverified' || group.status === 'library';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
+  const isReadOnlyGroup = isConvertedGroup || isArchiveGroup;
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -439,7 +482,7 @@ function AssetGroupRow({
         mediaPath: representativeAsset?.path ?? '',
         profileId: effectiveProfileId,
       }),
-    enabled: expanded && isConfidenceEnabled && Boolean(effectiveProfileId && representativeAsset),
+    enabled: expanded && !isReadOnlyGroup && isConfidenceEnabled && Boolean(effectiveProfileId && representativeAsset),
   });
   const queueGroup = useMutation({
     mutationFn: async () => {
@@ -464,7 +507,7 @@ function AssetGroupRow({
 	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
 	  return Promise.all(queueable.map(async ({ asset, result }) => {
 	    if (trackProfile && result.applies) {
-	      await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
+	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
 	    }
 	    return api.createQueueJob({
             mediaPath: asset.path,
@@ -548,21 +591,23 @@ function AssetGroupRow({
             {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
-        <TableCell>
-          <Stack direction="row" spacing={1} alignItems="center" onClick={(event) => event.stopPropagation()}>
-            <Switch
-              checked={isConfidenceEnabled}
-              onChange={(event) => toggleConfidence(event.target.checked)}
-              disabled={updateSetting.isPending}
-              size="small"
-            />
-            <Chip
-              label={isConfidenceEnabled ? 'On' : 'Off'}
-              color={isConfidenceEnabled ? 'success' : 'default'}
-              size="small"
-            />
-          </Stack>
-        </TableCell>
+        {!isReadOnlyGroup ? (
+          <TableCell>
+            <Stack direction="row" spacing={1} alignItems="center" onClick={(event) => event.stopPropagation()}>
+              <Switch
+                checked={isConfidenceEnabled}
+                onChange={(event) => toggleConfidence(event.target.checked)}
+                disabled={updateSetting.isPending}
+                size="small"
+              />
+              <Chip
+                label={isConfidenceEnabled ? 'On' : 'Off'}
+                color={isConfidenceEnabled ? 'success' : 'default'}
+                size="small"
+              />
+            </Stack>
+          </TableCell>
+        ) : null}
         <TableCell>{group.fileCount}</TableCell>
         <TableCell>{formatBytes(group.sizeBytes)}</TableCell>
         <TableCell>{formatDate(group.modifiedAt)}</TableCell>
@@ -578,17 +623,13 @@ function AssetGroupRow({
         </TableCell>
       </TableRow>
       <TableRow>
-        <TableCell colSpan={8} sx={{ p: 0, borderBottom: expanded ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
+        <TableCell colSpan={isReadOnlyGroup ? 7 : 8} sx={{ p: 0, borderBottom: expanded ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
-                {isConvertedGroup || isArchiveGroup ? (
+                {isArchiveGroup ? null : isConvertedGroup ? (
                   <Alert severity="info">
-                    {isArchiveGroup
-                      ? 'Archived originals are protected here. Recovering an original will not delete converted files.'
-                      : group.status === 'unverified' || group.status === 'library'
-                        ? 'Unverified library assets can be queued individually for safe replacement. MVForge converts in staging and archives the original before publishing.'
-                        : 'Converted assets are read-only here. Use Preview or Final Details to inspect results; re-processing should start from Original Archive.'}
+                    Converted assets are read-only here. Use Preview or Snapshot to inspect results; re-processing should start from Original Archive.
                   </Alert>
                 ) : (
                   <Grid container spacing={2} alignItems="stretch">
@@ -601,10 +642,11 @@ function AssetGroupRow({
                           updateMetadata.mutate({ path: group.path, categories: category ? [category] : [], tags: safeArray(pathMetadata.tags) });
                         }}
                         label="Category"
+                        size="small"
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" allowNone />
+                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" size="small" allowNone />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AudioProfileAutocomplete
@@ -612,13 +654,14 @@ function AssetGroupRow({
                         value={selectedAudioProfileKey}
                         onChange={setSelectedAudioProfileKey}
                         label="Audio profile"
+                        size="small"
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={selectPathTrackProfile} disabled={updateSetting.isPending} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <LibraryAutocomplete libraries={libraries} value={isLibraryGroup ? group.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" disabled={isLibraryGroup} />
+                      <LibraryAutocomplete libraries={libraries} value={isLibraryGroup ? group.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" size="small" disabled={isLibraryGroup} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <Button
@@ -644,7 +687,7 @@ function AssetGroupRow({
                     </Grid>
                   </Grid>
                 )}
-                {!isConfidenceEnabled ? (
+                {!isReadOnlyGroup && !isConfidenceEnabled ? (
                   <Alert severity="warning">
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
                   </Alert>
@@ -654,23 +697,23 @@ function AssetGroupRow({
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
                   </Alert>
                 ) : null}
-                {advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
+                {!isReadOnlyGroup && advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
-                  <Table size="small" sx={{ minWidth: 1320, tableLayout: 'fixed' }}>
+                  <Table size="small" sx={{ minWidth: isReadOnlyGroup ? 820 : 1320, tableLayout: 'fixed' }}>
                     <TableHead>
                       <TableRow>
                         <TableCell sx={{ width: 230 }}>Asset</TableCell>
                         <TableCell sx={{ width: 198 }}>Status</TableCell>
-                        <TableCell sx={{ width: 95 }}>Score</TableCell>
+                        {!isReadOnlyGroup ? <TableCell sx={{ width: 95 }}>Score</TableCell> : null}
                         <TableCell sx={{ width: 100 }}>Size</TableCell>
                         <TableCell sx={{ width: 128 }}>Modified</TableCell>
                         <TableCell sx={{ width: 145 }}>Category</TableCell>
-                        <TableCell sx={{ width: 165 }}>Video profile</TableCell>
-                        <TableCell sx={{ width: 165 }}>Audio profile</TableCell>
-                        <TableCell sx={{ width: 160 }}>Destination</TableCell>
+                        {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Video profile</TableCell> : null}
+                        {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Audio profile</TableCell> : null}
+                        {!isReadOnlyGroup ? <TableCell sx={{ width: 160 }}>Destination</TableCell> : null}
                         <TableCell align="center" sx={{ width: 180 }}>Actions</TableCell>
                       </TableRow>
                     </TableHead>
@@ -747,7 +790,6 @@ function AssetRow({
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
-  const [showFinalDetailsDialog, setShowFinalDetailsDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const assetMetadata = asset.metadata ?? { categories: [], tags: [], updatedAt: '' };
@@ -758,12 +800,16 @@ function AssetRow({
   const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
   const snapshot = useMutation({
     mutationFn: api.scan,
-    onSuccess: (scan) => profileSuggestion.mutate(scan.path),
+    onSuccess: (scan) => {
+      if (asset.status !== 'converted' && asset.status !== 'archive') {
+        profileSuggestion.mutate(scan.path);
+      }
+    },
   });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: selectedProfileId }),
-    enabled: confidenceEnabled && selectedProfileId > 0,
+    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && confidenceEnabled && selectedProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -777,7 +823,7 @@ function AssetRow({
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
         if (result.applies) {
-          await api.updateAssetConversion({ path: asset.path, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
+          await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
         } else {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
@@ -1045,32 +1091,38 @@ function AssetRow({
             ) : null}
           </Stack>
         </TableCell>
-        <TableCell>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<InfoOutlinedIcon />}
-            disabled={!confidenceEnabled || advisor.isPending || advisor.isError || !advisor.data}
-            onClick={() => setShowAdvisorDialog(true)}
-            sx={{ minWidth: 86 }}
-          >
-            {confidenceEnabled ? advisor.isPending ? '...' : advisor.data ? advisor.data.score : 'N/A' : 'Off'}
-          </Button>
-        </TableCell>
+        {!isArchive && !isConverted ? (
+          <TableCell>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<InfoOutlinedIcon />}
+              disabled={!confidenceEnabled || advisor.isPending || advisor.isError || !advisor.data}
+              onClick={() => setShowAdvisorDialog(true)}
+              sx={{ minWidth: 86 }}
+            >
+              {confidenceEnabled ? advisor.isPending ? '...' : advisor.data ? advisor.data.score : 'N/A' : 'Off'}
+            </Button>
+          </TableCell>
+        ) : null}
         <TableCell>{formatBytes(asset.sizeBytes)}</TableCell>
         <TableCell>{formatDate(asset.modifiedAt)}</TableCell>
         <TableCell sx={{ minWidth: 180 }}>
           <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
         </TableCell>
-        <TableCell sx={{ minWidth: 220 }}>
-          <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone />
-        </TableCell>
-        <TableCell sx={{ minWidth: 220 }}>
-          <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
-        </TableCell>
-        <TableCell sx={{ minWidth: 220 }}>
-          <LibraryAutocomplete libraries={libraries} value={isLibraryReplacement ? asset.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination" size="small" disabled={rowLocked || isLibraryReplacement} />
-        </TableCell>
+        {!isArchive && !isConverted ? (
+          <>
+            <TableCell sx={{ minWidth: 220 }}>
+              <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone />
+            </TableCell>
+            <TableCell sx={{ minWidth: 220 }}>
+              <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
+            </TableCell>
+            <TableCell sx={{ minWidth: 220 }}>
+              <LibraryAutocomplete libraries={libraries} value={isLibraryReplacement ? asset.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination" size="small" disabled={rowLocked || isLibraryReplacement} />
+            </TableCell>
+          </>
+        ) : null}
         <TableCell align="center">
           <Stack direction="row" spacing={1} justifyContent="center">
             <Tooltip title="Preview asset">
@@ -1111,25 +1163,13 @@ function AssetRow({
               </Tooltip>
             ) : null}
             {isConverted ? (
-              <>
-                <Tooltip title="Final details">
-                  <IconButton
-                    color="primary"
-                    onClick={() => setShowFinalDetailsDialog(true)}
-                    aria-label={`Final details for ${asset.fileName}`}
-                    sx={actionIconSx}
-                  >
-                    <FactCheckIcon />
+              <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                    <DeleteForeverIcon />
                   </IconButton>
-                </Tooltip>
-                <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
-                  <span onClick={(event) => event.stopPropagation()}>
-                    <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
-                      <DeleteForeverIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </>
+                </span>
+              </Tooltip>
             ) : isArchive ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
@@ -1308,7 +1348,7 @@ function AssetRow({
                 <MediaSnapshotDetails
                   scan={snapshot.data}
                   streamControls={
-                    isConverted
+                    isConverted || isArchive
                       ? undefined
                       : {
                           video: {
@@ -1329,7 +1369,7 @@ function AssetRow({
                         }
                   }
                   metadataControls={
-                    isConverted
+                    isConverted || isArchive
                       ? undefined
                       : {
                           video: {
@@ -1350,18 +1390,18 @@ function AssetRow({
                         }
                   }
                 />
-                {profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
-                {profileSuggestion.isError ? (
+                {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
+                {!isConverted && !isArchive && profileSuggestion.isError ? (
                   <Alert severity="warning">The snapshot was created, but a profile could not be suggested: {profileSuggestion.error instanceof Error ? profileSuggestion.error.message : 'unknown backend error'}</Alert>
                 ) : null}
-                {profileSuggestion.data ? (
+                {!isConverted && !isArchive && profileSuggestion.data ? (
                   <ProfileSuggestionCard
                     suggestion={profileSuggestion.data}
                     onSelect={isArchive ? undefined : (profile) => setSelectedProfileId(profile.id)}
                     onApplyMotionRecommendation={isArchive || isConverted ? undefined : applySnapshotMotionRecommendation}
                   />
                 ) : null}
-                {!isConverted || isLibraryReplacement ? (
+                {(!isConverted && !isArchive) || isLibraryReplacement ? (
                   <AssetConversionOverridePanel
                     draft={conversionDraft}
                     profile={profiles.find((profile) => profile.id === selectedProfileId)}
@@ -1405,26 +1445,6 @@ function AssetRow({
           </Stack>
         </DialogContent>
       </Dialog>
-      {associatedJob ? (
-        <JobDetailsDialog job={showFinalDetailsDialog ? associatedJob : null} onClose={() => setShowFinalDetailsDialog(false)} />
-      ) : (
-        <Dialog open={showFinalDetailsDialog} onClose={() => setShowFinalDetailsDialog(false)} maxWidth="md" fullWidth>
-          <DialogTitle>Final Details</DialogTitle>
-          <DialogContent>
-            <Stack spacing={2} sx={{ pt: 1 }}>
-              <Stack>
-                <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-                  {assetTitle(asset)}
-                </Typography>
-                <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                  {assetSubpath(asset, libraries)}
-                </Typography>
-              </Stack>
-              <FinalDetailsSummary asset={asset} job={associatedJob} />
-            </Stack>
-          </DialogContent>
-        </Dialog>
-      )}
     </>
   );
 }
@@ -1542,7 +1562,7 @@ const imageCleanupOptions: SelectOption[] = [
 
 const deinterlaceOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
-  { value: 'auto', label: 'Auto detect (recommended)' },
+  { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
   { value: 'off', label: 'Never deinterlace' },
   { value: 'force', label: 'Force deinterlace' },
 ];
@@ -2266,6 +2286,9 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
 }
 
 function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueue: boolean): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {
+  if (asset.status === 'archive') {
+    return { label: 'Archive', color: 'default' };
+  }
   if (pendingQueue) {
     return { label: 'Queueing', color: 'primary' };
   }
@@ -2295,9 +2318,6 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   }
   if (asset.status === 'unverified' || asset.status === 'library') {
     return { label: 'Unverified', color: 'warning' };
-  }
-  if (asset.status === 'archive') {
-    return { label: 'Archive', color: 'default' };
   }
   return { label: 'Unprocessed', color: 'warning' };
 }
@@ -2418,6 +2438,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   }
   if (typeof value.aacStereoDefault === 'boolean') {
     clean.aacStereoDefault = value.aacStereoDefault;
+  }
+  if (typeof value.enhancedAudioSourceStreamIndex === 'number' && Number.isInteger(value.enhancedAudioSourceStreamIndex) && value.enhancedAudioSourceStreamIndex >= 0) {
+    clean.enhancedAudioSourceStreamIndex = value.enhancedAudioSourceStreamIndex;
   }
   return clean;
 }

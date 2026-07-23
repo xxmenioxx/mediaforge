@@ -142,6 +142,27 @@ func TestPlannedOutputPathDoesNotDuplicateDestinationCategory(t *testing.T) {
 	}
 }
 
+func TestPlannedOutputPathRemovesRepeatedDestinationCategories(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		Name:            "Anime",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		MediaPath: "/media/raw/anime/anime/Conan el niño del futuro/Conan, el niño del futuro - 04_(Ladyarmaroid).mkv",
+		LibraryID: 1,
+		ProfileID: 1,
+	}
+
+	outputPath := plannedOutputPathForJob(db, job, library, profile)
+
+	if outputPath != "/media/library/anime/Conan el niño del futuro/Conan, el niño del futuro - 04_(Ladyarmaroid).mkv" {
+		t.Fatalf("unexpected output path: %s", outputPath)
+	}
+}
+
 func TestPlannedStagingOutputPathUsesFlatJobWorkspace(t *testing.T) {
 	profile := models.Profile{Container: "mkv"}
 	job := models.QueueJob{

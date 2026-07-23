@@ -128,6 +128,7 @@ export type AssetConversionOverrideState = {
   preserveChapters?: boolean;
   addAacStereoTrack?: boolean;
   aacStereoDefault?: boolean;
+  enhancedAudioSourceStreamIndex?: number;
   updatedAt?: string;
 };
 
@@ -162,6 +163,7 @@ export type AssetInventory = {
   converted: Asset[];
   unverified: Asset[];
   archive: Asset[];
+  missing: Asset[];
   unprocessedGroups: AssetGroup[];
   libraryGroups: AssetGroup[];
   convertedGroups: AssetGroup[];
@@ -180,12 +182,16 @@ export type AssetReports = {
   archiveBytes: number;
   expiredArchive: number;
   missingFiles: number;
+  missingActionable: number;
+  missingHistorical: number;
 };
 
 export type AssetSyncInfo = {
   lastSyncedAt: string;
   totalRecords: number;
   missingFiles: number;
+  missingActionable: number;
+  missingHistorical: number;
 };
 
 export type AssetSyncResult = {

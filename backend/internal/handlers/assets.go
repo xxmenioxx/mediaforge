@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,7 @@ type AssetInventory struct {
 	Converted         []Asset       `json:"converted"`
 	Unverified        []Asset       `json:"unverified"`
 	Archive           []Asset       `json:"archive"`
+	Missing           []Asset       `json:"missing"`
 	UnprocessedGroups []AssetGroup  `json:"unprocessedGroups"`
 	LibraryGroups     []AssetGroup  `json:"libraryGroups"`
 	ConvertedGroups   []AssetGroup  `json:"convertedGroups"`
@@ -52,20 +54,24 @@ type AssetInventory struct {
 }
 
 type AssetSyncInfo struct {
-	LastSyncedAt time.Time `json:"lastSyncedAt"`
-	TotalRecords int64     `json:"totalRecords"`
-	MissingFiles int64     `json:"missingFiles"`
+	LastSyncedAt      time.Time `json:"lastSyncedAt"`
+	TotalRecords      int64     `json:"totalRecords"`
+	MissingFiles      int64     `json:"missingFiles"`
+	MissingActionable int       `json:"missingActionable"`
+	MissingHistorical int       `json:"missingHistorical"`
 }
 
 type AssetReports struct {
-	UnprocessedFiles int   `json:"unprocessedFiles"`
-	LibraryFiles     int   `json:"libraryFiles"`
-	ConvertedFiles   int   `json:"convertedFiles"`
-	UnverifiedFiles  int   `json:"unverifiedFiles"`
-	ArchiveFiles     int   `json:"archiveFiles"`
-	ArchiveBytes     int64 `json:"archiveBytes"`
-	ExpiredArchive   int   `json:"expiredArchive"`
-	MissingFiles     int   `json:"missingFiles"`
+	UnprocessedFiles  int   `json:"unprocessedFiles"`
+	LibraryFiles      int   `json:"libraryFiles"`
+	ConvertedFiles    int   `json:"convertedFiles"`
+	UnverifiedFiles   int   `json:"unverifiedFiles"`
+	ArchiveFiles      int   `json:"archiveFiles"`
+	ArchiveBytes      int64 `json:"archiveBytes"`
+	ExpiredArchive    int   `json:"expiredArchive"`
+	MissingFiles      int   `json:"missingFiles"`
+	MissingActionable int   `json:"missingActionable"`
+	MissingHistorical int   `json:"missingHistorical"`
 }
 
 type AssetSyncResult struct {
@@ -93,29 +99,30 @@ type AssetMetadataState struct {
 }
 
 type AssetConversionOverrideState struct {
-	TrackProfileKey     string                         `json:"trackProfileKey,omitempty"`
-	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
-	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
-	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
-	VideoMetadata       map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
-	AudioMetadata       map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
-	SubtitleMetadata    map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
-	VideoCodec          string                         `json:"videoCodec,omitempty"`
-	AudioCodec          string                         `json:"audioCodec,omitempty"`
-	QualityMode         string                         `json:"qualityMode,omitempty"`
-	QualityValue        int                            `json:"qualityValue,omitempty"`
-	VideoPreset         string                         `json:"videoPreset,omitempty"`
-	PixFmt              string                         `json:"pixFmt,omitempty"`
-	VideoFilters        string                         `json:"videoFilters,omitempty"`
-	DeinterlaceMode     string                         `json:"deinterlaceMode,omitempty"`
-	X265Params          string                         `json:"x265Params,omitempty"`
-	ProcessingMode      string                         `json:"processingMode,omitempty"`
-	PreserveHDR         *bool                          `json:"preserveHdr,omitempty"`
-	PreserveSubtitles   *bool                          `json:"preserveSubtitles,omitempty"`
-	PreserveChapters    *bool                          `json:"preserveChapters,omitempty"`
-	AddAACStereoTrack   *bool                          `json:"addAacStereoTrack,omitempty"`
-	AACStereoDefault    *bool                          `json:"aacStereoDefault,omitempty"`
-	UpdatedAt           *time.Time                     `json:"updatedAt,omitempty"`
+	TrackProfileKey                string                         `json:"trackProfileKey,omitempty"`
+	KeepVideoStreams               []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams               []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams            []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
+	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
+	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	VideoCodec                     string                         `json:"videoCodec,omitempty"`
+	AudioCodec                     string                         `json:"audioCodec,omitempty"`
+	QualityMode                    string                         `json:"qualityMode,omitempty"`
+	QualityValue                   int                            `json:"qualityValue,omitempty"`
+	VideoPreset                    string                         `json:"videoPreset,omitempty"`
+	PixFmt                         string                         `json:"pixFmt,omitempty"`
+	VideoFilters                   string                         `json:"videoFilters,omitempty"`
+	DeinterlaceMode                string                         `json:"deinterlaceMode,omitempty"`
+	X265Params                     string                         `json:"x265Params,omitempty"`
+	ProcessingMode                 string                         `json:"processingMode,omitempty"`
+	PreserveHDR                    *bool                          `json:"preserveHdr,omitempty"`
+	PreserveSubtitles              *bool                          `json:"preserveSubtitles,omitempty"`
+	PreserveChapters               *bool                          `json:"preserveChapters,omitempty"`
+	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack,omitempty"`
+	AACStereoDefault               *bool                          `json:"aacStereoDefault,omitempty"`
+	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex,omitempty"`
+	UpdatedAt                      *time.Time                     `json:"updatedAt,omitempty"`
 }
 
 type StreamMetadataOverride struct {
@@ -173,28 +180,29 @@ type AssetMetadataUpdateInput struct {
 }
 
 type AssetConversionUpdateInput struct {
-	TrackProfileKey     string                         `json:"trackProfileKey"`
-	KeepVideoStreams    []int                          `json:"keepVideoStreams"`
-	KeepAudioStreams    []int                          `json:"keepAudioStreams"`
-	KeepSubtitleStreams []int                          `json:"keepSubtitleStreams"`
-	VideoMetadata       map[int]StreamMetadataOverride `json:"videoMetadata"`
-	AudioMetadata       map[int]StreamMetadataOverride `json:"audioMetadata"`
-	SubtitleMetadata    map[int]StreamMetadataOverride `json:"subtitleMetadata"`
-	VideoCodec          string                         `json:"videoCodec"`
-	AudioCodec          string                         `json:"audioCodec"`
-	QualityMode         string                         `json:"qualityMode"`
-	QualityValue        int                            `json:"qualityValue"`
-	VideoPreset         string                         `json:"videoPreset"`
-	PixFmt              string                         `json:"pixFmt"`
-	VideoFilters        string                         `json:"videoFilters"`
-	DeinterlaceMode     string                         `json:"deinterlaceMode"`
-	X265Params          string                         `json:"x265Params"`
-	ProcessingMode      string                         `json:"processingMode"`
-	PreserveHDR         *bool                          `json:"preserveHdr"`
-	PreserveSubtitles   *bool                          `json:"preserveSubtitles"`
-	PreserveChapters    *bool                          `json:"preserveChapters"`
-	AddAACStereoTrack   *bool                          `json:"addAacStereoTrack"`
-	AACStereoDefault    *bool                          `json:"aacStereoDefault"`
+	TrackProfileKey                string                         `json:"trackProfileKey"`
+	KeepVideoStreams               []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams               []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams            []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata"`
+	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata"`
+	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata"`
+	VideoCodec                     string                         `json:"videoCodec"`
+	AudioCodec                     string                         `json:"audioCodec"`
+	QualityMode                    string                         `json:"qualityMode"`
+	QualityValue                   int                            `json:"qualityValue"`
+	VideoPreset                    string                         `json:"videoPreset"`
+	PixFmt                         string                         `json:"pixFmt"`
+	VideoFilters                   string                         `json:"videoFilters"`
+	DeinterlaceMode                string                         `json:"deinterlaceMode"`
+	X265Params                     string                         `json:"x265Params"`
+	ProcessingMode                 string                         `json:"processingMode"`
+	PreserveHDR                    *bool                          `json:"preserveHdr"`
+	PreserveSubtitles              *bool                          `json:"preserveSubtitles"`
+	PreserveChapters               *bool                          `json:"preserveChapters"`
+	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack"`
+	AACStereoDefault               *bool                          `json:"aacStereoDefault"`
+	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -468,28 +476,29 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
 	override := AssetConversionOverrideState{
-		TrackProfileKey:     strings.TrimSpace(input.TrackProfileKey),
-		KeepVideoStreams:    normalizedStreamIndexes(input.KeepVideoStreams),
-		KeepAudioStreams:    normalizedStreamIndexes(input.KeepAudioStreams),
-		KeepSubtitleStreams: normalizedStreamIndexes(input.KeepSubtitleStreams),
-		VideoMetadata:       normalizedStreamMetadata(input.VideoMetadata),
-		AudioMetadata:       normalizedStreamMetadata(input.AudioMetadata),
-		SubtitleMetadata:    normalizedStreamMetadata(input.SubtitleMetadata),
-		VideoCodec:          strings.TrimSpace(input.VideoCodec),
-		AudioCodec:          strings.TrimSpace(input.AudioCodec),
-		QualityMode:         strings.TrimSpace(input.QualityMode),
-		QualityValue:        input.QualityValue,
-		VideoPreset:         strings.TrimSpace(input.VideoPreset),
-		PixFmt:              strings.TrimSpace(input.PixFmt),
-		VideoFilters:        strings.TrimSpace(input.VideoFilters),
-		DeinterlaceMode:     strings.TrimSpace(input.DeinterlaceMode),
-		X265Params:          strings.TrimSpace(input.X265Params),
-		ProcessingMode:      strings.TrimSpace(input.ProcessingMode),
-		PreserveHDR:         input.PreserveHDR,
-		PreserveSubtitles:   input.PreserveSubtitles,
-		PreserveChapters:    input.PreserveChapters,
-		AddAACStereoTrack:   input.AddAACStereoTrack,
-		AACStereoDefault:    input.AACStereoDefault,
+		TrackProfileKey:                strings.TrimSpace(input.TrackProfileKey),
+		KeepVideoStreams:               normalizedStreamIndexes(input.KeepVideoStreams),
+		KeepAudioStreams:               normalizedStreamIndexes(input.KeepAudioStreams),
+		KeepSubtitleStreams:            normalizedStreamIndexes(input.KeepSubtitleStreams),
+		VideoMetadata:                  normalizedStreamMetadata(input.VideoMetadata),
+		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
+		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
+		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
+		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
+		QualityMode:                    strings.TrimSpace(input.QualityMode),
+		QualityValue:                   input.QualityValue,
+		VideoPreset:                    strings.TrimSpace(input.VideoPreset),
+		PixFmt:                         strings.TrimSpace(input.PixFmt),
+		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
+		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
+		X265Params:                     strings.TrimSpace(input.X265Params),
+		ProcessingMode:                 strings.TrimSpace(input.ProcessingMode),
+		PreserveHDR:                    input.PreserveHDR,
+		PreserveSubtitles:              input.PreserveSubtitles,
+		PreserveChapters:               input.PreserveChapters,
+		AddAACStereoTrack:              input.AddAACStereoTrack,
+		AACStereoDefault:               input.AACStereoDefault,
+		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
 	}
 	if assetConversionOverrideEmpty(override) {
 		delete(entries, cleanPath)
@@ -941,6 +950,15 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 	profileKey := strings.TrimSpace(c.Query("profileKey"))
 	filterOverride := strings.TrimSpace(c.Query("filters"))
 	compatibilityPreview, _ := strconv.ParseBool(c.Query("compatibility"))
+	audioMap := "0:a:0?"
+	if rawStreamIndex := strings.TrimSpace(c.Query("streamIndex")); rawStreamIndex != "" {
+		streamIndex, err := strconv.Atoi(rawStreamIndex)
+		if err != nil || streamIndex < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "streamIndex must be a non-negative stream index"})
+			return
+		}
+		audioMap = fmt.Sprintf("0:%d?", streamIndex)
+	}
 	start, ok := boundedPreviewStart(c.Query("start"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "start must be HH:MM:SS or seconds"})
@@ -999,7 +1017,7 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 		"-ss", start,
 		"-t", strconv.Itoa(seconds),
 		"-i", path,
-		"-map", "0:a:0?",
+		"-map", audioMap,
 		"-vn",
 		"-af", filterChain,
 	}
@@ -1242,6 +1260,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		Converted:         []Asset{},
 		Unverified:        []Asset{},
 		Archive:           []Asset{},
+		Missing:           []Asset{},
 		UnprocessedGroups: []AssetGroup{},
 		LibraryGroups:     []AssetGroup{},
 		ConvertedGroups:   []AssetGroup{},
@@ -1303,14 +1322,23 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssetGroups(inventory.ConvertedGroups)
 	sortAssetGroups(inventory.UnverifiedGroups)
 	sortAssetGroups(inventory.ArchiveGroups)
-	inventory.Reports = assetReports(inventory)
+	missing := classifyMissingRecords(records)
+	for _, record := range records {
+		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
+			inventory.Missing = append(inventory.Missing, assetFromRecord(record))
+		}
+	}
+	sortAssets(inventory.Missing)
+	inventory.Reports = assetReports(inventory, missing)
 
 	var last models.AssetRecord
 	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
 		inventory.Sync.LastSyncedAt = last.SyncedAt
 	}
 	_ = h.db.Model(&models.AssetRecord{}).Count(&inventory.Sync.TotalRecords).Error
-	_ = h.db.Model(&models.AssetRecord{}).Where("missing = ?", true).Count(&inventory.Sync.MissingFiles).Error
+	inventory.Sync.MissingFiles = int64(missing.Total)
+	inventory.Sync.MissingActionable = missing.Actionable
+	inventory.Sync.MissingHistorical = missing.Historical
 	return inventory, nil
 }
 
@@ -1492,20 +1520,80 @@ func assetFromRecord(record models.AssetRecord) Asset {
 	}
 }
 
-func assetReports(inventory AssetInventory) AssetReports {
-	report := AssetReports{
-		UnprocessedFiles: len(inventory.Unprocessed),
-		LibraryFiles:     len(inventory.Library),
-		ConvertedFiles:   len(inventory.Converted),
-		UnverifiedFiles:  len(inventory.Unverified),
-		ArchiveFiles:     len(inventory.Archive),
-	}
-	now := time.Now()
-	for _, asset := range append(append([]Asset{}, inventory.Library...), inventory.Archive...) {
-		if asset.Missing {
-			report.MissingFiles++
+type MissingClassification struct {
+	Total           int
+	Actionable      int
+	Historical      int
+	HistoricalPaths map[string]bool
+}
+
+func classifyMissingRecords(records []models.AssetRecord) MissingClassification {
+	presentSizes := map[int64]struct{}{}
+	presentConvertedIdentities := map[string]struct{}{}
+	presentArchiveIdentities := map[string]struct{}{}
+	for _, record := range records {
+		if record.Missing {
+			continue
+		}
+		if record.SizeBytes > 0 {
+			presentSizes[record.SizeBytes] = struct{}{}
+		}
+		if record.Status == "converted" || record.Status == "archive" {
+			presentConvertedIdentities[missingMediaIdentity(record.FileName)] = struct{}{}
+		}
+		if record.Status == "archive" {
+			presentArchiveIdentities[missingMediaIdentity(record.FileName)] = struct{}{}
 		}
 	}
+
+	classification := MissingClassification{HistoricalPaths: map[string]bool{}}
+	for _, record := range records {
+		if !record.Missing {
+			continue
+		}
+		classification.Total++
+		_, sameSizeExists := presentSizes[record.SizeBytes]
+		_, replacementExists := presentConvertedIdentities[missingMediaIdentity(record.FileName)]
+		_, archivedOriginalExists := presentArchiveIdentities[missingMediaIdentity(record.FileName)]
+		if sameSizeExists || (record.Status == "converted" && replacementExists) || (record.Status == "unprocessed" && archivedOriginalExists) {
+			classification.Historical++
+			classification.HistoricalPaths[filepath.Clean(record.Path)] = true
+		} else {
+			classification.Actionable++
+		}
+	}
+	return classification
+}
+
+func missingMediaIdentity(fileName string) string {
+	stem := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(fileName), filepath.Ext(fileName)))
+	stem = strings.NewReplacer(
+		"-new", "", "_ttitle", "", "-ttitle", "",
+		"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u",
+	).Replace(stem)
+	var normalized strings.Builder
+	for _, character := range stem {
+		if unicode.IsLetter(character) || unicode.IsNumber(character) {
+			normalized.WriteRune(character)
+		} else {
+			normalized.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(normalized.String()), " ")
+}
+
+func assetReports(inventory AssetInventory, missing MissingClassification) AssetReports {
+	report := AssetReports{
+		UnprocessedFiles:  len(inventory.Unprocessed),
+		LibraryFiles:      len(inventory.Library),
+		ConvertedFiles:    len(inventory.Converted),
+		UnverifiedFiles:   len(inventory.Unverified),
+		ArchiveFiles:      len(inventory.Archive),
+		MissingFiles:      missing.Total,
+		MissingActionable: missing.Actionable,
+		MissingHistorical: missing.Historical,
+	}
+	now := time.Now()
 	for _, asset := range inventory.Archive {
 		report.ArchiveBytes += asset.SizeBytes
 		if asset.ExpiresAt != nil && now.After(*asset.ExpiresAt) {
@@ -1846,7 +1934,16 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.PreserveSubtitles == nil &&
 		override.PreserveChapters == nil &&
 		override.AddAACStereoTrack == nil &&
-		override.AACStereoDefault == nil
+		override.AACStereoDefault == nil &&
+		override.EnhancedAudioSourceStreamIndex == nil
+}
+
+func normalizedOptionalStreamIndex(index *int) *int {
+	if index == nil || *index < 0 {
+		return nil
+	}
+	value := *index
+	return &value
 }
 
 func normalizedStreamMetadata(metadata map[int]StreamMetadataOverride) map[int]StreamMetadataOverride {

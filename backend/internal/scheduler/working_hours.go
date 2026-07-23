@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"time"
+	_ "time/tzdata"
 )
 
 type WorkingHoursConfig struct {

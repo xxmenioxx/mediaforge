@@ -195,6 +195,29 @@ func TestFFmpegCommandBuilderUsesSelectedStreamIndexes(t *testing.T) {
 	assertNotContains(t, command, "-map 0:5")
 }
 
+func TestEnhancedAudioSourceUsesAssetOverride(t *testing.T) {
+	streamIndex := 4
+	streams := []MediaAudioStream{
+		{Index: 1, Default: true, Language: "jpn"},
+		{Index: 4, Language: "spa"},
+	}
+
+	if got := enhancedAudioSourceIndex(streams, AssetConversionOverrideState{EnhancedAudioSourceStreamIndex: &streamIndex}); got != 4 {
+		t.Fatalf("expected enhanced source stream 4, got %d", got)
+	}
+}
+
+func TestEnhancedAudioSourceFallsBackToDefaultTrack(t *testing.T) {
+	streams := []MediaAudioStream{
+		{Index: 1, Language: "jpn"},
+		{Index: 4, Default: true, Language: "spa"},
+	}
+
+	if got := enhancedAudioSourceIndex(streams, AssetConversionOverrideState{}); got != 4 {
+		t.Fatalf("expected default source stream 4, got %d", got)
+	}
+}
+
 func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
