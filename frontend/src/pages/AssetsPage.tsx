@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   Collapse,
   Dialog,
@@ -450,6 +451,7 @@ function AssetGroupRow({
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
   const pathTrackAssignments = getTrackProfilePathAssignments(settings);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(pathTrackAssignments[normalizePath(group.path)] ?? '');
+  const [selectedAssetPaths, setSelectedAssetPaths] = useState<string[]>([]);
   const groupAssets = safeArray(group.assets);
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
@@ -461,6 +463,8 @@ function AssetGroupRow({
   const isLibraryGroup = group.status === 'unverified' || group.status === 'library';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
   const isReadOnlyGroup = isConvertedGroup || isArchiveGroup;
+  const bulkSelectableAssets = isReadOnlyGroup ? groupAssets.filter((asset) => !asset.missing) : [];
+  const allBulkAssetsSelected = bulkSelectableAssets.length > 0 && bulkSelectableAssets.every((asset) => selectedAssetPaths.includes(asset.path));
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -532,6 +536,32 @@ function AssetGroupRow({
       navigate(`/queue?path=${encodeURIComponent(group.path)}`);
     },
   });
+  const bulkAssetAction = useMutation({
+    mutationFn: async (paths: string[]) => {
+      const failures: string[] = [];
+      let completed = 0;
+      for (const assetPath of paths) {
+        try {
+          if (isArchiveGroup) {
+            await api.recoverAsset(assetPath);
+          } else {
+            await api.deleteConvertedAsset(assetPath);
+          }
+          completed += 1;
+        } catch (error) {
+          failures.push(`${assetPath}: ${error instanceof Error ? error.message : 'unknown error'}`);
+        }
+      }
+      return { completed, failures };
+    },
+    onSettled: async () => {
+      setSelectedAssetPaths([]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
+    },
+  });
   function toggleExpanded() {
     if (!selectedProfileId && profiles[0]) {
       setSelectedProfileId(profiles[0].id);
@@ -556,6 +586,21 @@ function AssetGroupRow({
 	if (key) assignments[normalizePath(group.path)] = key;
 	else delete assignments[normalizePath(group.path)];
 	updateSetting.mutate({ key: 'trackProfilePathAssignments', value: { assignments } });
+  }
+
+  function toggleBulkAsset(path: string, selected: boolean) {
+    setSelectedAssetPaths((current) => selected
+      ? Array.from(new Set([...current, path]))
+      : current.filter((candidate) => candidate !== path));
+  }
+
+  function runBulkAssetAction() {
+    if (!selectedAssetPaths.length) return;
+    const action = isArchiveGroup ? 'recover' : 'safely delete and restore';
+    const confirmed = window.confirm(
+      `${action === 'recover' ? 'Recover' : 'Safely delete'} ${selectedAssetPaths.length} selected asset(s) from this path? ${isArchiveGroup ? 'Converted files will not be deleted.' : 'Each converted file will be deleted only if its archived original can be restored to Raw.'}`,
+    );
+    if (confirmed) bulkAssetAction.mutate(selectedAssetPaths);
   }
 
   return (
@@ -701,10 +746,45 @@ function AssetGroupRow({
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
+                {isReadOnlyGroup ? (
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Typography color="text.secondary" variant="body2">
+                      {selectedAssetPaths.length} of {bulkSelectableAssets.length} selected in this path
+                    </Typography>
+                    <Button
+                      color={isArchiveGroup ? 'primary' : 'error'}
+                      variant="outlined"
+                      size="small"
+                      startIcon={isArchiveGroup ? <TaskAltIcon /> : <DeleteForeverIcon />}
+                      disabled={!selectedAssetPaths.length || bulkAssetAction.isPending}
+                      onClick={runBulkAssetAction}
+                    >
+                      {bulkAssetAction.isPending ? 'Processing...' : isArchiveGroup ? 'Recover selected' : 'Delete selected'}
+                    </Button>
+                  </Stack>
+                ) : null}
+                {bulkAssetAction.data ? (
+                  <Alert severity={bulkAssetAction.data.failures.length ? 'warning' : 'success'}>
+                    {bulkAssetAction.data.completed} asset(s) completed.
+                    {bulkAssetAction.data.failures.length ? ` ${bulkAssetAction.data.failures.length} failed: ${bulkAssetAction.data.failures.join(' · ')}` : ''}
+                  </Alert>
+                ) : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
                   <Table size="small" sx={{ minWidth: isReadOnlyGroup ? 820 : 1320, tableLayout: 'fixed' }}>
                     <TableHead>
                       <TableRow>
+                        {isReadOnlyGroup ? (
+                          <TableCell padding="checkbox" sx={{ width: 48 }}>
+                            <Checkbox
+                              size="small"
+                              checked={allBulkAssetsSelected}
+                              indeterminate={selectedAssetPaths.length > 0 && !allBulkAssetsSelected}
+                              disabled={!bulkSelectableAssets.length || bulkAssetAction.isPending}
+                              onChange={(event) => setSelectedAssetPaths(event.target.checked ? bulkSelectableAssets.map((asset) => asset.path) : [])}
+                              inputProps={{ 'aria-label': `Select all assets in ${group.path}` }}
+                            />
+                          </TableCell>
+                        ) : null}
                         <TableCell sx={{ width: 230 }}>Asset</TableCell>
                         <TableCell sx={{ width: 198 }}>Status</TableCell>
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 95 }}>Score</TableCell> : null}
@@ -736,6 +816,10 @@ function AssetGroupRow({
                           hasOpenJob={queueGroup.isPending || assetHasOpenJob(asset, queueJobs)}
                           queueJobs={queueJobs}
                           mode={mode}
+                          bulkSelected={selectedAssetPaths.includes(asset.path)}
+                          bulkSelectionEnabled={isReadOnlyGroup}
+                          bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending}
+                          onBulkSelectionChange={toggleBulkAsset}
                         />
                       ))}
                     </TableBody>
@@ -766,6 +850,10 @@ function AssetRow({
   hasOpenJob,
   queueJobs,
   mode,
+  bulkSelected,
+  bulkSelectionEnabled,
+  bulkSelectionDisabled,
+  onBulkSelectionChange,
 }: {
   asset: Asset;
   libraries: Library[];
@@ -782,6 +870,10 @@ function AssetRow({
   hasOpenJob: boolean;
   queueJobs: QueueJob[];
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  bulkSelected: boolean;
+  bulkSelectionEnabled: boolean;
+  bulkSelectionDisabled: boolean;
+  onBulkSelectionChange: (path: string, selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [selectedProfileId, setSelectedProfileId] = useState<number>(groupProfileId);
@@ -1060,6 +1152,17 @@ function AssetRow({
   return (
     <>
       <TableRow hover>
+        {bulkSelectionEnabled ? (
+          <TableCell padding="checkbox">
+            <Checkbox
+              size="small"
+              checked={bulkSelected}
+              disabled={bulkSelectionDisabled}
+              onChange={(event) => onBulkSelectionChange(asset.path, event.target.checked)}
+              inputProps={{ 'aria-label': `Select ${asset.fileName}` }}
+            />
+          </TableCell>
+        ) : null}
         <TableCell>
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
             <Typography fontWeight={700} sx={{ wordBreak: 'break-word', lineHeight: 1.25 }}>

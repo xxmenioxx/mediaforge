@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/driver/sqlite"
@@ -93,6 +94,45 @@ func TestPlannedOutputPathForSingleJobKeepsSourceName(t *testing.T) {
 
 	if outputPath != "/media/anime/Ranma 1-2 (1989)/Season 01/title01.mkv" {
 		t.Fatalf("unexpected output path: %s", outputPath)
+	}
+}
+
+func TestPlannedOutputPathReusesRetiredPublishedNameAfterSafeRecovery(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		ID:              1,
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
+	}
+	profile := models.Profile{Container: "mkv"}
+	retiredAt := time.Now()
+	previous := models.QueueJob{
+		MediaPath:            "/media/raw/Baccano/Season 01/source-title.mkv",
+		LibraryID:            library.ID,
+		ProfileID:            1,
+		Status:               JobStatusCompleted,
+		PublishedPath:        "/media/library/anime/Baccano/Season 01/Baccano - S01E04.mkv",
+		PublicationRetiredAt: &retiredAt,
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatalf("create previous job: %v", err)
+	}
+	reconversion := models.QueueJob{
+		MediaPath: "/media/raw/Baccano/Season 01/source-title.mkv",
+		BatchID:   "single-recovered-asset",
+		BatchName: "Baccano/Season 01",
+		LibraryID: library.ID,
+		ProfileID: 1,
+	}
+	if err := db.Create(&reconversion).Error; err != nil {
+		t.Fatalf("create reconversion job: %v", err)
+	}
+
+	got := plannedOutputPathForJob(db, reconversion, library, profile)
+	want := "/media/library/anime/Baccano/Season 01/Baccano - S01E04.mkv"
+	if got != want {
+		t.Fatalf("reconversion output=%q want=%q", got, want)
 	}
 }
 

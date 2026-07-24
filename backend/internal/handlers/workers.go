@@ -810,6 +810,9 @@ func outputFileRelativePath(relative string, profile models.Profile) string {
 }
 
 func libraryOutputRelativePathForJob(db *gorm.DB, job models.QueueJob, library models.Library, fallbackRelative string) string {
+	if previousRelative := retiredPublishedRelativePath(db, job, library); previousRelative != "" {
+		return previousRelative
+	}
 	relative := fallbackRelative
 	if libraryExtrasPathEnabled(library) && assetIsExtra(job.MediaPath, assetMetadataOverrides(db)) {
 		return extrasOutputRelativePath(relative, libraryExtrasPathName(library))
@@ -818,6 +821,33 @@ func libraryOutputRelativePathForJob(db *gorm.DB, job models.QueueJob, library m
 		relative = multiEpisodeOutputRelativePath(db, job, relative)
 	}
 	return relative
+}
+
+func retiredPublishedRelativePath(db *gorm.DB, job models.QueueJob, library models.Library) string {
+	if db == nil || strings.TrimSpace(job.MediaPath) == "" || strings.TrimSpace(library.DestinationPath) == "" {
+		return ""
+	}
+	var previous models.QueueJob
+	query := db.Where(
+		"media_path = ? AND library_id = ? AND published_path <> ? AND publication_retired_at IS NOT NULL",
+		job.MediaPath,
+		job.LibraryID,
+		"",
+	)
+	if job.ID > 0 {
+		query = query.Where("id <> ?", job.ID)
+	}
+	if err := query.Order("published_at desc, id desc").First(&previous).Error; err != nil {
+		return ""
+	}
+
+	destination := filepath.Clean(strings.TrimSpace(library.DestinationPath))
+	published := filepath.Clean(strings.TrimSpace(previous.PublishedPath))
+	relative, err := filepath.Rel(destination, published)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(relative)
 }
 
 func dryRunCommand(inputPath string, outputPath string, profile models.Profile) string {
