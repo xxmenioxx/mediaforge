@@ -510,7 +510,7 @@ function AssetGroupRow({
 	  }
 	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
 	  return Promise.all(queueable.map(async ({ asset, result }) => {
-	    if (trackProfile && result.applies) {
+	    if (trackProfile) {
 	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
 	    }
 	    return api.createQueueJob({

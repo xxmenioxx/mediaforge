@@ -218,6 +218,65 @@ func TestEnhancedAudioSourceFallsBackToDefaultTrack(t *testing.T) {
 	}
 }
 
+func TestSanitizeConversionOverrideOmitsMissingStreamsAndMetadata(t *testing.T) {
+	missingAudioSource := 8
+	override := AssetConversionOverrideState{
+		KeepVideoStreams:               []int{0},
+		KeepAudioStreams:               []int{1, 8},
+		KeepSubtitleStreams:            []int{3, 7},
+		AudioMetadata:                  map[int]StreamMetadataOverride{1: {Title: "Japanese"}, 8: {Title: "Missing"}},
+		SubtitleMetadata:               map[int]StreamMetadataOverride{3: {Language: "spa"}, 7: {Language: "eng"}},
+		EnhancedAudioSourceStreamIndex: &missingAudioSource,
+	}
+	streams := MediaStreamInventory{
+		Video:    []MediaStream{{Index: 0}},
+		Audio:    []MediaAudioStream{{Index: 1, Default: true}},
+		Subtitle: []MediaStream{{Index: 3}},
+	}
+
+	sanitized, warnings := sanitizeConversionOverride(override, streams)
+
+	if len(sanitized.KeepAudioStreams) != 1 || sanitized.KeepAudioStreams[0] != 1 {
+		t.Fatalf("unexpected sanitized audio streams: %#v", sanitized.KeepAudioStreams)
+	}
+	if len(sanitized.KeepSubtitleStreams) != 1 || sanitized.KeepSubtitleStreams[0] != 3 {
+		t.Fatalf("unexpected sanitized subtitle streams: %#v", sanitized.KeepSubtitleStreams)
+	}
+	if _, exists := sanitized.AudioMetadata[8]; exists {
+		t.Fatal("missing audio metadata was not removed")
+	}
+	if _, exists := sanitized.SubtitleMetadata[7]; exists {
+		t.Fatal("missing subtitle metadata was not removed")
+	}
+	if sanitized.EnhancedAudioSourceStreamIndex != nil {
+		t.Fatal("missing enhanced audio source was not reset")
+	}
+	if len(warnings) != 5 {
+		t.Fatalf("expected five validation warnings, got %#v", warnings)
+	}
+}
+
+func TestSanitizedMissingSubtitleIsNotMappedByFFmpeg(t *testing.T) {
+	override, warnings := sanitizeConversionOverride(
+		AssetConversionOverrideState{KeepVideoStreams: []int{0}, KeepSubtitleStreams: []int{4, 9}},
+		MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Subtitle: []MediaStream{{Index: 4}}},
+	)
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true},
+		Streams:        MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Subtitle: []MediaStream{{Index: 4}}},
+		Override:       override,
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:4")
+	assertNotContains(t, command, "-map 0:9")
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "subtitle stream 9") {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
+
 func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,

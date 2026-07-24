@@ -72,7 +72,8 @@ export function QueuePage() {
   const batchFilter = searchParams.get('batch') ?? '';
   const pathFilter = searchParams.get('path') ?? '';
   const selectedJobId = Number(searchParams.get('job'));
-  const allJobs = useMemo(() => jobs.data ?? [], [jobs.data]);
+  const jobHistory = useMemo(() => jobs.data ?? [], [jobs.data]);
+  const allJobs = useMemo(() => latestJobsByAsset(jobHistory), [jobHistory]);
   const filteredJobs = useMemo(
     () =>
       allJobs.filter((job) => {
@@ -99,7 +100,7 @@ export function QueuePage() {
   const totalJobPages = Math.max(1, Math.ceil(jobGroups.length / jobsPerPage));
   const pagedJobGroups = jobGroups.slice((jobPage - 1) * jobsPerPage, jobPage * jobsPerPage);
   const statusCounts = useMemo(() => summarizeStatusCounts(allJobs), [allJobs]);
-  const selectedJob = selectedJobId ? allJobs.find((job) => job.id === selectedJobId) ?? null : null;
+  const selectedJob = selectedJobId ? jobHistory.find((job) => job.id === selectedJobId) ?? null : null;
 
   useEffect(() => {
     setJobPage(1);
@@ -966,6 +967,25 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
     const rightID = Math.max(...right.jobs.map((job) => job.id));
     return sortDirection === 'desc' ? rightID - leftID : leftID - rightID;
   });
+}
+
+function latestJobsByAsset(jobs: QueueJob[]) {
+  const latest = new Map<string, QueueJob>();
+  for (const job of jobs) {
+    const key = queueAssetIdentity(job.mediaPath);
+    const current = latest.get(key);
+    if (!current || job.id > current.id) {
+      latest.set(key, job);
+    }
+  }
+  return [...latest.values()];
+}
+
+function queueAssetIdentity(mediaPath: string) {
+  const normalized = normalizePath(mediaPath).replace(/^\/+/, '');
+  const rawMarker = 'media/raw/';
+  const rawIndex = normalized.indexOf(rawMarker);
+  return rawIndex >= 0 ? normalized.slice(rawIndex + rawMarker.length) : normalized;
 }
 
 function sortJobsByPipelineState(left: QueueJob, right: QueueJob, direction: 'asc' | 'desc') {

@@ -535,6 +535,9 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 	if !assetConversionOverrideEmpty(override) {
 		job.Notes = appendNote(job.Notes, "Asset conversion overrides applied")
 	}
+	for _, warning := range plan.StreamValidationWarnings {
+		job.Notes = appendNote(job.Notes, "Stream validation warning: "+warning)
+	}
 	job.FinishedAt = nil
 
 	if err := h.db.Save(&job).Error; err != nil {
@@ -668,6 +671,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
 	if !assetConversionOverrideEmpty(override) {
 		job.Notes = appendNote(job.Notes, "Asset conversion overrides applied")
+	}
+	for _, warning := range plan.StreamValidationWarnings {
+		job.Notes = appendNote(job.Notes, "Stream validation warning: "+warning)
 	}
 	if audioProfile != nil {
 		job.Notes = appendNote(job.Notes, "Audio enhancement profile: "+audioProfile.Key)

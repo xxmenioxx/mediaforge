@@ -17,15 +17,16 @@ const (
 )
 
 type MediaJobPlan struct {
-	InputPath      string
-	OutputPath     string
-	Profile        models.Profile
-	AudioProfile   *audioEnhancementProfile
-	Overwrite      bool
-	ProcessingMode string
-	Streams        MediaStreamInventory
-	Override       AssetConversionOverrideState
-	Interlace      InterlaceAnalysis
+	InputPath                string
+	OutputPath               string
+	Profile                  models.Profile
+	AudioProfile             *audioEnhancementProfile
+	Overwrite                bool
+	ProcessingMode           string
+	Streams                  MediaStreamInventory
+	Override                 AssetConversionOverrideState
+	StreamValidationWarnings []string
+	Interlace                InterlaceAnalysis
 }
 
 type MediaStreamInventory struct {
@@ -323,9 +324,58 @@ func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile 
 	if err != nil {
 		return MediaJobPlan{}, err
 	}
-	plan.Override = override
+	plan.Override, plan.StreamValidationWarnings = sanitizeConversionOverride(override, plan.Streams)
 	plan.ProcessingMode = mediaProcessingMode(effectiveProfile, audioProfile)
 	return plan, nil
+}
+
+func sanitizeConversionOverride(override AssetConversionOverrideState, streams MediaStreamInventory) (AssetConversionOverrideState, []string) {
+	warnings := []string{}
+	override.KeepVideoStreams = sanitizeSelectedStreams("video", override.KeepVideoStreams, streamIndexes(streams.Video), &warnings)
+	override.KeepAudioStreams = sanitizeSelectedStreams("audio", override.KeepAudioStreams, audioStreamIndexes(streams.Audio), &warnings)
+	override.KeepSubtitleStreams = sanitizeSelectedStreams("subtitle", override.KeepSubtitleStreams, streamIndexes(streams.Subtitle), &warnings)
+	override.VideoMetadata = sanitizeStreamMetadata("video metadata", override.VideoMetadata, streamIndexes(streams.Video), &warnings)
+	override.AudioMetadata = sanitizeStreamMetadata("audio metadata", override.AudioMetadata, audioStreamIndexes(streams.Audio), &warnings)
+	override.SubtitleMetadata = sanitizeStreamMetadata("subtitle metadata", override.SubtitleMetadata, streamIndexes(streams.Subtitle), &warnings)
+	if override.EnhancedAudioSourceStreamIndex != nil {
+		if _, exists := intSet(audioStreamIndexes(streams.Audio))[*override.EnhancedAudioSourceStreamIndex]; !exists {
+			warnings = append(warnings, fmt.Sprintf("Enhanced audio source stream %d is not present and was replaced with the available default audio stream.", *override.EnhancedAudioSourceStreamIndex))
+			override.EnhancedAudioSourceStreamIndex = nil
+		}
+	}
+	return override, warnings
+}
+
+func sanitizeSelectedStreams(label string, selected []int, available []int, warnings *[]string) []int {
+	if selected == nil {
+		return nil
+	}
+	availableSet := intSet(available)
+	valid := make([]int, 0, len(selected))
+	for _, index := range selected {
+		if _, exists := availableSet[index]; exists {
+			valid = append(valid, index)
+			continue
+		}
+		*warnings = append(*warnings, fmt.Sprintf("Selected %s stream %d is not present and was omitted.", label, index))
+	}
+	return valid
+}
+
+func sanitizeStreamMetadata(label string, metadata map[int]StreamMetadataOverride, available []int, warnings *[]string) map[int]StreamMetadataOverride {
+	if metadata == nil {
+		return nil
+	}
+	availableSet := intSet(available)
+	valid := make(map[int]StreamMetadataOverride, len(metadata))
+	for index, value := range metadata {
+		if _, exists := availableSet[index]; exists {
+			valid[index] = value
+			continue
+		}
+		*warnings = append(*warnings, fmt.Sprintf("%s for stream %d was omitted because the stream is not present.", label, index))
+	}
+	return valid
 }
 
 func applyAssetConversionOverrideToProfile(profile models.Profile, override AssetConversionOverrideState) models.Profile {
