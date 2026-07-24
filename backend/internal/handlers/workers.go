@@ -833,7 +833,7 @@ func retiredPublishedRelativePath(db *gorm.DB, job models.QueueJob, library mode
 	if db == nil || strings.TrimSpace(job.MediaPath) == "" || strings.TrimSpace(library.DestinationPath) == "" {
 		return ""
 	}
-	var previous models.QueueJob
+	var previousJobs []models.QueueJob
 	query := db.Where(
 		"media_path = ? AND library_id = ? AND published_path <> ? AND publication_retired_at IS NOT NULL",
 		job.MediaPath,
@@ -843,17 +843,29 @@ func retiredPublishedRelativePath(db *gorm.DB, job models.QueueJob, library mode
 	if job.ID > 0 {
 		query = query.Where("id <> ?", job.ID)
 	}
-	if err := query.Order("published_at desc, id desc").First(&previous).Error; err != nil {
+	if err := query.Order("published_at desc, id desc").Find(&previousJobs).Error; err != nil || len(previousJobs) == 0 {
 		return ""
 	}
 
 	destination := filepath.Clean(strings.TrimSpace(library.DestinationPath))
-	published := filepath.Clean(strings.TrimSpace(previous.PublishedPath))
-	relative, err := filepath.Rel(destination, published)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return ""
+	sourceStem := strings.TrimSuffix(filepath.Base(job.MediaPath), filepath.Ext(job.MediaPath))
+	fallback := ""
+	for _, previous := range previousJobs {
+		published := filepath.Clean(strings.TrimSpace(previous.PublishedPath))
+		relative, err := filepath.Rel(destination, published)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		relative = filepath.ToSlash(relative)
+		if fallback == "" {
+			fallback = relative
+		}
+		publishedStem := strings.TrimSuffix(filepath.Base(published), filepath.Ext(published))
+		if publishedStem != sourceStem {
+			return relative
+		}
 	}
-	return filepath.ToSlash(relative)
+	return fallback
 }
 
 func dryRunCommand(inputPath string, outputPath string, profile models.Profile) string {

@@ -327,8 +327,15 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		return
 	}
 
+	var activePublications []models.QueueJob
+	if err := h.db.Where("published_path = ? AND publication_retired_at IS NULL", path).Order("id desc").Find(&activePublications).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var job models.QueueJob
-	if err := h.db.Where("published_path = ?", path).Order("published_at desc, id desc").First(&job).Error; err != nil {
+	if len(activePublications) > 0 {
+		job = activePublications[0]
+	} else if err := h.db.Where("published_path = ?", path).Order("id desc").First(&job).Error; err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "no publishing job links this converted asset to an archived original"})
 		return
 	}
@@ -365,18 +372,32 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 
 	retiredAt := time.Now()
-	job.PublicationRetiredAt = &retiredAt
-	job.Notes = appendNote(job.Notes, "Safe deletion retired this publication before restoring its archived original")
-	if err := h.db.Save(&job).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not lock the publication against automatic reconciliation: " + err.Error()})
-		return
+	retiredPublicationIDs := []uint{}
+	for index := range activePublications {
+		activePublications[index].PublicationRetiredAt = &retiredAt
+		activePublications[index].Notes = appendNote(activePublications[index].Notes, "Safe deletion retired this publication before restoring its archived original")
+		if err := h.db.Save(&activePublications[index]).Error; err != nil {
+			for _, retiredID := range retiredPublicationIDs {
+				_ = h.db.Model(&models.QueueJob{}).Where("id = ?", retiredID).Updates(map[string]any{"publication_retired_at": nil}).Error
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not lock the publication against automatic reconciliation: " + err.Error()})
+			return
+		}
+		retiredPublicationIDs = append(retiredPublicationIDs, activePublications[index].ID)
+	}
+	if len(activePublications) > 0 {
+		job = activePublications[0]
+	}
+	rollbackRetirements := func() {
+		for _, retiredID := range retiredPublicationIDs {
+			_ = h.db.Model(&models.QueueJob{}).Where("id = ?", retiredID).Updates(map[string]any{"publication_retired_at": nil}).Error
+		}
 	}
 	quarantine := ""
 	if convertedExists {
 		quarantine = fmt.Sprintf("%s.mvforge-delete-%d", path, time.Now().UnixNano())
 		if err := os.Rename(path, quarantine); err != nil {
-			job.PublicationRetiredAt = nil
-			_ = h.db.Save(&job).Error
+			rollbackRetirements()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not prepare converted asset for safe deletion: " + err.Error()})
 			return
 		}
@@ -385,8 +406,7 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		if quarantine != "" {
 			_ = os.Rename(quarantine, path)
 		}
-		job.PublicationRetiredAt = nil
-		_ = h.db.Save(&job).Error
+		rollbackRetirements()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "original restoration failed; converted asset was restored: " + err.Error()})
 		return
 	}
@@ -394,8 +414,7 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		if err := os.Remove(quarantine); err != nil {
 			rollbackArchive := moveFile(restorePath, archivePath)
 			rollbackConverted := os.Rename(quarantine, path)
-			job.PublicationRetiredAt = nil
-			_ = h.db.Save(&job).Error
+			rollbackRetirements()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("converted deletion failed; rollback archive=%v converted=%v: %v", rollbackArchive, rollbackConverted, err)})
 			return
 		}

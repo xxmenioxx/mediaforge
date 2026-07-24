@@ -136,6 +136,56 @@ func TestPlannedOutputPathReusesRetiredPublishedNameAfterSafeRecovery(t *testing
 	}
 }
 
+func TestPlannedOutputPathPrefersOlderNormalizedNameOverLatestSourceName(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		ID:              1,
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
+	}
+	profile := models.Profile{Container: "mkv"}
+	retiredAt := time.Now()
+	mediaPath := "/media/raw/anime/Baccano/Baccano! S01E01 MULTi 1080p 10bits BluRay x265 AAC -Punisher694.mkv"
+	history := []models.QueueJob{
+		{
+			MediaPath:            mediaPath,
+			LibraryID:            library.ID,
+			ProfileID:            1,
+			Status:               JobStatusCompleted,
+			PublishedPath:        "/media/library/anime/Baccano/Baccano - S01E01.mkv",
+			PublicationRetiredAt: &retiredAt,
+		},
+		{
+			MediaPath:            mediaPath,
+			LibraryID:            library.ID,
+			ProfileID:            1,
+			Status:               JobStatusCompleted,
+			PublishedPath:        "/media/library/anime/Baccano/Baccano! S01E01 MULTi 1080p 10bits BluRay x265 AAC -Punisher694.mkv",
+			PublicationRetiredAt: &retiredAt,
+		},
+	}
+	if err := db.Create(&history).Error; err != nil {
+		t.Fatalf("create job history: %v", err)
+	}
+	reconversion := models.QueueJob{
+		MediaPath: mediaPath,
+		BatchID:   "single-recovered-asset",
+		BatchName: "anime/Baccano",
+		LibraryID: library.ID,
+		ProfileID: 1,
+	}
+	if err := db.Create(&reconversion).Error; err != nil {
+		t.Fatalf("create reconversion job: %v", err)
+	}
+
+	got := plannedOutputPathForJob(db, reconversion, library, profile)
+	want := "/media/library/anime/Baccano/Baccano - S01E01.mkv"
+	if got != want {
+		t.Fatalf("reconversion output=%q want=%q", got, want)
+	}
+}
+
 func TestPlannedOutputPathDropsRawSourceBucketForSelectedLibrary(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

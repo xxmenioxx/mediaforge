@@ -215,6 +215,65 @@ func TestDeleteConvertedCanResumeWhenConvertedAlreadyWentMissing(t *testing.T) {
 	}
 }
 
+func TestDeleteConvertedUsesNewestActiveJobAndRetiresSharedPublications(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "shared-publication")
+	convertedPath := filepath.Join(libraryRoot, "anime", "Baccano", "Season0", "episode.mkv")
+	olderArchivePath := filepath.Join(archiveRoot, "wrong", "episode.mkv")
+	latestArchivePath := filepath.Join(archiveRoot, "anime", "Baccano", "Season0", "episode.mkv")
+	latestRestorePath := filepath.Join(rawRoot, "anime", "Baccano", "Season0", "episode.mkv")
+	writeTestFile(t, convertedPath, "latest converted")
+	writeTestFile(t, latestArchivePath, "latest original")
+	olderPublishedAt := time.Now().Add(time.Hour)
+	latestPublishedAt := time.Now()
+	jobs := []models.QueueJob{
+		{
+			MediaPath:            filepath.Join(rawRoot, "wrong", "episode.mkv"),
+			LibraryID:            1,
+			ProfileID:            1,
+			Status:               JobStatusCompleted,
+			PublishedPath:        convertedPath,
+			OriginalArchivedPath: olderArchivePath,
+			PublishedAt:          &olderPublishedAt,
+		},
+		{
+			MediaPath:            latestRestorePath,
+			LibraryID:            1,
+			ProfileID:            1,
+			Status:               JobStatusCompleted,
+			PublishedPath:        convertedPath,
+			OriginalArchivedPath: latestArchivePath,
+			PublishedAt:          &latestPublishedAt,
+		},
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	relative := filepath.Join("anime", "Baccano", "Season0", "episode.mkv")
+	if err := db.Create(&models.AssetRecord{Path: convertedPath, RootPath: libraryRoot, RelativePath: filepath.ToSlash(relative), FileName: "episode.mkv", Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/delete-converted", NewAssetHandler(db).DeleteConverted)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/delete-converted?path="+url.QueryEscape(convertedPath), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(latestRestorePath)
+	if err != nil || string(content) != "latest original" {
+		t.Fatalf("restored content=%q err=%v", content, err)
+	}
+	var preserved []models.QueueJob
+	if err := db.Where("published_path = ?", convertedPath).Order("id").Find(&preserved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(preserved) != 2 || preserved[0].PublicationRetiredAt == nil || preserved[1].PublicationRetiredAt == nil {
+		t.Fatalf("shared publications were not retired: %#v", preserved)
+	}
+}
+
 func TestDeleteConvertedIsBlockedWhenArchivedOriginalIsMissing(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "missing")
 	convertedPath := filepath.Join(libraryRoot, "movie.mkv")
