@@ -969,6 +969,7 @@ function AssetRow({
   const isConverted = asset.status === 'converted';
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library';
   const isArchive = mode === 'archive' || asset.status === 'archive';
+  const rowColumnCount = bulkSelectionEnabled ? 7 : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
@@ -1322,32 +1323,32 @@ function AssetRow({
       </TableRow>
       {createJob.isSuccess ? (
         <TableRow>
-          <TableCell colSpan={10} sx={{ bgcolor: 'rgba(102,217,168,0.05)' }}>
+          <TableCell colSpan={rowColumnCount} sx={{ bgcolor: 'rgba(102,217,168,0.05)', maxWidth: 0 }}>
             <Alert severity="success">Asset queued individually.</Alert>
           </TableCell>
         </TableRow>
       ) : null}
       {createJob.isError ? (
         <TableRow>
-          <TableCell colSpan={10} sx={{ bgcolor: 'rgba(246,180,75,0.05)' }}>
+          <TableCell colSpan={rowColumnCount} sx={{ bgcolor: 'rgba(246,180,75,0.05)', maxWidth: 0 }}>
             <Alert severity="warning">{createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'}</Alert>
           </TableCell>
         </TableRow>
       ) : null}
       {deleteConvertedAsset.isSuccess ? (
         <TableRow>
-          <TableCell colSpan={10}><Alert severity="success">{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
         </TableRow>
       ) : null}
       {deleteConvertedAsset.isError ? (
         <TableRow>
-          <TableCell colSpan={10}><Alert severity="warning">Safe deletion was blocked: {deleteConvertedAsset.error instanceof Error ? deleteConvertedAsset.error.message : 'unknown error'}</Alert></TableCell>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Safe deletion was blocked: {deleteConvertedAsset.error instanceof Error ? deleteConvertedAsset.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {extractSubtitles.isSuccess ? (
         <TableRow>
-          <TableCell colSpan={10}>
-            <Alert severity="success">
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}>
+            <Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>
               Generated {extractSubtitles.data.created.length} subtitle file(s).
               {extractSubtitles.data.existing.length > 0 ? ` ${extractSubtitles.data.existing.length} already existed and were preserved.` : ''}
               {extractSubtitles.data.unsupported.length > 0 ? ` ${extractSubtitles.data.unsupported.length} bitmap track(s) require OCR.` : ''}
@@ -1357,12 +1358,12 @@ function AssetRow({
       ) : null}
       {extractSubtitles.isError ? (
         <TableRow>
-          <TableCell colSpan={10}><Alert severity="warning">Subtitle generation failed: {extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'unknown error'}</Alert></TableCell>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Subtitle generation failed: {extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {isBlockedByReview || reviewReason || reviewTags.length > 0 ? (
         <TableRow>
-          <TableCell colSpan={10} sx={{ bgcolor: 'rgba(246,180,75,0.05)' }}>
+          <TableCell colSpan={rowColumnCount} sx={{ bgcolor: 'rgba(246,180,75,0.05)', maxWidth: 0 }}>
             <Grid container spacing={1.5} alignItems="center">
               <Grid size={{ xs: 12, md: 5 }}>
                 <TextField

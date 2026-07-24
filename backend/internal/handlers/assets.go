@@ -480,7 +480,13 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
-	plans, unsupported := subtitleExtractionPlans(path, probe.Streams)
+	streams := probe.Streams
+	if !hasSubtitleProbeStream(streams) {
+		if subtitleStreams, probeErr := probeSubtitleStreams(c.Request.Context(), path); probeErr == nil && len(subtitleStreams) > 0 {
+			streams = append(streams, subtitleStreams...)
+		}
+	}
+	plans, unsupported := subtitleExtractionPlans(path, streams)
 	if len(plans) == 0 {
 		if len(unsupported) > 0 {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
@@ -489,7 +495,11 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 			})
 			return
 		}
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "the asset has no embedded subtitle tracks"})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf(
+			"FFprobe found no embedded subtitle tracks in %s (%s)",
+			filepath.Base(path),
+			probeStreamSummary(streams),
+		)})
 		return
 	}
 
@@ -551,6 +561,69 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func hasSubtitleProbeStream(streams []FFProbeStream) bool {
+	for _, stream := range streams {
+		if stream.CodecType == "subtitle" {
+			return true
+		}
+	}
+	return false
+}
+
+func probeSubtitleStreams(ctx context.Context, path string) ([]FFProbeStream, error) {
+	cmd := exec.CommandContext(
+		ctx,
+		"ffprobe",
+		"-v", "error",
+		"-select_streams", "s",
+		"-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title",
+		"-of", "json",
+		path,
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("%s", message)
+	}
+	var probe struct {
+		Streams []FFProbeStream `json:"streams"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &probe); err != nil {
+		return nil, err
+	}
+	return probe.Streams, nil
+}
+
+func probeStreamSummary(streams []FFProbeStream) string {
+	counts := map[string]int{}
+	for _, stream := range streams {
+		streamType := strings.TrimSpace(stream.CodecType)
+		if streamType == "" {
+			streamType = "unknown"
+		}
+		counts[streamType]++
+	}
+	if len(counts) == 0 {
+		return "0 streams"
+	}
+	keys := make([]string, 0, len(counts))
+	for streamType := range counts {
+		keys = append(keys, streamType)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, streamType := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", streamType, counts[streamType]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 type subtitleExtractionPlan struct {
