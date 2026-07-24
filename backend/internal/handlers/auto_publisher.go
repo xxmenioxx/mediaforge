@@ -40,10 +40,13 @@ func (p *AutoPublisher) tick() {
 		return
 	}
 	defer p.mu.Unlock()
-	if !pipelineAutomationSettings(p.db).AutoPublisherEnabled {
+	automation := pipelineAutomationSettings(p.db)
+	if automation.PublishedJobReconciliationEnabled {
+		p.reconcilePublishedJobs()
+	}
+	if !automation.AutoPublisherEnabled {
 		return
 	}
-	p.reconcilePublishedJobs()
 	var jobs []models.QueueJob
 	if err := p.db.Where("status = ? AND published_at IS NULL AND validation_status IN ?", JobStatusCompleted, []string{ValidationStatusPassed, ValidationStatusWarning}).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
 		return
@@ -60,13 +63,6 @@ func (p *AutoPublisher) reconcilePublishedJobs() {
 	}
 	for _, job := range jobs {
 		changed := false
-		if archivedPath, err := (PublisherHandler{db: p.db}).archivePublishedOriginal(job); err != nil {
-			job.Notes = appendNote(job.Notes, "Published job reconciliation archive warning: "+err.Error())
-			changed = true
-		} else if archivedPath != "" {
-			job.Notes = appendNote(job.Notes, "Published job reconciled; original archived: "+archivedPath)
-			changed = true
-		}
 		if job.OutputPath != "" {
 			if err := (PublisherHandler{db: p.db}).cleanupStagedJob(job); err != nil {
 				job.Notes = appendNote(job.Notes, "Published job reconciliation cleanup warning: "+err.Error())

@@ -523,11 +523,12 @@ func seedSettings(db *gorm.DB) error {
 		{
 			Key: "pipelineAutomation",
 			Value: models.JSONMap{
-				"autoAnalysisEnabled":   false,
-				"reviewMode":            "conditional",
-				"autoExecutionEnabled":  true,
-				"autoValidationEnabled": false,
-				"autoPublisherEnabled":  false,
+				"autoAnalysisEnabled":               false,
+				"reviewMode":                        "conditional",
+				"autoExecutionEnabled":              true,
+				"autoValidationEnabled":             false,
+				"autoPublisherEnabled":              false,
+				"publishedJobReconciliationEnabled": false,
 			},
 		},
 		{

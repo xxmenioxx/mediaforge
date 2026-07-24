@@ -49,3 +49,88 @@ func TestAutoPublisherDoesNotRearchiveRetiredPublication(t *testing.T) {
 		t.Fatalf("unexpected archive entries: %v", entries)
 	}
 }
+
+func TestAutoPublisherDoesNotRearchiveRecoveredOriginalForActivePublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:auto-publisher-recovered-active?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawRoot, archiveRoot := filepath.Join(root, "raw"), filepath.Join(root, "archive")
+	originalPath := filepath.Join(rawRoot, "anime", "Baccano", "Season0", "oav03.mkv")
+	publishedPath := filepath.Join(root, "library", "anime", "Baccano", "Season0", "Season0-S00E03.mkv")
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(publishedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(originalPath, []byte("recovered original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(publishedPath, []byte("converted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	job := models.QueueJob{
+		MediaPath:     originalPath,
+		LibraryID:     1,
+		ProfileID:     1,
+		Status:        JobStatusCompleted,
+		PublishedPath: publishedPath,
+		PublishedAt:   &now,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	(&AutoPublisher{db: db}).reconcilePublishedJobs()
+
+	content, err := os.ReadFile(originalPath)
+	if err != nil || string(content) != "recovered original" {
+		t.Fatalf("recovered Raw original was moved: content=%q err=%v", content, err)
+	}
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unexpected archive entries: %v", entries)
+	}
+}
+
+func TestPublishedJobReconciliationHasIndependentSetting(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:auto-publisher-reconciliation-setting?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if pipelineAutomationSettings(db).PublishedJobReconciliationEnabled {
+		t.Fatal("published job reconciliation must default to disabled")
+	}
+	setting := models.AppSetting{
+		Key: "pipelineAutomation",
+		Value: models.JSONMap{
+			"autoPublisherEnabled":              false,
+			"publishedJobReconciliationEnabled": true,
+		},
+	}
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	automation := pipelineAutomationSettings(db)
+	if !automation.PublishedJobReconciliationEnabled {
+		t.Fatal("published job reconciliation setting was not enabled")
+	}
+	if automation.AutoPublisherEnabled {
+		t.Fatal("reconciliation setting must not enable Auto Publisher")
+	}
+}

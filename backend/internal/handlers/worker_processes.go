@@ -223,9 +223,10 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 }
 
 type pipelineAutomation struct {
-	AutoAnalysisEnabled   bool
-	AutoValidationEnabled bool
-	AutoPublisherEnabled  bool
+	AutoAnalysisEnabled               bool
+	AutoValidationEnabled             bool
+	AutoPublisherEnabled              bool
+	PublishedJobReconciliationEnabled bool
 }
 
 func pipelineAutomationSettings(db *gorm.DB) pipelineAutomation {
@@ -236,9 +237,10 @@ func pipelineAutomationSettings(db *gorm.DB) pipelineAutomation {
 	}
 
 	return pipelineAutomation{
-		AutoAnalysisEnabled:   boolSetting(values["autoAnalysisEnabled"], false),
-		AutoValidationEnabled: boolSetting(values["autoValidationEnabled"], false),
-		AutoPublisherEnabled:  boolSetting(values["autoPublisherEnabled"], false),
+		AutoAnalysisEnabled:               boolSetting(values["autoAnalysisEnabled"], false),
+		AutoValidationEnabled:             boolSetting(values["autoValidationEnabled"], false),
+		AutoPublisherEnabled:              boolSetting(values["autoPublisherEnabled"], false),
+		PublishedJobReconciliationEnabled: boolSetting(values["publishedJobReconciliationEnabled"], false),
 	}
 }
 

@@ -94,6 +94,7 @@ type SettingsForm = {
     autoExecutionEnabled: boolean;
     autoValidationEnabled: boolean;
     autoPublisherEnabled: boolean;
+    publishedJobReconciliationEnabled: boolean;
   };
   assetInventory: {
     autoSyncEnabled: boolean;
@@ -167,6 +168,7 @@ const initialSettings: SettingsForm = buildSettingsForm({
     autoExecutionEnabled: true,
     autoValidationEnabled: false,
     autoPublisherEnabled: false,
+    publishedJobReconciliationEnabled: false,
   },
   assetInventory: {
     autoSyncEnabled: true,
@@ -334,6 +336,10 @@ export function SettingsPage() {
         autoPublisherEnabled: booleanValue(
           pipelineAutomation.autoPublisherEnabled,
           initialSettings.pipelineAutomation.autoPublisherEnabled,
+        ),
+        publishedJobReconciliationEnabled: booleanValue(
+          pipelineAutomation.publishedJobReconciliationEnabled,
+          initialSettings.pipelineAutomation.publishedJobReconciliationEnabled,
         ),
       },
       assetInventory: {
@@ -1495,6 +1501,26 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
             }
             label="Automatic publisher and originals archive"
           />
+          <FormControlLabel
+            control={
+              <Switch
+                checked={form.pipelineAutomation.publishedJobReconciliationEnabled}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    pipelineAutomation: {
+                      ...current.pipelineAutomation,
+                      publishedJobReconciliationEnabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+            }
+            label="Published job reconciliation"
+          />
+          <Typography color="text.secondary" variant="caption">
+            Periodically cleans staging for published jobs. It does not move recovered originals back to Archive.
+          </Typography>
           <Divider />
           <Typography variant="h3">Asset Inventory Sync</Typography>
           <FormControlLabel
@@ -1919,6 +1945,10 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       autoPublisherEnabled: booleanValue(
         pipelineAutomation.autoPublisherEnabled,
         initialSettings.pipelineAutomation.autoPublisherEnabled,
+      ),
+      publishedJobReconciliationEnabled: booleanValue(
+        pipelineAutomation.publishedJobReconciliationEnabled,
+        initialSettings.pipelineAutomation.publishedJobReconciliationEnabled,
       ),
     },
     assetInventory: {
