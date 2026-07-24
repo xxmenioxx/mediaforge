@@ -405,6 +405,40 @@ func TestFFmpegCommandBuilderConvertsOnlyTextSubtitlesToSRT(t *testing.T) {
 	assertContains(t, command, "-c:s:1 srt")
 }
 
+func TestFFmpegCommandBuilderConvertsOnlyTextSubtitlesToASS(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true,
+			WorkerConfig: models.JSONMap{"subtitleOutputFormat": "ass"},
+		},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 4, Codec: "hdmv_pgs_subtitle"},
+			{Index: 5, Codec: "subrip"},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-c:s:0 ass")
+	assertContains(t, command, "-c:s:1 ass")
+}
+
+func TestFFmpegCommandBuilderPreservesSubtitleFormatWhenRequested(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true,
+			WorkerConfig: models.JSONMap{"subtitleOutputFormat": "source", "preferSrtSubtitles": true},
+		},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "ass"}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-c:s")
+}
+
 func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {
 	makeDefault := true
 	plan := MediaJobPlan{

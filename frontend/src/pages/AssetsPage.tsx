@@ -41,6 +41,7 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
+import SubtitlesIcon from '@mui/icons-material/Subtitles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -914,9 +915,8 @@ function AssetRow({
         if (!result.applies && pathTrackProfile.validationMode === 'block') {
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
-        if (result.applies) {
-          await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
-        } else {
+        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
+        if (!result.applies) {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
       }
@@ -961,6 +961,9 @@ function AssetRow({
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
       ]);
     },
+  });
+  const extractSubtitles = useMutation({
+    mutationFn: api.extractAssetSubtitles,
   });
   const isBlockedByReview = assetReview.requiresReview;
   const isConverted = asset.status === 'converted';
@@ -1266,13 +1269,28 @@ function AssetRow({
               </Tooltip>
             ) : null}
             {isConverted ? (
-              <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
-                <span onClick={(event) => event.stopPropagation()}>
-                  <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
-                    <DeleteForeverIcon />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              <>
+                <Tooltip title={extractSubtitles.isPending ? 'Generating subtitle files' : 'Generate external SRT/ASS files from embedded subtitle tracks'}>
+                  <span onClick={(event) => event.stopPropagation()}>
+                    <IconButton
+                      color="primary"
+                      onClick={() => extractSubtitles.mutate(asset.path)}
+                      disabled={asset.missing || extractSubtitles.isPending}
+                      aria-label={`Generate subtitles for ${asset.fileName}`}
+                      sx={actionIconSx}
+                    >
+                      <SubtitlesIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
+                  <span onClick={(event) => event.stopPropagation()}>
+                    <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                      <DeleteForeverIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </>
             ) : isArchive ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
@@ -1324,6 +1342,22 @@ function AssetRow({
       {deleteConvertedAsset.isError ? (
         <TableRow>
           <TableCell colSpan={10}><Alert severity="warning">Safe deletion was blocked: {deleteConvertedAsset.error instanceof Error ? deleteConvertedAsset.error.message : 'unknown error'}</Alert></TableCell>
+        </TableRow>
+      ) : null}
+      {extractSubtitles.isSuccess ? (
+        <TableRow>
+          <TableCell colSpan={10}>
+            <Alert severity="success">
+              Generated {extractSubtitles.data.created.length} subtitle file(s).
+              {extractSubtitles.data.existing.length > 0 ? ` ${extractSubtitles.data.existing.length} already existed and were preserved.` : ''}
+              {extractSubtitles.data.unsupported.length > 0 ? ` ${extractSubtitles.data.unsupported.length} bitmap track(s) require OCR.` : ''}
+            </Alert>
+          </TableCell>
+        </TableRow>
+      ) : null}
+      {extractSubtitles.isError ? (
+        <TableRow>
+          <TableCell colSpan={10}><Alert severity="warning">Subtitle generation failed: {extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {isBlockedByReview || reviewReason || reviewTags.length > 0 ? (

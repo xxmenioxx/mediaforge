@@ -88,25 +88,6 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 	}
 	path = resolveMediaPath(h.db, path)
 
-	var existing models.ScanResult
-	if !request.Force {
-		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
-			enrichCachedScan(&existing)
-			_ = h.db.Save(&existing).Error
-			c.JSON(http.StatusOK, existing)
-			return
-		}
-	}
-
-	if request.Force {
-		_ = h.db.Where("path = ?", path).Delete(&models.ScanResult{}).Error
-	}
-
-	if !request.Force && existing.ID != 0 {
-		c.JSON(http.StatusOK, existing)
-		return
-	}
-
 	info, err := os.Stat(path)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": mediaPathReadError(err)})
@@ -116,6 +97,23 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 	if info.IsDir() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "media path must point to a file"})
 		return
+	}
+
+	var existing models.ScanResult
+	if !request.Force {
+		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+			if scanCacheMatchesFile(existing, info) {
+				enrichCachedScan(&existing)
+				_ = h.db.Save(&existing).Error
+				c.JSON(http.StatusOK, existing)
+				return
+			}
+			_ = h.db.Where("path = ?", path).Delete(&models.ScanResult{}).Error
+		}
+	}
+
+	if request.Force {
+		_ = h.db.Where("path = ?", path).Delete(&models.ScanResult{}).Error
 	}
 
 	probe, raw, err := runFFProbe(path, normalizedAnalysisSeconds(request.AnalysisSeconds))
@@ -131,6 +129,13 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, result)
+}
+
+func scanCacheMatchesFile(result models.ScanResult, info os.FileInfo) bool {
+	if info == nil || result.CreatedAt.IsZero() || result.SizeBytes != info.Size() {
+		return false
+	}
+	return !info.ModTime().After(result.CreatedAt)
 }
 
 func mediaPathReadError(err error) string {

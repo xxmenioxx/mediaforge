@@ -765,15 +765,18 @@ export function ProfilesPage() {
                           />
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={workerConfigBool(form, 'preferSrtSubtitles')}
-                                onChange={(event) => updateWorkerConfig('preferSrtSubtitles', event.target.checked)}
-                              />
-                            }
-                            label="Convert subtitles to SRT when possible"
-                          />
+                          <TextField
+                            select
+                            fullWidth
+                            label="Subtitle output format"
+                            value={subtitleOutputFormat(form)}
+                            onChange={(event) => updateWorkerConfig('subtitleOutputFormat', event.target.value)}
+                            helperText="Text tracks only; bitmap subtitles are preserved"
+                          >
+                            <MenuItem value="source">Preserve source format</MenuItem>
+                            <MenuItem value="srt">Convert text subtitles to SRT</MenuItem>
+                            <MenuItem value="ass">Convert text subtitles to ASS</MenuItem>
+                          </TextField>
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                           <FormControlLabel
@@ -1147,6 +1150,14 @@ function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
+function subtitleOutputFormat(profile: ProfileInput) {
+  const configured = workerConfigString(profile, 'subtitleOutputFormat').toLowerCase();
+  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+    return configured;
+  }
+  return workerConfigBool(profile, 'preferSrtSubtitles') ? 'srt' : 'source';
+}
+
 function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const codecFamily = codecFamilyFor(profile.videoCodec);
   const qualityStrategy = profile.videoCodec === 'copy' ? 'source' : 'crf';
@@ -1324,7 +1335,8 @@ function buildDryRunCommand(profile: ProfileInput) {
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
   const aacDisposition = aacTrackDefault(profile) ? 'default' : '0';
   const aacArgs = aacTrackEnabled(profile) ? `-map 0:a:0 -c:a:1 aac -b:a:1 ${workerConfigNumber(profile, 'aacStereoBitrateKbps', 192)}k -ac:a:1 2 -disposition:a:1 ${aacDisposition}` : '';
-  const subtitleArgs = profile.preserveSubtitles ? (workerConfigBool(profile, 'preferSrtSubtitles') ? '-c:s srt' : '-c:s copy') : '-sn';
+  const subtitleFormat = subtitleOutputFormat(profile);
+  const subtitleArgs = profile.preserveSubtitles ? (subtitleFormat === 'source' ? '-c:s copy' : `-c:s ${subtitleFormat}`) : '-sn';
   const chapterArgs = profile.preserveChapters ? '-map_chapters 0' : '-map_chapters -1';
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';
   const qualityArgs = profile.qualityMode === 'crf' && profile.videoCodec !== 'copy' && !isHardware ? `-crf ${profile.qualityValue}` : '';

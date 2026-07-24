@@ -91,6 +91,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  extractAssetSubtitles: (path: string) =>
+    request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
     request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
       method: 'POST',

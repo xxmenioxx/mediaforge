@@ -1,6 +1,13 @@
 package handlers
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
+)
 
 func TestIsHDRDoesNotTreatTenBitSDRAsHDR(t *testing.T) {
 	stream := FFProbeStream{
@@ -28,5 +35,31 @@ func TestStreamSizeBytesUsesMatroskaStatistics(t *testing.T) {
 	}
 	if got := streamBitrate(stream); got != 252532 {
 		t.Fatalf("bitrate=%d", got)
+	}
+}
+
+func TestScanCacheInvalidatesWhenMediaWasReplaced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(path, []byte("new converted asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modifiedAt := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(path, modifiedAt, modifiedAt); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := models.ScanResult{SizeBytes: info.Size(), CreatedAt: modifiedAt.Add(time.Second)}
+	if !scanCacheMatchesFile(current, info) {
+		t.Fatal("matching size and older media mtime should reuse the scan")
+	}
+	if scanCacheMatchesFile(models.ScanResult{SizeBytes: info.Size() + 1, CreatedAt: time.Now()}, info) {
+		t.Fatal("changed media size must invalidate the scan")
+	}
+	if scanCacheMatchesFile(models.ScanResult{SizeBytes: info.Size(), CreatedAt: modifiedAt.Add(-time.Second)}, info) {
+		t.Fatal("media modified after the scan must invalidate the scan")
 	}
 }

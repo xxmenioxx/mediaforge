@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -79,6 +80,120 @@ func TestPreviewModesUseFastProxyAndExactQualityFilters(t *testing.T) {
 	}
 	if got := previewVideoFilterChain("", "quality"); got != "null" {
 		t.Fatalf("quality preview should preserve resolution: %q", got)
+	}
+}
+
+func TestSubtitleExtractionPlansPreserveASSAndConvertOtherTextTracksToSRT(t *testing.T) {
+	plans, unsupported := subtitleExtractionPlans("/media/library/Movie.mkv", []FFProbeStream{
+		{Index: 0, CodecType: "video", CodecName: "hevc"},
+		{Index: 2, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "spa"}},
+		{Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}},
+		{Index: 4, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "jpn"}},
+	})
+
+	if len(plans) != 2 {
+		t.Fatalf("expected two text subtitle plans, got %#v", plans)
+	}
+	if plans[0].Codec != "ass" || plans[0].OutputPath != "/media/library/Movie.spa.2.ass" {
+		t.Fatalf("unexpected ASS extraction plan: %#v", plans[0])
+	}
+	if plans[1].Codec != "srt" || plans[1].OutputPath != "/media/library/Movie.eng.3.srt" {
+		t.Fatalf("unexpected SRT extraction plan: %#v", plans[1])
+	}
+	if len(unsupported) != 1 || unsupported[0] != "stream 4 (hdmv_pgs_subtitle)" {
+		t.Fatalf("unexpected unsupported subtitle tracks: %#v", unsupported)
+	}
+}
+
+func TestSubtitleExtractionPlansUseSafeUndefinedLanguage(t *testing.T) {
+	plans, _ := subtitleExtractionPlans("/media/library/Movie.mkv", []FFProbeStream{
+		{Index: 7, CodecType: "subtitle", CodecName: "webvtt", Tags: map[string]string{"language": "../../ES MX"}},
+		{Index: 8, CodecType: "subtitle", CodecName: "srt"},
+	})
+
+	if plans[0].OutputPath != "/media/library/Movie.es-mx.7.srt" {
+		t.Fatalf("unsafe or unexpected language filename: %q", plans[0].OutputPath)
+	}
+	if plans[1].OutputPath != "/media/library/Movie.und.8.srt" {
+		t.Fatalf("missing language should use und: %q", plans[1].OutputPath)
+	}
+}
+
+func TestExtractSubtitlesCreatesSidecarsAndPreservesExistingFiles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:subtitle-extraction?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "Baccano.mkv")
+	if err := os.WriteFile(mediaPath, []byte("converted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Library{Name: "Anime", DestinationPath: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: "Baccano.mkv", FileName: "Baccano.mkv", Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	ffprobe := filepath.Join(bin, "ffprobe")
+	ffmpeg := filepath.Join(bin, "ffmpeg")
+	probeScript := `#!/bin/sh
+printf '%s' '{"format":{"filename":"Baccano.mkv"},"streams":[{"index":2,"codec_type":"subtitle","codec_name":"ass","tags":{"language":"spa"}},{"index":3,"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"eng"}},{"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","tags":{"language":"jpn"}}]}'
+`
+	ffmpegScript := `#!/bin/sh
+for argument do output="$argument"; done
+if [ "$output" = "-" ]; then exit 0; fi
+printf '%s\n' 'generated subtitle' > "$output"
+`
+	if err := os.WriteFile(ffprobe, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ffmpeg, []byte(ffmpegScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
+	run := func() SubtitleExtractionResult {
+		t.Helper()
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader("{}"))
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var result SubtitleExtractionResult
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	first := run()
+	if len(first.Created) != 2 || len(first.Existing) != 0 || len(first.Unsupported) != 1 {
+		t.Fatalf("unexpected first extraction result: %#v", first)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "Baccano.spa.2.ass"),
+		filepath.Join(root, "Baccano.eng.3.srt"),
+	} {
+		content, err := os.ReadFile(path)
+		if err != nil || string(content) != "generated subtitle\n" {
+			t.Fatalf("sidecar %q content=%q err=%v", path, content, err)
+		}
+	}
+
+	second := run()
+	if len(second.Created) != 0 || len(second.Existing) != 2 {
+		t.Fatalf("repeat extraction should preserve existing sidecars: %#v", second)
 	}
 }
 

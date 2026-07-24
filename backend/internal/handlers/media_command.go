@@ -205,10 +205,11 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	hasSelectedSubtitles := len(selectedSubtitleStreams(plan)) > 0
 	if sourceHasSubtitles && !planHasStreamSelection(plan.Override) && !plan.Profile.PreserveSubtitles {
 		args = append(args, "-sn")
-	} else if hasSelectedSubtitles && plan.Profile.PreserveSubtitles && profileWorkerBool(plan.Profile, "preferSrtSubtitles", false) {
+	} else if hasSelectedSubtitles && plan.Profile.PreserveSubtitles {
+		subtitleCodec := effectiveSubtitleOutputFormat(plan.Profile)
 		for index, stream := range selectedSubtitleStreams(plan) {
-			if subtitleCanConvertToSRT(stream.Codec) {
-				args = append(args, fmt.Sprintf("-c:s:%d", index), "srt")
+			if subtitleCodec != "source" && subtitleCanConvertText(stream.Codec) {
+				args = append(args, fmt.Sprintf("-c:s:%d", index), subtitleCodec)
 			}
 		}
 	}
@@ -253,16 +254,31 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 	return profile
 }
 
-// FFmpeg can transcode text subtitles to SRT, but it cannot OCR bitmap
+// FFmpeg can transcode text subtitles to SRT or ASS, but it cannot OCR bitmap
 // subtitles such as DVD/VobSub or Blu-ray PGS. Since the command starts with
 // "-c copy", leaving those streams untouched preserves them in MKV output.
-func subtitleCanConvertToSRT(codec string) bool {
+func subtitleCanConvertText(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
 	case "ass", "ssa", "subrip", "srt", "text", "mov_text", "webvtt", "microdvd", "mpl2", "jacosub", "sami", "realtext", "subviewer", "subviewer1", "vplayer":
 		return true
 	default:
 		return false
 	}
+}
+
+func effectiveSubtitleOutputFormat(profile models.Profile) string {
+	switch strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["subtitleOutputFormat"]))) {
+	case "srt":
+		return "srt"
+	case "ass", "ssa":
+		return "ass"
+	case "source", "copy":
+		return "source"
+	}
+	if profileWorkerBool(profile, "preferSrtSubtitles", false) {
+		return "srt"
+	}
+	return "source"
 }
 
 func effectiveAACOption(plan MediaJobPlan, override *bool, key, legacyKey string, fallback bool) bool {

@@ -232,6 +232,9 @@ func evaluateDirectPlayClient(client string, profile models.Profile) DirectPlayC
 		penalize(15, "No AAC stereo compatibility track is guaranteed")
 	}
 	preferSRT, _ := profile.WorkerConfig["preferSrtSubtitles"].(bool)
+	if format, ok := profile.WorkerConfig["subtitleOutputFormat"].(string); ok {
+		preferSRT = strings.EqualFold(strings.TrimSpace(format), "srt")
+	}
 	if profile.PreserveSubtitles && !preferSRT {
 		penalize(10, "Preserved ASS or image subtitles may require transcoding")
 	}

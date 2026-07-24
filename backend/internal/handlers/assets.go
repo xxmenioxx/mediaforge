@@ -27,6 +27,12 @@ type AssetHandler struct {
 	db *gorm.DB
 }
 
+type SubtitleExtractionResult struct {
+	Created     []string `json:"created"`
+	Existing    []string `json:"existing"`
+	Unsupported []string `json:"unsupported"`
+}
+
 type previewGeneration struct {
 	done chan struct{}
 	err  error
@@ -436,6 +442,164 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+}
+
+func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
+	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if path == "." || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset not found in inventory"})
+		return
+	}
+	if record.Status != "converted" {
+		c.JSON(http.StatusConflict, gin.H{"error": "subtitle extraction is available only for MVForge converted assets"})
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset is not readable from the backend container"})
+		return
+	}
+	allowed, err := h.pathBelongsToLibrary(path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "converted asset is outside configured libraries"})
+		return
+	}
+
+	probe, _, err := runFFProbe(path, 20)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	plans, unsupported := subtitleExtractionPlans(path, probe.Streams)
+	if len(plans) == 0 {
+		if len(unsupported) > 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":       "the asset contains only bitmap subtitle tracks; OCR is required to create SRT or ASS files",
+				"unsupported": unsupported,
+			})
+			return
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "the asset has no embedded subtitle tracks"})
+		return
+	}
+
+	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: unsupported}
+	for _, plan := range plans {
+		if existing, statErr := os.Stat(plan.OutputPath); statErr == nil && !existing.IsDir() {
+			result.Existing = append(result.Existing, plan.OutputPath)
+			continue
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
+			return
+		}
+
+		temp, err := os.CreateTemp(filepath.Dir(plan.OutputPath), ".mvforge-subtitle-*."+plan.Format)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("cannot create subtitle beside the converted asset: %v", err)})
+			return
+		}
+		tempPath := temp.Name()
+		if err := temp.Close(); err != nil {
+			_ = os.Remove(tempPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		_ = os.Remove(tempPath)
+
+		args := []string{
+			"-hide_banner", "-loglevel", "error", "-nostdin",
+			"-i", path,
+			"-map", fmt.Sprintf("0:%d", plan.StreamIndex),
+			"-vn", "-an",
+			"-c:s", plan.Codec,
+			"-f", plan.Format,
+			tempPath,
+		}
+		cmd := exec.CommandContext(c.Request.Context(), "ffmpeg", args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(tempPath)
+			message := strings.TrimSpace(stderr.String())
+			if message == "" {
+				message = err.Error()
+			}
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("subtitle stream %d could not be extracted: %s", plan.StreamIndex, message)})
+			return
+		}
+		if err := os.Link(tempPath, plan.OutputPath); err != nil {
+			_ = os.Remove(tempPath)
+			if os.IsExist(err) {
+				result.Existing = append(result.Existing, plan.OutputPath)
+				continue
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("cannot publish extracted subtitle: %v", err)})
+			return
+		}
+		_ = os.Remove(tempPath)
+		result.Created = append(result.Created, plan.OutputPath)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+type subtitleExtractionPlan struct {
+	StreamIndex int
+	Codec       string
+	Format      string
+	OutputPath  string
+}
+
+func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subtitleExtractionPlan, []string) {
+	base := strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath))
+	plans := []subtitleExtractionPlan{}
+	unsupported := []string{}
+	for _, stream := range streams {
+		if stream.CodecType != "subtitle" {
+			continue
+		}
+		if !subtitleCanConvertText(stream.CodecName) {
+			unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
+			continue
+		}
+		format := "srt"
+		codec := "srt"
+		if strings.EqualFold(stream.CodecName, "ass") || strings.EqualFold(stream.CodecName, "ssa") {
+			format = "ass"
+			codec = "ass"
+		}
+		language := safeSubtitleFilenamePart(stream.Tags["language"])
+		if language == "" {
+			language = "und"
+		}
+		plans = append(plans, subtitleExtractionPlan{
+			StreamIndex: stream.Index,
+			Codec:       codec,
+			Format:      format,
+			OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
+		})
+	}
+	return plans, unsupported
+}
+
+func safeSubtitleFilenamePart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.Trim(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, value), "-")
 }
 
 func archivedOriginalForJob(job models.QueueJob, rawRoot string, archiveRoot string) string {

@@ -1154,15 +1154,18 @@ export function ProfileLabPage() {
                             />
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoWorkerBool(videoDraft, 'preferSrtSubtitles')}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preferSrtSubtitles', event.target.checked)}
-                                />
-                              }
-                              label="Prefer SRT subtitles"
-                            />
+                            <TextField
+                              select
+                              fullWidth
+                              label="Subtitle output format"
+                              value={videoSubtitleOutputFormat(videoDraft)}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'subtitleOutputFormat', event.target.value)}
+                              helperText="Bitmap tracks remain unchanged"
+                            >
+                              <MenuItem value="source">Preserve source format</MenuItem>
+                              <MenuItem value="srt">Convert text to SRT</MenuItem>
+                              <MenuItem value="ass">Convert text to ASS</MenuItem>
+                            </TextField>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <FormControlLabel
@@ -2363,6 +2366,7 @@ function videoPreviewOptions(draft: ProfileInput) {
     aacStereoBitrateKbps: numberWorkerValue(draft, 'aacStereoBitrateKbps', 192),
     aacStereoDefault: videoAACTrackDefault(draft),
     preserveOriginalAudio: videoWorkerBool(draft, 'preserveOriginalAudio', true),
+    subtitleOutputFormat: videoSubtitleOutputFormat(draft),
     preferSrtSubtitles: videoWorkerBool(draft, 'preferSrtSubtitles'),
     warnSubtitleFormats: videoWorkerBool(draft, 'warnSubtitleFormats', true),
   };
@@ -2386,6 +2390,14 @@ function videoWorkerBool(draft: ProfileInput, key: string, fallback = false) {
     return ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase());
   }
   return fallback;
+}
+
+function videoSubtitleOutputFormat(draft: ProfileInput) {
+  const configured = videoWorkerValue(draft, 'subtitleOutputFormat').toLowerCase();
+  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+    return configured;
+  }
+  return videoWorkerBool(draft, 'preferSrtSubtitles') ? 'srt' : 'source';
 }
 
 function videoAACTrackEnabled(draft: ProfileInput) {
