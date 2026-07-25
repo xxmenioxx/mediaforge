@@ -33,6 +33,11 @@ type SubtitleExtractionResult struct {
 	Unsupported []string `json:"unsupported"`
 }
 
+type AssetPathMigrationInput struct {
+	SourcePath           string `json:"sourcePath" binding:"required"`
+	DestinationLibraryID uint   `json:"destinationLibraryId" binding:"required"`
+}
+
 type previewGeneration struct {
 	done chan struct{}
 	err  error
@@ -302,6 +307,11 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := resetRecoveredAssetOverrides(h.db, record.Path, destination); err != nil {
+		appendSystemLog(h.db, "archive_asset_recovered_override_reset_failed", map[string]string{"archivePath": record.Path, "recoveredPath": destination}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was recovered, but its overrides could not be reset: " + err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status":        "recovered",
 		"sourcePath":    path,
@@ -437,6 +447,11 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	if err := h.db.Delete(&record).Error; err != nil {
 		appendSystemLog(h.db, "converted_asset_inventory_record_delete_failed", map[string]string{"convertedPath": path}, err)
 	}
+	if err := resetRecoveredAssetOverrides(h.db, path, archivePath, restorePath, job.MediaPath); err != nil {
+		appendSystemLog(h.db, "converted_asset_deleted_override_reset_failed", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "original was restored, but its overrides could not be reset: " + err.Error()})
+		return
+	}
 	if _, syncErr := h.syncAssetInventory(); syncErr != nil {
 		appendSystemLog(h.db, "converted_asset_deleted_inventory_sync_failed", map[string]string{"convertedPath": path, "restoredPath": restorePath}, syncErr)
 	}
@@ -456,8 +471,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset not found in inventory"})
 		return
 	}
-	if record.Status != "converted" {
-		c.JSON(http.StatusConflict, gin.H{"error": "subtitle extraction is available only for MVForge converted assets"})
+	if record.Status != "library" && record.Status != "unverified" {
+		c.JSON(http.StatusConflict, gin.H{"error": "subtitle extraction is available only for assets currently in Library"})
 		return
 	}
 	info, err := os.Stat(path)
@@ -561,6 +576,220 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func (h AssetHandler) MigratePath(c *gin.Context) {
+	var input AssetPathMigrationInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	sourcePath := filepath.Clean(strings.TrimSpace(input.SourcePath))
+	if sourcePath == "." || sourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sourcePath is required"})
+		return
+	}
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil || !sourceInfo.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source path must be a readable Library directory"})
+		return
+	}
+
+	var records []models.AssetRecord
+	if err := h.db.Where("missing = ?", false).Find(&records).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	migrating := make([]models.AssetRecord, 0)
+	for _, record := range records {
+		if pathIsInside(record.Path, sourcePath) && (record.Status == "library" || record.Status == "unverified" || record.Status == "converted") {
+			migrating = append(migrating, record)
+		}
+	}
+	if len(migrating) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "source path has no Library or Converted assets"})
+		return
+	}
+	sourceLibraryID := migrating[0].LibraryID
+	for _, record := range migrating {
+		if record.LibraryID != sourceLibraryID {
+			c.JSON(http.StatusConflict, gin.H{"error": "source path contains assets from more than one library"})
+			return
+		}
+	}
+	migratingPaths := make([]string, 0, len(migrating))
+	for _, record := range migrating {
+		migratingPaths = append(migratingPaths, record.Path)
+	}
+	var openJobs int64
+	if err := h.db.Model(&models.QueueJob{}).
+		Where("media_path IN ? AND status IN ?", migratingPaths, []string{JobStatusQueued, JobStatusRunning}).
+		Count(&openJobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if openJobs > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with open Queue jobs"})
+		return
+	}
+
+	var sourceLibrary models.Library
+	if err := h.db.First(&sourceLibrary, sourceLibraryID).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "source library could not be resolved"})
+		return
+	}
+	var destinationLibrary models.Library
+	if err := h.db.First(&destinationLibrary, input.DestinationLibraryID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "destination library not found"})
+		return
+	}
+	if sourceLibrary.ID == destinationLibrary.ID {
+		c.JSON(http.StatusConflict, gin.H{"error": "source and destination libraries are the same"})
+		return
+	}
+	relativeGroup, err := filepath.Rel(sourceLibrary.DestinationPath, sourcePath)
+	if err != nil || relativeGroup == "." || strings.HasPrefix(relativeGroup, ".."+string(filepath.Separator)) || relativeGroup == ".." {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source path is outside its registered library"})
+		return
+	}
+	destinationPath := filepath.Join(destinationLibrary.DestinationPath, relativeGroup)
+	if _, err := os.Stat(destinationPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "destination path already exists"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(err)})
+		return
+	}
+
+	if err := moveAssetDirectory(sourcePath, destinationPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "path migration failed: " + err.Error()})
+		return
+	}
+	rollback := func() {
+		if err := moveAssetDirectory(destinationPath, sourcePath); err != nil {
+			appendSystemLog(h.db, "asset_path_migration_rollback_failed", map[string]string{"sourcePath": sourcePath, "destinationPath": destinationPath}, err)
+		}
+	}
+
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		for _, record := range migrating {
+			relativeToGroup, relErr := filepath.Rel(sourcePath, record.Path)
+			if relErr != nil || strings.HasPrefix(relativeToGroup, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("invalid asset path %s", record.Path)
+			}
+			oldPath := record.Path
+			newPath := filepath.Join(destinationPath, relativeToGroup)
+			relativeToLibrary, relErr := filepath.Rel(destinationLibrary.DestinationPath, newPath)
+			if relErr != nil {
+				return relErr
+			}
+			if err := tx.Model(&models.AssetRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
+				"path":          filepath.Clean(newPath),
+				"root_path":     filepath.Clean(destinationLibrary.DestinationPath),
+				"relative_path": filepath.ToSlash(relativeToLibrary),
+				"library_id":    destinationLibrary.ID,
+				"library_name":  destinationLibrary.Name,
+				"synced_at":     time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.QueueJob{}).
+				Where("published_path = ?", oldPath).
+				Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID, "notes": gorm.Expr("COALESCE(notes, '') || ?", "\nConverted asset migrated to "+newPath)}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.QueueJob{}).
+				Where("replacement_target_path = ?", oldPath).
+				Update("replacement_target_path", newPath).Error; err != nil {
+				return err
+			}
+		}
+		return migrateAssetPathOverrides(tx, sourcePath, destinationPath)
+	})
+	if err != nil {
+		rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "path was moved but inventory update failed and rollback was attempted: " + err.Error()})
+		return
+	}
+
+	appendSystemLog(h.db, "asset_path_migrated", map[string]string{
+		"sourcePath": sourcePath, "destinationPath": destinationPath,
+		"sourceLibrary": sourceLibrary.Name, "destinationLibrary": destinationLibrary.Name,
+		"assets": strconv.Itoa(len(migrating)),
+	}, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "migrated", "sourcePath": sourcePath, "destinationPath": destinationPath,
+		"sourceLibraryId": sourceLibrary.ID, "destinationLibraryId": destinationLibrary.ID,
+		"assetsMoved": len(migrating),
+	})
+}
+
+func moveAssetDirectory(source, destination string) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	}
+	if err := filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported non-regular file: %s", path)
+		}
+		return copyPublishedFile(path, target, false)
+	}); err != nil {
+		_ = os.RemoveAll(destination)
+		return err
+	}
+	return os.RemoveAll(source)
+}
+
+func migrateAssetPathOverrides(db *gorm.DB, sourcePath, destinationPath string) error {
+	conversion := assetConversionOverrides(db)
+	for oldPath, value := range conversion {
+		if oldPath == sourcePath || pathIsInside(oldPath, sourcePath) {
+			relative, _ := filepath.Rel(sourcePath, oldPath)
+			delete(conversion, oldPath)
+			conversion[filepath.Join(destinationPath, relative)] = value
+		}
+	}
+	if err := saveAssetConversionOverrides(db, conversion); err != nil {
+		return err
+	}
+	reviews := assetReviewOverrides(db)
+	for oldPath, value := range reviews {
+		if oldPath == sourcePath || pathIsInside(oldPath, sourcePath) {
+			relative, _ := filepath.Rel(sourcePath, oldPath)
+			delete(reviews, oldPath)
+			reviews[filepath.Join(destinationPath, relative)] = value
+		}
+	}
+	if err := saveAssetReviewOverrides(db, reviews); err != nil {
+		return err
+	}
+	metadata := assetMetadataOverrides(db)
+	for oldPath, value := range metadata {
+		if oldPath == sourcePath || pathIsInside(oldPath, sourcePath) {
+			relative, _ := filepath.Rel(sourcePath, oldPath)
+			delete(metadata, oldPath)
+			metadata[filepath.Join(destinationPath, relative)] = value
+		}
+	}
+	return saveAssetMetadataOverrides(db, metadata)
 }
 
 func hasSubtitleProbeStream(streams []FFProbeStream) bool {
@@ -2062,6 +2291,50 @@ func saveAssetConversionOverrides(db *gorm.DB, overrides map[string]AssetConvers
 	}
 	setting.Value = value
 	return db.Save(&setting).Error
+}
+
+func resetRecoveredAssetOverrides(db *gorm.DB, paths ...string) error {
+	targets := map[string]struct{}{}
+	for _, path := range paths {
+		clean := filepath.Clean(strings.TrimSpace(path))
+		if clean != "." && clean != "" {
+			targets[clean] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		conversion := assetConversionOverrides(tx)
+		conversionChanged := false
+		for path := range targets {
+			if _, exists := conversion[path]; exists {
+				delete(conversion, path)
+				conversionChanged = true
+			}
+		}
+		if conversionChanged {
+			if err := saveAssetConversionOverrides(tx, conversion); err != nil {
+				return err
+			}
+		}
+
+		reviews := assetReviewOverrides(tx)
+		reviewsChanged := false
+		for path := range targets {
+			if _, exists := reviews[path]; exists {
+				delete(reviews, path)
+				reviewsChanged = true
+			}
+		}
+		if reviewsChanged {
+			if err := saveAssetReviewOverrides(tx, reviews); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func assetReviewOverrides(db *gorm.DB) map[string]AssetReviewState {

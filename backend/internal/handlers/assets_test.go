@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -136,7 +137,7 @@ func TestExtractSubtitlesCreatesSidecarsAndPreservesExistingFiles(t *testing.T) 
 	if err := db.Create(&models.Library{Name: "Anime", DestinationPath: root}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: "Baccano.mkv", FileName: "Baccano.mkv", Status: "converted"}).Error; err != nil {
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: "Baccano.mkv", FileName: "Baccano.mkv", Status: "library"}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -197,6 +198,96 @@ printf '%s\n' 'generated subtitle' > "$output"
 	}
 }
 
+func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-path-migration?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	documentariesRoot := filepath.Join(root, "documentaries")
+	seriesRoot := filepath.Join(root, "series")
+	sourcePath := filepath.Join(documentariesRoot, "TATU")
+	destinationPath := filepath.Join(seriesRoot, "TATU")
+	videoPath := filepath.Join(sourcePath, "_Ttitle.mkv")
+	sidecarPath := filepath.Join(sourcePath, "_Ttitle.spa.srt")
+	writeTestFile(t, videoPath, "converted")
+	writeTestFile(t, sidecarPath, "subtitle")
+	documentaries := models.Library{Name: "Documentaries", DestinationPath: documentariesRoot}
+	series := models.Library{Name: "Series", DestinationPath: seriesRoot}
+	if err := db.Create(&documentaries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&series).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{
+		Path: videoPath, RootPath: documentariesRoot, RelativePath: "TATU/_Ttitle.mkv",
+		FileName: "_Ttitle.mkv", Status: "converted", LibraryID: documentaries.ID, LibraryName: documentaries.Name,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	job := models.QueueJob{
+		MediaPath: filepath.Join(root, "raw", "documentaries", "TATU", "_Ttitle.mkv"),
+		LibraryID: documentaries.ID, ProfileID: 1, Status: JobStatusCompleted,
+		PublishedPath: videoPath, PublishedAt: &now, PlannedPublishedPath: videoPath,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		videoPath: {KeepSubtitleStreams: []int{2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/migrate-path", NewAssetHandler(db).MigratePath)
+	body := fmt.Sprintf(`{"sourcePath":%q,"destinationLibraryId":%d}`, sourcePath, series.ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/migrate-path", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("source path still exists: %v", err)
+	}
+	for _, expected := range []string{
+		filepath.Join(destinationPath, "_Ttitle.mkv"),
+		filepath.Join(destinationPath, "_Ttitle.spa.srt"),
+	} {
+		if _, err := os.Stat(expected); err != nil {
+			t.Fatalf("migrated file missing %q: %v", expected, err)
+		}
+	}
+	if err := db.First(&record, record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Path != filepath.Join(destinationPath, "_Ttitle.mkv") || record.LibraryID != series.ID || record.LibraryName != series.Name {
+		t.Fatalf("inventory was not reconciled: %#v", record)
+	}
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.PublishedPath != record.Path || job.LibraryID != series.ID || job.PlannedPublishedPath != videoPath {
+		t.Fatalf("publication was not reconciled while preserving plan: %#v", job)
+	}
+	overrides := assetConversionOverrides(db)
+	if _, exists := overrides[videoPath]; exists {
+		t.Fatal("old path override was preserved")
+	}
+	if _, exists := overrides[record.Path]; !exists {
+		t.Fatal("override was not migrated to the new path")
+	}
+}
+
 func TestPreviewCacheKeyChangesWithSourceAndOptions(t *testing.T) {
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "episode.mkv")
@@ -234,6 +325,8 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
+	unrelatedPath := filepath.Join(rawRoot, "movies", "other.mkv")
+	seedRecoveredAssetOverrides(t, db, convertedPath, archivePath, restorePath, unrelatedPath)
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -268,6 +361,7 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	if preserved.PublicationRetiredAt == nil {
 		t.Fatal("publication was not retired from automatic reconciliation")
 	}
+	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, convertedPath, archivePath, restorePath)
 }
 
 func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
@@ -280,6 +374,8 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
+	unrelatedPath := filepath.Join(rawRoot, "anime", "Baccano", "other.mkv")
+	seedRecoveredAssetOverrides(t, db, archivePath, rawPath, unrelatedPath)
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -296,6 +392,43 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	}
 	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
 		t.Fatalf("archive source still exists: %v", err)
+	}
+	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, archivePath, rawPath)
+}
+
+func seedRecoveredAssetOverrides(t *testing.T, db *gorm.DB, paths ...string) {
+	t.Helper()
+	conversion := map[string]AssetConversionOverrideState{}
+	reviews := map[string]AssetReviewState{}
+	for _, path := range paths {
+		conversion[path] = AssetConversionOverrideState{TrackProfileKey: "test-profile", KeepSubtitleStreams: []int{2}}
+		reviews[path] = AssetReviewState{RequiresReview: true, Reason: "test review", Source: "test", Tags: []string{"test"}, UpdatedAt: time.Now()}
+	}
+	if err := saveAssetConversionOverrides(db, conversion); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetReviewOverrides(db, reviews); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRecoveredAssetOverridesReset(t *testing.T, db *gorm.DB, unrelatedPath string, resetPaths ...string) {
+	t.Helper()
+	conversion := assetConversionOverrides(db)
+	reviews := assetReviewOverrides(db)
+	for _, path := range resetPaths {
+		if _, exists := conversion[filepath.Clean(path)]; exists {
+			t.Fatalf("conversion override was preserved for recovered asset %q", path)
+		}
+		if _, exists := reviews[filepath.Clean(path)]; exists {
+			t.Fatalf("review override was preserved for recovered asset %q", path)
+		}
+	}
+	if _, exists := conversion[filepath.Clean(unrelatedPath)]; !exists {
+		t.Fatalf("unrelated conversion override was removed: %q", unrelatedPath)
+	}
+	if _, exists := reviews[filepath.Clean(unrelatedPath)]; !exists {
+		t.Fatalf("unrelated review override was removed: %q", unrelatedPath)
 	}
 }
 

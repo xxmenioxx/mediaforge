@@ -290,6 +290,9 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
   const disks = snapshot ? Object.entries(snapshot.disks ?? {}) : [];
   const encoders = snapshot ? Object.entries(snapshot.encoders ?? {}) : [];
   const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : 0;
+  const cpuLoadPercent = snapshot && snapshot.cpuCores > 0
+    ? Math.min(100, Math.round((snapshot.cpuLoad1 / snapshot.cpuCores) * 100))
+    : 0;
   return <Card><CardContent><Stack spacing={2}>
     <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
       <Stack><Typography variant="h2">Runtime & Host</Typography><Typography color="text.secondary" variant="body2">Effective scheduler policy and the host capabilities used for dispatch decisions.</Typography></Stack>
@@ -298,7 +301,26 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
     {error ? <Alert severity="warning">Runtime diagnostics are temporarily unavailable.</Alert> : loading ? <Typography color="text.secondary">Loading runtime diagnostics…</Typography> : snapshot ? <>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip color="primary" label={`Effective: ${snapshot.selectedProfile}`} /><Chip label={`Detected: ${snapshot.recommendedProfile}`} /><Chip label={`Preferred: ${snapshot.preferredProfile || 'auto'}`} />{snapshot.appliedOverrides.length ? <Chip color="warning" label={`${snapshot.appliedOverrides.length} overrides`} /> : null}<Chip label={`${snapshot.os}/${snapshot.architecture}`} /><Chip label={`${snapshot.cpuCores} CPU cores · load ${snapshot.cpuLoad1.toFixed(2)}`} /><Chip color={snapshot.onBattery ? 'warning' : 'default'} label={snapshot.batteryPresent ? `${snapshot.onBattery ? 'Battery' : 'AC'} ${snapshot.batteryPercent}%` : `Power ${snapshot.powerSource}`} /></Stack>
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Stack direction="row" justifyContent="space-between"><Typography fontWeight={700}>Available RAM</Typography><Typography color="text.secondary">{formatBytes(snapshot.availableMemoryBytes)} / {formatBytes(snapshot.totalMemoryBytes)}</Typography></Stack><LinearProgress variant="determinate" value={ramPercent} color={ramPercent < 25 ? 'warning' : 'success'} /><Typography color="text.secondary" variant="caption">{ramPercent}% available</Typography></Stack></Grid>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Stack spacing={2}>
+            <Stack spacing={0.75}>
+              <Stack direction="row" justifyContent="space-between">
+                <Typography fontWeight={700}>Available RAM</Typography>
+                <Typography color="text.secondary">{formatBytes(snapshot.availableMemoryBytes)} / {formatBytes(snapshot.totalMemoryBytes)}</Typography>
+              </Stack>
+              <LinearProgress variant="determinate" value={ramPercent} color={ramPercent < 25 ? 'warning' : 'success'} />
+              <Typography color="text.secondary" variant="caption">{ramPercent}% available</Typography>
+            </Stack>
+            <Stack spacing={0.75}>
+              <Stack direction="row" justifyContent="space-between">
+                <Typography fontWeight={700}>CPU load</Typography>
+                <Typography color="text.secondary">{snapshot.cpuLoad1.toFixed(2)} / {snapshot.cpuCores} cores</Typography>
+              </Stack>
+              <LinearProgress variant="determinate" value={cpuLoadPercent} color={cpuLoadPercent >= 85 ? 'error' : cpuLoadPercent >= 65 ? 'warning' : 'success'} />
+              <Typography color="text.secondary" variant="caption">{cpuLoadPercent}% normalized 1-minute load</Typography>
+            </Stack>
+          </Stack>
+        </Grid>
         <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>Storage</Typography>{disks.map(([role, raw]) => { const disk = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}; return <Stack direction="row" justifyContent="space-between" key={role}><Typography color="text.secondary" variant="body2">{role} · {String(disk.type ?? 'unknown')}</Typography><Typography variant="body2">{formatBytes(Number(disk.availableBytes ?? 0))} free</Typography></Stack>; })}{!disks.length ? <Typography color="text.secondary" variant="body2">No controlled disks detected.</Typography> : null}</Stack></Grid>
         <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>FFmpeg encoders</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{encoders.map(([name, encoder]) => <Chip key={name} size="small" color={encoder.usable ? 'success' : 'default'} variant={encoder.usable ? 'filled' : 'outlined'} label={`${name} · ${encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found'}`} title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')} />)}{!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}</Stack><Typography color="text.secondary" variant="caption">Hover an encoder to see its capability diagnostic.</Typography></Stack></Grid>
       </Grid>

@@ -42,6 +42,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import SubtitlesIcon from '@mui/icons-material/Subtitles';
+import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -457,6 +458,7 @@ function AssetGroupRow({
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
+  const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
   const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
@@ -478,6 +480,15 @@ function AssetGroupRow({
     mutationFn: api.updateAssetMetadata,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const migratePath = useMutation({
+    mutationFn: api.migrateAssetPath,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
     },
   });
   const advisor = useQuery({
@@ -604,6 +615,34 @@ function AssetGroupRow({
     if (confirmed) bulkAssetAction.mutate(selectedAssetPaths);
   }
 
+  const migrationControls = (isLibraryGroup || isConvertedGroup) ? (
+    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+      <Box sx={{ width: { xs: '100%', sm: 280 } }}>
+        <LibraryAutocomplete
+          libraries={libraries.filter((library) => library.id !== group.libraryId)}
+          value={migrationLibraryId}
+          onChange={setMigrationLibraryId}
+          label="Move path to library"
+          size="small"
+        />
+      </Box>
+      <Button
+        variant="outlined"
+        size="small"
+        startIcon={<DriveFileMoveIcon />}
+        disabled={!migrationLibraryId || migratePath.isPending || groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+        onClick={() => {
+          const destination = libraries.find((library) => library.id === migrationLibraryId);
+          if (!destination || !window.confirm(`Move ${group.path} and all files inside it to ${destination.name}? MVForge will update inventory and publication paths.`)) return;
+          migratePath.mutate({ sourcePath: group.path, destinationLibraryId: migrationLibraryId });
+        }}
+        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+      >
+        {migratePath.isPending ? 'Moving...' : 'Move path'}
+      </Button>
+    </Stack>
+  ) : null;
+
   return (
     <>
       <TableRow
@@ -675,7 +714,7 @@ function AssetGroupRow({
               <Stack spacing={2}>
                 {isArchiveGroup ? null : isConvertedGroup ? (
                   <Alert severity="info">
-                    Converted assets are read-only here. Use Preview or Snapshot to inspect results; re-processing should start from Original Archive.
+                    Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
                   </Alert>
                 ) : (
                   <Grid container spacing={2} alignItems="stretch">
@@ -747,23 +786,34 @@ function AssetGroupRow({
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
+                {isLibraryGroup ? (
+                  <Stack direction="row" justifyContent="flex-end">
+                    {migrationControls}
+                  </Stack>
+                ) : null}
                 {isReadOnlyGroup ? (
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                     <Typography color="text.secondary" variant="body2">
                       {selectedAssetPaths.length} of {bulkSelectableAssets.length} selected in this path
                     </Typography>
-                    <Button
-                      color={isArchiveGroup ? 'primary' : 'error'}
-                      variant="outlined"
-                      size="small"
-                      startIcon={isArchiveGroup ? <TaskAltIcon /> : <DeleteForeverIcon />}
-                      disabled={!selectedAssetPaths.length || bulkAssetAction.isPending}
-                      onClick={runBulkAssetAction}
-                    >
-                      {bulkAssetAction.isPending ? 'Processing...' : isArchiveGroup ? 'Recover selected' : 'Delete selected'}
-                    </Button>
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
+                      {isConvertedGroup ? migrationControls : null}
+                      <Button
+                        color={isArchiveGroup ? 'primary' : 'error'}
+                        variant="outlined"
+                        size="small"
+                        startIcon={isArchiveGroup ? <TaskAltIcon /> : <DeleteForeverIcon />}
+                        disabled={!selectedAssetPaths.length || bulkAssetAction.isPending}
+                        onClick={runBulkAssetAction}
+                        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                      >
+                        {bulkAssetAction.isPending ? 'Processing...' : isArchiveGroup ? 'Recover selected' : 'Delete selected'}
+                      </Button>
+                    </Stack>
                   </Stack>
                 ) : null}
+                {migratePath.isSuccess ? <Alert severity="success">Path moved to {migratePath.data.destinationPath}. {migratePath.data.assetsMoved} asset(s) reconciled.</Alert> : null}
+                {migratePath.isError ? <Alert severity="warning">Path migration failed: {migratePath.error instanceof Error ? migratePath.error.message : 'unknown error'}</Alert> : null}
                 {bulkAssetAction.data ? (
                   <Alert severity={bulkAssetAction.data.failures.length ? 'warning' : 'success'}>
                     {bulkAssetAction.data.completed} asset(s) completed.
@@ -919,6 +969,12 @@ function AssetRow({
         if (!result.applies) {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
+      } else if (hasTrackSelectionOverride(conversionDraft)) {
+        await api.updateAssetConversion({
+          path: asset.path,
+          ...cleanConversionOverride(conversionDraft),
+          processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode',
+        });
       }
       return api.createQueueJob(input);
     },
@@ -973,7 +1029,7 @@ function AssetRow({
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
-  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile);
+  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile) || hasTrackSelectionOverride(conversionDraft);
 
   useEffect(() => {
     if (!firstCategory(assetMetadata.categories)) {
@@ -1269,9 +1325,9 @@ function AssetRow({
                 </IconButton>
               </Tooltip>
             ) : null}
-            {isConverted ? (
+            {isLibraryReplacement ? (
               <>
-                <Tooltip title={extractSubtitles.isPending ? 'Generating subtitle files' : 'Generate external SRT/ASS files from embedded subtitle tracks'}>
+                <Tooltip title={extractSubtitles.isPending ? 'Generating subtitle files' : 'Generate external SRT/ASS files from this Library asset'}>
                   <span onClick={(event) => event.stopPropagation()}>
                     <IconButton
                       color="primary"
@@ -1284,15 +1340,17 @@ function AssetRow({
                     </IconButton>
                   </span>
                 </Tooltip>
-                <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
-                  <span onClick={(event) => event.stopPropagation()}>
-                    <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
-                      <DeleteForeverIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
               </>
-            ) : isArchive ? null : (
+            ) : null}
+            {isConverted ? (
+              <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                    <DeleteForeverIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : isArchive || isLibraryReplacement ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
                   color="primary"
@@ -2581,6 +2639,12 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
     clean.enhancedAudioSourceStreamIndex = value.enhancedAudioSourceStreamIndex;
   }
   return clean;
+}
+
+function hasTrackSelectionOverride(value: AssetConversionOverrideState) {
+  return Array.isArray(value.keepVideoStreams) ||
+    Array.isArray(value.keepAudioStreams) ||
+    Array.isArray(value.keepSubtitleStreams);
 }
 
 function profileAACTrackEnabled(profile?: Profile) {

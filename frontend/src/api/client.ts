@@ -96,6 +96,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  migrateAssetPath: (input: { sourcePath: string; destinationLibraryId: number }) =>
+    request<{ status: string; sourcePath: string; destinationPath: string; sourceLibraryId: number; destinationLibraryId: number; assetsMoved: number }>('/api/assets/migrate-path', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
     request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
       method: 'POST',
