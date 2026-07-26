@@ -45,3 +45,19 @@ func TestClassifyCropCandidatesIgnoresSmallOverscan(t *testing.T) {
 		t.Fatalf("expected none for small borders, got %q", result.Status)
 	}
 }
+
+func TestClassifyCropCandidatesAcceptsSmallDVDMatteVariation(t *testing.T) {
+	analysis := CropAnalysis{Status: "unknown", OriginalWidth: 720, OriginalHeight: 480, Windows: 3}
+	result := classifyCropCandidates(analysis, []cropCandidate{
+		{width: 720, height: 286, x: 0, y: 98},
+		{width: 720, height: 286, x: 0, y: 98},
+		{width: 720, height: 284, x: 0, y: 100},
+	})
+
+	if result.Status != "detected" {
+		t.Fatalf("expected stable DVD matte to be detected, got %q", result.Status)
+	}
+	if result.RecommendedCrop != "720:286:0:98" {
+		t.Fatalf("unexpected DVD crop: %q", result.RecommendedCrop)
+	}
+}

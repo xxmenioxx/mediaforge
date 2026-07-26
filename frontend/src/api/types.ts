@@ -633,6 +633,7 @@ export type ScanResult = {
     windowSeconds?: number;
   };
   cropAnalysis: {
+    version?: number;
     status?: 'none' | 'detected' | 'variable' | 'unknown';
     source?: string;
     confidence?: number;

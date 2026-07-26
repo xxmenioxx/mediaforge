@@ -280,9 +280,9 @@ func enrichCachedScan(result *models.ScanResult) {
 			result.RawProbe["interlaceAnalysis"] = analysis
 		}
 	}
-	if len(result.CropAnalysis) == 0 {
+	if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 2 {
 		result.CropAnalysis = analysisMapFromRaw(result.RawProbe, "cropAnalysis")
-		if len(result.CropAnalysis) == 0 {
+		if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 2 {
 			analysis := detectCrop(result.Path, result.Width, result.Height, result.Duration)
 			encoded, _ := json.Marshal(analysis)
 			_ = json.Unmarshal(encoded, &result.CropAnalysis)
@@ -460,6 +460,20 @@ func analysisMapFromRaw(raw models.JSONMap, key string) models.JSONMap {
 		return models.JSONMap{}
 	}
 	return result
+}
+
+func jsonMapInt(value models.JSONMap, key string) int {
+	switch candidate := value[key].(type) {
+	case int:
+		return candidate
+	case float64:
+		return int(candidate)
+	case json.Number:
+		parsed, _ := candidate.Int64()
+		return int(parsed)
+	default:
+		return 0
+	}
 }
 
 func tagValue(tags map[string]string, key string, fallback string) string {
