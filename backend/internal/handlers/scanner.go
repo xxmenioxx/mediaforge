@@ -230,6 +230,7 @@ func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap
 	}
 	video := firstStream(probe.Streams, "video")
 	raw["interlaceAnalysis"] = detectInterlace(path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	raw["cropAnalysis"] = detectCrop(path, video.Width, video.Height, parseFloat(probe.Format.Duration))
 
 	return probe, raw, nil
 }
@@ -261,6 +262,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		SubtitleStreams:   streamSummaries(probe.Streams, "subtitle"),
 		RawProbe:          raw,
 		InterlaceAnalysis: interlaceAnalysisFromRaw(raw),
+		CropAnalysis:      analysisMapFromRaw(raw, "cropAnalysis"),
 	}
 }
 
@@ -276,6 +278,15 @@ func enrichCachedScan(result *models.ScanResult) {
 			encoded, _ := json.Marshal(analysis)
 			_ = json.Unmarshal(encoded, &result.InterlaceAnalysis)
 			result.RawProbe["interlaceAnalysis"] = analysis
+		}
+	}
+	if len(result.CropAnalysis) == 0 {
+		result.CropAnalysis = analysisMapFromRaw(result.RawProbe, "cropAnalysis")
+		if len(result.CropAnalysis) == 0 {
+			analysis := detectCrop(result.Path, result.Width, result.Height, result.Duration)
+			encoded, _ := json.Marshal(analysis)
+			_ = json.Unmarshal(encoded, &result.CropAnalysis)
+			result.RawProbe["cropAnalysis"] = analysis
 		}
 	}
 	rawStreams, ok := result.RawProbe["streams"].([]any)
@@ -430,6 +441,22 @@ func interlaceAnalysisFromRaw(raw models.JSONMap) models.JSONMap {
 	}
 	result := models.JSONMap{}
 	if json.Unmarshal(encoded, &result) != nil {
+		return models.JSONMap{}
+	}
+	return result
+}
+
+func analysisMapFromRaw(raw models.JSONMap, key string) models.JSONMap {
+	value, ok := raw[key]
+	if !ok {
+		return models.JSONMap{}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return models.JSONMap{}
+	}
+	result := models.JSONMap{}
+	if err := json.Unmarshal(encoded, &result); err != nil {
 		return models.JSONMap{}
 	}
 	return result

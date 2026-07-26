@@ -149,7 +149,12 @@ export function AssetsPage() {
                 ) : null}
               </Stack>
             </Stack>
-            {syncAssets.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Inventory synced.</Alert> : null}
+            {syncAssets.isSuccess ? (
+              <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
+                Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.
+                {syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
+              </Alert>
+            ) : null}
             {tab === 'archive' ? (
               <Alert severity="info" sx={{ mt: 1 }}>
                 Archived originals are protected here. Recovering an original will not delete converted files.
@@ -935,6 +940,7 @@ function AssetRow({
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
+  const reconciliationJobId = reconciliationJobIdFromReview(assetReview);
   const assetMetadata = asset.metadata ?? { categories: [], tags: [], updatedAt: '' };
   const [reviewReason, setReviewReason] = useState(assetReview.reason || '');
   const [reviewTags, setReviewTags] = useState<string[]>(safeArray(assetReview.tags));
@@ -989,6 +995,15 @@ function AssetRow({
     mutationFn: api.updateAssetReview,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const reconcilePublication = useMutation({
+    mutationFn: api.confirmPublicationReconciliation,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
     },
   });
   const updateMetadata = useMutation({
@@ -1312,6 +1327,20 @@ function AssetRow({
                   </IconButton>
                 </span>
               </Tooltip>
+            ) : reconciliationJobId > 0 ? (
+              <Tooltip title="Confirm that this asset is the relocated output for its MVForge job">
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton
+                    color="warning"
+                    onClick={() => reconcilePublication.mutate({ jobId: reconciliationJobId, path: asset.path })}
+                    disabled={reconcilePublication.isPending}
+                    aria-label={`Confirm relocated publication ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <TaskAltIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
             ) : !isConverted || isLibraryReplacement ? (
               <Tooltip title={assetReview.requiresReview ? 'Disable review block' : 'Enable review block'}>
                 <IconButton
@@ -1417,6 +1446,16 @@ function AssetRow({
       {extractSubtitles.isError ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Subtitle generation failed: {extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'unknown error'}</Alert></TableCell>
+        </TableRow>
+      ) : null}
+      {reconcilePublication.isSuccess ? (
+        <TableRow>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success">Relocated publication reconciled with job {reconcilePublication.data.jobId}.</Alert></TableCell>
+        </TableRow>
+      ) : null}
+      {reconcilePublication.isError ? (
+        <TableRow>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning">Could not reconcile publication: {reconcilePublication.error instanceof Error ? reconcilePublication.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {isBlockedByReview || reviewReason || reviewTags.length > 0 ? (
@@ -2645,6 +2684,15 @@ function hasTrackSelectionOverride(value: AssetConversionOverrideState) {
   return Array.isArray(value.keepVideoStreams) ||
     Array.isArray(value.keepAudioStreams) ||
     Array.isArray(value.keepSubtitleStreams);
+}
+
+function reconciliationJobIdFromReview(review: Asset['review']) {
+  if (review.source !== 'sync-reconciliation') return 0;
+  for (const tag of safeArray(review.tags)) {
+    const match = tag.match(/^reconciliation-job-(\d+)$/);
+    if (match) return Number(match[1]);
+  }
+  return 0;
 }
 
 function profileAACTrackEnabled(profile?: Profile) {

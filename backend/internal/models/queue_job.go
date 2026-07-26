@@ -32,6 +32,8 @@ type QueueJob struct {
 	ValidationScore       int        `json:"validationScore"`
 	ValidationReport      JSONMap    `json:"validationReport" gorm:"type:json"`
 	PublishedPath         string     `json:"publishedPath"`
+	PublishedFingerprint  string     `json:"publishedFingerprint" gorm:"index"`
+	PublishedSizeBytes    int64      `json:"publishedSizeBytes"`
 	PublishedAt           *time.Time `json:"publishedAt"`
 	PublicationRetiredAt  *time.Time `json:"publicationRetiredAt" gorm:"index"`
 	ReplacementTargetPath string     `json:"replacementTargetPath"`

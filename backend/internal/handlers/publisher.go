@@ -188,6 +188,14 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	now := time.Now()
 	job.PublishedPath = destinationPath
 	job.PublishedAt = &now
+	if info, statErr := os.Stat(destinationPath); statErr == nil {
+		if fingerprint, fingerprintErr := mediaFileFingerprint(destinationPath); fingerprintErr == nil {
+			job.PublishedFingerprint = fingerprint
+			job.PublishedSizeBytes = info.Size()
+		} else {
+			job.Notes = appendNote(job.Notes, "Published fingerprint warning: "+fingerprintErr.Error())
+		}
+	}
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
 		if err := transitionJobStage(h.db, &job, JobStageCleaningWorkspace); err != nil {
 			return PublishResult{}, err
@@ -265,6 +273,14 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 	job.PublishedPath = target
 	now := time.Now()
 	job.PublishedAt = &now
+	if info, statErr := os.Stat(target); statErr == nil {
+		if fingerprint, fingerprintErr := mediaFileFingerprint(target); fingerprintErr == nil {
+			job.PublishedFingerprint = fingerprint
+			job.PublishedSizeBytes = info.Size()
+		} else {
+			job.Notes = appendNote(job.Notes, "Published fingerprint warning: "+fingerprintErr.Error())
+		}
+	}
 	if err := h.db.Save(&job).Error; err != nil {
 		return PublishResult{}, err
 	}

@@ -10,21 +10,26 @@ import (
 
 func StartAssetInventorySyncer(db *gorm.DB) {
 	go func() {
+		runAssetInventorySyncIfDue(db)
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if !assetInventoryAutoSyncEnabled(db) {
-				continue
-			}
-			lastSync, interval := assetInventorySyncSchedule(db)
-			if !lastSync.IsZero() && time.Since(lastSync) < interval {
-				continue
-			}
-			if _, err := (AssetHandler{db: db}).syncAssetInventory(); err != nil {
-				log.Printf("asset inventory sync error: %v", err)
-			}
+			runAssetInventorySyncIfDue(db)
 		}
 	}()
+}
+
+func runAssetInventorySyncIfDue(db *gorm.DB) {
+	if !assetInventoryAutoSyncEnabled(db) {
+		return
+	}
+	lastSync, interval := assetInventorySyncSchedule(db)
+	if !lastSync.IsZero() && time.Since(lastSync) < interval {
+		return
+	}
+	if _, err := (AssetHandler{db: db}).syncAssetInventory(); err != nil {
+		log.Printf("asset inventory sync error: %v", err)
+	}
 }
 
 func assetInventoryAutoSyncEnabled(db *gorm.DB) bool {

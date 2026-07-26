@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -36,6 +37,11 @@ type SubtitleExtractionResult struct {
 type AssetPathMigrationInput struct {
 	SourcePath           string `json:"sourcePath" binding:"required"`
 	DestinationLibraryID uint   `json:"destinationLibraryId" binding:"required"`
+}
+
+type PublicationReconciliationInput struct {
+	JobID uint   `json:"jobId" binding:"required"`
+	Path  string `json:"path" binding:"required"`
 }
 
 type previewGeneration struct {
@@ -93,6 +99,8 @@ type AssetSyncResult struct {
 	UnverifiedFiles  int       `json:"unverifiedFiles"`
 	ArchiveFiles     int       `json:"archiveFiles"`
 	ExpiredDeleted   int       `json:"expiredDeleted"`
+	ReconciledFiles  int       `json:"reconciledFiles"`
+	ReviewMatches    int       `json:"reviewMatches"`
 }
 
 type AssetReviewState struct {
@@ -722,6 +730,61 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 		"sourceLibraryId": sourceLibrary.ID, "destinationLibraryId": destinationLibrary.ID,
 		"assetsMoved": len(migrating),
 	})
+}
+
+func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
+	var input PublicationReconciliationInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	candidatePath := filepath.Clean(strings.TrimSpace(input.Path))
+	var record models.AssetRecord
+	if err := h.db.Where("path = ? AND missing = ?", candidatePath, false).First(&record).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "candidate Library asset not found"})
+		return
+	}
+	var job models.QueueJob
+	if err := h.db.First(&job, input.JobID).Error; err != nil || job.PublicationRetiredAt != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "active publication job not found"})
+		return
+	}
+	if _, err := os.Stat(job.PublishedPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "the job's current published path still exists"})
+		return
+	}
+	review := reviewForPath(candidatePath, assetReviewOverrides(h.db))
+	expectedTag := fmt.Sprintf("reconciliation-job-%d", job.ID)
+	if review.Source != "sync-reconciliation" || !containsString(review.Tags, expectedTag) {
+		c.JSON(http.StatusConflict, gin.H{"error": "candidate is not an approved Sync reconciliation match"})
+		return
+	}
+	if job.PublishedFingerprint != "" {
+		fingerprint, err := mediaFileFingerprint(candidatePath)
+		if err != nil || fingerprint != job.PublishedFingerprint {
+			c.JSON(http.StatusConflict, gin.H{"error": "candidate fingerprint does not match the publication"})
+			return
+		}
+	}
+	oldPath := filepath.Clean(job.PublishedPath)
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		job.PublishedPath = candidatePath
+		job.LibraryID = record.LibraryID
+		job.Notes = appendNote(job.Notes, "User confirmed externally relocated converted asset: "+oldPath+" -> "+candidatePath)
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		if err := migrateSingleAssetPathOverrides(tx, oldPath, candidatePath); err != nil {
+			return err
+		}
+		reviews := assetReviewOverrides(tx)
+		delete(reviews, candidatePath)
+		return saveAssetReviewOverrides(tx, reviews)
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "reconciled", "jobId": job.ID, "oldPath": oldPath, "publishedPath": candidatePath})
 }
 
 func moveAssetDirectory(source, destination string) error {
@@ -1874,7 +1937,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 
 	seenDestinations := map[string]struct{}{}
-	mvForgeOutputs := mvForgeOutputPaths(h.db)
+	libraryRecords := []models.AssetRecord{}
 	for _, library := range libraries {
 		destinationPath := strings.TrimSpace(library.DestinationPath)
 		if destinationPath == "" {
@@ -1886,15 +1949,23 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		seenDestinations[destinationPath] = struct{}{}
 		for _, record := range collectAssetRecords(library, destinationPath, "converted", now, keepDays) {
 			foundPaths[record.Path] = struct{}{}
-			if err := upsertAssetRecord(h.db, record); err != nil {
-				return result, err
-			}
-			result.LibraryFiles++
-			if mvForgeOutputs[filepath.Clean(record.Path)] {
-				result.ConvertedFiles++
-			} else {
-				result.UnverifiedFiles++
-			}
+			libraryRecords = append(libraryRecords, record)
+		}
+	}
+	result.ReconciledFiles, result.ReviewMatches, err = reconcileMovedPublishedAssets(h.db, libraryRecords)
+	if err != nil {
+		return result, err
+	}
+	mvForgeOutputs := mvForgeOutputPaths(h.db)
+	for _, record := range libraryRecords {
+		if err := upsertAssetRecord(h.db, record); err != nil {
+			return result, err
+		}
+		result.LibraryFiles++
+		if mvForgeOutputs[filepath.Clean(record.Path)] {
+			result.ConvertedFiles++
+		} else {
+			result.UnverifiedFiles++
 		}
 	}
 
@@ -1929,6 +2000,198 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord) (int, int, error) {
+	mode := assetReconciliationMode(db)
+	if mode == "off" {
+		return 0, 0, nil
+	}
+	var jobs []models.QueueJob
+	if err := db.Where("published_path <> ? AND publication_retired_at IS NULL", "").Order("id desc").Find(&jobs).Error; err != nil {
+		return 0, 0, err
+	}
+	claimed := map[string]bool{}
+	for _, job := range jobs {
+		if job.PublishedSizeBytes == 0 {
+			var previous models.AssetRecord
+			if err := db.Where("path = ?", job.PublishedPath).First(&previous).Error; err == nil && previous.SizeBytes > 0 {
+				job.PublishedSizeBytes = previous.SizeBytes
+				_ = db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Update("published_size_bytes", previous.SizeBytes).Error
+			}
+		}
+		if info, err := os.Stat(job.PublishedPath); err == nil && !info.IsDir() {
+			claimed[filepath.Clean(job.PublishedPath)] = true
+			if job.PublishedFingerprint == "" || job.PublishedSizeBytes != info.Size() {
+				if fingerprint, fingerprintErr := mediaFileFingerprint(job.PublishedPath); fingerprintErr == nil {
+					job.PublishedFingerprint = fingerprint
+					job.PublishedSizeBytes = info.Size()
+					_ = db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{
+						"published_fingerprint": fingerprint,
+						"published_size_bytes":  info.Size(),
+					}).Error
+				}
+			}
+		}
+	}
+
+	fingerprintCache := map[string]string{}
+	reconciled, reviewMatches := 0, 0
+	reviews := assetReviewOverrides(db)
+	reviewsChanged := false
+	for _, job := range jobs {
+		if claimed[filepath.Clean(job.PublishedPath)] {
+			continue
+		}
+		matches := []models.AssetRecord{}
+		for _, candidate := range candidates {
+			clean := filepath.Clean(candidate.Path)
+			if claimed[clean] {
+				continue
+			}
+			if job.PublishedFingerprint != "" {
+				if job.PublishedSizeBytes > 0 && candidate.SizeBytes != job.PublishedSizeBytes {
+					continue
+				}
+				fingerprint, ok := fingerprintCache[clean]
+				if !ok {
+					fingerprint, _ = mediaFileFingerprint(candidate.Path)
+					fingerprintCache[clean] = fingerprint
+				}
+				if fingerprint == job.PublishedFingerprint {
+					matches = append(matches, candidate)
+				}
+				continue
+			}
+			legacyIdentity := legacyMediaPathIdentity(job.PublishedPath)
+			if legacyIdentity != "" && job.PublishedSizeBytes > 0 && candidate.SizeBytes == job.PublishedSizeBytes &&
+				legacyMediaPathIdentity(candidate.Path) == legacyIdentity {
+				matches = append(matches, candidate)
+			}
+		}
+		if len(matches) == 1 && job.PublishedFingerprint != "" && mode == "exact" {
+			match := matches[0]
+			oldPath := filepath.Clean(job.PublishedPath)
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				job.PublishedPath = match.Path
+				job.LibraryID = match.LibraryID
+				job.Notes = appendNote(job.Notes, "Sync reconciled externally relocated converted asset: "+oldPath+" -> "+match.Path)
+				if err := tx.Save(&job).Error; err != nil {
+					return err
+				}
+				return migrateSingleAssetPathOverrides(tx, oldPath, match.Path)
+			}); err != nil {
+				return reconciled, reviewMatches, err
+			}
+			claimed[filepath.Clean(match.Path)] = true
+			reconciled++
+			continue
+		}
+		if len(matches) > 0 {
+			for _, match := range matches {
+				reviews[filepath.Clean(match.Path)] = AssetReviewState{
+					RequiresReview: true,
+					Reason:         fmt.Sprintf("Possible relocated publication for job %d; confirm before reconciliation.", job.ID),
+					Source:         "sync-reconciliation",
+					Tags:           []string{"relocated-publication", fmt.Sprintf("reconciliation-job-%d", job.ID)},
+					UpdatedAt:      time.Now(),
+				}
+				reviewMatches++
+				reviewsChanged = true
+			}
+		}
+	}
+	if reviewsChanged {
+		if err := saveAssetReviewOverrides(db, reviews); err != nil {
+			return reconciled, reviewMatches, err
+		}
+	}
+	return reconciled, reviewMatches, nil
+}
+
+func legacyMediaPathIdentity(mediaPath string) string {
+	if identity := missingMediaIdentity(filepath.Base(mediaPath)); identity != "" {
+		return identity
+	}
+	return missingMediaIdentity(filepath.Base(filepath.Dir(mediaPath)))
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func migrateSingleAssetPathOverrides(db *gorm.DB, oldPath, newPath string) error {
+	conversion := assetConversionOverrides(db)
+	if value, exists := conversion[oldPath]; exists {
+		delete(conversion, oldPath)
+		conversion[newPath] = value
+		if err := saveAssetConversionOverrides(db, conversion); err != nil {
+			return err
+		}
+	}
+	reviews := assetReviewOverrides(db)
+	if value, exists := reviews[oldPath]; exists {
+		delete(reviews, oldPath)
+		reviews[newPath] = value
+		if err := saveAssetReviewOverrides(db, reviews); err != nil {
+			return err
+		}
+	}
+	metadata := assetMetadataOverrides(db)
+	if value, exists := metadata[oldPath]; exists {
+		delete(metadata, oldPath)
+		metadata[newPath] = value
+		return saveAssetMetadataOverrides(db, metadata)
+	}
+	return nil
+}
+
+func assetReconciliationMode(db *gorm.DB) string {
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", "assetInventory").Error; err == nil {
+		if mode := strings.ToLower(strings.TrimSpace(stringSetting(setting.Value, "reconciliationMode", ""))); mode == "off" || mode == "review" || mode == "exact" {
+			return mode
+		}
+	}
+	return "exact"
+}
+
+func mediaFileFingerprint(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%d:", info.Size())
+	const sampleSize int64 = 1 << 20
+	offsets := []int64{0}
+	if info.Size() > sampleSize*2 {
+		offsets = append(offsets, info.Size()/2-sampleSize/2)
+	}
+	if info.Size() > sampleSize {
+		offsets = append(offsets, info.Size()-sampleSize)
+	}
+	buffer := make([]byte, sampleSize)
+	for _, offset := range offsets {
+		count, readErr := file.ReadAt(buffer, offset)
+		if readErr != nil && readErr != io.EOF {
+			return "", readErr
+		}
+		if _, err := hash.Write(buffer[:count]); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func collectAssetRecords(library models.Library, root string, status string, syncedAt time.Time, keepDays int) []models.AssetRecord {

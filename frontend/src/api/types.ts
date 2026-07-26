@@ -202,6 +202,8 @@ export type AssetSyncResult = {
   unverifiedFiles: number;
   archiveFiles: number;
   expiredDeleted: number;
+  reconciledFiles: number;
+  reviewMatches: number;
 };
 
 export type AdvisorRequest = {
@@ -629,6 +631,22 @@ export type ScanResult = {
     recommendedFilter?: string;
     windowStart?: number;
     windowSeconds?: number;
+  };
+  cropAnalysis: {
+    status?: 'none' | 'detected' | 'variable' | 'unknown';
+    source?: string;
+    confidence?: number;
+    recommendedCrop?: string;
+    originalWidth?: number;
+    originalHeight?: number;
+    outputWidth?: number;
+    outputHeight?: number;
+    x?: number;
+    y?: number;
+    windows?: number;
+    matchingWindows?: number;
+    sampledAt?: number[];
+    reason?: string;
   };
   rawProbe: Record<string, unknown>;
   createdAt: string;

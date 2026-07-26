@@ -9,6 +9,10 @@ import {
   Chip,
   Collapse,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControlLabel,
   Grid,
   MenuItem,
@@ -26,6 +30,7 @@ import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
 import TuneIcon from '@mui/icons-material/Tune';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -38,6 +43,7 @@ import type {
   MediaStreamInfo,
   Profile,
   ProfileInput,
+  ProfileSuggestion,
   ScanResult,
   StreamMetadataOverride,
 } from '../api/types';
@@ -48,6 +54,15 @@ import { PageHeader } from '../components/PageHeader';
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
 type LabSection = 'video' | 'audio' | 'tracks';
+
+type LabRecommendationReport = {
+  summary: string;
+  match: string;
+  video: string[];
+  audio: string[];
+  tracks: string[];
+  general: string[];
+};
 
 type TrackProfile = {
   key: string;
@@ -444,15 +459,21 @@ export function ProfileLabPage() {
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
-  const rawAssets = assets.data?.unprocessed ?? [];
+  const labAssets = useMemo(
+    () => uniqueAssets([
+      ...(assets.data?.unprocessed ?? []),
+      ...(assets.data?.library ?? []),
+      ...(assets.data?.converted ?? []),
+      ...(assets.data?.unverified ?? []),
+    ]),
+    [assets.data],
+  );
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
   const trackProfiles = useMemo(() => getTrackProfiles(settings.data), [settings.data]);
   const [labSection, setLabSection] = useState<LabSection>('video');
   const [assetPath, setAssetPath] = useState('');
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
-  const [previewMode, setPreviewMode] = useState<'quick' | 'quality'>('quick');
-  const [originalPreviewMode, setOriginalPreviewMode] = useState<'direct' | 'compatible'>('direct');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
@@ -473,9 +494,12 @@ export function ProfileLabPage() {
   const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
   const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
+  const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
+  const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
+  const [recommendationOpen, setRecommendationOpen] = useState(false);
+  const [recommendationApplied, setRecommendationApplied] = useState(false);
   const previewsRef = useRef<HTMLDivElement | null>(null);
-  const selectedAsset = rawAssets.find((asset) => asset.path === assetPath) ?? null;
-  const effectivePreviewSeconds = previewMode === 'quick' ? Math.min(seconds, 8) : seconds;
+  const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
 
@@ -502,6 +526,15 @@ export function ProfileLabPage() {
     mutationFn: api.updateAssetConversion,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const autoRecommendation = useMutation({
+    mutationFn: api.suggestProfile,
+    onSuccess: (suggestion) => {
+      setRecommendationSuggestion(suggestion);
+      setRecommendationReport(previewRecommendationReport(suggestion));
+      setRecommendationApplied(false);
+      setRecommendationOpen(true);
     },
   });
 
@@ -537,6 +570,133 @@ export function ProfileLabPage() {
       preserveSubtitles: profile.preserveSubtitles,
       preserveChapters: profile.preserveChapters,
       workerConfig: { ...profile.workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
+    });
+  }
+
+  function applyAutoRecommendation(suggestion: ProfileSuggestion) {
+    const scan = suggestion.scan;
+    const proposed = suggestion.proposedProfile;
+    const sourceName = selectedAsset?.fileName ?? scan.fileName;
+    const interlaceStatus = scan.interlaceAnalysis.status ?? 'unknown';
+    const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
+    const recommendedCrop = scan.cropAnalysis?.recommendedCrop?.trim() ?? '';
+    const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
+    const needsVideoCorrection = interlaceStatus === 'interlaced';
+    const targetVideoCodec = sourceIsHEVC && !needsVideoCorrection ? 'copy' : proposed.videoCodec;
+    const videoReasons = targetVideoCodec === 'copy'
+      ? ['The source is already HEVC and no definite filter correction was detected, so video copy avoids generational loss.']
+      : [`CRF ${suggestion.insights.recommendedCrf} was selected from the detected ${scan.width}×${scan.height} source.`];
+    let deinterlaceMode = 'auto';
+    if (interlaceStatus === 'progressive') {
+      deinterlaceMode = 'off';
+      videoReasons.push('The analyzed motion window is progressive, so deinterlacing was disabled.');
+    } else if (interlaceStatus === 'interlaced') {
+      deinterlaceMode = 'force';
+      videoReasons.push('Interlacing was detected, so bwdif was enabled for the video draft.');
+    } else if (interlaceStatus === 'telecine_suspected') {
+      deinterlaceMode = 'auto';
+      videoReasons.push('Telecine is suspected; automatic analysis remains enabled instead of forcing ordinary deinterlacing.');
+    } else {
+      videoReasons.push('Motion classification is not definitive, so conversion-time automatic analysis remains enabled.');
+    }
+    if (scan.hdr) {
+      videoReasons.push('HDR and 10-bit output are preserved because HDR metadata was detected.');
+    }
+    if (cropStatus === 'detected' && recommendedCrop) {
+      videoReasons.push(
+        `Stable black bars were detected in ${scan.cropAnalysis.matchingWindows ?? 0}/${scan.cropAnalysis.windows ?? 0} samples; crop=${recommendedCrop} was enabled for preview.`,
+      );
+    } else if (cropStatus === 'variable') {
+      videoReasons.push('Black bars varied between samples, so crop remains disabled and requires manual review.');
+    }
+    const workerConfig = {
+      ...proposed.workerConfig,
+      deinterlaceMode,
+      denoise: 'off',
+      deband: 'off',
+      crop: cropStatus === 'detected' && recommendedCrop ? 'manual' : 'off',
+      cropValue: cropStatus === 'detected' ? recommendedCrop : '',
+    };
+    setSelectedVideoStarterPreset('');
+    setVideoDraft({
+      ...proposed,
+      name: `Auto recommended - ${sourceName}`,
+      description: `Generated in Profile Lab from the current snapshot of ${sourceName}.`,
+      videoCodec: targetVideoCodec,
+      qualityValue: suggestion.insights.recommendedCrf,
+      workerConfig: {
+        ...workerConfig,
+        source: 'profile-lab-auto-recommendation',
+        derivedFromAsset: selectedAsset?.path ?? scan.path,
+        videoFilters: buildVideoFilterChain(workerConfig),
+      },
+    });
+
+    const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase()));
+    const multichannelAudio = scan.audioStreams.filter((stream) => (stream.channels ?? 0) > 2);
+    const audioReasons: string[] = [];
+    setSelectedAudioStarterPreset('');
+    setAudioDraft({
+      ...emptyAudioDraft,
+      key: uniqueKey(slugify(`auto-compatible-${sourceName}`), audioProfiles),
+      name: `Compatible audio - ${sourceName}`,
+      description: `Conservative compatibility copy derived from the snapshot of ${sourceName}.`,
+      filters: 'anull',
+      channelMode: multichannelAudio.length > 0 ? 'force-stereo' : 'preserve',
+      preserveOriginalTrack: true,
+      outputCodec: 'aac',
+      notes: 'Auto recommendation preserves the original and does not apply EQ, denoise, or loudness changes without an audio measurement.',
+    });
+    setAudioFilterChainEdited(false);
+    audioReasons.push(
+      incompatibleAudio.length > 0
+        ? `${incompatibleAudio.length} audio track(s) use less browser-friendly codecs; an AAC compatibility copy was prepared while preserving the originals.`
+        : 'The audio codecs are already broadly compatible; the draft remains loss-safe and preserves every original track.',
+    );
+    if (multichannelAudio.length > 0) {
+      audioReasons.push('A stereo AAC compatibility copy is proposed for multichannel audio; the surround originals remain intact.');
+    }
+    audioReasons.push('No EQ, denoise, or loudness correction was inferred from metadata alone.');
+
+    const commentaryIndexes = scan.audioStreams.filter(isCommentaryStream).map((stream) => stream.index);
+    const keptAudioIndexes = scan.audioStreams.filter((stream) => !commentaryIndexes.includes(stream.index)).map((stream) => stream.index);
+    const trackReasons = [
+      `${scan.videoStreams.length} video, ${scan.audioStreams.length} audio, and ${scan.subtitleStreams.length} subtitle track(s) were read from the snapshot.`,
+    ];
+    setTrackDraft({
+      ...emptyTrackDraft,
+      key: uniqueTrackKey(slugify(`auto-tracks-${sourceName}`), trackProfiles),
+      name: `Recommended tracks - ${sourceName}`,
+      description: `Track selection derived from the current snapshot of ${sourceName}.`,
+      sourceAssetPath: selectedAsset?.path ?? scan.path,
+      sourceAssetName: sourceName,
+      videoMode: 'all',
+      audioMode: 'all',
+      subtitleMode: 'all',
+      audioRequired: scan.audioStreams.length > 0,
+      subtitlesRequired: false,
+      dropCommentary: commentaryIndexes.length > 0,
+      notes: 'Review language/default choices before saving. Missing tracks are validated in review mode.',
+    });
+    setTrackConversionDraft({
+      keepAudioStreams: commentaryIndexes.length > 0 ? keptAudioIndexes : undefined,
+    });
+    trackReasons.push(
+      commentaryIndexes.length > 0
+        ? `${commentaryIndexes.length} commentary track(s) were identified by metadata and deselected; review before saving.`
+        : 'No commentary tracks were identified, so no tracks were removed automatically.',
+    );
+    trackReasons.push('All subtitle tracks are preserved; language and forced/default metadata remain editable.');
+
+    setRecommendationReport({
+      summary: suggestion.summary,
+      match: suggestion.matchType === 'existing' && suggestion.suggestedProfile
+        ? `Closest existing profile: ${suggestion.suggestedProfile.name}`
+        : 'A new profile draft is recommended.',
+      video: videoReasons,
+      audio: audioReasons,
+      tracks: trackReasons,
+      general: suggestion.insights.recommendations,
     });
   }
 
@@ -763,18 +923,22 @@ export function ProfileLabPage() {
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Grid container spacing={1.5} alignItems="flex-start">
-              <Grid size={{ xs: 12, lg: 4.75 }}>
+              <Grid size={{ xs: 12, lg: 7 }}>
                 <AssetAutocomplete
-                  assets={rawAssets}
+                  assets={labAssets}
                   value={selectedAsset}
                   onChange={(asset) => {
                     setAssetPath(asset?.path ?? '');
                     setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
                     resetProcessedPreviews();
+                    setRecommendationReport(null);
+                    setRecommendationSuggestion(null);
+                    setRecommendationApplied(false);
+                    setRecommendationOpen(false);
                   }}
                 />
               </Grid>
-              <Grid size={{ xs: 7, sm: 3, lg: 1.25 }}>
+              <Grid size={{ xs: 6, sm: 3, lg: 1.25 }}>
                 <TextField
                   label="Start"
                   size="small"
@@ -787,7 +951,7 @@ export function ProfileLabPage() {
                   fullWidth
                 />
               </Grid>
-              <Grid size={{ xs: 5, sm: 2, lg: 0.75 }}>
+              <Grid size={{ xs: 3, sm: 2, lg: 0.75 }}>
                 <TextField
                   label="Seconds"
                   size="small"
@@ -802,39 +966,7 @@ export function ProfileLabPage() {
                   fullWidth
                 />
               </Grid>
-              <Grid size={{ xs: 12, sm: 4, lg: 2 }}>
-                <TextField
-                  label="Preview mode"
-                  size="small"
-                  value={previewMode}
-                  onChange={(event) => {
-                    setPreviewMode(event.target.value as 'quick' | 'quality');
-                    resetProcessedPreviews();
-                  }}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="quick">Quick iteration</MenuItem>
-                  <MenuItem value="quality">Quality check</MenuItem>
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 12, sm: 5, lg: 2.25 }}>
-                <TextField
-                  label="Original playback"
-                  size="small"
-                  value={originalPreviewMode}
-                  onChange={(event) => {
-                    setOriginalPreviewMode(event.target.value as 'direct' | 'compatible');
-                    resetProcessedPreviews();
-                  }}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="direct">Direct original</MenuItem>
-                  <MenuItem value="compatible">Browser compatible (Jellyfin / Plex)</MenuItem>
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 12, sm: 2, lg: 1 }}>
+              <Grid size={{ xs: 3, sm: 2, lg: 1 }}>
                 <Button
                   startIcon={<PlayArrowIcon />}
                   variant="contained"
@@ -847,18 +979,63 @@ export function ProfileLabPage() {
                   Preview
                 </Button>
               </Grid>
+              <Grid size={{ xs: 12, sm: 5, lg: 2 }}>
+                <Stack direction="row" spacing={0.75}>
+                  <Button
+                    startIcon={<AutoFixHighIcon />}
+                    variant="outlined"
+                    size="small"
+                    disabled={!assetPath || autoRecommendation.isPending}
+                    onClick={() => autoRecommendation.mutate(assetPath)}
+                    fullWidth
+                    sx={{ minHeight: 40 }}
+                  >
+                    {autoRecommendation.isPending ? 'Analyzing…' : 'Analyze'}
+                  </Button>
+                  {recommendationReport ? (
+                    <Button size="small" variant="text" onClick={() => setRecommendationOpen(true)} sx={{ minWidth: 'auto', px: 1 }}>
+                      {recommendationApplied ? 'Applied' : 'View'}
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Grid>
             </Grid>
+            {autoRecommendation.isError ? (
+              <Alert severity="error" sx={{ mt: 1.5 }}>
+                Auto recommendation failed: {autoRecommendation.error instanceof Error ? autoRecommendation.error.message : 'unknown error'}
+              </Alert>
+            ) : null}
           </CardContent>
         </Card>
+        <Dialog open={recommendationOpen && Boolean(recommendationReport)} onClose={() => setRecommendationOpen(false)} fullWidth maxWidth="md">
+          <DialogTitle>Profile Lab suggestion</DialogTitle>
+          <DialogContent dividers>
+            {recommendationReport ? (
+              <LabRecommendationDetails report={recommendationReport} applied={recommendationApplied} />
+            ) : null}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRecommendationOpen(false)}>Close</Button>
+            <Button
+              variant="contained"
+              startIcon={<AutoFixHighIcon />}
+              disabled={!recommendationSuggestion || recommendationApplied}
+              onClick={() => {
+                if (recommendationSuggestion) {
+                  applyAutoRecommendation(recommendationSuggestion);
+                  setRecommendationApplied(true);
+                }
+              }}
+            >
+              {recommendationApplied ? 'Changes applied' : 'Apply changes'}
+            </Button>
+          </DialogActions>
+        </Dialog>
         <Box ref={previewsRef} sx={{ scrollMarginTop: 16, mb: 2 }}>
           <Stack spacing={2}>
               {assetPath && previewNonce > 0 ? (
-                <Alert severity={originalPreviewMode === 'compatible' || previewMode === 'quick' ? 'warning' : 'success'}>
-                  {originalPreviewMode === 'compatible'
-                    ? 'Sample A is a temporary H.264/AAC browser-compatible proxy of the original. It does not change the source file, but it is not a bit-exact visual reference.'
-                    : previewMode === 'quick'
-                      ? 'Sample A is the untouched original. Sample B is an 8-second, reduced-resolution proxy for fast iteration; use Quality check for final visual comparisons.'
-                      : 'Sample A is the untouched original. Sample B uses the requested duration, source resolution, and exact profile settings for a fidelity comparison.'}
+                <Alert severity="info">
+                  Sample A is a high-quality H.264/AAC browser-compatible reference generated from the original. Sample B uses the requested duration, source resolution, and current profile draft.
                 </Alert>
               ) : null}
               {assetPath && previewNonce > 0 ? (
@@ -866,39 +1043,30 @@ export function ProfileLabPage() {
                   <Grid size={{ xs: 12, lg: 6 }}>
                     <SampleCard
                       title="Sample A"
-                      subtitle={originalPreviewMode === 'compatible' ? 'Original content transcoded temporarily for browser playback' : 'Original source stream, no conversion'}
+                      subtitle="Original content in a temporary browser-compatible reference"
                     >
                       <Stack spacing={2}>
-                        {originalPreviewMode === 'compatible' ? (
-                          <>
-                            <VideoPreview
-                              key={`original-compatible-${previewNonce}`}
-                              label="Original · browser-compatible H.264 proxy"
-                              src={api.compatibleAssetPreviewUrl({
-                                path: assetPath,
-                                start,
-                                seconds,
-                                mode: 'quality',
-                                videoCodec: 'x264',
-                                qualityValue: 20,
-                                videoPreset: 'medium',
-                                pixFmt: 'yuv420p',
-                                videoEncoder: 'libx264',
-                                useHardwareIfAvailable: false,
-                                globalQuality: 25,
-                              })}
-                            />
-                            <AudioPreview
-                              label="Original · browser-compatible AAC stereo 192 kbps"
-                              src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true, streamIndex: selectedAudioStreamIndex })}
-                            />
-                          </>
-                        ) : (
-                          <>
-                            <VideoPreview key={`original-${previewNonce}`} label="Original video" src={originalPreviewUrl(assetPath, start, seconds)} direct />
-                            <AudioPreview label="Original audio" src={`${api.audioPreviewUrl({ path: assetPath, start, seconds, streamIndex: selectedAudioStreamIndex })}&nonce=${previewNonce}`} />
-                          </>
-                        )}
+                        <VideoPreview
+                          key={`original-compatible-${previewNonce}`}
+                          label="Original · browser-compatible H.264 reference"
+                          src={api.compatibleAssetPreviewUrl({
+                            path: assetPath,
+                            start,
+                            seconds,
+                            mode: 'quality',
+                            videoCodec: 'x264',
+                            qualityValue: 16,
+                            videoPreset: 'medium',
+                            pixFmt: 'yuv420p',
+                            videoEncoder: 'libx264',
+                            useHardwareIfAvailable: false,
+                            globalQuality: 21,
+                          })}
+                        />
+                        <AudioPreview
+                          label="Original · browser-compatible AAC stereo 192 kbps"
+                          src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true, streamIndex: selectedAudioStreamIndex })}
+                        />
                       </Stack>
                     </SampleCard>
                   </Grid>
@@ -907,15 +1075,15 @@ export function ProfileLabPage() {
                       <Stack spacing={2}>
                         {videoPreviewNonce > 0 ? (
                           <VideoPreview
-                            key={`draft-${videoPreviewNonce}-${previewMode}`}
+                            key={`draft-${videoPreviewNonce}`}
                             label="Video draft"
                             src={api.compatibleAssetPreviewUrl({
                               path: assetPath,
                               start,
-                              seconds: effectivePreviewSeconds,
+                              seconds,
                               videoCodec: processedVideoCodec,
                               qualityValue: processedVideoQualityValue,
-                              mode: previewMode,
+                              mode: 'quality',
                               ...processedVideoOptions,
                             })}
                             onStatusChange={setVideoPreviewStatus}
@@ -926,7 +1094,7 @@ export function ProfileLabPage() {
                         {audioPreviewNonce > 0 ? (
                           <AudioPreview
                             label="Audio draft"
-                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds: effectivePreviewSeconds, filters: processedAudioFilters, streamIndex: selectedAudioStreamIndex })}&nonce=${audioPreviewNonce}`}
+                            src={`${api.audioPreviewUrl({ path: assetPath, start, seconds, filters: processedAudioFilters, streamIndex: selectedAudioStreamIndex })}&nonce=${audioPreviewNonce}`}
                             onStatusChange={setAudioPreviewStatus}
                           />
                         ) : (
@@ -2149,19 +2317,6 @@ function VideoPreview({
   );
 }
 
-function originalPreviewUrl(path: string, start: string, seconds: number) {
-  const startSeconds = previewStartSeconds(start);
-  const endSeconds = startSeconds + Math.max(1, seconds);
-  return `${api.assetPreviewUrl(path)}#t=${startSeconds},${endSeconds}`;
-}
-
-function previewStartSeconds(value: string) {
-  if (/^\d+$/.test(value.trim())) return Number(value);
-  const parts = value.split(':').map((part) => Number(part));
-  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return 0;
-  return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
-}
-
 function formatPreviewBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
@@ -2668,6 +2823,95 @@ function AudioProfileAutocomplete({
   );
 }
 
+function LabRecommendationDetails({
+  report,
+  applied,
+}: {
+  report: LabRecommendationReport;
+  applied: boolean;
+}) {
+  const sections: Array<{ key: LabSection; label: string; items: string[] }> = [
+    { key: 'video', label: 'Video', items: report.video },
+    { key: 'audio', label: 'Audio', items: report.audio },
+    { key: 'tracks', label: 'Tracks', items: report.tracks },
+  ];
+  return (
+    <Stack spacing={1.5}>
+      <Alert severity={applied ? 'success' : 'info'}>
+        {applied ? 'These changes were applied to the editable LAB drafts.' : 'Review the proposed changes below. Nothing has been modified yet.'}
+      </Alert>
+      <Typography variant="h3">{report.summary}</Typography>
+      <Typography color="text.secondary" variant="body2">{report.match}</Typography>
+      <Grid container spacing={1.5}>
+        {sections.map((section) => (
+          <Grid key={section.key} size={{ xs: 12, md: 4 }}>
+            <Box sx={{ height: '100%', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+              <Stack spacing={1}>
+                <Typography fontWeight={700}>{section.label}</Typography>
+                {section.items.map((item) => (
+                  <Typography key={item} variant="body2">• {item}</Typography>
+                ))}
+              </Stack>
+            </Box>
+          </Grid>
+        ))}
+      </Grid>
+      <Alert severity="info">
+        <Stack spacing={0.5}>
+          {report.general.map((item) => <Typography key={item} variant="body2">{item}</Typography>)}
+        </Stack>
+      </Alert>
+      <Typography color="text.secondary" variant="caption">
+        Applying changes only updates the editable LAB drafts. It does not save profiles, process media, or add a job to Queue.
+      </Typography>
+    </Stack>
+  );
+}
+
+function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommendationReport {
+  const scan = suggestion.scan;
+  const interlace = scan.interlaceAnalysis.status ?? 'unknown';
+  const crop = scan.cropAnalysis?.status ?? 'unknown';
+  const commentary = scan.audioStreams.filter(isCommentaryStream).length;
+  const video = [
+    `Proposed ${suggestion.proposedProfile.videoCodec} at CRF ${suggestion.insights.recommendedCrf} for ${scan.width}×${scan.height}.`,
+    scan.hdr ? 'Preserve detected HDR metadata and 10-bit output.' : 'No HDR preservation adjustment is required.',
+    interlace === 'interlaced'
+      ? 'Enable bwdif because interlacing was detected.'
+      : interlace === 'progressive'
+        ? 'Keep deinterlacing disabled because the analyzed window is progressive.'
+        : `Keep conversion-time motion analysis enabled because the source was classified as ${interlace}.`,
+    crop === 'detected'
+      ? `Enable manual crop ${scan.cropAnalysis.recommendedCrop} after stable black bars were detected.`
+      : crop === 'variable'
+        ? 'Keep crop disabled because the detected borders vary between scenes.'
+        : 'Keep crop disabled because no stable black bars were detected.',
+  ];
+  const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase())).length;
+  const audio = [
+    incompatibleAudio > 0
+      ? `Prepare an AAC compatibility copy for ${incompatibleAudio} less-compatible audio track(s), preserving every original.`
+      : 'Preserve the compatible original audio tracks; an editable AAC compatibility draft remains available.',
+    'Do not infer EQ, denoise, or loudness correction from metadata alone.',
+  ];
+  const tracks = [
+    `Preserve ${scan.videoStreams.length} video, ${scan.audioStreams.length} audio, and ${scan.subtitleStreams.length} subtitle track(s).`,
+    commentary > 0
+      ? `Deselect ${commentary} track(s) identified as commentary; review before saving.`
+      : 'Do not remove tracks automatically because no commentary metadata was identified.',
+  ];
+  return {
+    summary: suggestion.summary,
+    match: suggestion.matchType === 'existing' && suggestion.suggestedProfile
+      ? `Closest existing profile: ${suggestion.suggestedProfile.name}`
+      : 'A new profile draft is recommended.',
+    video,
+    audio,
+    tracks,
+    general: suggestion.insights.recommendations,
+  };
+}
+
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: Asset | null; onChange: (asset: Asset | null) => void }) {
   return (
     <Autocomplete
@@ -2687,7 +2931,7 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
           )
           .slice(0, 50);
       }}
-      renderInput={(params) => <TextField {...params} label="Raw asset" size="small" />}
+      renderInput={(params) => <TextField {...params} label="Asset from Raw or Library" size="small" />}
       renderOption={(props, asset) => (
         <Box component="li" {...props} key={asset.path}>
           <Stack sx={{ minWidth: 0 }}>
@@ -2695,7 +2939,7 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
               {asset.fileName}
             </Typography>
             <Typography color="text.secondary" variant="body2" noWrap>
-              {asset.relativePath || asset.path}
+              {asset.status.toUpperCase()} · {asset.libraryName || 'Unassigned'} · {asset.relativePath || asset.path}
             </Typography>
           </Stack>
         </Box>
@@ -2703,6 +2947,24 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
       fullWidth
     />
   );
+}
+
+function uniqueAssets(assets: Asset[]) {
+  const byPath = new Map<string, Asset>();
+  assets.forEach((asset) => {
+    const current = byPath.get(asset.path);
+    if (!current || asset.status === 'library' || asset.status === 'converted') {
+      byPath.set(asset.path, asset);
+    }
+  });
+  return [...byPath.values()].sort((left, right) =>
+    (left.relativePath || left.path).localeCompare(right.relativePath || right.path),
+  );
+}
+
+function isCommentaryStream(stream: MediaStreamInfo) {
+  const metadata = `${stream.title} ${stream.codecLong}`.toLowerCase();
+  return stream.comment || ['commentary', 'comentario', 'director comments'].some((term) => metadata.includes(term));
 }
 
 function TrackProfileAutocomplete({

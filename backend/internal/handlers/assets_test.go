@@ -288,6 +288,143 @@ func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T)
 	}
 }
 
+func TestReconcileMovedPublishedAssetUsesExactFingerprint(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:exact-asset-reconciliation?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "documentaries", "TATU", "_Ttitle.mkv")
+	newPath := filepath.Join(root, "series", "Renamed TATU Documentary.mkv")
+	writeTestFile(t, newPath, "converted-content")
+	info, _ := os.Stat(newPath)
+	fingerprint, err := mediaFileFingerprint(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{
+		MediaPath: filepath.Join(root, "raw", "_Ttitle.mkv"), LibraryID: 1, ProfileID: 1,
+		Status: JobStatusCompleted, PublishedPath: oldPath, PlannedPublishedPath: oldPath,
+		PublishedFingerprint: fingerprint, PublishedSizeBytes: info.Size(),
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		oldPath: {KeepAudioStreams: []int{1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := models.AssetRecord{Path: newPath, FileName: filepath.Base(newPath), SizeBytes: info.Size(), LibraryID: 2, LibraryName: "Series"}
+
+	reconciled, reviews, err := reconcileMovedPublishedAssets(db, []models.AssetRecord{candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled != 1 || reviews != 0 {
+		t.Fatalf("reconciled=%d reviews=%d", reconciled, reviews)
+	}
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.PublishedPath != newPath || job.LibraryID != 2 || job.PlannedPublishedPath != oldPath {
+		t.Fatalf("job was not reconciled correctly: %#v", job)
+	}
+	overrides := assetConversionOverrides(db)
+	if _, exists := overrides[oldPath]; exists {
+		t.Fatal("old override path was preserved")
+	}
+	if _, exists := overrides[newPath]; !exists {
+		t.Fatal("override was not migrated")
+	}
+}
+
+func TestReconcileLegacyPossibleMatchesRequiresReview(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:legacy-asset-reconciliation?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := "/library/documentaries/TATU/TATU_Ttitle.mkv"
+	job := models.QueueJob{MediaPath: "/raw/TATU/TATU_Ttitle.mkv", LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: oldPath, PublishedSizeBytes: 100}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidates := []models.AssetRecord{
+		{Path: "/library/series/TATU/TATU-new.mkv", FileName: "TATU-new.mkv", SizeBytes: 100},
+		{Path: "/library/videos/TATU/TATU.mkv", FileName: "TATU.mkv", SizeBytes: 100},
+	}
+	reconciled, reviews, err := reconcileMovedPublishedAssets(db, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled != 0 || reviews != 2 {
+		t.Fatalf("legacy match must require review: reconciled=%d reviews=%d", reconciled, reviews)
+	}
+	for _, candidate := range candidates {
+		review := reviewForPath(candidate.Path, assetReviewOverrides(db))
+		if !review.RequiresReview || review.Source != "sync-reconciliation" {
+			t.Fatalf("candidate was not marked for review: %#v", review)
+		}
+	}
+}
+
+func TestConfirmLegacyPublicationReconciliationUpdatesJob(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:confirm-legacy-reconciliation?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetRecord{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := "/library/documentaries/TATU/_Ttitle.mkv"
+	newPath := filepath.Join(t.TempDir(), "series", "TATU", "_Ttitle.mkv")
+	writeTestFile(t, newPath, "converted")
+	job := models.QueueJob{MediaPath: "/raw/documentaries/TATU/_Ttitle.mkv", LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: oldPath}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: newPath, FileName: "_Ttitle.mkv", Status: "converted", LibraryID: 2, LibraryName: "Series"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetReviewOverrides(db, map[string]AssetReviewState{
+		newPath: {
+			RequiresReview: true, Source: "sync-reconciliation",
+			Tags:      []string{"relocated-publication", fmt.Sprintf("reconciliation-job-%d", job.ID)},
+			UpdatedAt: time.Now(),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/reconcile-publication", NewAssetHandler(db).ConfirmPublicationReconciliation)
+	body := fmt.Sprintf(`{"jobId":%d,"path":%q}`, job.ID, newPath)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/reconcile-publication", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.PublishedPath != newPath || job.LibraryID != record.LibraryID {
+		t.Fatalf("publication was not confirmed: %#v", job)
+	}
+	if reviewForPath(newPath, assetReviewOverrides(db)).RequiresReview {
+		t.Fatal("reconciliation review was not cleared")
+	}
+}
+
 func TestPreviewCacheKeyChangesWithSourceAndOptions(t *testing.T) {
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "episode.mkv")

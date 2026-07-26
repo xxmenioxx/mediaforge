@@ -21,6 +21,7 @@ type ScanResult struct {
 	AudioStreams      JSONList  `json:"audioStreams" gorm:"type:json"`
 	SubtitleStreams   JSONList  `json:"subtitleStreams" gorm:"type:json"`
 	InterlaceAnalysis JSONMap   `json:"interlaceAnalysis" gorm:"type:json"`
+	CropAnalysis      JSONMap   `json:"cropAnalysis" gorm:"type:json"`
 	RawProbe          JSONMap   `json:"rawProbe" gorm:"type:json"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`

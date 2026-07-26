@@ -11,7 +11,7 @@ func OpenAPI(c *gin.Context) {
 		"openapi": "3.0.3",
 		"info": gin.H{
 			"title":       "MVForge API",
-			"version":     "1.0.9",
+			"version":     "1.0.10",
 			"description": "Manual media workflow orchestration API.",
 		},
 		"servers": []gin.H{
@@ -1014,6 +1014,7 @@ func openAPIComponents() gin.H {
 					"audioStreams":      gin.H{"type": "array", "items": ref("MediaStream")},
 					"subtitleStreams":   gin.H{"type": "array", "items": ref("MediaStream")},
 					"interlaceAnalysis": gin.H{"type": "object", "additionalProperties": true},
+					"cropAnalysis":      gin.H{"type": "object", "additionalProperties": true},
 					"rawProbe":          gin.H{"type": "object", "additionalProperties": true},
 					"createdAt":         gin.H{"type": "string", "format": "date-time"},
 					"updatedAt":         gin.H{"type": "string", "format": "date-time"},

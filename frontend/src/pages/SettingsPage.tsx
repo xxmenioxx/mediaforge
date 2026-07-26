@@ -100,6 +100,7 @@ type SettingsForm = {
     autoSyncEnabled: boolean;
     syncIntervalMinutes: number;
     expireArchiveFiles: boolean;
+    reconciliationMode: 'off' | 'review' | 'exact';
   };
   validation: {
     minimumScore: number;
@@ -174,6 +175,7 @@ const initialSettings: SettingsForm = buildSettingsForm({
     autoSyncEnabled: true,
     syncIntervalMinutes: 60,
     expireArchiveFiles: true,
+    reconciliationMode: 'exact',
   },
   validation: { minimumScore: 90, requireDurationMatch: true },
   cancellationPolicy: {
@@ -346,6 +348,7 @@ export function SettingsPage() {
         autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
         syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
         expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
+        reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
       },
       validation: {
         minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
@@ -1252,6 +1255,26 @@ function PathsCard({ form, setForm }: SettingsCardProps) {
             fullWidth
           />
           <TextField
+            select
+            label="Renamed or relocated assets"
+            value={form.assetInventory.reconciliationMode}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                assetInventory: {
+                  ...current.assetInventory,
+                  reconciliationMode: event.target.value as 'off' | 'review' | 'exact',
+                },
+              }))
+            }
+            helperText="Exact fingerprints can be reconciled automatically; uncertain legacy matches are sent to Review."
+            fullWidth
+          >
+            <MenuItem value="exact">Automatically reconcile exact fingerprints</MenuItem>
+            <MenuItem value="review">Review all possible matches</MenuItem>
+            <MenuItem value="off">Off</MenuItem>
+          </TextField>
+          <TextField
             label="Library root"
             value={form.paths.libraryRoot}
             onChange={(event) =>
@@ -1557,6 +1580,9 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
             inputProps={{ min: 5, max: 10080 }}
             fullWidth
           />
+          <Typography color="text.secondary" variant="caption">
+            Runs automatically after backend startup and at this interval. Each run also reconciles renamed or moved Library assets according to the reconciliation mode above.
+          </Typography>
           <FormControlLabel
             control={
               <Checkbox
@@ -1955,6 +1981,7 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
       syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
       expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
+      reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
     },
     validation: {
       minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
@@ -2092,6 +2119,10 @@ function normalizeExtension(value: string) {
 
 function stringValue(value: unknown, fallback: string) {
   return typeof value === 'string' ? value : fallback;
+}
+
+function reconciliationModeValue(value: unknown): SettingsForm['assetInventory']['reconciliationMode'] {
+  return value === 'off' || value === 'review' || value === 'exact' ? value : 'exact';
 }
 
 function archivePathValue(value: unknown, fallback: string) {

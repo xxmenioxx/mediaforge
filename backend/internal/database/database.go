@@ -599,6 +599,7 @@ func seedSettings(db *gorm.DB) error {
 				"autoSyncEnabled":     true,
 				"syncIntervalMinutes": 60,
 				"expireArchiveFiles":  true,
+				"reconciliationMode":  "exact",
 			},
 		},
 		{

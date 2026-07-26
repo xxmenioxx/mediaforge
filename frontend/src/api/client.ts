@@ -101,6 +101,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  confirmPublicationReconciliation: (input: { jobId: number; path: string }) =>
+    request<{ status: string; jobId: number; oldPath: string; publishedPath: string }>('/api/assets/reconcile-publication', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   updateAssetReview: ({ path, ...review }: AssetReviewUpdateInput) =>
     request<{ path: string; review: unknown }>(`/api/assets/review?path=${encodeURIComponent(path)}`, {
       method: 'POST',
