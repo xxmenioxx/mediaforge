@@ -509,6 +509,23 @@ export function ProfileLabPage() {
     }
   }, [audioFilterChainEdited, currentAudioFilters]);
 
+  useEffect(() => {
+    if (!recommendationApplied || !assetPath) {
+      return;
+    }
+    setPreviewNonce((current) => current + 1);
+    setProcessedVideoCodec(videoDraft.videoCodec);
+    setProcessedVideoQualityValue(videoDraft.qualityValue);
+    setProcessedVideoOptions(videoPreviewOptions(videoDraft));
+    setVideoPreviewStatus('loading');
+    setVideoPreviewNonce((current) => current + 1);
+    setProcessedAudioFilters(effectiveAudioFilters(audioDraft) || 'anull');
+    setProcessedAudioChannelMode(audioDraft.channelMode);
+    setAudioPreviewStatus('loading');
+    setAudioPreviewNonce((current) => current + 1);
+    scrollToPreviews();
+  }, [recommendationApplied]);
+
   const createVideoProfile = useMutation({
     mutationFn: api.createProfile,
     onSuccess: async () => {
@@ -1024,6 +1041,7 @@ export function ProfileLabPage() {
                 if (recommendationSuggestion) {
                   applyAutoRecommendation(recommendationSuggestion);
                   setRecommendationApplied(true);
+                  setRecommendationOpen(false);
                 }
               }}
             >
