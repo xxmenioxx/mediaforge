@@ -422,7 +422,7 @@ const emptyAudioDraft: AudioEnhancementProfile = {
   name: '',
   description: '',
   intent: 'Asset-specific restoration',
-  filters: 'loudnorm=I=-18:TP=-2:LRA=11',
+  filters: 'anull',
   rnnoiseModelPath: '',
   channelMode: 'preserve',
   forceStereoMode: 'auto',
@@ -3366,17 +3366,12 @@ function normalizedBaseFilters(profile: AudioEnhancementProfile) {
     .map((filter) => filter.trim())
     .filter(Boolean);
   const loudnorm = loudnormFilter(profile);
-  let foundLoudnorm = false;
   const normalized = filters.map((filter) => {
     if (!filter.startsWith('loudnorm=')) {
       return filter;
     }
-    foundLoudnorm = true;
     return loudnorm;
   });
-  if (!foundLoudnorm) {
-    normalized.push(loudnorm);
-  }
   return normalized.join(',');
 }
 

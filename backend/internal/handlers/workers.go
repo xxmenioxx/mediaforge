@@ -997,7 +997,6 @@ func normalizedBaseAudioFilters(profile audioEnhancementProfile) string {
 	rawFilters := strings.Split(profile.Filters, ",")
 	filters := []string{}
 	loudnorm := loudnormFilter(profile)
-	foundLoudnorm := false
 
 	for _, rawFilter := range rawFilters {
 		filter := strings.TrimSpace(rawFilter)
@@ -1006,14 +1005,9 @@ func normalizedBaseAudioFilters(profile audioEnhancementProfile) string {
 		}
 		if strings.HasPrefix(filter, "loudnorm=") {
 			filters = append(filters, loudnorm)
-			foundLoudnorm = true
 			continue
 		}
 		filters = append(filters, filter)
-	}
-
-	if !foundLoudnorm {
-		filters = append(filters, loudnorm)
 	}
 
 	return strings.Join(filters, ",")
