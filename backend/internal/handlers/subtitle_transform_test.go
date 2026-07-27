@@ -100,7 +100,43 @@ func TestPublishSubtitleArtifactsAcceptsAnIdenticalRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(published) != 1 || published[0] != destination {
-		t.Fatalf("unexpected retry result: %#v", published)
+	if len(published) != 0 {
+		t.Fatalf("retry must not report an existing sidecar as newly published: %#v", published)
+	}
+}
+
+func TestPublishSubtitleArtifactsPreservesDifferentLibrarySidecar(t *testing.T) {
+	temp := t.TempDir()
+	staged := filepath.Join(temp, "staged.srt")
+	destination := filepath.Join(temp, "library", "Movie.spa.srt")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("generated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("edited in library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{{
+		StreamIndex: 2, Format: "srt", Language: "spa", StagedPath: staged, SizeBytes: 9,
+	}})}
+
+	published, err := publishSubtitleArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := filepath.Join(temp, "library", "Movie.mvf.spa.srt")
+	if len(published) != 1 || published[0] != renamed {
+		t.Fatalf("generated sidecar was not published under MVF name: %#v", published)
+	}
+	if content, err := os.ReadFile(destination); err != nil || string(content) != "edited in library" {
+		t.Fatalf("Library sidecar was overwritten: content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(renamed); err != nil || string(content) != "generated" {
+		t.Fatalf("renamed generated sidecar content=%q err=%v", content, err)
+	}
+	if !strings.Contains(job.Notes, "renamed") {
+		t.Fatalf("rename was not recorded in job notes: %q", job.Notes)
 	}
 }

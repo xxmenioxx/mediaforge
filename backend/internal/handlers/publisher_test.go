@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -199,6 +200,10 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	originalSidecar := strings.TrimSuffix(original, filepath.Ext(original)) + ".spa.srt"
+	if err := os.WriteFile(originalSidecar, []byte("library subtitle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(output, []byte("converted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +237,79 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(output)); !os.IsNotExist(err) {
 		t.Fatalf("workspace was not cleaned: %v", err)
+	}
+	if got, err := os.ReadFile(originalSidecar); err != nil || string(got) != "library subtitle" {
+		t.Fatalf("library sidecar was moved or removed: content=%q err=%v", got, err)
+	}
+}
+
+func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
+	root := t.TempDir()
+	rawMedia := filepath.Join(root, "raw", "Movies", "Original Name.mkv")
+	libraryMedia := filepath.Join(root, "library", "Movies", "Published Name.mkv")
+	for _, mediaPath := range []string{rawMedia, libraryMedia} {
+		if err := os.MkdirAll(filepath.Dir(mediaPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mediaPath, []byte("video"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawBase := strings.TrimSuffix(rawMedia, filepath.Ext(rawMedia))
+	srt := rawBase + ".spa.default.srt"
+	ass := rawBase + ".eng.2.ass"
+	if err := os.WriteFile(srt, []byte("spanish"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ass, []byte("english"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 2 {
+		t.Fatalf("copied sidecars=%#v", copied)
+	}
+	libraryBase := strings.TrimSuffix(libraryMedia, filepath.Ext(libraryMedia))
+	for path, want := range map[string]string{
+		libraryBase + ".spa.default.srt": "spanish",
+		libraryBase + ".eng.2.ass":       "english",
+	} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || string(got) != want {
+			t.Fatalf("published sidecar %q content=%q err=%v", path, got, readErr)
+		}
+	}
+	for path, want := range map[string]string{srt: "spanish", ass: "english"} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || string(got) != want {
+			t.Fatalf("raw sidecar %q was moved or removed: content=%q err=%v", path, got, readErr)
+		}
+	}
+
+	if err := os.WriteFile(libraryBase+".spa.default.srt", []byte("edited in library"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia); err != nil {
+		t.Fatalf("different Library sidecar must not block publication: %v", err)
+	}
+	if got, err := os.ReadFile(libraryBase + ".spa.default.srt"); err != nil || string(got) != "edited in library" {
+		t.Fatalf("existing Library sidecar was overwritten: content=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(libraryBase + ".mvf.spa.default.srt"); err != nil || string(got) != "spanish" {
+		t.Fatalf("incoming sidecar was not preserved with MVF name: content=%q err=%v", got, err)
+	}
+
+	if err := os.WriteFile(libraryBase+".mvf.spa.default.srt", []byte("another version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(libraryBase + ".mvf-2.spa.default.srt"); err != nil || string(got) != "spanish" {
+		t.Fatalf("second collision was not preserved: content=%q err=%v", got, err)
 	}
 }
 

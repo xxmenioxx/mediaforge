@@ -154,24 +154,24 @@ func publishSubtitleArtifacts(job *models.QueueJob, destinationMediaPath string,
 		if artifact.Default {
 			suffix += ".default"
 		}
-		destinations[index] = base + suffix + "." + artifact.Format
-		if _, duplicate := usedDestinations[destinations[index]]; duplicate {
-			return nil, fmt.Errorf("multiple subtitle transformations resolve to the same destination: %s", destinations[index])
+		suffix += "." + artifact.Format
+		preferredDestination := base + suffix
+		if _, duplicate := usedDestinations[preferredDestination]; duplicate {
+			return nil, fmt.Errorf("multiple subtitle transformations resolve to the same destination: %s", preferredDestination)
 		}
-		usedDestinations[destinations[index]] = struct{}{}
+		usedDestinations[preferredDestination] = struct{}{}
 		if !overwrite {
-			if _, err := os.Stat(destinations[index]); err == nil {
-				equal, compareErr := filesEqual(artifact.StagedPath, destinations[index])
-				if compareErr != nil {
-					return nil, compareErr
-				}
-				if !equal {
-					return nil, fmt.Errorf("subtitle destination already exists with different content: %s", destinations[index])
-				}
-				alreadyPublished[index] = true
-			} else if !os.IsNotExist(err) {
+			resolved, exists, err := resolveSidecarDestination(artifact.StagedPath, base, suffix)
+			if err != nil {
 				return nil, err
 			}
+			destinations[index] = resolved
+			alreadyPublished[index] = exists
+			if resolved != preferredDestination {
+				job.Notes = appendNote(job.Notes, "Generated subtitle sidecar renamed to preserve existing Library content: "+resolved)
+			}
+		} else {
+			destinations[index] = preferredDestination
 		}
 	}
 	published := []string{}
@@ -180,8 +180,8 @@ func publishSubtitleArtifacts(job *models.QueueJob, destinationMediaPath string,
 			if err := copyPublishedFile(artifact.StagedPath, destinations[index], overwrite); err != nil {
 				return published, err
 			}
+			published = append(published, destinations[index])
 		}
-		published = append(published, destinations[index])
 		artifacts[index].PublishedPath = destinations[index]
 	}
 	job.SubtitleArtifacts = subtitleArtifactsJSON(artifacts)

@@ -63,16 +63,15 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 	defer os.RemoveAll(tempDir)
 
 	tempName := "ocr." + format
+	tempPath := filepath.Join(tempDir, tempName)
 	args := []string{
 		mediaPath,
 		seconvFormat(format),
 		"--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)),
 		"--ocr-engine:tesseract",
 		"--ocr-language:" + language,
-		"--output-folder:" + tempDir,
-		"--output-filename:" + tempName,
+		"--output-filename:" + tempPath,
 		"--overwrite",
-		"--quiet",
 	}
 	cmd := exec.CommandContext(ctx, "seconv", args...)
 	var stdout bytes.Buffer
@@ -87,10 +86,13 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, message)
 	}
 
-	tempPath := filepath.Join(tempDir, tempName)
 	content, err := os.ReadFile(tempPath)
 	if err != nil {
-		return result, fmt.Errorf("OCR produced no %s subtitle for stream %d", strings.ToUpper(format), stream.Index)
+		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
+		if message == "" {
+			message = "SeConv completed without reporting a reason"
+		}
+		return result, fmt.Errorf("OCR produced no %s subtitle for stream %d: %s", strings.ToUpper(format), stream.Index, message)
 	}
 	if !validSubtitleSidecar(format, content) {
 		return result, fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)

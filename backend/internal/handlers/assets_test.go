@@ -271,13 +271,8 @@ if [ "$output" = "-" ]; then exit 0; fi
 printf '%s\n' 'generated subtitle' > "$output"
 `
 	seconvScript := `#!/bin/sh
-for argument do
-  case "$argument" in
-    --output-folder:*) output_folder="${argument#--output-folder:}" ;;
-    --output-filename:*) output_filename="${argument#--output-filename:}" ;;
-  esac
-done
-printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_folder/$output_filename"
+for argument do case "$argument" in --output-filename:*) output_filename="${argument#--output-filename:}" ;; esac; done
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_filename"
 `
 	if err := os.WriteFile(ffprobe, []byte(probeScript), 0o700); err != nil {
 		t.Fatal(err)
@@ -358,13 +353,11 @@ func TestExtractSubtitlesRunsOCRForExplicitBitmapTrackOnly(t *testing.T) {
 printf '%s' '{"format":{"filename":"DVD.mkv"},"streams":[{"index":4,"id":"0x7","codec_type":"subtitle","codec_name":"dvd_subtitle","tags":{"language":"spa"}}]}'
 `
 	seconvScript := `#!/bin/sh
-output_folder=""
 output_filename=""
 track=""
 language=""
 for argument do
   case "$argument" in
-    --output-folder:*) output_folder="${argument#--output-folder:}" ;;
     --output-filename:*) output_filename="${argument#--output-filename:}" ;;
     --track-number:*) track="${argument#--track-number:}" ;;
     --ocr-language:*) language="${argument#--ocr-language:}" ;;
@@ -372,7 +365,7 @@ for argument do
 done
 [ "$track" = "7" ] || exit 20
 [ "$language" = "spa" ] || exit 21
-printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_folder/$output_filename"
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_filename"
 `
 	for name, content := range map[string]string{
 		"ffprobe":   probeScript,
@@ -677,6 +670,8 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	archivePath := filepath.Join(archiveRoot, relative)
 	restorePath := filepath.Join(rawRoot, relative)
 	writeTestFile(t, convertedPath, "converted")
+	convertedSidecar := strings.TrimSuffix(convertedPath, filepath.Ext(convertedPath)) + ".spa.srt"
+	writeTestFile(t, convertedSidecar, "keep this subtitle")
 	writeTestFile(t, archivePath, "original")
 	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
@@ -702,8 +697,11 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	if _, err := os.Stat(convertedPath); !os.IsNotExist(err) {
 		t.Fatalf("converted still exists: %v", err)
 	}
-	if _, err := os.Stat(filepath.Dir(convertedPath)); !os.IsNotExist(err) {
-		t.Fatalf("empty converted asset directory was not removed: %v", err)
+	if content, err := os.ReadFile(convertedSidecar); err != nil || string(content) != "keep this subtitle" {
+		t.Fatalf("converted sidecar was removed: content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(filepath.Dir(convertedPath)); err != nil {
+		t.Fatalf("library path containing sidecars was removed: %v", err)
 	}
 	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
 		t.Fatalf("archive still exists: %v", err)
@@ -726,11 +724,13 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 }
 
 func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
-	db, rawRoot, _, archiveRoot := safeDeleteTestDB(t, "recover-archive")
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "recover-archive")
 	relative := filepath.Join("anime", "Baccano", "episode.mkv")
 	archivePath := filepath.Join(archiveRoot, "processed-originals", relative)
 	rawPath := filepath.Join(rawRoot, relative)
 	writeTestFile(t, archivePath, "original")
+	librarySidecar := filepath.Join(libraryRoot, "anime", "Baccano", "episode.spa.srt")
+	writeTestFile(t, librarySidecar, "keep this subtitle")
 	record := models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: filepath.ToSlash(relative), FileName: "episode.mkv", Status: "archive", LibraryName: "Original Archive"}
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
@@ -753,6 +753,9 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	}
 	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
 		t.Fatalf("archive source still exists: %v", err)
+	}
+	if content, err := os.ReadFile(librarySidecar); err != nil || string(content) != "keep this subtitle" {
+		t.Fatalf("Library sidecar was removed during Archive recovery: content=%q err=%v", content, err)
 	}
 	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, archivePath, rawPath)
 }

@@ -172,6 +172,9 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			return PublishResult{}, publishError{Status: http.StatusNotFound, Message: "published output path is not readable", Err: err}
 		}
 	}
+	if _, err := copyExternalSubtitleSidecars(job.MediaPath, destinationPath); err != nil {
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "video output is ready but existing subtitle sidecars could not be copied to Library; original was not archived", Err: err}
+	}
 	if _, err := publishSubtitleArtifacts(&job, destinationPath, overwrite); err != nil {
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "video output is ready but subtitle sidecars could not be published; original was not archived", Err: err}
 	}
@@ -578,4 +581,75 @@ func moveFile(source string, destination string) error {
 		return err
 	}
 	return os.Remove(source)
+}
+
+func copyExternalSubtitleSidecars(sourceMediaPath string, destinationMediaPath string) ([]string, error) {
+	sourceMediaPath = filepath.Clean(strings.TrimSpace(sourceMediaPath))
+	destinationMediaPath = filepath.Clean(strings.TrimSpace(destinationMediaPath))
+	if sourceMediaPath == "." || destinationMediaPath == "." || sourceMediaPath == destinationMediaPath {
+		return nil, nil
+	}
+	sidecars, err := externalSubtitlesForMedia(sourceMediaPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sourceBase := strings.TrimSuffix(sourceMediaPath, filepath.Ext(sourceMediaPath))
+	destinationBase := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath))
+	copied := make([]string, 0, len(sidecars))
+	for _, sidecar := range sidecars {
+		suffix := strings.TrimPrefix(sidecar.Path, sourceBase)
+		if suffix == sidecar.Path || suffix == "" {
+			continue
+		}
+		destination, alreadyPublished, resolveErr := resolveSidecarDestination(sidecar.Path, destinationBase, suffix)
+		if resolveErr != nil {
+			return copied, resolveErr
+		}
+		if alreadyPublished {
+			continue
+		}
+		if err := copyPublishedFile(sidecar.Path, destination, false); err != nil {
+			if os.IsExist(err) {
+				equal, compareErr := filesEqual(sidecar.Path, destination)
+				if compareErr == nil && equal {
+					continue
+				}
+			}
+			return copied, err
+		}
+		copied = append(copied, destination)
+	}
+	return copied, nil
+}
+
+func resolveSidecarDestination(sourcePath string, destinationBase string, suffix string) (string, bool, error) {
+	for index := 0; ; index++ {
+		marker := ""
+		if index == 1 {
+			marker = ".mvf"
+		} else if index > 1 {
+			marker = fmt.Sprintf(".mvf-%d", index)
+		}
+		candidate := destinationBase + marker + suffix
+		info, err := os.Stat(candidate)
+		if os.IsNotExist(err) {
+			return candidate, false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if info.IsDir() {
+			continue
+		}
+		equal, err := filesEqual(sourcePath, candidate)
+		if err != nil {
+			return "", false, err
+		}
+		if equal {
+			return candidate, true, nil
+		}
+	}
 }
