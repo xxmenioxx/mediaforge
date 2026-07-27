@@ -1942,7 +1942,16 @@ export function ProfileLabPage() {
                                 </Grid>
                                 <Grid size={{ xs: 12, lg: 8 }}>
                                   <Stack spacing={1.5}>
-                                    <Typography fontWeight={700} variant="body2">Image adjustments</Typography>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                                      <Typography fontWeight={700} variant="body2">Image adjustments</Typography>
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        onClick={() => resetImageAdjustmentControls(setVideoDraft)}
+                                      >
+                                        Reset image controls
+                                      </Button>
+                                    </Stack>
                                     <Box
                                       sx={{
                                         display: 'grid',
@@ -3105,6 +3114,31 @@ function updateVideoFilterControl(
     const workerConfig = {
       ...current.workerConfig,
       [key]: value,
+    };
+    return {
+      ...current,
+      workerConfig: {
+        ...workerConfig,
+        videoFilters: buildVideoFilterChain(workerConfig),
+      },
+    };
+  });
+}
+
+function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<ProfileInput>>) {
+  setVideoDraft((current) => {
+    const workerConfig = {
+      ...current.workerConfig,
+      exposure: 0,
+      brightness: 0,
+      contrast: 100,
+      saturation: 100,
+      vibrance: 0,
+      gamma: 100,
+      temperature: 0,
+      tint: 0,
+      blackPoint: 0,
+      whitePoint: 100,
     };
     return {
       ...current,
