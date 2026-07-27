@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
@@ -110,6 +111,40 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		profile.WorkerConfig["globalQuality"] != 27 {
 		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
 	}
+}
+
+func TestDefaultQSVQualityUsesConservativeStartingPoint(t *testing.T) {
+	tests := map[int]int{
+		18: 16,
+		20: 18,
+		22: 21,
+		24: 24,
+		0:  18,
+	}
+	for crf, expected := range tests {
+		if actual := defaultQSVQuality(crf); actual != expected {
+			t.Fatalf("defaultQSVQuality(%d) = %d, expected %d", crf, actual, expected)
+		}
+	}
+}
+
+func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"qsvRateControl":    "la_icq",
+		"qsvExtendedBRC":    true,
+		"qsvLookAheadDepth": 40,
+		"qsvAdaptiveI":      true,
+		"qsvAdaptiveB":      true,
+	}}
+	args := qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{
+		LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false,
+	})
+	command := strings.Join(args, " ")
+	assertContains(t, command, "-look_ahead 1")
+	assertContains(t, command, "-adaptive_i 1")
+	assertNotContains(t, command, "-extbrc")
+	assertNotContains(t, command, "-adaptive_b")
+	assertNotContains(t, command, "-look_ahead_depth")
 }
 
 func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T) {

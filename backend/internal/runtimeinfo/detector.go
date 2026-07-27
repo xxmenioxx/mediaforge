@@ -72,7 +72,12 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	}
 	for _, name := range encoderCandidates {
 		capability := capabilities.CheckEncoder(name)
-		snapshot.Encoders[name] = models.JSONMap{"listed": capability.Listed, "usable": capability.Usable, "reason": capability.Reason}
+		snapshot.Encoders[name] = models.JSONMap{
+			"listed": capability.Listed, "usable": capability.Usable, "main10": capability.Main10,
+			"lookAhead": capability.LookAhead, "extendedBrc": capability.ExtendedBRC,
+			"adaptiveI": capability.AdaptiveI, "adaptiveB": capability.AdaptiveB,
+			"reason": capability.Reason,
+		}
 	}
 	snapshot.RecommendedProfile, snapshot.SelectionReasons = SelectProfile(snapshot)
 	effective, err := ResolveEffectiveRuntimePolicy(db, snapshot.RecommendedProfile)

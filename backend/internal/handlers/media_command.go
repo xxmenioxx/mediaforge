@@ -677,7 +677,7 @@ func videoCodecArgs(profile models.Profile) []string {
 		case "libx264", "libx265":
 			args = append(args, "-crf", fmt.Sprintf("%d", profile.QualityValue))
 		case "hevc_qsv":
-			args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
+			args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
 		case "hevc_nvenc":
 			args = append(args, "-cq", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
 		case "hevc_videotoolbox":
@@ -687,6 +687,13 @@ func videoCodecArgs(profile models.Profile) []string {
 			args = append(args, "-b:v", fmt.Sprintf("%dM", bitrate), "-maxrate", fmt.Sprintf("%dM", maxrate), "-bufsize", fmt.Sprintf("%dM", buffer))
 		case "hevc_amf":
 			args = append(args, "-qp_i", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
+		}
+	}
+	if encoder == "hevc_qsv" {
+		if profileUsesTenBit(profile) {
+			args = append(args, "-profile:v", "main10")
+		} else {
+			args = append(args, "-profile:v", "main")
 		}
 	}
 	if encoder == "hevc_videotoolbox" {
@@ -711,7 +718,7 @@ func resolvedVideoEncoder(profile models.Profile) string {
 	if selected == "" || selected == "ffmpeg" || selected == "auto" {
 		if profileWorkerBool(profile, "useHardwareIfAvailable", false) {
 			for _, encoder := range []string{"hevc_qsv", "hevc_videotoolbox", "hevc_nvenc", "hevc_amf"} {
-				if ffmpegEncoderAvailable(encoder) {
+				if ffmpegEncoderAvailableForProfile(encoder, profile) {
 					return encoder
 				}
 			}
@@ -720,7 +727,7 @@ func resolvedVideoEncoder(profile models.Profile) string {
 	}
 	encoder := ffmpegCodecName(selected)
 	if isHardwareVideoEncoder(encoder) {
-		if !profileWorkerBool(profile, "useHardwareIfAvailable", false) || !ffmpegEncoderAvailable(encoder) {
+		if !profileWorkerBool(profile, "useHardwareIfAvailable", false) || !ffmpegEncoderAvailableForProfile(encoder, profile) {
 			return "libx265"
 		}
 	}
@@ -747,16 +754,70 @@ func videoWorkerArgs(profile models.Profile) []string {
 		args = append(args, "-preset", preset)
 	}
 	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && pixFmt != "auto" && encoder != "hevc_videotoolbox" {
+		if encoder == "hevc_qsv" {
+			switch pixFmt {
+			case "yuv420p10le":
+				pixFmt = "p010le"
+			case "yuv420p":
+				pixFmt = "nv12"
+			}
+		}
 		args = append(args, "-pix_fmt", pixFmt)
 	}
 	if params := workerStringValue(profile.WorkerConfig["x265Params"]); params != "" && resolvedVideoEncoder(profile) == "libx265" {
 		args = append(args, "-x265-params", params)
+	}
+	if encoder == "hevc_qsv" {
+		args = append(args, qsvWorkerArgs(profile)...)
+	}
+	return args
+}
+
+func qsvWorkerArgs(profile models.Profile) []string {
+	return qsvWorkerArgsForCapability(profile, capabilities.CheckEncoder("hevc_qsv"))
+}
+
+func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.EncoderCapability) []string {
+	args := []string{}
+	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
+	if rateControl == "la_icq" && capability.LookAhead {
+		args = append(args, "-look_ahead", "1")
+	}
+	if profileWorkerBool(profile, "qsvExtendedBRC", false) && capability.ExtendedBRC {
+		args = append(args, "-extbrc", "1")
+		if depth := workerIntValue(profile.WorkerConfig["qsvLookAheadDepth"], 0); depth > 0 {
+			args = append(args, "-look_ahead_depth", fmt.Sprintf("%d", min(100, max(10, depth))))
+		}
+	}
+	if profileWorkerBool(profile, "qsvAdaptiveI", false) && capability.AdaptiveI {
+		args = append(args, "-adaptive_i", "1")
+	}
+	if profileWorkerBool(profile, "qsvAdaptiveB", false) && capability.AdaptiveB {
+		args = append(args, "-adaptive_b", "1")
 	}
 	return args
 }
 
 func ffmpegEncoderAvailable(encoder string) bool {
 	return capabilities.CheckEncoder(encoder).Usable
+}
+
+func ffmpegEncoderAvailableForProfile(encoder string, profile models.Profile) bool {
+	capability := capabilities.CheckEncoder(encoder)
+	if !capability.Usable {
+		return false
+	}
+	return encoder != "hevc_qsv" || !profileUsesTenBit(profile) || capability.Main10
+}
+
+func defaultQSVQuality(softwareCRF int) int {
+	if softwareCRF <= 0 {
+		return 18
+	}
+	if softwareCRF <= 20 {
+		return max(15, softwareCRF-2)
+	}
+	return min(30, 18+(3*(softwareCRF-20)+1)/2)
 }
 
 func profileUsesTenBit(profile models.Profile) bool {

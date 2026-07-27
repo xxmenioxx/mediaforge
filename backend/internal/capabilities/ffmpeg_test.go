@@ -14,3 +14,13 @@ func TestHardwareEncoderClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestEncoderCapabilityCanReportMainWithoutMain10(t *testing.T) {
+	capability := EncoderCapability{Listed: true, Usable: true, Main10: false, Reason: "Main10 is unavailable"}
+	if !capability.Usable {
+		t.Fatal("expected Main-only hardware encoder to remain usable")
+	}
+	if capability.Main10 {
+		t.Fatal("did not expect Main10 support")
+	}
+}

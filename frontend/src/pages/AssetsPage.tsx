@@ -55,6 +55,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
+import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -1143,7 +1144,7 @@ function AssetRow({
       aacStereoDefault: typeof workerConfig.addAacStereoDefault === 'boolean' ? workerConfig.addAacStereoDefault : conversionDraft.aacStereoDefault,
       useHardwareIfAvailable: hardwareEnabled,
       videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || (hardwareEnabled ? 'auto' : 'libx265'),
-      globalQuality: Number(workerConfig.globalQuality || Math.min(35, (suggestion.insights.recommendedCrf || proposed.qualityValue) + 5)),
+      globalQuality: Number(workerConfig.globalQuality || qsvQualityRangeForCrf(suggestion.insights.recommendedCrf || proposed.qualityValue).recommended),
       ...motionPatch,
     });
     await updateConversion.mutateAsync({ path: asset.path, ...next });
@@ -2347,11 +2348,11 @@ function AssetConversionOverridePanel({
                   <TextField
                     label="Hardware quality"
                     type="number"
-                    value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? Math.min(35, (draft.qualityValue ?? profile?.qualityValue ?? 22) + 5))}
+                    value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? qsvQualityRangeForCrf(draft.qualityValue ?? profile?.qualityValue ?? 22).recommended)}
                     onChange={(event) => onChange('globalQuality', Number(event.target.value))}
                     disabled={!(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
                     inputProps={{ min: 15, max: 35 }}
-                    helperText={`Approximate match: CRF ${draft.qualityValue ?? profile?.qualityValue ?? 22} ≈ HW ${Math.min(35, (draft.qualityValue ?? profile?.qualityValue ?? 22) + 5)}. Lower is higher quality.`}
+                    helperText={qsvQualityHelper(draft.qualityValue ?? profile?.qualityValue ?? 22)}
                     size="small"
                     fullWidth
                   />

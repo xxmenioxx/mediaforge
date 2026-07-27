@@ -50,6 +50,7 @@ import type {
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
+import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -151,7 +152,9 @@ const encoderPresetOptions = [
 const pixelFormatOptions = [
   { value: 'auto', label: 'Auto / codec default', description: 'Lets MVForge choose a compatible pixel format from the codec and encoder.' },
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265/anime/DVD. Helps reduce banding while staying widely playable.' },
+  { value: 'p010le', label: 'QSV 10-bit Main10 (P010)', description: 'Native 10-bit input format for Intel Quick Sync HEVC Main10.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or codecs that do not need 10-bit output.' },
+  { value: 'nv12', label: 'QSV 8-bit Main (NV12)', description: 'Native 8-bit input format for Intel Quick Sync HEVC Main.' },
 ] as const;
 
 const videoEncoderOptions = [
@@ -173,9 +176,18 @@ const deinterlaceOptions = [
 
 const denoiseOptions = [
   { value: 'off', label: 'Off' },
+  { value: 'film-grain', label: 'Film grain · very light' },
+  { value: 'film-restore', label: 'Film restore · gentle' },
   { value: 'light', label: 'Light' },
   { value: 'medium', label: 'Medium' },
   { value: 'strong', label: 'Strong' },
+] as const;
+
+const unsharpOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'subtle', label: 'Subtle · 0.10' },
+  { value: 'film-restore', label: 'Film restore · 0.15' },
+  { value: 'light', label: 'Light · 0.25' },
 ] as const;
 
 const debandOptions = [
@@ -338,14 +350,19 @@ const videoStarterPresets = [
     description: 'QSV/hardware cuando importa más velocidad y no saturar el NAS.',
     draft: {
       videoCodec: 'x265_10bit',
-      qualityValue: 25,
+      qualityValue: 20,
       workerConfig: {
         videoEncoder: 'hevc_qsv',
         preferredEncoder: 'hardware',
         useHardwareIfAvailable: true,
-        globalQuality: 25,
+        globalQuality: 18,
+        qsvRateControl: 'icq',
+        qsvLookAheadDepth: 40,
+        qsvExtendedBRC: false,
+        qsvAdaptiveI: true,
+        qsvAdaptiveB: true,
         videoPreset: 'medium',
-        pixFmt: 'yuv420p10le',
+        pixFmt: 'p010le',
         deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
@@ -366,14 +383,19 @@ const videoStarterPresets = [
     description: 'Hardware HEVC para bibliotecas grandes y conversiones masivas.',
     draft: {
       videoCodec: 'x265_10bit',
-      qualityValue: 27,
+      qualityValue: 23,
       workerConfig: {
         videoEncoder: 'hevc_qsv',
         preferredEncoder: 'hardware',
         useHardwareIfAvailable: true,
-        globalQuality: 27,
+        globalQuality: 21,
+        qsvRateControl: 'icq',
+        qsvLookAheadDepth: 40,
+        qsvExtendedBRC: false,
+        qsvAdaptiveI: true,
+        qsvAdaptiveB: false,
         videoPreset: 'medium',
-        pixFmt: 'yuv420p10le',
+        pixFmt: 'p010le',
         deinterlaceMode: 'off',
         denoise: 'off',
         deband: 'off',
@@ -407,11 +429,12 @@ const emptyVideoDraft: ProfileInput = {
     videoEncoder: 'auto',
     preferredEncoder: 'software',
     useHardwareIfAvailable: false,
-    globalQuality: 25,
+    globalQuality: 18,
     videoPreset: 'medium',
     pixFmt: 'yuv420p10le',
     deinterlaceMode: 'off',
     denoise: 'off',
+    unsharp: 'off',
     deband: 'off',
     crop: 'off',
     cropValue: '',
@@ -658,10 +681,18 @@ export function ProfileLabPage() {
       ...proposed.workerConfig,
       deinterlaceMode,
       denoise: 'off',
+      unsharp: 'off',
       deband: 'off',
       crop: autoCropSafe ? 'manual' : 'off',
       cropValue: autoCropSafe ? recommendedCrop : '',
+      brightness: 0,
+      contrast: 100,
+      saturation: 100,
+      gamma: 100,
+      temperature: 0,
+      tint: 0,
     };
+    videoReasons.push('Color controls remain neutral because snapshot metadata alone cannot justify brightness, contrast, saturation, gamma, temperature, or tint corrections.');
     setSelectedVideoStarterPreset('');
     setVideoDraft({
       ...proposed,
@@ -1329,7 +1360,7 @@ export function ProfileLabPage() {
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
                               label="Hardware quality"
-                              value={numberWorkerValue(videoDraft, 'globalQuality', videoDraft.qualityValue || 25)}
+                              value={numberWorkerValue(videoDraft, 'globalQuality', qsvQualityRangeForCrf(videoDraft.qualityValue || 20).recommended)}
                               onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'globalQuality', Number(event.target.value))}
                               type="number"
                               inputProps={{ min: 15, max: 35 }}
@@ -1339,6 +1370,53 @@ export function ProfileLabPage() {
                               fullWidth
                             />
                           </Grid>
+                          {videoWorkerBool(videoDraft, 'useHardwareIfAvailable') && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
+                            <>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField
+                                  label="QSV rate control"
+                                  value={videoWorkerValue(videoDraft, 'qsvRateControl', 'icq')}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvRateControl', event.target.value)}
+                                  helperText="LA-ICQ falls back to ICQ unless the active worker probe confirms Look Ahead."
+                                  select
+                                  size="small"
+                                  fullWidth
+                                >
+                                  <MenuItem value="icq">ICQ · safe default</MenuItem>
+                                  <MenuItem value="la_icq">LA-ICQ · capability required</MenuItem>
+                                </TextField>
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField
+                                  label="QSV look-ahead depth"
+                                  type="number"
+                                  value={numberWorkerValue(videoDraft, 'qsvLookAheadDepth', 40)}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvLookAheadDepth', Number(event.target.value))}
+                                  inputProps={{ min: 10, max: 100 }}
+                                  size="small"
+                                  fullWidth
+                                />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <FormControlLabel
+                                  control={<Checkbox checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
+                                  label="Extended BRC"
+                                />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <Stack>
+                                  <FormControlLabel
+                                    control={<Checkbox checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveI', event.target.checked)} />}
+                                    label="Adaptive I"
+                                  />
+                                  <FormControlLabel
+                                    control={<Checkbox checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveB', event.target.checked)} />}
+                                    label="Adaptive B"
+                                  />
+                                </Stack>
+                              </Grid>
+                            </>
+                          ) : null}
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <FormControlLabel
                               control={
@@ -1568,6 +1646,22 @@ export function ProfileLabPage() {
                                     fullWidth
                                   >
                                     {debandOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                  <TextField
+                                    label="Unsharp"
+                                    value={videoFilterControlValue(videoDraft, 'unsharp', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'unsharp', event.target.value)}
+                                    helperText="Restores luma edge definition after denoise without sharpening chroma."
+                                    select
+                                    fullWidth
+                                  >
+                                    {unsharpOptions.map((option) => (
                                       <MenuItem key={option.value} value={option.value}>
                                         {option.label}
                                       </MenuItem>
@@ -2593,7 +2687,12 @@ function videoPreviewOptions(draft: ProfileInput) {
   return {
     videoEncoder: videoWorkerValue(draft, 'videoEncoder', 'auto'),
     useHardwareIfAvailable: videoWorkerBool(draft, 'useHardwareIfAvailable'),
-    globalQuality: numberWorkerValue(draft, 'globalQuality', draft.qualityValue || 25),
+    globalQuality: numberWorkerValue(draft, 'globalQuality', qsvQualityRangeForCrf(draft.qualityValue || 20).recommended),
+    qsvRateControl: videoWorkerValue(draft, 'qsvRateControl', 'icq'),
+    qsvLookAheadDepth: numberWorkerValue(draft, 'qsvLookAheadDepth', 40),
+    qsvExtendedBRC: videoWorkerBool(draft, 'qsvExtendedBRC'),
+    qsvAdaptiveI: videoWorkerBool(draft, 'qsvAdaptiveI'),
+    qsvAdaptiveB: videoWorkerBool(draft, 'qsvAdaptiveB'),
     videoPreset: videoWorkerValue(draft, 'videoPreset', 'medium'),
     pixFmt: videoWorkerValue(draft, 'pixFmt', isTenBitDraft(draft) ? 'yuv420p10le' : 'yuv420p'),
     videoFilters: videoWorkerValue(draft, 'videoFilters'),
@@ -2688,8 +2787,7 @@ function isHardwareEncoderOption(value: string) {
 }
 
 function hardwareQualityHelper(softwareCRF: number) {
-  const suggested = Math.min(35, Math.max(15, softwareCRF + 5));
-  return `Approximate starting point: software CRF ${softwareCRF} ≈ hardware quality ${suggested}. Encoder-dependent; lower means higher quality.`;
+  return qsvQualityHelper(softwareCRF);
 }
 
 function videoFilterControlValue(draft: ProfileInput, key: string, fallback = '') {
@@ -2720,6 +2818,7 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
   const deinterlaceMode = stringValue(workerConfig.deinterlaceMode, 'auto');
   const denoise = stringValue(workerConfig.denoise, 'off');
+  const unsharp = stringValue(workerConfig.unsharp, 'off');
   const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
   const cropValue = stringValue(workerConfig.cropValue, '');
@@ -2737,12 +2836,23 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   } else if (deinterlaceMode === 'ivtc_bff') {
     filters.push('fieldmatch=order=bff,decimate');
   }
-  if (denoise === 'light') {
+  if (denoise === 'film-grain') {
+    filters.push('hqdn3d=1.0:1.0:3.0:3.0');
+  } else if (denoise === 'film-restore') {
+    filters.push('hqdn3d=1.2:1.0:4.0:3.0');
+  } else if (denoise === 'light') {
     filters.push('hqdn3d=1.5:1.5:6:6');
   } else if (denoise === 'medium') {
     filters.push('hqdn3d=2:2:7:7');
   } else if (denoise === 'strong') {
     filters.push('nlmeans=s=2:p=7:r=15');
+  }
+  if (unsharp === 'subtle') {
+    filters.push('unsharp=5:5:0.10:5:5:0.0');
+  } else if (unsharp === 'film-restore') {
+    filters.push('unsharp=5:5:0.15:5:5:0.0');
+  } else if (unsharp === 'light') {
+    filters.push('unsharp=5:5:0.25:5:5:0.0');
   }
   if (deband === 'light') {
     filters.push('deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018');

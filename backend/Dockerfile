@@ -52,7 +52,8 @@ RUN apt-get update \
        ca-certificates curl ffmpeg libfontconfig1 libfreetype6 libsqlite3-0 sqlite3 tesseract-ocr \
        tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-spa tzdata \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-         apt-get install -y --no-install-recommends intel-media-va-driver i965-va-driver; \
+         apt-get install -y --no-install-recommends \
+           intel-media-va-driver i965-va-driver libmfx-gen1.2 libvpl2 onevpl-tools; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 

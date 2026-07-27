@@ -1539,6 +1539,11 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	videoEncoderOverride := strings.TrimSpace(c.Query("videoEncoder"))
 	useHardwareOverride, _ := strconv.ParseBool(c.Query("useHardwareIfAvailable"))
 	globalQualityOverride, _ := strconv.Atoi(c.Query("globalQuality"))
+	qsvRateControlOverride := strings.TrimSpace(c.Query("qsvRateControl"))
+	qsvLookAheadDepthOverride, _ := strconv.Atoi(c.Query("qsvLookAheadDepth"))
+	qsvExtendedBRCOverride, _ := strconv.ParseBool(c.Query("qsvExtendedBRC"))
+	qsvAdaptiveIOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveI"))
+	qsvAdaptiveBOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveB"))
 	subtitleStreamIndex := -1
 	if rawSubtitleIndex := strings.TrimSpace(c.Query("subtitleStreamIndex")); rawSubtitleIndex != "" {
 		parsed, parseErr := strconv.Atoi(rawSubtitleIndex)
@@ -1625,7 +1630,11 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	} else {
 		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
 	}
-	args = append(args, previewVideoCodecArgs(h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride, videoEncoderOverride, useHardwareOverride, globalQualityOverride)...)
+	args = append(args, previewVideoCodecArgs(
+		h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride,
+		videoEncoderOverride, useHardwareOverride, globalQualityOverride,
+		qsvRateControlOverride, qsvLookAheadDepthOverride, qsvExtendedBRCOverride, qsvAdaptiveIOverride, qsvAdaptiveBOverride,
+	)...)
 	args = append(args,
 		"-an",
 		"-sn",
@@ -1783,7 +1792,7 @@ func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride str
 
 	videoEncoder := "auto"
 	useHardware := false
-	globalQuality := qualityValue + 5
+	globalQuality := defaultQSVQuality(qualityValue)
 	if len(hardwareOverrides) > 0 {
 		videoEncoder, _ = hardwareOverrides[0].(string)
 	}
@@ -1812,6 +1821,17 @@ func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride str
 			"globalQuality": globalQuality, "videoPreset": videoPreset,
 			"pixFmt": pixFmt, "x265Params": x265Params,
 		},
+	}
+	if len(hardwareOverrides) > 3 {
+		profile.WorkerConfig["qsvRateControl"], _ = hardwareOverrides[3].(string)
+	}
+	if len(hardwareOverrides) > 4 {
+		profile.WorkerConfig["qsvLookAheadDepth"], _ = hardwareOverrides[4].(int)
+	}
+	for index, key := range []string{"qsvExtendedBRC", "qsvAdaptiveI", "qsvAdaptiveB"} {
+		if len(hardwareOverrides) > index+5 {
+			profile.WorkerConfig[key], _ = hardwareOverrides[index+5].(bool)
+		}
 	}
 	args := videoCodecArgs(profile)
 	return append(args, videoWorkerArgs(profile)...)

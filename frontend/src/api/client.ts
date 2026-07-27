@@ -277,6 +277,11 @@ export const api = {
     videoEncoder = 'auto',
     useHardwareIfAvailable = false,
     globalQuality = 25,
+    qsvRateControl = 'icq',
+    qsvLookAheadDepth = 40,
+    qsvExtendedBRC = false,
+    qsvAdaptiveI = false,
+    qsvAdaptiveB = false,
     mode = 'quick',
     subtitleStreamIndex,
   }: {
@@ -293,10 +298,15 @@ export const api = {
     videoEncoder?: string;
     useHardwareIfAvailable?: boolean;
     globalQuality?: number;
+    qsvRateControl?: string;
+    qsvLookAheadDepth?: number;
+    qsvExtendedBRC?: boolean;
+    qsvAdaptiveI?: boolean;
+    qsvAdaptiveB?: boolean;
     mode?: 'quick' | 'quality';
     subtitleStreamIndex?: number;
   }) =>
-    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&mode=${mode}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`,
+    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&mode=${mode}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`,
   audioPreviewUrl: ({
     path,
     profileKey = '',

@@ -39,6 +39,7 @@ import { FormEvent, useState } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import type { Profile, ProfileInput } from '../api/types';
+import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -90,7 +91,9 @@ const encoderPresetOptions = [
 const pixelFormatOptions = [
   { value: 'auto', label: 'Auto / codec default', description: 'Lets MVForge choose a compatible pixel format from the codec and encoder.' },
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265, anime, and DVD sources. Helps reduce banding.' },
+  { value: 'p010le', label: 'QSV 10-bit Main10 (P010)', description: 'Native 10-bit input format for Intel Quick Sync HEVC Main10.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or simple compatibility-focused outputs.' },
+  { value: 'nv12', label: 'QSV 8-bit Main (NV12)', description: 'Native 8-bit input format for Intel Quick Sync HEVC Main.' },
 ] as const;
 
 const videoEncoderOptions = [
@@ -308,7 +311,7 @@ export function ProfilesPage() {
         container: 'mkv',
         videoCodec: 'x265_10bit',
         audioCodec: 'copy',
-        qualityValue: 25,
+        qualityValue: 20,
         preserveHdr: true,
         preserveSubtitles: true,
         preserveChapters: true,
@@ -317,9 +320,14 @@ export function ProfilesPage() {
           videoEncoder: 'hevc_qsv',
           preferredEncoder: 'hardware',
           useHardwareIfAvailable: true,
-          globalQuality: 25,
+          globalQuality: 18,
+          qsvRateControl: 'icq',
+          qsvLookAheadDepth: 40,
+          qsvExtendedBRC: false,
+          qsvAdaptiveI: true,
+          qsvAdaptiveB: true,
           videoPreset: 'medium',
-          pixFmt: 'yuv420p10le',
+          pixFmt: 'p010le',
           addAacStereoTrack: true,
           aacStereoDefault: false,
           preserveOriginalAudio: true,
@@ -357,7 +365,7 @@ export function ProfilesPage() {
         container: 'mkv',
         videoCodec: 'x265_10bit',
         audioCodec: 'copy',
-        qualityValue: 27,
+        qualityValue: 23,
         preserveHdr: true,
         preserveSubtitles: true,
         preserveChapters: true,
@@ -366,9 +374,14 @@ export function ProfilesPage() {
           videoEncoder: 'hevc_qsv',
           preferredEncoder: 'hardware',
           useHardwareIfAvailable: true,
-          globalQuality: 27,
+          globalQuality: 21,
+          qsvRateControl: 'icq',
+          qsvLookAheadDepth: 40,
+          qsvExtendedBRC: false,
+          qsvAdaptiveI: true,
+          qsvAdaptiveB: false,
           videoPreset: 'medium',
-          pixFmt: 'yuv420p10le',
+          pixFmt: 'p010le',
           addAacStereoTrack: true,
           aacStereoDefault: false,
           preserveOriginalAudio: true,
@@ -682,7 +695,7 @@ export function ProfilesPage() {
                         <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label="Hardware quality"
-                            value={workerConfigNumber(form, 'globalQuality', form.qualityValue || 25)}
+                            value={workerConfigNumber(form, 'globalQuality', qsvQualityRangeForCrf(form.qualityValue || 20).recommended)}
                             onChange={(event) => updateWorkerConfig('globalQuality', Number(event.target.value))}
                             helperText={hardwareQualityHelper(form.qualityValue)}
                             type="number"
@@ -691,6 +704,50 @@ export function ProfilesPage() {
                             fullWidth
                           />
                         </Grid>
+                        {workerConfigBool(form, 'useHardwareIfAvailable') && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
+                          <>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <TextField
+                                label="QSV rate control"
+                                value={workerConfigString(form, 'qsvRateControl', 'icq')}
+                                onChange={(event) => updateWorkerConfig('qsvRateControl', event.target.value)}
+                                helperText="LA-ICQ is applied only when the worker probe confirms Look Ahead; otherwise MVForge uses ICQ."
+                                select
+                                fullWidth
+                              >
+                                <MenuItem value="icq">ICQ · safest default</MenuItem>
+                                <MenuItem value="la_icq">LA-ICQ · capability required</MenuItem>
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <TextField
+                                label="QSV look-ahead depth"
+                                type="number"
+                                value={workerConfigNumber(form, 'qsvLookAheadDepth', 40)}
+                                onChange={(event) => updateWorkerConfig('qsvLookAheadDepth', Number(event.target.value))}
+                                inputProps={{ min: 10, max: 100 }}
+                                helperText="Used with supported extended BRC; 40 is a conservative starting point."
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}>
+                              <Stack>
+                                <FormControlLabel
+                                  control={<Checkbox checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
+                                  label="QSV Extended BRC"
+                                />
+                                <FormControlLabel
+                                  control={<Checkbox checked={workerConfigBool(form, 'qsvAdaptiveI')} onChange={(event) => updateWorkerConfig('qsvAdaptiveI', event.target.checked)} />}
+                                  label="QSV Adaptive I"
+                                />
+                                <FormControlLabel
+                                  control={<Checkbox checked={workerConfigBool(form, 'qsvAdaptiveB')} onChange={(event) => updateWorkerConfig('qsvAdaptiveB', event.target.checked)} />}
+                                  label="QSV Adaptive B"
+                                />
+                              </Stack>
+                            </Grid>
+                          </>
+                        ) : null}
                         {workerConfigBool(form, 'useHardwareIfAvailable') && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
                             <Grid size={{ xs: 12, md: 4 }}>
@@ -1312,8 +1369,7 @@ function isHardwareEncoderOption(value: string) {
 }
 
 function hardwareQualityHelper(softwareCRF: number) {
-  const suggested = Math.min(35, Math.max(15, softwareCRF + 5));
-  return `Approximate starting point: software CRF ${softwareCRF} ≈ hardware quality ${suggested}. Encoder-dependent; lower means higher quality.`;
+  return qsvQualityHelper(softwareCRF);
 }
 
 function buildDryRunCommand(profile: ProfileInput) {
@@ -1331,7 +1387,15 @@ function buildDryRunCommand(profile: ProfileInput) {
   const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
   const hardwareQualityArgs = isVideoToolbox
     ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 6)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 8)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 12)}M`
-    : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', profile.qualityValue || 25)}` : '';
+    : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue || 20).recommended)}` : '';
+  const qsvArgs = resolvedEncoder === 'hevc_qsv'
+    ? [
+        workerConfigString(profile, 'qsvRateControl', 'icq') === 'la_icq' ? '-look_ahead 1' : '',
+        workerConfigBool(profile, 'qsvExtendedBRC') ? `-extbrc 1 -look_ahead_depth ${workerConfigNumber(profile, 'qsvLookAheadDepth', 40)}` : '',
+        workerConfigBool(profile, 'qsvAdaptiveI') ? '-adaptive_i 1' : '',
+        workerConfigBool(profile, 'qsvAdaptiveB') ? '-adaptive_b 1' : '',
+      ].filter(Boolean).join(' ')
+    : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
   const aacDisposition = aacTrackDefault(profile) ? 'default' : '0';
   const aacArgs = aacTrackEnabled(profile) ? `-map 0:a:0 -c:a:1 aac -b:a:1 ${workerConfigNumber(profile, 'aacStereoBitrateKbps', 192)}k -ac:a:1 2 -disposition:a:1 ${aacDisposition}` : '';
@@ -1341,7 +1405,7 @@ function buildDryRunCommand(profile: ProfileInput) {
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';
   const qualityArgs = profile.qualityMode === 'crf' && profile.videoCodec !== 'copy' && !isHardware ? `-crf ${profile.qualityValue}` : '';
 
-  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
+  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, qsvArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
     .filter(Boolean)
     .join(' ');
 }
