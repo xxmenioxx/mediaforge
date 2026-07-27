@@ -521,6 +521,8 @@ export function ProfileLabPage() {
   const [audioFilterChainEdited, setAudioFilterChainEdited] = useState(false);
   const [audioPreviewStatus, setAudioPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [videoDraft, setVideoDraft] = useState<ProfileInput>(emptyVideoDraft);
+  const [savedVideoProfileId, setSavedVideoProfileId] = useState<number | null>(null);
+  const [videoProfileSaveMessage, setVideoProfileSaveMessage] = useState('');
   const [selectedVideoStarterPreset, setSelectedVideoStarterPreset] = useState('');
   const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
@@ -535,6 +537,12 @@ export function ProfileLabPage() {
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
+  const videoPreviewStale =
+    videoPreviewNonce > 0 &&
+    videoPreviewStatus !== 'loading' &&
+    (processedVideoCodec !== videoDraft.videoCodec ||
+      processedVideoQualityValue !== videoDraft.qualityValue ||
+      JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft)));
 
   useEffect(() => {
     if (!audioFilterChainEdited) {
@@ -559,9 +567,16 @@ export function ProfileLabPage() {
     scrollToPreviews();
   }, [recommendationApplied]);
 
-  const createVideoProfile = useMutation({
-    mutationFn: api.createProfile,
-    onSuccess: async () => {
+  const saveVideoProfileMutation = useMutation({
+    mutationFn: async (profile: ProfileInput) => {
+      if (savedVideoProfileId) {
+        return { profile: await api.updateProfile({ id: savedVideoProfileId, ...profile }), action: 'updated' as const };
+      }
+      return { profile: await api.createProfile(profile), action: 'created' as const };
+    },
+    onSuccess: async ({ profile, action }) => {
+      setSavedVideoProfileId(profile.id);
+      setVideoProfileSaveMessage(action === 'updated' ? 'Video profile updated.' : 'Video profile saved.');
       await queryClient.invalidateQueries({ queryKey: ['profiles'] });
     },
   });
@@ -608,6 +623,8 @@ export function ProfileLabPage() {
     if (!profile) {
       return;
     }
+    setSavedVideoProfileId(null);
+    setVideoProfileSaveMessage('');
     setSelectedVideoStarterPreset('');
     setVideoDraft({
       name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
@@ -628,6 +645,8 @@ export function ProfileLabPage() {
     const scan = suggestion.scan;
     const proposed = suggestion.proposedProfile;
     const sourceName = selectedAsset?.fileName ?? scan.fileName;
+    setSavedVideoProfileId(null);
+    setVideoProfileSaveMessage('');
     const interlaceStatus = scan.interlaceAnalysis.status ?? 'unknown';
     const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
     const recommendedCrop = scan.cropAnalysis?.recommendedCrop?.trim() ?? '';
@@ -781,6 +800,8 @@ export function ProfileLabPage() {
     if (!preset) {
       return;
     }
+    setSavedVideoProfileId(null);
+    setVideoProfileSaveMessage('');
     setSelectedVideoStarterPreset(presetKey);
     setVideoDraft((current) => {
       const workerConfig = {
@@ -837,7 +858,7 @@ export function ProfileLabPage() {
   }
 
   function saveVideoProfile() {
-    createVideoProfile.mutate({
+    saveVideoProfileMutation.mutate({
       ...videoDraft,
       workerConfig: {
         ...videoDraft.workerConfig,
@@ -1263,13 +1284,30 @@ export function ProfileLabPage() {
                         startIcon={<SaveIcon />}
                         variant="outlined"
                         size="small"
-                        disabled={!videoDraft.name || createVideoProfile.isPending}
+                        disabled={!videoDraft.name || saveVideoProfileMutation.isPending}
                         onClick={saveVideoProfile}
                         sx={{ minHeight: 32 }}
                       >
-                        Save Profile
+                        {savedVideoProfileId ? 'Update Profile' : 'Save Profile'}
                       </Button>
                     </Stack>
+                  </Stack>
+                  <Stack spacing={1}>
+                    {videoPreviewStatus === 'ready' && !videoPreviewStale ? (
+                      <Alert severity="success">Video sample ready in Sample B.</Alert>
+                    ) : null}
+                    {videoPreviewStale ? (
+                      <Alert severity="info">Video settings changed. Process video again to refresh Sample B.</Alert>
+                    ) : null}
+                    {videoPreviewStatus === 'error' ? (
+                      <Alert severity="warning">Video sample could not be processed.</Alert>
+                    ) : null}
+                    {saveVideoProfileMutation.isSuccess && videoProfileSaveMessage ? (
+                      <Alert severity="success">{videoProfileSaveMessage}</Alert>
+                    ) : null}
+                    {saveVideoProfileMutation.isError ? (
+                      <Alert severity="error">{saveVideoProfileMutation.error instanceof Error ? saveVideoProfileMutation.error.message : 'Video profile could not be saved.'}</Alert>
+                    ) : null}
                   </Stack>
                   <Alert severity="info">
                     <strong>copy</strong> keeps the original stream untouched. Use it to preserve quality; choose x264/x265 or another codec when
@@ -1834,18 +1872,6 @@ export function ProfileLabPage() {
                       <TextField label="Description" value={videoDraft.description} onChange={(event) => setVideoDraft({ ...videoDraft, description: event.target.value })} multiline minRows={2} fullWidth />
                     </Grid>
                   </Grid>
-                  {videoPreviewStatus === 'ready' ? (
-                    <Alert severity="success">Video sample ready in Sample B.</Alert>
-                  ) : null}
-                  {videoPreviewNonce > 0 &&
-                  videoPreviewStatus !== 'loading' &&
-                  (processedVideoCodec !== videoDraft.videoCodec || processedVideoQualityValue !== videoDraft.qualityValue || JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft))) ? (
-                    <Alert severity="info">Video settings changed. Process video again to refresh Sample B.</Alert>
-                  ) : null}
-                  {videoPreviewStatus === 'error' ? (
-                    <Alert severity="warning">Video sample could not be processed.</Alert>
-                  ) : null}
-                  {createVideoProfile.isSuccess ? <Alert severity="success">Video profile saved.</Alert> : null}
                 </Stack>
               </CardContent>
             </Card>
