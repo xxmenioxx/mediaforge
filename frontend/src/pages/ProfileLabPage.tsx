@@ -66,6 +66,8 @@ type LabRecommendationReport = {
   general: string[];
 };
 
+type RecommendationSectionState = Record<LabSection, boolean>;
+
 type TrackProfile = {
   key: string;
   name: string;
@@ -177,8 +179,8 @@ const deinterlaceOptions = [
 
 const denoiseOptions = [
   { value: 'off', label: 'Off' },
-  { value: 'film-grain', label: 'Film grain · very light' },
-  { value: 'film-restore', label: 'Film restore · gentle' },
+  { value: 'film-grain', label: 'Preserve grain · very light' },
+  { value: 'film-restore', label: 'Film restoration · gentle' },
   { value: 'light', label: 'Light' },
   { value: 'medium', label: 'Medium' },
   { value: 'strong', label: 'Strong' },
@@ -197,9 +199,16 @@ const debandOptions = [
   { value: 'medium', label: 'Medium' },
 ] as const;
 
-const cropOptions = [
+const deflickerOptions = [
   { value: 'off', label: 'Off' },
-  { value: 'manual', label: 'Manual' },
+  { value: 'light', label: 'Light · 5 frames' },
+  { value: 'medium', label: 'Medium · 9 frames' },
+] as const;
+
+const deblockOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'light', label: 'Light' },
+  { value: 'medium', label: 'Medium' },
 ] as const;
 
 const videoStarterPresets = [
@@ -435,10 +444,22 @@ const emptyVideoDraft: ProfileInput = {
     pixFmt: 'yuv420p10le',
     deinterlaceMode: 'off',
     denoise: 'off',
+    deflicker: 'off',
+    deblockFilter: 'off',
     unsharp: 'off',
     deband: 'off',
     crop: 'off',
     cropValue: '',
+    brightness: 0,
+    contrast: 100,
+    saturation: 100,
+    gamma: 100,
+    temperature: 0,
+    tint: 0,
+    exposure: 0,
+    vibrance: 0,
+    blackPoint: 0,
+    whitePoint: 100,
     videoFilters: '',
     x265Params: 'aq-mode=3:aq-strength=0.9:deblock=-1,-1',
     addAacStereoTrack: false,
@@ -560,9 +581,18 @@ export function ProfileLabPage() {
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
-  const [recommendationApplied, setRecommendationApplied] = useState(false);
+  const [recommendationApplied, setRecommendationApplied] = useState<RecommendationSectionState>({ video: false, audio: false, tracks: false });
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const loadedEditRequestRef = useRef('');
+  const recommendationDefaultsRef = useRef<{
+    video: ProfileInput;
+    audio: AudioEnhancementProfile;
+    tracks: TrackProfile;
+    trackConversion: AssetConversionOverrideState;
+    savedVideoProfileId: number | null;
+    selectedVideoStarterPreset: string;
+    selectedAudioStarterPreset: string;
+  } | null>(null);
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
@@ -635,23 +665,6 @@ export function ProfileLabPage() {
     }
   }, [audioFilterChainEdited, currentAudioFilters]);
 
-  useEffect(() => {
-    if (!recommendationApplied || !assetPath) {
-      return;
-    }
-    setPreviewNonce((current) => current + 1);
-    setProcessedVideoCodec(videoDraft.videoCodec);
-    setProcessedVideoQualityValue(videoDraft.qualityValue);
-    setProcessedVideoOptions(videoPreviewOptions(videoDraft));
-    setVideoPreviewStatus('loading');
-    setVideoPreviewNonce((current) => current + 1);
-    setProcessedAudioFilters(effectiveAudioFilters(audioDraft) || 'anull');
-    setProcessedAudioChannelMode(audioDraft.channelMode);
-    setAudioPreviewStatus('loading');
-    setAudioPreviewNonce((current) => current + 1);
-    scrollToPreviews();
-  }, [recommendationApplied]);
-
   const saveVideoProfileMutation = useMutation({
     mutationFn: async (profile: ProfileInput) => {
       if (savedVideoProfileId) {
@@ -681,9 +694,18 @@ export function ProfileLabPage() {
   const autoRecommendation = useMutation({
     mutationFn: api.suggestProfile,
     onSuccess: (suggestion) => {
+      recommendationDefaultsRef.current = {
+        video: videoDraft,
+        audio: audioDraft,
+        tracks: trackDraft,
+        trackConversion: trackConversionDraft,
+        savedVideoProfileId,
+        selectedVideoStarterPreset,
+        selectedAudioStarterPreset,
+      };
       setRecommendationSuggestion(suggestion);
       setRecommendationReport(previewRecommendationReport(suggestion));
-      setRecommendationApplied(false);
+      setRecommendationApplied({ video: false, audio: false, tracks: false });
       setRecommendationOpen(true);
     },
   });
@@ -726,17 +748,20 @@ export function ProfileLabPage() {
     });
   }
 
-  function applyAutoRecommendation(suggestion: ProfileSuggestion) {
+  function applyAutoRecommendation(suggestion: ProfileSuggestion, section: LabSection) {
     const scan = suggestion.scan;
     const proposed = suggestion.proposedProfile;
     const sourceName = selectedAsset?.fileName ?? scan.fileName;
-    setSavedVideoProfileId(null);
-    setVideoProfileSaveMessage('');
+    if (section === 'video') {
+      setSavedVideoProfileId(null);
+      setVideoProfileSaveMessage('');
+    }
     const interlaceStatus = scan.interlaceAnalysis.status ?? 'unknown';
     const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
     const recommendedCrop = scan.cropAnalysis?.recommendedCrop?.trim() ?? '';
     const bitmapSubtitleStreams = scan.subtitleStreams.filter(isBitmapSubtitleStream);
-    const autoCropSafe = cropStatus === 'detected' && Boolean(recommendedCrop) && bitmapSubtitleStreams.length === 0;
+    const cropSuggestionAvailable = cropStatus === 'detected' && Boolean(recommendedCrop);
+    const cropSuggestionSafe = cropSuggestionAvailable && bitmapSubtitleStreams.length === 0;
     const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
     const needsVideoCorrection = interlaceStatus === 'interlaced' || interlaceStatus === 'telecine_suspected';
     const targetVideoCodec = sourceIsHEVC && !needsVideoCorrection ? 'copy' : proposed.videoCodec;
@@ -770,9 +795,9 @@ export function ProfileLabPage() {
     if (scan.hdr) {
       videoReasons.push('HDR and 10-bit output are preserved because HDR metadata was detected.');
     }
-    if (autoCropSafe) {
+    if (cropSuggestionSafe) {
       videoReasons.push(
-        `Stable black bars were detected in ${scan.cropAnalysis.matchingWindows ?? 0}/${scan.cropAnalysis.windows ?? 0} samples; crop=${recommendedCrop} was enabled for preview.`,
+        `Stable black bars were detected in ${scan.cropAnalysis.matchingWindows ?? 0}/${scan.cropAnalysis.windows ?? 0} samples; crop=${recommendedCrop} was added to the draft but left disabled for visual confirmation.`,
       );
     } else if (cropStatus === 'detected' && bitmapSubtitleStreams.length > 0) {
       videoReasons.push(
@@ -785,20 +810,25 @@ export function ProfileLabPage() {
       ...proposed.workerConfig,
       deinterlaceMode,
       denoise: 'off',
+      deflicker: 'off',
+      deblockFilter: 'off',
       unsharp: 'off',
       deband: 'off',
-      crop: autoCropSafe ? 'manual' : 'off',
-      cropValue: autoCropSafe ? recommendedCrop : '',
+      crop: 'off',
+      cropValue: cropSuggestionAvailable ? recommendedCrop : '',
       brightness: 0,
       contrast: 100,
       saturation: 100,
       gamma: 100,
       temperature: 0,
       tint: 0,
+      exposure: 0,
+      vibrance: 0,
+      blackPoint: 0,
+      whitePoint: 100,
     };
-    videoReasons.push('Color controls remain neutral because snapshot metadata alone cannot justify brightness, contrast, saturation, gamma, temperature, or tint corrections.');
-    setSelectedVideoStarterPreset('');
-    setVideoDraft({
+    videoReasons.push('Image adjustment controls remain neutral because snapshot metadata alone cannot justify exposure, levels, color, or detail corrections.');
+    const recommendedVideoDraft: ProfileInput = {
       ...proposed,
       name: `Auto recommended - ${sourceName}`,
       description: `Generated in Profile Lab from the current snapshot of ${sourceName}.`,
@@ -810,13 +840,23 @@ export function ProfileLabPage() {
         derivedFromAsset: selectedAsset?.path ?? scan.path,
         videoFilters: buildVideoFilterChain(workerConfig),
       },
-    });
+    };
+    if (section === 'video') {
+      setSelectedVideoStarterPreset('');
+      setVideoDraft(recommendedVideoDraft);
+      setPreviewNonce((current) => current + 1);
+      setProcessedVideoCodec(recommendedVideoDraft.videoCodec);
+      setProcessedVideoQualityValue(recommendedVideoDraft.qualityValue);
+      setProcessedVideoOptions(videoPreviewOptions(recommendedVideoDraft));
+      setVideoPreviewStatus('loading');
+      setVideoPreviewNonce((current) => current + 1);
+      scrollToPreviews();
+    }
 
     const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase()));
     const multichannelAudio = scan.audioStreams.filter((stream) => (stream.channels ?? 0) > 2);
     const audioReasons: string[] = [];
-    setSelectedAudioStarterPreset('');
-    setAudioDraft({
+    const recommendedAudioDraft: AudioEnhancementProfile = {
       ...emptyAudioDraft,
       key: uniqueKey(slugify(`auto-compatible-${sourceName}`), audioProfiles),
       name: `Compatible audio - ${sourceName}`,
@@ -826,8 +866,18 @@ export function ProfileLabPage() {
       preserveOriginalTrack: true,
       outputCodec: 'aac',
       notes: 'Auto recommendation preserves the original and does not apply EQ, denoise, or loudness changes without an audio measurement.',
-    });
-    setAudioFilterChainEdited(false);
+    };
+    if (section === 'audio') {
+      setSelectedAudioStarterPreset('');
+      setAudioDraft(recommendedAudioDraft);
+      setAudioFilterChainEdited(false);
+      setPreviewNonce((current) => current + 1);
+      setProcessedAudioFilters(effectiveAudioFilters(recommendedAudioDraft) || 'anull');
+      setProcessedAudioChannelMode(recommendedAudioDraft.channelMode);
+      setAudioPreviewStatus('loading');
+      setAudioPreviewNonce((current) => current + 1);
+      scrollToPreviews();
+    }
     audioReasons.push(
       incompatibleAudio.length > 0
         ? `${incompatibleAudio.length} audio track(s) use less browser-friendly codecs; an AAC compatibility copy was prepared while preserving the originals.`
@@ -843,7 +893,7 @@ export function ProfileLabPage() {
     const trackReasons = [
       `${scan.videoStreams.length} video, ${scan.audioStreams.length} audio, and ${scan.subtitleStreams.length} subtitle track(s) were read from the snapshot.`,
     ];
-    setTrackDraft({
+    const recommendedTrackDraft: TrackProfile = {
       ...emptyTrackDraft,
       key: uniqueTrackKey(slugify(`auto-tracks-${sourceName}`), trackProfiles),
       name: `Recommended tracks - ${sourceName}`,
@@ -857,10 +907,14 @@ export function ProfileLabPage() {
       subtitlesRequired: false,
       dropCommentary: commentaryIndexes.length > 0,
       notes: 'Review language/default choices before saving. Missing tracks are validated in review mode.',
-    });
-    setTrackConversionDraft({
+    };
+    const recommendedTrackConversion: AssetConversionOverrideState = {
       keepAudioStreams: commentaryIndexes.length > 0 ? keptAudioIndexes : undefined,
-    });
+    };
+    if (section === 'tracks') {
+      setTrackDraft(recommendedTrackDraft);
+      setTrackConversionDraft(recommendedTrackConversion);
+    }
     trackReasons.push(
       commentaryIndexes.length > 0
         ? `${commentaryIndexes.length} commentary track(s) were identified by metadata and deselected; review before saving.`
@@ -878,6 +932,39 @@ export function ProfileLabPage() {
       tracks: trackReasons,
       general: suggestion.insights.recommendations,
     });
+    setRecommendationApplied((current) => ({ ...current, [section]: true }));
+  }
+
+  function resetAutoRecommendation(section: LabSection) {
+    const defaults = recommendationDefaultsRef.current;
+    if (!defaults) {
+      return;
+    }
+    if (section === 'video') {
+      setVideoDraft(defaults.video);
+      setSavedVideoProfileId(defaults.savedVideoProfileId);
+      setVideoProfileSaveMessage('');
+      setSelectedVideoStarterPreset(defaults.selectedVideoStarterPreset);
+      setPreviewNonce((current) => current + 1);
+      setProcessedVideoCodec(defaults.video.videoCodec);
+      setProcessedVideoQualityValue(defaults.video.qualityValue);
+      setProcessedVideoOptions(videoPreviewOptions(defaults.video));
+      setVideoPreviewStatus('loading');
+      setVideoPreviewNonce((current) => current + 1);
+    } else if (section === 'audio') {
+      setAudioDraft(defaults.audio);
+      setAudioFilterChainEdited(false);
+      setSelectedAudioStarterPreset(defaults.selectedAudioStarterPreset);
+      setPreviewNonce((current) => current + 1);
+      setProcessedAudioFilters(effectiveAudioFilters(defaults.audio) || 'anull');
+      setProcessedAudioChannelMode(defaults.audio.channelMode);
+      setAudioPreviewStatus('loading');
+      setAudioPreviewNonce((current) => current + 1);
+    } else {
+      setTrackDraft(defaults.tracks);
+      setTrackConversionDraft(defaults.trackConversion);
+    }
+    setRecommendationApplied((current) => ({ ...current, [section]: false }));
   }
 
   function applyStarterVideoPreset(presetKey: string) {
@@ -1116,7 +1203,7 @@ export function ProfileLabPage() {
                     resetProcessedPreviews();
                     setRecommendationReport(null);
                     setRecommendationSuggestion(null);
-                    setRecommendationApplied(false);
+                    setRecommendationApplied({ video: false, audio: false, tracks: false });
                     setRecommendationOpen(false);
                   }}
                 />
@@ -1201,7 +1288,7 @@ export function ProfileLabPage() {
                   </Button>
                   {recommendationReport ? (
                     <Button size="small" variant="text" onClick={() => setRecommendationOpen(true)} sx={{ minWidth: 'auto', px: 1 }}>
-                      {recommendationApplied ? 'Applied' : 'View'}
+                      {Object.values(recommendationApplied).some(Boolean) ? 'Applied' : 'View'}
                     </Button>
                   ) : null}
                 </Stack>
@@ -1218,25 +1305,21 @@ export function ProfileLabPage() {
           <DialogTitle>Profile Lab suggestion</DialogTitle>
           <DialogContent dividers>
             {recommendationReport ? (
-              <LabRecommendationDetails report={recommendationReport} applied={recommendationApplied} />
+              <LabRecommendationDetails
+                report={recommendationReport}
+                applied={recommendationApplied}
+                canApply={Boolean(recommendationSuggestion)}
+                onApply={(section) => {
+                  if (recommendationSuggestion) {
+                    applyAutoRecommendation(recommendationSuggestion, section);
+                  }
+                }}
+                onDefault={resetAutoRecommendation}
+              />
             ) : null}
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setRecommendationOpen(false)}>Close</Button>
-            <Button
-              variant="contained"
-              startIcon={<AutoFixHighIcon />}
-              disabled={!recommendationSuggestion || recommendationApplied}
-              onClick={() => {
-                if (recommendationSuggestion) {
-                  applyAutoRecommendation(recommendationSuggestion);
-                  setRecommendationApplied(true);
-                  setRecommendationOpen(false);
-                }
-              }}
-            >
-              {recommendationApplied ? 'Changes applied' : 'Apply changes'}
-            </Button>
           </DialogActions>
         </Dialog>
         <Box ref={previewsRef} sx={{ scrollMarginTop: 16, mb: 2 }}>
@@ -1730,7 +1813,11 @@ export function ProfileLabPage() {
                                 </Typography>
                               </Stack>
                               <Grid container spacing={2}>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <Grid size={{ xs: 12, lg: 4 }}>
+                                  <Stack spacing={1.5}>
+                                    <Typography fontWeight={700} variant="body2">Cleanup filters</Typography>
+                                    <Grid container spacing={1.5}>
+                                <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
                                     label="Deinterlace"
                                     value={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto')}
@@ -1745,7 +1832,7 @@ export function ProfileLabPage() {
                                     ))}
                                   </TextField>
                                 </Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
                                     label="Denoise"
                                     value={videoFilterControlValue(videoDraft, 'denoise', 'off')}
@@ -1760,7 +1847,7 @@ export function ProfileLabPage() {
                                     ))}
                                   </TextField>
                                 </Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
                                     label="Deband"
                                     value={videoFilterControlValue(videoDraft, 'deband', 'off')}
@@ -1775,12 +1862,44 @@ export function ProfileLabPage() {
                                     ))}
                                   </TextField>
                                 </Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <Grid size={{ xs: 12, sm: 6 }}>
+                                  <TextField
+                                    label="Deflicker"
+                                    value={videoFilterControlValue(videoDraft, 'deflicker', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deflicker', event.target.value)}
+                                    helperText="Reduces frame-to-frame brightness variation in old transfers."
+                                    select
+                                    fullWidth
+                                  >
+                                    {deflickerOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6 }}>
+                                  <TextField
+                                    label="Deblock"
+                                    value={videoFilterControlValue(videoDraft, 'deblockFilter', 'off')}
+                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deblockFilter', event.target.value)}
+                                    helperText="Softens visible MPEG/DVD block boundaries. Preview before saving."
+                                    select
+                                    fullWidth
+                                  >
+                                    {deblockOptions.map((option) => (
+                                      <MenuItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </MenuItem>
+                                    ))}
+                                  </TextField>
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
                                     label="Unsharp"
                                     value={videoFilterControlValue(videoDraft, 'unsharp', 'off')}
                                     onChange={(event) => updateVideoFilterControl(setVideoDraft, 'unsharp', event.target.value)}
-                                    helperText="Restores luma edge definition after denoise without sharpening chroma."
+                                    helperText="Restores luma edge definition after denoise."
                                     select
                                     fullWidth
                                   >
@@ -1791,35 +1910,59 @@ export function ProfileLabPage() {
                                     ))}
                                   </TextField>
                                 </Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                                  <TextField
-                                    label="Crop"
-                                    value={videoFilterControlValue(videoDraft, 'crop', 'off')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'crop', event.target.value)}
-                                    select
-                                    fullWidth
-                                  >
-                                    {cropOptions.map((option) => (
-                                      <MenuItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
-                                </Grid>
-                                {videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' ? (
-                                  <Grid size={{ xs: 12, md: 6 }}>
+                                <Grid size={{ xs: 12 }}>
+                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+                                    <FormControlLabel
+                                      control={
+                                        <Checkbox
+                                          checked={videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'}
+                                          onChange={(event) => updateVideoFilterControl(setVideoDraft, 'crop', event.target.checked ? 'manual' : 'off')}
+                                        />
+                                      }
+                                      label="Enable crop"
+                                      sx={{ minWidth: 150, m: 0 }}
+                                    />
                                     <TextField
-                                      label="Manual crop"
+                                      label={videoWorkerValue(videoDraft, 'cropValue') ? 'Suggested crop' : 'Manual crop'}
                                       value={videoWorkerValue(videoDraft, 'cropValue')}
                                       onChange={(event) => updateVideoFilterControl(setVideoDraft, 'cropValue', event.target.value)}
                                       placeholder="iw:ih-80:0:40"
-                                      helperText="FFmpeg crop expression: width:height:x:y."
+                                      helperText={
+                                        videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'
+                                          ? 'Enabled for Sample B and the saved profile.'
+                                          : 'Saved as a suggestion, but not applied until enabled.'
+                                      }
+                                      size="small"
                                       fullWidth
                                     />
-                                  </Grid>
-                                ) : null}
-                                <Grid size={{ xs: 12, md: 4 }}>
-                                  <ImageAdjustmentSlider
+                                  </Stack>
+                                </Grid>
+                                    </Grid>
+                                  </Stack>
+                                </Grid>
+                                <Grid size={{ xs: 12, lg: 8 }}>
+                                  <Stack spacing={1.5}>
+                                    <Typography fontWeight={700} variant="body2">Image adjustments</Typography>
+                                    <Box
+                                      sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: { xs: 'repeat(5, minmax(64px, 1fr))', md: 'repeat(10, minmax(64px, 1fr))' },
+                                        gap: 0.75,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <ImageAdjustmentSlider
+                                    label="Exposure"
+                                    tooltip="Adjust overall exposure in stops. Keep changes small."
+                                    value={numberWorkerValue(videoDraft, 'exposure', 0)}
+                                    min={-200}
+                                    max={200}
+                                    step={10}
+                                    scaleLabels={['+2', '0', '-2']}
+                                    valueLabel={(value) => `${value > 0 ? '+' : ''}${(value / 100).toFixed(1)} EV`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'exposure', String(value))}
+                                  />
+                                      <ImageAdjustmentSlider
                                     label="Brightness"
                                     tooltip="Small luma correction for sources that are too dark or washed out."
                                     value={numberWorkerValue(videoDraft, 'brightness', 0)}
@@ -1828,8 +1971,6 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'brightness', String(value))}
                                   />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 4 }}>
                                   <ImageAdjustmentSlider
                                     label="Contrast"
                                     tooltip="Adjust image separation. Keep changes subtle for animation."
@@ -1839,8 +1980,6 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'contrast', String(value))}
                                   />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 4 }}>
                                   <ImageAdjustmentSlider
                                     label="Saturation"
                                     tooltip="Color intensity correction. Useful for faded sources."
@@ -1850,8 +1989,15 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'saturation', String(value))}
                                   />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 4 }}>
+                                  <ImageAdjustmentSlider
+                                    label="Vibrance"
+                                    tooltip="Boosts weaker colors more selectively than saturation."
+                                    value={numberWorkerValue(videoDraft, 'vibrance', 0)}
+                                    min={-100}
+                                    max={100}
+                                    valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'vibrance', String(value))}
+                                  />
                                   <ImageAdjustmentSlider
                                     label="Gamma"
                                     tooltip="Midtone correction. Helps sources that look flat, too dark, or too bright without moving black/white as much."
@@ -1861,8 +2007,6 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'gamma', String(value))}
                                   />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 4 }}>
                                   <ImageAdjustmentSlider
                                     label="Temperature"
                                     tooltip="Warmer/cooler correction. Positive warms, negative cools."
@@ -1872,8 +2016,6 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'temperature', String(value))}
                                   />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 4 }}>
                                   <ImageAdjustmentSlider
                                     label="Tint"
                                     tooltip="Green/magenta correction. Useful for color casts after old transfers."
@@ -1883,6 +2025,28 @@ export function ProfileLabPage() {
                                     valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'tint', String(value))}
                                   />
+                                  <ImageAdjustmentSlider
+                                    label="Black point"
+                                    tooltip="Raises the input black point to deepen washed-out blacks."
+                                    value={numberWorkerValue(videoDraft, 'blackPoint', 0)}
+                                    min={0}
+                                    max={10}
+                                    step={1}
+                                    valueLabel={(value) => `${value}%`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'blackPoint', String(value))}
+                                  />
+                                  <ImageAdjustmentSlider
+                                    label="White point"
+                                    tooltip="Lowers the input white point to recover contrast in dull highlights."
+                                    value={numberWorkerValue(videoDraft, 'whitePoint', 100)}
+                                    min={90}
+                                    max={100}
+                                    step={1}
+                                    valueLabel={(value) => `${value}%`}
+                                    onChange={(value) => updateVideoFilterControl(setVideoDraft, 'whitePoint', String(value))}
+                                  />
+                                    </Box>
+                                  </Stack>
                                 </Grid>
                               </Grid>
                             </Stack>
@@ -2505,6 +2669,8 @@ function ImageAdjustmentSlider({
   value,
   min,
   max,
+  step = 5,
+  scaleLabels,
   valueLabel,
   onChange,
 }: {
@@ -2513,24 +2679,49 @@ function ImageAdjustmentSlider({
   value: number;
   min: number;
   max: number;
+  step?: number;
+  scaleLabels?: [string, string, string];
   valueLabel: (value: number) => string;
   onChange: (value: number) => void;
 }) {
   return (
     <Tooltip title={tooltip}>
-      <Stack spacing={0.5}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Typography fontWeight={700}>{label}</Typography>
-          <Chip label={valueLabel(value)} size="small" />
-        </Stack>
-        <Slider
-          value={value}
-          min={min}
-          max={max}
-          step={5}
+      <Stack
+        spacing={1}
+        alignItems="center"
+        sx={{
+          width: '100%',
+          minWidth: 0,
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 1,
+          p: 1,
+          bgcolor: 'rgba(255,255,255,0.02)',
+          flexShrink: 0,
+        }}
+      >
+        <Typography fontWeight={700} variant="caption" noWrap sx={{ maxWidth: '100%' }}>{label}</Typography>
+        <Chip
+          label={valueLabel(value)}
           size="small"
-          onChange={(_, nextValue) => onChange(Array.isArray(nextValue) ? nextValue[0] : nextValue)}
+          sx={{ maxWidth: '100%', height: 22, '& .MuiChip-label': { px: 0.75, fontSize: 11 } }}
         />
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: 190 }}>
+          <Stack justifyContent="space-between" sx={{ height: '100%' }}>
+            <Typography color="text.secondary" variant="caption">{scaleLabels?.[0] ?? max}</Typography>
+            <Typography color="text.secondary" variant="caption">{scaleLabels?.[1] ?? Math.round((min + max) / 2)}</Typography>
+            <Typography color="text.secondary" variant="caption">{scaleLabels?.[2] ?? min}</Typography>
+          </Stack>
+          <Slider
+            value={value}
+            min={min}
+            max={max}
+            step={step}
+            orientation="vertical"
+            sx={{ height: 170 }}
+            onChange={(_, nextValue) => onChange(Array.isArray(nextValue) ? nextValue[0] : nextValue)}
+          />
+        </Stack>
       </Stack>
     </Tooltip>
   );
@@ -2929,6 +3120,8 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
   const deinterlaceMode = stringValue(workerConfig.deinterlaceMode, 'auto');
   const denoise = stringValue(workerConfig.denoise, 'off');
+  const deflicker = stringValue(workerConfig.deflicker, 'off');
+  const deblockFilter = stringValue(workerConfig.deblockFilter, 'off');
   const unsharp = stringValue(workerConfig.unsharp, 'off');
   const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
@@ -2939,6 +3132,10 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const gamma = numericWorkerConfigValue(workerConfig, 'gamma', 100);
   const temperature = numericWorkerConfigValue(workerConfig, 'temperature', 0);
   const tint = numericWorkerConfigValue(workerConfig, 'tint', 0);
+  const exposure = numericWorkerConfigValue(workerConfig, 'exposure', 0);
+  const vibrance = numericWorkerConfigValue(workerConfig, 'vibrance', 0);
+  const blackPoint = numericWorkerConfigValue(workerConfig, 'blackPoint', 0);
+  const whitePoint = numericWorkerConfigValue(workerConfig, 'whitePoint', 100);
 
   if (deinterlaceMode === 'force') {
     filters.push('bwdif=mode=send_frame:parity=auto:deint=all');
@@ -2946,6 +3143,16 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
     filters.push('fieldmatch=order=tff,decimate');
   } else if (deinterlaceMode === 'ivtc_bff') {
     filters.push('fieldmatch=order=bff,decimate');
+  }
+  if (deflicker === 'light') {
+    filters.push('deflicker=size=5:mode=pm');
+  } else if (deflicker === 'medium') {
+    filters.push('deflicker=size=9:mode=pm');
+  }
+  if (deblockFilter === 'light') {
+    filters.push('deblock=filter=weak:block=8');
+  } else if (deblockFilter === 'medium') {
+    filters.push('deblock=filter=strong:block=8');
   }
   if (denoise === 'film-grain') {
     filters.push('hqdn3d=1.0:1.0:3.0:3.0');
@@ -2973,6 +3180,14 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   if (crop === 'manual' && cropValue.trim()) {
     filters.push(`crop=${cropValue.trim()}`);
   }
+  if (exposure !== 0) {
+    filters.push(`exposure=exposure=${trimGain(Math.max(-200, Math.min(200, exposure)) / 100)}`);
+  }
+  if (blackPoint !== 0 || whitePoint !== 100) {
+    const inputBlack = trimGain(Math.max(0, Math.min(10, blackPoint)) / 100);
+    const inputWhite = trimGain(Math.max(90, Math.min(100, whitePoint)) / 100);
+    filters.push(`colorlevels=rimin=${inputBlack}:gimin=${inputBlack}:bimin=${inputBlack}:rimax=${inputWhite}:gimax=${inputWhite}:bimax=${inputWhite}`);
+  }
   if (brightness !== 0 || contrast !== 100 || saturation !== 100 || gamma !== 100) {
     const eqParts = [
       `brightness=${trimGain((Math.max(-100, Math.min(100, brightness)) / 100) * 0.12)}`,
@@ -2981,6 +3196,9 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
       `gamma=${trimGain(Math.max(70, Math.min(130, gamma)) / 100)}`,
     ];
     filters.push(`eq=${eqParts.join(':')}`);
+  }
+  if (vibrance !== 0) {
+    filters.push(`vibrance=intensity=${trimGain(Math.max(-100, Math.min(100, vibrance)) / 100)}`);
   }
   if (temperature !== 0 || tint !== 0) {
     const warm = Math.max(-100, Math.min(100, temperature)) / 100;
@@ -3130,19 +3348,28 @@ function AudioProfileAutocomplete({
 function LabRecommendationDetails({
   report,
   applied,
+  canApply,
+  onApply,
+  onDefault,
 }: {
   report: LabRecommendationReport;
-  applied: boolean;
+  applied: RecommendationSectionState;
+  canApply: boolean;
+  onApply: (section: LabSection) => void;
+  onDefault: (section: LabSection) => void;
 }) {
   const sections: Array<{ key: LabSection; label: string; items: string[] }> = [
     { key: 'video', label: 'Video', items: report.video },
     { key: 'audio', label: 'Audio', items: report.audio },
     { key: 'tracks', label: 'Tracks', items: report.tracks },
   ];
+  const appliedCount = Object.values(applied).filter(Boolean).length;
   return (
     <Stack spacing={1.5}>
-      <Alert severity={applied ? 'success' : 'info'}>
-        {applied ? 'These changes were applied to the editable LAB drafts.' : 'Review the proposed changes below. Nothing has been modified yet.'}
+      <Alert severity={appliedCount > 0 ? 'success' : 'info'}>
+        {appliedCount > 0
+          ? `${appliedCount} recommendation section${appliedCount === 1 ? '' : 's'} applied. Other LAB drafts remain unchanged.`
+          : 'Review each section independently. Nothing has been modified yet.'}
       </Alert>
       <Typography variant="h3">{report.summary}</Typography>
       <Typography color="text.secondary" variant="body2">{report.match}</Typography>
@@ -3151,7 +3378,18 @@ function LabRecommendationDetails({
           <Grid key={section.key} size={{ xs: 12, md: 4 }}>
             <Box sx={{ height: '100%', p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
               <Stack spacing={1}>
-                <Typography fontWeight={700}>{section.label}</Typography>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                  <Typography fontWeight={700}>{section.label}</Typography>
+                  <Button
+                    size="small"
+                    variant={applied[section.key] ? 'outlined' : 'contained'}
+                    color={applied[section.key] ? 'inherit' : 'primary'}
+                    disabled={!canApply}
+                    onClick={() => applied[section.key] ? onDefault(section.key) : onApply(section.key)}
+                  >
+                    {applied[section.key] ? 'Default' : 'Apply'}
+                  </Button>
+                </Stack>
                 {section.items.map((item) => (
                   <Typography key={item} variant="body2">• {item}</Typography>
                 ))}
@@ -3166,7 +3404,7 @@ function LabRecommendationDetails({
         </Stack>
       </Alert>
       <Typography color="text.secondary" variant="caption">
-        Applying changes only updates the editable LAB drafts. It does not save profiles, process media, or add a job to Queue.
+        Apply updates only that LAB draft. Default restores the values present before Analyze. Neither action saves a profile or adds a Queue job.
       </Typography>
     </Stack>
   );
@@ -3190,7 +3428,7 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
     crop === 'detected' && scan.subtitleStreams.some(isBitmapSubtitleStream)
       ? 'Keep crop disabled because bitmap subtitles may be positioned inside the detected black bars.'
       : crop === 'detected'
-        ? `Enable manual crop ${scan.cropAnalysis.recommendedCrop} after stable black bars were detected.`
+        ? `Add crop ${scan.cropAnalysis.recommendedCrop} as a disabled suggestion for visual confirmation.`
       : crop === 'variable'
         ? 'Keep crop disabled because the detected borders vary between scenes.'
         : 'Keep crop disabled because no stable black bars were detected.',
