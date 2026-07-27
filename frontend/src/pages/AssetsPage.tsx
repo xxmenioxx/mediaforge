@@ -2101,6 +2101,11 @@ function AssetConversionOverridePanel({
   readOnly?: boolean;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const recommendedCrop = scan?.cropAnalysis?.status === 'detected' ? (scan.cropAnalysis.recommendedCrop ?? '').trim() : '';
+  const currentCropFilter = cropFilterFromChain(draft.videoFilters);
+  const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
+  const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
+  const bitmapSubtitleCount = scan?.subtitleStreams.filter((stream) => isBitmapSubtitleCodec(stream.codec)).length ?? 0;
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2240,12 +2245,12 @@ function AssetConversionOverridePanel({
             <TextField
               select
               label="Image cleanup filters"
-              value={draft.videoFilters ?? ''}
-              onChange={(event) => onChange('videoFilters', event.target.value)}
+              value={withoutCropFilters(draft.videoFilters)}
+              onChange={(event) => onChange('videoFilters', joinFilters(event.target.value, cropFilterFromChain(draft.videoFilters)))}
               size="small"
               fullWidth
             >
-              {optionItems(imageCleanupOptions, draft.videoFilters).map((option) => (
+              {optionItems(imageCleanupOptions, withoutCropFilters(draft.videoFilters)).map((option) => (
                 <MenuItem key={option.value} value={option.value}>
                   {option.label}
                 </MenuItem>
@@ -2265,6 +2270,39 @@ function AssetConversionOverridePanel({
                 <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
               ))}
             </TextField>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <Box sx={{ border: 1, borderColor: suggestedCropEnabled ? 'primary.main' : 'divider', borderRadius: 1, p: 1.5, bgcolor: suggestedCropEnabled ? 'rgba(79,179,255,0.055)' : 'rgba(255,255,255,0.02)' }}>
+              <Stack spacing={1}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={1}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={suggestedCropEnabled}
+                        disabled={!recommendedCrop}
+                        onChange={(event) => onChange(
+                          'videoFilters',
+                          event.target.checked
+                            ? joinFilters(withoutCropFilters(draft.videoFilters), suggestedCropFilter)
+                            : withoutCropFilters(draft.videoFilters),
+                        )}
+                      />
+                    }
+                    label="Enable suggested crop"
+                  />
+                  {recommendedCrop ? <Chip size="small" color={suggestedCropEnabled ? 'primary' : 'default'} label={`crop=${recommendedCrop}`} /> : <Chip size="small" label="No stable crop suggested" />}
+                </Stack>
+                {scan?.cropAnalysis?.reason ? <Typography variant="body2" color="text.secondary">{scan.cropAnalysis.reason}</Typography> : null}
+                {currentCropFilter && !suggestedCropEnabled ? (
+                  <Alert severity="info">A custom crop is currently active: {currentCropFilter}. Enabling the suggestion will replace it.</Alert>
+                ) : null}
+                {suggestedCropEnabled && bitmapSubtitleCount > 0 ? (
+                  <Alert severity="warning">
+                    {bitmapSubtitleCount} bitmap subtitle track(s) may place text inside the cropped bars. Verify representative subtitled scenes before processing.
+                  </Alert>
+                ) : null}
+              </Stack>
+            </Box>
           </Grid>
           <Grid size={{ xs: 12 }}>
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
@@ -3190,6 +3228,14 @@ function optionItems(options: SelectOption[], currentValue?: string) {
 
 function withoutMotionFilters(value?: string) {
   return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && !item.startsWith('fieldmatch') && item !== 'decimate').join(',');
+}
+
+function cropFilterFromChain(value?: string) {
+  return (value ?? '').split(',').map((item) => item.trim()).find((item) => item.startsWith('crop=')) ?? '';
+}
+
+function withoutCropFilters(value?: string) {
+  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('crop=')).join(',');
 }
 
 function joinFilters(...values: Array<string | undefined>) {
