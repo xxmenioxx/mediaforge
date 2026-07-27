@@ -1957,7 +1957,7 @@ export function ProfileLabPage() {
                                     value={numberWorkerValue(videoDraft, 'exposure', 0)}
                                     min={-200}
                                     max={200}
-                                    step={10}
+                                    step={5}
                                     scaleLabels={['+2', '0', '-2']}
                                     valueLabel={(value) => `${value > 0 ? '+' : ''}${(value / 100).toFixed(1)} EV`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'exposure', String(value))}
@@ -2669,7 +2669,7 @@ function ImageAdjustmentSlider({
   value,
   min,
   max,
-  step = 5,
+  step = 1,
   scaleLabels,
   valueLabel,
   onChange,
