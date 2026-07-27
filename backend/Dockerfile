@@ -62,6 +62,8 @@ COPY --from=seconv /out/native/ /usr/local/lib/
 
 RUN ldconfig
 
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
