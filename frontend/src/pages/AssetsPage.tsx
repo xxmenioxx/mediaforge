@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControlLabel,
   Grid,
   IconButton,
   InputAdornment,
@@ -43,6 +44,7 @@ import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import SubtitlesIcon from '@mui/icons-material/Subtitles';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
+import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -51,7 +53,7 @@ import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, Library, MediaStreamInfo, Profile, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
+import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 export function AssetsPage() {
@@ -936,6 +938,9 @@ function AssetRow({
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>(groupAudioProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
+  const [snapshotTab, setSnapshotTab] = useState(0);
+  const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
+  const [subtitleContent, setSubtitleContent] = useState('');
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
@@ -954,6 +959,11 @@ function AssetRow({
         profileSuggestion.mutate(scan.path);
       }
     },
+  });
+  const externalSubtitles = useQuery({
+    queryKey: ['externalSubtitles', asset.path],
+    queryFn: () => api.externalAssetSubtitles(asset.path),
+    enabled: showSnapshotDialog && asset.status !== 'archive' && !asset.missing,
   });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
@@ -1035,6 +1045,27 @@ function AssetRow({
   });
   const extractSubtitles = useMutation({
     mutationFn: api.extractAssetSubtitles,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    },
+  });
+  const loadSubtitleContent = useMutation({
+    mutationFn: api.externalAssetSubtitleContent,
+    onSuccess: (result) => setSubtitleContent(result.content),
+  });
+  const saveSubtitleContent = useMutation({
+    mutationFn: api.updateExternalAssetSubtitle,
+    onSuccess: async () => {
+      setEditingSubtitle(null);
+      setSubtitleContent('');
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    },
+  });
+  const deleteExternalSubtitle = useMutation({
+    mutationFn: api.deleteExternalAssetSubtitle,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    },
   });
   const isBlockedByReview = assetReview.requiresReview;
   const isConverted = asset.status === 'converted';
@@ -1058,6 +1089,7 @@ function AssetRow({
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
+    setSnapshotTab(0);
     setShowSnapshotDialog(true);
     if (!asset.missing && !snapshot.data && !snapshot.isPending) {
       snapshot.mutate({ path: asset.path });
@@ -1077,21 +1109,47 @@ function AssetRow({
     snapshot.mutate({ path: asset.path, force: true });
   }
 
-  async function applySnapshotMotionRecommendation(status: ScanResult['interlaceAnalysis']['status']) {
-    if (status === 'mixed' || status === 'unknown' || !status) {
-      await updateReview.mutateAsync({ path: asset.path, requiresReview: true, source: 'snapshot-motion', reason: `Motion analysis result requires review: ${status ?? 'unknown'}.`, tags: Array.from(new Set([...reviewTags, 'motion-review'])) });
-      return 'Asset marked for motion review; no filter was applied.';
-    }
-    const patch = status === 'progressive'
-      ? { deinterlaceMode: 'off' as const, videoFilters: withoutMotionFilters(conversionDraft.videoFilters) }
+  async function applySnapshotRecommendations(suggestion: ProfileSuggestion) {
+    const scan = suggestion.scan;
+    const proposed = suggestion.proposedProfile;
+    const workerConfig = proposed.workerConfig ?? {};
+    const status = scan.interlaceAnalysis.status;
+    const withoutMotion = withoutMotionFilters(conversionDraft.videoFilters);
+    const recommendedMotionFilter = scan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
+    const motionPatch: AssetConversionOverrideState = status === 'progressive'
+      ? { deinterlaceMode: 'off', videoFilters: withoutMotion }
       : status === 'interlaced'
-        ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(conversionDraft.videoFilters) }
-        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters('fieldmatch,decimate', withoutMotionFilters(conversionDraft.videoFilters)) };
-    await updateConversion.mutateAsync({ path: asset.path, ...conversionDraft, ...patch });
-    setConversionDraft((current) => ({ ...current, ...patch }));
-    if (status === 'progressive') return 'Saved: deinterlacing disabled for this asset.';
-    if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
-    return 'Saved: fieldmatch and decimate will run before encoding.';
+        ? { deinterlaceMode: 'force', videoFilters: withoutMotion }
+        : status === 'telecine_suspected'
+          ? {
+              deinterlaceMode: scan.interlaceAnalysis.recommendedMode === 'ivtc_bff' ? 'ivtc_bff' : 'ivtc_tff',
+              videoFilters: joinFilters(recommendedMotionFilter, withoutMotion),
+            }
+          : {};
+    const hardwareEnabled = workerConfig.useHardwareIfAvailable === true;
+    const next = cleanConversionOverride({
+      ...conversionDraft,
+      videoCodec: proposed.videoCodec,
+      audioCodec: proposed.audioCodec,
+      qualityMode: proposed.qualityMode,
+      qualityValue: suggestion.insights.recommendedCrf || proposed.qualityValue,
+      videoPreset: stringFromRecord(workerConfig, 'videoPreset'),
+      pixFmt: stringFromRecord(workerConfig, 'pixFmt') || stringFromRecord(workerConfig, 'pixelFormat'),
+      processingMode: stringFromRecord(workerConfig, 'processingMode'),
+      preserveHdr: proposed.preserveHdr,
+      preserveSubtitles: proposed.preserveSubtitles,
+      preserveChapters: proposed.preserveChapters,
+      addAacStereoTrack: typeof workerConfig.addAacStereoTrack === 'boolean' ? workerConfig.addAacStereoTrack : conversionDraft.addAacStereoTrack,
+      aacStereoDefault: typeof workerConfig.addAacStereoDefault === 'boolean' ? workerConfig.addAacStereoDefault : conversionDraft.aacStereoDefault,
+      useHardwareIfAvailable: hardwareEnabled,
+      videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || (hardwareEnabled ? 'auto' : 'libx265'),
+      globalQuality: Number(workerConfig.globalQuality || Math.min(35, (suggestion.insights.recommendedCrf || proposed.qualityValue) + 5)),
+      ...motionPatch,
+    });
+    await updateConversion.mutateAsync({ path: asset.path, ...next });
+    setConversionDraft(next);
+    setSnapshotTab(2);
+    return 'Recommendations were saved to Asset Overrides.';
   }
 
   function toggleSnapshotStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
@@ -1580,72 +1638,132 @@ function AssetRow({
             ) : null}
             {snapshot.data ? (
               <>
-                <MediaSnapshotDetails
-                  scan={snapshot.data}
-                  streamControls={
-                    isConverted || isArchive
-                      ? undefined
-                      : {
-                          video: {
-                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'video'),
-                            disabled: updateConversion.isPending,
-                            onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
-                          },
-                          audio: {
-                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'audio'),
-                            disabled: updateConversion.isPending,
-                            onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
-                          },
-                          subtitle: {
-                            selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'subtitle'),
-                            disabled: updateConversion.isPending,
-                            onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
-                          },
-                        }
-                  }
-                  metadataControls={
-                    isConverted || isArchive
-                      ? undefined
-                      : {
-                          video: {
-                            values: conversionDraft.videoMetadata ?? {},
-                            disabled: updateConversion.isPending,
-                            onChange: (index, patch) => updateStreamMetadata('video', index, patch),
-                          },
-                          audio: {
-                            values: conversionDraft.audioMetadata ?? {},
-                            disabled: updateConversion.isPending,
-                            onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
-                          },
-                          subtitle: {
-                            values: conversionDraft.subtitleMetadata ?? {},
-                            disabled: updateConversion.isPending,
-                            onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
-                          },
-                        }
-                  }
-                />
-                {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
-                {!isConverted && !isArchive && profileSuggestion.isError ? (
-                  <Alert severity="warning">The snapshot was created, but a profile could not be suggested: {profileSuggestion.error instanceof Error ? profileSuggestion.error.message : 'unknown backend error'}</Alert>
-                ) : null}
-                {!isConverted && !isArchive && profileSuggestion.data ? (
-                  <ProfileSuggestionCard
-                    suggestion={profileSuggestion.data}
-                    onSelect={isArchive ? undefined : (profile) => setSelectedProfileId(profile.id)}
-                    onApplyMotionRecommendation={isArchive || isConverted ? undefined : applySnapshotMotionRecommendation}
-                  />
-                ) : null}
-                {(!isConverted && !isArchive) || isLibraryReplacement ? (
-                  <AssetConversionOverridePanel
-                    draft={conversionDraft}
-                    profile={profiles.find((profile) => profile.id === selectedProfileId)}
-                    onChange={updateConversionDraft}
-                    onSave={saveConversionOverrides}
-                    onReset={resetConversionOverrides}
-                    saving={updateConversion.isPending}
-                  />
-                ) : null}
+                <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
+                  <Tab label="General & Tracks" />
+                  <Tab label="Suggested profile" />
+                  <Tab label="Asset Overrides" />
+                </Tabs>
+                <Box hidden={snapshotTab !== 0}>
+                  <Stack spacing={2} sx={{ pt: 1.5 }}>
+                    <MediaSnapshotDetails scan={snapshot.data} section="general" />
+                    <Divider />
+                    <Typography variant="h3">Embedded tracks</Typography>
+                    <MediaSnapshotDetails
+                      scan={snapshot.data}
+                      section="tracks"
+                      streamControls={
+                        isConverted || isArchive
+                          ? undefined
+                          : {
+                              video: {
+                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'video'),
+                                disabled: updateConversion.isPending,
+                                onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
+                              },
+                              audio: {
+                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'audio'),
+                                disabled: updateConversion.isPending,
+                                onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
+                              },
+                              subtitle: {
+                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'subtitle'),
+                                disabled: updateConversion.isPending,
+                                onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
+                              },
+                            }
+                      }
+                      metadataControls={
+                        isConverted || isArchive
+                          ? undefined
+                          : {
+                              video: {
+                                values: conversionDraft.videoMetadata ?? {},
+                                disabled: updateConversion.isPending,
+                                onChange: (index, patch) => updateStreamMetadata('video', index, patch),
+                              },
+                              audio: {
+                                values: conversionDraft.audioMetadata ?? {},
+                                disabled: updateConversion.isPending,
+                                onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
+                              },
+                              subtitle: {
+                                values: conversionDraft.subtitleMetadata ?? {},
+                                disabled: updateConversion.isPending,
+                                onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
+                              },
+                            }
+                      }
+                    />
+                    {!isArchive ? (
+                      <EmbeddedSubtitleActions
+                        streams={snapshot.data.subtitleStreams}
+                        pending={extractSubtitles.isPending}
+                        onGenerate={(streamIndex, format, ocrLanguage) => extractSubtitles.mutate({ path: asset.path, streamIndex, format, ocrLanguage })}
+                      />
+                    ) : null}
+                    {!isArchive ? (
+                      <ExternalSubtitleList
+                        values={externalSubtitles.data ?? []}
+                        loading={externalSubtitles.isLoading}
+                        deleting={deleteExternalSubtitle.isPending}
+                        onEdit={(subtitle) => {
+                          setEditingSubtitle(subtitle);
+                          setSubtitleContent('');
+                          loadSubtitleContent.mutate({ path: asset.path, subtitlePath: subtitle.path });
+                        }}
+                        onDelete={(subtitle) => {
+                          if (window.confirm(`Delete external subtitle ${subtitle.fileName}? This cannot be undone.`)) {
+                            deleteExternalSubtitle.mutate({ path: asset.path, subtitlePath: subtitle.path });
+                          }
+                        }}
+                      />
+                    ) : null}
+                    {externalSubtitles.isError ? (
+                      <Alert severity="warning">{externalSubtitles.error instanceof Error ? externalSubtitles.error.message : 'Could not list external subtitles.'}</Alert>
+                    ) : null}
+                    {extractSubtitles.isSuccess ? (
+                      <Alert severity="success">
+                        Generated {extractSubtitles.data.created.length} subtitle file(s).
+                        {extractSubtitles.data.existing.length ? ` ${extractSubtitles.data.existing.length} already existed.` : ''}
+                      </Alert>
+                    ) : null}
+                    {extractSubtitles.isError ? <Alert severity="warning">{extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'Subtitle generation failed.'}</Alert> : null}
+                    {deleteExternalSubtitle.isError ? <Alert severity="warning">{deleteExternalSubtitle.error instanceof Error ? deleteExternalSubtitle.error.message : 'Subtitle deletion failed.'}</Alert> : null}
+                  </Stack>
+                </Box>
+                <Box hidden={snapshotTab !== 1}>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
+                    {!isConverted && !isArchive && profileSuggestion.isError ? (
+                      <Alert severity="warning">The snapshot was created, but a profile could not be suggested: {profileSuggestion.error instanceof Error ? profileSuggestion.error.message : 'unknown backend error'}</Alert>
+                    ) : null}
+                    {!isConverted && !isArchive && profileSuggestion.data ? (
+                      <ProfileSuggestionCard
+                        suggestion={profileSuggestion.data}
+                        onSelect={(profile) => setSelectedProfileId(profile.id)}
+                        onApplyMotionRecommendation={() => applySnapshotRecommendations(profileSuggestion.data!)}
+                      />
+                    ) : null}
+                    {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}
+                    {isArchive ? <Alert severity="info">Recover the archived original before applying a suggested profile.</Alert> : null}
+                  </Stack>
+                </Box>
+                <Box hidden={snapshotTab !== 2}>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    {!isArchive ? (
+                      <AssetConversionOverridePanel
+                        draft={conversionDraft}
+                        profile={profiles.find((profile) => profile.id === selectedProfileId)}
+                        scan={snapshot.data}
+                        onChange={updateConversionDraft}
+                        onSave={saveConversionOverrides}
+                        onReset={resetConversionOverrides}
+                        saving={updateConversion.isPending}
+                        readOnly={isConverted}
+                      />
+                    ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
+                  </Stack>
+                </Box>
               </>
             ) : null}
             {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}
@@ -1655,6 +1773,36 @@ function AssetRow({
             {isConverted ? (
               <FinalDetailsSummary asset={asset} job={associatedJob} compact />
             ) : null}
+          </Stack>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(editingSubtitle)} onClose={() => setEditingSubtitle(null)} maxWidth="md" fullWidth>
+        <DialogTitle>Edit external subtitle</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography color="text.secondary" sx={{ wordBreak: 'break-all' }}>{editingSubtitle?.fileName}</Typography>
+            {loadSubtitleContent.isPending ? <Alert severity="info">Loading subtitle…</Alert> : null}
+            {loadSubtitleContent.isError ? <Alert severity="warning">{loadSubtitleContent.error instanceof Error ? loadSubtitleContent.error.message : 'Could not load subtitle.'}</Alert> : null}
+            <TextField
+              value={subtitleContent}
+              onChange={(event) => setSubtitleContent(event.target.value)}
+              multiline
+              minRows={16}
+              fullWidth
+              disabled={loadSubtitleContent.isPending || loadSubtitleContent.isError}
+              inputProps={{ spellCheck: false }}
+            />
+            <Stack direction="row" justifyContent="flex-end" spacing={1}>
+              <Button onClick={() => setEditingSubtitle(null)}>Cancel</Button>
+              <Button
+                variant="contained"
+                disabled={!editingSubtitle || !subtitleContent.trim() || saveSubtitleContent.isPending}
+                onClick={() => editingSubtitle && saveSubtitleContent.mutate({ path: asset.path, subtitlePath: editingSubtitle.path, content: subtitleContent })}
+              >
+                Save subtitle
+              </Button>
+            </Stack>
+            {saveSubtitleContent.isError ? <Alert severity="warning">{saveSubtitleContent.error instanceof Error ? saveSubtitleContent.error.message : 'Could not save subtitle.'}</Alert> : null}
           </Stack>
         </DialogContent>
       </Dialog>
@@ -1750,6 +1898,126 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
   );
 }
 
+function EmbeddedSubtitleActions({
+  streams,
+  pending,
+  onGenerate,
+}: {
+  streams: MediaStreamInfo[];
+  pending: boolean;
+  onGenerate: (streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string) => void;
+}) {
+  const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+      <Stack spacing={1.25}>
+        <Stack>
+          <Typography variant="h3">Generate external subtitles</Typography>
+          <Typography color="text.secondary" variant="body2">Create an SRT or ASS sidecar from a selected embedded track. Bitmap tracks use OCR only when you press a generate button; the embedded track is not removed.</Typography>
+        </Stack>
+        {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
+        {streams.map((stream) => {
+          const bitmap = isBitmapSubtitleCodec(stream.codec);
+          return (
+            <Stack
+              key={stream.index}
+              direction={{ xs: 'column', sm: 'row' }}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              justifyContent="space-between"
+              spacing={1}
+              sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}
+            >
+              <Stack sx={{ minWidth: 0 }}>
+                <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
+                {stream.title ? <Typography color="text.secondary" variant="body2">{stream.title}</Typography> : null}
+                {bitmap ? <Typography color="warning.main" variant="caption">Bitmap track: generation runs local OCR and may require text corrections afterward.</Typography> : null}
+              </Stack>
+              <Stack direction="row" spacing={1}>
+                {bitmap ? (
+                  <TextField
+                    select
+                    size="small"
+                    label="OCR language"
+                    value={ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)}
+                    onChange={(event) => setOcrLanguages((current) => ({ ...current, [stream.index]: event.target.value }))}
+                    sx={{ minWidth: 130 }}
+                  >
+                    <MenuItem value="eng">English</MenuItem>
+                    <MenuItem value="spa">Spanish</MenuItem>
+                    <MenuItem value="jpn">Japanese</MenuItem>
+                  </TextField>
+                ) : null}
+                <Button size="small" variant="outlined" disabled={pending} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate SRT</Button>
+                <Button size="small" variant="outlined" disabled={pending} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate ASS</Button>
+              </Stack>
+            </Stack>
+          );
+        })}
+      </Stack>
+    </Box>
+  );
+}
+
+function defaultOCRLanguage(language: string) {
+  const value = (language || '').trim().toLowerCase();
+  if (value === 'spa' || value === 'es' || value === 'esp') return 'spa';
+  if (value === 'jpn' || value === 'ja' || value === 'jp') return 'jpn';
+  return 'eng';
+}
+
+function ExternalSubtitleList({
+  values,
+  loading,
+  deleting,
+  onEdit,
+  onDelete,
+}: {
+  values: ExternalSubtitle[];
+  loading: boolean;
+  deleting: boolean;
+  onEdit: (subtitle: ExternalSubtitle) => void;
+  onDelete: (subtitle: ExternalSubtitle) => void;
+}) {
+  return (
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+      <Stack spacing={1.25}>
+        <Typography variant="h3">External SRT / ASS files</Typography>
+        {loading ? <Alert severity="info">Reading external subtitles…</Alert> : null}
+        {!loading && values.length === 0 ? <Alert severity="info">No external SRT or ASS sidecars were found beside this asset.</Alert> : null}
+        {values.map((subtitle) => (
+          <Stack
+            key={subtitle.path}
+            direction={{ xs: 'column', sm: 'row' }}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            justifyContent="space-between"
+            spacing={1}
+            sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}
+          >
+            <Stack sx={{ minWidth: 0 }}>
+              <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{subtitle.fileName}</Typography>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                <Chip label={subtitle.format.toUpperCase()} size="small" />
+                {subtitle.language ? <Chip label={subtitle.language.toUpperCase()} size="small" /> : null}
+                {subtitle.default ? <Chip label="Default" color="primary" size="small" /> : null}
+                {subtitle.forced ? <Chip label="Forced" color="warning" size="small" /> : null}
+                <Chip label={formatBytes(subtitle.sizeBytes)} size="small" />
+              </Stack>
+            </Stack>
+            <Stack direction="row" spacing={0.5}>
+              <Tooltip title="Edit subtitle text">
+                <IconButton size="small" color="primary" onClick={() => onEdit(subtitle)}><EditIcon /></IconButton>
+              </Tooltip>
+              <Tooltip title="Delete external subtitle">
+                <IconButton size="small" color="error" disabled={deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
+              </Tooltip>
+            </Stack>
+          </Stack>
+        ))}
+      </Stack>
+    </Box>
+  );
+}
+
 type SelectOption = {
   value: string;
   label: string;
@@ -1800,22 +2068,37 @@ const deinterlaceOptions: SelectOption[] = [
   { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
   { value: 'off', label: 'Never deinterlace' },
   { value: 'force', label: 'Force deinterlace' },
+  { value: 'ivtc_tff', label: 'Inverse telecine · TFF' },
+  { value: 'ivtc_bff', label: 'Inverse telecine · BFF' },
+];
+
+const assetEncoderOptions: SelectOption[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'libx265', label: 'Software x265' },
+  { value: 'hevc_qsv', label: 'Intel Quick Sync' },
+  { value: 'hevc_nvenc', label: 'NVIDIA NVENC' },
+  { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox' },
+  { value: 'hevc_amf', label: 'AMD AMF' },
 ];
 
 function AssetConversionOverridePanel({
   draft,
   profile,
+  scan,
   onChange,
   onSave,
   onReset,
   saving,
+  readOnly = false,
 }: {
   draft: AssetConversionOverrideState;
   profile?: Profile;
+  scan?: ScanResult;
   onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
   onSave: () => void;
   onReset: () => void;
   saving: boolean;
+  readOnly?: boolean;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -1826,21 +2109,22 @@ function AssetConversionOverridePanel({
           <Stack>
             <Typography variant="h3">Asset Overrides</Typography>
             <Typography color="text.secondary" variant="body2">
-              Per-asset changes applied at conversion time.
+              {readOnly ? 'Recorded overrides for this converted asset. Re-process from its archived original to apply changes.' : 'Per-asset changes applied at conversion time.'}
             </Typography>
           </Stack>
           <Stack direction="row" spacing={1}>
-            <Button variant="outlined" onClick={onReset} disabled={saving}>
+            <Button variant="outlined" onClick={onReset} disabled={saving || readOnly}>
               Remove
             </Button>
-            <Button variant="contained" onClick={onSave} disabled={saving}>
+            <Button variant="contained" onClick={onSave} disabled={saving || readOnly}>
               Save
             </Button>
           </Stack>
         </Stack>
         <Divider />
-        <Grid container spacing={1.5}>
-          <Grid size={{ xs: 12, md: 3 }}>
+        <Box component="fieldset" disabled={readOnly} sx={{ border: 0, p: 0, m: 0, minWidth: 0 }}>
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Video codec"
@@ -1856,7 +2140,26 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
+          {scan && scan.audioStreams.length > 0 ? (
+            <Grid size={{ xs: 12, md: 4 }}>
+              <TextField
+                select
+                label="Enhanced audio source"
+                value={draft.enhancedAudioSourceStreamIndex ?? ''}
+                onChange={(event) => onChange('enhancedAudioSourceStreamIndex', event.target.value === '' ? undefined : Number(event.target.value))}
+                size="small"
+                fullWidth
+              >
+                <MenuItem value="">Default audio track</MenuItem>
+                {scan.audioStreams.map((stream) => (
+                  <MenuItem key={stream.index} value={stream.index}>
+                    #{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+          ) : null}
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Audio codec"
@@ -1872,7 +2175,7 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Work mode"
@@ -1886,16 +2189,22 @@ function AssetConversionOverridePanel({
               <MenuItem value="audio_only">Audio/subtitle fixes only</MenuItem>
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
-            <Stack spacing={0.25}>
+          <Grid size={{ xs: 12 }}>
+            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, px: 2, pt: 1.25, pb: 1 }}>
+            <Stack spacing={0.5}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="body2">CRF {draft.qualityValue ?? profile?.qualityValue ?? 22}</Typography>
+                <Typography fontWeight={700}>Software quality · CRF {draft.qualityValue ?? profile?.qualityValue ?? 22}</Typography>
                 {draft.qualityValue ? <Button size="small" onClick={() => onChange('qualityValue', undefined)}>Use profile</Button> : <Chip label="Profile default" size="small" />}
               </Stack>
-              <Slider value={draft.qualityValue ?? profile?.qualityValue ?? 22} min={14} max={30} step={1} marks={[{ value: 14, label: '14' }, { value: 22, label: '22' }, { value: 30, label: '30' }]} onChange={(_, value) => onChange('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" size="small" />
+              <Slider value={draft.qualityValue ?? profile?.qualityValue ?? 22} min={14} max={30} step={1} onChange={(_, value) => onChange('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" size="small" sx={{ mx: 0.5, width: 'calc(100% - 8px)' }} />
+              <Stack direction="row" justifyContent="space-between">
+                <Typography variant="caption" color="text.secondary">14 · higher quality</Typography>
+                <Typography variant="caption" color="text.secondary">30 · smaller file</Typography>
+              </Stack>
             </Stack>
+            </Box>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Speed"
@@ -1911,7 +2220,7 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Color depth"
@@ -1927,7 +2236,7 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 6 }}>
+          <Grid size={{ xs: 12, md: 8 }}>
             <TextField
               select
               label="Image cleanup filters"
@@ -1943,7 +2252,7 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
               label="Deinterlacing"
@@ -1956,6 +2265,61 @@ function AssetConversionOverridePanel({
                 <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
               ))}
             </TextField>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
+              <Grid container spacing={2} alignItems="flex-start">
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true}
+                        onChange={(event) => {
+                          onChange('useHardwareIfAvailable', event.target.checked);
+                          if (!event.target.checked) onChange('videoEncoder', 'libx265');
+                        }}
+                      />
+                    }
+                    label="Use hardware if available"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    select
+                    label="Encoder"
+                    value={draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto'}
+                    onChange={(event) => onChange('videoEncoder', event.target.value)}
+                    disabled={!(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
+                    helperText="Hardware encoders are enabled only when hardware use is allowed."
+                    size="small"
+                    fullWidth
+                  >
+                    {assetEncoderOptions.map((option) => (
+                      <MenuItem
+                        key={option.value}
+                        value={option.value}
+                        disabled={isHardwareAssetEncoder(option.value) && !(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
+                      >
+                        {option.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    label="Hardware quality"
+                    type="number"
+                    value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? Math.min(35, (draft.qualityValue ?? profile?.qualityValue ?? 22) + 5))}
+                    onChange={(event) => onChange('globalQuality', Number(event.target.value))}
+                    disabled={!(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
+                    inputProps={{ min: 15, max: 35 }}
+                    helperText={`Approximate match: CRF ${draft.qualityValue ?? profile?.qualityValue ?? 22} ≈ HW ${Math.min(35, (draft.qualityValue ?? profile?.qualityValue ?? 22) + 5)}. Lower is higher quality.`}
+                    size="small"
+                    fullWidth
+                  />
+                </Grid>
+              </Grid>
+            </Box>
           </Grid>
           <Grid size={{ xs: 12 }}>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -2035,6 +2399,7 @@ function AssetConversionOverridePanel({
             </Collapse>
           </Grid>
         </Grid>
+        </Box>
       </Stack>
     </Box>
   );
@@ -2070,7 +2435,7 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const report = job?.validationReport ?? {};
   const mode = stringFromRecord(report, 'processingMode') || modeFromNotes(job?.notes ?? '');
   const audioProfile = job?.audioProfileKey || audioProfileFromNotes(job?.notes ?? '');
-  const status = job?.publishedAt && !job.publicationRetiredAt ? 'Published' : job?.publicationRetiredAt ? 'Publication retired' : job?.status === 'completed' ? 'Converted' : job?.status || 'Converted';
+  const status = jobPublishesAsset(asset, job) ? 'Published' : job?.publicationRetiredAt ? 'Publication retired' : job?.status === 'completed' ? 'Converted' : job?.status || 'Converted';
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2507,16 +2872,12 @@ function assetReviewApproved(asset: Asset) {
 
 function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
   const normalizedAssetPath = normalizePath(asset.path);
-  const assetFileName = asset.fileName.toLowerCase();
   return [...safeArray(jobs)]
     .sort((left, right) => right.id - left.id)
     .filter((job) => !job.publicationRetiredAt)
     .find((job) => {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
-      if (candidates.includes(normalizedAssetPath)) {
-        return true;
-      }
-      return candidates.some((candidate) => candidate.toLowerCase().endsWith(`/${assetFileName}`));
+      return candidates.includes(normalizedAssetPath);
     });
 }
 
@@ -2527,25 +2888,26 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   if (pendingQueue) {
     return { label: 'Queueing', color: 'primary' };
   }
-  if (job?.publishedAt && !job.publicationRetiredAt) {
+  if (jobPublishesAsset(asset, job)) {
     return { label: 'Published', color: 'success' };
   }
-  if (job?.status === 'running') {
+  const activeJob = job?.publishedAt && !job.publicationRetiredAt ? undefined : job;
+  if (activeJob?.status === 'running') {
     return { label: 'Worker', color: 'primary' };
   }
-  if (job?.status === 'queued') {
+  if (activeJob?.status === 'queued') {
     return { label: 'Queued', color: 'primary' };
   }
-  if (job?.status === 'failed') {
+  if (activeJob?.status === 'failed') {
     return { label: 'Failed', color: 'error' };
   }
-  if (job?.status === 'canceled') {
+  if (activeJob?.status === 'canceled') {
     return { label: 'Canceled', color: 'default' };
   }
-  if (job?.status === 'completed' && !job.validationStatus) {
+  if (activeJob?.status === 'completed' && !activeJob.validationStatus) {
     return { label: 'Analysis', color: 'warning' };
   }
-  if (job?.validationStatus === 'passed' || job?.validationStatus === 'warning') {
+  if (activeJob?.validationStatus === 'passed' || activeJob?.validationStatus === 'warning') {
     return { label: 'Publisher', color: 'primary' };
   }
   if (asset.status === 'converted') {
@@ -2555,6 +2917,14 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
     return { label: 'Unverified', color: 'warning' };
   }
   return { label: 'Unprocessed', color: 'warning' };
+}
+
+function jobPublishesAsset(asset: Asset, job?: QueueJob) {
+  return Boolean(
+    job?.publishedAt
+    && !job.publicationRetiredAt
+    && normalizePath(job.publishedPath) === normalizePath(asset.path),
+  );
 }
 
 function queueNotes(base: string, audioProfileKey: string) {
@@ -2583,6 +2953,14 @@ function priorityForSize(sizeBytes: number) {
 
 function normalizePath(value: string) {
   return value.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function isBitmapSubtitleCodec(codec: string) {
+  return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec.toLowerCase());
+}
+
+function isHardwareAssetEncoder(value: string) {
+  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
 }
 
 function stringFromRecord(record: Record<string, unknown>, key: string) {
@@ -2638,6 +3016,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (subtitleMetadata) {
     clean.subtitleMetadata = subtitleMetadata;
   }
+  if (Array.isArray(value.subtitleTransforms) && value.subtitleTransforms.length) {
+    clean.subtitleTransforms = value.subtitleTransforms;
+  }
   ([
     'videoCodec',
     'audioCodec',
@@ -2647,13 +3028,14 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
     'videoFilters',
     'x265Params',
     'processingMode',
+    'videoEncoder',
   ] as const).forEach((key) => {
     const text = value[key]?.trim();
     if (text) {
       clean[key] = text;
     }
   });
-  if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force') {
+  if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
   if (typeof value.qualityValue === 'number' && Number.isFinite(value.qualityValue) && value.qualityValue > 0) {
@@ -2676,6 +3058,12 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   }
   if (typeof value.enhancedAudioSourceStreamIndex === 'number' && Number.isInteger(value.enhancedAudioSourceStreamIndex) && value.enhancedAudioSourceStreamIndex >= 0) {
     clean.enhancedAudioSourceStreamIndex = value.enhancedAudioSourceStreamIndex;
+  }
+  if (typeof value.useHardwareIfAvailable === 'boolean') {
+    clean.useHardwareIfAvailable = value.useHardwareIfAvailable;
+  }
+  if (typeof value.globalQuality === 'number' && Number.isFinite(value.globalQuality) && value.globalQuality > 0) {
+    clean.globalQuality = value.globalQuality;
   }
   return clean;
 }
@@ -2801,7 +3189,7 @@ function optionItems(options: SelectOption[], currentValue?: string) {
 }
 
 function withoutMotionFilters(value?: string) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && item !== 'fieldmatch' && item !== 'decimate').join(',');
+  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && !item.startsWith('fieldmatch') && item !== 'decimate').join(',');
 }
 
 function joinFilters(...values: Array<string | undefined>) {

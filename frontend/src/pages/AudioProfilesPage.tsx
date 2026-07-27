@@ -1085,7 +1085,7 @@ function channelFilter(profile: AudioEnhancementProfile) {
     case 'force-stereo':
       return forceStereoFilter(profile.forceStereoMode);
     case 'downmix-mono':
-      return 'aresample=ocl=mono';
+      return 'aresample=ochl=mono';
     case 'light-stereo': {
       const delay = Math.max(1, Math.min(40, Math.round(profile.stereoDelayMs || 12)));
       const width = Math.max(0, Math.min(100, profile.stereoWidth || 20));
@@ -1105,7 +1105,7 @@ function forceStereoFilter(mode: AudioEnhancementProfile['forceStereoMode']) {
     case 'duplicate-first':
       return 'pan=stereo|c0=c0|c1=c0';
     default:
-      return 'aresample=ocl=stereo';
+      return 'aresample=ochl=stereo';
   }
 }
 
@@ -1152,7 +1152,7 @@ function eqFilterChain(bands: Record<string, number>) {
 }
 
 function sanitizeAudioFilterChain(filterChain: string) {
-  return filterChain.replace(/afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)/g, (_match, prefix: string, rawValue: string) => {
+  return filterChain.replace(/aresample=ocl=/g, 'aresample=ochl=').replace(/afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)/g, (_match, prefix: string, rawValue: string) => {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed)) {
       return `afftdn=${prefix}${rawValue}`;

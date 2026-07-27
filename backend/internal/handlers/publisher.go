@@ -172,6 +172,9 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			return PublishResult{}, publishError{Status: http.StatusNotFound, Message: "published output path is not readable", Err: err}
 		}
 	}
+	if _, err := publishSubtitleArtifacts(&job, destinationPath, overwrite); err != nil {
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "video output is ready but subtitle sidecars could not be published; original was not archived", Err: err}
+	}
 
 	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
 		return PublishResult{}, err
@@ -268,6 +271,21 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		job.OriginalArchivedPath = ""
 		_ = h.db.Save(&job).Error
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed; original was restored", Err: err}
+	}
+	publishedSubtitles, subtitleErr := publishSubtitleArtifacts(&job, target, false)
+	if subtitleErr != nil {
+		_ = os.Remove(target)
+		for _, published := range publishedSubtitles {
+			_ = os.Remove(published)
+		}
+		rollbackErr := moveFile(archivedPath, job.MediaPath)
+		if rollbackErr != nil {
+			return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed and original rollback also failed", Err: fmt.Errorf("subtitle publish: %v; rollback: %v", subtitleErr, rollbackErr)}
+		}
+		job.ReplacementTargetPath = ""
+		job.OriginalArchivedPath = ""
+		_ = h.db.Save(&job).Error
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed; original library asset was restored", Err: subtitleErr}
 	}
 	job.Notes = appendNote(job.Notes, "Library original archived: "+archivedPath)
 	job.PublishedPath = target

@@ -353,6 +353,7 @@ func sanitizeConversionOverride(override AssetConversionOverrideState, streams M
 	override.VideoMetadata = sanitizeStreamMetadata("video metadata", override.VideoMetadata, streamIndexes(streams.Video), &warnings)
 	override.AudioMetadata = sanitizeStreamMetadata("audio metadata", override.AudioMetadata, audioStreamIndexes(streams.Audio), &warnings)
 	override.SubtitleMetadata = sanitizeStreamMetadata("subtitle metadata", override.SubtitleMetadata, streamIndexes(streams.Subtitle), &warnings)
+	override.SubtitleTransforms = sanitizeSubtitleTransforms(override.SubtitleTransforms, streams.Subtitle, &warnings)
 	if override.EnhancedAudioSourceStreamIndex != nil {
 		if _, exists := intSet(audioStreamIndexes(streams.Audio))[*override.EnhancedAudioSourceStreamIndex]; !exists {
 			warnings = append(warnings, fmt.Sprintf("Enhanced audio source stream %d is not present and was replaced with the available default audio stream.", *override.EnhancedAudioSourceStreamIndex))
@@ -360,6 +361,27 @@ func sanitizeConversionOverride(override AssetConversionOverrideState, streams M
 		}
 	}
 	return override, warnings
+}
+
+func sanitizeSubtitleTransforms(values []SubtitleTransform, streams []MediaStream, warnings *[]string) []SubtitleTransform {
+	available := map[int]MediaStream{}
+	for _, stream := range streams {
+		available[stream.Index] = stream
+	}
+	result := []SubtitleTransform{}
+	for _, value := range normalizedSubtitleTransforms(values) {
+		stream, exists := available[value.StreamIndex]
+		if !exists {
+			*warnings = append(*warnings, fmt.Sprintf("Subtitle transformation for missing stream %d was omitted.", value.StreamIndex))
+			continue
+		}
+		if !subtitleCanConvertText(stream.Codec) {
+			*warnings = append(*warnings, fmt.Sprintf("Subtitle stream %d (%s) requires OCR; transformation was not applied and the embedded track was preserved.", stream.Index, stream.Codec))
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func sanitizeSelectedStreams(label string, selected []int, available []int, warnings *[]string) []int {
@@ -442,12 +464,21 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
 	}
+	if override.UseHardwareIfAvailable != nil {
+		workerConfig["useHardwareIfAvailable"] = *override.UseHardwareIfAvailable
+	}
+	if value := strings.TrimSpace(override.VideoEncoder); value != "" {
+		workerConfig["videoEncoder"] = value
+	}
+	if override.GlobalQuality > 0 {
+		workerConfig["globalQuality"] = override.GlobalQuality
+	}
 	profile.WorkerConfig = workerConfig
 	return profile
 }
 
 func planHasStreamSelection(override AssetConversionOverrideState) bool {
-	return override.KeepVideoStreams != nil || override.KeepAudioStreams != nil || override.KeepSubtitleStreams != nil
+	return override.KeepVideoStreams != nil || override.KeepAudioStreams != nil || override.KeepSubtitleStreams != nil || len(override.SubtitleTransforms) > 0
 }
 
 func appendSelectedStreamMaps(args []string, plan MediaJobPlan) []string {
@@ -458,7 +489,11 @@ func appendSelectedStreamMaps(args []string, plan MediaJobPlan) []string {
 		args = append(args, "-map", fmt.Sprintf("0:%d", index))
 	}
 	if plan.Profile.PreserveSubtitles {
+		removed := removedEmbeddedSubtitleSet(plan.Override.SubtitleTransforms)
 		for _, index := range selectedStreamIndexes(streamIndexes(plan.Streams.Subtitle), plan.Override.KeepSubtitleStreams) {
+			if _, remove := removed[index]; remove {
+				continue
+			}
 			args = append(args, "-map", fmt.Sprintf("0:%d", index))
 		}
 	}
@@ -511,13 +546,27 @@ func selectedSubtitleStreams(plan MediaJobPlan) []MediaStream {
 	}
 	selectedIndexes := selectedStreamIndexes(streamIndexes(plan.Streams.Subtitle), plan.Override.KeepSubtitleStreams)
 	allowed := intSet(selectedIndexes)
+	removed := removedEmbeddedSubtitleSet(plan.Override.SubtitleTransforms)
 	streams := []MediaStream{}
 	for _, stream := range plan.Streams.Subtitle {
+		if _, remove := removed[stream.Index]; remove {
+			continue
+		}
 		if _, ok := allowed[stream.Index]; ok {
 			streams = append(streams, stream)
 		}
 	}
 	return streams
+}
+
+func removedEmbeddedSubtitleSet(values []SubtitleTransform) map[int]struct{} {
+	result := map[int]struct{}{}
+	for _, value := range values {
+		if value.RemoveEmbedded {
+			result[value.StreamIndex] = struct{}{}
+		}
+	}
+	return result
 }
 
 func metadataOverrideFor(metadata map[int]StreamMetadataOverride, index int) StreamMetadataOverride {

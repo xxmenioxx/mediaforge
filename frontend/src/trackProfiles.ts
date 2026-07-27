@@ -1,5 +1,14 @@
 import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride } from './api/types';
 
+export type SubtitleTransform = {
+  streamIndex: number;
+  format: 'srt' | 'ass';
+  removeEmbedded: boolean;
+  makeDefault: boolean;
+  language: string;
+  title?: string;
+};
+
 export type TrackProfile = {
   key: string;
   name: string;
@@ -23,6 +32,7 @@ export type TrackProfile = {
   subtitlesRequired: boolean;
   defaultSubtitleLanguage: string;
   validationMode: 'block' | 'review' | 'warn';
+  subtitleTransforms?: SubtitleTransform[];
   notes: string;
   disabled?: boolean;
   deletedAt?: string;
@@ -49,6 +59,7 @@ export function trackProfileOverride(profile: TrackProfile): AssetConversionOver
     videoMetadata: profile.videoMetadata,
     audioMetadata: profile.audioMetadata,
     subtitleMetadata: profile.subtitleMetadata,
+    subtitleTransforms: profile.subtitleTransforms,
   };
 }
 
@@ -59,6 +70,23 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
   const strings = (entry: unknown) => Array.isArray(entry) ? entry.filter((part): part is string => typeof part === 'string') : [];
   const numbers = (entry: unknown) => Array.isArray(entry) ? entry.filter((part): part is number => Number.isInteger(part)) : undefined;
   const metadata = (entry: unknown) => entry && typeof entry === 'object' ? entry as Record<string, StreamMetadataOverride> : undefined;
+  const transforms = (entry: unknown): SubtitleTransform[] | undefined => {
+    if (!Array.isArray(entry)) return undefined;
+    const values = entry.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object') return [];
+      const value = raw as Record<string, unknown>;
+      if (!Number.isInteger(value.streamIndex) || (value.format !== 'srt' && value.format !== 'ass')) return [];
+      return [{
+        streamIndex: value.streamIndex as number,
+        format: value.format as SubtitleTransform['format'],
+        removeEmbedded: value.removeEmbedded !== false,
+        makeDefault: value.makeDefault === true,
+        language: typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : 'und',
+        title: typeof value.title === 'string' ? value.title : undefined,
+      }];
+    });
+    return values.length ? values : undefined;
+  };
   return {
     ...emptyTrackProfile,
     key: item.key, name: item.name, description: typeof item.description === 'string' ? item.description : '',
@@ -66,6 +94,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     sourceAssetName: typeof item.sourceAssetName === 'string' ? item.sourceAssetName : undefined,
     keepVideoStreams: numbers(item.keepVideoStreams), keepAudioStreams: numbers(item.keepAudioStreams), keepSubtitleStreams: numbers(item.keepSubtitleStreams),
     videoMetadata: metadata(item.videoMetadata), audioMetadata: metadata(item.audioMetadata), subtitleMetadata: metadata(item.subtitleMetadata),
+    subtitleTransforms: transforms(item.subtitleTransforms),
     videoMode: item.videoMode === 'all' || item.videoMode === 'require-one' ? item.videoMode : 'first',
     audioMode: item.audioMode === 'all' || item.audioMode === 'default' || item.audioMode === 'none' ? item.audioMode : 'languages',
     audioLanguages: strings(item.audioLanguages), audioRequired: item.audioRequired !== false, dropCommentary: item.dropCommentary !== false,

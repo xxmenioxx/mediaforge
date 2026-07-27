@@ -187,16 +187,17 @@ export function AnalysisPage() {
       return 'Asset marked for motion review; no filter was applied.';
     }
     const current = selectedAsset?.conversion ?? {};
+    const recommendedFilter = currentScan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
     const patch = status === 'progressive'
       ? { deinterlaceMode: 'off' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
       : status === 'interlaced'
         ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
-        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters('fieldmatch,decimate', withoutMotionFilters(current.videoFilters)) };
+        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters(recommendedFilter, withoutMotionFilters(current.videoFilters)) };
     await api.updateAssetConversion({ path: currentScan.path, ...current, ...patch });
     await queryClient.invalidateQueries({ queryKey: ['assets'] });
     if (status === 'progressive') return 'Saved: deinterlacing disabled for this asset.';
     if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
-    return 'Saved: fieldmatch and decimate will run before encoding.';
+    return `Saved: ${recommendedFilter} will run before encoding.`;
   }
 
   return (
@@ -429,7 +430,7 @@ function requestErrorMessage(error: unknown) {
 }
 
 function withoutMotionFilters(value?: string) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && item !== 'fieldmatch' && item !== 'decimate').join(',');
+  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && !item.startsWith('fieldmatch') && item !== 'decimate').join(',');
 }
 
 function joinFilters(...values: Array<string | undefined>) {

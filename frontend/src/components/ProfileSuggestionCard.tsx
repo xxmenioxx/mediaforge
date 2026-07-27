@@ -1,4 +1,4 @@
-import { Alert, Button, Card, CardContent, Chip, Divider, Stack, Typography } from '@mui/material';
+import { Alert, Button, Card, CardContent, Chip, Stack, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -35,30 +35,34 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
           <Alert severity={motion.severity}>
             <Typography fontWeight={700}>{motion.title}</Typography>
             <Typography variant="body2">{motion.detail}</Typography>
+            <Stack spacing={0.5} sx={{ mt: 1 }}>
+              <Typography fontWeight={700} variant="body2">All recommendations</Typography>
+              {allRecommendations(suggestion, motion.detail).map((recommendation) => (
+                <Typography key={recommendation} variant="body2">• {recommendation}</Typography>
+              ))}
+            </Stack>
+          </Alert>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             {onApplyMotionRecommendation ? (
-              <Button color="inherit" size="small" disabled={applyMotion.isPending} onClick={() => applyMotion.mutate()} sx={{ mt: 0.75 }}>
-                {motion.action}
+              <Button
+                variant="contained"
+                size="small"
+                disabled={applyMotion.isPending}
+                onClick={() => applyMotion.mutate()}
+              >
+                {applyMotion.isPending ? 'Applying…' : 'Apply recommendations'}
               </Button>
             ) : null}
-          </Alert>
-          {applyMotion.isSuccess ? <Alert severity="success">{applyMotion.data || 'Recommendation applied to this asset.'}</Alert> : null}
-          {applyMotion.isError ? <Alert severity="warning">Could not apply recommendation: {applyMotion.error instanceof Error ? applyMotion.error.message : 'unknown error'}</Alert> : null}
-          {suggestion.insights ? (
-            <>
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {suggestion.insights ? (
+              <>
                 <Chip label={`Recommended CRF ${suggestion.insights.recommendedCrf}`} color="primary" size="small" />
                 <Chip label={`Estimated size ${formatBytes(suggestion.insights.estimatedMinBytes)}–${formatBytes(suggestion.insights.estimatedMaxBytes)}`} size="small" />
                 <Chip label={savingsLabel(suggestion.insights.estimatedSavingsLow, suggestion.insights.estimatedSavingsHigh)} color={suggestion.insights.estimatedSavingsHigh > 0 ? 'success' : 'warning'} size="small" />
-              </Stack>
-              <Divider />
-              <Stack spacing={0.5}>
-                <Typography fontWeight={700}>Quality and size guidance</Typography>
-                {suggestion.insights.recommendations.map((recommendation) => (
-                  <Typography key={recommendation} variant="body2" color="text.secondary">• {recommendation}</Typography>
-                ))}
-              </Stack>
-            </>
-          ) : null}
+              </>
+            ) : null}
+          </Stack>
+          {applyMotion.isSuccess ? <Alert severity="success">{applyMotion.data || 'Recommendation applied to this asset.'}</Alert> : null}
+          {applyMotion.isError ? <Alert severity="warning">Could not apply recommendation: {applyMotion.error instanceof Error ? applyMotion.error.message : 'unknown error'}</Alert> : null}
           {existing ? (
             <>
               <Typography fontWeight={700}>{existing.name}</Typography>
@@ -90,6 +94,15 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
   );
 }
 
+function allRecommendations(suggestion: ProfileSuggestion, motion: string) {
+  const values = [
+    motion,
+    ...(suggestion.insights?.recommendations ?? []),
+    ...(suggestion.candidates?.[0]?.reasons ?? []),
+  ].map((value) => value.trim()).filter(Boolean);
+  return Array.from(new Set(values));
+}
+
 function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail: string; severity: 'success' | 'info' | 'warning'; action: string } {
   const analysis = suggestion.scan.interlaceAnalysis;
   const confidence = typeof analysis?.confidence === 'number' ? ` · confidence ${Math.round(analysis.confidence * 100)}%` : '';
@@ -102,7 +115,14 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
     case 'mixed':
       return { title: `Mixed progressive/interlaced${confidence}`, detail: `Review a motion-heavy preview before conversion; automatic correction should not be assumed safe${window}.`, severity: 'warning', action: 'Mark for review' };
     case 'telecine_suspected':
-      return { title: `Telecine suspected${confidence}`, detail: `Validate cadence in LAB before choosing deinterlacing or IVTC${window}.`, severity: 'warning', action: 'Apply fieldmatch + decimate' };
+      return {
+        title: `Telecine suspected${confidence}`,
+        detail: analysis.recommendedFilter
+          ? `${analysis.fieldOrderMismatch ? `Container field order ${(analysis.containerFieldOrder || 'unknown').toUpperCase()} conflicts with detected ${(analysis.detectedFieldOrder || 'unknown').toUpperCase()}. ` : ''}Recommended filter: ${analysis.recommendedFilter}${window}.`
+          : `Validate cadence in LAB before choosing deinterlacing or IVTC${window}.`,
+        severity: 'warning',
+        action: analysis.recommendedMode ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Apply fieldmatch + decimate',
+      };
     default:
       return { title: 'Scan type unknown', detail: `MVForge could not classify motion structure reliably; inspect a preview before conversion${window}.`, severity: 'info', action: 'Mark for review' };
   }

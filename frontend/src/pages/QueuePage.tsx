@@ -119,6 +119,7 @@ export function QueuePage() {
         videoMetadata: undefined,
         audioMetadata: undefined,
         subtitleMetadata: undefined,
+        subtitleTransforms: undefined,
       }),
       trackProfileKey: trackProfile?.key,
       processingMode: input.processingMode,

@@ -32,3 +32,28 @@ func TestEffectiveAudioFiltersUpdatesExplicitLoudnessNormalization(t *testing.T)
 		t.Fatalf("expected explicit loudnorm values to be updated, got %q", result)
 	}
 }
+
+func TestEffectiveAudioFiltersUsesModernOutputChannelLayoutOption(t *testing.T) {
+	profile := audioEnhancementProfile{
+		Filters:         "anull",
+		ChannelMode:     "force-stereo",
+		ForceStereoMode: "auto",
+	}
+
+	result := effectiveAudioFilters(profile)
+
+	if !strings.Contains(result, "aresample=ochl=stereo") {
+		t.Fatalf("expected modern aresample output layout option, got %q", result)
+	}
+	if strings.Contains(result, "aresample=ocl=") {
+		t.Fatalf("deprecated ocl option must not be generated: %q", result)
+	}
+}
+
+func TestEffectiveAudioFiltersMigratesSavedDeprecatedChannelLayoutOption(t *testing.T) {
+	profile := audioEnhancementProfile{Filters: "aresample=ocl=mono"}
+	result := effectiveAudioFilters(profile)
+	if result != "aresample=ochl=mono" {
+		t.Fatalf("expected saved filter migration, got %q", result)
+	}
+}

@@ -94,6 +94,24 @@ func TestFFmpegCommandBuilderUsesSoftwareAndCodecDefaultWhenHardwareIsDisabled(t
 	assertNotContains(t, command, "-pix_fmt")
 }
 
+func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
+	enabled := true
+	profile := applyAssetConversionOverrideToProfile(models.Profile{
+		VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+		WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "useHardwareIfAvailable": false},
+	}, AssetConversionOverrideState{
+		UseHardwareIfAvailable: &enabled,
+		VideoEncoder:           "hevc_qsv",
+		GlobalQuality:          27,
+	})
+
+	if profile.WorkerConfig["useHardwareIfAvailable"] != true ||
+		profile.WorkerConfig["videoEncoder"] != "hevc_qsv" ||
+		profile.WorkerConfig["globalQuality"] != 27 {
+		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
+	}
+}
+
 func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
@@ -274,6 +292,47 @@ func TestSanitizedMissingSubtitleIsNotMappedByFFmpeg(t *testing.T) {
 	assertNotContains(t, command, "-map 0:9")
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "subtitle stream 9") {
 		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
+
+func TestFFmpegCommandBuilderRemovesExportedSubtitleFromContainer(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true},
+		Streams: MediaStreamInventory{
+			Video:    []MediaStream{{Index: 0}},
+			Audio:    []MediaAudioStream{{Index: 1, Codec: "aac"}},
+			Subtitle: []MediaStream{{Index: 2, Codec: "subrip"}, {Index: 3, Codec: "ass"}},
+		},
+		Override: AssetConversionOverrideState{
+			SubtitleTransforms: []SubtitleTransform{{
+				StreamIndex: 2, Format: "srt", RemoveEmbedded: true, MakeDefault: true, Language: "spa",
+			}},
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:0")
+	assertContains(t, command, "-map 0:1")
+	assertContains(t, command, "-map 0:3")
+	assertNotContains(t, command, "-map 0:2")
+	assertContains(t, command, "-c copy")
+}
+
+func TestSanitizeConversionOverrideKeepsBitmapSubtitleWhenOCRWouldBeRequired(t *testing.T) {
+	override, warnings := sanitizeConversionOverride(
+		AssetConversionOverrideState{SubtitleTransforms: []SubtitleTransform{{
+			StreamIndex: 4, Format: "srt", RemoveEmbedded: true, Language: "spa",
+		}}},
+		MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "hdmv_pgs_subtitle"}}},
+	)
+
+	if len(override.SubtitleTransforms) != 0 {
+		t.Fatalf("expected unsupported bitmap transformation to be omitted: %#v", override.SubtitleTransforms)
+	}
+	if len(warnings) != 1 || !strings.Contains(strings.ToLower(warnings[0]), "ocr") {
+		t.Fatalf("expected OCR warning, got %#v", warnings)
 	}
 }
 

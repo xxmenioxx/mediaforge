@@ -44,6 +44,7 @@ type FFProbeResult struct {
 
 type FFProbeStream struct {
 	Index              int               `json:"index"`
+	ID                 any               `json:"id"`
 	CodecType          string            `json:"codec_type"`
 	CodecName          string            `json:"codec_name"`
 	Width              int               `json:"width"`

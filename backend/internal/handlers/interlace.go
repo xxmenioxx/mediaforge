@@ -12,20 +12,38 @@ import (
 )
 
 type InterlaceAnalysis struct {
-	Status            string  `json:"status"`
-	FieldOrder        string  `json:"fieldOrder"`
-	Source            string  `json:"source"`
-	Confidence        float64 `json:"confidence"`
-	TFF               int     `json:"tff"`
-	BFF               int     `json:"bff"`
-	Progressive       int     `json:"progressive"`
-	Undetermined      int     `json:"undetermined"`
-	RepeatedTop       int     `json:"repeatedTop"`
-	RepeatedBottom    int     `json:"repeatedBottom"`
-	SampledFrames     int     `json:"sampledFrames"`
-	WindowStart       float64 `json:"windowStart"`
-	WindowSeconds     int     `json:"windowSeconds"`
-	RecommendedFilter string  `json:"recommendedFilter,omitempty"`
+	Status              string          `json:"status"`
+	FieldOrder          string          `json:"fieldOrder"`
+	ContainerFieldOrder string          `json:"containerFieldOrder"`
+	DetectedFieldOrder  string          `json:"detectedFieldOrder,omitempty"`
+	FieldOrderMismatch  bool            `json:"fieldOrderMismatch"`
+	Source              string          `json:"source"`
+	Confidence          float64         `json:"confidence"`
+	TFF                 int             `json:"tff"`
+	BFF                 int             `json:"bff"`
+	Progressive         int             `json:"progressive"`
+	Undetermined        int             `json:"undetermined"`
+	RepeatedTop         int             `json:"repeatedTop"`
+	RepeatedBottom      int             `json:"repeatedBottom"`
+	SampledFrames       int             `json:"sampledFrames"`
+	WindowStart         float64         `json:"windowStart"`
+	WindowSeconds       int             `json:"windowSeconds"`
+	SampleCount         int             `json:"sampleCount"`
+	SampledAt           []float64       `json:"sampledAt,omitempty"`
+	RecommendedMode     string          `json:"recommendedMode,omitempty"`
+	RecommendedFilter   string          `json:"recommendedFilter,omitempty"`
+	IVTCValidation      *IVTCValidation `json:"ivtcValidation,omitempty"`
+}
+
+type IVTCValidation struct {
+	TFFProgressive      int     `json:"tffProgressive"`
+	TFFClassified       int     `json:"tffClassified"`
+	TFFProgressiveRatio float64 `json:"tffProgressiveRatio"`
+	BFFProgressive      int     `json:"bffProgressive"`
+	BFFClassified       int     `json:"bffClassified"`
+	BFFProgressiveRatio float64 `json:"bffProgressiveRatio"`
+	SelectedOrder       string  `json:"selectedOrder,omitempty"`
+	Confidence          float64 `json:"confidence"`
 }
 
 var (
@@ -35,32 +53,82 @@ var (
 
 func detectInterlace(path, fieldOrder string, duration float64, windowSeconds int) InterlaceAnalysis {
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
-	analysis := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(windowSeconds+30)*time.Second)
-	defer cancel()
-
-	start := 0.0
-	if duration > float64(windowSeconds) {
-		start = max(0, duration/2-float64(windowSeconds)/2)
+	containerOrder := normalizeFieldOrder(fieldOrder)
+	analysis := InterlaceAnalysis{
+		Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: containerOrder,
+		ContainerFieldOrder: containerOrder, Source: "ffprobe", WindowSeconds: windowSeconds,
 	}
-	analysis.WindowStart = start
-	analysis.WindowSeconds = windowSeconds
-	args := []string{"-hide_banner", "-ss", fmt.Sprintf("%.3f", start), "-i", path, "-map", "0:v:0", "-t", strconv.Itoa(windowSeconds), "-vf", "idet", "-an", "-f", "null", "-"}
+	for _, start := range distributedInterlaceStarts(duration, windowSeconds) {
+		sample, ok := runIDET(path, start, windowSeconds, "idet")
+		if !ok {
+			continue
+		}
+		analysis.TFF += sample.TFF
+		analysis.BFF += sample.BFF
+		analysis.Progressive += sample.Progressive
+		analysis.Undetermined += sample.Undetermined
+		analysis.RepeatedTop += sample.RepeatedTop
+		analysis.RepeatedBottom += sample.RepeatedBottom
+		analysis.SampledFrames += sample.SampledFrames
+		analysis.SampledAt = append(analysis.SampledAt, start)
+	}
+	analysis.SampleCount = len(analysis.SampledAt)
+	if analysis.SampleCount == 0 {
+		return analysis
+	}
+	analysis.WindowStart = analysis.SampledAt[0]
+	analysis.Source = "idet_multi_sample"
+	analysis.DetectedFieldOrder = dominantFieldOrder(analysis.TFF, analysis.BFF)
+	if analysis.DetectedFieldOrder != "" {
+		analysis.FieldOrder = analysis.DetectedFieldOrder
+		analysis.FieldOrderMismatch = fieldOrderFamily(containerOrder) != "" &&
+			fieldOrderFamily(containerOrder) != analysis.DetectedFieldOrder
+	}
+	classifyInterlace(&analysis)
+	if shouldValidateIVTC(analysis) {
+		validateIVTC(path, duration, windowSeconds, &analysis)
+	}
+	return analysis
+}
+
+func distributedInterlaceStarts(duration float64, windowSeconds int) []float64 {
+	if duration <= float64(windowSeconds) || duration <= 0 {
+		return []float64{0}
+	}
+	maxStart := max(0, duration-float64(windowSeconds))
+	starts := []float64{}
+	seen := map[int]bool{}
+	for _, position := range []float64{0.05, 0.25, 0.50, 0.75, 0.90} {
+		start := min(maxStart, max(0, duration*position-float64(windowSeconds)/2))
+		key := int(start * 1000)
+		if !seen[key] {
+			seen[key] = true
+			starts = append(starts, start)
+		}
+	}
+	return starts
+}
+
+func runIDET(path string, start float64, seconds int, filter string) (InterlaceAnalysis, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(seconds+30)*time.Second)
+	defer cancel()
+	args := []string{"-hide_banner", "-ss", fmt.Sprintf("%.3f", start), "-i", path, "-map", "0:v:0", "-t", strconv.Itoa(seconds), "-vf", filter, "-an", "-sn", "-f", "null", "-"}
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
-		return analysis
+		return InterlaceAnalysis{}, false
 	}
 
 	multiMatches := idetMultiPattern.FindAllStringSubmatch(stderr.String(), -1)
 	if len(multiMatches) == 0 {
-		return analysis
+		return InterlaceAnalysis{}, false
 	}
 	multi := multiMatches[len(multiMatches)-1]
 	if len(multi) != 5 {
-		return analysis
+		return InterlaceAnalysis{}, false
 	}
+	analysis := InterlaceAnalysis{}
 	analysis.TFF = atoi(multi[1])
 	analysis.BFF = atoi(multi[2])
 	analysis.Progressive = atoi(multi[3])
@@ -72,9 +140,80 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 		analysis.RepeatedTop = atoi(repeated[2])
 		analysis.RepeatedBottom = atoi(repeated[3])
 	}
-	analysis.Source = "idet"
-	classifyInterlace(&analysis)
-	return analysis
+	return analysis, true
+}
+
+func dominantFieldOrder(tff, bff int) string {
+	total := tff + bff
+	if total == 0 {
+		return ""
+	}
+	if float64(tff)/float64(total) >= 0.65 {
+		return "tff"
+	}
+	if float64(bff)/float64(total) >= 0.65 {
+		return "bff"
+	}
+	return ""
+}
+
+func fieldOrderFamily(value string) string {
+	switch normalizeFieldOrder(value) {
+	case "tt", "tb", "tff":
+		return "tff"
+	case "bb", "bt", "bff":
+		return "bff"
+	default:
+		return ""
+	}
+}
+
+func shouldValidateIVTC(analysis InterlaceAnalysis) bool {
+	classified := analysis.TFF + analysis.BFF + analysis.Progressive
+	return classified > 0 && (analysis.Status == "telecine_suspected" ||
+		float64(analysis.TFF+analysis.BFF)/float64(classified) >= 0.50)
+}
+
+func validateIVTC(path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
+	start := max(0, duration/2-float64(seconds)/2)
+	tff, tffOK := runIDET(path, start, seconds, "fieldmatch=order=tff,idet")
+	bff, bffOK := runIDET(path, start, seconds, "fieldmatch=order=bff,idet")
+	if !tffOK || !bffOK {
+		return
+	}
+	tffClassified := tff.TFF + tff.BFF + tff.Progressive
+	bffClassified := bff.TFF + bff.BFF + bff.Progressive
+	validation := &IVTCValidation{
+		TFFProgressive: tff.Progressive, TFFClassified: tffClassified,
+		BFFProgressive: bff.Progressive, BFFClassified: bffClassified,
+	}
+	if tffClassified > 0 {
+		validation.TFFProgressiveRatio = float64(tff.Progressive) / float64(tffClassified)
+	}
+	if bffClassified > 0 {
+		validation.BFFProgressiveRatio = float64(bff.Progressive) / float64(bffClassified)
+	}
+	applyIVTCValidation(analysis, validation)
+	analysis.IVTCValidation = validation
+}
+
+func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation) {
+	selected, best, other := "tff", validation.TFFProgressiveRatio, validation.BFFProgressiveRatio
+	if validation.BFFProgressiveRatio > validation.TFFProgressiveRatio {
+		selected, best, other = "bff", validation.BFFProgressiveRatio, validation.TFFProgressiveRatio
+	}
+	validation.Confidence = best
+	if best >= 0.85 && best-other >= 0.15 {
+		validation.SelectedOrder = selected
+		analysis.Status = "telecine_suspected"
+		analysis.Confidence = best
+		analysis.DetectedFieldOrder = selected
+		analysis.FieldOrder = selected
+		analysis.FieldOrderMismatch = fieldOrderFamily(analysis.ContainerFieldOrder) != "" &&
+			fieldOrderFamily(analysis.ContainerFieldOrder) != selected
+		analysis.RecommendedMode = "ivtc_" + selected
+		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ",decimate"
+	}
 }
 
 func classifyInterlace(analysis *InterlaceAnalysis) {
@@ -92,7 +231,8 @@ func classifyInterlace(analysis *InterlaceAnalysis) {
 	case interlacedRatio >= 0.70:
 		analysis.Status = "interlaced"
 		analysis.Confidence = interlacedRatio
-		analysis.RecommendedFilter = "bwdif=mode=send_frame:parity=auto:deint=all"
+		analysis.RecommendedMode = "force"
+		analysis.RecommendedFilter = bwdifFilter(*analysis)
 	case interlacedRatio >= 0.10:
 		analysis.Status = "mixed"
 		analysis.Confidence = max(interlacedRatio, 1-interlacedRatio)
@@ -130,16 +270,24 @@ func effectiveDeinterlaceFilter(profileMode string, analysis InterlaceAnalysis) 
 	switch strings.ToLower(strings.TrimSpace(profileMode)) {
 	case "off", "disabled", "none":
 		return ""
-	case "ivtc", "ivtc_bff", "inverse_telecine":
+	case "ivtc", "ivtc_tff", "ivtc_bff", "inverse_telecine":
 		// IVTC is carried in videoFilters so it can preserve the selected
 		// field order and must not be prefixed with ordinary deinterlacing.
 		return ""
 	case "force", "forced", "on":
-		return "bwdif=mode=send_frame:parity=auto:deint=all"
+		return bwdifFilter(analysis)
 	default:
 		if analysis.Status == "interlaced" {
-			return "bwdif=mode=send_frame:parity=auto:deint=all"
+			return bwdifFilter(analysis)
 		}
 		return ""
 	}
+}
+
+func bwdifFilter(analysis InterlaceAnalysis) string {
+	parity := analysis.DetectedFieldOrder
+	if parity != "tff" && parity != "bff" {
+		parity = "auto"
+	}
+	return "bwdif=mode=send_frame:parity=" + parity + ":deint=all"
 }

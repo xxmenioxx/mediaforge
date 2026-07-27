@@ -76,6 +76,14 @@ type TrackProfile = {
   videoMetadata?: Record<string, StreamMetadataOverride>;
   audioMetadata?: Record<string, StreamMetadataOverride>;
   subtitleMetadata?: Record<string, StreamMetadataOverride>;
+  subtitleTransforms?: Array<{
+    streamIndex: number;
+    format: 'srt' | 'ass';
+    removeEmbedded: boolean;
+    makeDefault: boolean;
+    language: string;
+    title?: string;
+  }>;
   videoMode: 'first' | 'all' | 'require-one';
   audioMode: 'all' | 'default' | 'languages' | 'none';
   audioLanguages: string[];
@@ -159,6 +167,7 @@ const deinterlaceOptions = [
   { value: 'off', label: 'Off' },
   { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
   { value: 'force', label: 'Force' },
+  { value: 'ivtc_tff', label: 'Inverse telecine (TFF DVD)' },
   { value: 'ivtc_bff', label: 'Inverse telecine (BFF DVD)' },
 ] as const;
 
@@ -482,6 +491,7 @@ export function ProfileLabPage() {
   const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
   const [audioPreviewStreamIndex, setAudioPreviewStreamIndex] = useState<number | null>(null);
+  const [subtitlePreviewStreamIndex, setSubtitlePreviewStreamIndex] = useState<number | null>(null);
   const [processedAudioFilters, setProcessedAudioFilters] = useState('');
   const [processedAudioChannelMode, setProcessedAudioChannelMode] = useState<AudioEnhancementProfile['channelMode']>('preserve');
   const [audioFilterChain, setAudioFilterChain] = useState(effectiveAudioFilters(emptyAudioDraft));
@@ -557,17 +567,18 @@ export function ProfileLabPage() {
 
   const trackSnapshot = useMutation({ mutationFn: api.scan });
   const availableAudioStreams = trackSnapshot.data?.audioStreams ?? [];
+  const availableSubtitleStreams = trackSnapshot.data?.subtitleStreams ?? [];
   const selectedAudioStreamIndex = availableAudioStreams.some((stream) => stream.index === audioPreviewStreamIndex)
     ? audioPreviewStreamIndex ?? undefined
     : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
 
   useEffect(() => {
     setTrackConversionDraft({});
-    if ((labSection === 'audio' || labSection === 'tracks') && assetPath) {
+    if (assetPath) {
       trackSnapshot.reset();
       trackSnapshot.mutate({ path: assetPath });
     }
-  }, [assetPath, labSection]);
+  }, [assetPath]);
 
   function selectVideoProfile(profileId: number) {
     const profile = (profiles.data ?? []).find((candidate) => candidate.id === profileId);
@@ -597,8 +608,10 @@ export function ProfileLabPage() {
     const interlaceStatus = scan.interlaceAnalysis.status ?? 'unknown';
     const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
     const recommendedCrop = scan.cropAnalysis?.recommendedCrop?.trim() ?? '';
+    const bitmapSubtitleStreams = scan.subtitleStreams.filter(isBitmapSubtitleStream);
+    const autoCropSafe = cropStatus === 'detected' && Boolean(recommendedCrop) && bitmapSubtitleStreams.length === 0;
     const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
-    const needsVideoCorrection = interlaceStatus === 'interlaced';
+    const needsVideoCorrection = interlaceStatus === 'interlaced' || interlaceStatus === 'telecine_suspected';
     const targetVideoCodec = sourceIsHEVC && !needsVideoCorrection ? 'copy' : proposed.videoCodec;
     const videoReasons = targetVideoCodec === 'copy'
       ? ['The source is already HEVC and no definite filter correction was detected, so video copy avoids generational loss.']
@@ -611,17 +624,32 @@ export function ProfileLabPage() {
       deinterlaceMode = 'force';
       videoReasons.push('Interlacing was detected, so bwdif was enabled for the video draft.');
     } else if (interlaceStatus === 'telecine_suspected') {
-      deinterlaceMode = 'auto';
-      videoReasons.push('Telecine is suspected; automatic analysis remains enabled instead of forcing ordinary deinterlacing.');
+      const detectedOrder = scan.interlaceAnalysis.detectedFieldOrder?.toLowerCase()
+        || scan.interlaceAnalysis.fieldOrder?.toLowerCase()
+        || '';
+      deinterlaceMode = scan.interlaceAnalysis.recommendedMode
+        || (detectedOrder.startsWith('b') ? 'ivtc_bff' : 'ivtc_tff');
+      videoReasons.push(
+        `Telecine is suspected; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with fieldmatch and decimate.`,
+      );
+      if (scan.interlaceAnalysis.fieldOrderMismatch) {
+        videoReasons.push(
+          `The container reports ${(scan.interlaceAnalysis.containerFieldOrder || 'unknown').toUpperCase()}, but distributed samples detected ${detectedOrder.toUpperCase()}; the measured content order was used.`,
+        );
+      }
     } else {
       videoReasons.push('Motion classification is not definitive, so conversion-time automatic analysis remains enabled.');
     }
     if (scan.hdr) {
       videoReasons.push('HDR and 10-bit output are preserved because HDR metadata was detected.');
     }
-    if (cropStatus === 'detected' && recommendedCrop) {
+    if (autoCropSafe) {
       videoReasons.push(
         `Stable black bars were detected in ${scan.cropAnalysis.matchingWindows ?? 0}/${scan.cropAnalysis.windows ?? 0} samples; crop=${recommendedCrop} was enabled for preview.`,
+      );
+    } else if (cropStatus === 'detected' && bitmapSubtitleStreams.length > 0) {
+      videoReasons.push(
+        `Stable black bars were detected, but crop remains disabled because ${bitmapSubtitleStreams.length} bitmap subtitle track(s) may be positioned inside those bars.`,
       );
     } else if (cropStatus === 'variable') {
       videoReasons.push('Black bars varied between samples, so crop remains disabled and requires manual review.');
@@ -631,8 +659,8 @@ export function ProfileLabPage() {
       deinterlaceMode,
       denoise: 'off',
       deband: 'off',
-      crop: cropStatus === 'detected' && recommendedCrop ? 'manual' : 'off',
-      cropValue: cropStatus === 'detected' ? recommendedCrop : '',
+      crop: autoCropSafe ? 'manual' : 'off',
+      cropValue: autoCropSafe ? recommendedCrop : '',
     };
     setSelectedVideoStarterPreset('');
     setVideoDraft({
@@ -940,13 +968,14 @@ export function ProfileLabPage() {
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Grid container spacing={1.5} alignItems="flex-start">
-              <Grid size={{ xs: 12, lg: 7 }}>
+              <Grid size={{ xs: 12, lg: 5 }}>
                 <AssetAutocomplete
                   assets={labAssets}
                   value={selectedAsset}
                   onChange={(asset) => {
                     setAssetPath(asset?.path ?? '');
                     setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
+                    setSubtitlePreviewStreamIndex(null);
                     resetProcessedPreviews();
                     setRecommendationReport(null);
                     setRecommendationSuggestion(null);
@@ -954,6 +983,30 @@ export function ProfileLabPage() {
                     setRecommendationOpen(false);
                   }}
                 />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 5, lg: 2 }}>
+                <TextField
+                  label="Preview subtitles"
+                  size="small"
+                  value={subtitlePreviewStreamIndex ?? ''}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSubtitlePreviewStreamIndex(value === '' ? null : Number(value));
+                    setPreviewNonce((current) => current > 0 ? current + 1 : current);
+                    setVideoPreviewNonce((current) => current > 0 ? current + 1 : current);
+                  }}
+                  disabled={!assetPath || trackSnapshot.isPending}
+                  helperText={trackSnapshot.isPending ? 'Loading tracks…' : undefined}
+                  select
+                  fullWidth
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {availableSubtitleStreams.map((stream) => (
+                    <MenuItem key={stream.index} value={stream.index}>
+                      {subtitlePreviewLabel(stream)}
+                    </MenuItem>
+                  ))}
+                </TextField>
               </Grid>
               <Grid size={{ xs: 6, sm: 3, lg: 1.25 }}>
                 <TextField
@@ -1056,6 +1109,11 @@ export function ProfileLabPage() {
                   Sample A is a high-quality H.264/AAC browser-compatible reference generated from the original. Sample B uses the requested duration, source resolution, and current profile draft.
                 </Alert>
               ) : null}
+              {assetPath && previewNonce > 0 && selectedPreviewSubtitleIsBitmap(availableSubtitleStreams, subtitlePreviewStreamIndex) && processedVideoUsesCrop(processedVideoOptions) ? (
+                <Alert severity="warning">
+                  The selected subtitle track is bitmap-based and the video draft applies crop. Subtitles positioned in the removed bars may be clipped; disable crop or verify several subtitled scenes.
+                </Alert>
+              ) : null}
               {assetPath && previewNonce > 0 ? (
                 <Grid container spacing={2} alignItems="stretch">
                   <Grid size={{ xs: 12, lg: 6 }}>
@@ -1079,6 +1137,7 @@ export function ProfileLabPage() {
                             videoEncoder: 'libx264',
                             useHardwareIfAvailable: false,
                             globalQuality: 21,
+                            subtitleStreamIndex: subtitlePreviewStreamIndex ?? undefined,
                           })}
                         />
                         <AudioPreview
@@ -1102,6 +1161,7 @@ export function ProfileLabPage() {
                               videoCodec: processedVideoCodec,
                               qualityValue: processedVideoQualityValue,
                               mode: 'quality',
+                              subtitleStreamIndex: subtitlePreviewStreamIndex ?? undefined,
                               ...processedVideoOptions,
                             })}
                             onStatusChange={setVideoPreviewStatus}
@@ -2045,11 +2105,14 @@ export function ProfileLabPage() {
                       <Typography variant="h3">Track Profile Draft</Typography>
                     </Stack>
                     <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
-                      <Button size="small" variant="outlined" disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(false)} sx={{ minHeight: 32 }}>
-                        Scan
-                      </Button>
-                      <Button size="small" variant="outlined" disabled={!assetPath || trackSnapshot.isPending} onClick={() => scanTrackAsset(true)} sx={{ minHeight: 32 }}>
-                        Rescan
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled={!assetPath || trackSnapshot.isPending}
+                        onClick={() => scanTrackAsset(Boolean(trackSnapshot.data))}
+                        sx={{ minHeight: 32 }}
+                      >
+                        {trackSnapshot.data ? 'Rescan' : 'Scan'}
                       </Button>
                       <Button
                         startIcon={<SaveIcon />}
@@ -2669,6 +2732,8 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
 
   if (deinterlaceMode === 'force') {
     filters.push('bwdif=mode=send_frame:parity=auto:deint=all');
+  } else if (deinterlaceMode === 'ivtc_tff') {
+    filters.push('fieldmatch=order=tff,decimate');
   } else if (deinterlaceMode === 'ivtc_bff') {
     filters.push('fieldmatch=order=bff,decimate');
   }
@@ -2898,9 +2963,13 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
       ? 'Enable bwdif because interlacing was detected.'
       : interlace === 'progressive'
         ? 'Keep deinterlacing disabled because the analyzed window is progressive.'
+        : interlace === 'telecine_suspected'
+          ? `Enable inverse telecine ${(scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder)?.toLowerCase().startsWith('b') ? 'BFF' : 'TFF'} with ${scan.interlaceAnalysis.recommendedFilter || 'fieldmatch and decimate'}.`
         : `Keep conversion-time motion analysis enabled because the source was classified as ${interlace}.`,
-    crop === 'detected'
-      ? `Enable manual crop ${scan.cropAnalysis.recommendedCrop} after stable black bars were detected.`
+    crop === 'detected' && scan.subtitleStreams.some(isBitmapSubtitleStream)
+      ? 'Keep crop disabled because bitmap subtitles may be positioned inside the detected black bars.'
+      : crop === 'detected'
+        ? `Enable manual crop ${scan.cropAnalysis.recommendedCrop} after stable black bars were detected.`
       : crop === 'variable'
         ? 'Keep crop disabled because the detected borders vary between scenes.'
         : 'Keep crop disabled because no stable black bars were detected.',
@@ -2983,6 +3052,36 @@ function uniqueAssets(assets: Asset[]) {
 function isCommentaryStream(stream: MediaStreamInfo) {
   const metadata = `${stream.title} ${stream.codecLong}`.toLowerCase();
   return stream.comment || ['commentary', 'comentario', 'director comments'].some((term) => metadata.includes(term));
+}
+
+function subtitlePreviewLabel(stream: MediaStreamInfo) {
+  const language = stream.language || 'und';
+  const title = stream.title?.trim();
+  const flags = [stream.default ? 'default' : '', stream.forced ? 'forced' : ''].filter(Boolean).join(', ');
+  return [
+    `#${stream.index}`,
+    language.toUpperCase(),
+    stream.codec.toUpperCase(),
+    title,
+    flags ? `(${flags})` : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function isBitmapSubtitleStream(stream: MediaStreamInfo) {
+  const codec = stream.codec.toLowerCase();
+  return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec);
+}
+
+function selectedPreviewSubtitleIsBitmap(streams: MediaStreamInfo[], selectedIndex: number | null) {
+  if (selectedIndex === null) {
+    return false;
+  }
+  const stream = streams.find((candidate) => candidate.index === selectedIndex);
+  return stream ? isBitmapSubtitleStream(stream) : false;
+}
+
+function processedVideoUsesCrop(options: ReturnType<typeof videoPreviewOptions>) {
+  return /(^|,)crop=/.test(options.videoFilters);
 }
 
 function TrackProfileAutocomplete({
@@ -3082,6 +3181,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     videoMetadata: streamMetadataMapValue(candidate.videoMetadata),
     audioMetadata: streamMetadataMapValue(candidate.audioMetadata),
     subtitleMetadata: streamMetadataMapValue(candidate.subtitleMetadata),
+    subtitleTransforms: subtitleTransformsValue(candidate.subtitleTransforms),
     videoMode: trackVideoMode(candidate.videoMode),
     audioMode: trackAudioMode(candidate.audioMode),
     audioLanguages: stringArrayValue(candidate.audioLanguages),
@@ -3097,6 +3197,24 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     disabled: booleanValue(candidate.disabled, false),
     deletedAt: stringValue(candidate.deletedAt),
   };
+}
+
+function subtitleTransformsValue(value: unknown): TrackProfile['subtitleTransforms'] {
+  if (!Array.isArray(value)) return undefined;
+  const result = value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const candidate = item as Record<string, unknown>;
+    if (!Number.isInteger(candidate.streamIndex) || (candidate.format !== 'srt' && candidate.format !== 'ass')) return [];
+    return [{
+      streamIndex: candidate.streamIndex as number,
+      format: candidate.format as 'srt' | 'ass',
+      removeEmbedded: candidate.removeEmbedded !== false,
+      makeDefault: candidate.makeDefault === true,
+      language: typeof candidate.language === 'string' ? candidate.language : 'und',
+      title: typeof candidate.title === 'string' ? candidate.title : undefined,
+    }];
+  });
+  return result.length ? result : undefined;
 }
 
 function trackVideoMode(value: unknown): TrackProfile['videoMode'] {
@@ -3191,6 +3309,9 @@ function cleanTrackConversionOverride(value: AssetConversionOverrideState): Asse
   }
   if (subtitleMetadata) {
     clean.subtitleMetadata = subtitleMetadata;
+  }
+  if (Array.isArray(value.subtitleTransforms) && value.subtitleTransforms.length) {
+    clean.subtitleTransforms = value.subtitleTransforms;
   }
   return clean;
 }
@@ -3354,7 +3475,7 @@ function channelFilter(profile: AudioEnhancementProfile) {
     case 'force-stereo':
       return forceStereoFilter(profile.forceStereoMode);
     case 'downmix-mono':
-      return 'aresample=ocl=mono';
+      return 'aresample=ochl=mono';
     case 'light-stereo': {
       const delay = Math.max(1, Math.min(40, Math.round(profile.stereoDelayMs || 12)));
       const width = Math.max(0, Math.min(100, profile.stereoWidth || 20));
@@ -3374,7 +3495,7 @@ function forceStereoFilter(mode: AudioEnhancementProfile['forceStereoMode']) {
     case 'duplicate-first':
       return 'pan=stereo|c0=c0|c1=c0';
     default:
-      return 'aresample=ocl=stereo';
+      return 'aresample=ochl=stereo';
   }
 }
 
@@ -3419,7 +3540,7 @@ function eqFilterChain(bands: Record<string, number>) {
 }
 
 function sanitizeAudioFilterChain(filterChain: string) {
-  return filterChain.replace(/afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)/g, (_match, prefix: string, rawValue: string) => {
+  return filterChain.replace(/aresample=ocl=/g, 'aresample=ochl=').replace(/afftdn=([^,]*\bnf=)(-?\d+(?:\.\d+)?)/g, (_match, prefix: string, rawValue: string) => {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed)) {
       return `afftdn=${prefix}${rawValue}`;

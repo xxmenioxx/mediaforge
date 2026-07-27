@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,30 @@ func TestPreviewModesUseFastProxyAndExactQualityFilters(t *testing.T) {
 	}
 }
 
+func TestSplitPreviewFiltersPlacesSubtitlesBeforeCrop(t *testing.T) {
+	before, after := splitPreviewFiltersAtCrop("fieldmatch=order=tff,decimate,crop=720:286:0:98,hqdn3d=1.5:1.5:6:6")
+	if before != "fieldmatch=order=tff,decimate" {
+		t.Fatalf("unexpected filters before crop: %q", before)
+	}
+	if after != "crop=720:286:0:98,hqdn3d=1.5:1.5:6:6" {
+		t.Fatalf("unexpected crop filters: %q", after)
+	}
+}
+
+func TestEscapeSubtitleFilterPath(t *testing.T) {
+	got := escapeSubtitleFilterPath(`/media/Movies/Director's Cut: Film.mkv`)
+	want := `/media/Movies/Director\'s Cut\: Film.mkv`
+	if got != want {
+		t.Fatalf("escaped path=%q want=%q", got, want)
+	}
+}
+
+func TestPreviewTimestampSeconds(t *testing.T) {
+	if got := previewTimestampSeconds("01:02:03"); got != 3723 {
+		t.Fatalf("timestamp seconds=%d", got)
+	}
+}
+
 func TestSubtitleExtractionPlansPreserveASSAndConvertOtherTextTracksToSRT(t *testing.T) {
 	plans, unsupported := subtitleExtractionPlans("/media/library/Movie.mkv", []FFProbeStream{
 		{Index: 0, CodecType: "video", CodecName: "hevc"},
@@ -120,6 +145,97 @@ func TestSubtitleExtractionPlansUseSafeUndefinedLanguage(t *testing.T) {
 	}
 }
 
+func TestSubtitleExtractionPlansCanSelectTrackAndOutputFormat(t *testing.T) {
+	streamIndex := 3
+	plans, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", []FFProbeStream{
+		{Index: 2, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "spa"}},
+		{Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}},
+	}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "ass"})
+
+	if len(unsupported) != 0 || len(plans) != 1 {
+		t.Fatalf("unexpected plans=%#v unsupported=%#v", plans, unsupported)
+	}
+	if plans[0].StreamIndex != 3 || plans[0].Codec != "ass" || plans[0].OutputPath != "/media/library/Movie.eng.3.ass" {
+		t.Fatalf("unexpected selected plan: %#v", plans[0])
+	}
+}
+
+func TestExternalSubtitleManagementIsScopedToAssetSidecars(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:external-subtitles?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "Movie.mkv")
+	sidecar := filepath.Join(root, "Movie.spa.default.srt")
+	assSidecar := filepath.Join(root, "Movie.eng.ass")
+	other := filepath.Join(root, "Other.srt")
+	writeTestFile(t, mediaPath, "video")
+	writeTestFile(t, sidecar, "1\n00:00:01,000 --> 00:00:02,000\nHola\n")
+	writeTestFile(t, assSidecar, "[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n")
+	writeTestFile(t, other, "must remain")
+	if err := db.Create(&models.Library{Name: "Movies", DestinationPath: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: "Movie.mkv", FileName: "Movie.mkv", Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewAssetHandler(db)
+	router.GET("/api/assets/external-subtitles", handler.ExternalSubtitles)
+	router.GET("/api/assets/external-subtitles/content", handler.ExternalSubtitleContent)
+	router.PUT("/api/assets/external-subtitles", handler.UpdateExternalSubtitle)
+	router.DELETE("/api/assets/external-subtitles", handler.DeleteExternalSubtitle)
+
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/api/assets/external-subtitles?path="+url.QueryEscape(mediaPath), nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed []ExternalSubtitle
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 || listed[0].FileName != "Movie.eng.ass" || listed[1].Language != "spa" || !listed[1].Default {
+		t.Fatalf("unexpected sidecars: %#v", listed)
+	}
+
+	updateBody := `{"subtitlePath":` + strconv.Quote(sidecar) + `,"content":"updated subtitle"}`
+	updateResponse := httptest.NewRecorder()
+	router.ServeHTTP(updateResponse, httptest.NewRequest(http.MethodPut, "/api/assets/external-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader(updateBody)))
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+	if content, err := os.ReadFile(sidecar); err != nil || string(content) != "updated subtitle" {
+		t.Fatalf("sidecar was not updated: %q %v", content, err)
+	}
+
+	foreignBody := `{"subtitlePath":` + strconv.Quote(other) + `}`
+	deleteResponse := httptest.NewRecorder()
+	router.ServeHTTP(deleteResponse, httptest.NewRequest(http.MethodDelete, "/api/assets/external-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader(foreignBody)))
+	if deleteResponse.Code != http.StatusBadRequest {
+		t.Fatalf("foreign sidecar delete status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("foreign subtitle was modified: %v", err)
+	}
+
+	deleteBody := `{"subtitlePath":` + strconv.Quote(assSidecar) + `}`
+	deleteResponse = httptest.NewRecorder()
+	router.ServeHTTP(deleteResponse, httptest.NewRequest(http.MethodDelete, "/api/assets/external-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader(deleteBody)))
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	if _, err := os.Stat(assSidecar); !os.IsNotExist(err) {
+		t.Fatalf("expected sidecar deletion, got %v", err)
+	}
+}
+
 func TestExtractSubtitlesCreatesSidecarsAndPreservesExistingFiles(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:subtitle-extraction?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -144,6 +260,8 @@ func TestExtractSubtitlesCreatesSidecarsAndPreservesExistingFiles(t *testing.T) 
 	bin := t.TempDir()
 	ffprobe := filepath.Join(bin, "ffprobe")
 	ffmpeg := filepath.Join(bin, "ffmpeg")
+	seconv := filepath.Join(bin, "seconv")
+	tesseract := filepath.Join(bin, "tesseract")
 	probeScript := `#!/bin/sh
 printf '%s' '{"format":{"filename":"Baccano.mkv"},"streams":[{"index":2,"codec_type":"subtitle","codec_name":"ass","tags":{"language":"spa"}},{"index":3,"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"eng"}},{"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","tags":{"language":"jpn"}}]}'
 `
@@ -152,10 +270,25 @@ for argument do output="$argument"; done
 if [ "$output" = "-" ]; then exit 0; fi
 printf '%s\n' 'generated subtitle' > "$output"
 `
+	seconvScript := `#!/bin/sh
+for argument do
+  case "$argument" in
+    --output-folder:*) output_folder="${argument#--output-folder:}" ;;
+    --output-filename:*) output_filename="${argument#--output-filename:}" ;;
+  esac
+done
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_folder/$output_filename"
+`
 	if err := os.WriteFile(ffprobe, []byte(probeScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(ffmpeg, []byte(ffmpegScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seconv, []byte(seconvScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tesseract, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -179,22 +312,113 @@ printf '%s\n' 'generated subtitle' > "$output"
 	}
 
 	first := run()
-	if len(first.Created) != 2 || len(first.Existing) != 0 || len(first.Unsupported) != 1 {
+	if len(first.Created) != 3 || len(first.Existing) != 0 || len(first.Unsupported) != 0 {
 		t.Fatalf("unexpected first extraction result: %#v", first)
 	}
 	for _, path := range []string{
 		filepath.Join(root, "Baccano.spa.2.ass"),
 		filepath.Join(root, "Baccano.eng.3.srt"),
+		filepath.Join(root, "Baccano.jpn.4.srt"),
 	} {
 		content, err := os.ReadFile(path)
-		if err != nil || string(content) != "generated subtitle\n" {
+		if err != nil || len(content) == 0 {
 			t.Fatalf("sidecar %q content=%q err=%v", path, content, err)
 		}
 	}
 
 	second := run()
-	if len(second.Created) != 0 || len(second.Existing) != 2 {
+	if len(second.Created) != 0 || len(second.Existing) != 3 {
 		t.Fatalf("repeat extraction should preserve existing sidecars: %#v", second)
+	}
+}
+
+func TestExtractSubtitlesRunsOCRForExplicitBitmapTrackOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:subtitle-ocr?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "DVD.mkv")
+	if err := os.WriteFile(mediaPath, []byte("dvd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Library{Name: "Anime", DestinationPath: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: "DVD.mkv", FileName: "DVD.mkv", Status: "library"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	probeScript := `#!/bin/sh
+printf '%s' '{"format":{"filename":"DVD.mkv"},"streams":[{"index":4,"id":"0x7","codec_type":"subtitle","codec_name":"dvd_subtitle","tags":{"language":"spa"}}]}'
+`
+	seconvScript := `#!/bin/sh
+output_folder=""
+output_filename=""
+track=""
+language=""
+for argument do
+  case "$argument" in
+    --output-folder:*) output_folder="${argument#--output-folder:}" ;;
+    --output-filename:*) output_filename="${argument#--output-filename:}" ;;
+    --track-number:*) track="${argument#--track-number:}" ;;
+    --ocr-language:*) language="${argument#--ocr-language:}" ;;
+  esac
+done
+[ "$track" = "7" ] || exit 20
+[ "$language" = "spa" ] || exit 21
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_folder/$output_filename"
+`
+	for name, content := range map[string]string{
+		"ffprobe":   probeScript,
+		"seconv":    seconvScript,
+		"tesseract": "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
+	response := httptest.NewRecorder()
+	body := `{"streamIndex":4,"format":"srt","ocrLanguage":"spa"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader(body))
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	outputPath := filepath.Join(root, "DVD.spa.4.srt")
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "Hola") {
+		t.Fatalf("unexpected OCR output: %q", content)
+	}
+}
+
+func TestBitmapSubtitleOCRHelpers(t *testing.T) {
+	if got := matroskaTrackNumber(FFProbeStream{Index: 4, ID: "0x7"}); got != 7 {
+		t.Fatalf("hex track ID = %d, want 7", got)
+	}
+	if got := matroskaTrackNumber(FFProbeStream{Index: 4, ID: float64(8)}); got != 8 {
+		t.Fatalf("numeric track ID = %d, want 8", got)
+	}
+	if got := matroskaTrackNumber(FFProbeStream{Index: 4}); got != 5 {
+		t.Fatalf("fallback track ID = %d, want 5", got)
+	}
+	for input, want := range map[string]string{"spa": "spa", "es": "spa", "jpn": "jpn", "ja": "jpn", "eng": "eng", "und": "eng"} {
+		if got := normalizedOCRLanguage(input, ""); got != want {
+			t.Fatalf("OCR language %q = %q, want %q", input, got, want)
+		}
 	}
 }
 

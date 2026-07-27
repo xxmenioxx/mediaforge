@@ -5,6 +5,7 @@ type MediaSnapshotDetailsProps = {
   scan: ScanResult;
   streamControls?: StreamControls;
   metadataControls?: StreamMetadataControls;
+  section?: 'all' | 'general' | 'tracks';
 };
 
 export type StreamControls = {
@@ -31,10 +32,10 @@ type StreamMetadataControlState = {
   onChange: (index: number, patch: StreamMetadataOverride) => void;
 };
 
-export function MediaSnapshotDetails({ scan, streamControls, metadataControls }: MediaSnapshotDetailsProps) {
+export function MediaSnapshotDetails({ scan, streamControls, metadataControls, section = 'all' }: MediaSnapshotDetailsProps) {
   return (
     <Stack spacing={1.25}>
-      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+      {section !== 'tracks' ? <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
         <SnapshotChip label="Video" value={`${scan.videoCodec || 'unknown'}${scan.width && scan.height ? ` ${scan.width}x${scan.height}` : ''}`} />
         <SnapshotChip label="Duration" value={formatDuration(scan.duration)} />
         <SnapshotChip label="Bitrate" value={formatBitrate(scan.bitrate)} />
@@ -42,12 +43,20 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls }:
         <SnapshotChip label="Range" value={scan.hdr ? 'HDR' : 'SDR'} />
         <SnapshotChip label="Scan type" value={interlaceLabel(scan)} />
         <SnapshotChip label="Motion sample" value={interlaceWindowLabel(scan)} />
+        {scan.interlaceAnalysis?.detectedFieldOrder ? <SnapshotChip label="Detected order" value={scan.interlaceAnalysis.detectedFieldOrder.toUpperCase()} /> : null}
+        {scan.interlaceAnalysis?.fieldOrderMismatch ? (
+          <SnapshotChip
+            label="Field-order mismatch"
+            value={`${(scan.interlaceAnalysis.containerFieldOrder || 'unknown').toUpperCase()} metadata → ${(scan.interlaceAnalysis.detectedFieldOrder || 'unknown').toUpperCase()} content`}
+          />
+        ) : null}
+        {scan.interlaceAnalysis?.recommendedMode ? <SnapshotChip label="Motion correction" value={scan.interlaceAnalysis.recommendedMode.toUpperCase()} /> : null}
         <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
         <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
         {streamControls ? <SnapshotChip label="Selection savings" value={selectionSavingsLabel(scan, streamControls)} /> : null}
-      </Stack>
+      </Stack> : null}
 
-      <StreamSection
+      {section !== 'general' ? <><StreamSection
         title={`Video (${scan.videoStreams?.length ?? 0})`}
         streams={scan.videoStreams ?? []}
         emptyLabel="No video tracks found."
@@ -68,6 +77,7 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls }:
         control={streamControls?.subtitle}
         metadataControl={metadataControls?.subtitle}
       />
+      </> : null}
     </Stack>
   );
 }
@@ -78,7 +88,7 @@ function interlaceLabel(scan: ScanResult) {
   switch (status) {
     case 'interlaced': return `Interlaced${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
     case 'mixed': return 'Mixed · review';
-    case 'telecine_suspected': return 'Telecine suspected';
+    case 'telecine_suspected': return `Telecine suspected${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
     case 'progressive': return 'Progressive';
     default: return 'Unknown';
   }
@@ -87,7 +97,9 @@ function interlaceLabel(scan: ScanResult) {
 function interlaceWindowLabel(scan: ScanResult) {
   const seconds = scan.interlaceAnalysis?.windowSeconds;
   const start = scan.interlaceAnalysis?.windowStart;
+  const samples = scan.interlaceAnalysis?.sampleCount;
   if (!seconds) return 'Legacy sample';
+  if (samples && samples > 1) return `${samples} × ${seconds}s distributed`;
   return `${seconds}s from ${formatClock(start ?? 0)}`;
 }
 

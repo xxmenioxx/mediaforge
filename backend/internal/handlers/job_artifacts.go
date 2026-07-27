@@ -35,16 +35,18 @@ type jobArtifact struct {
 }
 
 type AssetConversionReport struct {
-	HasOverrides      bool                           `json:"hasOverrides"`
-	Override          AssetConversionOverrideState   `json:"override,omitempty"`
-	SelectedVideo     []int                          `json:"selectedVideo,omitempty"`
-	SelectedAudio     []int                          `json:"selectedAudio,omitempty"`
-	SelectedSubtitles []int                          `json:"selectedSubtitles,omitempty"`
-	VideoMetadata     map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
-	AudioMetadata     map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
-	SubtitleMetadata  map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
-	ProfileOverrides  map[string]any                 `json:"profileOverrides,omitempty"`
-	HumanSummary      []string                       `json:"humanSummary,omitempty"`
+	HasOverrides       bool                           `json:"hasOverrides"`
+	Override           AssetConversionOverrideState   `json:"override,omitempty"`
+	SelectedVideo      []int                          `json:"selectedVideo,omitempty"`
+	SelectedAudio      []int                          `json:"selectedAudio,omitempty"`
+	SelectedSubtitles  []int                          `json:"selectedSubtitles,omitempty"`
+	VideoMetadata      map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
+	AudioMetadata      map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
+	SubtitleMetadata   map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	SubtitleTransforms []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
+	SubtitleArtifacts  models.JSONList                `json:"subtitleArtifacts,omitempty"`
+	ProfileOverrides   map[string]any                 `json:"profileOverrides,omitempty"`
+	HumanSummary       []string                       `json:"humanSummary,omitempty"`
 }
 
 type jobArtifactsResponse struct {
@@ -392,6 +394,7 @@ func assetConversionReport(override AssetConversionOverrideState) AssetConversio
 	report.VideoMetadata = override.VideoMetadata
 	report.AudioMetadata = override.AudioMetadata
 	report.SubtitleMetadata = override.SubtitleMetadata
+	report.SubtitleTransforms = override.SubtitleTransforms
 	report.ProfileOverrides = assetProfileOverrideMap(override)
 	report.HumanSummary = assetConversionHumanSummary(override)
 	return report
@@ -454,6 +457,15 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.EnhancedAudioSourceStreamIndex != nil {
 		values["enhancedAudioSourceStreamIndex"] = *override.EnhancedAudioSourceStreamIndex
 	}
+	if override.UseHardwareIfAvailable != nil {
+		values["useHardwareIfAvailable"] = *override.UseHardwareIfAvailable
+	}
+	if strings.TrimSpace(override.VideoEncoder) != "" {
+		values["videoEncoder"] = override.VideoEncoder
+	}
+	if override.GlobalQuality > 0 {
+		values["globalQuality"] = override.GlobalQuality
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -482,6 +494,16 @@ func assetConversionHumanSummary(override AssetConversionOverrideState) []string
 	}
 	if len(override.SubtitleMetadata) > 0 {
 		summary = append(summary, "Subtitle track metadata edited")
+	}
+	for _, transform := range override.SubtitleTransforms {
+		action := fmt.Sprintf("Subtitle stream %d exported as %s", transform.StreamIndex, strings.ToUpper(transform.Format))
+		if transform.RemoveEmbedded {
+			action += " and removed from the converted container"
+		}
+		if transform.MakeDefault {
+			action += " as the default sidecar"
+		}
+		summary = append(summary, action)
 	}
 	for key, value := range assetProfileOverrideMap(override) {
 		summary = append(summary, key+": "+fmt.Sprint(value))
@@ -515,6 +537,7 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		Result:          result,
 		Notes:           job.Notes,
 	}
+	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
 	return writeJobArtifact(db, job, "result", artifact)
 }
 

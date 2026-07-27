@@ -34,6 +34,28 @@ type SubtitleExtractionResult struct {
 	Unsupported []string `json:"unsupported"`
 }
 
+type SubtitleExtractionInput struct {
+	StreamIndex *int   `json:"streamIndex"`
+	Format      string `json:"format"`
+	OCRLanguage string `json:"ocrLanguage,omitempty"`
+}
+
+type ExternalSubtitle struct {
+	Path       string    `json:"path"`
+	FileName   string    `json:"fileName"`
+	Format     string    `json:"format"`
+	Language   string    `json:"language,omitempty"`
+	Default    bool      `json:"default"`
+	Forced     bool      `json:"forced"`
+	SizeBytes  int64     `json:"sizeBytes"`
+	ModifiedAt time.Time `json:"modifiedAt"`
+}
+
+type ExternalSubtitleUpdateInput struct {
+	SubtitlePath string `json:"subtitlePath" binding:"required"`
+	Content      string `json:"content"`
+}
+
 type AssetPathMigrationInput struct {
 	SourcePath           string `json:"sourcePath" binding:"required"`
 	DestinationLibraryID uint   `json:"destinationLibraryId" binding:"required"`
@@ -125,6 +147,7 @@ type AssetConversionOverrideState struct {
 	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
 	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
 	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	SubtitleTransforms             []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
 	VideoCodec                     string                         `json:"videoCodec,omitempty"`
 	AudioCodec                     string                         `json:"audioCodec,omitempty"`
 	QualityMode                    string                         `json:"qualityMode,omitempty"`
@@ -141,6 +164,9 @@ type AssetConversionOverrideState struct {
 	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack,omitempty"`
 	AACStereoDefault               *bool                          `json:"aacStereoDefault,omitempty"`
 	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex,omitempty"`
+	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable,omitempty"`
+	VideoEncoder                   string                         `json:"videoEncoder,omitempty"`
+	GlobalQuality                  int                            `json:"globalQuality,omitempty"`
 	UpdatedAt                      *time.Time                     `json:"updatedAt,omitempty"`
 }
 
@@ -149,6 +175,15 @@ type StreamMetadataOverride struct {
 	Language string `json:"language,omitempty"`
 	Default  *bool  `json:"default,omitempty"`
 	Forced   *bool  `json:"forced,omitempty"`
+}
+
+type SubtitleTransform struct {
+	StreamIndex    int    `json:"streamIndex"`
+	Format         string `json:"format"`
+	RemoveEmbedded bool   `json:"removeEmbedded"`
+	MakeDefault    bool   `json:"makeDefault"`
+	Language       string `json:"language"`
+	Title          string `json:"title,omitempty"`
 }
 
 type Asset struct {
@@ -206,6 +241,7 @@ type AssetConversionUpdateInput struct {
 	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata"`
 	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata"`
 	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata"`
+	SubtitleTransforms             []SubtitleTransform            `json:"subtitleTransforms"`
 	VideoCodec                     string                         `json:"videoCodec"`
 	AudioCodec                     string                         `json:"audioCodec"`
 	QualityMode                    string                         `json:"qualityMode"`
@@ -222,6 +258,9 @@ type AssetConversionUpdateInput struct {
 	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack"`
 	AACStereoDefault               *bool                          `json:"aacStereoDefault"`
 	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex"`
+	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable"`
+	VideoEncoder                   string                         `json:"videoEncoder"`
+	GlobalQuality                  int                            `json:"globalQuality"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -479,8 +518,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset not found in inventory"})
 		return
 	}
-	if record.Status != "library" && record.Status != "unverified" {
-		c.JSON(http.StatusConflict, gin.H{"error": "subtitle extraction is available only for assets currently in Library"})
+	if record.Status == "archive" {
+		c.JSON(http.StatusConflict, gin.H{"error": "recover the archived original before generating external subtitles"})
 		return
 	}
 	info, err := os.Stat(path)
@@ -509,11 +548,22 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 			streams = append(streams, subtitleStreams...)
 		}
 	}
-	plans, unsupported := subtitleExtractionPlans(path, streams)
-	if len(plans) == 0 {
+	var input SubtitleExtractionInput
+	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	input.Format = strings.ToLower(strings.TrimSpace(input.Format))
+	if input.Format != "" && input.Format != "srt" && input.Format != "ass" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be srt or ass"})
+		return
+	}
+	plans, unsupported := subtitleExtractionPlansForRequest(path, streams, input)
+	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
+	if len(plans) == 0 && len(bitmapStreams) == 0 {
 		if len(unsupported) > 0 {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"error":       "the asset contains only bitmap subtitle tracks; OCR is required to create SRT or ASS files",
+				"error":       "the selected subtitle track cannot be converted to SRT or ASS",
 				"unsupported": unsupported,
 			})
 			return
@@ -526,7 +576,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 
-	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: unsupported}
+	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: []string{}}
 	for _, plan := range plans {
 		if existing, statErr := os.Stat(plan.OutputPath); statErr == nil && !existing.IsDir() {
 			result.Existing = append(result.Existing, plan.OutputPath)
@@ -582,8 +632,169 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		_ = os.Remove(tempPath)
 		result.Created = append(result.Created, plan.OutputPath)
 	}
+	for _, stream := range bitmapStreams {
+		ocrResult, ocrErr := generateBitmapSubtitleSidecar(c.Request.Context(), path, stream, input)
+		if ocrErr != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":       ocrErr.Error(),
+				"created":     result.Created,
+				"existing":    result.Existing,
+				"unsupported": result.Unsupported,
+			})
+			return
+		}
+		result.Created = append(result.Created, ocrResult.Created...)
+		result.Existing = append(result.Existing, ocrResult.Existing...)
+	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func (h AssetHandler) ExternalSubtitles(c *gin.Context) {
+	mediaPath, _, ok := h.externalSubtitleAsset(c)
+	if !ok {
+		return
+	}
+	values, err := externalSubtitlesForMedia(mediaPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, values)
+}
+
+func (h AssetHandler) ExternalSubtitleContent(c *gin.Context) {
+	mediaPath, _, ok := h.externalSubtitleAsset(c)
+	if !ok {
+		return
+	}
+	subtitlePath, err := validatedExternalSubtitlePath(mediaPath, c.Query("subtitlePath"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	content, err := os.ReadFile(subtitlePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": mediaPathReadError(err)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": subtitlePath, "content": string(content)})
+}
+
+func (h AssetHandler) UpdateExternalSubtitle(c *gin.Context) {
+	mediaPath, _, ok := h.externalSubtitleAsset(c)
+	if !ok {
+		return
+	}
+	var input ExternalSubtitleUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	subtitlePath, err := validatedExternalSubtitlePath(mediaPath, input.SubtitlePath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(input.Content) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subtitle content cannot be empty"})
+		return
+	}
+	if len(input.Content) > 8*1024*1024 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "subtitle content exceeds 8 MiB"})
+		return
+	}
+	existingInfo, err := os.Stat(subtitlePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": mediaPathReadError(err)})
+		return
+	}
+	temp, err := os.CreateTemp(filepath.Dir(subtitlePath), ".mvforge-subtitle-edit-*"+filepath.Ext(subtitlePath))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	tempPath := temp.Name()
+	if err = temp.Chmod(existingInfo.Mode()); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err = temp.WriteString(input.Content); err == nil {
+		err = temp.Sync()
+	}
+	closeErr := temp.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tempPath, subtitlePath)
+	}
+	if err != nil {
+		_ = os.Remove(tempPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": subtitlePath, "message": "External subtitle updated."})
+}
+
+func (h AssetHandler) DeleteExternalSubtitle(c *gin.Context) {
+	mediaPath, _, ok := h.externalSubtitleAsset(c)
+	if !ok {
+		return
+	}
+	var input ExternalSubtitleUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	subtitlePath, err := validatedExternalSubtitlePath(mediaPath, input.SubtitlePath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.Remove(subtitlePath); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "external subtitle no longer exists"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": subtitlePath, "message": "External subtitle deleted."})
+}
+
+func (h AssetHandler) externalSubtitleAsset(c *gin.Context) (string, models.AssetRecord, bool) {
+	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if path == "." || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return "", models.AssetRecord{}, false
+	}
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "asset not found in inventory"})
+		return "", models.AssetRecord{}, false
+	}
+	if record.Status == "archive" {
+		c.JSON(http.StatusConflict, gin.H{"error": "archived originals cannot manage external subtitles"})
+		return "", models.AssetRecord{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "asset is not readable from the backend container"})
+		return "", models.AssetRecord{}, false
+	}
+	allowed, err := h.pathBelongsToLibrary(path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return "", models.AssetRecord{}, false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "asset is outside configured media roots"})
+		return "", models.AssetRecord{}, false
+	}
+	return path, record, true
 }
 
 func (h AssetHandler) MigratePath(c *gin.Context) {
@@ -926,11 +1137,22 @@ type subtitleExtractionPlan struct {
 }
 
 func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subtitleExtractionPlan, []string) {
+	return subtitleExtractionPlansForRequest(mediaPath, streams, SubtitleExtractionInput{})
+}
+
+func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream, input SubtitleExtractionInput) ([]subtitleExtractionPlan, []string) {
 	base := strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath))
 	plans := []subtitleExtractionPlan{}
 	unsupported := []string{}
+	requestedFormat := strings.ToLower(strings.TrimSpace(input.Format))
+	if requestedFormat != "" && requestedFormat != "srt" && requestedFormat != "ass" {
+		return plans, []string{"requested output format must be srt or ass"}
+	}
 	for _, stream := range streams {
 		if stream.CodecType != "subtitle" {
+			continue
+		}
+		if input.StreamIndex != nil && stream.Index != *input.StreamIndex {
 			continue
 		}
 		if !subtitleCanConvertText(stream.CodecName) {
@@ -943,6 +1165,10 @@ func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subti
 			format = "ass"
 			codec = "ass"
 		}
+		if requestedFormat != "" {
+			format = requestedFormat
+			codec = requestedFormat
+		}
 		language := safeSubtitleFilenamePart(stream.Tags["language"])
 		if language == "" {
 			language = "und"
@@ -954,7 +1180,89 @@ func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subti
 			OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
 		})
 	}
+	if input.StreamIndex != nil && len(plans) == 0 && len(unsupported) == 0 {
+		unsupported = append(unsupported, fmt.Sprintf("subtitle stream %d was not found", *input.StreamIndex))
+	}
 	return plans, unsupported
+}
+
+func selectedBitmapSubtitleStreams(streams []FFProbeStream, requestedIndex *int) []FFProbeStream {
+	selected := []FFProbeStream{}
+	for _, stream := range streams {
+		if stream.CodecType != "subtitle" || !isBitmapSubtitleCodecName(stream.CodecName) {
+			continue
+		}
+		if requestedIndex != nil && stream.Index != *requestedIndex {
+			continue
+		}
+		selected = append(selected, stream)
+	}
+	return selected
+}
+
+func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
+	directory := filepath.Dir(mediaPath)
+	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	values := []ExternalSubtitle{}
+	for _, entry := range entries {
+		if entry.IsDir() || !externalSubtitleNameForStem(entry.Name(), stem) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(entry.Name())), ".")
+		tokens := strings.Split(strings.TrimSuffix(strings.TrimPrefix(entry.Name(), stem), filepath.Ext(entry.Name())), ".")
+		language := ""
+		isDefault, forced := false, false
+		for _, token := range tokens {
+			clean := strings.ToLower(strings.TrimSpace(token))
+			switch clean {
+			case "", "default":
+				isDefault = isDefault || clean == "default"
+			case "forced":
+				forced = true
+			default:
+				if language == "" {
+					if _, err := strconv.Atoi(clean); err != nil {
+						language = clean
+					}
+				}
+			}
+		}
+		values = append(values, ExternalSubtitle{
+			Path: filepath.Join(directory, entry.Name()), FileName: entry.Name(), Format: ext,
+			Language: language, Default: isDefault, Forced: forced, SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
+		})
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].FileName < values[j].FileName })
+	return values, nil
+}
+
+func externalSubtitleNameForStem(name, stem string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext != ".srt" && ext != ".ass" {
+		return false
+	}
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	return base == stem || strings.HasPrefix(base, stem+".")
+}
+
+func validatedExternalSubtitlePath(mediaPath, requested string) (string, error) {
+	requested = filepath.Clean(strings.TrimSpace(requested))
+	if requested == "." || requested == "" {
+		return "", fmt.Errorf("subtitlePath is required")
+	}
+	if filepath.Dir(requested) != filepath.Dir(mediaPath) ||
+		!externalSubtitleNameForStem(filepath.Base(requested), strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))) {
+		return "", fmt.Errorf("subtitlePath must be an SRT or ASS sidecar belonging to this asset")
+	}
+	return requested, nil
 }
 
 func safeSubtitleFilenamePart(value string) string {
@@ -1031,6 +1339,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoMetadata:                  normalizedStreamMetadata(input.VideoMetadata),
 		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
 		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
+		SubtitleTransforms:             normalizedSubtitleTransforms(input.SubtitleTransforms),
 		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
 		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
 		QualityMode:                    strings.TrimSpace(input.QualityMode),
@@ -1047,6 +1356,9 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		AddAACStereoTrack:              input.AddAACStereoTrack,
 		AACStereoDefault:               input.AACStereoDefault,
 		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
+		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
+		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
+		GlobalQuality:                  input.GlobalQuality,
 	}
 	if assetConversionOverrideEmpty(override) {
 		delete(entries, cleanPath)
@@ -1227,6 +1539,15 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	videoEncoderOverride := strings.TrimSpace(c.Query("videoEncoder"))
 	useHardwareOverride, _ := strconv.ParseBool(c.Query("useHardwareIfAvailable"))
 	globalQualityOverride, _ := strconv.Atoi(c.Query("globalQuality"))
+	subtitleStreamIndex := -1
+	if rawSubtitleIndex := strings.TrimSpace(c.Query("subtitleStreamIndex")); rawSubtitleIndex != "" {
+		parsed, parseErr := strconv.Atoi(rawSubtitleIndex)
+		if parseErr != nil || parsed < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "subtitleStreamIndex must be a non-negative stream index"})
+			return
+		}
+		subtitleStreamIndex = parsed
+	}
 	previewMode := normalizedPreviewMode(c.Query("mode"))
 	start, ok := boundedPreviewStart(c.Query("start"))
 	if !ok {
@@ -1274,16 +1595,35 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		videoPresetOverride = "veryfast"
 		x265ParamsOverride = ""
 	}
+	inputStart := start
+	subtitlePrerollSeconds := 0
+	if subtitleStreamIndex >= 0 {
+		startSeconds := previewTimestampSeconds(start)
+		subtitlePrerollSeconds = min(10, startSeconds)
+		inputStart = secondsToTimestamp(startSeconds - subtitlePrerollSeconds)
+	}
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
 		"-analyzeduration", analyzeSize,
 		"-probesize", analyzeSize,
-		"-ss", start,
-		"-t", strconv.Itoa(seconds),
+		"-ss", inputStart,
 		"-i", path,
-		"-map", "0:v:0?",
-		"-vf", previewVideoFilterChain(videoFiltersOverride, previewMode),
+	}
+	if subtitlePrerollSeconds > 0 {
+		args = append(args, "-ss", strconv.Itoa(subtitlePrerollSeconds))
+	}
+	args = append(args, "-t", strconv.Itoa(seconds))
+	videoFilter := previewVideoFilterChain(videoFiltersOverride, previewMode)
+	if subtitleStreamIndex >= 0 {
+		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
+		if filterErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": filterErr.Error()})
+			return
+		}
+		args = append(args, "-filter_complex", filter, "-map", "[preview_video]")
+	} else {
+		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
 	}
 	args = append(args, previewVideoCodecArgs(h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride, videoEncoderOverride, useHardwareOverride, globalQualityOverride)...)
 	args = append(args,
@@ -1493,6 +1833,87 @@ func previewVideoFilterChain(videoFilters string, previewMode ...string) string 
 	return videoFilters + "," + scale
 }
 
+func previewSubtitleFilter(path string, streamIndex int, videoFilter string) (string, error) {
+	inventory, err := probeMediaStreams(path)
+	if err != nil {
+		return "", fmt.Errorf("subtitle preview scan failed: %w", err)
+	}
+	subtitleOrdinal := -1
+	subtitleCodec := ""
+	for ordinal, stream := range inventory.Subtitle {
+		if stream.Index == streamIndex {
+			subtitleOrdinal = ordinal
+			subtitleCodec = strings.ToLower(stream.Codec)
+			break
+		}
+	}
+	if subtitleOrdinal < 0 {
+		return "", fmt.Errorf("subtitle stream %d is not present in the selected asset", streamIndex)
+	}
+	if strings.TrimSpace(videoFilter) == "" {
+		videoFilter = "null"
+	}
+	beforeCrop, cropAndAfter := splitPreviewFiltersAtCrop(videoFilter)
+	switch subtitleCodec {
+	case "subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text":
+		if cropAndAfter != "" {
+			return fmt.Sprintf(
+				"[0:v:0]%s,subtitles=filename='%s':si=%d[preview_subbed];[preview_subbed]%s[preview_video]",
+				beforeCrop,
+				escapeSubtitleFilterPath(path),
+				subtitleOrdinal,
+				cropAndAfter,
+			), nil
+		}
+		return fmt.Sprintf(
+			"[0:v:0]%s,subtitles=filename='%s':si=%d[preview_video]",
+			videoFilter,
+			escapeSubtitleFilterPath(path),
+			subtitleOrdinal,
+		), nil
+	default:
+		if cropAndAfter != "" {
+			return fmt.Sprintf(
+				"[0:v:0]%s[preview_base];[preview_base][0:%d]overlay[preview_subbed];[preview_subbed]%s[preview_video]",
+				beforeCrop,
+				streamIndex,
+				cropAndAfter,
+			), nil
+		}
+		return fmt.Sprintf(
+			"[0:v:0]%s[preview_base];[preview_base][0:%d]overlay[preview_video]",
+			videoFilter,
+			streamIndex,
+		), nil
+	}
+}
+
+func splitPreviewFiltersAtCrop(filterChain string) (string, string) {
+	filters := strings.Split(filterChain, ",")
+	for index, filter := range filters {
+		if strings.HasPrefix(strings.TrimSpace(filter), "crop=") {
+			before := strings.TrimSpace(strings.Join(filters[:index], ","))
+			after := strings.TrimSpace(strings.Join(filters[index:], ","))
+			if before == "" {
+				before = "null"
+			}
+			return before, after
+		}
+	}
+	return filterChain, ""
+}
+
+func escapeSubtitleFilterPath(path string) string {
+	return strings.NewReplacer(
+		`\`, `\\`,
+		`:`, `\:`,
+		`'`, `\'`,
+		`,`, `\,`,
+		`[`, `\[`,
+		`]`, `\]`,
+	).Replace(path)
+}
+
 func (h AssetHandler) AudioPreview(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	profileKey := strings.TrimSpace(c.Query("profileKey"))
@@ -1609,6 +2030,7 @@ func sanitizeAudioFilterChain(filterChain string) string {
 		if arnndnModelMissing(filter) {
 			continue
 		}
+		filter = strings.ReplaceAll(filter, "aresample=ocl=", "aresample=ochl=")
 		filters = append(filters, sanitizeAfftdnFilter(filter))
 	}
 	if len(filters) == 0 {
@@ -1715,6 +2137,17 @@ func boundedPreviewStart(value string) (string, bool) {
 	}
 
 	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds), true
+}
+
+func previewTimestampSeconds(value string) int {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, _ := strconv.Atoi(parts[0])
+	minutes, _ := strconv.Atoi(parts[1])
+	seconds, _ := strconv.Atoi(parts[2])
+	return max(0, hours*3600+minutes*60+seconds)
 }
 
 func secondsToTimestamp(totalSeconds int) string {
@@ -2701,6 +3134,7 @@ func conversionOverrideForPath(path string, overrides map[string]AssetConversion
 	override.VideoMetadata = normalizedStreamMetadata(override.VideoMetadata)
 	override.AudioMetadata = normalizedStreamMetadata(override.AudioMetadata)
 	override.SubtitleMetadata = normalizedStreamMetadata(override.SubtitleMetadata)
+	override.SubtitleTransforms = normalizedSubtitleTransforms(override.SubtitleTransforms)
 	return override
 }
 
@@ -2712,6 +3146,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		len(override.VideoMetadata) == 0 &&
 		len(override.AudioMetadata) == 0 &&
 		len(override.SubtitleMetadata) == 0 &&
+		len(override.SubtitleTransforms) == 0 &&
 		strings.TrimSpace(override.VideoCodec) == "" &&
 		strings.TrimSpace(override.AudioCodec) == "" &&
 		strings.TrimSpace(override.QualityMode) == "" &&
@@ -2727,7 +3162,35 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.PreserveChapters == nil &&
 		override.AddAACStereoTrack == nil &&
 		override.AACStereoDefault == nil &&
-		override.EnhancedAudioSourceStreamIndex == nil
+		override.EnhancedAudioSourceStreamIndex == nil &&
+		override.UseHardwareIfAvailable == nil &&
+		strings.TrimSpace(override.VideoEncoder) == "" &&
+		override.GlobalQuality == 0
+}
+
+func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransform {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[int]struct{}{}
+	result := make([]SubtitleTransform, 0, len(values))
+	for _, value := range values {
+		format := strings.ToLower(strings.TrimSpace(value.Format))
+		if value.StreamIndex < 0 || (format != "srt" && format != "ass") {
+			continue
+		}
+		if _, exists := seen[value.StreamIndex]; exists {
+			continue
+		}
+		seen[value.StreamIndex] = struct{}{}
+		value.Format = format
+		value.Language = safeSubtitleFilenamePart(value.Language)
+		if value.Language == "" {
+			value.Language = "und"
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func normalizedOptionalStreamIndex(index *int) *int {

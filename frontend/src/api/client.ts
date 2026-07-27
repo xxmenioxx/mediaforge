@@ -17,6 +17,7 @@ import type {
   ClaimJobInput,
   ExecuteJobInput,
   ExecutionPlan,
+  ExternalSubtitle,
   JobArtifactsResponse,
   Profile,
   ProfileInput,
@@ -91,10 +92,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  extractAssetSubtitles: (path: string) =>
-    request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`, {
+  extractAssetSubtitles: (input: string | { path: string; streamIndex?: number; format?: 'srt' | 'ass'; ocrLanguage?: string }) => {
+    const value = typeof input === 'string' ? { path: input } : input;
+    return request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ streamIndex: value.streamIndex, format: value.format, ocrLanguage: value.ocrLanguage }),
+    });
+  },
+  externalAssetSubtitles: (path: string) =>
+    request<ExternalSubtitle[]>(`/api/assets/external-subtitles?path=${encodeURIComponent(path)}`),
+  externalAssetSubtitleContent: (input: { path: string; subtitlePath: string }) =>
+    request<{ path: string; content: string }>(`/api/assets/external-subtitles/content?path=${encodeURIComponent(input.path)}&subtitlePath=${encodeURIComponent(input.subtitlePath)}`),
+  updateExternalAssetSubtitle: (input: { path: string; subtitlePath: string; content: string }) =>
+    request<{ path: string; message: string }>(`/api/assets/external-subtitles?path=${encodeURIComponent(input.path)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ subtitlePath: input.subtitlePath, content: input.content }),
+    }),
+  deleteExternalAssetSubtitle: (input: { path: string; subtitlePath: string }) =>
+    request<{ path: string; message: string }>(`/api/assets/external-subtitles?path=${encodeURIComponent(input.path)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ subtitlePath: input.subtitlePath }),
     }),
   migrateAssetPath: (input: { sourcePath: string; destinationLibraryId: number }) =>
     request<{ status: string; sourcePath: string; destinationPath: string; sourceLibraryId: number; destinationLibraryId: number; assetsMoved: number }>('/api/assets/migrate-path', {
@@ -261,6 +278,7 @@ export const api = {
     useHardwareIfAvailable = false,
     globalQuality = 25,
     mode = 'quick',
+    subtitleStreamIndex,
   }: {
     path: string;
     profileId?: number;
@@ -276,8 +294,9 @@ export const api = {
     useHardwareIfAvailable?: boolean;
     globalQuality?: number;
     mode?: 'quick' | 'quality';
+    subtitleStreamIndex?: number;
   }) =>
-    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&mode=${mode}`,
+    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&mode=${mode}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`,
   audioPreviewUrl: ({
     path,
     profileKey = '',

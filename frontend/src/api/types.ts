@@ -113,6 +113,14 @@ export type AssetConversionOverrideState = {
   videoMetadata?: Record<string, StreamMetadataOverride>;
   audioMetadata?: Record<string, StreamMetadataOverride>;
   subtitleMetadata?: Record<string, StreamMetadataOverride>;
+  subtitleTransforms?: Array<{
+    streamIndex: number;
+    format: 'srt' | 'ass';
+    removeEmbedded: boolean;
+    makeDefault: boolean;
+    language: string;
+    title?: string;
+  }>;
   videoCodec?: string;
   audioCodec?: string;
   qualityMode?: string;
@@ -120,7 +128,7 @@ export type AssetConversionOverrideState = {
   videoPreset?: string;
   pixFmt?: string;
   videoFilters?: string;
-  deinterlaceMode?: 'auto' | 'off' | 'force';
+  deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
   processingMode?: string;
   preserveHdr?: boolean;
@@ -129,7 +137,21 @@ export type AssetConversionOverrideState = {
   addAacStereoTrack?: boolean;
   aacStereoDefault?: boolean;
   enhancedAudioSourceStreamIndex?: number;
+  useHardwareIfAvailable?: boolean;
+  videoEncoder?: string;
+  globalQuality?: number;
   updatedAt?: string;
+};
+
+export type ExternalSubtitle = {
+  path: string;
+  fileName: string;
+  format: 'srt' | 'ass';
+  language?: string;
+  default: boolean;
+  forced: boolean;
+  sizeBytes: number;
+  modifiedAt: string;
 };
 
 export type StreamMetadataOverride = {
@@ -410,6 +432,16 @@ export type QueueJob = {
   publicationRetiredAt?: string;
   replacementTargetPath: string;
   originalArchivedPath: string;
+  subtitleArtifacts?: Array<{
+    streamIndex: number;
+    sourceCodec: string;
+    format: 'srt' | 'ass';
+    language: string;
+    default: boolean;
+    stagedPath: string;
+    publishedPath?: string;
+    sizeBytes: number;
+  }>;
   startedAt?: string;
   finishedAt?: string;
   dismissedAt?: string;
@@ -621,6 +653,9 @@ export type ScanResult = {
   interlaceAnalysis: {
     status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';
     fieldOrder?: string;
+    containerFieldOrder?: string;
+    detectedFieldOrder?: 'tff' | 'bff' | string;
+    fieldOrderMismatch?: boolean;
     source?: string;
     confidence?: number;
     tff?: number;
@@ -631,6 +666,19 @@ export type ScanResult = {
     recommendedFilter?: string;
     windowStart?: number;
     windowSeconds?: number;
+    sampleCount?: number;
+    sampledAt?: number[];
+    recommendedMode?: 'force' | 'ivtc_tff' | 'ivtc_bff' | string;
+    ivtcValidation?: {
+      tffProgressive?: number;
+      tffClassified?: number;
+      tffProgressiveRatio?: number;
+      bffProgressive?: number;
+      bffClassified?: number;
+      bffProgressiveRatio?: number;
+      selectedOrder?: 'tff' | 'bff' | string;
+      confidence?: number;
+    };
   };
   cropAnalysis: {
     version?: number;

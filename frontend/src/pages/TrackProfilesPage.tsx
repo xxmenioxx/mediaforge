@@ -7,7 +7,7 @@ import { api } from '../api/client';
 import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
-import { emptyTrackProfile, getTrackProfiles, type TrackProfile } from '../trackProfiles';
+import { emptyTrackProfile, getTrackProfiles, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
 
 export function TrackProfilesPage() {
   const client = useQueryClient();
@@ -37,6 +37,29 @@ export function TrackProfilesPage() {
     if (!draft) return;
     const key = type === 'video' ? 'videoMetadata' : type === 'audio' ? 'audioMetadata' : 'subtitleMetadata';
     setDraft({ ...draft, [key]: { ...(draft[key] ?? {}), [String(index)]: { ...(draft[key]?.[String(index)] ?? {}), ...patch } } });
+  };
+  const updateSubtitleTransform = (stream: MediaStreamInfo, format: '' | 'srt' | 'ass') => {
+    if (!draft) return;
+    const existing = draft.subtitleTransforms ?? [];
+    const remaining = existing.filter((item) => item.streamIndex !== stream.index);
+    setDraft({
+      ...draft,
+      subtitleTransforms: format ? [...remaining, {
+        streamIndex: stream.index,
+        format,
+        removeEmbedded: true,
+        makeDefault: true,
+        language: stream.language || 'und',
+        title: stream.title || undefined,
+      }] : remaining,
+    });
+  };
+  const updateSubtitleTransformValue = (streamIndex: number, patch: Partial<SubtitleTransform>) => {
+    if (!draft) return;
+    setDraft({
+      ...draft,
+      subtitleTransforms: (draft.subtitleTransforms ?? []).map((item) => item.streamIndex === streamIndex ? { ...item, ...patch } : item),
+    });
   };
   return <>
     <PageHeader title="Track Profiles" eyebrow="Stream selection"><Typography color="text.secondary" sx={{ mt: 1 }}>Reusable video, audio, subtitle and metadata selection rules.</Typography></PageHeader>
@@ -68,6 +91,55 @@ export function TrackProfilesPage() {
               subtitle: { values: draft.subtitleMetadata ?? {}, onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch) },
             }}
           />
+          <Stack spacing={1.5}>
+            <Typography variant="h3">External subtitle transformations</Typography>
+            <Typography color="text.secondary" variant="body2">
+              Generate a sidecar beside the published video, validate it, and remove the embedded source track. Video and audio remain untouched in a track-only job.
+            </Typography>
+            {sourceScan.subtitleStreams.map((stream) => {
+              const transform = draft.subtitleTransforms?.find((item) => item.streamIndex === stream.index);
+              const bitmap = isBitmapSubtitle(stream.codec);
+              return (
+                <Box key={stream.index} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+                  <Stack spacing={1}>
+                    <Typography fontWeight={700}>
+                      #{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()} {stream.title ? `· ${stream.title}` : ''}
+                    </Typography>
+                    {bitmap ? (
+                      <Alert severity="warning">This is a bitmap subtitle. OCR is required before SRT/ASS replacement, so direct transformation is disabled.</Alert>
+                    ) : null}
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                      <TextField
+                        select
+                        fullWidth
+                        label="Action"
+                        value={transform?.format ?? ''}
+                        onChange={(event) => updateSubtitleTransform(stream, event.target.value as '' | 'srt' | 'ass')}
+                      >
+                        <MenuItem value="">Keep embedded track</MenuItem>
+                        <MenuItem value="srt" disabled={bitmap}>Create SRT and remove embedded</MenuItem>
+                        <MenuItem value="ass" disabled={bitmap}>Create ASS and remove embedded</MenuItem>
+                      </TextField>
+                      {transform ? (
+                        <>
+                          <TextField
+                            label="Language"
+                            value={transform.language}
+                            onChange={(event) => updateSubtitleTransformValue(stream.index, { language: event.target.value.toLowerCase() })}
+                            fullWidth
+                          />
+                          <FormControlLabel
+                            control={<Switch checked={transform.makeDefault} onChange={(_, value) => updateSubtitleTransformValue(stream.index, { makeDefault: value })} />}
+                            label="Default sidecar"
+                          />
+                        </>
+                      ) : null}
+                    </Stack>
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Stack>
         </>
       ) : draft.sourceAssetPath || draft.sourceAssetName ? (
         <Alert severity="warning">The profile keeps its source asset reference, but no matching original analysis snapshot is available.</Alert>
@@ -102,3 +174,4 @@ function findSourceScan(settings: AppSetting[] | undefined, profile: TrackProfil
   return scan && typeof scan === 'object' ? scan as ScanResult : undefined;
 }
 function normalizePath(value: string) { return value.replaceAll('\\', '/').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase(); }
+function isBitmapSubtitle(codec: string) { return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec.toLowerCase()); }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -661,6 +662,17 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	subtitleArtifacts, err := generateSubtitleArtifacts(context.Background(), plan)
+	if err != nil {
+		job.Status = JobStatusFailed
+		job.ErrorMessage = err.Error()
+		job.Notes = appendNote(job.Notes, "Subtitle transformation failed before media conversion: "+err.Error())
+		_ = transitionJobStage(h.db, &job, JobStageFailed)
+		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
+		_ = h.db.Save(&job).Error
+		return job, http.StatusUnprocessableEntity, err
+	}
+	job.SubtitleArtifacts = subtitleArtifactsJSON(subtitleArtifacts)
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := "ffmpeg " + shellJoin(args)
 	now := time.Now()
@@ -1049,7 +1061,7 @@ func channelFilter(profile audioEnhancementProfile) string {
 	case "force-stereo":
 		return forceStereoFilter(profile.ForceStereoMode)
 	case "downmix-mono":
-		return "aresample=ocl=mono"
+		return "aresample=ochl=mono"
 	case "light-stereo":
 		delay := float64(int(clampFloat(profile.StereoDelayMs, 1, 40) + 0.5))
 		width := clampFloat(profile.StereoWidth, 0, 100)
@@ -1069,7 +1081,7 @@ func forceStereoFilter(mode string) string {
 	case "duplicate-first":
 		return "pan=stereo|c0=c0|c1=c0"
 	default:
-		return "aresample=ocl=stereo"
+		return "aresample=ochl=stereo"
 	}
 }
 
