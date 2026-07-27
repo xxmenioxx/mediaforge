@@ -34,6 +34,7 @@ import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type {
   AppSetting,
@@ -449,6 +450,31 @@ const emptyVideoDraft: ProfileInput = {
   },
 };
 
+function profileInputFromSavedProfile(profile: Profile): ProfileInput {
+  return {
+    name: profile.name,
+    description: profile.description,
+    container: profile.container,
+    videoCodec: profile.videoCodec,
+    codecFamily: profile.codecFamily,
+    encoderPolicy: profile.encoderPolicy,
+    preferredEncoder: profile.preferredEncoder,
+    allowedEncoders: profile.allowedEncoders,
+    fallbackPolicy: profile.fallbackPolicy,
+    bitDepth: profile.bitDepth,
+    pixelFormat: profile.pixelFormat,
+    qualityStrategy: profile.qualityStrategy,
+    audioCodec: profile.audioCodec,
+    qualityMode: profile.qualityMode,
+    qualityValue: profile.qualityValue,
+    preserveHdr: profile.preserveHdr,
+    preserveSubtitles: profile.preserveSubtitles,
+    preserveChapters: profile.preserveChapters,
+    workerConfig: { ...emptyVideoDraft.workerConfig, ...profile.workerConfig },
+    disabled: profile.disabled,
+  };
+}
+
 const emptyAudioDraft: AudioEnhancementProfile = {
   key: '',
   name: '',
@@ -488,8 +514,10 @@ const emptyTrackDraft: TrackProfile = {
 
 export function ProfileLabPage() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
+  const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const labAssets = useMemo(
     () => uniqueAssets([
@@ -534,6 +562,7 @@ export function ProfileLabPage() {
   const [recommendationOpen, setRecommendationOpen] = useState(false);
   const [recommendationApplied, setRecommendationApplied] = useState(false);
   const previewsRef = useRef<HTMLDivElement | null>(null);
+  const loadedEditRequestRef = useRef('');
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
@@ -543,6 +572,62 @@ export function ProfileLabPage() {
     (processedVideoCodec !== videoDraft.videoCodec ||
       processedVideoQualityValue !== videoDraft.qualityValue ||
       JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft)));
+
+  useEffect(() => {
+    const videoProfileId = Number(searchParams.get('videoProfileId') || 0);
+    const audioProfileKey = searchParams.get('audioProfileKey') || '';
+    const trackProfileKey = searchParams.get('trackProfileKey') || '';
+    const requestKey = videoProfileId > 0
+      ? `video:${videoProfileId}`
+      : audioProfileKey
+        ? `audio:${audioProfileKey}`
+        : trackProfileKey
+          ? `tracks:${trackProfileKey}`
+          : '';
+    if (!requestKey || loadedEditRequestRef.current === requestKey) {
+      return;
+    }
+
+    if (videoProfileId > 0) {
+      const profile = [...(profiles.data ?? []), ...(adminProfiles.data ?? [])].find((candidate) => candidate.id === videoProfileId);
+      if (!profile) {
+        return;
+      }
+      setLabSection('video');
+      setVideoDraft(profileInputFromSavedProfile(profile));
+      setSavedVideoProfileId(profile.id);
+      setVideoProfileSaveMessage('');
+      setSelectedVideoStarterPreset('');
+    } else if (audioProfileKey) {
+      const profile = audioProfiles.find((candidate) => candidate.key === audioProfileKey);
+      if (!profile) {
+        return;
+      }
+      setLabSection('audio');
+      setAudioDraft({ ...profile, eqBands: normalizeEqBands(profile.eqBands) });
+      setAudioFilterChainEdited(false);
+      setSelectedAudioStarterPreset('');
+    } else {
+      const profile = trackProfiles.find((candidate) => candidate.key === trackProfileKey);
+      if (!profile) {
+        return;
+      }
+      setLabSection('tracks');
+      setTrackDraft({ ...profile });
+      setTrackConversionDraft({
+        keepVideoStreams: profile.keepVideoStreams,
+        keepAudioStreams: profile.keepAudioStreams,
+        keepSubtitleStreams: profile.keepSubtitleStreams,
+        videoMetadata: profile.videoMetadata,
+        audioMetadata: profile.audioMetadata,
+        subtitleMetadata: profile.subtitleMetadata,
+      });
+      if (profile.sourceAssetPath && labAssets.some((asset) => asset.path === profile.sourceAssetPath)) {
+        setAssetPath(profile.sourceAssetPath);
+      }
+    }
+    loadedEditRequestRef.current = requestKey;
+  }, [adminProfiles.data, audioProfiles, labAssets, profiles.data, searchParams, trackProfiles]);
 
   useEffect(() => {
     if (!audioFilterChainEdited) {

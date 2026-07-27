@@ -37,6 +37,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import type { AppSetting, AudioEnhancementProfile } from '../api/types';
@@ -80,13 +81,13 @@ const emptyProfile: AudioEnhancementProfile = {
 
 export function AudioProfilesPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
   const activeAudioProfiles = audioProfiles.filter((profile) => !profile.disabled && !profile.deletedAt);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
-  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [form, setForm] = useState<AudioEnhancementProfile>(emptyProfile);
   const [testAssetPath, setTestAssetPath] = useState('');
   const [testProfileKey, setTestProfileKey] = useState('');
@@ -122,19 +123,15 @@ export function AudioProfilesPage() {
   }
 
   function addProfile() {
-    setEditingKey(null);
     setForm(emptyProfile);
     setShowForm(true);
   }
 
   function editProfile(profile: AudioEnhancementProfile) {
-    setEditingKey(profile.key);
-    setForm(profile);
-    setShowForm(true);
+    navigate(`/profile-lab?audioProfileKey=${encodeURIComponent(profile.key)}`);
   }
 
   function applyPreset(profile: AudioEnhancementProfile) {
-    setEditingKey(null);
     setForm({ ...profile, key: uniqueKey(profile.key, audioProfiles), name: `${profile.name} Copy` });
     setShowForm(true);
   }
@@ -143,15 +140,12 @@ export function AudioProfilesPage() {
     event.preventDefault();
     const normalized = {
       ...form,
-      key: editingKey ?? slugify(form.key || form.name),
+      key: slugify(form.key || form.name),
       outputCodec: form.outputCodec || 'aac',
     };
-    const next = editingKey
-      ? audioProfiles.map((profile) => (profile.key === editingKey ? { ...profile, ...normalized } : profile))
-      : [...audioProfiles, normalized];
+    const next = [...audioProfiles, normalized];
     saveProfiles(next);
     setShowForm(false);
-    setEditingKey(null);
     setForm(emptyProfile);
   }
 
@@ -407,7 +401,7 @@ export function AudioProfilesPage() {
       </Box>
 
       <Dialog open={showForm} onClose={() => setShowForm(false)} maxWidth="lg" fullWidth>
-        <DialogTitle>{editingKey ? 'Edit Audio Profile' : 'New Audio Profile'}</DialogTitle>
+        <DialogTitle>New Audio Profile</DialogTitle>
         <DialogContent>
           <Box component="form" onSubmit={submit}>
             <Stack spacing={2.5}>
@@ -428,7 +422,7 @@ export function AudioProfilesPage() {
                       setForm((current) => ({
                         ...current,
                         name: event.target.value,
-                        key: editingKey ? current.key : slugify(event.target.value),
+                        key: slugify(event.target.value),
                       }))
                     }
                     required
@@ -440,7 +434,6 @@ export function AudioProfilesPage() {
                     label="Key"
                     value={form.key}
                     onChange={(event) => setForm((current) => ({ ...current, key: slugify(event.target.value) }))}
-                    disabled={Boolean(editingKey)}
                     required
                     fullWidth
                   />

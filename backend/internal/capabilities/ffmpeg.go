@@ -18,6 +18,16 @@ type EncoderCapability struct {
 	AdaptiveB      bool
 }
 
+var encoderCandidates = []string{
+	"libx264",
+	"libx265",
+	"libsvtav1",
+	"hevc_qsv",
+	"hevc_nvenc",
+	"hevc_videotoolbox",
+	"hevc_amf",
+}
+
 var encoderCache = struct {
 	sync.Mutex
 	listedChecked bool
@@ -53,7 +63,7 @@ func CheckEncoder(encoder string) EncoderCapability {
 		encoderCache.listedChecked = true
 		if output, err := exec.Command("ffmpeg", "-hide_banner", "-encoders").CombinedOutput(); err == nil {
 			text := string(output)
-			for _, candidate := range []string{"libx264", "libx265", "libsvtav1", "hevc_qsv", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"} {
+			for _, candidate := range encoderCandidates {
 				encoderCache.listed[candidate] = strings.Contains(text, candidate)
 			}
 		}
@@ -66,7 +76,7 @@ func CheckEncoder(encoder string) EncoderCapability {
 	result := EncoderCapability{Listed: true, Usable: true}
 	if isHardwareEncoder(encoder) {
 		mainPixelFormat := "yuv420p"
-		if encoder == "hevc_qsv" {
+		if strings.HasSuffix(encoder, "_qsv") || strings.HasSuffix(encoder, "_vaapi") {
 			mainPixelFormat = "nv12"
 		}
 		result.Usable = hardwareEncoderSmokeTest(encoder, mainPixelFormat)
@@ -75,7 +85,7 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.Usable = true
 		}
 		if !result.Usable {
-			result.Reason = encoder + " is listed but could not open an HEVC encoding session"
+			result.Reason = encoder + " is listed but could not complete a hardware encoding smoke test"
 		} else if !result.Main10 {
 			result.Reason = encoder + " is usable for HEVC Main but Main10 is unavailable"
 		}
@@ -91,24 +101,36 @@ func CheckEncoder(encoder string) EncoderCapability {
 }
 
 func isHardwareEncoder(encoder string) bool {
-	switch encoder {
-	case "hevc_videotoolbox", "hevc_qsv", "hevc_nvenc", "hevc_amf":
-		return true
-	default:
-		return false
-	}
+	return strings.HasSuffix(encoder, "_qsv") ||
+		strings.HasSuffix(encoder, "_vaapi") ||
+		strings.HasSuffix(encoder, "_nvenc") ||
+		strings.HasSuffix(encoder, "_videotoolbox") ||
+		strings.HasSuffix(encoder, "_amf")
 }
 
 func hardwareEncoderSmokeTest(encoder, pixelFormat string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=128x128:rate=1", "-frames:v", "1", "-an", "-c:v", encoder, "-b:v", "1M"}
-	if pixelFormat == "p010le" && (encoder == "hevc_qsv" || encoder == "hevc_videotoolbox") {
+	return exec.CommandContext(ctx, "ffmpeg", hardwareEncoderSmokeArgs(encoder, pixelFormat)...).Run() == nil
+}
+
+func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
+	args := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30",
+		"-frames:v", "30", "-an",
+	}
+	if strings.HasSuffix(encoder, "_vaapi") {
+		args = append(args, "-vf", "format="+pixelFormat+",hwupload")
+	} else {
+		args = append(args, "-pix_fmt", pixelFormat)
+	}
+	args = append(args, "-c:v", encoder, "-b:v", "1M")
+	if pixelFormat == "p010le" && (strings.HasSuffix(encoder, "_qsv") || encoder == "hevc_videotoolbox") {
 		args = append(args, "-profile:v", "main10")
 	}
-	args = append(args, "-pix_fmt", pixelFormat)
 	args = append(args, "-f", "null", "-")
-	return exec.CommandContext(ctx, "ffmpeg", args...).Run() == nil
+	return args
 }
 
 func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {

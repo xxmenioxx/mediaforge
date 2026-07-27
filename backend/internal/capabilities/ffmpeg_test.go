@@ -1,6 +1,9 @@
 package capabilities
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestHardwareEncoderClassification(t *testing.T) {
 	for _, encoder := range []string{"hevc_qsv", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"} {
@@ -11,6 +14,15 @@ func TestHardwareEncoderClassification(t *testing.T) {
 	for _, encoder := range []string{"libx265", "libx264", "copy"} {
 		if isHardwareEncoder(encoder) {
 			t.Fatalf("did not expect %s to require a hardware smoke test", encoder)
+		}
+	}
+}
+
+func TestQSVSmokeTestUsesRepresentativeVideo(t *testing.T) {
+	args := hardwareEncoderSmokeArgs("hevc_qsv", "p010le")
+	for _, expected := range []string{"testsrc2=size=128x128:rate=30", "30", "hevc_qsv", "p010le", "main10"} {
+		if !slices.Contains(args, expected) {
+			t.Fatalf("expected QSV smoke args to contain %q: %#v", expected, args)
 		}
 	}
 }

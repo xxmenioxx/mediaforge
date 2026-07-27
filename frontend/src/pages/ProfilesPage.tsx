@@ -33,9 +33,9 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
-import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import type { Profile, ProfileInput } from '../api/types';
@@ -107,12 +107,12 @@ const videoEncoderOptions = [
 
 export function ProfilesPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const profiles = useQuery({
     queryKey: ['profiles', 'admin'],
     queryFn: api.profilesAdmin,
   });
   const [form, setForm] = useState<ProfileInput>(initialProfile);
-  const [editingId, setEditingId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [profileJson, setProfileJson] = useState(JSON.stringify(initialProfile, null, 2));
@@ -123,18 +123,6 @@ export function ProfilesPage() {
     onSuccess: async () => {
       setForm(initialProfile);
       setProfileJson(JSON.stringify(initialProfile, null, 2));
-      setShowForm(false);
-      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
-    },
-  });
-
-  const updateProfile = useMutation({
-    mutationFn: api.updateProfile,
-    onSuccess: async () => {
-      setForm(initialProfile);
-      setProfileJson(JSON.stringify(initialProfile, null, 2));
-      setEditingId(null);
       setShowForm(false);
       await queryClient.invalidateQueries({ queryKey: ['profiles'] });
       await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
@@ -405,78 +393,20 @@ export function ProfilesPage() {
       },
     });
 
-    if (editingId) {
-      updateProfile.mutate({ id: editingId, ...payload });
-      return;
-    }
-
     createProfile.mutate(payload);
   }
 
   function addProfile() {
-    setEditingId(null);
     setForm(initialProfile);
     setProfileJson(JSON.stringify(initialProfile, null, 2));
     setShowForm(true);
   }
 
   function editProfile(profile: Profile) {
-    setEditingId(profile.id);
-    setShowForm(true);
-    setForm({
-      name: profile.name,
-      description: profile.description,
-      container: profile.container,
-      videoCodec: profile.videoCodec,
-      codecFamily: profile.codecFamily,
-      encoderPolicy: profile.encoderPolicy,
-      preferredEncoder: profile.preferredEncoder,
-      allowedEncoders: profile.allowedEncoders,
-      fallbackPolicy: profile.fallbackPolicy,
-      bitDepth: profile.bitDepth,
-      pixelFormat: profile.pixelFormat,
-      qualityStrategy: profile.qualityStrategy,
-      audioCodec: profile.audioCodec,
-      qualityMode: profile.qualityMode,
-      qualityValue: profile.qualityValue,
-      preserveHdr: profile.preserveHdr,
-      preserveSubtitles: profile.preserveSubtitles,
-      preserveChapters: profile.preserveChapters,
-      workerConfig: profile.workerConfig,
-      disabled: profile.disabled,
-    });
-    setProfileJson(
-      JSON.stringify(
-        {
-          name: profile.name,
-          description: profile.description,
-          container: profile.container,
-          videoCodec: profile.videoCodec,
-          codecFamily: profile.codecFamily,
-          encoderPolicy: profile.encoderPolicy,
-          preferredEncoder: profile.preferredEncoder,
-          allowedEncoders: profile.allowedEncoders,
-          fallbackPolicy: profile.fallbackPolicy,
-          bitDepth: profile.bitDepth,
-          pixelFormat: profile.pixelFormat,
-          qualityStrategy: profile.qualityStrategy,
-          audioCodec: profile.audioCodec,
-          qualityMode: profile.qualityMode,
-          qualityValue: profile.qualityValue,
-          preserveHdr: profile.preserveHdr,
-          preserveSubtitles: profile.preserveSubtitles,
-          preserveChapters: profile.preserveChapters,
-          workerConfig: profile.workerConfig,
-          disabled: profile.disabled,
-        },
-        null,
-        2,
-      ),
-    );
+    navigate(`/profile-lab?videoProfileId=${profile.id}`);
   }
 
   function cancelEdit() {
-    setEditingId(null);
     setForm(initialProfile);
     setProfileJson(JSON.stringify(initialProfile, null, 2));
     setShowForm(false);
@@ -524,7 +454,7 @@ export function ProfilesPage() {
           </Button>
         </Stack>
         <Dialog open={showForm} onClose={cancelEdit} maxWidth="lg" fullWidth>
-          <DialogTitle>{editingId ? 'Edit Profile' : 'New Profile'}</DialogTitle>
+          <DialogTitle>New Profile</DialogTitle>
           <DialogContent>
             <Box component="form" onSubmit={submit}>
               <Stack spacing={3}>
@@ -1061,12 +991,12 @@ export function ProfilesPage() {
                   <Grid size={{ xs: 12, md: 3 }}>
                     <Button
                       type="submit"
-                      startIcon={editingId ? <SaveIcon /> : <AddIcon />}
+                      startIcon={<AddIcon />}
                       variant="contained"
-                      disabled={createProfile.isPending || updateProfile.isPending}
+                      disabled={createProfile.isPending}
                       fullWidth
                     >
-                      {editingId ? 'Save Profile' : 'Create Profile'}
+                      Create Profile
                     </Button>
                   </Grid>
                 </Grid>
@@ -1075,11 +1005,6 @@ export function ProfilesPage() {
             {createProfile.isError ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 Profile could not be created. Profile names must be unique.
-              </Alert>
-            ) : null}
-            {updateProfile.isError ? (
-              <Alert severity="warning" sx={{ mt: 2 }}>
-                Profile could not be updated. Profile names must be unique.
               </Alert>
             ) : null}
           </DialogContent>

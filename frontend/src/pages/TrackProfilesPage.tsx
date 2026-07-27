@@ -3,6 +3,7 @@ import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -11,6 +12,7 @@ import { emptyTrackProfile, getTrackProfiles, type SubtitleTransform, type Track
 
 export function TrackProfilesPage() {
   const client = useQueryClient();
+  const navigate = useNavigate();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const profiles = getTrackProfiles(settings.data, true);
   const [showDisabled, setShowDisabled] = useState(false);
@@ -67,11 +69,11 @@ export function TrackProfilesPage() {
       {settings.isError ? <Alert severity="warning">Unable to load track profiles.</Alert> : null}
       <Stack direction="row" justifyContent="space-between"><FormControlLabel control={<Switch checked={showDisabled} onChange={(_, value) => setShowDisabled(value)} />} label="Show disabled" /><Button startIcon={<AddIcon />} variant="contained" onClick={() => setDraft({ ...emptyTrackProfile })}>Add Track Profile</Button></Stack>
       <Card><CardContent sx={{ p: 0 }}><Table><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Streams</TableCell><TableCell>Rules</TableCell><TableCell>Status</TableCell><TableCell /></TableRow></TableHead><TableBody>
-        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => setDraft({ ...profile })}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
+        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
         {!visible.length ? <TableRow><TableCell colSpan={5}><Alert severity="info">No track profiles yet. Create one here or from Profile Lab.</Alert></TableCell></TableRow> : null}
       </TableBody></Table></CardContent></Card>
     </Stack></Box>
-    <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} maxWidth="lg" fullWidth><DialogTitle>{draft?.key ? 'Edit Track Profile' : 'New Track Profile'}</DialogTitle><DialogContent>{draft ? <Stack spacing={2} sx={{ mt: 1 }}>
+    <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} maxWidth="lg" fullWidth><DialogTitle>New Track Profile</DialogTitle><DialogContent>{draft ? <Stack spacing={2} sx={{ mt: 1 }}>
       <TextField label="Name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required /><TextField label="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} multiline />
       {sourceScan ? (
         <>

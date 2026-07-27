@@ -875,7 +875,7 @@ func openAPIComponents() gin.H {
 				"required": []string{"name", "version", "source"},
 				"properties": gin.H{
 					"name":    gin.H{"type": "string", "example": "FFmpeg"},
-					"version": gin.H{"type": "string", "example": "ffmpeg version 8.1.1"},
+					"version": gin.H{"type": "string", "example": "ffmpeg version 8.1.2"},
 					"source":  gin.H{"type": "string", "example": "container"},
 				},
 			},
