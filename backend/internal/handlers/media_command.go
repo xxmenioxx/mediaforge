@@ -778,7 +778,7 @@ func qsvWorkerArgs(profile models.Profile) []string {
 }
 
 func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.EncoderCapability) []string {
-	args := []string{}
+	args := []string{"-low_power", "0"}
 	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
 	if rateControl == "la_icq" && capability.LookAhead {
 		args = append(args, "-look_ahead", "1")

@@ -25,7 +25,7 @@ RUN apt-get update \
        libaom-dev libass-dev libbluray-dev libdav1d-dev libdrm-dev \
        libfontconfig1-dev libfreetype6-dev libfribidi-dev libmp3lame-dev \
        libopenjp2-7-dev libopus-dev libsoxr-dev libva-dev \
-       libvorbis-dev libvpl-dev libvpx-dev libwebp-dev libx264-dev \
+       libmfx-dev libvorbis-dev libvpx-dev libwebp-dev libx264-dev \
        libx265-dev libzimg-dev ocl-icd-opencl-dev \
     && curl -fsSL -o /tmp/svt-av1.tar.gz \
        "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v${SVT_AV1_VERSION}/SVT-AV1-v${SVT_AV1_VERSION}.tar.gz" \
@@ -72,7 +72,7 @@ RUN apt-get update \
        --enable-libwebp \
        --enable-libopenjpeg \
        --enable-libbluray \
-       --enable-libvpl \
+       --enable-libmfx \
        --enable-vaapi \
        --enable-libdrm \
        --enable-opencl \
@@ -120,7 +120,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl libaom3 libass9 libbluray2 libdav1d6 libdrm2 \
        libfontconfig1 libfreetype6 libfribidi0 libmp3lame0 libopenjp2-7 \
-       libopus0 libsoxr0 libsqlite3-0 libva2 libva-drm2 libvpl2 \
+       libmfx1 libopus0 libsoxr0 libsqlite3-0 libva2 libva-drm2 libvpl2 \
        libvorbis0a libvorbisenc2 libvpx7 libwebp7 libx264-164 libx265-199 \
        libzimg2 ocl-icd-libopencl1 sqlite3 tesseract-ocr \
        tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-spa tzdata \

@@ -20,7 +20,7 @@ func TestHardwareEncoderClassification(t *testing.T) {
 
 func TestQSVSmokeTestUsesRepresentativeVideo(t *testing.T) {
 	args := hardwareEncoderSmokeArgs("hevc_qsv", "p010le")
-	for _, expected := range []string{"testsrc2=size=128x128:rate=30", "30", "hevc_qsv", "p010le", "main10"} {
+	for _, expected := range []string{"testsrc2=size=640x360:rate=30", "30", "hevc_qsv", "p010le", "main10", "0"} {
 		if !slices.Contains(args, expected) {
 			t.Fatalf("expected QSV smoke args to contain %q: %#v", expected, args)
 		}
