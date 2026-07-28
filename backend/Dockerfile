@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25-trixie AS build
 
 WORKDIR /src
 
@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 go build -o /out/mvforge-api ./cmd/api
 
-FROM debian:bookworm-slim AS ffmpeg
+FROM debian:trixie-slim AS ffmpeg
 
 ARG FFMPEG_VERSION=8.1.2
 ARG FFMPEG_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
@@ -85,7 +85,7 @@ RUN apt-get update \
     && strip /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
     && rm -rf /var/lib/apt/lists/* /tmp/ffmpeg.tar.xz /tmp/svt-av1.tar.gz /src
 
-FROM debian:bookworm-slim AS seconv
+FROM debian:trixie-slim AS seconv
 
 ARG TARGETARCH
 ARG SECONV_VERSION=5.1.0-rc15
@@ -116,21 +116,21 @@ RUN apt-get update \
     && unzip -p /tmp/harfbuzzsharp.nupkg "runtimes/${runtime}/native/libHarfBuzzSharp.so" > /out/native/libHarfBuzzSharp.so \
     && chmod 0755 /out/native/*.so
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl libaom3 libass9 libbluray2 libdav1d6 libdrm2 \
+       ca-certificates curl libaom3 libass9 libbluray2 libdav1d7 libdrm2 \
        libfontconfig1 libfreetype6 libfribidi0 libmp3lame0 libopenjp2-7 \
-       libmfx1 libopus0 libsoxr0 libsqlite3-0 libva2 libva-drm2 libvpl2 \
-       libvorbis0a libvorbisenc2 libvpx7 libwebp7 libx264-164 libx265-199 \
+       libopus0 libsoxr0 libsqlite3-0 libva2 libva-drm2 libvpl2 \
+       libvorbis0a libvorbisenc2 libvpx9 libwebp7 libx264-164 libx265-215 \
        libzimg2 ocl-icd-libopencl1 sqlite3 tesseract-ocr \
        tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-spa tzdata \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
          apt-get install -y --no-install-recommends \
-           intel-media-va-driver i965-va-driver libmfx-gen1.2 onevpl-tools; \
+           intel-media-va-driver i965-va-driver libmfx-gen1.2 libvpl-tools; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 

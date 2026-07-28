@@ -29,7 +29,7 @@ func TestVAAPISmokeTestInitializesRenderDeviceAndUploadsFrames(t *testing.T) {
 
 func TestQSVSmokeTestUsesRepresentativeVideo(t *testing.T) {
 	args := hardwareEncoderSmokeArgs("hevc_qsv", "p010le")
-	for _, expected := range []string{"testsrc2=size=640x360:rate=30", "30", "hevc_qsv", "p010le", "main10", "0"} {
+	for _, expected := range []string{"qsv=hw,child_device=/dev/dri/renderD128", "testsrc2=size=640x360:rate=30", "30", "hevc_qsv", "p010le", "main10", "0"} {
 		if !slices.Contains(args, expected) {
 			t.Fatalf("expected QSV smoke args to contain %q: %#v", expected, args)
 		}

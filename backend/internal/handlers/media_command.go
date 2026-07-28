@@ -773,6 +773,8 @@ func videoWorkerArgs(profile models.Profile) []string {
 		}
 		filters += "format=" + format + ",hwupload"
 		args = append(args, "-vaapi_device", "/dev/dri/renderD128")
+	} else if encoder == "hevc_qsv" {
+		args = append(args, "-init_hw_device", "qsv=hw,child_device=/dev/dri/renderD128")
 	}
 	if filters != "" {
 		args = append(args, "-vf", filters)

@@ -135,7 +135,9 @@ func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 	}
-	if strings.HasSuffix(encoder, "_vaapi") {
+	if strings.HasSuffix(encoder, "_qsv") {
+		args = append(args, "-init_hw_device", "qsv=hw,child_device=/dev/dri/renderD128")
+	} else if strings.HasSuffix(encoder, "_vaapi") {
 		args = append(args, "-vaapi_device", "/dev/dri/renderD128")
 	}
 	args = append(args,
@@ -163,6 +165,7 @@ func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {
 	defer cancel()
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
+		"-init_hw_device", "qsv=hw,child_device=/dev/dri/renderD128",
 		"-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30",
 		"-frames:v", "30", "-an",
 		"-c:v", "hevc_qsv",
