@@ -470,9 +470,10 @@ function AssetGroupRow({
   const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
+  const isPublishedAsIsGroup = group.status === 'published_as_is' || (groupAssets.length > 0 && groupAssets.every((asset) => asset.publicationMode === 'as_is'));
   const isLibraryGroup = group.status === 'unverified' || group.status === 'library' || group.status === 'published_as_is';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
-  const isReadOnlyGroup = isConvertedGroup || isArchiveGroup;
+  const isReadOnlyGroup = isConvertedGroup || isPublishedAsIsGroup || isArchiveGroup;
   const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
   const bulkSelectableAssets = isReadOnlyGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
@@ -574,6 +575,8 @@ function AssetGroupRow({
         try {
           if (isArchiveGroup) {
             await api.recoverAsset(assetPath);
+          } else if (isPublishedAsIsGroup) {
+            await api.returnPublishedAsIsAsset(assetPath);
           } else {
             await api.deleteConvertedAsset(assetPath);
           }
@@ -624,13 +627,23 @@ function AssetGroupRow({
       : current.filter((candidate) => candidate !== path));
   }
 
-  function runBulkAssetAction() {
-    if (!selectedAssetPaths.length) return;
-    const action = isArchiveGroup ? 'recover' : 'safely delete and restore';
+  function runBulkAssetAction(paths = selectedAssetPaths) {
+    if (!paths.length) return;
+    const action = isArchiveGroup
+      ? 'recover'
+      : isPublishedAsIsGroup
+        ? 'return to Raw'
+        : 'safely delete and restore';
     const confirmed = window.confirm(
-      `${action === 'recover' ? 'Recover' : 'Safely delete'} ${selectedAssetPaths.length} selected asset(s) from this path? ${isArchiveGroup ? 'Converted files will not be deleted.' : 'Each converted file will be deleted only if its archived original can be restored to Raw.'}`,
+      `${action === 'recover' ? 'Recover' : isPublishedAsIsGroup ? 'Return' : 'Safely delete'} ${paths.length} asset(s) from this path? ${
+        isArchiveGroup
+          ? 'Converted files will not be deleted.'
+          : isPublishedAsIsGroup
+            ? 'Each Published as-is asset and its external subtitles will return to the original Raw path.'
+            : 'Each converted file will be deleted only if its archived original can be restored to Raw.'
+      }`,
     );
-    if (confirmed) bulkAssetAction.mutate(selectedAssetPaths);
+    if (confirmed) bulkAssetAction.mutate(paths);
   }
 
   const migrationControls = (isLibraryGroup || isConvertedGroup) ? (
@@ -739,6 +752,10 @@ function AssetGroupRow({
                 {isArchiveGroup ? null : isConvertedGroup ? (
                   <Alert severity="info">
                     Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
+                  </Alert>
+                ) : isPublishedAsIsGroup ? (
+                  <Alert severity="info">
+                    Published as-is assets must be returned to Raw before they can be queued for conversion.
                   </Alert>
                 ) : (
                   <Grid container spacing={2} alignItems="stretch">
@@ -851,11 +868,34 @@ function AssetGroupRow({
                         size="small"
                         startIcon={isArchiveGroup ? <TaskAltIcon /> : <DeleteForeverIcon />}
                         disabled={!selectedAssetPaths.length || bulkAssetAction.isPending}
-                        onClick={runBulkAssetAction}
+                        onClick={() => runBulkAssetAction()}
                         sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
                       >
-                        {bulkAssetAction.isPending ? 'Processing...' : isArchiveGroup ? 'Recover selected' : 'Delete selected'}
+                        {bulkAssetAction.isPending
+                          ? 'Processing...'
+                          : isArchiveGroup
+                            ? 'Recover selected'
+                            : isPublishedAsIsGroup
+                              ? 'Return selected'
+                              : 'Delete selected'}
                       </Button>
+                      {!isArchiveGroup && (
+                        <Button
+                          color="error"
+                          variant="contained"
+                          size="small"
+                          startIcon={<DeleteForeverIcon />}
+                          disabled={bulkAssetAction.isPending || bulkSelectableAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+                          onClick={() => runBulkAssetAction(bulkSelectableAssets.map((asset) => asset.path))}
+                          sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                        >
+                          {bulkAssetAction.isPending
+                            ? 'Processing...'
+                            : isPublishedAsIsGroup
+                              ? 'Return path to Raw'
+                              : 'Delete path'}
+                        </Button>
+                      )}
                     </Stack>
                   </Stack>
                 ) : isConvertedGroup ? (
@@ -1021,7 +1061,7 @@ function AssetRow({
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: selectedProfileId }),
-    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && confidenceEnabled && selectedProfileId > 0,
+    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && selectedProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -1140,7 +1180,7 @@ function AssetRow({
       ? bulkSelectionEnabled ? 7 : 6
       : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
-  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
+  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile) || hasTrackSelectionOverride(conversionDraft);
 
@@ -1407,7 +1447,7 @@ function AssetRow({
             ) : null}
           </Stack>
         </TableCell>
-        {!isArchive && !isConverted ? (
+        {!isArchive && !isConverted && !isPublishedAsIs ? (
           <TableCell>
             <Button
               size="small"
@@ -1442,7 +1482,7 @@ function AssetRow({
             <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
           </TableCell>
         ) : null}
-        {!isArchive && !isConverted ? (
+        {!isArchive && !isConverted && !isPublishedAsIs ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
               <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone />
@@ -1537,7 +1577,7 @@ function AssetRow({
                 </IconButton>
               </Tooltip>
             )}
-            {isLibraryReplacement ? (
+            {isLibraryReplacement && !isPublishedAsIs ? (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Convert and safely replace this library asset'}>
                 <IconButton
                   color="warning"
