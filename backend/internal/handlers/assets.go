@@ -22,6 +22,7 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AssetHandler struct {
@@ -80,6 +81,8 @@ var previewCacheState = struct {
 	sync.Mutex
 	inFlight map[string]*previewGeneration
 }{inFlight: map[string]*previewGeneration{}}
+
+var assetInventorySyncMu sync.Mutex
 
 type AssetInventory struct {
 	Unprocessed       []Asset       `json:"unprocessed"`
@@ -213,6 +216,16 @@ type Asset struct {
 	Metadata        AssetMetadataState           `json:"metadata"`
 	Conversion      AssetConversionOverrideState `json:"conversion"`
 	PublicationMode string                       `json:"publicationMode,omitempty"`
+	Technical       *AssetTechnicalInfo          `json:"technical,omitempty"`
+}
+
+type AssetTechnicalInfo struct {
+	VideoCodec string  `json:"videoCodec"`
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+	Duration   float64 `json:"duration"`
+	Bitrate    int64   `json:"bitrate"`
+	HDR        bool    `json:"hdr"`
 }
 
 type AssetGroup struct {
@@ -520,6 +533,122 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+}
+
+func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
+	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if path == "." || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	var publication models.DirectPublication
+	if err := h.db.Where("published_path = ? AND returned_at IS NULL", path).First(&publication).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "active Publish as-is record not found"})
+		return
+	}
+	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	restorePath := filepath.Clean(publication.SourcePath)
+	if !pathIsInside(restorePath, rawRoot) {
+		c.JSON(http.StatusConflict, gin.H{"error": "the original Raw destination is outside the configured Raw root"})
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "the Published as-is asset is not physically available"})
+		return
+	}
+	if _, err := os.Stat(restorePath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "an asset already exists at the original Raw path"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(err)})
+		return
+	}
+	fingerprint, err := mediaFileFingerprint(path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if publication.PublishedFingerprint != "" && fingerprint != publication.PublishedFingerprint {
+		c.JSON(http.StatusConflict, gin.H{"error": "the Library file no longer matches its Publish as-is fingerprint; return was blocked"})
+		return
+	}
+
+	sidecars, err := externalSubtitlesForMedia(path)
+	if err != nil && !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	publishedBase := strings.TrimSuffix(path, filepath.Ext(path))
+	restoreBase := strings.TrimSuffix(restorePath, filepath.Ext(restorePath))
+	type movePair struct{ from, to string }
+	moves := []movePair{{from: path, to: restorePath}}
+	for _, sidecar := range sidecars {
+		suffix := strings.TrimPrefix(sidecar.Path, publishedBase)
+		moves = append(moves, movePair{from: sidecar.Path, to: restoreBase + suffix})
+	}
+	for _, move := range moves {
+		if _, err := os.Stat(move.to); err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "return target already exists: " + move.to})
+			return
+		} else if !os.IsNotExist(err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(err)})
+			return
+		}
+	}
+	completed := []movePair{}
+	rollback := func() {
+		for index := len(completed) - 1; index >= 0; index-- {
+			_ = moveFile(completed[index].to, completed[index].from)
+		}
+	}
+	for _, move := range moves {
+		if err := moveFile(move.from, move.to); err != nil {
+			rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "return to Raw failed and rollback was attempted: " + err.Error()})
+			return
+		}
+		completed = append(completed, move)
+	}
+
+	returnedAt := time.Now()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		publication.ReturnedAt = &returnedAt
+		if err := tx.Save(&publication).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("path = ?", path).Delete(&models.AssetRecord{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.ScanResult{}).Where("path = ?", path).
+			Updates(map[string]any{"path": restorePath, "file_name": filepath.Base(restorePath)}).Error; err != nil {
+			return err
+		}
+		return returnDirectPublicationOverrides(tx, path, restorePath)
+	})
+	if err != nil {
+		rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was moved but registration failed and rollback was attempted: " + err.Error()})
+		return
+	}
+	var library models.Library
+	if err := h.db.First(&library, publication.LibraryID).Error; err == nil && pathIsInside(filepath.Dir(path), library.DestinationPath) {
+		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), library.DestinationPath); err != nil {
+			appendSystemLog(h.db, "published_as_is_empty_library_path_cleanup_failed", map[string]string{"publishedPath": path}, err)
+		}
+	}
+	if _, syncErr := h.syncAssetInventory(); syncErr != nil {
+		appendSystemLog(h.db, "published_as_is_return_inventory_sync_failed", map[string]string{"publishedPath": path, "restoredPath": restorePath}, syncErr)
+	}
+	appendSystemLog(h.db, "published_as_is_returned_to_raw", map[string]string{"publishedPath": path, "restoredPath": restorePath}, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "returned_to_raw", "publishedPath": path, "restoredPath": restorePath,
+		"message": "Published as-is asset and external subtitles were returned to their original Raw names.",
+	})
 }
 
 func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
@@ -846,6 +975,9 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "source path has no unprocessed assets"})
 		return
 	}
+	sort.Slice(publishing, func(left, right int) bool {
+		return strings.ToLower(publishing[left].Path) < strings.ToLower(publishing[right].Path)
+	})
 	paths := make([]string, 0, len(publishing))
 	for _, record := range publishing {
 		paths = append(paths, record.Path)
@@ -876,10 +1008,18 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "source path is outside the selected library Raw root"})
 		return
 	}
+	relativeGroup = directPublicationRelativeGroup(relativeGroup, library.DestinationPath)
 	destinationPath := filepath.Join(library.DestinationPath, relativeGroup)
-	if _, err := os.Stat(destinationPath); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "destination path already exists"})
-		return
+	if destinationInfo, err := os.Stat(destinationPath); err == nil {
+		entries, readErr := os.ReadDir(destinationPath)
+		if !destinationInfo.IsDir() || readErr != nil || len(entries) > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "destination path already exists"})
+			return
+		}
+		if err := os.Remove(destinationPath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "empty destination path could not be prepared: " + err.Error()})
+			return
+		}
 	} else if !os.IsNotExist(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(err)})
 		return
@@ -898,7 +1038,14 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "direct publication failed: " + err.Error()})
 		return
 	}
+	publishedPaths, rollbackNames, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, publishing, library)
+	if err != nil {
+		_ = moveAssetDirectory(destinationPath, sourcePath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "episode naming failed and publication was rolled back: " + err.Error()})
+		return
+	}
 	rollback := func() {
+		rollbackNames()
 		if err := moveAssetDirectory(destinationPath, sourcePath); err != nil {
 			appendSystemLog(h.db, "direct_publication_rollback_failed", map[string]string{"sourcePath": sourcePath, "destinationPath": destinationPath}, err)
 		}
@@ -907,16 +1054,12 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 	publishedAt := time.Now()
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		for _, record := range publishing {
-			relative, relErr := filepath.Rel(sourcePath, record.Path)
-			if relErr != nil {
-				return relErr
-			}
-			publishedPath := filepath.Join(destinationPath, relative)
+			publishedPath := publishedPaths[record.Path]
 			publication := models.DirectPublication{
 				SourcePath: record.Path, PublishedPath: publishedPath, LibraryID: library.ID,
 				PublishedFingerprint: fingerprints[record.Path], PublishedSizeBytes: record.SizeBytes, PublishedAt: publishedAt,
 			}
-			if err := tx.Create(&publication).Error; err != nil {
+			if err := saveDirectPublication(tx, &publication); err != nil {
 				return err
 			}
 			if err := tx.Where("path = ?", record.Path).Delete(&models.AssetRecord{}).Error; err != nil {
@@ -927,7 +1070,7 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 				return err
 			}
 		}
-		return resetDirectPublicationOverrides(tx, publishing, sourcePath, destinationPath)
+		return resetDirectPublicationOverrides(tx, publishing, sourcePath, destinationPath, publishedPaths)
 	})
 	if err != nil {
 		rollback()
@@ -945,6 +1088,128 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		"destinationLibraryId": library.ID, "assetsPublished": len(publishing),
 		"message": "Assets were validated and published without FFmpeg conversion.",
 	})
+}
+
+func saveDirectPublication(db *gorm.DB, publication *models.DirectPublication) error {
+	var existing models.DirectPublication
+	result := db.Where("published_path = ?", publication.PublishedPath).Limit(1).Find(&existing)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return db.Create(publication).Error
+	}
+	publication.ID = existing.ID
+	publication.CreatedAt = existing.CreatedAt
+	publication.ReturnedAt = nil
+	return db.Save(publication).Error
+}
+
+func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library) (map[string]string, func(), error) {
+	published := make(map[string]string, len(records))
+	for _, record := range records {
+		relative, err := filepath.Rel(sourcePath, record.Path)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		published[record.Path] = filepath.Join(destinationPath, relative)
+	}
+	if !libraryEpisodeNamingEnabled(library) || len(records) <= 1 {
+		return published, func() {}, nil
+	}
+
+	sorted := append([]models.AssetRecord(nil), records...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return strings.ToLower(sorted[i].Path) < strings.ToLower(sorted[j].Path)
+	})
+	batchName := filepath.ToSlash(filepath.Base(sourcePath))
+	title := sanitizeMediaFileName(filepath.Base(sourcePath))
+	season := firstPositiveInt(seasonNumberFromPath(sourcePath), 1)
+	targets := map[string]string{}
+	for index, record := range sorted {
+		relative, err := filepath.Rel(sourcePath, record.Path)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		job := models.QueueJob{MediaPath: record.Path, BatchName: batchName}
+		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: index + 1}
+		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
+		targets[record.Path] = filepath.Join(destinationPath, namedRelative)
+	}
+
+	seenTargets := map[string]bool{}
+	for _, target := range targets {
+		clean := filepath.Clean(target)
+		if seenTargets[clean] {
+			return nil, func() {}, fmt.Errorf("episode naming produced duplicate target %s", target)
+		}
+		seenTargets[clean] = true
+	}
+	type renamePair struct{ from, to string }
+	completed := []renamePair{}
+	rollback := func() {
+		for index := len(completed) - 1; index >= 0; index-- {
+			_ = os.Rename(completed[index].to, completed[index].from)
+		}
+	}
+	for _, record := range sorted {
+		current := published[record.Path]
+		target := targets[record.Path]
+		if current == target {
+			continue
+		}
+		sidecars, err := externalSubtitlesForMedia(current)
+		if err != nil && !os.IsNotExist(err) {
+			rollback()
+			return nil, func() {}, err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			rollback()
+			return nil, func() {}, err
+		}
+		if _, err := os.Stat(target); err == nil {
+			rollback()
+			return nil, func() {}, fmt.Errorf("episode target already exists: %s", target)
+		} else if !os.IsNotExist(err) {
+			rollback()
+			return nil, func() {}, err
+		}
+		if err := os.Rename(current, target); err != nil {
+			rollback()
+			return nil, func() {}, err
+		}
+		completed = append(completed, renamePair{from: current, to: target})
+		sourceBase := strings.TrimSuffix(current, filepath.Ext(current))
+		targetBase := strings.TrimSuffix(target, filepath.Ext(target))
+		for _, sidecar := range sidecars {
+			suffix := strings.TrimPrefix(sidecar.Path, sourceBase)
+			sidecarTarget := targetBase + suffix
+			if _, err := os.Stat(sidecarTarget); err == nil {
+				rollback()
+				return nil, func() {}, fmt.Errorf("subtitle target already exists: %s", sidecarTarget)
+			} else if !os.IsNotExist(err) {
+				rollback()
+				return nil, func() {}, err
+			}
+			if err := os.Rename(sidecar.Path, sidecarTarget); err != nil {
+				rollback()
+				return nil, func() {}, err
+			}
+			completed = append(completed, renamePair{from: sidecar.Path, to: sidecarTarget})
+		}
+		published[record.Path] = target
+	}
+	return published, rollback, nil
+}
+
+func directPublicationRelativeGroup(relativeGroup, destinationRoot string) string {
+	clean := filepath.Clean(relativeGroup)
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	destinationCategory := filepath.Base(filepath.Clean(destinationRoot))
+	if len(parts) > 1 && strings.EqualFold(parts[0], destinationCategory) {
+		return filepath.FromSlash(strings.Join(parts[1:], "/"))
+	}
+	return clean
 }
 
 func (h AssetHandler) MigratePath(c *gin.Context) {
@@ -1223,7 +1488,7 @@ func migrateAssetPathOverrides(db *gorm.DB, sourcePath, destinationPath string) 
 	return saveAssetMetadataOverrides(db, metadata)
 }
 
-func resetDirectPublicationOverrides(db *gorm.DB, records []models.AssetRecord, sourcePath, destinationPath string) error {
+func resetDirectPublicationOverrides(db *gorm.DB, records []models.AssetRecord, sourcePath, destinationPath string, publishedPaths map[string]string) error {
 	conversion := assetConversionOverrides(db)
 	reviews := assetReviewOverrides(db)
 	metadata := assetMetadataOverrides(db)
@@ -1233,6 +1498,9 @@ func resetDirectPublicationOverrides(db *gorm.DB, records []models.AssetRecord, 
 			return err
 		}
 		newPath := filepath.Join(destinationPath, relative)
+		if publishedPath := strings.TrimSpace(publishedPaths[record.Path]); publishedPath != "" {
+			newPath = publishedPath
+		}
 		delete(conversion, record.Path)
 		delete(reviews, record.Path)
 		if value, exists := metadata[record.Path]; exists {
@@ -2455,6 +2723,27 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	if err := h.db.Order("status asc, library_name asc, relative_path asc").Find(&records).Error; err != nil {
 		return AssetInventory{}, err
 	}
+	scans := []models.ScanResult{}
+	if h.db.Migrator().HasTable(&models.ScanResult{}) {
+		if err := h.db.Order("updated_at desc, id desc").Find(&scans).Error; err != nil {
+			return AssetInventory{}, err
+		}
+	}
+	technicalByPath := map[string]*AssetTechnicalInfo{}
+	for _, scan := range scans {
+		path := filepath.Clean(scan.Path)
+		if _, exists := technicalByPath[path]; exists {
+			continue
+		}
+		technicalByPath[path] = &AssetTechnicalInfo{
+			VideoCodec: scan.VideoCodec,
+			Width:      scan.Width,
+			Height:     scan.Height,
+			Duration:   scan.Duration,
+			Bitrate:    scan.Bitrate,
+			HDR:        scan.HDR,
+		}
+	}
 
 	inventory := AssetInventory{
 		Unprocessed:       []Asset{},
@@ -2473,10 +2762,11 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	directOutputs := directPublicationPaths(h.db)
 	for _, record := range records {
 		asset := assetFromRecord(record)
+		asset.Technical = technicalByPath[filepath.Clean(record.Path)]
 		switch record.Status {
 		case "converted":
 			if directOutputs[filepath.Clean(record.Path)] {
-				asset.Status = "library"
+				asset.Status = "published_as_is"
 				asset.PublicationMode = "as_is"
 				inventory.Library = append(inventory.Library, asset)
 			} else if mvForgeOutputs[filepath.Clean(record.Path)] {
@@ -2581,6 +2871,12 @@ func directPublicationPaths(db *gorm.DB) map[string]bool {
 }
 
 func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
+	// Manual sync, automatic sync, publication, and recovery can all request a
+	// refresh. Keep the filesystem scan and missing-record reconciliation as
+	// one process-wide operation.
+	assetInventorySyncMu.Lock()
+	defer assetInventorySyncMu.Unlock()
+
 	now := time.Now()
 	result := AssetSyncResult{SyncedAt: now}
 
@@ -2912,16 +3208,14 @@ func collectAssetRecords(library models.Library, root string, status string, syn
 }
 
 func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
-	var existing models.AssetRecord
-	if err := db.First(&existing, "path = ?", record.Path).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return db.Create(&record).Error
-		}
-		return err
-	}
-	record.ID = existing.ID
-	record.CreatedAt = existing.CreatedAt
-	return db.Save(&record).Error
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "path"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"root_path", "relative_path", "group_path", "file_name", "extension",
+			"size_bytes", "modified_at", "status", "library_id", "library_name",
+			"missing", "expires_at", "synced_at", "updated_at",
+		}),
+	}).Create(&record).Error
 }
 
 func assetFromRecord(record models.AssetRecord) Asset {
@@ -3271,6 +3565,29 @@ func resetRecoveredAssetOverrides(db *gorm.DB, paths ...string) error {
 		}
 		return nil
 	})
+}
+
+func returnDirectPublicationOverrides(db *gorm.DB, publishedPath, restorePath string) error {
+	publishedPath = filepath.Clean(publishedPath)
+	restorePath = filepath.Clean(restorePath)
+	conversion := assetConversionOverrides(db)
+	delete(conversion, publishedPath)
+	delete(conversion, restorePath)
+	if err := saveAssetConversionOverrides(db, conversion); err != nil {
+		return err
+	}
+	reviews := assetReviewOverrides(db)
+	delete(reviews, publishedPath)
+	delete(reviews, restorePath)
+	if err := saveAssetReviewOverrides(db, reviews); err != nil {
+		return err
+	}
+	metadata := assetMetadataOverrides(db)
+	if value, exists := metadata[publishedPath]; exists {
+		delete(metadata, publishedPath)
+		metadata[restorePath] = value
+	}
+	return saveAssetMetadataOverrides(db, metadata)
 }
 
 func assetReviewOverrides(db *gorm.DB) map[string]AssetReviewState {

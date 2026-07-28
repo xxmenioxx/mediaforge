@@ -66,13 +66,21 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'library' | 'converted' | 'unverified' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'archive';
   missing: boolean;
   expiresAt?: string;
   review: AssetReviewState;
   metadata: AssetMetadataState;
   conversion: AssetConversionOverrideState;
   publicationMode?: 'as_is';
+  technical?: {
+    videoCodec: string;
+    width: number;
+    height: number;
+    duration: number;
+    bitrate: number;
+    hdr: boolean;
+  };
 };
 
 export type AssetGroup = {
@@ -81,7 +89,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'library' | 'converted' | 'unverified' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'archive';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;

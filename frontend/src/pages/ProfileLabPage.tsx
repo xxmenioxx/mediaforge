@@ -3533,7 +3533,7 @@ function uniqueAssets(assets: Asset[]) {
   const byPath = new Map<string, Asset>();
   assets.forEach((asset) => {
     const current = byPath.get(asset.path);
-    if (!current || asset.status === 'library' || asset.status === 'converted') {
+    if (!current || asset.status === 'library' || asset.status === 'published_as_is' || asset.status === 'converted') {
       byPath.set(asset.path, asset);
     }
   });

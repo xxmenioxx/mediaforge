@@ -68,6 +68,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/assets/sync", assets.Sync)
 		api.POST("/assets/recover", assets.Recover)
 		api.POST("/assets/delete-converted", assets.DeleteConverted)
+		api.POST("/assets/return-published-as-is", assets.ReturnPublishedAsIs)
 		api.POST("/assets/extract-subtitles", assets.ExtractSubtitles)
 		api.GET("/assets/external-subtitles", assets.ExternalSubtitles)
 		api.GET("/assets/external-subtitles/content", assets.ExternalSubtitleContent)

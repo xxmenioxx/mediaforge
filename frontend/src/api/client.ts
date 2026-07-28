@@ -92,6 +92,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  returnPublishedAsIsAsset: (path: string) =>
+    request<{ status: string; publishedPath: string; restoredPath: string; message: string }>(`/api/assets/return-published-as-is?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   extractAssetSubtitles: (input: string | { path: string; streamIndex?: number; format?: 'srt' | 'ass'; ocrLanguage?: string }) => {
     const value = typeof input === 'string' ? { path: input } : input;
     return request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {

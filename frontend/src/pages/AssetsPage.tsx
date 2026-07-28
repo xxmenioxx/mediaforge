@@ -42,7 +42,6 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
-import SubtitlesIcon from '@mui/icons-material/Subtitles';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -471,10 +470,12 @@ function AssetGroupRow({
   const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
-  const isLibraryGroup = group.status === 'unverified' || group.status === 'library';
+  const isLibraryGroup = group.status === 'unverified' || group.status === 'library' || group.status === 'published_as_is';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
   const isReadOnlyGroup = isConvertedGroup || isArchiveGroup;
+  const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
   const bulkSelectableAssets = isReadOnlyGroup ? groupAssets.filter((asset) => !asset.missing) : [];
+  const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
   const allBulkAssetsSelected = bulkSelectableAssets.length > 0 && bulkSelectableAssets.every((asset) => selectedAssetPaths.includes(asset.path));
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
@@ -697,21 +698,23 @@ function AssetGroupRow({
             {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
-        {!isReadOnlyGroup ? (
+        {showConfidenceColumn ? (
           <TableCell>
-            <Stack direction="row" spacing={1} alignItems="center" onClick={(event) => event.stopPropagation()}>
-              <Switch
-                checked={isConfidenceEnabled}
-                onChange={(event) => toggleConfidence(event.target.checked)}
-                disabled={updateSetting.isPending}
-                size="small"
-              />
-              <Chip
-                label={isConfidenceEnabled ? 'On' : 'Off'}
-                color={isConfidenceEnabled ? 'success' : 'default'}
-                size="small"
-              />
-            </Stack>
+            {!isReadOnlyGroup ? (
+              <Stack direction="row" spacing={1} alignItems="center" onClick={(event) => event.stopPropagation()}>
+                <Switch
+                  checked={isConfidenceEnabled}
+                  onChange={(event) => toggleConfidence(event.target.checked)}
+                  disabled={updateSetting.isPending}
+                  size="small"
+                />
+                <Chip
+                  label={isConfidenceEnabled ? 'On' : 'Off'}
+                  color={isConfidenceEnabled ? 'success' : 'default'}
+                  size="small"
+                />
+              </Stack>
+            ) : null}
           </TableCell>
         ) : null}
         <TableCell>{group.fileCount}</TableCell>
@@ -729,7 +732,7 @@ function AssetGroupRow({
         </TableCell>
       </TableRow>
       <TableRow>
-        <TableCell colSpan={isReadOnlyGroup ? 7 : 8} sx={{ p: 0, borderBottom: expanded ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
+        <TableCell colSpan={showConfidenceColumn ? 8 : 7} sx={{ p: 0, borderBottom: expanded ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
@@ -835,7 +838,7 @@ function AssetGroupRow({
                     {migrationControls}
                   </Stack>
                 ) : null}
-                {isReadOnlyGroup ? (
+                {isReadOnlyGroup && hasMultipleSelectableAssets ? (
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                     <Typography color="text.secondary" variant="body2">
                       {selectedAssetPaths.length} of {bulkSelectableAssets.length} selected in this path
@@ -855,6 +858,10 @@ function AssetGroupRow({
                       </Button>
                     </Stack>
                   </Stack>
+                ) : isConvertedGroup ? (
+                  <Stack direction="row" justifyContent="flex-end">
+                    {migrationControls}
+                  </Stack>
                 ) : null}
                 {migratePath.isSuccess ? <Alert severity="success">Path moved to {migratePath.data.destinationPath}. {migratePath.data.assetsMoved} asset(s) reconciled.</Alert> : null}
                 {migratePath.isError ? <Alert severity="warning">Path migration failed: {migratePath.error instanceof Error ? migratePath.error.message : 'unknown error'}</Alert> : null}
@@ -865,10 +872,17 @@ function AssetGroupRow({
                   </Alert>
                 ) : null}
                 <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', pb: 0.5 }}>
-                  <Table size="small" sx={{ minWidth: isReadOnlyGroup ? 820 : 1320, tableLayout: 'fixed' }}>
+                  <Table
+                    size="small"
+                    sx={{
+                      width: '100%',
+                      minWidth: isConvertedGroup ? 1120 : isReadOnlyGroup ? 820 : 1320,
+                      tableLayout: 'fixed',
+                    }}
+                  >
                     <TableHead>
                       <TableRow>
-                        {isReadOnlyGroup ? (
+                        {isReadOnlyGroup && hasMultipleSelectableAssets ? (
                           <TableCell padding="checkbox" sx={{ width: 48 }}>
                             <Checkbox
                               size="small"
@@ -883,9 +897,10 @@ function AssetGroupRow({
                         <TableCell sx={{ width: 230 }}>Asset</TableCell>
                         <TableCell sx={{ width: 198 }}>Status</TableCell>
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 95 }}>Score</TableCell> : null}
+                        {isConvertedGroup ? <TableCell sx={{ width: 360 }}>Media</TableCell> : null}
                         <TableCell sx={{ width: 100 }}>Size</TableCell>
                         <TableCell sx={{ width: 128 }}>Modified</TableCell>
-                        <TableCell sx={{ width: 145 }}>Category</TableCell>
+                        {!isConvertedGroup ? <TableCell sx={{ width: 145 }}>Category</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Video profile</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Audio profile</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 160 }}>Destination</TableCell> : null}
@@ -912,7 +927,7 @@ function AssetGroupRow({
                           queueJobs={queueJobs}
                           mode={mode}
                           bulkSelected={selectedAssetPaths.includes(asset.path)}
-                          bulkSelectionEnabled={isReadOnlyGroup}
+                          bulkSelectionEnabled={isReadOnlyGroup && hasMultipleSelectableAssets}
                           bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending}
                           onBulkSelectionChange={toggleBulkAsset}
                         />
@@ -991,10 +1006,11 @@ function AssetRow({
   const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
   const snapshot = useMutation({
     mutationFn: api.scan,
-    onSuccess: (scan) => {
+    onSuccess: async (scan) => {
       if (asset.status !== 'converted' && asset.status !== 'archive') {
         profileSuggestion.mutate(scan.path);
       }
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
   const externalSubtitles = useQuery({
@@ -1080,6 +1096,15 @@ function AssetRow({
       ]);
     },
   });
+  const returnPublishedAsIs = useMutation({
+    mutationFn: api.returnPublishedAsIsAsset,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
+    },
+  });
   const extractSubtitles = useMutation({
     mutationFn: api.extractAssetSubtitles,
     onSuccess: async () => {
@@ -1106,9 +1131,14 @@ function AssetRow({
   });
   const isBlockedByReview = assetReview.requiresReview;
   const isConverted = asset.status === 'converted';
-  const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library';
+  const isPublishedAsIs = asset.status === 'published_as_is';
+  const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
-  const rowColumnCount = bulkSelectionEnabled ? 7 : 10;
+  const rowColumnCount = isConverted
+    ? bulkSelectionEnabled ? 7 : 6
+    : isArchive
+      ? bulkSelectionEnabled ? 7 : 6
+      : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
@@ -1324,6 +1354,14 @@ function AssetRow({
     }
   }
 
+  function returnPublishedAsIsAsset(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const confirmed = window.confirm('Remove this Published as-is asset from Library and return it to its original Raw path? Its original filename and external subtitle names will be restored.');
+    if (confirmed) {
+      returnPublishedAsIs.mutate(asset.path);
+    }
+  }
+
   return (
     <>
       <TableRow hover>
@@ -1383,11 +1421,27 @@ function AssetRow({
             </Button>
           </TableCell>
         ) : null}
+        {isConverted ? (
+          <TableCell>
+            <ConvertedMediaSummary
+              technical={snapshot.data ? {
+                videoCodec: snapshot.data.videoCodec,
+                width: snapshot.data.width,
+                height: snapshot.data.height,
+                duration: snapshot.data.duration,
+                bitrate: snapshot.data.bitrate,
+                hdr: snapshot.data.hdr,
+              } : asset.technical}
+            />
+          </TableCell>
+        ) : null}
         <TableCell>{formatBytes(asset.sizeBytes)}</TableCell>
         <TableCell>{formatDate(asset.modifiedAt)}</TableCell>
-        <TableCell sx={{ minWidth: 180 }}>
-          <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
-        </TableCell>
+        {!isConverted ? (
+          <TableCell sx={{ minWidth: 180 }}>
+            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
+          </TableCell>
+        ) : null}
         {!isArchive && !isConverted ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
@@ -1454,27 +1508,18 @@ function AssetRow({
                 </IconButton>
               </Tooltip>
             ) : null}
-            {isLibraryReplacement ? (
-              <>
-                <Tooltip title={extractSubtitles.isPending ? 'Generating subtitle files' : 'Generate external SRT/ASS files from this Library asset'}>
-                  <span onClick={(event) => event.stopPropagation()}>
-                    <IconButton
-                      color="primary"
-                      onClick={() => extractSubtitles.mutate(asset.path)}
-                      disabled={asset.missing || extractSubtitles.isPending}
-                      aria-label={`Generate subtitles for ${asset.fileName}`}
-                      sx={actionIconSx}
-                    >
-                      <SubtitlesIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </>
-            ) : null}
             {isConverted ? (
               <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
                 <span onClick={(event) => event.stopPropagation()}>
                   <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                    <DeleteForeverIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : isPublishedAsIs ? (
+              <Tooltip title={returnPublishedAsIs.isPending ? 'Returning asset to Raw' : 'Remove from Library and return the original file to Raw'}>
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton color="error" onClick={returnPublishedAsIsAsset} disabled={returnPublishedAsIs.isPending} aria-label={`Return ${asset.fileName} to Raw`} sx={actionIconSx}>
                     <DeleteForeverIcon />
                   </IconButton>
                 </span>
@@ -1532,20 +1577,16 @@ function AssetRow({
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Safe deletion was blocked: {deleteConvertedAsset.error instanceof Error ? deleteConvertedAsset.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
-      {extractSubtitles.isSuccess ? (
+      {returnPublishedAsIs.isSuccess ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}>
-            <Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>
-              Generated {extractSubtitles.data.created.length} subtitle file(s).
-              {extractSubtitles.data.existing.length > 0 ? ` ${extractSubtitles.data.existing.length} already existed and were preserved.` : ''}
-              {extractSubtitles.data.unsupported.length > 0 ? ` ${extractSubtitles.data.unsupported.length} bitmap track(s) require OCR.` : ''}
-            </Alert>
+            <Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{returnPublishedAsIs.data.message} Restored to: {returnPublishedAsIs.data.restoredPath}</Alert>
           </TableCell>
         </TableRow>
       ) : null}
-      {extractSubtitles.isError ? (
+      {returnPublishedAsIs.isError ? (
         <TableRow>
-          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Subtitle generation failed: {extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'unknown error'}</Alert></TableCell>
+          <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="warning" sx={{ overflowWrap: 'anywhere' }}>Return to Raw was blocked: {returnPublishedAsIs.error instanceof Error ? returnPublishedAsIs.error.message : 'unknown error'}</Alert></TableCell>
         </TableRow>
       ) : null}
       {reconcilePublication.isSuccess ? (
@@ -2853,6 +2894,8 @@ function statusLabel(status: Asset['status']) {
       return 'Converted';
     case 'library':
       return 'Library';
+    case 'published_as_is':
+      return 'Published as-is';
     case 'unverified':
       return 'Unverified';
     case 'archive':
@@ -2868,6 +2911,8 @@ function statusColor(status: Asset['status']): 'default' | 'success' | 'warning'
       return 'success';
     case 'library':
       return 'default';
+    case 'published_as_is':
+      return 'success';
     case 'unverified':
       return 'warning';
     case 'archive':
@@ -2909,7 +2954,7 @@ function relativeAssetPath(asset: Asset, libraries: Library[]) {
   }
 
   const library = libraries.find((candidate) => candidate.id === asset.libraryId);
-  const basePath = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library' ? library?.destinationPath : library?.sourcePath;
+  const basePath = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is' ? library?.destinationPath : library?.sourcePath;
 
   if (!basePath) {
     return asset.fileName;
@@ -3021,7 +3066,7 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   if (asset.status === 'converted') {
     return { label: 'Converted', color: 'success' };
   }
-  if (asset.status === 'unverified' || asset.status === 'library') {
+  if (asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is') {
     return { label: 'Unverified', color: 'warning' };
   }
   return { label: 'Unprocessed', color: 'warning' };
@@ -3478,6 +3523,58 @@ function booleanValue(value: unknown, fallback: boolean) {
 function createBatchId(group: AssetGroup) {
   const random = Math.random().toString(36).slice(2, 8);
   return `batch-${group.libraryId}-${Date.now()}-${random}`;
+}
+
+function ConvertedMediaSummary({ technical }: { technical?: Asset['technical'] }) {
+  const items = [
+    {
+      label: 'Video',
+      value: technical
+        ? [technical.videoCodec || 'Unknown', technical.width && technical.height ? `${technical.width}×${technical.height}` : '']
+            .filter(Boolean)
+            .join(' ')
+        : 'Not scanned',
+    },
+    { label: 'Duration', value: technical ? formatMediaDuration(technical.duration) : '—' },
+    { label: 'Bitrate', value: technical ? formatMediaBitrate(technical.bitrate) : '—' },
+    { label: 'Range', value: technical ? technical.hdr ? 'HDR' : 'SDR' : '—' },
+  ];
+
+  return (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: '1.35fr 1fr 1fr 0.65fr',
+        gap: 1.25,
+        alignItems: 'start',
+      }}
+    >
+      {items.map((item) => (
+        <Stack key={item.label} spacing={0.15} sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary" fontWeight={700}>
+            {item.label}
+          </Typography>
+          <Typography variant="body2" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.value}
+          </Typography>
+        </Stack>
+      ))}
+    </Box>
+  );
+}
+
+function formatMediaDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return [hours, minutes, remainingSeconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function formatMediaBitrate(bitsPerSecond: number) {
+  if (!Number.isFinite(bitsPerSecond) || bitsPerSecond <= 0) return '—';
+  return `${(bitsPerSecond / 1_000_000).toFixed(2)} Mbps`;
 }
 
 function formatBytes(bytes: number) {

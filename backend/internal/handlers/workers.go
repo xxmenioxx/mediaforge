@@ -1264,7 +1264,10 @@ func multiEpisodeOutputRelativePath(db *gorm.DB, job models.QueueJob, fallbackRe
 	if !ok {
 		return fallbackRelative
 	}
+	return formatMultiEpisodeOutputRelativePath(job, fallbackRelative, spec)
+}
 
+func formatMultiEpisodeOutputRelativePath(job models.QueueJob, fallbackRelative string, spec multiEpisodeNameSpec) string {
 	dir := path.Dir(fallbackRelative)
 	title := sanitizeMediaFileName(spec.SeriesTitle)
 	episodeID := fmt.Sprintf("S%02dE%02d", spec.Season, spec.Episode)
