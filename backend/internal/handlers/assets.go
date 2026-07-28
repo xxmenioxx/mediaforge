@@ -1204,12 +1204,11 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 
 func directPublicationRelativeGroup(relativeGroup, destinationRoot string) string {
 	clean := filepath.Clean(relativeGroup)
-	parts := strings.Split(filepath.ToSlash(clean), "/")
-	destinationCategory := filepath.Base(filepath.Clean(destinationRoot))
-	if len(parts) > 1 && strings.EqualFold(parts[0], destinationCategory) {
-		return filepath.FromSlash(strings.Join(parts[1:], "/"))
-	}
-	return clean
+	relative := libraryOutputBaseRelativePath(
+		filepath.ToSlash(clean),
+		models.Library{DestinationPath: filepath.ToSlash(filepath.Clean(destinationRoot))},
+	)
+	return filepath.FromSlash(relative)
 }
 
 func (h AssetHandler) MigratePath(c *gin.Context) {

@@ -248,8 +248,14 @@ func TestDirectPublicationRelativeGroupAvoidsDuplicateLibraryCategory(t *testing
 	if got := directPublicationRelativeGroup("anime/Digimon 2", "/media/library/anime"); got != "Digimon 2" {
 		t.Fatalf("relative group = %q, want Digimon 2", got)
 	}
-	if got := directPublicationRelativeGroup("movies/Old Boy", "/media/library/anime"); got != filepath.Join("movies", "Old Boy") {
-		t.Fatalf("unrelated category was removed: %q", got)
+	if got := directPublicationRelativeGroup("anime/Digimon 2", "/media/library/cartoon"); got != "Digimon 2" {
+		t.Fatalf("cross-category relative group = %q, want Digimon 2", got)
+	}
+	if got := directPublicationRelativeGroup("anime/anime/Digimon 2", "/media/library/anime"); got != "Digimon 2" {
+		t.Fatalf("repeated category relative group = %q, want Digimon 2", got)
+	}
+	if got := directPublicationRelativeGroup("collection/Old Boy", "/media/library/anime"); got != filepath.Join("collection", "Old Boy") {
+		t.Fatalf("non-category folder was removed: %q", got)
 	}
 }
 
