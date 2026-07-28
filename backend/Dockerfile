@@ -78,8 +78,8 @@ RUN apt-get update \
        --enable-opencl \
     && make -j"$(nproc)" \
     && make install \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -F -- "--enable-libvpl" \
-    && if /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -Fq -- "--enable-libmfx"; then \
+    && LD_LIBRARY_PATH=/opt/ffmpeg/lib /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -F -- "--enable-libvpl" \
+    && if LD_LIBRARY_PATH=/opt/ffmpeg/lib /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -Fq -- "--enable-libmfx"; then \
          echo "FFmpeg unexpectedly linked the legacy Media SDK runtime" >&2; exit 1; \
        fi \
     && strip /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
