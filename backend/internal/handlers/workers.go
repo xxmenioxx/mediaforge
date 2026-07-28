@@ -423,8 +423,9 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 		job.ErrorMessage = input.ErrorMessage
 	}
 
+	canceledRunningProcess := false
 	if job.Status == JobStatusCanceled {
-		cancelRunningJobProcess(job.ID)
+		canceledRunningProcess = cancelRunningJobProcess(job.ID)
 	}
 
 	if job.Status == JobStatusRunning && job.StartedAt == nil {
@@ -445,6 +446,9 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 	}
 	if job.Status == JobStatusCanceled {
 		_ = scheduler.ReleaseReservation(h.db, job.ID)
+		if !canceledRunningProcess {
+			_ = cleanupCanceledJob(h.db, job)
+		}
 	} else if terminalJobStatus(job.Status) {
 		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
 	}

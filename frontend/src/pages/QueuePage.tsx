@@ -637,6 +637,31 @@ function QueueGroupCard({
       ]);
     },
   });
+  const batchAction = useMutation({
+    mutationFn: async (action: 'cancel' | 'remove') => {
+      const jobs = group.jobs.filter((job) => job.status !== 'completed');
+      if (action === 'cancel') {
+        await Promise.all(
+          jobs
+            .filter((job) => job.status === 'queued' || job.status === 'running')
+            .map((job) => api.updateQueueJob({ jobId: job.id, status: 'canceled' })),
+        );
+        return;
+      }
+      await Promise.all(jobs.map(async (job) => {
+        if (job.status === 'running') {
+          await api.updateQueueJob({ jobId: job.id, status: 'canceled' });
+        }
+        await api.dismissQueueJob(job.id);
+      }));
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
+    },
+  });
 
   function updatePriority(job: QueueJob, nextPriority: number) {
     updateJob.mutate({ jobId: job.id, priority: nextPriority });
@@ -661,6 +686,18 @@ function QueueGroupCard({
     dismissJob.mutate(job.id);
   }
 
+  function cancelBatch() {
+    const count = group.jobs.filter((job) => job.status === 'queued' || job.status === 'running').length;
+    if (!count || !window.confirm(`Cancel ${count} queued/running job${count === 1 ? '' : 's'} in “${group.name}”?`)) return;
+    batchAction.mutate('cancel');
+  }
+
+  function removeBatch() {
+    const count = group.jobs.filter((job) => job.status !== 'completed').length;
+    if (!count || !window.confirm(`Remove ${count} non-completed job${count === 1 ? '' : 's'} from “${group.name}”? Running jobs will be canceled first. Logs and reports will be preserved.`)) return;
+    batchAction.mutate('remove');
+  }
+
   useEffect(() => {
     if (initiallyExpanded) {
       setExpanded(true);
@@ -680,6 +717,7 @@ function QueueGroupCard({
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
         <Stack spacing={1}>
           {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
+          {batchAction.isError ? <Alert severity="warning">Could not complete the batch action. Refresh Queue to review the remaining jobs.</Alert> : null}
           <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
               <Typography variant="h3" sx={{ wordBreak: 'break-word' }}>
@@ -693,6 +731,30 @@ function QueueGroupCard({
               {group.failed ? <Chip label={`${group.failed} failed`} color="error" size="small" /> : null}
             </Stack>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+              {group.isBatch && (group.queued > 0 || group.running > 0) ? (
+                <Button
+                  startIcon={<CancelIcon />}
+                  color="warning"
+                  variant="outlined"
+                  size="small"
+                  disabled={batchAction.isPending}
+                  onClick={cancelBatch}
+                >
+                  Cancel Batch
+                </Button>
+              ) : null}
+              {group.isBatch && group.jobs.some((job) => job.status !== 'completed') ? (
+                <Button
+                  startIcon={<RemoveCircleOutlineIcon />}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                  disabled={batchAction.isPending}
+                  onClick={removeBatch}
+                >
+                  Remove Batch
+                </Button>
+              ) : null}
               {group.failed ? (
                 <Button
                   startIcon={<ReplayIcon />}
@@ -727,7 +789,7 @@ function QueueGroupCard({
                 <JobRow
                   key={job.id}
                   job={job}
-                  isUpdating={updateJob.isPending || dismissJob.isPending}
+                  isUpdating={updateJob.isPending || dismissJob.isPending || batchAction.isPending}
                   onCancel={cancelJob}
                   onEdit={onEditJob}
                   onPriorityChange={updatePriority}

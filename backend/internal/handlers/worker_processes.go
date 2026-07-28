@@ -116,6 +116,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 			"timing":   jobExecutionTiming(job, durationSeconds),
 			"progress": job.Progress,
 		})
+		_ = cleanupCanceledJob(h.db, job)
 		return
 	}
 

@@ -176,8 +176,11 @@ func housekeepingCandidate(db *gorm.DB, jobID uint, path string, modified time.T
 		return candidate, false, nil
 	}
 	reference := modified
-	if result.RowsAffected > 0 && job.UpdatedAt.After(reference) {
+	if result.RowsAffected > 0 {
 		reference = job.UpdatedAt
+		if job.FinishedAt != nil {
+			reference = *job.FinishedAt
+		}
 	}
 	if now.Before(reference.Add(time.Duration(max(retentionDays, 0)) * 24 * time.Hour)) {
 		return candidate, false, nil

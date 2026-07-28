@@ -284,6 +284,7 @@ func (h QueueHandler) Update(c *gin.Context) {
 		job.Notes = input.Notes
 	}
 
+	canceledRunningProcess := false
 	if input.Status != "" {
 		if !validJobStatus(input.Status) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job status"})
@@ -300,7 +301,7 @@ func (h QueueHandler) Update(c *gin.Context) {
 			job.StartedAt = nil
 			job.FinishedAt = nil
 		case JobStatusCanceled:
-			cancelRunningJobProcess(job.ID)
+			canceledRunningProcess = cancelRunningJobProcess(job.ID)
 			job.Status = JobStatusCanceled
 			job.FinishedAt = &now
 		default:
@@ -340,6 +341,9 @@ func (h QueueHandler) Update(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if job.Status == JobStatusCanceled && !canceledRunningProcess {
+		_ = cleanupCanceledJob(h.db, job)
 	}
 
 	c.JSON(http.StatusOK, job)

@@ -80,3 +80,33 @@ func TestHousekeepingPreviewAndRunRespectWorkspaceBoundary(t *testing.T) {
 		t.Fatal("file outside workspace was removed")
 	}
 }
+
+func TestCanceledRetentionUsesTerminalJobTimeNotWorkspaceModification(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:housekeeping-canceled-time?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-4 * 24 * time.Hour)
+	job := models.QueueJob{MediaPath: "/raw/canceled.mkv", Status: JobStatusCanceled, FinishedAt: &old}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&job).Updates(map[string]any{"updated_at": old, "finished_at": old}).Error; err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(t.TempDir(), "job-1")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := HousekeepingPolicy{CanceledRetentionDays: 3}
+	candidate, eligible, err := housekeepingCandidate(db, job.ID, workspace, time.Now(), policy, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eligible || candidate.Reason != "canceled job retention expired" {
+		t.Fatalf("recent workspace metadata incorrectly extended retention: eligible=%v candidate=%#v", eligible, candidate)
+	}
+}
