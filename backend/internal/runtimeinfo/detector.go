@@ -74,6 +74,7 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 		capability := capabilities.CheckEncoder(name)
 		snapshot.Encoders[name] = models.JSONMap{
 			"listed": capability.Listed, "usable": capability.Usable, "main10": capability.Main10,
+			"icq": capability.ICQ, "lowPower": capability.LowPower,
 			"lookAhead": capability.LookAhead, "extendedBrc": capability.ExtendedBRC,
 			"adaptiveI": capability.AdaptiveI, "adaptiveB": capability.AdaptiveB,
 			"reason": capability.Reason,

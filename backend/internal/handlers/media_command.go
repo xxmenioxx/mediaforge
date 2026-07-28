@@ -692,7 +692,11 @@ func videoCodecArgs(profile models.Profile) []string {
 		case "libx264", "libx265":
 			args = append(args, "-crf", fmt.Sprintf("%d", profile.QualityValue))
 		case "hevc_qsv":
-			args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
+			if capabilities.CheckEncoder("hevc_qsv").ICQ {
+				args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
+			} else {
+				args = append(args, "-b:v", fmt.Sprintf("%dM", defaultHardwareBitrateMbps(profile.QualityValue)))
+			}
 		case "hevc_vaapi":
 			args = append(args, "-qp", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
 		case "hevc_nvenc":
@@ -811,7 +815,10 @@ func qsvWorkerArgs(profile models.Profile) []string {
 }
 
 func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.EncoderCapability) []string {
-	args := []string{"-low_power", "0"}
+	args := []string{}
+	if profileWorkerBool(profile, "qsvLowPower", false) && capability.LowPower {
+		args = append(args, "-low_power", "1")
+	}
 	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
 	if rateControl == "la_icq" && capability.LookAhead {
 		args = append(args, "-look_ahead", "1")
@@ -829,6 +836,19 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 		args = append(args, "-adaptive_b", "1")
 	}
 	return args
+}
+
+func defaultHardwareBitrateMbps(softwareCRF int) int {
+	switch {
+	case softwareCRF <= 18:
+		return 8
+	case softwareCRF <= 20:
+		return 6
+	case softwareCRF <= 23:
+		return 4
+	default:
+		return 3
+	}
 }
 
 func ffmpegEncoderAvailable(encoder string) bool {

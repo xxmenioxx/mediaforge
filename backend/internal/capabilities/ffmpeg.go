@@ -12,6 +12,8 @@ type EncoderCapability struct {
 	Listed, Usable bool
 	Reason         string
 	Main10         bool
+	ICQ            bool
+	LowPower       bool
 	LookAhead      bool
 	ExtendedBRC    bool
 	AdaptiveI      bool
@@ -99,10 +101,12 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.Reason = encoder + " is usable for HEVC Main but Main10 is unavailable"
 		}
 		if encoder == "hevc_qsv" && result.Usable {
-			result.LookAhead = qsvFeatureSmokeTest(mainPixelFormat, "-look_ahead", "1")
-			result.ExtendedBRC = qsvFeatureSmokeTest(mainPixelFormat, "-extbrc", "1", "-look_ahead_depth", "40")
-			result.AdaptiveI = qsvFeatureSmokeTest(mainPixelFormat, "-adaptive_i", "1")
-			result.AdaptiveB = qsvFeatureSmokeTest(mainPixelFormat, "-adaptive_b", "1")
+			result.ICQ = qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18")
+			result.LowPower = qsvFeatureSmokeTest(mainPixelFormat, "-low_power", "1")
+			result.LookAhead = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-look_ahead", "1")
+			result.ExtendedBRC = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-extbrc", "1", "-look_ahead_depth", "40")
+			result.AdaptiveI = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_i", "1")
+			result.AdaptiveB = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_b", "1")
 		}
 	}
 	encoderCache.probed[encoder] = result
@@ -150,9 +154,6 @@ func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 		args = append(args, "-pix_fmt", pixelFormat)
 	}
 	args = append(args, "-c:v", encoder, "-b:v", "1M")
-	if strings.HasSuffix(encoder, "_qsv") {
-		args = append(args, "-low_power", "0")
-	}
 	if pixelFormat == "p010le" && (strings.HasSuffix(encoder, "_qsv") || strings.HasSuffix(encoder, "_vaapi") || encoder == "hevc_videotoolbox") {
 		args = append(args, "-profile:v", "main10")
 	}
@@ -169,8 +170,7 @@ func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {
 		"-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30",
 		"-frames:v", "30", "-an",
 		"-c:v", "hevc_qsv",
-		"-low_power", "0",
-		"-global_quality", "18",
+		"-b:v", "1M",
 		"-pix_fmt", pixelFormat,
 	}
 	args = append(args, featureArgs...)

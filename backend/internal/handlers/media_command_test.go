@@ -148,7 +148,7 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 		"qsvAdaptiveB":      true,
 	}}
 	args := qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{
-		LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false,
+		ICQ: true, LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false,
 	})
 	command := strings.Join(args, " ")
 	assertContains(t, command, "-look_ahead 1")

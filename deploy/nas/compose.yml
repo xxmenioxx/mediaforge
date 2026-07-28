@@ -15,6 +15,8 @@ services:
       - ${STAGING_PATH:?Set STAGING_PATH in .env}:/media/staging
       - ${ARCHIVE_PATH:?Set ARCHIVE_PATH in .env}:/media/originals_archive
       - ${REPORTS_PATH:?Set REPORTS_PATH in .env}:/media/reports
+    devices:
+      - /dev/dri:/dev/dri
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 30s

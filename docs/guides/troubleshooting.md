@@ -108,10 +108,9 @@ la capacidad disponible son los valores que gobiernan la decisión de espacio.
 ## `Error creating a MFX session: -9` con `hevc_qsv`
 
 FFmpeg puede listar `hevc_qsv` aunque el contenedor no tenga acceso a Intel
-Quick Sync. MVForge prueba una codificación HEVC Main10 real antes de marcar
-el encoder como usable. Si la prueba falla, el runtime snapshot debe mostrar
-QSV como no usable y el scheduler puede seleccionar `libx265` cuando el perfil
-lo permita.
+Quick Sync. MVForge prueba primero H.264/HEVC Main básicos y comprueba por
+separado ICQ, Main10 y `low_power`. Una función avanzada que falle deja QSV
+como limitado, pero no invalida una codificación básica que sí funciona.
 
 Para utilizar QSV en Linux, comprueba primero el host:
 
@@ -128,9 +127,21 @@ services:
       - /dev/dri:/dev/dri
 ```
 
-La imagen `linux/amd64` incluye el Intel Media Driver (`iHD`) y el runtime Intel
-Media SDK de Alpine. La imagen de prueba se publica para x86_64 porque el NAS
-objetivo usa Quick Sync; ARM64 no está incluido temporalmente.
+La imagen `linux/amd64` incluye una cadena Intel fijada y compilada conjuntamente:
+libva 2.22.0, GMMLib 22.8.0, Intel Media Driver 25.2.6, oneVPL 2.15.0,
+oneVPL Tools 1.5.0 y oneVPL GPU Runtime 25.2.6. No utiliza el runtime Media
+SDK heredado.
+
+Ejecuta el diagnóstico completo dentro del backend:
+
+```sh
+docker exec mvforge-backend mvforge-hw-probe
+```
+
+El JSON conserva stdout, stderr, duración, exit code y reason code de cada
+prueba. Para considerar solucionado QSV en el NAS, `intel.qsv.capabilities.hevcBasic`
+debe ser `true`. `icq`, `main10`, `lowPower0` y `lowPower1` pueden variar por
+generación de GPU y no deben ocultar el resultado básico.
 
 Recrea el contenedor, pulsa **Refresh host** y confirma que `hevc_qsv` aparezca
 como usable. Si continúa fallando, utiliza temporalmente `libx265`; no fuerces
