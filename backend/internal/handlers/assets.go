@@ -2773,16 +2773,21 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	}
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	directOutputs := directPublicationPaths(h.db)
+	missing := classifyMissingRecords(records)
 	for _, record := range records {
+		cleanPath := filepath.Clean(record.Path)
+		if record.Missing && missing.HistoricalPaths[cleanPath] {
+			continue
+		}
 		asset := assetFromRecord(record)
-		asset.Technical = technicalByPath[filepath.Clean(record.Path)]
+		asset.Technical = technicalByPath[cleanPath]
 		switch record.Status {
 		case "converted":
-			if directOutputs[filepath.Clean(record.Path)] {
+			if directOutputs[cleanPath] {
 				asset.Status = "published_as_is"
 				asset.PublicationMode = "as_is"
 				inventory.Library = append(inventory.Library, asset)
-			} else if mvForgeOutputs[filepath.Clean(record.Path)] {
+			} else if mvForgeOutputs[cleanPath] {
 				asset.Status = "converted"
 				inventory.Converted = append(inventory.Converted, asset)
 				inventory.Library = append(inventory.Library, asset)
@@ -2833,7 +2838,6 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssetGroups(inventory.ConvertedGroups)
 	sortAssetGroups(inventory.UnverifiedGroups)
 	sortAssetGroups(inventory.ArchiveGroups)
-	missing := classifyMissingRecords(records)
 	for _, record := range records {
 		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
 			inventory.Missing = append(inventory.Missing, assetFromRecord(record))

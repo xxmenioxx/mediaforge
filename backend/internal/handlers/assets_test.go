@@ -1308,6 +1308,50 @@ func TestClassifyMissingRecordsSeparatesMovedAndActionableFiles(t *testing.T) {
 	}
 }
 
+func TestAssetInventoryHidesHistoricalMissingConvertedRecordsFromLibrary(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:historical-missing-inventory?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []models.AssetRecord{
+		{
+			Path: "/media/library/cartoon/anime/Digimon 2/episode01.mp4", FileName: "episode01.mp4",
+			Status: "converted", SizeBytes: 100, Missing: true,
+		},
+		{
+			Path: "/media/raw/anime/Digimon 2/episode01.mp4", FileName: "episode01.mp4",
+			Status: "unprocessed", SizeBytes: 100,
+		},
+		{
+			Path: "/media/library/anime/Lost/movie.mkv", FileName: "movie.mkv",
+			Status: "converted", SizeBytes: 200, Missing: true,
+		},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := NewAssetHandler(db).assetInventoryFromDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Library) != 1 || inventory.Library[0].Path != "/media/library/anime/Lost/movie.mkv" {
+		t.Fatalf("Library should retain only actionable missing publication: %#v", inventory.Library)
+	}
+	if len(inventory.Unverified) != 1 || inventory.Unverified[0].Path != "/media/library/anime/Lost/movie.mkv" {
+		t.Fatalf("Unverified should retain only actionable missing publication: %#v", inventory.Unverified)
+	}
+	if len(inventory.Missing) != 1 || inventory.Missing[0].Path != "/media/library/anime/Lost/movie.mkv" {
+		t.Fatalf("Missing should retain only actionable record: %#v", inventory.Missing)
+	}
+	if inventory.Sync.MissingHistorical != 1 || inventory.Sync.MissingActionable != 1 {
+		t.Fatalf("unexpected missing counters: %#v", inventory.Sync)
+	}
+}
+
 func TestMissingMediaIdentityNormalizesRenamedSpanishTitle(t *testing.T) {
 	legacy := missingMediaIdentity("El increíble castillo vagabundo\uf00a (2004)_Ttitle.mkv")
 	current := missingMediaIdentity("El increible Castillo Vagabundo (2004)-new.mkv")
