@@ -2514,7 +2514,7 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
       <Stack spacing={1.5}>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Chip label={status} color={job?.status === 'failed' ? 'error' : 'success'} size="small" />
-          {job ? <Chip label={`Job #${job.id}`} size="small" /> : null}
+          {job ? <Chip label={job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'} size="small" /> : null}
           {job?.validationStatus ? <Chip label={`Validation: ${job.validationStatus} ${job.validationScore}/100`} size="small" /> : null}
         </Stack>
         <Typography fontWeight={700}>What changed</Typography>

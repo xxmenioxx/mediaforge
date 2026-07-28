@@ -9,6 +9,28 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestAssignExecutionNumberIgnoresQueuedPlaceholderIDs(t *testing.T) {
+	db := queueJobTestDB(t)
+	executedNumber := uint(4)
+	executed := models.QueueJob{
+		MediaPath:       "/media/raw/executed.mkv",
+		Status:          JobStatusCompleted,
+		ExecutionNumber: &executedNumber,
+	}
+	placeholder := models.QueueJob{MediaPath: "/media/raw/pending.mkv", Status: JobStatusQueued}
+	for _, job := range []*models.QueueJob{&executed, &placeholder} {
+		if err := db.Create(job).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := assignExecutionNumber(db, &placeholder); err != nil {
+		t.Fatal(err)
+	}
+	if placeholder.ExecutionNumber == nil || *placeholder.ExecutionNumber != 5 {
+		t.Fatalf("execution number = %#v, want 5", placeholder.ExecutionNumber)
+	}
+}
+
 func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

@@ -101,7 +101,7 @@ export function HistoryPage() {
               <TableBody>
                 {pageJobs.map((job) => (
                   <TableRow key={job.id} hover>
-                    <TableCell>#{job.id}</TableCell>
+                    <TableCell>#{job.executionNumber ?? job.id}</TableCell>
                     <TableCell>
                       <Typography fontWeight={700} noWrap>{fileNameFromPath(job.mediaPath)}</Typography>
                       <Typography color="text.secondary" variant="body2" noWrap>{job.mediaPath}</Typography>

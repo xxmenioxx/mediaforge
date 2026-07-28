@@ -321,7 +321,7 @@ export function QueuePage() {
           </CardContent>
         </Card>
         <Dialog open={isJobDialogOpen} onClose={closeJobDialog} maxWidth="md" fullWidth>
-          <DialogTitle>{editingJob ? `Edit Job #${editingJob.id}` : 'Queue Job'}</DialogTitle>
+          <DialogTitle>{editingJob ? (editingJob.executionNumber ? `Edit Job #${editingJob.executionNumber}` : 'Edit Pending Item') : 'Queue Job'}</DialogTitle>
           <Box component="form" onSubmit={submit}>
             <DialogContent>
               <Grid container spacing={2}>
@@ -682,7 +682,7 @@ function QueueGroupCard({
   }
 
   function removeJob(job: QueueJob) {
-    if (!window.confirm(`Remove Job #${job.id} from Queue? Its database record, logs, and reports will be preserved.`)) return;
+    if (job.executionNumber && !window.confirm(`Remove Job #${job.executionNumber} from Queue? Its database record, logs, and reports will be preserved.`)) return;
     dismissJob.mutate(job.id);
   }
 
@@ -693,8 +693,11 @@ function QueueGroupCard({
   }
 
   function removeBatch() {
-    const count = group.jobs.filter((job) => job.status !== 'completed').length;
-    if (!count || !window.confirm(`Remove ${count} non-completed job${count === 1 ? '' : 's'} from “${group.name}”? Running jobs will be canceled first. Logs and reports will be preserved.`)) return;
+    const removable = group.jobs.filter((job) => job.status !== 'completed');
+    const count = removable.length;
+    const onlyPlaceholders = removable.every((job) => !job.executionNumber && !job.startedAt);
+    if (!count) return;
+    if (!onlyPlaceholders && !window.confirm(`Remove ${count} non-completed job${count === 1 ? '' : 's'} from “${group.name}”? Running jobs will be canceled first. Logs and reports will be preserved.`)) return;
     batchAction.mutate('remove');
   }
 
@@ -841,7 +844,9 @@ function JobRow({
         <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
           <Stack spacing={0.4} sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography fontWeight={700}>Job #{job.id}</Typography>
+              <Typography fontWeight={700}>
+                {job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'}
+              </Typography>
               <Typography fontWeight={700} noWrap>
                 {fileNameFromPath(job.mediaPath)}
               </Typography>

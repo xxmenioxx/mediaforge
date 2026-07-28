@@ -81,15 +81,26 @@ func (h QueueHandler) Dismiss(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "running or completed jobs cannot be removed from queue"})
 		return
 	}
-	now := time.Now()
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		if job.Status == JobStatusQueued {
-			job.Status = JobStatusCanceled
-			job.FinishedAt = &now
-			if err := transitionJobStage(tx, &job, JobStageCanceled); err != nil {
+	if job.ExecutionNumber == nil && job.StartedAt == nil {
+		err = h.db.Transaction(func(tx *gorm.DB) error {
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
 			}
+			if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
+				return err
+			}
+			return tx.Delete(&job).Error
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
+		c.JSON(http.StatusOK, gin.H{"removed": true, "placeholderId": job.ID})
+		return
+	}
+
+	now := time.Now()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
 		job.DismissedAt = &now
 		if err := tx.Save(&job).Error; err != nil {
 			return err

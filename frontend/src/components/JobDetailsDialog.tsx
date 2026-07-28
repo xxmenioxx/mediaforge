@@ -59,7 +59,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
     <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
       <DialogTitle>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="h3">Job #{job.id}</Typography>
+          <Typography variant="h3">{job.executionNumber ? `Job #${job.executionNumber}` : 'Pending Queue Item'}</Typography>
           <Chip label={job.status} color={statusColor(job.status)} size="small" />
           {job.stage ? <Chip label={job.stage.replaceAll('_', ' ')} color="primary" variant="outlined" size="small" /> : null}
           <Chip label={`${job.progress}%`} color="primary" size="small" variant="outlined" />

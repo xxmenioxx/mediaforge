@@ -353,6 +353,9 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 		}
 
 		now := time.Now()
+		if err := assignExecutionNumber(tx, &job); err != nil {
+			return err
+		}
 		job.Status = JobStatusRunning
 		job.Progress = 1
 		job.WorkerName = workerName
@@ -382,6 +385,20 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 		return models.QueueJob{}, err
 	}
 	return claimed, nil
+}
+
+func assignExecutionNumber(tx *gorm.DB, job *models.QueueJob) error {
+	if job.ExecutionNumber != nil {
+		return nil
+	}
+	var next uint
+	if err := tx.Model(&models.QueueJob{}).
+		Select("COALESCE(MAX(execution_number), 0) + 1").
+		Scan(&next).Error; err != nil {
+		return err
+	}
+	job.ExecutionNumber = &next
+	return nil
 }
 
 func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {

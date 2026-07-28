@@ -4,6 +4,7 @@ import "time"
 
 type QueueJob struct {
 	ID                    uint       `json:"id" gorm:"primaryKey"`
+	ExecutionNumber       *uint      `json:"executionNumber,omitempty" gorm:"uniqueIndex"`
 	BatchID               string     `json:"batchId" gorm:"index"`
 	BatchName             string     `json:"batchName"`
 	MediaPath             string     `json:"mediaPath" gorm:"not null"`

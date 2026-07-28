@@ -405,6 +405,7 @@ export type RuntimeProfilesResponse = { profiles: RuntimeProfileDefinition[]; ef
 
 export type QueueJob = {
   id: number;
+  executionNumber?: number;
   batchId: string;
   batchName: string;
   mediaPath: string;

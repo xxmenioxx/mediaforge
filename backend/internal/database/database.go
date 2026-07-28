@@ -67,10 +67,23 @@ func Migrate(db *gorm.DB) error {
 	if err := backfillQueueLifecycleStages(db); err != nil {
 		return err
 	}
+	if err := backfillQueueExecutionNumbers(db); err != nil {
+		return err
+	}
 	if err := scheduler.ReconcileReservations(db); err != nil {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func backfillQueueExecutionNumbers(db *gorm.DB) error {
+	// IDs were historically exposed as job numbers. Preserve those numbers for
+	// work that actually started, while leaving never-executed queue entries as
+	// numberless placeholders.
+	return db.Model(&models.QueueJob{}).
+		Where("execution_number IS NULL").
+		Where("started_at IS NOT NULL OR status IN ?", []string{"running", "completed", "failed"}).
+		Update("execution_number", gorm.Expr("id")).Error
 }
 
 func migrateRuntimePolicy(db *gorm.DB) error {

@@ -13,12 +13,12 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestDismissQueueJobPreservesRecordAndReleasesReservation(t *testing.T) {
+func TestDismissQueuedPlaceholderDeletesRecordPlanAndReservation(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-dismiss?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}); err != nil {
 		t.Fatal(err)
 	}
 	job := models.QueueJob{MediaPath: "/media/raw/remove.mkv", LibraryID: 1, ProfileID: 1, Status: JobStatusQueued, Stage: JobStageQueued}
@@ -26,6 +26,10 @@ func TestDismissQueueJobPreservesRecordAndReleasesReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := scheduler.LockQueuedAsset(db, job); err != nil {
+		t.Fatal(err)
+	}
+	plan := models.ExecutionPlan{JobID: job.ID, Version: 1, Status: scheduler.ExecutionPlanPendingEvaluation}
+	if err := db.Create(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -39,11 +43,8 @@ func TestDismissQueueJobPreservesRecordAndReleasesReservation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var stored models.QueueJob
-	if err := db.First(&stored, job.ID).Error; err != nil {
-		t.Fatalf("dismissed job was deleted: %v", err)
-	}
-	if stored.DismissedAt == nil || stored.Status != JobStatusCanceled {
-		t.Fatalf("unexpected dismissed job: %#v", stored)
+	if err := db.First(&stored, job.ID).Error; err == nil {
+		t.Fatalf("queued placeholder was preserved: %#v", stored)
 	}
 	var reservations int64
 	if err := db.Model(&models.SchedulerReservation{}).Where("job_id = ?", job.ID).Count(&reservations).Error; err != nil {
@@ -51,6 +52,13 @@ func TestDismissQueueJobPreservesRecordAndReleasesReservation(t *testing.T) {
 	}
 	if reservations != 0 {
 		t.Fatalf("reservations=%d", reservations)
+	}
+	var plans int64
+	if err := db.Model(&models.ExecutionPlan{}).Where("job_id = ?", job.ID).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if plans != 0 {
+		t.Fatalf("plans=%d", plans)
 	}
 
 	router.GET("/api/queue/jobs", NewQueueHandler(db).List)

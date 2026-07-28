@@ -201,7 +201,7 @@ export function WorkersPage() {
                       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
                         <Stack sx={{ minWidth: 0 }}>
                           <Typography fontWeight={700} noWrap>
-                            Job #{job.id} · {fileNameFromPath(job.mediaPath)}
+                            {job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'} · {fileNameFromPath(job.mediaPath)}
                           </Typography>
                           <Typography color="text.secondary" variant="body2" noWrap>
                             {job.workerName || 'Unclaimed'} · P{job.priority}

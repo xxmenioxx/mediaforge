@@ -73,7 +73,7 @@ export function PublisherPage() {
                       <Stack spacing={0.5}>
                         <Typography fontWeight={700}>{fileNameFromPath(job.mediaPath)}</Typography>
                         <Typography color="text.secondary" variant="body2">
-                          Job #{job.id}
+                          Job #{job.executionNumber ?? job.id}
                         </Typography>
                       </Stack>
                     </TableCell>
