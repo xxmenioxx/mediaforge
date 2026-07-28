@@ -1399,6 +1399,7 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 		}
 	}
 	oldPath := filepath.Clean(job.PublishedPath)
+	staleRecordsRemoved := int64(0)
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		job.PublishedPath = candidatePath
 		job.LibraryID = record.LibraryID
@@ -1409,6 +1410,16 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 		if err := migrateSingleAssetPathOverrides(tx, oldPath, candidatePath); err != nil {
 			return err
 		}
+		result := tx.Where("path = ? AND missing = ?", oldPath, true).Delete(&models.AssetRecord{})
+		if result.Error != nil {
+			return result.Error
+		}
+		staleRecordsRemoved = result.RowsAffected
+		if staleRecordsRemoved > 0 {
+			if err := tx.Where("path = ?", oldPath).Delete(&models.ScanResult{}).Error; err != nil {
+				return err
+			}
+		}
 		reviews := assetReviewOverrides(tx)
 		delete(reviews, candidatePath)
 		return saveAssetReviewOverrides(tx, reviews)
@@ -1416,7 +1427,10 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "reconciled", "jobId": job.ID, "oldPath": oldPath, "publishedPath": candidatePath})
+	c.JSON(http.StatusOK, gin.H{
+		"status": "reconciled", "jobId": job.ID, "oldPath": oldPath,
+		"publishedPath": candidatePath, "staleRecordsRemoved": staleRecordsRemoved,
+	})
 }
 
 func moveAssetDirectory(source, destination string) error {

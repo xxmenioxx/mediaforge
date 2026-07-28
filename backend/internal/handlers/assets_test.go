@@ -854,7 +854,7 @@ func TestConfirmLegacyPublicationReconciliationUpdatesJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetRecord{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetRecord{}, &models.ScanResult{}, &models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	oldPath := "/library/documentaries/TATU/_Ttitle.mkv"
@@ -866,6 +866,16 @@ func TestConfirmLegacyPublicationReconciliationUpdatesJob(t *testing.T) {
 	}
 	record := models.AssetRecord{Path: newPath, FileName: "_Ttitle.mkv", Status: "converted", LibraryID: 2, LibraryName: "Series"}
 	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := models.AssetRecord{
+		Path: oldPath, FileName: "_Ttitle.mkv", Status: "converted",
+		LibraryID: 1, LibraryName: "Documentaries", Missing: true,
+	}
+	if err := db.Create(&stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: oldPath, FileName: "_Ttitle.mkv"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := saveAssetReviewOverrides(db, map[string]AssetReviewState{
@@ -897,6 +907,23 @@ func TestConfirmLegacyPublicationReconciliationUpdatesJob(t *testing.T) {
 	}
 	if reviewForPath(newPath, assetReviewOverrides(db)).RequiresReview {
 		t.Fatal("reconciliation review was not cleared")
+	}
+	var staleRecords int64
+	if err := db.Model(&models.AssetRecord{}).Where("path = ?", oldPath).Count(&staleRecords).Error; err != nil {
+		t.Fatal(err)
+	}
+	if staleRecords != 0 {
+		t.Fatalf("stale asset records=%d, want 0", staleRecords)
+	}
+	var staleScans int64
+	if err := db.Model(&models.ScanResult{}).Where("path = ?", oldPath).Count(&staleScans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if staleScans != 0 {
+		t.Fatalf("stale scan records=%d, want 0", staleScans)
+	}
+	if err := db.First(&record, record.ID).Error; err != nil {
+		t.Fatalf("candidate record was removed: %v", err)
 	}
 }
 
