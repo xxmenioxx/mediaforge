@@ -167,6 +167,11 @@ type AssetConversionOverrideState struct {
 	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable,omitempty"`
 	VideoEncoder                   string                         `json:"videoEncoder,omitempty"`
 	GlobalQuality                  int                            `json:"globalQuality,omitempty"`
+	QSVRateControl                 string                         `json:"qsvRateControl,omitempty"`
+	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth,omitempty"`
+	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc,omitempty"`
+	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI,omitempty"`
+	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB,omitempty"`
 	UpdatedAt                      *time.Time                     `json:"updatedAt,omitempty"`
 }
 
@@ -261,6 +266,11 @@ type AssetConversionUpdateInput struct {
 	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable"`
 	VideoEncoder                   string                         `json:"videoEncoder"`
 	GlobalQuality                  int                            `json:"globalQuality"`
+	QSVRateControl                 string                         `json:"qsvRateControl"`
+	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth"`
+	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc"`
+	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI"`
+	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -1359,6 +1369,11 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
 		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
 		GlobalQuality:                  input.GlobalQuality,
+		QSVRateControl:                 strings.TrimSpace(input.QSVRateControl),
+		QSVLookAheadDepth:              input.QSVLookAheadDepth,
+		QSVExtendedBRC:                 input.QSVExtendedBRC,
+		QSVAdaptiveI:                   input.QSVAdaptiveI,
+		QSVAdaptiveB:                   input.QSVAdaptiveB,
 	}
 	if assetConversionOverrideEmpty(override) {
 		delete(entries, cleanPath)
@@ -1499,7 +1514,7 @@ func (h AssetHandler) Preview(c *gin.Context) {
 		return
 	}
 
-	allowed, err := h.pathBelongsToLibrary(path)
+	allowed, err := h.pathBelongsToReadableMediaRoot(path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1579,7 +1594,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		return
 	}
 
-	allowed, err := h.pathBelongsToLibrary(path)
+	allowed, err := h.pathBelongsToReadableMediaRoot(path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1970,7 +1985,7 @@ func (h AssetHandler) AudioPreview(c *gin.Context) {
 		return
 	}
 
-	allowed, err := h.pathBelongsToLibrary(path)
+	allowed, err := h.pathBelongsToReadableMediaRoot(path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2235,6 +2250,19 @@ func (h AssetHandler) pathBelongsToLibrary(mediaPath string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (h AssetHandler) pathBelongsToReadableMediaRoot(mediaPath string) (bool, error) {
+	allowed, err := h.pathBelongsToLibrary(mediaPath)
+	if err != nil || allowed {
+		return allowed, err
+	}
+
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return false, err
+	}
+	return pathIsInside(mediaPath, archiveRoot), nil
 }
 
 func settingPath(db *gorm.DB, key string, fallback string) (string, error) {
@@ -3185,7 +3213,12 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.EnhancedAudioSourceStreamIndex == nil &&
 		override.UseHardwareIfAvailable == nil &&
 		strings.TrimSpace(override.VideoEncoder) == "" &&
-		override.GlobalQuality == 0
+		override.GlobalQuality == 0 &&
+		strings.TrimSpace(override.QSVRateControl) == "" &&
+		override.QSVLookAheadDepth == 0 &&
+		override.QSVExtendedBRC == nil &&
+		override.QSVAdaptiveI == nil &&
+		override.QSVAdaptiveB == nil
 }
 
 func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransform {

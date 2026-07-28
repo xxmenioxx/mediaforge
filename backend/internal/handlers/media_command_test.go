@@ -97,6 +97,7 @@ func TestFFmpegCommandBuilderUsesSoftwareAndCodecDefaultWhenHardwareIsDisabled(t
 
 func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 	enabled := true
+	disabled := false
 	profile := applyAssetConversionOverrideToProfile(models.Profile{
 		VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
 		WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "useHardwareIfAvailable": false},
@@ -104,11 +105,21 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		UseHardwareIfAvailable: &enabled,
 		VideoEncoder:           "hevc_qsv",
 		GlobalQuality:          27,
+		QSVRateControl:         "la_icq",
+		QSVLookAheadDepth:      55,
+		QSVExtendedBRC:         &enabled,
+		QSVAdaptiveI:           &enabled,
+		QSVAdaptiveB:           &disabled,
 	})
 
 	if profile.WorkerConfig["useHardwareIfAvailable"] != true ||
 		profile.WorkerConfig["videoEncoder"] != "hevc_qsv" ||
-		profile.WorkerConfig["globalQuality"] != 27 {
+		profile.WorkerConfig["globalQuality"] != 27 ||
+		profile.WorkerConfig["qsvRateControl"] != "la_icq" ||
+		profile.WorkerConfig["qsvLookAheadDepth"] != 55 ||
+		profile.WorkerConfig["qsvExtendedBRC"] != true ||
+		profile.WorkerConfig["qsvAdaptiveI"] != true ||
+		profile.WorkerConfig["qsvAdaptiveB"] != false {
 		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
 	}
 }

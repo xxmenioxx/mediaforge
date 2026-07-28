@@ -140,6 +140,11 @@ export type AssetConversionOverrideState = {
   useHardwareIfAvailable?: boolean;
   videoEncoder?: string;
   globalQuality?: number;
+  qsvRateControl?: 'icq' | 'la_icq';
+  qsvLookAheadDepth?: number;
+  qsvExtendedBrc?: boolean;
+  qsvAdaptiveI?: boolean;
+  qsvAdaptiveB?: boolean;
   updatedAt?: string;
 };
 

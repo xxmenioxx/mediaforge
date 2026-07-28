@@ -466,6 +466,21 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.GlobalQuality > 0 {
 		values["globalQuality"] = override.GlobalQuality
 	}
+	if strings.TrimSpace(override.QSVRateControl) != "" {
+		values["qsvRateControl"] = override.QSVRateControl
+	}
+	if override.QSVLookAheadDepth > 0 {
+		values["qsvLookAheadDepth"] = override.QSVLookAheadDepth
+	}
+	if override.QSVExtendedBRC != nil {
+		values["qsvExtendedBrc"] = *override.QSVExtendedBRC
+	}
+	if override.QSVAdaptiveI != nil {
+		values["qsvAdaptiveI"] = *override.QSVAdaptiveI
+	}
+	if override.QSVAdaptiveB != nil {
+		values["qsvAdaptiveB"] = *override.QSVAdaptiveB
+	}
 	if len(values) == 0 {
 		return nil
 	}

@@ -473,6 +473,21 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if override.GlobalQuality > 0 {
 		workerConfig["globalQuality"] = override.GlobalQuality
 	}
+	if value := strings.TrimSpace(override.QSVRateControl); value != "" {
+		workerConfig["qsvRateControl"] = value
+	}
+	if override.QSVLookAheadDepth > 0 {
+		workerConfig["qsvLookAheadDepth"] = override.QSVLookAheadDepth
+	}
+	if override.QSVExtendedBRC != nil {
+		workerConfig["qsvExtendedBRC"] = *override.QSVExtendedBRC
+	}
+	if override.QSVAdaptiveI != nil {
+		workerConfig["qsvAdaptiveI"] = *override.QSVAdaptiveI
+	}
+	if override.QSVAdaptiveB != nil {
+		workerConfig["qsvAdaptiveB"] = *override.QSVAdaptiveB
+	}
 	profile.WorkerConfig = workerConfig
 	return profile
 }

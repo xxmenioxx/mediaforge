@@ -1046,6 +1046,37 @@ func TestArchivedOriginalForJobUsesRecordedPathThenLegacyNote(t *testing.T) {
 	}
 }
 
+func TestReadableMediaRootsIncludeArchiveWithoutExpandingLibraryMutations(t *testing.T) {
+	db, _, _, archiveRoot := safeDeleteTestDB(t, "archive-preview")
+	handler := NewAssetHandler(db)
+	archivePath := filepath.Join(archiveRoot, "documentaries", "movie.mkv")
+
+	allowed, err := handler.pathBelongsToReadableMediaRoot(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowed {
+		t.Fatalf("expected archived media to be readable: %s", archivePath)
+	}
+
+	allowed, err = handler.pathBelongsToLibrary(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed {
+		t.Fatalf("archive must not be accepted by mutation-only library validation: %s", archivePath)
+	}
+
+	outsidePath := filepath.Join(filepath.Dir(archiveRoot), "private", "movie.mkv")
+	allowed, err = handler.pathBelongsToReadableMediaRoot(outsidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed {
+		t.Fatalf("path outside configured media roots was accepted: %s", outsidePath)
+	}
+}
+
 func assertStringList(t *testing.T, actual []string, expected []string) {
 	t.Helper()
 	if len(actual) != len(expected) {

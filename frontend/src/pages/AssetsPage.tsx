@@ -1145,6 +1145,11 @@ function AssetRow({
       useHardwareIfAvailable: hardwareEnabled,
       videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || (hardwareEnabled ? 'auto' : 'libx265'),
       globalQuality: Number(workerConfig.globalQuality || qsvQualityRangeForCrf(suggestion.insights.recommendedCrf || proposed.qualityValue).recommended),
+      qsvRateControl: stringFromRecord(workerConfig, 'qsvRateControl') === 'la_icq' ? 'la_icq' : 'icq',
+      qsvLookAheadDepth: Number(workerConfig.qsvLookAheadDepth || 40),
+      qsvExtendedBrc: workerConfig.qsvExtendedBRC === true,
+      qsvAdaptiveI: workerConfig.qsvAdaptiveI === true,
+      qsvAdaptiveB: workerConfig.qsvAdaptiveB === true,
       ...motionPatch,
     });
     await updateConversion.mutateAsync({ path: asset.path, ...next });
@@ -2107,6 +2112,9 @@ function AssetConversionOverridePanel({
   const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
   const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
   const bitmapSubtitleCount = scan?.subtitleStreams.filter((stream) => isBitmapSubtitleCodec(stream.codec)).length ?? 0;
+  const hardwareEnabled = draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true;
+  const effectiveVideoEncoder = draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto';
+  const qsvSelected = hardwareEnabled && effectiveVideoEncoder === 'hevc_qsv';
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2358,6 +2366,31 @@ function AssetConversionOverridePanel({
                   />
                 </Grid>
               </Grid>
+              {qsvSelected ? (
+                <Grid container spacing={1.5} sx={{ mt: 1 }}>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                    <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
+                      <MenuItem value="icq">ICQ</MenuItem>
+                      <MenuItem value="la_icq">LA-ICQ</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                    <TextField label="Look-ahead depth" type="number" value={draft.qsvLookAheadDepth ?? Number(profile?.workerConfig?.qsvLookAheadDepth ?? 40)} onChange={(event) => onChange('qsvLookAheadDepth', Number(event.target.value))} inputProps={{ min: 10, max: 100 }} size="small" fullWidth />
+                  </Grid>
+                  <Grid size={{ xs: 12, md: 6 }}>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <FormControlLabel control={<Checkbox checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
+                      <FormControlLabel control={<Checkbox checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)} />} label="Adaptive I" />
+                      <FormControlLabel control={<Checkbox checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)} />} label="Adaptive B" />
+                    </Stack>
+                  </Grid>
+                  <Grid size={{ xs: 12 }}>
+                    <Typography variant="caption" color="text.secondary">
+                      QSV low-power mode remains disabled for NAS compatibility. Unsupported features are omitted after the runtime smoke test.
+                    </Typography>
+                  </Grid>
+                </Grid>
+              ) : null}
             </Box>
           </Grid>
           <Grid size={{ xs: 12 }}>
@@ -3077,6 +3110,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
+  if (value.qsvRateControl === 'icq' || value.qsvRateControl === 'la_icq') {
+    clean.qsvRateControl = value.qsvRateControl;
+  }
   if (typeof value.qualityValue === 'number' && Number.isFinite(value.qualityValue) && value.qualityValue > 0) {
     clean.qualityValue = value.qualityValue;
   }
@@ -3104,6 +3140,12 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.globalQuality === 'number' && Number.isFinite(value.globalQuality) && value.globalQuality > 0) {
     clean.globalQuality = value.globalQuality;
   }
+  if (typeof value.qsvLookAheadDepth === 'number' && Number.isFinite(value.qsvLookAheadDepth) && value.qsvLookAheadDepth > 0) {
+    clean.qsvLookAheadDepth = Math.min(100, Math.max(10, Math.round(value.qsvLookAheadDepth)));
+  }
+  if (typeof value.qsvExtendedBrc === 'boolean') clean.qsvExtendedBrc = value.qsvExtendedBrc;
+  if (typeof value.qsvAdaptiveI === 'boolean') clean.qsvAdaptiveI = value.qsvAdaptiveI;
+  if (typeof value.qsvAdaptiveB === 'boolean') clean.qsvAdaptiveB = value.qsvAdaptiveB;
   return clean;
 }
 
