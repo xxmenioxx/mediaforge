@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var encoderCandidates = []string{"libx264", "libx265", "libsvtav1", "hevc_videotoolbox", "hevc_qsv", "hevc_nvenc", "hevc_amf"}
+var encoderCandidates = []string{"libx264", "libx265", "libsvtav1", "hevc_videotoolbox", "hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_amf"}
 
 type Detector struct {
 	db   *gorm.DB

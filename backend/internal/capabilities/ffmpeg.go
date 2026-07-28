@@ -23,6 +23,7 @@ var encoderCandidates = []string{
 	"libx265",
 	"libsvtav1",
 	"hevc_qsv",
+	"hevc_vaapi",
 	"hevc_nvenc",
 	"hevc_videotoolbox",
 	"hevc_amf",
@@ -133,9 +134,14 @@ func hardwareEncoderSmokeTest(encoder, pixelFormat string) (bool, string) {
 func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
+	}
+	if strings.HasSuffix(encoder, "_vaapi") {
+		args = append(args, "-vaapi_device", "/dev/dri/renderD128")
+	}
+	args = append(args,
 		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
 		"-frames:v", "30", "-an",
-	}
+	)
 	if strings.HasSuffix(encoder, "_vaapi") {
 		args = append(args, "-vf", "format="+pixelFormat+",hwupload")
 	} else {
@@ -145,7 +151,7 @@ func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 	if strings.HasSuffix(encoder, "_qsv") {
 		args = append(args, "-low_power", "0")
 	}
-	if pixelFormat == "p010le" && (strings.HasSuffix(encoder, "_qsv") || encoder == "hevc_videotoolbox") {
+	if pixelFormat == "p010le" && (strings.HasSuffix(encoder, "_qsv") || strings.HasSuffix(encoder, "_vaapi") || encoder == "hevc_videotoolbox") {
 		args = append(args, "-profile:v", "main10")
 	}
 	args = append(args, "-f", "null", "-")

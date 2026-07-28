@@ -693,6 +693,8 @@ func videoCodecArgs(profile models.Profile) []string {
 			args = append(args, "-crf", fmt.Sprintf("%d", profile.QualityValue))
 		case "hevc_qsv":
 			args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
+		case "hevc_vaapi":
+			args = append(args, "-qp", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
 		case "hevc_nvenc":
 			args = append(args, "-cq", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
 		case "hevc_videotoolbox":
@@ -704,7 +706,7 @@ func videoCodecArgs(profile models.Profile) []string {
 			args = append(args, "-qp_i", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
 		}
 	}
-	if encoder == "hevc_qsv" {
+	if encoder == "hevc_qsv" || encoder == "hevc_vaapi" {
 		if profileUsesTenBit(profile) {
 			args = append(args, "-profile:v", "main10")
 		} else {
@@ -732,7 +734,7 @@ func resolvedVideoEncoder(profile models.Profile) string {
 	}
 	if selected == "" || selected == "ffmpeg" || selected == "auto" {
 		if profileWorkerBool(profile, "useHardwareIfAvailable", false) {
-			for _, encoder := range []string{"hevc_qsv", "hevc_videotoolbox", "hevc_nvenc", "hevc_amf"} {
+			for _, encoder := range []string{"hevc_qsv", "hevc_vaapi", "hevc_videotoolbox", "hevc_nvenc"} {
 				if ffmpegEncoderAvailableForProfile(encoder, profile) {
 					return encoder
 				}
@@ -760,15 +762,29 @@ func videoWorkerArgs(profile models.Profile) []string {
 
 	args := []string{}
 	encoder := resolvedVideoEncoder(profile)
-	if filters := workerStringValue(profile.WorkerConfig["videoFilters"]); filters != "" {
+	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
+	if encoder == "hevc_vaapi" {
+		format := "nv12"
+		if profileUsesTenBit(profile) {
+			format = "p010le"
+		}
+		if filters != "" {
+			filters += ","
+		}
+		filters += "format=" + format + ",hwupload"
+		args = append(args, "-vaapi_device", "/dev/dri/renderD128")
+	}
+	if filters != "" {
 		args = append(args, "-vf", filters)
 	}
-	if preset := workerStringValue(profile.WorkerConfig["videoPreset"]); preset != "" && encoder != "hevc_videotoolbox" {
-		args = append(args, "-preset", preset)
-	} else if preset := workerStringValue(profile.WorkerConfig["preset"]); preset != "" && preset != "profile-lab" {
-		args = append(args, "-preset", preset)
+	if encoder != "hevc_videotoolbox" && encoder != "hevc_vaapi" {
+		if preset := workerStringValue(profile.WorkerConfig["videoPreset"]); preset != "" {
+			args = append(args, "-preset", preset)
+		} else if preset := workerStringValue(profile.WorkerConfig["preset"]); preset != "" && preset != "profile-lab" {
+			args = append(args, "-preset", preset)
+		}
 	}
-	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && pixFmt != "auto" && encoder != "hevc_videotoolbox" {
+	if pixFmt := workerStringValue(profile.WorkerConfig["pixFmt"]); pixFmt != "" && pixFmt != "auto" && encoder != "hevc_videotoolbox" && encoder != "hevc_vaapi" {
 		if encoder == "hevc_qsv" {
 			switch pixFmt {
 			case "yuv420p10le":
@@ -822,7 +838,7 @@ func ffmpegEncoderAvailableForProfile(encoder string, profile models.Profile) bo
 	if !capability.Usable {
 		return false
 	}
-	return encoder != "hevc_qsv" || !profileUsesTenBit(profile) || capability.Main10
+	return (encoder != "hevc_qsv" && encoder != "hevc_vaapi") || !profileUsesTenBit(profile) || capability.Main10
 }
 
 func defaultQSVQuality(softwareCRF int) int {
@@ -856,7 +872,7 @@ func defaultVideoToolboxBitrateMbps(quality int) int {
 
 func isHardwareVideoEncoder(encoder string) bool {
 	switch encoder {
-	case "hevc_qsv", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf":
+	case "hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf":
 		return true
 	default:
 		return false

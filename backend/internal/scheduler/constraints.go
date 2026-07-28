@@ -75,6 +75,7 @@ func ResolveExecutionConstraints(profile models.Profile) (ExecutionConstraints, 
 	if constraints.QualityStrategy == "" {
 		constraints.QualityStrategy = legacyQualityStrategy(profile.QualityValue)
 	}
+	constraints.AllowedEncoders = withIntelVAAPIFallback(constraints.CodecFamily, constraints.FallbackPolicy, constraints.AllowedEncoders)
 
 	if err := ValidateExecutionConstraints(constraints); err != nil {
 		return ExecutionConstraints{}, err
@@ -148,7 +149,11 @@ func legacyEncoderContract(profile models.Profile, codecFamily string) (string, 
 		return EncoderPolicyAutomatic, allowed[0], allowed, FallbackPolicyAllowedOnly
 	}
 	if allowHardware && isHardwareEncoder(selected) && software != "" {
-		return EncoderPolicyRestricted, selected, []string{selected, software}, FallbackPolicyAllowedOnly
+		allowed := []string{selected, software}
+		if codecFamily == "hevc" && selected == "hevc_qsv" {
+			allowed = []string{selected, "hevc_vaapi", software}
+		}
+		return EncoderPolicyRestricted, selected, allowed, FallbackPolicyAllowedOnly
 	}
 	return EncoderPolicyLocked, selected, []string{selected}, FallbackPolicyWait
 }
@@ -213,7 +218,7 @@ func softwareEncoder(codec string) string {
 func hardwareEncoders(codec string) []string {
 	switch codec {
 	case "hevc":
-		return []string{"hevc_qsv", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"}
+		return []string{"hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"}
 	case "h264":
 		return []string{"h264_qsv", "h264_nvenc", "h264_videotoolbox", "h264_amf"}
 	case "av1":
@@ -221,6 +226,20 @@ func hardwareEncoders(codec string) []string {
 	default:
 		return nil
 	}
+}
+
+func withIntelVAAPIFallback(codec, fallback string, encoders []string) []string {
+	if codec != "hevc" || fallback != FallbackPolicyAllowedOnly || !contains(encoders, "hevc_qsv") || contains(encoders, "hevc_vaapi") {
+		return encoders
+	}
+	result := make([]string, 0, len(encoders)+1)
+	for _, encoder := range encoders {
+		result = append(result, encoder)
+		if encoder == "hevc_qsv" {
+			result = append(result, "hevc_vaapi")
+		}
+	}
+	return result
 }
 
 func encoderMatchesCodec(encoder, codec string) bool {

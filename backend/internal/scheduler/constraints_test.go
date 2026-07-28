@@ -41,8 +41,24 @@ func TestResolveLegacyHardwareProfileRestrictsFallback(t *testing.T) {
 	if got.EncoderPolicy != EncoderPolicyRestricted || got.FallbackPolicy != FallbackPolicyAllowedOnly {
 		t.Fatalf("unexpected fallback contract: %#v", got)
 	}
-	if !reflect.DeepEqual(got.AllowedEncoders, []string{"hevc_qsv", "libx265"}) {
+	if !reflect.DeepEqual(got.AllowedEncoders, []string{"hevc_qsv", "hevc_vaapi", "libx265"}) {
 		t.Fatalf("unexpected allowed encoders: %#v", got.AllowedEncoders)
+	}
+}
+
+func TestAuthoritativeQSVProfileGainsIntelVAAPIFallback(t *testing.T) {
+	profile := models.Profile{
+		CodecFamily: "hevc", EncoderPolicy: EncoderPolicyRestricted,
+		PreferredEncoder: "hevc_qsv", AllowedEncoders: models.StringList{"hevc_qsv", "libx265"},
+		FallbackPolicy: FallbackPolicyAllowedOnly, QualityMode: "crf", QualityValue: 20,
+	}
+
+	got, err := ResolveExecutionConstraints(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.AllowedEncoders, []string{"hevc_qsv", "hevc_vaapi", "libx265"}) {
+		t.Fatalf("expected VAAPI between QSV and software fallbacks, got %#v", got.AllowedEncoders)
 	}
 }
 
