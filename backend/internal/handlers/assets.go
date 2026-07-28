@@ -61,6 +61,11 @@ type AssetPathMigrationInput struct {
 	DestinationLibraryID uint   `json:"destinationLibraryId" binding:"required"`
 }
 
+type PublishAsIsInput struct {
+	SourcePath           string `json:"sourcePath" binding:"required"`
+	DestinationLibraryID uint   `json:"destinationLibraryId" binding:"required"`
+}
+
 type PublicationReconciliationInput struct {
 	JobID uint   `json:"jobId" binding:"required"`
 	Path  string `json:"path" binding:"required"`
@@ -192,21 +197,22 @@ type SubtitleTransform struct {
 }
 
 type Asset struct {
-	LibraryID    uint                         `json:"libraryId"`
-	LibraryName  string                       `json:"libraryName"`
-	Path         string                       `json:"path"`
-	RelativePath string                       `json:"relativePath"`
-	GroupPath    string                       `json:"groupPath"`
-	FileName     string                       `json:"fileName"`
-	Extension    string                       `json:"extension"`
-	SizeBytes    int64                        `json:"sizeBytes"`
-	ModifiedAt   time.Time                    `json:"modifiedAt"`
-	Status       string                       `json:"status"`
-	Missing      bool                         `json:"missing"`
-	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
-	Review       AssetReviewState             `json:"review"`
-	Metadata     AssetMetadataState           `json:"metadata"`
-	Conversion   AssetConversionOverrideState `json:"conversion"`
+	LibraryID       uint                         `json:"libraryId"`
+	LibraryName     string                       `json:"libraryName"`
+	Path            string                       `json:"path"`
+	RelativePath    string                       `json:"relativePath"`
+	GroupPath       string                       `json:"groupPath"`
+	FileName        string                       `json:"fileName"`
+	Extension       string                       `json:"extension"`
+	SizeBytes       int64                        `json:"sizeBytes"`
+	ModifiedAt      time.Time                    `json:"modifiedAt"`
+	Status          string                       `json:"status"`
+	Missing         bool                         `json:"missing"`
+	ExpiresAt       *time.Time                   `json:"expiresAt,omitempty"`
+	Review          AssetReviewState             `json:"review"`
+	Metadata        AssetMetadataState           `json:"metadata"`
+	Conversion      AssetConversionOverrideState `json:"conversion"`
+	PublicationMode string                       `json:"publicationMode,omitempty"`
 }
 
 type AssetGroup struct {
@@ -807,6 +813,140 @@ func (h AssetHandler) externalSubtitleAsset(c *gin.Context) (string, models.Asse
 	return path, record, true
 }
 
+func (h AssetHandler) PublishAsIs(c *gin.Context) {
+	var input PublishAsIsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	sourcePath := filepath.Clean(strings.TrimSpace(input.SourcePath))
+	info, err := os.Stat(sourcePath)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sourcePath must be a readable Raw directory"})
+		return
+	}
+
+	var library models.Library
+	if err := h.db.First(&library, input.DestinationLibraryID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "destination library not found"})
+		return
+	}
+	var records []models.AssetRecord
+	if err := h.db.Where("status = ? AND missing = ?", "unprocessed", false).Find(&records).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	publishing := make([]models.AssetRecord, 0)
+	for _, record := range records {
+		if pathIsInside(record.Path, sourcePath) {
+			publishing = append(publishing, record)
+		}
+	}
+	if len(publishing) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "source path has no unprocessed assets"})
+		return
+	}
+	paths := make([]string, 0, len(publishing))
+	for _, record := range publishing {
+		paths = append(paths, record.Path)
+	}
+	var openJobs int64
+	if err := h.db.Model(&models.QueueJob{}).
+		Where("media_path IN ? AND status IN ?", paths, []string{JobStatusQueued, JobStatusRunning}).
+		Count(&openJobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if openJobs > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with open Queue jobs"})
+		return
+	}
+
+	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	sourceRoot := filepath.Clean(rawRoot)
+	if candidate := filepath.Clean(strings.TrimSpace(library.SourcePath)); candidate != "." && candidate != "" && pathIsInside(sourcePath, candidate) {
+		sourceRoot = candidate
+	}
+	relativeGroup, err := filepath.Rel(sourceRoot, sourcePath)
+	if err != nil || relativeGroup == "." || relativeGroup == ".." || strings.HasPrefix(relativeGroup, ".."+string(filepath.Separator)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source path is outside the selected library Raw root"})
+		return
+	}
+	destinationPath := filepath.Join(library.DestinationPath, relativeGroup)
+	if _, err := os.Stat(destinationPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "destination path already exists"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(err)})
+		return
+	}
+
+	fingerprints := make(map[string]string, len(publishing))
+	for _, record := range publishing {
+		fingerprint, err := mediaFileFingerprint(record.Path)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "could not validate " + record.FileName + ": " + err.Error()})
+			return
+		}
+		fingerprints[record.Path] = fingerprint
+	}
+	if err := moveAssetDirectory(sourcePath, destinationPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "direct publication failed: " + err.Error()})
+		return
+	}
+	rollback := func() {
+		if err := moveAssetDirectory(destinationPath, sourcePath); err != nil {
+			appendSystemLog(h.db, "direct_publication_rollback_failed", map[string]string{"sourcePath": sourcePath, "destinationPath": destinationPath}, err)
+		}
+	}
+
+	publishedAt := time.Now()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		for _, record := range publishing {
+			relative, relErr := filepath.Rel(sourcePath, record.Path)
+			if relErr != nil {
+				return relErr
+			}
+			publishedPath := filepath.Join(destinationPath, relative)
+			publication := models.DirectPublication{
+				SourcePath: record.Path, PublishedPath: publishedPath, LibraryID: library.ID,
+				PublishedFingerprint: fingerprints[record.Path], PublishedSizeBytes: record.SizeBytes, PublishedAt: publishedAt,
+			}
+			if err := tx.Create(&publication).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("path = ?", record.Path).Delete(&models.AssetRecord{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.ScanResult{}).Where("path = ?", record.Path).
+				Updates(map[string]any{"path": publishedPath, "file_name": filepath.Base(publishedPath)}).Error; err != nil {
+				return err
+			}
+		}
+		return resetDirectPublicationOverrides(tx, publishing, sourcePath, destinationPath)
+	})
+	if err != nil {
+		rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "files were moved but registration failed and rollback was attempted: " + err.Error()})
+		return
+	}
+	if _, err := h.syncAssetInventory(); err != nil {
+		appendSystemLog(h.db, "direct_publication_inventory_sync_failed", map[string]string{"destinationPath": destinationPath}, err)
+	}
+	appendSystemLog(h.db, "assets_published_as_is", map[string]string{
+		"sourcePath": sourcePath, "destinationPath": destinationPath, "library": library.Name, "assets": strconv.Itoa(len(publishing)),
+	}, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "published_as_is", "sourcePath": sourcePath, "destinationPath": destinationPath,
+		"destinationLibraryId": library.ID, "assetsPublished": len(publishing),
+		"message": "Assets were validated and published without FFmpeg conversion.",
+	})
+}
+
 func (h AssetHandler) MigratePath(c *gin.Context) {
 	var input AssetPathMigrationInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -931,6 +1071,13 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 				Where("replacement_target_path = ?", oldPath).
 				Update("replacement_target_path", newPath).Error; err != nil {
 				return err
+			}
+			if tx.Migrator().HasTable(&models.DirectPublication{}) {
+				if err := tx.Model(&models.DirectPublication{}).
+					Where("published_path = ? AND returned_at IS NULL", oldPath).
+					Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID}).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return migrateAssetPathOverrides(tx, sourcePath, destinationPath)
@@ -1072,6 +1219,32 @@ func migrateAssetPathOverrides(db *gorm.DB, sourcePath, destinationPath string) 
 			delete(metadata, oldPath)
 			metadata[filepath.Join(destinationPath, relative)] = value
 		}
+	}
+	return saveAssetMetadataOverrides(db, metadata)
+}
+
+func resetDirectPublicationOverrides(db *gorm.DB, records []models.AssetRecord, sourcePath, destinationPath string) error {
+	conversion := assetConversionOverrides(db)
+	reviews := assetReviewOverrides(db)
+	metadata := assetMetadataOverrides(db)
+	for _, record := range records {
+		relative, err := filepath.Rel(sourcePath, record.Path)
+		if err != nil {
+			return err
+		}
+		newPath := filepath.Join(destinationPath, relative)
+		delete(conversion, record.Path)
+		delete(reviews, record.Path)
+		if value, exists := metadata[record.Path]; exists {
+			delete(metadata, record.Path)
+			metadata[newPath] = value
+		}
+	}
+	if err := saveAssetConversionOverrides(db, conversion); err != nil {
+		return err
+	}
+	if err := saveAssetReviewOverrides(db, reviews); err != nil {
+		return err
 	}
 	return saveAssetMetadataOverrides(db, metadata)
 }
@@ -2297,18 +2470,24 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		ArchiveGroups:     []AssetGroup{},
 	}
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
+	directOutputs := directPublicationPaths(h.db)
 	for _, record := range records {
 		asset := assetFromRecord(record)
 		switch record.Status {
 		case "converted":
-			if mvForgeOutputs[filepath.Clean(record.Path)] {
+			if directOutputs[filepath.Clean(record.Path)] {
+				asset.Status = "library"
+				asset.PublicationMode = "as_is"
+				inventory.Library = append(inventory.Library, asset)
+			} else if mvForgeOutputs[filepath.Clean(record.Path)] {
 				asset.Status = "converted"
 				inventory.Converted = append(inventory.Converted, asset)
+				inventory.Library = append(inventory.Library, asset)
 			} else {
 				asset.Status = "unverified"
 				inventory.Unverified = append(inventory.Unverified, asset)
+				inventory.Library = append(inventory.Library, asset)
 			}
-			inventory.Library = append(inventory.Library, asset)
 		case "archive":
 			inventory.Archive = append(inventory.Archive, asset)
 		default:
@@ -2384,6 +2563,19 @@ func mvForgeOutputPaths(db *gorm.DB) map[string]bool {
 				paths[filepath.Clean(value)] = true
 			}
 		}
+	}
+	return paths
+}
+
+func directPublicationPaths(db *gorm.DB) map[string]bool {
+	paths := map[string]bool{}
+	if !db.Migrator().HasTable(&models.DirectPublication{}) {
+		return paths
+	}
+	var publications []models.DirectPublication
+	_ = db.Where("returned_at IS NULL").Find(&publications).Error
+	for _, publication := range publications {
+		paths[filepath.Clean(publication.PublishedPath)] = true
 	}
 	return paths
 }

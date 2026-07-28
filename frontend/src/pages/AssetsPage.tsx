@@ -499,6 +499,15 @@ function AssetGroupRow({
       ]);
     },
   });
+  const publishAsIs = useMutation({
+    mutationFn: api.publishAssetsAsIs,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      ]);
+    },
+  });
   const advisor = useQuery({
     queryKey: ['advisor', group.id, representativeAsset?.path, effectiveProfileId],
     queryFn: () =>
@@ -680,7 +689,11 @@ function AssetGroupRow({
         <TableCell>{group.libraryName}</TableCell>
         <TableCell>
           <Stack spacing={0.75} alignItems="flex-start">
-            <Chip label={statusLabel(group.status)} color={statusColor(group.status)} size="small" />
+            <Chip
+              label={groupAssets.every((asset) => asset.publicationMode === 'as_is') ? 'Published as-is' : statusLabel(group.status)}
+              color={groupAssets.every((asset) => asset.publicationMode === 'as_is') ? 'success' : statusColor(group.status)}
+              size="small"
+            />
             {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
@@ -794,6 +807,29 @@ function AssetGroupRow({
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
+                {mode === 'unprocessed' && !isReadOnlyGroup ? (
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    <Typography color="text.secondary" variant="body2">
+                      No conversion required: validate and move these original files directly to the selected Library.
+                    </Typography>
+                    <Button
+                      variant="outlined"
+                      color="success"
+                      size="small"
+                      disabled={!selectedLibraryId || publishAsIs.isPending || groupAssets.length === 0 || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                      onClick={() => {
+                        const destination = libraries.find((library) => library.id === selectedLibraryId);
+                        if (!destination || !window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
+                        publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: selectedLibraryId });
+                      }}
+                      sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                    >
+                      {publishAsIs.isPending ? 'Publishing...' : 'Publish as-is'}
+                    </Button>
+                  </Stack>
+                ) : null}
+                {publishAsIs.isSuccess ? <Alert severity="success">{publishAsIs.data.message}</Alert> : null}
+                {publishAsIs.isError ? <Alert severity="warning">{publishAsIs.error instanceof Error ? publishAsIs.error.message : 'Direct publication failed.'}</Alert> : null}
                 {isLibraryGroup ? (
                   <Stack direction="row" justifyContent="flex-end">
                     {migrationControls}

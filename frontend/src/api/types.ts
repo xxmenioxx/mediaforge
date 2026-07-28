@@ -72,6 +72,7 @@ export type Asset = {
   review: AssetReviewState;
   metadata: AssetMetadataState;
   conversion: AssetConversionOverrideState;
+  publicationMode?: 'as_is';
 };
 
 export type AssetGroup = {

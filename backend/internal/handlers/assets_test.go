@@ -36,6 +36,86 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestPublishAsIsMovesPathAndRegistersOriginalPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:publish-as-is?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.Library{}, &models.AssetRecord{}, &models.DirectPublication{},
+		&models.QueueJob{}, &models.ScanResult{}, &models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	archiveRoot := filepath.Join(root, "archive")
+	libraryRoot := filepath.Join(root, "library")
+	sourcePath := filepath.Join(rawRoot, "series", "Digimon")
+	videoPath := filepath.Join(sourcePath, "episode01.mp4")
+	writeTestFile(t, videoPath, "small-h264-video")
+	writeTestFile(t, filepath.Join(sourcePath, "episode01.spa.srt"), "subtitle")
+	if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Series", SourcePath: filepath.Join(rawRoot, "series"), DestinationPath: libraryRoot, Type: "series"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(videoPath)
+	record := models.AssetRecord{
+		Path: videoPath, RootPath: rawRoot, RelativePath: "series/Digimon/episode01.mp4",
+		GroupPath: "series/Digimon", FileName: "episode01.mp4", Extension: ".mp4",
+		SizeBytes: info.Size(), ModifiedAt: info.ModTime(), Status: "unprocessed", Missing: false, SyncedAt: time.Now(),
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/publish-as-is", NewAssetHandler(db).PublishAsIs)
+	body := fmt.Sprintf(`{"sourcePath":%q,"destinationLibraryId":%d}`, sourcePath, library.ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/publish-as-is", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	destinationPath := filepath.Join(libraryRoot, "Digimon")
+	publishedVideo := filepath.Join(destinationPath, "episode01.mp4")
+	for _, expected := range []string{publishedVideo, filepath.Join(destinationPath, "episode01.spa.srt")} {
+		if _, err := os.Stat(expected); err != nil {
+			t.Fatalf("published file missing %q: %v", expected, err)
+		}
+	}
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("source path still exists: %v", err)
+	}
+	var publication models.DirectPublication
+	if err := db.First(&publication, "published_path = ?", publishedVideo).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publication.SourcePath != videoPath || publication.PublishedFingerprint == "" {
+		t.Fatalf("incomplete publication record: %#v", publication)
+	}
+	inventory, err := NewAssetHandler(db).assetInventoryFromDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Library) != 1 || inventory.Library[0].Status != "library" || inventory.Library[0].PublicationMode != "as_is" {
+		t.Fatalf("unexpected Library inventory: %#v", inventory.Library)
+	}
+	if len(inventory.Converted) != 0 || len(inventory.Unprocessed) != 0 {
+		t.Fatalf("asset was classified incorrectly: converted=%#v unprocessed=%#v", inventory.Converted, inventory.Unprocessed)
+	}
+}
+
 func TestManualReviewApprovalIsPersistedAfterDisablingBlock(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:manual-review-approval?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

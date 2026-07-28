@@ -118,6 +118,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  publishAssetsAsIs: (input: { sourcePath: string; destinationLibraryId: number }) =>
+    request<{ status: string; sourcePath: string; destinationPath: string; destinationLibraryId: number; assetsPublished: number; message: string }>('/api/assets/publish-as-is', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   confirmPublicationReconciliation: (input: { jobId: number; path: string }) =>
     request<{ status: string; jobId: number; oldPath: string; publishedPath: string }>('/api/assets/reconcile-publication', {
       method: 'POST',
@@ -193,6 +198,10 @@ export const api = {
     }),
   dismissQueueJob: (jobId: number) =>
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
+      method: 'DELETE',
+    }),
+  dismissQueueBatch: (batchId: string) =>
+    request<{ batchId: string; removedPlaceholders: number; dismissedJobs: number; preservedCompleted: number }>(`/api/queue/batches/${encodeURIComponent(batchId)}`, {
       method: 'DELETE',
     }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),

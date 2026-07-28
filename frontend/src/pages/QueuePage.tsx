@@ -434,6 +434,7 @@ type QueueJobGroup = {
   name: string;
   jobs: QueueJob[];
   isBatch: boolean;
+  batchId: string;
   progress: number;
   completed: number;
   failed: number;
@@ -648,12 +649,10 @@ function QueueGroupCard({
         );
         return;
       }
-      await Promise.all(jobs.map(async (job) => {
-        if (job.status === 'running') {
-          await api.updateQueueJob({ jobId: job.id, status: 'canceled' });
-        }
-        await api.dismissQueueJob(job.id);
-      }));
+      if (!group.batchId) {
+        throw new Error('This Queue group does not have a batch identifier.');
+      }
+      await api.dismissQueueBatch(group.batchId);
     },
     onSuccess: async () => {
       await Promise.all([
@@ -997,6 +996,7 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
         name: job.batchName || groupId,
         jobs: [],
         isBatch: Boolean(job.batchId) || false,
+        batchId: job.batchId || '',
         progress: 0,
         completed: 0,
         failed: 0,
@@ -1005,6 +1005,10 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
       } satisfies QueueJobGroup);
 
     group.jobs.push(job);
+    if (job.batchId && !group.batchId) {
+      group.batchId = job.batchId;
+      group.isBatch = true;
+    }
     groups.set(groupId, group);
   });
 

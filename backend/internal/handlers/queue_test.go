@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
@@ -106,6 +107,68 @@ func TestDismissQueueJobRejectsRunningAndCompleted(t *testing.T) {
 				t.Fatalf("protected job changed: %#v", stored)
 			}
 		})
+	}
+}
+
+func TestDismissBatchRemovesPlaceholdersAndPreservesCompletedHistory(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-dismiss-batch?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(-time.Minute)
+	executionNumber := uint(9)
+	jobs := []models.QueueJob{
+		{BatchID: "digimon", MediaPath: "/raw/e01.mp4", Status: JobStatusQueued, Stage: JobStageQueued},
+		{BatchID: "digimon", MediaPath: "/raw/e02.mp4", Status: JobStatusCanceled, Stage: JobStageCanceled, StartedAt: &started, ExecutionNumber: &executionNumber},
+		{BatchID: "digimon", MediaPath: "/raw/e03.mp4", Status: JobStatusCompleted, Stage: JobStageCompleted, StartedAt: &started},
+	}
+	for index := range jobs {
+		if err := db.Create(&jobs[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			if err := scheduler.LockQueuedAsset(db, jobs[index]); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.ExecutionPlan{JobID: jobs[index].ID, Version: 1, Status: scheduler.ExecutionPlanPendingEvaluation}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/queue/batches/:batchId", NewQueueHandler(db).DismissBatch)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/queue/batches/digimon", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var placeholderCount int64
+	if err := db.Model(&models.QueueJob{}).Where("id = ?", jobs[0].ID).Count(&placeholderCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if placeholderCount != 0 {
+		t.Fatal("queued placeholder was preserved")
+	}
+	var canceled models.QueueJob
+	if err := db.First(&canceled, jobs[1].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if canceled.DismissedAt == nil {
+		t.Fatal("started canceled job was not dismissed")
+	}
+	var completed models.QueueJob
+	if err := db.First(&completed, jobs[2].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if completed.DismissedAt != nil {
+		t.Fatal("completed history was dismissed")
 	}
 }
 

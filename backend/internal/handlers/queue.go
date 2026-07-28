@@ -114,6 +114,83 @@ func (h QueueHandler) Dismiss(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
+func (h QueueHandler) DismissBatch(c *gin.Context) {
+	batchID := strings.TrimSpace(c.Param("batchId"))
+	if batchID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "batch id is required"})
+		return
+	}
+	var jobs []models.QueueJob
+	if err := h.db.Where("batch_id = ? AND dismissed_at IS NULL", batchID).Order("id asc").Find(&jobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if len(jobs) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+		return
+	}
+
+	now := time.Now()
+	removedPlaceholders := 0
+	dismissedJobs := 0
+	preservedCompleted := 0
+	canceledProcesses := map[uint]bool{}
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		for index := range jobs {
+			job := &jobs[index]
+			if job.Status == JobStatusCompleted {
+				preservedCompleted++
+				continue
+			}
+			if job.ExecutionNumber == nil && job.StartedAt == nil {
+				if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+					return err
+				}
+				if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Delete(job).Error; err != nil {
+					return err
+				}
+				removedPlaceholders++
+				continue
+			}
+			if job.Status == JobStatusRunning {
+				canceledProcesses[job.ID] = cancelRunningJobProcess(job.ID)
+				job.Status = JobStatusCanceled
+				job.FinishedAt = &now
+				if err := transitionJobStage(tx, job, JobStageCanceled); err != nil {
+					return err
+				}
+			}
+			job.DismissedAt = &now
+			if err := tx.Save(job).Error; err != nil {
+				return err
+			}
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+				return err
+			}
+			dismissedJobs++
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, job := range jobs {
+		if job.Status == JobStatusCanceled && !canceledProcesses[job.ID] {
+			_ = cleanupCanceledJob(h.db, job)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"batchId":             batchID,
+		"removedPlaceholders": removedPlaceholders,
+		"dismissedJobs":       dismissedJobs,
+		"preservedCompleted":  preservedCompleted,
+	})
+}
+
 func (h QueueHandler) Create(c *gin.Context) {
 	var input QueueJobInput
 	if err := c.ShouldBindJSON(&input); err != nil {
