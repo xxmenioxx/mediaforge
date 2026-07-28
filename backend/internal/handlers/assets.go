@@ -1011,13 +1011,8 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 	relativeGroup = directPublicationRelativeGroup(relativeGroup, library.DestinationPath)
 	destinationPath := filepath.Join(library.DestinationPath, relativeGroup)
 	if destinationInfo, err := os.Stat(destinationPath); err == nil {
-		entries, readErr := os.ReadDir(destinationPath)
-		if !destinationInfo.IsDir() || readErr != nil || len(entries) > 0 {
+		if !destinationInfo.IsDir() {
 			c.JSON(http.StatusConflict, gin.H{"error": "destination path already exists"})
-			return
-		}
-		if err := os.Remove(destinationPath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "empty destination path could not be prepared: " + err.Error()})
 			return
 		}
 	} else if !os.IsNotExist(err) {
@@ -1034,21 +1029,20 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		}
 		fingerprints[record.Path] = fingerprint
 	}
-	if err := moveAssetDirectory(sourcePath, destinationPath); err != nil {
+	movedPaths, rollbackMove, err := mergeAssetDirectory(sourcePath, destinationPath)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "direct publication failed: " + err.Error()})
 		return
 	}
-	publishedPaths, rollbackNames, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, publishing, library)
+	publishedPaths, rollbackNames, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, publishing, library, movedPaths)
 	if err != nil {
-		_ = moveAssetDirectory(destinationPath, sourcePath)
+		rollbackMove()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "episode naming failed and publication was rolled back: " + err.Error()})
 		return
 	}
 	rollback := func() {
 		rollbackNames()
-		if err := moveAssetDirectory(destinationPath, sourcePath); err != nil {
-			appendSystemLog(h.db, "direct_publication_rollback_failed", map[string]string{"sourcePath": sourcePath, "destinationPath": destinationPath}, err)
-		}
+		rollbackMove()
 	}
 
 	publishedAt := time.Now()
@@ -1105,9 +1099,13 @@ func saveDirectPublication(db *gorm.DB, publication *models.DirectPublication) e
 	return db.Save(publication).Error
 }
 
-func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library) (map[string]string, func(), error) {
+func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library, movedPaths map[string]string) (map[string]string, func(), error) {
 	published := make(map[string]string, len(records))
 	for _, record := range records {
+		if movedPath := movedPaths[filepath.Clean(record.Path)]; movedPath != "" {
+			published[record.Path] = movedPath
+			continue
+		}
 		relative, err := filepath.Rel(sourcePath, record.Path)
 		if err != nil {
 			return nil, func() {}, err
@@ -1134,7 +1132,14 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 		job := models.QueueJob{MediaPath: record.Path, BatchName: batchName}
 		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: index + 1}
 		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
-		targets[record.Path] = filepath.Join(destinationPath, namedRelative)
+		target := filepath.Join(destinationPath, namedRelative)
+		if current := published[record.Path]; filepath.Clean(current) != filepath.Clean(target) {
+			target, err = resolveMVFFileDestination(target)
+			if err != nil {
+				return nil, func() {}, err
+			}
+		}
+		targets[record.Path] = target
 	}
 
 	seenTargets := map[string]bool{}
@@ -1164,13 +1169,6 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 			return nil, func() {}, err
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			rollback()
-			return nil, func() {}, err
-		}
-		if _, err := os.Stat(target); err == nil {
-			rollback()
-			return nil, func() {}, fmt.Errorf("episode target already exists: %s", target)
-		} else if !os.IsNotExist(err) {
 			rollback()
 			return nil, func() {}, err
 		}
@@ -1465,6 +1463,91 @@ func moveAssetDirectory(source, destination string) error {
 		return err
 	}
 	return os.RemoveAll(source)
+}
+
+// mergeAssetDirectory moves a Raw directory into a Library directory while
+// preserving files already generated there. Exact file collisions are retained
+// with .mvf, .mvf-2, and subsequent suffixes.
+func mergeAssetDirectory(source, destination string) (map[string]string, func(), error) {
+	destinationExisted := false
+	if _, err := os.Stat(destination); err == nil {
+		destinationExisted = true
+	} else if !os.IsNotExist(err) {
+		return nil, func() {}, err
+	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return nil, func() {}, err
+	}
+	type movePair struct{ from, to string }
+	completed := []movePair{}
+	movedPaths := map[string]string{}
+	rollback := func() {
+		_ = os.MkdirAll(source, 0o755)
+		for index := len(completed) - 1; index >= 0; index-- {
+			move := completed[index]
+			_ = moveFile(move.to, move.from)
+		}
+		if !destinationExisted {
+			_ = os.RemoveAll(destination)
+		}
+	}
+	err := filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported non-regular file: %s", path)
+		}
+		relative, relErr := filepath.Rel(source, path)
+		if relErr != nil {
+			return relErr
+		}
+		target, targetErr := resolveMVFFileDestination(filepath.Join(destination, relative))
+		if targetErr != nil {
+			return targetErr
+		}
+		if moveErr := moveFile(path, target); moveErr != nil {
+			return moveErr
+		}
+		completed = append(completed, movePair{from: path, to: target})
+		movedPaths[filepath.Clean(path)] = target
+		return nil
+	})
+	if err != nil {
+		rollback()
+		return nil, func() {}, err
+	}
+	if err := os.RemoveAll(source); err != nil {
+		rollback()
+		return nil, func() {}, err
+	}
+	return movedPaths, rollback, nil
+}
+
+func resolveMVFFileDestination(destination string) (string, error) {
+	extension := filepath.Ext(destination)
+	base := strings.TrimSuffix(destination, extension)
+	for index := 0; ; index++ {
+		marker := ""
+		if index == 1 {
+			marker = ".mvf"
+		} else if index > 1 {
+			marker = fmt.Sprintf(".mvf-%d", index)
+		}
+		candidate := base + marker + extension
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
 }
 
 func migrateAssetPathOverrides(db *gorm.DB, sourcePath, destinationPath string) error {

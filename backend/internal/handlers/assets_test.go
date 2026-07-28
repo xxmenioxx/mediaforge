@@ -221,12 +221,25 @@ func TestPublishAsIsMovesPathAndRegistersOriginalPublication(t *testing.T) {
 		t.Fatalf("returned asset was classified incorrectly: library=%#v unprocessed=%#v", inventory.Library, inventory.Unprocessed)
 	}
 
+	trickplayPath := filepath.Join(destinationPath, "episode01.trickplay", "preview.jpg")
+	writeTestFile(t, trickplayPath, "generated preview")
+	writeTestFile(t, publishedVideo, "pre-existing library video")
 	republishResponse := httptest.NewRecorder()
 	republishRequest := httptest.NewRequest(http.MethodPost, "/api/assets/publish-as-is", strings.NewReader(body))
 	republishRequest.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(republishResponse, republishRequest)
 	if republishResponse.Code != http.StatusOK {
 		t.Fatalf("republish status=%d body=%s", republishResponse.Code, republishResponse.Body.String())
+	}
+	if content, err := os.ReadFile(trickplayPath); err != nil || string(content) != "generated preview" {
+		t.Fatalf("existing trickplay metadata was not preserved: content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(publishedVideo); err != nil || string(content) != "pre-existing library video" {
+		t.Fatalf("existing Library video was overwritten: content=%q err=%v", content, err)
+	}
+	publishedMVFVideo := filepath.Join(destinationPath, "episode01.mvf.mp4")
+	if content, err := os.ReadFile(publishedMVFVideo); err != nil || string(content) != "small-h264-video" {
+		t.Fatalf("colliding incoming video was not preserved with MVF name: content=%q err=%v", content, err)
 	}
 	var publications int64
 	if err := db.Model(&models.DirectPublication{}).Where("published_path = ?", publishedVideo).Count(&publications).Error; err != nil {
@@ -235,12 +248,18 @@ func TestPublishAsIsMovesPathAndRegistersOriginalPublication(t *testing.T) {
 	if publications != 1 {
 		t.Fatalf("direct publication records=%d, want 1", publications)
 	}
+	if err := db.Model(&models.DirectPublication{}).Where("published_path = ? AND returned_at IS NULL", publishedMVFVideo).Count(&publications).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publications != 1 {
+		t.Fatalf("active MVF publication records=%d, want 1", publications)
+	}
 	publication = models.DirectPublication{}
 	if err := db.First(&publication, publicationID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if publication.ReturnedAt != nil {
-		t.Fatal("republished direct publication remained retired")
+	if publication.ReturnedAt == nil {
+		t.Fatal("the previous colliding publication should remain retired")
 	}
 }
 
@@ -273,7 +292,7 @@ func TestDirectPublicationEpisodeNamingRenamesMediaAndSubtitleSidecars(t *testin
 	writeTestFile(t, filepath.Join(destinationPath, "Digimon_Adventure_02_E01-[Group].spa.srt"), "subtitle")
 	library := models.Library{ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
 
-	published, rollback, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, records, library)
+	published, rollback, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, records, library, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
