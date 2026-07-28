@@ -25,7 +25,7 @@ RUN apt-get update \
        libaom-dev libass-dev libbluray-dev libdav1d-dev libdrm-dev \
        libfontconfig1-dev libfreetype6-dev libfribidi-dev libmp3lame-dev \
        libopenjp2-7-dev libopus-dev libsoxr-dev libva-dev \
-       libmfx-dev libvorbis-dev libvpx-dev libwebp-dev libx264-dev \
+       libvpl-dev libvorbis-dev libvpx-dev libwebp-dev libx264-dev \
        libx265-dev libzimg-dev ocl-icd-opencl-dev \
     && curl -fsSL -o /tmp/svt-av1.tar.gz \
        "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v${SVT_AV1_VERSION}/SVT-AV1-v${SVT_AV1_VERSION}.tar.gz" \
@@ -72,12 +72,16 @@ RUN apt-get update \
        --enable-libwebp \
        --enable-libopenjpeg \
        --enable-libbluray \
-       --enable-libmfx \
+       --enable-libvpl \
        --enable-vaapi \
        --enable-libdrm \
        --enable-opencl \
     && make -j"$(nproc)" \
     && make install \
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -F -- "--enable-libvpl" \
+    && if /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -Fq -- "--enable-libmfx"; then \
+         echo "FFmpeg unexpectedly linked the legacy Media SDK runtime" >&2; exit 1; \
+       fi \
     && strip /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
     && rm -rf /var/lib/apt/lists/* /tmp/ffmpeg.tar.xz /tmp/svt-av1.tar.gz /src
 
