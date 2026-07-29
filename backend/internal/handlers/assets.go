@@ -3383,14 +3383,19 @@ func classifyMissingRecords(records []models.AssetRecord) MissingClassification 
 
 func applyRetiredPublicationPaths(db *gorm.DB, records []models.AssetRecord, classification *MissingClassification) {
 	retiredPaths := map[string]bool{}
+	retiredIdentities := map[string]bool{}
+	addRetiredPath := func(value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			retiredPaths[filepath.Clean(value)] = true
+			retiredIdentities[missingPublicationIdentity(value)] = true
+		}
+	}
 	if db.Migrator().HasTable(&models.QueueJob{}) {
 		var jobs []models.QueueJob
 		_ = db.Where("publication_retired_at IS NOT NULL").Find(&jobs).Error
 		for _, job := range jobs {
 			for _, value := range []string{job.PublishedPath, job.OutputPath, job.PlannedPublishedPath} {
-				if value = strings.TrimSpace(value); value != "" {
-					retiredPaths[filepath.Clean(value)] = true
-				}
+				addRetiredPath(value)
 			}
 		}
 	}
@@ -3398,14 +3403,13 @@ func applyRetiredPublicationPaths(db *gorm.DB, records []models.AssetRecord, cla
 		var publications []models.DirectPublication
 		_ = db.Where("returned_at IS NOT NULL").Find(&publications).Error
 		for _, publication := range publications {
-			if value := strings.TrimSpace(publication.PublishedPath); value != "" {
-				retiredPaths[filepath.Clean(value)] = true
-			}
+			addRetiredPath(publication.PublishedPath)
 		}
 	}
 	for _, record := range records {
 		path := filepath.Clean(record.Path)
-		if !record.Missing || !retiredPaths[path] || classification.HistoricalPaths[path] {
+		retiredIdentity := retiredIdentities[missingPublicationIdentity(path)]
+		if !record.Missing || (!retiredPaths[path] && !retiredIdentity) || classification.HistoricalPaths[path] {
 			continue
 		}
 		classification.HistoricalPaths[path] = true
@@ -3414,6 +3418,11 @@ func applyRetiredPublicationPaths(db *gorm.DB, records []models.AssetRecord, cla
 			classification.Actionable--
 		}
 	}
+}
+
+func missingPublicationIdentity(path string) string {
+	clean := filepath.Clean(path)
+	return missingMediaIdentity(filepath.Base(filepath.Dir(clean))) + "/" + missingMediaIdentity(filepath.Base(clean))
 }
 
 func missingMediaIdentity(fileName string) string {

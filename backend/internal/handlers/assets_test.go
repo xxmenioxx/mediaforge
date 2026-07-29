@@ -1358,8 +1358,9 @@ func TestAssetInventoryHidesHistoricalMissingConvertedRecordsFromLibrary(t *test
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.QueueJob{
-		MediaPath: "/media/raw/anime/Digimon 2/episode02.mp4", PublishedPath: records[3].Path,
-		Status: JobStatusCompleted, PublicationRetiredAt: &retiredAt,
+		MediaPath:     "/media/raw/anime/Digimon 2/episode02.mp4",
+		PublishedPath: "/media/library/anime/Digimon 2/episode02.mkv",
+		Status:        JobStatusCompleted, PublicationRetiredAt: &retiredAt,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
