@@ -690,6 +690,20 @@ func TestBitmapSubtitleOCRHelpers(t *testing.T) {
 			t.Fatalf("OCR language %q = %q, want %q", input, got, want)
 		}
 	}
+	message := emptyOCRTrackMessage(3, "eng", `
+Running tesseract OCR on 1 MKV VobSub image(s) (track #4)...
+Note: 1 image(s) produced no OCR text and were dropped.
+Converted 0 file(s)
+`)
+	if !strings.Contains(message, "its 1 bitmap event contained no text recognizable as eng") {
+		t.Fatalf("unexpected empty OCR message: %q", message)
+	}
+	if got := emptyOCRTrackMessage(3, "eng", "unrelated failure"); got != "" {
+		t.Fatalf("unrelated OCR output should not be classified as empty: %q", got)
+	}
+	if got := conciseCommandOutput("first\n  second", 100); got != "first second" {
+		t.Fatalf("unexpected concise output: %q", got)
+	}
 }
 
 func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T) {

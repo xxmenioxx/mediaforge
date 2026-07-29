@@ -596,11 +596,34 @@ func (h WorkerHandler) Execute(c *gin.Context) {
 
 	job, status, err := h.executeQueueJob(job, input.Overwrite)
 	if err != nil {
+		h.failClaimedJobExecution(job.ID, err)
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusAccepted, job)
+}
+
+// failClaimedJobExecution closes the gap between reserving a job and starting
+// FFmpeg. A missing input, profile, path setting, or workspace preparation
+// failure must not leave an active reservation permanently stuck at "claimed".
+func (h WorkerHandler) failClaimedJobExecution(jobID uint, executionErr error) {
+	if jobID == 0 || executionErr == nil || hasRunningJobProcess(jobID) {
+		return
+	}
+	var job models.QueueJob
+	if err := h.db.First(&job, jobID).Error; err != nil || job.Status != JobStatusRunning {
+		return
+	}
+	now := time.Now()
+	job.Status = JobStatusFailed
+	job.Progress = 0
+	job.ErrorMessage = executionErr.Error()
+	job.FinishedAt = &now
+	job.Notes = appendNote(job.Notes, "Execution failed after the worker claimed the job; its reservation was released")
+	_ = transitionJobStage(h.db, &job, JobStageFailed)
+	_ = scheduler.DeactivateReservationResources(h.db, job.ID)
+	_ = h.db.Save(&job).Error
 }
 
 func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (models.QueueJob, int, error) {

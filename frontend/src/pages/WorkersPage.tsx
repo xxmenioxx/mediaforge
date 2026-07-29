@@ -42,7 +42,10 @@ export function WorkersPage() {
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
 
   const claimJob = useMutation({
-    mutationFn: api.claimQueueJob,
+    mutationFn: async (claim: { workerName: string }) => {
+      const job = await api.claimQueueJob(claim);
+      return api.executeQueueJob({ jobId: job.id, overwrite: true });
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
@@ -70,7 +73,7 @@ export function WorkersPage() {
     }
   }, [workerSettings.defaultWorkerName]);
 
-  function claimNextJob() {
+  function claimAndRunNextJob() {
     claimJob.mutate({ workerName });
   }
 
@@ -115,7 +118,7 @@ export function WorkersPage() {
                   <Stack>
                     <Typography variant="h3">Local Worker</Typography>
                     <Typography color="text.secondary" variant="body2">
-                      Claim the next queued job by priority and creation time.
+                      Claim and immediately execute the next queued job by priority and creation time.
                     </Typography>
                   </Stack>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
@@ -128,11 +131,11 @@ export function WorkersPage() {
                     <Button
                       startIcon={<PlayArrowIcon />}
                       variant="contained"
-                      onClick={claimNextJob}
+                      onClick={claimAndRunNextJob}
                       disabled={claimJob.isPending || !workerName}
                       sx={{ minWidth: 148 }}
                     >
-                      Claim
+                      Claim &amp; run
                     </Button>
                   </Stack>
                   {claimJob.isError ? <Alert severity="info">{claimJob.error instanceof Error ? claimJob.error.message : 'No runnable queued jobs are available right now.'}</Alert> : null}

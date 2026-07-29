@@ -1163,7 +1163,12 @@ function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const hardwareAllowed = workerConfigBool(profile, 'useHardwareIfAvailable');
   const hardware = hardwareEncodersFor(codecFamily);
   const pixelFormat = workerConfigString(profile, 'pixFmt', profile.pixelFormat || 'yuv420p');
-  const bitDepth = pixelFormat === 'auto' ? 0 : pixelFormat.includes('10') || profile.videoCodec.toLowerCase().includes('10bit') ? 10 : 8;
+  const normalizedPixelFormat = pixelFormat.toLowerCase();
+  const bitDepth = normalizedPixelFormat === 'auto'
+    ? 0
+    : normalizedPixelFormat.includes('10') || normalizedPixelFormat.includes('p010')
+      ? 10
+      : 8;
 
   if (configured === 'auto' || configured === 'ffmpeg') {
     return hardwareAllowed

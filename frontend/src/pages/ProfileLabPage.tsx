@@ -3049,7 +3049,10 @@ function videoPreviewOptions(draft: ProfileInput) {
 }
 
 function isTenBitDraft(draft: ProfileInput) {
-  return draft.videoCodec.includes('10bit') || videoWorkerValue(draft, 'pixFmt').includes('10');
+  const pixelFormat = videoWorkerValue(draft, 'pixFmt').toLowerCase();
+  if (pixelFormat === 'nv12' || pixelFormat === 'yuv420p') return false;
+  if (pixelFormat.includes('10') || pixelFormat.includes('p010')) return true;
+  return (draft.bitDepth ?? 0) >= 10 || draft.videoCodec.includes('10bit');
 }
 
 function videoWorkerValue(draft: ProfileInput, key: string, fallback = '') {
@@ -3097,14 +3100,26 @@ function updateVideoWorkerConfig(
   key: string,
   value: unknown,
 ) {
-  setVideoDraft((current) => ({
-    ...current,
-    ...(key === 'pixFmt' ? { videoCodec: displayVideoCodec(current.videoCodec) } : {}),
-    workerConfig: {
-      ...current.workerConfig,
-      [key]: value,
-    },
-  }));
+  setVideoDraft((current) => {
+    const pixelFormat = key === 'pixFmt' && typeof value === 'string' ? value.toLowerCase() : '';
+    const explicitBitDepth = pixelFormat === 'nv12' || pixelFormat === 'yuv420p'
+      ? 8
+      : pixelFormat.includes('10') || pixelFormat.includes('p010')
+        ? 10
+        : undefined;
+    return {
+      ...current,
+      ...(key === 'pixFmt' ? {
+        videoCodec: displayVideoCodec(current.videoCodec),
+        bitDepth: explicitBitDepth ?? 0,
+        pixelFormat: typeof value === 'string' ? value : current.pixelFormat,
+      } : {}),
+      workerConfig: {
+        ...current.workerConfig,
+        [key]: value,
+      },
+    };
+  });
 }
 
 function encoderPresetDescription(value: string) {

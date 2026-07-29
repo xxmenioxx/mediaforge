@@ -886,10 +886,16 @@ func defaultQSVQuality(softwareCRF int) int {
 }
 
 func profileUsesTenBit(profile models.Profile) bool {
+	pixelFormat := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["pixFmt"])))
+	switch pixelFormat {
+	case "nv12", "yuv420p":
+		return false
+	case "p010", "p010le", "yuv420p10", "yuv420p10le":
+		return true
+	}
 	if profile.BitDepth >= 10 || isTenBitVideoCodec(profile.VideoCodec) {
 		return true
 	}
-	pixelFormat := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["pixFmt"])))
 	return strings.Contains(pixelFormat, "10") || strings.Contains(pixelFormat, "p010")
 }
 

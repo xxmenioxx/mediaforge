@@ -7,8 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+)
+
+var (
+	ocrBitmapCountPattern  = regexp.MustCompile(`(?i)Running tesseract OCR on\s+(\d+)\s+MKV VobSub image`)
+	ocrDroppedCountPattern = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
 )
 
 func isBitmapSubtitleCodecName(codec string) bool {
@@ -89,9 +95,13 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 	content, err := os.ReadFile(tempPath)
 	if err != nil {
 		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
+		if summary := emptyOCRTrackMessage(stream.Index, language, message); summary != "" {
+			return result, fmt.Errorf("%s", summary)
+		}
 		if message == "" {
 			message = "SeConv completed without reporting a reason"
 		}
+		message = conciseCommandOutput(message, 1200)
 		return result, fmt.Errorf("OCR produced no %s subtitle for stream %d: %s", strings.ToUpper(format), stream.Index, message)
 	}
 	if !validSubtitleSidecar(format, content) {
@@ -106,6 +116,34 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 	}
 	result.Created = append(result.Created, outputPath)
 	return result, nil
+}
+
+func emptyOCRTrackMessage(streamIndex int, language string, output string) string {
+	dropped := ocrDroppedCountPattern.FindStringSubmatch(output)
+	if len(dropped) != 2 {
+		return ""
+	}
+	count := dropped[1]
+	if total := ocrBitmapCountPattern.FindStringSubmatch(output); len(total) == 2 {
+		count = total[1]
+	}
+	noun := "bitmap event"
+	if count != "1" {
+		noun = "bitmap events"
+	}
+	return fmt.Sprintf(
+		"OCR completed for subtitle stream %d, but its %s %s contained no text recognizable as %s. "+
+			"The track may be empty or decorative, or the OCR language may be incorrect; no subtitle file was created.",
+		streamIndex, count, noun, language,
+	)
+}
+
+func conciseCommandOutput(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= limit {
+		return value
+	}
+	return strings.TrimSpace(value[:limit]) + "…"
 }
 
 func seconvFormat(format string) string {

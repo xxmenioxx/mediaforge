@@ -89,3 +89,42 @@ func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
 		t.Fatalf("single slot violated: running=%d active=%d", running, active)
 	}
 }
+
+func TestClaimedJobExecutionFailureReleasesReservation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:claimed-execution-failure?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	job := models.QueueJob{
+		MediaPath: "/raw/missing.mkv", LibraryID: 1, ProfileID: 1,
+		Status: JobStatusRunning, Stage: JobStageClaimed, Progress: 1, StartedAt: &now,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	reservation := models.SchedulerReservation{
+		JobID: job.ID, AssetKey: job.MediaPath, State: scheduler.ReservationStateActive,
+	}
+	if err := db.Create(&reservation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	NewWorkerHandler(db).failClaimedJobExecution(job.ID, errors.New("input media is not readable"))
+
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobStatusFailed || job.Stage != JobStageFailed || job.Progress != 0 || job.FinishedAt == nil {
+		t.Fatalf("claimed job was not closed after execution failure: %#v", job)
+	}
+	if err := db.First(&reservation, reservation.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reservation.State == scheduler.ReservationStateActive {
+		t.Fatalf("reservation remained active: %#v", reservation)
+	}
+}

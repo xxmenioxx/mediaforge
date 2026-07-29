@@ -166,6 +166,19 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 	assertNotContains(t, command, "-look_ahead_depth")
 }
 
+func TestExplicitNV12OverridesLegacyMain10ProfileMetadata(t *testing.T) {
+	profile := models.Profile{
+		VideoCodec: "x265_10bit",
+		BitDepth:   10,
+		WorkerConfig: models.JSONMap{
+			"pixFmt": "nv12",
+		},
+	}
+	if profileUsesTenBit(profile) {
+		t.Fatal("explicit NV12 must select 8-bit HEVC Main even when legacy profile fields still say 10-bit")
+	}
+}
+
 func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,

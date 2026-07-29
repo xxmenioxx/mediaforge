@@ -83,6 +83,7 @@ func (w *AutoWorker) tick() {
 		}
 
 		if _, _, err := w.handler.executeQueueJob(job, true); err != nil {
+			w.handler.failClaimedJobExecution(job.ID, err)
 			log.Printf("auto worker execute job %d error: %v", job.ID, err)
 			appendSystemLog(w.handler.db, "auto_worker_execution_failed", map[string]string{"worker": limits.DefaultWorkerName, "jobId": fmt.Sprint(job.ID)}, err)
 			return
