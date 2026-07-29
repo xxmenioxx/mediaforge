@@ -1332,9 +1332,10 @@ func TestAssetInventoryHidesHistoricalMissingConvertedRecordsFromLibrary(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AssetRecord{}, &models.ScanResult{}); err != nil {
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.ScanResult{}, &models.QueueJob{}); err != nil {
 		t.Fatal(err)
 	}
+	retiredAt := time.Now()
 	records := []models.AssetRecord{
 		{
 			Path: "/media/library/cartoon/anime/Digimon 2/episode01.mp4", FileName: "episode01.mp4",
@@ -1348,8 +1349,18 @@ func TestAssetInventoryHidesHistoricalMissingConvertedRecordsFromLibrary(t *test
 			Path: "/media/library/anime/Lost/movie.mkv", FileName: "movie.mkv",
 			Status: "converted", SizeBytes: 200, Missing: true,
 		},
+		{
+			Path: "/media/library/anime/Digimon 2/episode02.mkv", FileName: "episode02.mkv",
+			Status: "converted", SizeBytes: 300, Missing: true,
+		},
 	}
 	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.QueueJob{
+		MediaPath: "/media/raw/anime/Digimon 2/episode02.mp4", PublishedPath: records[3].Path,
+		Status: JobStatusCompleted, PublicationRetiredAt: &retiredAt,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -1366,7 +1377,7 @@ func TestAssetInventoryHidesHistoricalMissingConvertedRecordsFromLibrary(t *test
 	if len(inventory.Missing) != 1 || inventory.Missing[0].Path != "/media/library/anime/Lost/movie.mkv" {
 		t.Fatalf("Missing should retain only actionable record: %#v", inventory.Missing)
 	}
-	if inventory.Sync.MissingHistorical != 1 || inventory.Sync.MissingActionable != 1 {
+	if inventory.Sync.MissingHistorical != 2 || inventory.Sync.MissingActionable != 1 {
 		t.Fatalf("unexpected missing counters: %#v", inventory.Sync)
 	}
 }

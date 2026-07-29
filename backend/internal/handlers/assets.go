@@ -2857,6 +2857,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	directOutputs := directPublicationPaths(h.db)
 	missing := classifyMissingRecords(records)
+	applyRetiredPublicationPaths(h.db, records, &missing)
 	for _, record := range records {
 		cleanPath := filepath.Clean(record.Path)
 		if record.Missing && missing.HistoricalPaths[cleanPath] {
@@ -3378,6 +3379,41 @@ func classifyMissingRecords(records []models.AssetRecord) MissingClassification 
 		}
 	}
 	return classification
+}
+
+func applyRetiredPublicationPaths(db *gorm.DB, records []models.AssetRecord, classification *MissingClassification) {
+	retiredPaths := map[string]bool{}
+	if db.Migrator().HasTable(&models.QueueJob{}) {
+		var jobs []models.QueueJob
+		_ = db.Where("publication_retired_at IS NOT NULL").Find(&jobs).Error
+		for _, job := range jobs {
+			for _, value := range []string{job.PublishedPath, job.OutputPath, job.PlannedPublishedPath} {
+				if value = strings.TrimSpace(value); value != "" {
+					retiredPaths[filepath.Clean(value)] = true
+				}
+			}
+		}
+	}
+	if db.Migrator().HasTable(&models.DirectPublication{}) {
+		var publications []models.DirectPublication
+		_ = db.Where("returned_at IS NOT NULL").Find(&publications).Error
+		for _, publication := range publications {
+			if value := strings.TrimSpace(publication.PublishedPath); value != "" {
+				retiredPaths[filepath.Clean(value)] = true
+			}
+		}
+	}
+	for _, record := range records {
+		path := filepath.Clean(record.Path)
+		if !record.Missing || !retiredPaths[path] || classification.HistoricalPaths[path] {
+			continue
+		}
+		classification.HistoricalPaths[path] = true
+		classification.Historical++
+		if classification.Actionable > 0 {
+			classification.Actionable--
+		}
+	}
 }
 
 func missingMediaIdentity(fileName string) string {
