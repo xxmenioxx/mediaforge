@@ -463,6 +463,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if strings.TrimSpace(override.VideoEncoder) != "" {
 		values["videoEncoder"] = override.VideoEncoder
 	}
+	if strings.TrimSpace(override.PreferredEncoder) != "" {
+		values["preferredEncoder"] = override.PreferredEncoder
+	}
 	if override.GlobalQuality > 0 {
 		values["globalQuality"] = override.GlobalQuality
 	}
@@ -480,6 +483,15 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	}
 	if override.QSVAdaptiveB != nil {
 		values["qsvAdaptiveB"] = *override.QSVAdaptiveB
+	}
+	if override.VideoToolboxBitrateMbps > 0 {
+		values["videoToolboxBitrateMbps"] = override.VideoToolboxBitrateMbps
+	}
+	if override.VideoToolboxMaxrateMbps > 0 {
+		values["videoToolboxMaxrateMbps"] = override.VideoToolboxMaxrateMbps
+	}
+	if override.VideoToolboxBufferMbps > 0 {
+		values["videoToolboxBufferMbps"] = override.VideoToolboxBufferMbps
 	}
 	if len(values) == 0 {
 		return nil

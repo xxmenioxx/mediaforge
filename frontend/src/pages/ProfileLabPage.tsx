@@ -163,6 +163,7 @@ const pixelFormatOptions = [
 const videoEncoderOptions = [
   { value: 'auto', label: 'Auto', description: 'MVForge chooses software unless hardware fallback is enabled and available.' },
   { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
+  { value: 'hevc_vaapi', label: 'VAAPI', description: 'Linux hardware encoding through the active VA-API driver.' },
   { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
   { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
@@ -1547,6 +1548,22 @@ export function ProfileLabPage() {
                         <Grid container spacing={2} alignItems="flex-start">
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
+                              label="Hardware preference"
+                              value={videoWorkerValue(videoDraft, 'preferredEncoder', 'software')}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preferredEncoder', event.target.value)}
+                              helperText="Choose quality-first software, hardware speed, or automatic selection."
+                              select
+                              size="small"
+                              disabled={videoDraft.videoCodec === 'copy' || !videoWorkerBool(videoDraft, 'useHardwareIfAvailable') || videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
+                              fullWidth
+                            >
+                              <MenuItem value="software">Prefer software quality</MenuItem>
+                              <MenuItem value="hardware">Prefer hardware speed</MenuItem>
+                              <MenuItem value="auto">Auto</MenuItem>
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                            <TextField
                               label="Encoder"
                               value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
                               onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoEncoder', event.target.value)}
@@ -1620,6 +1637,19 @@ export function ProfileLabPage() {
                                     label="Adaptive B"
                                   />
                                 </Stack>
+                              </Grid>
+                            </>
+                          ) : null}
+                          {videoWorkerBool(videoDraft, 'useHardwareIfAvailable') && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
+                            <>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxMaxrateMbps', 8)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField label="VideoToolbox buffer (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBufferMbps', 12)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
                               </Grid>
                             </>
                           ) : null}
@@ -3094,7 +3124,7 @@ function displayVideoCodec(value: string) {
 }
 
 function isHardwareEncoderOption(value: string) {
-  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+  return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
 }
 
 function hardwareQualityHelper(softwareCRF: number) {

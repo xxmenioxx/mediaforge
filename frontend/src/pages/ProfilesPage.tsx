@@ -99,6 +99,7 @@ const pixelFormatOptions = [
 const videoEncoderOptions = [
   { value: 'auto', label: 'Auto', description: 'MVForge chooses software unless hardware fallback is enabled and available.' },
   { value: 'hevc_qsv', label: 'Intel Quick Sync', description: 'Fast HEVC hardware encoding for bulk conversion on Intel systems.' },
+  { value: 'hevc_vaapi', label: 'VAAPI', description: 'Linux hardware encoding through the active VA-API driver.' },
   { value: 'hevc_nvenc', label: 'NVIDIA NVENC', description: 'Fast HEVC hardware encoding on NVIDIA GPUs.' },
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
   { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
@@ -1290,7 +1291,7 @@ function displayVideoCodec(value: string) {
 }
 
 function isHardwareEncoderOption(value: string) {
-  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+  return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
 }
 
 function hardwareQualityHelper(softwareCRF: number) {

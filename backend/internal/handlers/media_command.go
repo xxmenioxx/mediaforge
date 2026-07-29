@@ -470,6 +470,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.VideoEncoder); value != "" {
 		workerConfig["videoEncoder"] = value
 	}
+	if value := strings.TrimSpace(override.PreferredEncoder); value != "" {
+		workerConfig["preferredEncoder"] = value
+	}
 	if override.GlobalQuality > 0 {
 		workerConfig["globalQuality"] = override.GlobalQuality
 	}
@@ -487,6 +490,15 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if override.QSVAdaptiveB != nil {
 		workerConfig["qsvAdaptiveB"] = *override.QSVAdaptiveB
+	}
+	if override.VideoToolboxBitrateMbps > 0 {
+		workerConfig["videoToolboxBitrateMbps"] = override.VideoToolboxBitrateMbps
+	}
+	if override.VideoToolboxMaxrateMbps > 0 {
+		workerConfig["videoToolboxMaxrateMbps"] = override.VideoToolboxMaxrateMbps
+	}
+	if override.VideoToolboxBufferMbps > 0 {
+		workerConfig["videoToolboxBufferMbps"] = override.VideoToolboxBufferMbps
 	}
 	profile.WorkerConfig = workerConfig
 	return profile

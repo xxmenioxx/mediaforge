@@ -16,6 +16,7 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  LinearProgress,
   MenuItem,
   Slider,
   Stack,
@@ -1033,6 +1034,7 @@ function AssetRow({
   const [snapshotTab, setSnapshotTab] = useState(0);
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleContent, setSubtitleContent] = useState('');
+  const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
@@ -1143,12 +1145,6 @@ function AssetRow({
         queryClient.invalidateQueries({ queryKey: ['assets'] }),
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
       ]);
-    },
-  });
-  const extractSubtitles = useMutation({
-    mutationFn: api.extractAssetSubtitles,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
     },
   });
   const loadSubtitleContent = useMutation({
@@ -1308,6 +1304,39 @@ function AssetRow({
 
   function saveConversionOverrides() {
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
+  }
+
+  async function generateExternalSubtitle(streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string) {
+    const key = subtitleGenerationKey(streamIndex, format);
+    setSubtitleGenerations((current) => ({
+      ...current,
+      [key]: { status: 'running', streamIndex, format },
+    }));
+    try {
+      const result = await api.extractAssetSubtitles({ path: asset.path, streamIndex, format, ocrLanguage });
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: {
+          status: 'success',
+          streamIndex,
+          format,
+          message: result.created.length
+            ? `Generated ${result.created.length} ${format.toUpperCase()} file(s).`
+            : `${result.existing.length} ${format.toUpperCase()} file(s) already existed.`,
+        },
+      }));
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    } catch (error) {
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: {
+          status: 'error',
+          streamIndex,
+          format,
+          message: error instanceof Error ? error.message : 'Subtitle generation failed.',
+        },
+      }));
+    }
   }
 
 
@@ -1820,8 +1849,8 @@ function AssetRow({
                     {!isArchive ? (
                       <EmbeddedSubtitleActions
                         streams={snapshot.data.subtitleStreams}
-                        pending={extractSubtitles.isPending}
-                        onGenerate={(streamIndex, format, ocrLanguage) => extractSubtitles.mutate({ path: asset.path, streamIndex, format, ocrLanguage })}
+                        generations={subtitleGenerations}
+                        onGenerate={generateExternalSubtitle}
                       />
                     ) : null}
                     {!isArchive ? (
@@ -1844,13 +1873,6 @@ function AssetRow({
                     {externalSubtitles.isError ? (
                       <Alert severity="warning">{externalSubtitles.error instanceof Error ? externalSubtitles.error.message : 'Could not list external subtitles.'}</Alert>
                     ) : null}
-                    {extractSubtitles.isSuccess ? (
-                      <Alert severity="success">
-                        Generated {extractSubtitles.data.created.length} subtitle file(s).
-                        {extractSubtitles.data.existing.length ? ` ${extractSubtitles.data.existing.length} already existed.` : ''}
-                      </Alert>
-                    ) : null}
-                    {extractSubtitles.isError ? <Alert severity="warning">{extractSubtitles.error instanceof Error ? extractSubtitles.error.message : 'Subtitle generation failed.'}</Alert> : null}
                     {deleteExternalSubtitle.isError ? <Alert severity="warning">{deleteExternalSubtitle.error instanceof Error ? deleteExternalSubtitle.error.message : 'Subtitle deletion failed.'}</Alert> : null}
                   </Stack>
                 </Box>
@@ -2023,11 +2045,11 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
 
 function EmbeddedSubtitleActions({
   streams,
-  pending,
+  generations,
   onGenerate,
 }: {
   streams: MediaStreamInfo[];
-  pending: boolean;
+  generations: Record<string, SubtitleGenerationState>;
   onGenerate: (streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string) => void;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
@@ -2041,44 +2063,73 @@ function EmbeddedSubtitleActions({
         {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
         {streams.map((stream) => {
           const bitmap = isBitmapSubtitleCodec(stream.codec);
+          const streamGenerations = (['srt', 'ass'] as const)
+            .map((format) => generations[subtitleGenerationKey(stream.index, format)])
+            .filter((value): value is SubtitleGenerationState => Boolean(value));
           return (
             <Stack
               key={stream.index}
-              direction={{ xs: 'column', sm: 'row' }}
-              alignItems={{ xs: 'stretch', sm: 'center' }}
-              justifyContent="space-between"
               spacing={1}
               sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}
             >
-              <Stack sx={{ minWidth: 0 }}>
-                <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
-                {stream.title ? <Typography color="text.secondary" variant="body2">{stream.title}</Typography> : null}
-                {bitmap ? <Typography color="warning.main" variant="caption">Bitmap track: generation runs local OCR and may require text corrections afterward.</Typography> : null}
+              <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
+                <Stack sx={{ minWidth: 0 }}>
+                  <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
+                  {stream.title ? <Typography color="text.secondary" variant="body2">{stream.title}</Typography> : null}
+                  {bitmap ? <Typography color="warning.main" variant="caption">Bitmap track: generation runs local OCR and may require text corrections afterward.</Typography> : null}
+                </Stack>
+                <Stack direction="row" spacing={1}>
+                  {bitmap ? (
+                    <TextField
+                      select
+                      size="small"
+                      label="OCR language"
+                      value={ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)}
+                      onChange={(event) => setOcrLanguages((current) => ({ ...current, [stream.index]: event.target.value }))}
+                      sx={{ minWidth: 130 }}
+                    >
+                      <MenuItem value="eng">English</MenuItem>
+                      <MenuItem value="spa">Spanish</MenuItem>
+                      <MenuItem value="jpn">Japanese</MenuItem>
+                    </TextField>
+                  ) : null}
+                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate SRT</Button>
+                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate ASS</Button>
+                </Stack>
               </Stack>
-              <Stack direction="row" spacing={1}>
-                {bitmap ? (
-                  <TextField
-                    select
-                    size="small"
-                    label="OCR language"
-                    value={ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)}
-                    onChange={(event) => setOcrLanguages((current) => ({ ...current, [stream.index]: event.target.value }))}
-                    sx={{ minWidth: 130 }}
-                  >
-                    <MenuItem value="eng">English</MenuItem>
-                    <MenuItem value="spa">Spanish</MenuItem>
-                    <MenuItem value="jpn">Japanese</MenuItem>
-                  </TextField>
-                ) : null}
-                <Button size="small" variant="outlined" disabled={pending} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate SRT</Button>
-                <Button size="small" variant="outlined" disabled={pending} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate ASS</Button>
-              </Stack>
+              {streamGenerations.map((generation) => (
+                <Box key={subtitleGenerationKey(stream.index, generation.format)}>
+                  {generation.status === 'running' ? (
+                    <Stack spacing={0.5}>
+                      <Typography variant="caption" color="text.secondary">
+                        Generating {generation.format.toUpperCase()} for stream #{stream.index}…
+                      </Typography>
+                      <LinearProgress aria-label={`Generating ${generation.format.toUpperCase()} subtitle for stream ${stream.index}`} />
+                    </Stack>
+                  ) : (
+                    <Alert severity={generation.status === 'success' ? 'success' : 'warning'} sx={{ py: 0 }}>
+                      {generation.message}
+                    </Alert>
+                  )}
+                </Box>
+              ))}
             </Stack>
           );
         })}
       </Stack>
     </Box>
   );
+}
+
+type SubtitleGenerationState = {
+  status: 'running' | 'success' | 'error';
+  streamIndex: number;
+  format: 'srt' | 'ass';
+  message?: string;
+};
+
+function subtitleGenerationKey(streamIndex: number, format: 'srt' | 'ass') {
+  return `${streamIndex}:${format}`;
 }
 
 function defaultOCRLanguage(language: string) {
@@ -2199,6 +2250,7 @@ const assetEncoderOptions: SelectOption[] = [
   { value: 'auto', label: 'Auto' },
   { value: 'libx265', label: 'Software x265' },
   { value: 'hevc_qsv', label: 'Intel Quick Sync' },
+  { value: 'hevc_vaapi', label: 'VAAPI' },
   { value: 'hevc_nvenc', label: 'NVIDIA NVENC' },
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox' },
   { value: 'hevc_amf', label: 'AMD AMF' },
@@ -2232,6 +2284,7 @@ function AssetConversionOverridePanel({
   const hardwareEnabled = draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true;
   const effectiveVideoEncoder = draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto';
   const qsvSelected = hardwareEnabled && effectiveVideoEncoder === 'hevc_qsv';
+  const videoToolboxSelected = hardwareEnabled && effectiveVideoEncoder === 'hevc_videotoolbox';
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2450,10 +2503,26 @@ function AssetConversionOverridePanel({
                 <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     select
+                    label="Hardware preference"
+                    value={draft.preferredEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'preferredEncoder') || 'software'}
+                    onChange={(event) => onChange('preferredEncoder', event.target.value as AssetConversionOverrideState['preferredEncoder'])}
+                    disabled={!hardwareEnabled}
+                    helperText="Choose quality-first software, hardware speed, or automatic selection."
+                    size="small"
+                    fullWidth
+                  >
+                    <MenuItem value="software">Prefer software quality</MenuItem>
+                    <MenuItem value="hardware">Prefer hardware speed</MenuItem>
+                    <MenuItem value="auto">Auto</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    select
                     label="Encoder"
                     value={draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto'}
                     onChange={(event) => onChange('videoEncoder', event.target.value)}
-                    disabled={!(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
+                    disabled={!hardwareEnabled || videoToolboxSelected}
                     helperText="Hardware encoders are enabled only when hardware use is allowed."
                     size="small"
                     fullWidth
@@ -2505,6 +2574,19 @@ function AssetConversionOverridePanel({
                     <Typography variant="caption" color="text.secondary">
                       QSV low-power mode remains disabled for NAS compatibility. Unsupported features are omitted after the runtime smoke test.
                     </Typography>
+                  </Grid>
+                </Grid>
+              ) : null}
+              {videoToolboxSelected ? (
+                <Grid container spacing={1.5} sx={{ mt: 1 }}>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                    <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={draft.videoToolboxBitrateMbps ?? Number(profile?.workerConfig?.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                    <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={draft.videoToolboxMaxrateMbps ?? Number(profile?.workerConfig?.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                    <TextField label="VideoToolbox buffer (Mbps)" type="number" value={draft.videoToolboxBufferMbps ?? Number(profile?.workerConfig?.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
                   </Grid>
                 </Grid>
               ) : null}
@@ -3153,7 +3235,7 @@ function isBitmapSubtitleCodec(codec: string) {
 }
 
 function isHardwareAssetEncoder(value: string) {
-  return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+  return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
 }
 
 function stringFromRecord(record: Record<string, unknown>, key: string) {
@@ -3234,6 +3316,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.qsvRateControl === 'icq' || value.qsvRateControl === 'la_icq') {
     clean.qsvRateControl = value.qsvRateControl;
   }
+  if (value.preferredEncoder === 'software' || value.preferredEncoder === 'hardware' || value.preferredEncoder === 'auto') {
+    clean.preferredEncoder = value.preferredEncoder;
+  }
   if (typeof value.qualityValue === 'number' && Number.isFinite(value.qualityValue) && value.qualityValue > 0) {
     clean.qualityValue = value.qualityValue;
   }
@@ -3267,6 +3352,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.qsvExtendedBrc === 'boolean') clean.qsvExtendedBrc = value.qsvExtendedBrc;
   if (typeof value.qsvAdaptiveI === 'boolean') clean.qsvAdaptiveI = value.qsvAdaptiveI;
   if (typeof value.qsvAdaptiveB === 'boolean') clean.qsvAdaptiveB = value.qsvAdaptiveB;
+  if (typeof value.videoToolboxBitrateMbps === 'number' && Number.isFinite(value.videoToolboxBitrateMbps) && value.videoToolboxBitrateMbps > 0) clean.videoToolboxBitrateMbps = Math.min(200, Math.round(value.videoToolboxBitrateMbps));
+  if (typeof value.videoToolboxMaxrateMbps === 'number' && Number.isFinite(value.videoToolboxMaxrateMbps) && value.videoToolboxMaxrateMbps > 0) clean.videoToolboxMaxrateMbps = Math.min(250, Math.round(value.videoToolboxMaxrateMbps));
+  if (typeof value.videoToolboxBufferMbps === 'number' && Number.isFinite(value.videoToolboxBufferMbps) && value.videoToolboxBufferMbps > 0) clean.videoToolboxBufferMbps = Math.min(500, Math.round(value.videoToolboxBufferMbps));
   return clean;
 }
 

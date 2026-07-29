@@ -102,24 +102,32 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
 		WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "useHardwareIfAvailable": false},
 	}, AssetConversionOverrideState{
-		UseHardwareIfAvailable: &enabled,
-		VideoEncoder:           "hevc_qsv",
-		GlobalQuality:          27,
-		QSVRateControl:         "la_icq",
-		QSVLookAheadDepth:      55,
-		QSVExtendedBRC:         &enabled,
-		QSVAdaptiveI:           &enabled,
-		QSVAdaptiveB:           &disabled,
+		UseHardwareIfAvailable:  &enabled,
+		VideoEncoder:            "hevc_qsv",
+		PreferredEncoder:        "hardware",
+		GlobalQuality:           27,
+		QSVRateControl:          "la_icq",
+		QSVLookAheadDepth:       55,
+		QSVExtendedBRC:          &enabled,
+		QSVAdaptiveI:            &enabled,
+		QSVAdaptiveB:            &disabled,
+		VideoToolboxBitrateMbps: 6,
+		VideoToolboxMaxrateMbps: 8,
+		VideoToolboxBufferMbps:  12,
 	})
 
 	if profile.WorkerConfig["useHardwareIfAvailable"] != true ||
 		profile.WorkerConfig["videoEncoder"] != "hevc_qsv" ||
+		profile.WorkerConfig["preferredEncoder"] != "hardware" ||
 		profile.WorkerConfig["globalQuality"] != 27 ||
 		profile.WorkerConfig["qsvRateControl"] != "la_icq" ||
 		profile.WorkerConfig["qsvLookAheadDepth"] != 55 ||
 		profile.WorkerConfig["qsvExtendedBRC"] != true ||
 		profile.WorkerConfig["qsvAdaptiveI"] != true ||
-		profile.WorkerConfig["qsvAdaptiveB"] != false {
+		profile.WorkerConfig["qsvAdaptiveB"] != false ||
+		profile.WorkerConfig["videoToolboxBitrateMbps"] != 6 ||
+		profile.WorkerConfig["videoToolboxMaxrateMbps"] != 8 ||
+		profile.WorkerConfig["videoToolboxBufferMbps"] != 12 {
 		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
 	}
 }

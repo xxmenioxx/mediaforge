@@ -174,12 +174,16 @@ type AssetConversionOverrideState struct {
 	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex,omitempty"`
 	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable,omitempty"`
 	VideoEncoder                   string                         `json:"videoEncoder,omitempty"`
+	PreferredEncoder               string                         `json:"preferredEncoder,omitempty"`
 	GlobalQuality                  int                            `json:"globalQuality,omitempty"`
 	QSVRateControl                 string                         `json:"qsvRateControl,omitempty"`
 	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth,omitempty"`
 	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc,omitempty"`
 	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI,omitempty"`
 	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB,omitempty"`
+	VideoToolboxBitrateMbps        int                            `json:"videoToolboxBitrateMbps,omitempty"`
+	VideoToolboxMaxrateMbps        int                            `json:"videoToolboxMaxrateMbps,omitempty"`
+	VideoToolboxBufferMbps         int                            `json:"videoToolboxBufferMbps,omitempty"`
 	UpdatedAt                      *time.Time                     `json:"updatedAt,omitempty"`
 }
 
@@ -284,12 +288,16 @@ type AssetConversionUpdateInput struct {
 	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex"`
 	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable"`
 	VideoEncoder                   string                         `json:"videoEncoder"`
+	PreferredEncoder               string                         `json:"preferredEncoder"`
 	GlobalQuality                  int                            `json:"globalQuality"`
 	QSVRateControl                 string                         `json:"qsvRateControl"`
 	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth"`
 	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc"`
 	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI"`
 	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB"`
+	VideoToolboxBitrateMbps        int                            `json:"videoToolboxBitrateMbps"`
+	VideoToolboxMaxrateMbps        int                            `json:"videoToolboxMaxrateMbps"`
+	VideoToolboxBufferMbps         int                            `json:"videoToolboxBufferMbps"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -1905,12 +1913,16 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
 		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
 		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
+		PreferredEncoder:               strings.TrimSpace(input.PreferredEncoder),
 		GlobalQuality:                  input.GlobalQuality,
 		QSVRateControl:                 strings.TrimSpace(input.QSVRateControl),
 		QSVLookAheadDepth:              input.QSVLookAheadDepth,
 		QSVExtendedBRC:                 input.QSVExtendedBRC,
 		QSVAdaptiveI:                   input.QSVAdaptiveI,
 		QSVAdaptiveB:                   input.QSVAdaptiveB,
+		VideoToolboxBitrateMbps:        input.VideoToolboxBitrateMbps,
+		VideoToolboxMaxrateMbps:        input.VideoToolboxMaxrateMbps,
+		VideoToolboxBufferMbps:         input.VideoToolboxBufferMbps,
 	}
 	if assetConversionOverrideEmpty(override) {
 		delete(entries, cleanPath)
@@ -3867,12 +3879,16 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.EnhancedAudioSourceStreamIndex == nil &&
 		override.UseHardwareIfAvailable == nil &&
 		strings.TrimSpace(override.VideoEncoder) == "" &&
+		strings.TrimSpace(override.PreferredEncoder) == "" &&
 		override.GlobalQuality == 0 &&
 		strings.TrimSpace(override.QSVRateControl) == "" &&
 		override.QSVLookAheadDepth == 0 &&
 		override.QSVExtendedBRC == nil &&
 		override.QSVAdaptiveI == nil &&
-		override.QSVAdaptiveB == nil
+		override.QSVAdaptiveB == nil &&
+		override.VideoToolboxBitrateMbps == 0 &&
+		override.VideoToolboxMaxrateMbps == 0 &&
+		override.VideoToolboxBufferMbps == 0
 }
 
 func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransform {

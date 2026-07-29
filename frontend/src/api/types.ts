@@ -148,12 +148,16 @@ export type AssetConversionOverrideState = {
   enhancedAudioSourceStreamIndex?: number;
   useHardwareIfAvailable?: boolean;
   videoEncoder?: string;
+  preferredEncoder?: 'software' | 'hardware' | 'auto';
   globalQuality?: number;
   qsvRateControl?: 'icq' | 'la_icq';
   qsvLookAheadDepth?: number;
   qsvExtendedBrc?: boolean;
   qsvAdaptiveI?: boolean;
   qsvAdaptiveB?: boolean;
+  videoToolboxBitrateMbps?: number;
+  videoToolboxMaxrateMbps?: number;
+  videoToolboxBufferMbps?: number;
   updatedAt?: string;
 };
 

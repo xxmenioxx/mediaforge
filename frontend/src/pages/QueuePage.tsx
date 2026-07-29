@@ -51,7 +51,9 @@ export function QueuePage() {
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
-    refetchInterval: (query) => (query.state.data?.some((job) => job.status === 'running') ? 2000 : false),
+    refetchInterval: (query) => (
+      query.state.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 2000 : false
+    ),
   });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
