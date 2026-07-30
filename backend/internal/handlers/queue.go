@@ -447,6 +447,24 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	if profile.Disabled {
 		return errQueueProfileDisabled
 	}
+	override := conversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	if strings.TrimSpace(override.PreferredEncoder) != "" ||
+		strings.TrimSpace(override.VideoEncoder) != "" ||
+		strings.TrimSpace(override.VideoCodec) != "" ||
+		override.UseHardwareIfAvailable != nil {
+		profile = applyAssetConversionOverrideToProfile(profile, override)
+		// Asset processing preference must participate in immutable scheduler
+		// planning. Clear the profile's authoritative encoder contract so the
+		// effective worker configuration is resolved into the job snapshot.
+		profile.EncoderPolicy = ""
+		profile.PreferredEncoder = ""
+		profile.AllowedEncoders = nil
+		profile.FallbackPolicy = ""
+		profile.CodecFamily = ""
+		profile.BitDepth = 0
+		profile.PixelFormat = ""
+		profile.QualityStrategy = ""
+	}
 	now := time.Now()
 	snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, source)
 	if err != nil {

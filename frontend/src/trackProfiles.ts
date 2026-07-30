@@ -6,6 +6,7 @@ export type SubtitleTransform = {
   removeEmbedded: boolean;
   makeDefault: boolean;
   language: string;
+  ocrLanguage?: string;
   title?: string;
 };
 
@@ -82,6 +83,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
         removeEmbedded: value.removeEmbedded !== false,
         makeDefault: value.makeDefault === true,
         language: typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : 'und',
+        ocrLanguage: typeof value.ocrLanguage === 'string' && value.ocrLanguage.trim() ? value.ocrLanguage.trim().toLowerCase() : undefined,
         title: typeof value.title === 'string' ? value.title : undefined,
       }];
     });

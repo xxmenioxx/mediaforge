@@ -128,6 +128,7 @@ export type AssetConversionOverrideState = {
     removeEmbedded: boolean;
     makeDefault: boolean;
     language: string;
+    ocrLanguage?: string;
     title?: string;
   }>;
   videoCodec?: string;
@@ -139,7 +140,6 @@ export type AssetConversionOverrideState = {
   videoFilters?: string;
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
-  processingMode?: string;
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;
@@ -382,6 +382,12 @@ export type RuntimeSnapshot = {
   container: boolean;
   cpuCores: number;
   cpuLoad1: number;
+  gpuDetected: boolean;
+  gpuUsageAvailable: boolean;
+  gpuUsagePercent: number;
+  gpuMediaUsagePercent: number;
+  gpuRenderUsagePercent: number;
+  gpuMetricSource: string;
   totalMemoryBytes: number;
   availableMemoryBytes: number;
   batteryPresent: boolean;
@@ -636,8 +642,11 @@ export type MediaStreamInfo = {
   width?: number;
   height?: number;
   pixFmt?: string;
+  colorSpace?: string;
+  colorRange?: string;
   colorTransfer?: string;
   colorPrimaries?: string;
+  chromaLocation?: string;
   bitsPerRawSample?: string;
   avgFrameRate?: string;
   realFrameRate?: string;
@@ -669,6 +678,18 @@ export type ScanResult = {
   videoStreams: MediaStreamInfo[];
   audioStreams: MediaStreamInfo[];
   subtitleStreams: MediaStreamInfo[];
+  compatibilityAnalysis: {
+    version?: number;
+    target?: string;
+    overall?: 'direct_play_likely' | 'client_dependent' | 'transcode_likely' | string;
+    score?: number;
+    video?: string;
+    audio?: string;
+    subtitles?: string;
+    reasons?: string[];
+    warnings?: string[];
+    recommendations?: string[];
+  };
   interlaceAnalysis: {
     status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';
     fieldOrder?: string;
@@ -688,6 +709,7 @@ export type ScanResult = {
     sampleCount?: number;
     sampledAt?: number[];
     recommendedMode?: 'force' | 'ivtc_tff' | 'ivtc_bff' | string;
+    recommendedFieldMetadataMode?: 'progressive' | 'tff' | 'bff' | string;
     ivtcValidation?: {
       tffProgressive?: number;
       tffClassified?: number;
@@ -719,4 +741,77 @@ export type ScanResult = {
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+};
+
+export type PreviewVideoCharacteristics = {
+  codec: string;
+  profile?: string;
+  pixelFormat?: string;
+  bitDepth?: number;
+  width: number;
+  height: number;
+  sampleAspectRatio?: string;
+  displayAspectRatio?: string;
+  frameRate?: string;
+  fieldOrder?: string;
+  colorRange?: string;
+  colorSpace?: string;
+  colorTransfer?: string;
+  colorPrimaries?: string;
+  chromaLocation?: string;
+};
+
+export type PreviewInspection = {
+  source: PreviewVideoCharacteristics;
+  output: PreviewVideoCharacteristics;
+  cacheHit: boolean;
+  previewMode: 'quick' | 'quality';
+  start: string;
+  seconds: number;
+  generatedPath: string;
+  requestedEncoder: string;
+  effectiveEncoder: string;
+  normalization: {
+    mode: 'preserve' | 'normalize_bt709';
+    applied: boolean;
+    filter?: string;
+    reason: string;
+    inputColor: PreviewVideoCharacteristics;
+    outputColor: PreviewVideoCharacteristics;
+    sarPreserved: boolean;
+    aliasWarnings?: string[];
+  };
+};
+
+export type PreviewFrameMetrics = {
+  comparable: boolean;
+  reason: string;
+  sourceDimensions: string;
+  outputDimensions: string;
+  ssim?: number;
+  psnr?: number;
+};
+
+export type CompatiblePreviewOptions = {
+  path: string;
+  profileId?: number;
+  start?: string;
+  seconds?: number;
+  videoCodec?: string;
+  qualityValue?: number;
+  videoPreset?: string;
+  pixFmt?: string;
+  videoFilters?: string;
+  x265Params?: string;
+  videoEncoder?: string;
+  useHardwareIfAvailable?: boolean;
+  globalQuality?: number;
+  qsvRateControl?: string;
+  qsvLookAheadDepth?: number;
+  qsvExtendedBRC?: boolean;
+  qsvAdaptiveI?: boolean;
+  qsvAdaptiveB?: boolean;
+  mode?: 'quick' | 'quality';
+  previewNormalization?: 'preserve' | 'normalize_bt709';
+  subtitleStreamIndex?: number;
 };

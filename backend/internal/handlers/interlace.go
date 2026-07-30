@@ -12,27 +12,28 @@ import (
 )
 
 type InterlaceAnalysis struct {
-	Status              string          `json:"status"`
-	FieldOrder          string          `json:"fieldOrder"`
-	ContainerFieldOrder string          `json:"containerFieldOrder"`
-	DetectedFieldOrder  string          `json:"detectedFieldOrder,omitempty"`
-	FieldOrderMismatch  bool            `json:"fieldOrderMismatch"`
-	Source              string          `json:"source"`
-	Confidence          float64         `json:"confidence"`
-	TFF                 int             `json:"tff"`
-	BFF                 int             `json:"bff"`
-	Progressive         int             `json:"progressive"`
-	Undetermined        int             `json:"undetermined"`
-	RepeatedTop         int             `json:"repeatedTop"`
-	RepeatedBottom      int             `json:"repeatedBottom"`
-	SampledFrames       int             `json:"sampledFrames"`
-	WindowStart         float64         `json:"windowStart"`
-	WindowSeconds       int             `json:"windowSeconds"`
-	SampleCount         int             `json:"sampleCount"`
-	SampledAt           []float64       `json:"sampledAt,omitempty"`
-	RecommendedMode     string          `json:"recommendedMode,omitempty"`
-	RecommendedFilter   string          `json:"recommendedFilter,omitempty"`
-	IVTCValidation      *IVTCValidation `json:"ivtcValidation,omitempty"`
+	Status                       string          `json:"status"`
+	FieldOrder                   string          `json:"fieldOrder"`
+	ContainerFieldOrder          string          `json:"containerFieldOrder"`
+	DetectedFieldOrder           string          `json:"detectedFieldOrder,omitempty"`
+	FieldOrderMismatch           bool            `json:"fieldOrderMismatch"`
+	Source                       string          `json:"source"`
+	Confidence                   float64         `json:"confidence"`
+	TFF                          int             `json:"tff"`
+	BFF                          int             `json:"bff"`
+	Progressive                  int             `json:"progressive"`
+	Undetermined                 int             `json:"undetermined"`
+	RepeatedTop                  int             `json:"repeatedTop"`
+	RepeatedBottom               int             `json:"repeatedBottom"`
+	SampledFrames                int             `json:"sampledFrames"`
+	WindowStart                  float64         `json:"windowStart"`
+	WindowSeconds                int             `json:"windowSeconds"`
+	SampleCount                  int             `json:"sampleCount"`
+	SampledAt                    []float64       `json:"sampledAt,omitempty"`
+	RecommendedMode              string          `json:"recommendedMode,omitempty"`
+	RecommendedFieldMetadataMode string          `json:"recommendedFieldMetadataMode,omitempty"`
+	RecommendedFilter            string          `json:"recommendedFilter,omitempty"`
+	IVTCValidation               *IVTCValidation `json:"ivtcValidation,omitempty"`
 }
 
 type IVTCValidation struct {
@@ -85,10 +86,27 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 			fieldOrderFamily(containerOrder) != analysis.DetectedFieldOrder
 	}
 	classifyInterlace(&analysis)
+	finalizeFieldMetadataAnalysis(&analysis)
 	if shouldValidateIVTC(analysis) {
 		validateIVTC(path, duration, windowSeconds, &analysis)
 	}
 	return analysis
+}
+
+func finalizeFieldMetadataAnalysis(analysis *InterlaceAnalysis) {
+	containerOrder := normalizeFieldOrder(analysis.ContainerFieldOrder)
+	if analysis.Status == "progressive" {
+		analysis.DetectedFieldOrder = "progressive"
+		analysis.FieldOrder = "progressive"
+		analysis.FieldOrderMismatch = fieldOrderFamily(containerOrder) != ""
+		if analysis.FieldOrderMismatch {
+			analysis.RecommendedFieldMetadataMode = "progressive"
+		}
+	}
+	if analysis.Status == "interlaced" && analysis.RecommendedMode == "force" {
+		// The recommended bwdif pass emits progressive frames.
+		analysis.RecommendedFieldMetadataMode = "progressive"
+	}
 }
 
 func distributedInterlaceStarts(duration float64, windowSeconds int) []float64 {
@@ -212,6 +230,7 @@ func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation
 		analysis.FieldOrderMismatch = fieldOrderFamily(analysis.ContainerFieldOrder) != "" &&
 			fieldOrderFamily(analysis.ContainerFieldOrder) != selected
 		analysis.RecommendedMode = "ivtc_" + selected
+		analysis.RecommendedFieldMetadataMode = "progressive"
 		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ",decimate"
 	}
 }

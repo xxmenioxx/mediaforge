@@ -13,6 +13,7 @@ const (
 	JobStagePreparingWorkspace = "preparing_workspace"
 	JobStageCopyingWorkspace   = "copying_to_workspace"
 	JobStageAnalyzingAsIs      = "analyzing_as_is"
+	JobStagePreparingSubtitles = "preparing_subtitles"
 	JobStageConverting         = "converting"
 	JobStageValidating         = "validating"
 	JobStageDirectPlayAnalysis = "directplay_analysis"

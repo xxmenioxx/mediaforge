@@ -51,6 +51,8 @@ type FFProbeStream struct {
 	Height             int               `json:"height"`
 	ColorTransfer      string            `json:"color_transfer"`
 	ColorPrimaries     string            `json:"color_primaries"`
+	ColorSpace         string            `json:"color_space"`
+	ColorRange         string            `json:"color_range"`
 	PixFmt             string            `json:"pix_fmt"`
 	Tags               map[string]string `json:"tags"`
 	Disposition        map[string]int    `json:"disposition"`
@@ -244,7 +246,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		bitrate = parseInt(video.Bitrate)
 	}
 
-	return models.ScanResult{
+	result := models.ScanResult{
 		Path:              path,
 		FileName:          filepath.Base(path),
 		Container:         probe.Format.FormatName,
@@ -265,6 +267,8 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		InterlaceAnalysis: interlaceAnalysisFromRaw(raw),
 		CropAnalysis:      analysisMapFromRaw(raw, "cropAnalysis"),
 	}
+	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
+	return result
 }
 
 func enrichCachedScan(result *models.ScanResult) {
@@ -307,6 +311,7 @@ func enrichCachedScan(result *models.ScanResult) {
 	result.VideoStreams = streamSummaries(streams, "video")
 	result.AudioStreams = streamSummaries(streams, "audio")
 	result.SubtitleStreams = streamSummaries(streams, "subtitle")
+	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(*result)
 }
 
 func normalizedAnalysisSeconds(value int) int {
@@ -381,6 +386,8 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 			summary["pixFmt"] = stream.PixFmt
 			summary["colorTransfer"] = stream.ColorTransfer
 			summary["colorPrimaries"] = stream.ColorPrimaries
+			summary["colorSpace"] = stream.ColorSpace
+			summary["colorRange"] = stream.ColorRange
 			summary["bitsPerRawSample"] = stream.BitsPerRawSample
 			summary["avgFrameRate"] = stream.AverageFrameRate
 			summary["realFrameRate"] = stream.RealBaseFrameRate

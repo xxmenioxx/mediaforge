@@ -27,8 +27,10 @@ var runningJobProcesses = struct {
 	commands: map[uint]*exec.Cmd{},
 }
 
-func (h WorkerHandler) startFFmpegJob(jobID uint, args []string) error {
-	durationSeconds := probeMediaDurationSeconds(h.db, jobID)
+func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds float64) error {
+	if durationSeconds <= 0 {
+		durationSeconds = probeMediaDurationSeconds(h.db, jobID)
+	}
 	progressArgs := ffmpegArgsWithProgress(args)
 
 	cmd := exec.CommandContext(context.Background(), "ffmpeg", progressArgs...)
@@ -320,17 +322,36 @@ func progressFromFFmpegLine(line string, durationSeconds float64) (int, bool) {
 	if durationSeconds <= 0 {
 		return 0, false
 	}
-	value, ok := strings.CutPrefix(line, "out_time_ms=")
-	if !ok {
+	value := ""
+	for _, prefix := range []string{"out_time_us=", "out_time_ms="} {
+		if candidate, ok := strings.CutPrefix(line, prefix); ok {
+			value = candidate
+			break
+		}
+	}
+	elapsedSeconds := 0.0
+	if value != "" {
+		microseconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return 0, false
+		}
+		elapsedSeconds = microseconds / 1_000_000
+	} else if timestamp, ok := strings.CutPrefix(line, "out_time="); ok {
+		parts := strings.Split(strings.TrimSpace(timestamp), ":")
+		if len(parts) != 3 {
+			return 0, false
+		}
+		hours, hoursErr := strconv.ParseFloat(parts[0], 64)
+		minutes, minutesErr := strconv.ParseFloat(parts[1], 64)
+		seconds, secondsErr := strconv.ParseFloat(parts[2], 64)
+		if hoursErr != nil || minutesErr != nil || secondsErr != nil {
+			return 0, false
+		}
+		elapsedSeconds = hours*3600 + minutes*60 + seconds
+	} else {
 		return 0, false
 	}
 
-	microseconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil {
-		return 0, false
-	}
-
-	elapsedSeconds := microseconds / 1_000_000
 	percent := 5 + int((elapsedSeconds/durationSeconds)*90)
 	return clamp(percent, 5, 95), true
 }
@@ -339,6 +360,10 @@ func probeMediaDurationSeconds(db *gorm.DB, jobID uint) float64 {
 	var job models.QueueJob
 	if err := db.First(&job, jobID).Error; err != nil {
 		return 0
+	}
+	var scan models.ScanResult
+	if err := db.Where("path = ? AND duration > 0", job.MediaPath).Order("created_at desc").First(&scan).Error; err == nil {
+		return scan.Duration
 	}
 
 	output, err := exec.Command(

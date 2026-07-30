@@ -293,6 +293,7 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
   const cpuLoadPercent = snapshot && snapshot.cpuCores > 0
     ? Math.min(100, Math.round((snapshot.cpuLoad1 / snapshot.cpuCores) * 100))
     : 0;
+  const gpuUsagePercent = snapshot?.gpuUsageAvailable ? Math.round(snapshot.gpuUsagePercent) : 0;
   return <Card><CardContent><Stack spacing={2}>
     <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
       <Stack><Typography variant="h2">Runtime & Host</Typography><Typography color="text.secondary" variant="body2">Effective scheduler policy and the host capabilities used for dispatch decisions.</Typography></Stack>
@@ -318,6 +319,24 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
               </Stack>
               <LinearProgress variant="determinate" value={cpuLoadPercent} color={cpuLoadPercent >= 85 ? 'error' : cpuLoadPercent >= 65 ? 'warning' : 'success'} />
               <Typography color="text.secondary" variant="caption">{cpuLoadPercent}% normalized 1-minute load</Typography>
+            </Stack>
+            <Stack spacing={0.75}>
+              <Stack direction="row" justifyContent="space-between">
+                <Typography fontWeight={700}>GPU usage</Typography>
+                <Typography color="text.secondary">
+                  {snapshot.gpuUsageAvailable ? `${gpuUsagePercent}%` : snapshot.gpuDetected ? 'Unavailable' : 'Not detected'}
+                </Typography>
+              </Stack>
+              <LinearProgress
+                variant="determinate"
+                value={gpuUsagePercent}
+                color={gpuUsagePercent >= 90 ? 'error' : gpuUsagePercent >= 70 ? 'warning' : 'success'}
+              />
+              <Typography color="text.secondary" variant="caption">
+                {snapshot.gpuUsageAvailable
+                  ? `Media ${Math.round(snapshot.gpuMediaUsagePercent)}% · Render ${Math.round(snapshot.gpuRenderUsagePercent)}%`
+                  : 'GPU engine counters are not exposed by this host/runtime.'}
+              </Typography>
             </Stack>
           </Stack>
         </Grid>

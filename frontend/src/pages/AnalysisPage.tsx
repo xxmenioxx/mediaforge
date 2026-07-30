@@ -189,13 +189,20 @@ export function AnalysisPage() {
     const current = selectedAsset?.conversion ?? {};
     const recommendedFilter = currentScan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
     const patch = status === 'progressive'
-      ? { deinterlaceMode: 'off' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
+      ? {
+          deinterlaceMode: 'off' as const,
+          videoFilters: withoutMotionFilters(current.videoFilters),
+        }
       : status === 'interlaced'
         ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
         : { deinterlaceMode: 'off' as const, videoFilters: joinFilters(recommendedFilter, withoutMotionFilters(current.videoFilters)) };
     await api.updateAssetConversion({ path: currentScan.path, ...current, ...patch });
     await queryClient.invalidateQueries({ queryKey: ['assets'] });
-    if (status === 'progressive') return 'Saved: deinterlacing disabled for this asset.';
+    if (status === 'progressive') {
+      return currentScan.interlaceAnalysis.fieldOrderMismatch
+        ? 'Saved: deinterlacing disabled and output field metadata set to progressive.'
+        : 'Saved: deinterlacing disabled for this asset.';
+    }
     if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
     return `Saved: ${recommendedFilter} will run before encoding.`;
   }
@@ -277,6 +284,7 @@ export function AnalysisPage() {
                     <Chip label={decision} color="warning" size="small" />
                   </Stack>
                   <MediaSnapshotDetails scan={currentScan} />
+                  <PlaybackCompatibilityCard scan={currentScan} />
                   {suggestion.data ? <ProfileSuggestionCard suggestion={suggestion.data} onSelect={(profile) => setSelectedProfileId(profile.id)} onApplyMotionRecommendation={applyMotionRecommendation} /> : suggestion.isPending ? <Alert severity="info">Comparing this analysis with available profiles…</Alert> : suggestion.isError ? <Alert severity="warning">Profile suggestions are unavailable for this analysis.</Alert> : null}
                   <Card variant="outlined">
                     <CardContent>
@@ -427,6 +435,38 @@ export function AnalysisPage() {
 
 function requestErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim() ? error.message : 'Unknown backend error.';
+}
+
+function PlaybackCompatibilityCard({ scan }: { scan: ScanResult }) {
+  const analysis = scan.compatibilityAnalysis;
+  if (!analysis) return null;
+  const severity = analysis.overall === 'transcode_likely' ? 'warning' : analysis.overall === 'direct_play_likely' ? 'success' : 'info';
+  return (
+    <Card variant="outlined">
+      <CardContent>
+        <Stack spacing={1.5}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="h3">Jellyfin playback analysis</Typography>
+            <Chip label={(analysis.overall || 'unknown').replaceAll('_', ' ')} color={severity} size="small" />
+            <Chip label={`Score ${analysis.score ?? 0}/100`} size="small" />
+          </Stack>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip label={`Video · ${(analysis.video || 'unknown').replaceAll('_', ' ')}`} size="small" />
+            <Chip label={`Audio · ${(analysis.audio || 'unknown').replaceAll('_', ' ')}`} size="small" />
+            <Chip label={`Subtitles · ${(analysis.subtitles || 'unknown').replaceAll('_', ' ')}`} size="small" />
+          </Stack>
+          {(analysis.reasons ?? []).map((reason) => <Alert key={reason} severity="warning">{reason}</Alert>)}
+          {(analysis.warnings ?? []).map((warning) => <Alert key={warning} severity="info">{warning}</Alert>)}
+          {(analysis.recommendations ?? []).length ? (
+            <Stack spacing={0.5}>
+              <Typography fontWeight={700}>Recommendations</Typography>
+              {(analysis.recommendations ?? []).map((recommendation) => <Typography key={recommendation} color="text.secondary" variant="body2">• {recommendation}</Typography>)}
+            </Stack>
+          ) : null}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
 }
 
 function withoutMotionFilters(value?: string) {

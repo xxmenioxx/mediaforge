@@ -706,6 +706,13 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	if len(plan.Override.SubtitleTransforms) > 0 {
+		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {
+			return job, http.StatusInternalServerError, err
+		}
+		job.Progress = 3
+		_ = h.db.Save(&job).Error
+	}
 	subtitleArtifacts, err := generateSubtitleArtifacts(context.Background(), plan)
 	if err != nil {
 		job.Status = JobStatusFailed
@@ -748,7 +755,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	if err := h.startFFmpegJob(job.ID, args); err != nil {
+	if err := h.startFFmpegJob(job.ID, args, plan.Streams.Duration); err != nil {
 		job.Status = JobStatusFailed
 		job.Progress = 0
 		job.ErrorMessage = err.Error()
@@ -778,9 +785,12 @@ func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error
 
 func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
 	override := conversionOverrideForPath(job.MediaPath, entries)
-	if mode := normalizeQueueProcessingMode(job.ProcessingMode); mode != "" {
-		override.ProcessingMode = mode
+	if value := strings.TrimSpace(job.TrackProfileKey); value != "" {
+		override.TrackProfileKey = value
 	}
+	// Processing mode is derived by the queue selection, never from a stale
+	// per-asset override saved by the former Work mode control.
+	override.ProcessingMode = normalizeQueueProcessingMode(job.ProcessingMode)
 	return override
 }
 

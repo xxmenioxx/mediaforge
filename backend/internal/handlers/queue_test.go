@@ -215,6 +215,82 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	}
 }
 
+func TestQueueProfileSnapshotUsesAssetProcessingPreference(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-asset-encoder-override?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/hardware-override.mkv"
+	enabled := true
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		path: {
+			PreferredEncoder:       "hardware",
+			UseHardwareIfAvailable: &enabled,
+			VideoEncoder:           "hevc_qsv",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewQueueHandler(db)
+	job := models.QueueJob{MediaPath: path, LibraryID: 1, Priority: 1, Status: JobStatusQueued}
+	if err := handler.captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.PreferredEncoder != "hevc_qsv" || restored.EncoderPolicy != scheduler.EncoderPolicyRestricted {
+		t.Fatalf("asset hardware preference was not captured for scheduling: %#v", restored)
+	}
+}
+
+func TestQueueProfileSnapshotUsesCodecOverrideForEncoderPlanning(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-asset-codec-override?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.EncoderPolicy = "automatic"
+	profile.PreferredEncoder = "hevc_qsv"
+	profile.AllowedEncoders = models.StringList{"hevc_qsv", "libx265"}
+	profile.FallbackPolicy = "allowed_only"
+	profile.WorkerConfig = models.JSONMap{"videoEncoder": "hevc_qsv", "useHardwareIfAvailable": true}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/h264-override.mkv"
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		path: {VideoCodec: "x264", PreferredEncoder: "software"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewQueueHandler(db)
+	job := models.QueueJob{MediaPath: path, LibraryID: 1, Priority: 1, Status: JobStatusQueued}
+	if err := handler.captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.CodecFamily != "h264" || restored.PreferredEncoder != "libx264" {
+		t.Fatalf("codec override was not reflected in scheduler snapshot: %#v", restored)
+	}
+}
+
 func TestQueueProfileSnapshotRejectsDisabledProfile(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-disabled-profile?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

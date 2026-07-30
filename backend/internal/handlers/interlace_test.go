@@ -77,3 +77,34 @@ func TestDistributedInterlaceStartsSamplesLongAssets(t *testing.T) {
 		t.Fatalf("unexpected sample distribution: %#v", starts)
 	}
 }
+
+func TestProgressiveFramesRecommendMetadataCorrectionForInterlacedContainer(t *testing.T) {
+	analysis := InterlaceAnalysis{
+		Status:              "progressive",
+		ContainerFieldOrder: "tt",
+	}
+
+	finalizeFieldMetadataAnalysis(&analysis)
+
+	if !analysis.FieldOrderMismatch || analysis.DetectedFieldOrder != "progressive" {
+		t.Fatalf("expected progressive mismatch, got %#v", analysis)
+	}
+	if analysis.RecommendedFieldMetadataMode != "progressive" {
+		t.Fatalf("expected progressive metadata recommendation, got %q", analysis.RecommendedFieldMetadataMode)
+	}
+}
+
+func TestAutomaticFieldMetadataMarksProgressiveFramesWithoutDeinterlacing(t *testing.T) {
+	analysis := InterlaceAnalysis{Status: "progressive", ContainerFieldOrder: "tt"}
+	analysis.FieldOrderMismatch = true
+	if filter := effectiveAutomaticFieldMetadataFilter("", "", analysis); filter != "setfield=prog" {
+		t.Fatalf("expected progressive metadata filter, got %q", filter)
+	}
+}
+
+func TestBWDIFAlwaysMarksOutputProgressive(t *testing.T) {
+	analysis := InterlaceAnalysis{Status: "interlaced", ContainerFieldOrder: "tt"}
+	if filter := effectiveAutomaticFieldMetadataFilter("bwdif=mode=send_frame:parity=tff:deint=all", "", analysis); filter != "setfield=prog" {
+		t.Fatalf("expected bwdif output to be marked progressive, got %q", filter)
+	}
+}

@@ -52,6 +52,7 @@ export function TrackProfilesPage() {
         removeEmbedded: true,
         makeDefault: true,
         language: stream.language || 'und',
+        ocrLanguage: isBitmapSubtitle(stream.codec) ? defaultOCRLanguage(stream.language) : undefined,
         title: stream.title || undefined,
       }] : remaining,
     });
@@ -108,7 +109,7 @@ export function TrackProfilesPage() {
                       #{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()} {stream.title ? `· ${stream.title}` : ''}
                     </Typography>
                     {bitmap ? (
-                      <Alert severity="warning">This is a bitmap subtitle. OCR is required before SRT/ASS replacement, so direct transformation is disabled.</Alert>
+                      <Alert severity="info">This bitmap subtitle will run OCR as a pre-conversion phase. The generated sidecar is validated before the embedded track is removed.</Alert>
                     ) : null}
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
                       <TextField
@@ -119,8 +120,8 @@ export function TrackProfilesPage() {
                         onChange={(event) => updateSubtitleTransform(stream, event.target.value as '' | 'srt' | 'ass')}
                       >
                         <MenuItem value="">Keep embedded track</MenuItem>
-                        <MenuItem value="srt" disabled={bitmap}>Create SRT and remove embedded</MenuItem>
-                        <MenuItem value="ass" disabled={bitmap}>Create ASS and remove embedded</MenuItem>
+                        <MenuItem value="srt">Create SRT and remove embedded</MenuItem>
+                        <MenuItem value="ass">Create ASS and remove embedded</MenuItem>
                       </TextField>
                       {transform ? (
                         <>
@@ -130,6 +131,15 @@ export function TrackProfilesPage() {
                             onChange={(event) => updateSubtitleTransformValue(stream.index, { language: event.target.value.toLowerCase() })}
                             fullWidth
                           />
+                          {bitmap ? (
+                            <TextField
+                              label="OCR language"
+                              value={transform.ocrLanguage || defaultOCRLanguage(stream.language)}
+                              onChange={(event) => updateSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value.toLowerCase() })}
+                              helperText="Tesseract language, for example spa, eng or jpn."
+                              fullWidth
+                            />
+                          ) : null}
                           <FormControlLabel
                             control={<Switch checked={transform.makeDefault} onChange={(_, value) => updateSubtitleTransformValue(stream.index, { makeDefault: value })} />}
                             label="Default sidecar"
@@ -177,3 +187,11 @@ function findSourceScan(settings: AppSetting[] | undefined, profile: TrackProfil
 }
 function normalizePath(value: string) { return value.replaceAll('\\', '/').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase(); }
 function isBitmapSubtitle(codec: string) { return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec.toLowerCase()); }
+function defaultOCRLanguage(language: string) {
+  const normalized = language.trim().toLowerCase();
+  if (['spa', 'es', 'esp'].includes(normalized)) return 'spa';
+  if (['jpn', 'ja'].includes(normalized)) return 'jpn';
+  if (['fra', 'fr', 'fre'].includes(normalized)) return 'fra';
+  if (['deu', 'de', 'ger'].includes(normalized)) return 'deu';
+  return 'eng';
+}

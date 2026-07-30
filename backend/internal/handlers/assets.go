@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -81,6 +82,8 @@ var previewCacheState = struct {
 	sync.Mutex
 	inFlight map[string]*previewGeneration
 }{inFlight: map[string]*previewGeneration{}}
+
+var previewFilterCapabilityCache sync.Map
 
 var assetInventorySyncMu sync.Mutex
 
@@ -200,6 +203,7 @@ type SubtitleTransform struct {
 	RemoveEmbedded bool   `json:"removeEmbedded"`
 	MakeDefault    bool   `json:"makeDefault"`
 	Language       string `json:"language"`
+	OCRLanguage    string `json:"ocrLanguage,omitempty"`
 	Title          string `json:"title,omitempty"`
 }
 
@@ -1904,7 +1908,6 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
 		X265Params:                     strings.TrimSpace(input.X265Params),
-		ProcessingMode:                 strings.TrimSpace(input.ProcessingMode),
 		PreserveHDR:                    input.PreserveHDR,
 		PreserveSubtitles:              input.PreserveSubtitles,
 		PreserveChapters:               input.PreserveChapters,
@@ -2108,6 +2111,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	qsvExtendedBRCOverride, _ := strconv.ParseBool(c.Query("qsvExtendedBRC"))
 	qsvAdaptiveIOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveI"))
 	qsvAdaptiveBOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveB"))
+	previewNormalizationMode := normalizedPreviewNormalizationMode(c.Query("previewNormalization"))
 	subtitleStreamIndex := -1
 	if rawSubtitleIndex := strings.TrimSpace(c.Query("subtitleStreamIndex")); rawSubtitleIndex != "" {
 		parsed, parseErr := strconv.Atoi(rawSubtitleIndex)
@@ -2183,7 +2187,8 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		args = append(args, "-ss", strconv.Itoa(subtitlePrerollSeconds))
 	}
 	args = append(args, "-t", strconv.Itoa(seconds))
-	videoFilter := previewVideoFilterChain(videoFiltersOverride, previewMode)
+	normalization := buildPreviewNormalization(path, previewNormalizationMode)
+	videoFilter := joinPreviewFilters(normalization.Filter, previewVideoFilterChain(videoFiltersOverride, previewMode))
 	if subtitleStreamIndex >= 0 {
 		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
 		if filterErr != nil {
@@ -2194,11 +2199,22 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	} else {
 		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
 	}
-	args = append(args, previewVideoCodecArgs(
+	requestedVideoEncoder := strings.ToLower(strings.TrimSpace(videoEncoderOverride))
+	videoCodecArguments := previewVideoCodecArgs(
 		h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride,
 		videoEncoderOverride, useHardwareOverride, globalQualityOverride,
 		qsvRateControlOverride, qsvLookAheadDepthOverride, qsvExtendedBRCOverride, qsvAdaptiveIOverride, qsvAdaptiveBOverride,
-	)...)
+	)
+	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
+	args = append(args, videoCodecArguments...)
+	if normalization.Applied && normalization.Mode == "normalize_bt709" {
+		args = append(args,
+			"-color_primaries", "bt709",
+			"-color_trc", "bt709",
+			"-colorspace", "bt709",
+			"-color_range", "tv",
+		)
+	}
 	args = append(args,
 		"-an",
 		"-sn",
@@ -2219,6 +2235,62 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	frameKind := strings.ToLower(strings.TrimSpace(c.Query("frame")))
+	if frameKind == "source" || frameKind == "output" {
+		framePath := cachePath
+		frameStart := "0"
+		frameFilter := "null"
+		if frameKind == "source" {
+			framePath = path
+			frameStart = start
+			frameFilter = normalization.Filter
+		}
+		frame, frameErr := generatePreviewFrame(c.Request.Context(), framePath, frameStart, frameFilter)
+		if frameErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity generation failed: " + frameErr.Error()})
+			return
+		}
+		c.Header("Content-Type", "image/png")
+		c.Header("Cache-Control", "private, max-age=0, must-revalidate")
+		c.Header("X-MVForge-Frame-Kind", frameKind)
+		c.Header("X-MVForge-Preview-Normalization", normalization.Mode)
+		c.Data(http.StatusOK, "image/png", frame)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Query("metrics")), "true") {
+		metrics, metricsErr := generatePreviewFrameMetrics(c.Request.Context(), path, start, normalization.Filter, cachePath)
+		if metricsErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity metrics failed: " + metricsErr.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, metrics)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true") {
+		source, sourceErr := probePreviewCharacteristics(path)
+		if sourceErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "source preview validation failed: " + sourceErr.Error()})
+			return
+		}
+		output, outputErr := probePreviewCharacteristics(cachePath)
+		if outputErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "generated preview validation failed: " + outputErr.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"source":           source,
+			"output":           output,
+			"cacheHit":         cacheHit,
+			"previewMode":      previewMode,
+			"start":            start,
+			"seconds":          seconds,
+			"generatedPath":    cachePath,
+			"normalization":    normalization,
+			"requestedEncoder": requestedVideoEncoder,
+			"effectiveEncoder": effectiveVideoEncoder,
+		})
+		return
+	}
 
 	c.Header("Content-Type", "video/mp4")
 	c.Header("Content-Disposition", `inline; filename="`+strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+`-preview.mp4"`)
@@ -2227,7 +2299,437 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	c.Header("X-MVForge-Preview-Mode", previewMode)
 	c.Header("X-MVForge-Preview-Cache", map[bool]string{true: "hit", false: "miss"}[cacheHit])
 	c.Header("X-MVForge-Preview-Generation-Ms", strconv.FormatInt(time.Since(started).Milliseconds(), 10))
+	c.Header("X-MVForge-Preview-Normalization", normalization.Mode)
+	c.Header("X-MVForge-Requested-Encoder", requestedVideoEncoder)
+	c.Header("X-MVForge-Effective-Encoder", effectiveVideoEncoder)
 	c.File(cachePath)
+}
+
+func argumentValue(args []string, name string) string {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == name {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+func (h AssetHandler) CompatiblePreviewInspection(c *gin.Context) {
+	query := c.Request.URL.Query()
+	query.Set("inspect", "true")
+	query.Del("metrics")
+	query.Del("frame")
+	c.Request.URL.RawQuery = query.Encode()
+	h.CompatiblePreview(c)
+}
+
+func (h AssetHandler) CompatiblePreviewMetrics(c *gin.Context) {
+	query := c.Request.URL.Query()
+	query.Set("metrics", "true")
+	query.Del("inspect")
+	query.Del("frame")
+	c.Request.URL.RawQuery = query.Encode()
+	h.CompatiblePreview(c)
+}
+
+type previewFrameMetrics struct {
+	Comparable       bool    `json:"comparable"`
+	Reason           string  `json:"reason"`
+	SourceDimensions string  `json:"sourceDimensions"`
+	OutputDimensions string  `json:"outputDimensions"`
+	SSIM             float64 `json:"ssim,omitempty"`
+	PSNR             float64 `json:"psnr,omitempty"`
+}
+
+func generatePreviewFrameMetrics(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string) (previewFrameMetrics, error) {
+	source, err := probePreviewCharacteristics(sourcePath)
+	if err != nil {
+		return previewFrameMetrics{}, err
+	}
+	output, err := probePreviewCharacteristics(outputPath)
+	if err != nil {
+		return previewFrameMetrics{}, err
+	}
+	sourceWidth, sourceHeight := squarePixelFrameDimensions(source)
+	outputWidth, outputHeight := squarePixelFrameDimensions(output)
+	result := previewFrameMetrics{
+		SourceDimensions: fmt.Sprintf("%dx%d", sourceWidth, sourceHeight),
+		OutputDimensions: fmt.Sprintf("%dx%d", outputWidth, outputHeight),
+	}
+	if sourceWidth != outputWidth || sourceHeight != outputHeight {
+		result.Reason = "PSNR and SSIM were skipped because the displayed frame geometry differs."
+		return result, nil
+	}
+	sourceFilter = joinPreviewFilters(sourceFilter, squarePixelFrameFilter(source), "format=yuv420p")
+	outputFilter := joinPreviewFilters(squarePixelFrameFilter(output), "format=yuv420p")
+	ssim, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "ssim")
+	if err != nil {
+		return previewFrameMetrics{}, err
+	}
+	psnr, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "psnr")
+	if err != nil {
+		return previewFrameMetrics{}, err
+	}
+	result.Comparable = true
+	result.Reason = "Both decoded frames were compared in the same color domain, pixel format, and square-pixel geometry."
+	result.SSIM = ssim
+	result.PSNR = psnr
+	return result, nil
+}
+
+func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string) (float64, error) {
+	args := []string{"-hide_banner", "-loglevel", "info"}
+	if sourceStart != "" && sourceStart != "0" && sourceStart != "00:00:00" {
+		args = append(args, "-ss", sourceStart)
+	}
+	args = append(args,
+		"-i", sourcePath,
+		"-i", outputPath,
+		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[conversion];[reference][conversion]%s", sourceFilter, outputFilter, metric),
+		"-frames:v", "1",
+		"-an", "-sn", "-dn",
+		"-f", "null",
+		"-",
+	)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return 0, fmt.Errorf("%s", message)
+	}
+	pattern := `All:([0-9.]+)`
+	if metric == "psnr" {
+		pattern = `average:([0-9.]+|inf)`
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(stderr.String())
+	if len(match) != 2 {
+		return 0, fmt.Errorf("FFmpeg did not report %s for the selected frame", strings.ToUpper(metric))
+	}
+	if match[1] == "inf" {
+		return 100, nil
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func generatePreviewFrame(ctx context.Context, path string, start string, baseFilter string) ([]byte, error) {
+	characteristics, err := probePreviewCharacteristics(path)
+	if err != nil {
+		return nil, err
+	}
+	filter := joinPreviewFilters(baseFilter, squarePixelFrameFilter(characteristics))
+	args := []string{"-hide_banner", "-loglevel", "error"}
+	if start != "" && start != "0" && start != "00:00:00" {
+		args = append(args, "-ss", start)
+	}
+	args = append(args,
+		"-i", path,
+		"-map", "0:v:0",
+		"-frames:v", "1",
+		"-vf", filter,
+		"-an", "-sn", "-dn",
+		"-c:v", "png",
+		"-f", "image2pipe",
+		"pipe:1",
+	)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("%s", message)
+	}
+	if len(output) == 0 {
+		return nil, fmt.Errorf("FFmpeg returned an empty PNG frame")
+	}
+	return output, nil
+}
+
+func squarePixelFrameFilter(characteristics previewVideoCharacteristics) string {
+	displayWidth, displayHeight := squarePixelFrameDimensions(characteristics)
+	if displayWidth == characteristics.Width && displayHeight == characteristics.Height {
+		return "setsar=1"
+	}
+	return fmt.Sprintf("scale=%d:%d:flags=lanczos,setsar=1", displayWidth, displayHeight)
+}
+
+func squarePixelFrameDimensions(characteristics previewVideoCharacteristics) (int, int) {
+	if !validAspectRatio(characteristics.SampleAspectRatio) || characteristics.SampleAspectRatio == "1:1" {
+		return characteristics.Width, characteristics.Height
+	}
+	parts := strings.Split(characteristics.SampleAspectRatio, ":")
+	numerator, _ := strconv.Atoi(parts[0])
+	denominator, _ := strconv.Atoi(parts[1])
+	if numerator <= 0 || denominator <= 0 || characteristics.Width <= 0 || characteristics.Height <= 0 {
+		return characteristics.Width, characteristics.Height
+	}
+	displayWidth := int(math.Round(float64(characteristics.Width*numerator) / float64(denominator)))
+	if displayWidth <= 0 {
+		return characteristics.Width, characteristics.Height
+	}
+	return displayWidth, characteristics.Height
+}
+
+type previewNormalizationDecision struct {
+	Mode          string                      `json:"mode"`
+	Applied       bool                        `json:"applied"`
+	Filter        string                      `json:"filter,omitempty"`
+	Reason        string                      `json:"reason"`
+	InputColor    previewVideoCharacteristics `json:"inputColor"`
+	OutputColor   previewVideoCharacteristics `json:"outputColor"`
+	SARPreserved  bool                        `json:"sarPreserved"`
+	AliasWarnings []string                    `json:"aliasWarnings,omitempty"`
+}
+
+func normalizedPreviewNormalizationMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "preserve":
+		return "preserve"
+	case "normalize_bt709", "", "auto":
+		return "normalize_bt709"
+	default:
+		return "normalize_bt709"
+	}
+}
+
+func buildPreviewNormalization(path string, mode string) previewNormalizationDecision {
+	source, err := probePreviewCharacteristics(path)
+	decision := previewNormalizationDecision{
+		Mode: mode, InputColor: source, OutputColor: source,
+		SARPreserved: source.SampleAspectRatio != "",
+	}
+	if err != nil {
+		decision.Reason = "Source characteristics could not be probed; preview normalization was not applied."
+		decision.AliasWarnings = []string{err.Error()}
+		return decision
+	}
+	if mode == "preserve" {
+		decision.Reason = "The preview decoder and encoder preserve the source color domain where supported."
+		return decision
+	}
+	if !ffmpegFilterAvailable("colorspace") {
+		decision.Reason = "BT.709 normalization was skipped because this FFmpeg build does not provide the colorspace filter."
+		decision.AliasWarnings = []string{"Install or build FFmpeg with the colorspace filter before enabling canonical preview normalization."}
+		return decision
+	}
+	matrix, matrixOK := colorspaceColorAlias(source.ColorSpace, "matrix")
+	primaries, primariesOK := colorspaceColorAlias(source.ColorPrimaries, "primaries")
+	transfer, transferOK := colorspaceColorAlias(source.ColorTransfer, "transfer")
+	inputRange, rangeOK := colorspaceColorAlias(source.ColorRange, "range")
+	if !matrixOK || !primariesOK || !transferOK || !rangeOK {
+		missing := []string{}
+		if !matrixOK {
+			missing = append(missing, "matrix="+unknownLabel(source.ColorSpace))
+		}
+		if !primariesOK {
+			missing = append(missing, "primaries="+unknownLabel(source.ColorPrimaries))
+		}
+		if !transferOK {
+			missing = append(missing, "transfer="+unknownLabel(source.ColorTransfer))
+		}
+		if !rangeOK {
+			missing = append(missing, "range="+unknownLabel(source.ColorRange))
+		}
+		decision.Reason = "BT.709 normalization was skipped because the source color interpretation is incomplete."
+		decision.AliasWarnings = []string{"Unsupported or missing FFmpeg color aliases: " + strings.Join(missing, ", ")}
+		return decision
+	}
+	filters := []string{fmt.Sprintf(
+		"colorspace=ispace=%s:iprimaries=%s:itrc=%s:irange=%s:space=bt709:primaries=bt709:trc=bt709:range=tv",
+		matrix, primaries, transfer, inputRange,
+	)}
+	if validAspectRatio(source.SampleAspectRatio) {
+		filters = append(filters, "setsar="+strings.ReplaceAll(source.SampleAspectRatio, ":", "/"))
+	}
+	decision.Applied = true
+	decision.Filter = strings.Join(filters, ",")
+	decision.Reason = "Pixel values were converted mathematically from the declared source color domain to limited-range BT.709."
+	decision.OutputColor.ColorSpace = "bt709"
+	decision.OutputColor.ColorPrimaries = "bt709"
+	decision.OutputColor.ColorTransfer = "bt709"
+	decision.OutputColor.ColorRange = "tv"
+	return decision
+}
+
+func colorspaceColorAlias(value string, kind string) (string, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	aliases := map[string]map[string]string{
+		"matrix": {
+			"bt709": "bt709", "bt470bg": "bt470bg", "smpte170m": "smpte170m",
+			"smpte240m": "smpte240m", "bt2020nc": "bt2020nc", "bt2020ncl": "bt2020ncl",
+		},
+		"primaries": {
+			"bt709": "bt709", "bt470m": "bt470m", "bt470bg": "bt470bg",
+			"smpte170m": "smpte170m", "smpte240m": "smpte240m", "bt2020": "bt2020",
+		},
+		"transfer": {
+			"bt709": "bt709", "bt470m": "bt470m", "bt470bg": "bt470bg",
+			"smpte170m": "smpte170m", "smpte240m": "smpte240m", "bt2020-10": "bt2020-10", "bt2020-12": "bt2020-12",
+		},
+		"range": {
+			"tv": "tv", "limited": "tv", "pc": "pc", "full": "pc",
+		},
+	}
+	alias, ok := aliases[kind][value]
+	return alias, ok
+}
+
+func validAspectRatio(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return false
+	}
+	left, leftErr := strconv.Atoi(parts[0])
+	right, rightErr := strconv.Atoi(parts[1])
+	return leftErr == nil && rightErr == nil && left > 0 && right > 0
+}
+
+func unknownLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(value)
+}
+
+func ffmpegFilterAvailable(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	if cached, ok := previewFilterCapabilityCache.Load(name); ok {
+		available, _ := cached.(bool)
+		return available
+	}
+	output, err := exec.Command("ffmpeg", "-hide_banner", "-h", "filter="+name).CombinedOutput()
+	available := err == nil && !strings.Contains(strings.ToLower(string(output)), "unknown filter")
+	previewFilterCapabilityCache.Store(name, available)
+	return available
+}
+
+func joinPreviewFilters(filters ...string) string {
+	result := []string{}
+	for _, filter := range filters {
+		filter = strings.TrimSpace(filter)
+		if filter == "" || filter == "null" {
+			continue
+		}
+		result = append(result, filter)
+	}
+	if len(result) == 0 {
+		return "null"
+	}
+	return strings.Join(result, ",")
+}
+
+type previewVideoCharacteristics struct {
+	Codec              string `json:"codec"`
+	Profile            string `json:"profile,omitempty"`
+	PixelFormat        string `json:"pixelFormat,omitempty"`
+	BitDepth           int    `json:"bitDepth,omitempty"`
+	Width              int    `json:"width"`
+	Height             int    `json:"height"`
+	SampleAspectRatio  string `json:"sampleAspectRatio,omitempty"`
+	DisplayAspectRatio string `json:"displayAspectRatio,omitempty"`
+	FrameRate          string `json:"frameRate,omitempty"`
+	FieldOrder         string `json:"fieldOrder,omitempty"`
+	ColorRange         string `json:"colorRange,omitempty"`
+	ColorSpace         string `json:"colorSpace,omitempty"`
+	ColorTransfer      string `json:"colorTransfer,omitempty"`
+	ColorPrimaries     string `json:"colorPrimaries,omitempty"`
+	ChromaLocation     string `json:"chromaLocation,omitempty"`
+}
+
+func probePreviewCharacteristics(path string) (previewVideoCharacteristics, error) {
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,profile,pix_fmt,bits_per_raw_sample,width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate,field_order,color_range,color_space,color_transfer,color_primaries,chroma_location",
+		"-of", "json",
+		path,
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return previewVideoCharacteristics{}, fmt.Errorf("%s", message)
+	}
+	var result struct {
+		Streams []struct {
+			CodecName          string `json:"codec_name"`
+			Profile            string `json:"profile"`
+			PixFmt             string `json:"pix_fmt"`
+			BitsPerRawSample   string `json:"bits_per_raw_sample"`
+			Width              int    `json:"width"`
+			Height             int    `json:"height"`
+			SampleAspectRatio  string `json:"sample_aspect_ratio"`
+			DisplayAspectRatio string `json:"display_aspect_ratio"`
+			AverageFrameRate   string `json:"avg_frame_rate"`
+			FieldOrder         string `json:"field_order"`
+			ColorRange         string `json:"color_range"`
+			ColorSpace         string `json:"color_space"`
+			ColorTransfer      string `json:"color_transfer"`
+			ColorPrimaries     string `json:"color_primaries"`
+			ChromaLocation     string `json:"chroma_location"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return previewVideoCharacteristics{}, err
+	}
+	if len(result.Streams) == 0 {
+		return previewVideoCharacteristics{}, fmt.Errorf("ffprobe found no video stream")
+	}
+	stream := result.Streams[0]
+	bitDepth, _ := strconv.Atoi(stream.BitsPerRawSample)
+	if bitDepth == 0 {
+		bitDepth = pixelFormatBitDepth(stream.PixFmt)
+	}
+	return previewVideoCharacteristics{
+		Codec: stream.CodecName, Profile: stream.Profile, PixelFormat: stream.PixFmt, BitDepth: bitDepth,
+		Width: stream.Width, Height: stream.Height, SampleAspectRatio: stream.SampleAspectRatio,
+		DisplayAspectRatio: stream.DisplayAspectRatio, FrameRate: stream.AverageFrameRate,
+		FieldOrder: stream.FieldOrder, ColorRange: stream.ColorRange, ColorSpace: stream.ColorSpace,
+		ColorTransfer: stream.ColorTransfer, ColorPrimaries: stream.ColorPrimaries,
+		ChromaLocation: stream.ChromaLocation,
+	}, nil
+}
+
+func pixelFormatBitDepth(value string) int {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case value == "nv12":
+		return 8
+	case strings.Contains(value, "16"):
+		return 16
+	case strings.Contains(value, "14"):
+		return 14
+	case strings.Contains(value, "12"):
+		return 12
+	case strings.Contains(value, "10"):
+		return 10
+	case strings.Contains(value, "9"):
+		return 9
+	case value != "":
+		return 8
+	default:
+		return 0
+	}
 }
 
 func normalizedPreviewMode(value string) string {
@@ -3654,6 +4156,9 @@ func assetConversionOverrides(db *gorm.DB) map[string]AssetConversionOverrideSta
 		if err := json.Unmarshal(bytes, &override); err != nil {
 			continue
 		}
+		// Work mode is no longer a per-asset setting. Queue selection derives
+		// it from whether a video profile is selected.
+		override.ProcessingMode = ""
 		entries[filepath.Clean(rawPath)] = override
 	}
 	return entries
@@ -3911,6 +4416,7 @@ func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransfor
 		if value.Language == "" {
 			value.Language = "und"
 		}
+		value.OCRLanguage = strings.ToLower(strings.TrimSpace(value.OCRLanguage))
 		result = append(result, value)
 	}
 	return result

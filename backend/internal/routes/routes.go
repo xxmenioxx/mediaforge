@@ -82,6 +82,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/assets/conversion", assets.UpdateConversion)
 		api.GET("/assets/preview", assets.Preview)
 		api.GET("/assets/preview/compatible", assets.CompatiblePreview)
+		api.GET("/assets/preview/inspect", assets.CompatiblePreviewInspection)
+		api.GET("/assets/preview/metrics", assets.CompatiblePreviewMetrics)
 		api.GET("/assets/preview/audio", assets.AudioPreview)
 		api.POST("/analysis/backfill-as-is", handlers.BackfillAnalysisFromAsIsReports(db))
 		api.GET("/paths/browse", paths.Browse)

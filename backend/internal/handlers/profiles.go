@@ -73,6 +73,7 @@ func (h ProfileHandler) Create(c *gin.Context) {
 	if input.WorkerConfig == nil {
 		input.WorkerConfig = models.JSONMap{}
 	}
+	delete(input.WorkerConfig, "processingMode")
 
 	profile := models.Profile{
 		Name:              input.Name,
@@ -122,10 +123,10 @@ func (h ProfileHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
 	if input.WorkerConfig == nil {
 		input.WorkerConfig = models.JSONMap{}
 	}
+	delete(input.WorkerConfig, "processingMode")
 
 	var profile models.Profile
 	if err := h.db.First(&profile, uint(id)).Error; err != nil {

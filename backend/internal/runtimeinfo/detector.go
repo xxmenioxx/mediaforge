@@ -59,6 +59,8 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	}
 	snapshot.TotalMemoryBytes, snapshot.AvailableMemoryBytes = detectMemory()
 	snapshot.CPULoad1 = detectCPULoad1()
+	snapshot.GPUDetected, snapshot.GPUUsageAvailable, snapshot.GPUUsagePercent,
+		snapshot.GPUMediaUsagePercent, snapshot.GPURenderUsagePercent, snapshot.GPUMetricSource = detectGPUUsage()
 	snapshot.BatteryPresent, snapshot.PowerSource, snapshot.OnBattery, snapshot.BatteryPercent = detectPower()
 
 	paths := loadDiskProbePaths(db)
@@ -99,6 +101,86 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 		return models.RuntimeSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func detectGPUUsage() (detected bool, available bool, total float64, media float64, render float64, source string) {
+	if runtime.GOOS != "linux" {
+		return false, false, 0, 0, 0, ""
+	}
+	cards, _ := filepath.Glob("/sys/class/drm/card[0-9]*")
+	detected = len(cards) > 0
+	first := readDRMEngineCounters("/proc")
+	started := time.Now()
+	time.Sleep(250 * time.Millisecond)
+	second := readDRMEngineCounters("/proc")
+	elapsed := time.Since(started).Seconds()
+	if elapsed <= 0 || len(first) == 0 || len(second) == 0 {
+		return detected, false, 0, 0, 0, ""
+	}
+	usage := drmEngineUsage(first, second, elapsed)
+	if len(usage) == 0 {
+		return detected, false, 0, 0, 0, ""
+	}
+	for engine, percent := range usage {
+		total = max(total, percent)
+		switch {
+		case strings.Contains(engine, "video"):
+			media = min(100, media+percent)
+		case strings.Contains(engine, "render") || strings.Contains(engine, "compute"):
+			render = min(100, render+percent)
+		}
+	}
+	return detected, true, min(100, total), media, render, "drm_fdinfo"
+}
+
+func readDRMEngineCounters(procRoot string) map[string]uint64 {
+	result := map[string]uint64{}
+	files, _ := filepath.Glob(filepath.Join(procRoot, "[0-9]*", "fdinfo", "*"))
+	for _, path := range files {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for engine, value := range parseDRMEngineCounters(string(content)) {
+			result[engine] += value
+		}
+	}
+	return result
+}
+
+func parseDRMEngineCounters(content string) map[string]uint64 {
+	result := map[string]uint64{}
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || !strings.HasPrefix(key, "drm-engine-") {
+			continue
+		}
+		fields := strings.Fields(value)
+		if len(fields) == 0 {
+			continue
+		}
+		nanoseconds, err := strconv.ParseUint(fields[0], 10, 64)
+		if err == nil {
+			result[strings.TrimPrefix(strings.ToLower(key), "drm-engine-")] += nanoseconds
+		}
+	}
+	return result
+}
+
+func drmEngineUsage(first map[string]uint64, second map[string]uint64, elapsedSeconds float64) map[string]float64 {
+	result := map[string]float64{}
+	if elapsedSeconds <= 0 {
+		return result
+	}
+	elapsedNanoseconds := elapsedSeconds * float64(time.Second)
+	for engine, after := range second {
+		before, exists := first[engine]
+		if !exists || after < before {
+			continue
+		}
+		result[engine] = min(100, (float64(after-before)/elapsedNanoseconds)*100)
+	}
+	return result
 }
 
 // loadDiskProbePaths prefers registered library destinations because Docker

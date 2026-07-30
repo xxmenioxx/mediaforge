@@ -147,7 +147,20 @@ export function ProfilesPage() {
   });
 
   function updateField<K extends keyof ProfileInput>(field: K, value: ProfileInput[K]) {
-    const next = { ...form, [field]: value };
+    let next = { ...form, [field]: value };
+    if (field === 'videoCodec' && typeof value === 'string' &&
+      workerConfigString(next, 'preferredEncoder', 'software') === 'hardware' &&
+      hardwareEncodersFor(codecFamilyFor(value)).length === 0) {
+      next = {
+        ...next,
+        workerConfig: {
+          ...next.workerConfig,
+          preferredEncoder: 'software',
+          useHardwareIfAvailable: false,
+          videoEncoder: 'auto',
+        },
+      };
+    }
     setProfileForm(field === 'videoCodec' || field === 'qualityValue' ? synchronizeAuthoritativeContract(next) : next);
   }
 
@@ -163,6 +176,31 @@ export function ProfilesPage() {
       },
     };
     setProfileForm(['videoEncoder', 'useHardwareIfAvailable', 'pixFmt'].includes(key) ? synchronizeAuthoritativeContract(next) : next);
+  }
+
+  function updateProcessingPreference(preference: 'auto' | 'software' | 'hardware') {
+    const currentEncoder = workerConfigString(form, 'videoEncoder', 'auto');
+    const hardware = preference === 'hardware';
+    const hardwareAvailable = hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length > 0;
+    const next = {
+      ...form,
+      workerConfig: {
+        ...form.workerConfig,
+        preferredEncoder: preference,
+        useHardwareIfAvailable: preference !== 'software' && hardwareAvailable,
+        videoEncoder: preference === 'software' || preference === 'auto'
+          ? 'auto'
+          : isHardwareEncoderOption(currentEncoder) ? currentEncoder : 'auto',
+        ...(!hardware ? {
+          qsvRateControl: undefined,
+          qsvLookAheadDepth: undefined,
+          qsvExtendedBRC: undefined,
+          qsvAdaptiveI: undefined,
+          qsvAdaptiveB: undefined,
+        } : {}),
+      },
+    };
+    setProfileForm(synchronizeAuthoritativeContract(next));
   }
 
   function updateX265Param(key: string, value: string) {
@@ -429,8 +467,9 @@ export function ProfilesPage() {
             : initialProfile.workerConfig,
       };
 
-      setForm(next);
-      setProfileJson(JSON.stringify(next, null, 2));
+      const synchronized = synchronizeAuthoritativeContract(next);
+      setForm(synchronized);
+      setProfileJson(JSON.stringify(synchronized, null, 2));
     } catch {
       setProfileJson(JSON.stringify(form, null, 2));
     }
@@ -593,37 +632,35 @@ export function ProfilesPage() {
                       <Grid container spacing={2} alignItems="flex-start">
                         <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
-                            label="Encoder"
-                            value={workerConfigString(form, 'videoEncoder', 'auto')}
-                            onChange={(event) => updateWorkerConfig('videoEncoder', event.target.value)}
-                            helperText={videoEncoderDescription(workerConfigString(form, 'videoEncoder', 'auto'))}
+                            label="Processing preference"
+                            value={workerConfigString(form, 'preferredEncoder', 'software')}
+                            onChange={(event) => updateProcessingPreference(event.target.value as 'auto' | 'software' | 'hardware')}
+                            helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
                             disabled={form.videoCodec === 'copy'}
                             select
                             fullWidth
                           >
-                            {videoEncoderOptions.map((option) => (
-                              <MenuItem key={option.value} value={option.value} disabled={isHardwareEncoderOption(option.value) && !workerConfigBool(form, 'useHardwareIfAvailable')}>
-                                {option.label}
-                              </MenuItem>
-                            ))}
+                            <MenuItem value="auto">Auto</MenuItem>
+                            <MenuItem value="software">Software · match Video Codec</MenuItem>
+                            <MenuItem value="hardware" disabled={hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length === 0}>Hardware</MenuItem>
                           </TextField>
                         </Grid>
-                        <Grid size={{ xs: 12, md: 4 }}>
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
-                            label="Hardware preference"
-                            value={workerConfigString(form, 'preferredEncoder', 'software')}
-                            onChange={(event) => updateWorkerConfig('preferredEncoder', event.target.value)}
-                            helperText="Hardware is faster for bulk queues; software x265 is better for careful archival compression."
-                            disabled={form.videoCodec === 'copy' || !workerConfigBool(form, 'useHardwareIfAvailable')}
+                            label="Hardware encoder"
+                            value={workerConfigString(form, 'videoEncoder', 'auto')}
+                            onChange={(event) => updateWorkerConfig('videoEncoder', event.target.value)}
+                            helperText={videoEncoderDescription(workerConfigString(form, 'videoEncoder', 'auto'))}
                             select
                             fullWidth
                           >
-                            <MenuItem value="software">Prefer software quality</MenuItem>
-                            <MenuItem value="hardware">Prefer hardware speed</MenuItem>
                             <MenuItem value="auto">Auto</MenuItem>
+                            {videoEncoderOptions.filter((option) => isHardwareEncoderOption(option.value)).map((option) => (
+                              <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                            ))}
                           </TextField>
-                        </Grid>
-                        <Grid size={{ xs: 12, md: 4 }}>
+                        </Grid> : null}
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label="Hardware quality"
                             value={workerConfigNumber(form, 'globalQuality', qsvQualityRangeForCrf(form.qualityValue || 20).recommended)}
@@ -631,11 +668,11 @@ export function ProfilesPage() {
                             helperText={hardwareQualityHelper(form.qualityValue)}
                             type="number"
                             inputProps={{ min: 15, max: 35 }}
-                            disabled={form.videoCodec === 'copy' || !workerConfigBool(form, 'useHardwareIfAvailable') || workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
+                            disabled={workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
                             fullWidth
                           />
-                        </Grid>
-                        {workerConfigBool(form, 'useHardwareIfAvailable') && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
+                        </Grid> : null}
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
                           <>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField
@@ -679,7 +716,7 @@ export function ProfilesPage() {
                             </Grid>
                           </>
                         ) : null}
-                        {workerConfigBool(form, 'useHardwareIfAvailable') && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
@@ -692,17 +729,6 @@ export function ProfilesPage() {
                             </Grid>
                           </>
                         ) : null}
-                        <Grid size={{ xs: 12, md: 4 }}>
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={workerConfigBool(form, 'useHardwareIfAvailable')}
-                                onChange={(event) => updateWorkerConfig('useHardwareIfAvailable', event.target.checked)}
-                              />
-                            }
-                            label="Use hardware if available"
-                          />
-                        </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                           <FormControlLabel
                             control={
@@ -880,14 +906,16 @@ export function ProfilesPage() {
                               label="Deinterlacing"
                               value={workerConfigString(form, 'deinterlaceMode', 'auto')}
                               onChange={(event) => updateWorkerConfig('deinterlaceMode', event.target.value)}
-                              helperText="Auto analyzes the asset before encoding."
+                              helperText={workerConfigString(form, 'deinterlaceMode', 'auto') === 'force'
+                                ? 'bwdif=mode=send_frame:parity=auto:deint=all; output is marked progressive automatically.'
+                                : 'Auto analyzes the asset before encoding and updates output field metadata when a correction is applied.'}
                               disabled={form.videoCodec === 'copy'}
                               select
                               fullWidth
                             >
                               <MenuItem value="auto">Auto at conversion (uses Analysis)</MenuItem>
                               <MenuItem value="off">Off</MenuItem>
-                              <MenuItem value="force">Force</MenuItem>
+                              <MenuItem value="force">Force · bwdif (single-rate)</MenuItem>
                             </TextField>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -1142,6 +1170,9 @@ function subtitleOutputFormat(profile: ProfileInput) {
 }
 
 function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
+  const workerConfig = { ...profile.workerConfig };
+  delete workerConfig.processingMode;
+  profile = { ...profile, workerConfig };
   const codecFamily = codecFamilyFor(profile.videoCodec);
   const qualityStrategy = profile.videoCodec === 'copy' ? 'source' : 'crf';
   if (codecFamily === 'copy') {
@@ -1160,8 +1191,8 @@ function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
 
   const configured = workerConfigString(profile, 'videoEncoder', 'auto');
   const software = codecFamily === 'h264' ? 'libx264' : codecFamily === 'av1' ? 'libsvtav1' : 'libx265';
-  const hardwareAllowed = workerConfigBool(profile, 'useHardwareIfAvailable');
   const hardware = hardwareEncodersFor(codecFamily);
+  const hardwareAllowed = workerConfigBool(profile, 'useHardwareIfAvailable') && hardware.length > 0;
   const pixelFormat = workerConfigString(profile, 'pixFmt', profile.pixelFormat || 'yuv420p');
   const normalizedPixelFormat = pixelFormat.toLowerCase();
   const bitDepth = normalizedPixelFormat === 'auto'
@@ -1220,9 +1251,7 @@ function codecFamilyFor(videoCodec: string) {
 }
 
 function hardwareEncodersFor(codecFamily: string) {
-  if (codecFamily === 'h264') return ['h264_qsv', 'h264_nvenc', 'h264_videotoolbox', 'h264_amf'];
-  if (codecFamily === 'av1') return ['av1_qsv', 'av1_nvenc', 'av1_amf'];
-  if (codecFamily === 'hevc') return ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'];
+  if (codecFamily === 'hevc') return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'];
   return [];
 }
 
@@ -1307,7 +1336,10 @@ function buildDryRunCommand(profile: ProfileInput) {
   const input = '<input>';
   const output = `<output>.${profile.container}`;
   const encoder = workerConfigString(profile, 'videoEncoder', 'auto');
-  const resolvedEncoder = encoder === 'auto' ? (workerConfigBool(profile, 'useHardwareIfAvailable') ? 'auto-hardware' : profile.videoCodec) : encoder;
+  const hardwareAvailable = hardwareEncodersFor(codecFamilyFor(profile.videoCodec)).length > 0;
+  const resolvedEncoder = encoder === 'auto'
+    ? (workerConfigBool(profile, 'useHardwareIfAvailable') && hardwareAvailable ? 'auto-hardware' : softwareEncoderForVideoCodec(profile.videoCodec))
+    : encoder;
   const isHardware = ['hevc_qsv', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf', 'auto-hardware'].includes(resolvedEncoder);
   const isVideoToolbox = resolvedEncoder === 'hevc_videotoolbox';
   const videoArgs = profile.videoCodec === 'copy' ? '-c:v copy' : `-c:v ${resolvedEncoder}`;
@@ -1339,4 +1371,12 @@ function buildDryRunCommand(profile: ProfileInput) {
   return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, qsvArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
     .filter(Boolean)
     .join(' ');
+}
+
+function softwareEncoderForVideoCodec(videoCodec: string) {
+  const family = codecFamilyFor(videoCodec);
+  if (family === 'h264') return 'libx264';
+  if (family === 'hevc') return 'libx265';
+  if (family === 'av1') return 'libsvtav1';
+  return family === 'copy' ? 'copy' : videoCodec;
 }

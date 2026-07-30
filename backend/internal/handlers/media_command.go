@@ -38,13 +38,18 @@ type MediaStreamInventory struct {
 }
 
 type MediaStream struct {
-	Index      int
-	Codec      string
-	FieldOrder string
-	Language   string
-	Title      string
-	Default    bool
-	Forced     bool
+	Index          int
+	Codec          string
+	FieldOrder     string
+	PixelFormat    string
+	ColorRange     string
+	ColorSpace     string
+	ColorTransfer  string
+	ColorPrimaries string
+	Language       string
+	Title          string
+	Default        bool
+	Forced         bool
 }
 
 type MediaAudioStream struct {
@@ -124,8 +129,12 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	args = append(args, "-c", "copy")
 	if plan.ProcessingMode == ProcessingModeFullEncode {
 		effectiveProfile := profileWithAutomaticDeinterlace(plan.Profile, plan.Interlace)
+		if len(plan.Streams.Video) > 0 {
+			effectiveProfile = profileWithAutomaticVideoToolboxColor(effectiveProfile, plan.Streams.Video[0])
+		}
 		args = append(args, videoCodecArgs(effectiveProfile)...)
 		args = append(args, videoWorkerArgs(effectiveProfile)...)
+		args = append(args, videoColorMetadataArgs(effectiveProfile)...)
 	} else {
 		args = append(args, "-c:v", "copy")
 	}
@@ -240,18 +249,128 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
 	}
 	filter := effectiveDeinterlaceFilter(mode, analysis)
-	if filter == "" {
+	fieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(filter, existingVideoFilters(profile), analysis)
+	if filter == "" && fieldMetadataFilter == "" {
 		return profile
 	}
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
 	if existing != "" && !strings.Contains(existing, "bwdif=") && !strings.Contains(existing, "yadif=") {
-		filter += "," + existing
+		if filter != "" {
+			filter += ","
+		}
+		filter += existing
 	} else if existing != "" {
 		filter = existing
 	}
+	if fieldMetadataFilter != "" && !strings.Contains(filter, "setfield=") {
+		if filter != "" {
+			filter += ","
+		}
+		filter += fieldMetadataFilter
+	}
 	profile.WorkerConfig["videoFilters"] = filter
 	return profile
+}
+
+func existingVideoFilters(profile models.Profile) string {
+	return strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+}
+
+func profileWithAutomaticVideoToolboxColor(profile models.Profile, source MediaStream) models.Profile {
+	return profileWithAutomaticVideoToolboxColorForEncoder(profile, source, resolvedVideoEncoder(profile))
+}
+
+func profileWithAutomaticVideoToolboxColorForEncoder(profile models.Profile, source MediaStream, encoder string) models.Profile {
+	if encoder != "hevc_videotoolbox" {
+		return profile
+	}
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	if sourceUsesBT709(source) {
+		setProfileOutputColorMetadata(profile.WorkerConfig, "bt709", "bt709", "bt709", normalizedFFmpegRange(source.ColorRange))
+		return profile
+	}
+	matrix, matrixOK := colorspaceColorAlias(source.ColorSpace, "matrix")
+	primaries, primariesOK := colorspaceColorAlias(source.ColorPrimaries, "primaries")
+	transfer, transferOK := colorspaceColorAlias(source.ColorTransfer, "transfer")
+	inputRange, rangeOK := colorspaceColorAlias(source.ColorRange, "range")
+	if !matrixOK || !primariesOK || !transferOK || !rangeOK {
+		return profile
+	}
+	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+	if !strings.Contains(strings.ToLower(existing), "colorspace=") {
+		colorFilter := fmt.Sprintf(
+			"colorspace=ispace=%s:iprimaries=%s:itrc=%s:irange=%s:space=bt709:primaries=bt709:trc=bt709:range=tv",
+			matrix, primaries, transfer, inputRange,
+		)
+		if existing != "" {
+			existing += ","
+		}
+		profile.WorkerConfig["videoFilters"] = existing + colorFilter
+	}
+	setProfileOutputColorMetadata(profile.WorkerConfig, "bt709", "bt709", "bt709", "tv")
+	profile.WorkerConfig["automaticColorConversion"] = "videotoolbox_legacy_to_bt709"
+	return profile
+}
+
+func sourceUsesBT709(source MediaStream) bool {
+	return strings.EqualFold(strings.TrimSpace(source.ColorSpace), "bt709") &&
+		strings.EqualFold(strings.TrimSpace(source.ColorTransfer), "bt709") &&
+		strings.EqualFold(strings.TrimSpace(source.ColorPrimaries), "bt709")
+}
+
+func normalizedFFmpegRange(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pc", "full":
+		return "pc"
+	default:
+		return "tv"
+	}
+}
+
+func setProfileOutputColorMetadata(config models.JSONMap, matrix, transfer, primaries, colorRange string) {
+	config["outputColorSpace"] = matrix
+	config["outputColorTransfer"] = transfer
+	config["outputColorPrimaries"] = primaries
+	config["outputColorRange"] = colorRange
+}
+
+func videoColorMetadataArgs(profile models.Profile) []string {
+	if profile.WorkerConfig == nil {
+		return nil
+	}
+	args := []string{}
+	for _, option := range []struct {
+		key  string
+		flag string
+	}{
+		{key: "outputColorSpace", flag: "-colorspace"},
+		{key: "outputColorTransfer", flag: "-color_trc"},
+		{key: "outputColorPrimaries", flag: "-color_primaries"},
+		{key: "outputColorRange", flag: "-color_range"},
+	} {
+		if value := strings.TrimSpace(workerStringValue(profile.WorkerConfig[option.key])); value != "" {
+			args = append(args, option.flag, value)
+		}
+	}
+	return args
+}
+
+func effectiveAutomaticFieldMetadataFilter(motionFilter, existingFilters string, analysis InterlaceAnalysis) string {
+	combined := strings.ToLower(strings.Join([]string{motionFilter, existingFilters}, ","))
+	if strings.Contains(combined, "setfield=") {
+		return ""
+	}
+	correctionProducesProgressiveFrames := strings.Contains(combined, "bwdif=") ||
+		strings.Contains(combined, "yadif=") ||
+		(strings.Contains(combined, "fieldmatch") && strings.Contains(combined, "decimate"))
+	if correctionProducesProgressiveFrames {
+		return "setfield=prog"
+	}
+	if analysis.Status == "progressive" && analysis.FieldOrderMismatch {
+		return "setfield=prog"
+	}
+	return ""
 }
 
 // FFmpeg can transcode text subtitles to SRT or ASS, but it cannot OCR bitmap
@@ -317,7 +436,7 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	if len(streams.Video) > 0 {
 		fieldOrder = streams.Video[0].FieldOrder
 	}
-	processingMode := mediaProcessingMode(profile, audioProfile)
+	processingMode := mediaProcessingMode(profile)
 	analysis := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
 	if processingMode == ProcessingModeFullEncode {
 		analysis = detectInterlace(inputPath, fieldOrder, streams.Duration, 20)
@@ -341,8 +460,59 @@ func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile 
 		return MediaJobPlan{}, err
 	}
 	plan.Override, plan.StreamValidationWarnings = sanitizeConversionOverride(override, plan.Streams)
-	plan.ProcessingMode = mediaProcessingMode(effectiveProfile, audioProfile)
+	applyProfileSubtitleExternalization(&plan)
+	plan.ProcessingMode = mediaProcessingMode(effectiveProfile)
+	// audio_only represents "no video profile selected" while the queue still
+	// carries a technical fallback profile. full_encode is derived from the
+	// effective video codec so a copy profile cannot accidentally encode.
+	if normalizeQueueProcessingMode(override.ProcessingMode) == ProcessingModeAudioOnly {
+		plan.ProcessingMode = ProcessingModeAudioOnly
+	}
 	return plan, nil
+}
+
+func applyProfileSubtitleExternalization(plan *MediaJobPlan) {
+	if plan == nil || strings.TrimSpace(plan.Override.TrackProfileKey) != "" || len(plan.Override.SubtitleTransforms) > 0 {
+		return
+	}
+	format := effectiveExternalSubtitleFormat(plan.Profile)
+	if format == "" {
+		return
+	}
+	transforms := make([]SubtitleTransform, 0, len(plan.Streams.Subtitle))
+	for _, stream := range plan.Streams.Subtitle {
+		transforms = append(transforms, SubtitleTransform{
+			StreamIndex:    stream.Index,
+			Format:         format,
+			RemoveEmbedded: true,
+			MakeDefault:    stream.Default,
+			Language:       stream.Language,
+			OCRLanguage:    stream.Language,
+			Title:          stream.Title,
+		})
+	}
+	plan.Override.SubtitleTransforms = normalizedSubtitleTransforms(transforms)
+	if len(plan.Override.SubtitleTransforms) > 0 {
+		plan.Override.KeepSubtitleStreams = nil
+		plan.StreamValidationWarnings = append(plan.StreamValidationWarnings,
+			fmt.Sprintf("Video profile will externalize all subtitle tracks as %s; embedded subtitle tracks are removed only after every sidecar passes validation.", strings.ToUpper(format)))
+	}
+}
+
+func effectiveExternalSubtitleFormat(profile models.Profile) string {
+	configured := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["externalSubtitleFormat"])))
+	if configured == "" {
+		// Profiles saved before externalSubtitleFormat used subtitleOutputFormat.
+		configured = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["subtitleOutputFormat"])))
+	}
+	switch configured {
+	case "srt":
+		return "srt"
+	case "ass", "ssa":
+		return "ass"
+	default:
+		return ""
+	}
 }
 
 func sanitizeConversionOverride(override AssetConversionOverrideState, streams MediaStreamInventory) (AssetConversionOverrideState, []string) {
@@ -376,8 +546,11 @@ func sanitizeSubtitleTransforms(values []SubtitleTransform, streams []MediaStrea
 			continue
 		}
 		if !subtitleCanConvertText(stream.Codec) {
-			*warnings = append(*warnings, fmt.Sprintf("Subtitle stream %d (%s) requires OCR; transformation was not applied and the embedded track was preserved.", stream.Index, stream.Codec))
-			continue
+			if !isBitmapSubtitleCodecName(stream.Codec) {
+				*warnings = append(*warnings, fmt.Sprintf("Subtitle stream %d (%s) cannot be transformed and was preserved.", stream.Index, stream.Codec))
+				continue
+			}
+			*warnings = append(*warnings, fmt.Sprintf("Subtitle stream %d (%s) will run OCR before media conversion.", stream.Index, stream.Codec))
 		}
 		result = append(result, value)
 	}
@@ -458,9 +631,6 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.X265Params); value != "" {
 		workerConfig["x265Params"] = value
 	}
-	if value := strings.TrimSpace(override.ProcessingMode); value != "" {
-		workerConfig["processingMode"] = value
-	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
 	}
@@ -472,6 +642,23 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := strings.TrimSpace(override.PreferredEncoder); value != "" {
 		workerConfig["preferredEncoder"] = value
+	}
+	switch strings.ToLower(strings.TrimSpace(override.PreferredEncoder)) {
+	case "software":
+		workerConfig["useHardwareIfAvailable"] = false
+		// "auto" with hardware disabled resolves to the software encoder for
+		// the selected VideoCodec (libx264, libx265, libsvtav1, etc.).
+		workerConfig["videoEncoder"] = "auto"
+	case "auto":
+		workerConfig["useHardwareIfAvailable"] = len(hardwareEncoderCandidatesForVideoCodec(profile.VideoCodec)) > 0
+		workerConfig["videoEncoder"] = "auto"
+	case "hardware":
+		hardwareSupported := len(hardwareEncoderCandidatesForVideoCodec(profile.VideoCodec)) > 0
+		workerConfig["useHardwareIfAvailable"] = hardwareSupported
+		encoder := strings.ToLower(strings.TrimSpace(workerStringValue(workerConfig["videoEncoder"])))
+		if !hardwareSupported || encoder == "" || encoder == "libx265" || encoder == "libx264" || encoder == "libsvtav1" {
+			workerConfig["videoEncoder"] = "auto"
+		}
 	}
 	if override.GlobalQuality > 0 {
 		workerConfig["globalQuality"] = override.GlobalQuality
@@ -750,7 +937,7 @@ func resolvedVideoEncoder(profile models.Profile) string {
 	}
 	if selected == "" || selected == "ffmpeg" || selected == "auto" {
 		if profileWorkerBool(profile, "useHardwareIfAvailable", false) {
-			for _, encoder := range []string{"hevc_qsv", "hevc_vaapi", "hevc_videotoolbox", "hevc_nvenc"} {
+			for _, encoder := range hardwareEncoderCandidatesForVideoCodec(profile.VideoCodec) {
 				if ffmpegEncoderAvailableForProfile(encoder, profile) {
 					return encoder
 				}
@@ -760,11 +947,56 @@ func resolvedVideoEncoder(profile models.Profile) string {
 	}
 	encoder := ffmpegCodecName(selected)
 	if isHardwareVideoEncoder(encoder) {
-		if !profileWorkerBool(profile, "useHardwareIfAvailable", false) || !ffmpegEncoderAvailableForProfile(encoder, profile) {
-			return "libx265"
+		if !stringSliceContains(hardwareEncoderCandidatesForVideoCodec(profile.VideoCodec), encoder) ||
+			!encoderMatchesVideoCodec(encoder, profile.VideoCodec) ||
+			!profileWorkerBool(profile, "useHardwareIfAvailable", false) ||
+			!ffmpegEncoderAvailableForProfile(encoder, profile) {
+			return ffmpegCodecName(profile.VideoCodec)
 		}
 	}
 	return encoder
+}
+
+func hardwareEncoderCandidatesForVideoCodec(codec string) []string {
+	switch videoCodecFamily(codec) {
+	case "hevc":
+		return []string{"hevc_qsv", "hevc_vaapi", "hevc_videotoolbox", "hevc_nvenc", "hevc_amf"}
+	default:
+		// MVForge currently smoke-tests HEVC hardware encoders only. Other
+		// codec families remain on their matching software encoder.
+		return nil
+	}
+}
+
+func videoCodecFamily(codec string) string {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	switch {
+	case codec == "copy":
+		return "copy"
+	case strings.Contains(codec, "265") || strings.Contains(codec, "hevc"):
+		return "hevc"
+	case strings.Contains(codec, "264"):
+		return "h264"
+	case strings.Contains(codec, "av1"):
+		return "av1"
+	default:
+		return codec
+	}
+}
+
+func encoderMatchesVideoCodec(encoder, codec string) bool {
+	encoder = strings.ToLower(strings.TrimSpace(encoder))
+	family := videoCodecFamily(codec)
+	switch family {
+	case "hevc":
+		return strings.HasPrefix(encoder, "hevc_")
+	case "h264":
+		return strings.HasPrefix(encoder, "h264_")
+	case "av1":
+		return strings.HasPrefix(encoder, "av1_")
+	default:
+		return false
+	}
 }
 
 func videoWorkerArgs(profile models.Profile) []string {
@@ -911,12 +1143,22 @@ func defaultVideoToolboxBitrateMbps(quality int) int {
 }
 
 func isHardwareVideoEncoder(encoder string) bool {
-	switch encoder {
-	case "hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf":
-		return true
-	default:
-		return false
+	encoder = strings.ToLower(strings.TrimSpace(encoder))
+	for _, suffix := range []string{"_qsv", "_vaapi", "_nvenc", "_videotoolbox", "_amf"} {
+		if strings.HasSuffix(encoder, suffix) {
+			return true
+		}
 	}
+	return false
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func profileWorkerBool(profile models.Profile, key string, fallback bool) bool {
@@ -963,17 +1205,9 @@ func workerIntValue(value interface{}, fallback int) int {
 	return int(number)
 }
 
-func mediaProcessingMode(profile models.Profile, audioProfile *audioEnhancementProfile) string {
-	if profile.WorkerConfig != nil {
-		mode := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["processingMode"])))
-		switch mode {
-		case ProcessingModeAudioOnly, "audio-only", "audioonly":
-			return ProcessingModeAudioOnly
-		case ProcessingModeFullEncode, "full-encode", "fullencode":
-			return ProcessingModeFullEncode
-		}
-	}
-	if audioProfile != nil {
+func mediaProcessingMode(profile models.Profile) string {
+	videoCodec := strings.ToLower(strings.TrimSpace(profile.VideoCodec))
+	if videoCodec == "" || videoCodec == "copy" || videoCodec == "none" {
 		return ProcessingModeAudioOnly
 	}
 	return ProcessingModeFullEncode
@@ -1016,7 +1250,7 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 	cmd := exec.Command(
 		"ffprobe",
 		"-v", "error",
-		"-show_entries", "format=duration:stream=index,codec_type,codec_name,channels,channel_layout,field_order:stream_tags=language,title:stream_disposition=default,forced",
+		"-show_entries", "format=duration:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries:stream_tags=language,title:stream_disposition=default,forced",
 		"-show_chapters",
 		"-of", "json",
 		inputPath,
@@ -1038,14 +1272,19 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			Duration string `json:"duration"`
 		} `json:"format"`
 		Streams []struct {
-			Index         int               `json:"index"`
-			CodecType     string            `json:"codec_type"`
-			CodecName     string            `json:"codec_name"`
-			Channels      int               `json:"channels"`
-			ChannelLayout string            `json:"channel_layout"`
-			FieldOrder    string            `json:"field_order"`
-			Tags          map[string]string `json:"tags"`
-			Disposition   struct {
+			Index          int               `json:"index"`
+			CodecType      string            `json:"codec_type"`
+			CodecName      string            `json:"codec_name"`
+			Channels       int               `json:"channels"`
+			ChannelLayout  string            `json:"channel_layout"`
+			FieldOrder     string            `json:"field_order"`
+			PixelFormat    string            `json:"pix_fmt"`
+			ColorRange     string            `json:"color_range"`
+			ColorSpace     string            `json:"color_space"`
+			ColorTransfer  string            `json:"color_transfer"`
+			ColorPrimaries string            `json:"color_primaries"`
+			Tags           map[string]string `json:"tags"`
+			Disposition    struct {
 				Default int `json:"default"`
 				Forced  int `json:"forced"`
 			} `json:"disposition"`
@@ -1061,13 +1300,18 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 	inventory := MediaStreamInventory{Video: []MediaStream{}, Audio: []MediaAudioStream{}, Subtitle: []MediaStream{}, Duration: parseFloat(response.Format.Duration), ChapterCount: len(response.Chapters)}
 	for _, stream := range response.Streams {
 		common := MediaStream{
-			Index:      stream.Index,
-			Codec:      stream.CodecName,
-			FieldOrder: stream.FieldOrder,
-			Language:   stream.Tags["language"],
-			Title:      stream.Tags["title"],
-			Default:    stream.Disposition.Default == 1,
-			Forced:     stream.Disposition.Forced == 1,
+			Index:          stream.Index,
+			Codec:          stream.CodecName,
+			FieldOrder:     stream.FieldOrder,
+			PixelFormat:    stream.PixelFormat,
+			ColorRange:     stream.ColorRange,
+			ColorSpace:     stream.ColorSpace,
+			ColorTransfer:  stream.ColorTransfer,
+			ColorPrimaries: stream.ColorPrimaries,
+			Language:       stream.Tags["language"],
+			Title:          stream.Tags["title"],
+			Default:        stream.Disposition.Default == 1,
+			Forced:         stream.Disposition.Forced == 1,
 		}
 		switch stream.CodecType {
 		case "video":

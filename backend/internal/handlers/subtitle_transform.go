@@ -34,13 +34,11 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
 	usedPaths := map[string]struct{}{}
 	artifacts := make([]SubtitleArtifact, 0, len(plan.Override.SubtitleTransforms))
+	var bitmapStreams map[int]FFProbeStream
 	for _, transform := range plan.Override.SubtitleTransforms {
 		stream, exists := streams[transform.StreamIndex]
 		if !exists {
 			return nil, fmt.Errorf("subtitle stream %d disappeared before extraction", transform.StreamIndex)
-		}
-		if !subtitleCanConvertText(stream.Codec) {
-			return nil, fmt.Errorf("subtitle stream %d (%s) requires OCR and cannot be converted directly", stream.Index, stream.Codec)
 		}
 		language := safeSubtitleFilenamePart(transform.Language)
 		if language == "" {
@@ -59,21 +57,47 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 		}
 		usedPaths[stagedPath] = struct{}{}
 		_ = os.Remove(stagedPath)
-		args := []string{
-			"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-			"-i", plan.InputPath,
-			"-map", fmt.Sprintf("0:%d", stream.Index),
-			"-vn", "-an",
-			"-c:s", transform.Format,
-			"-f", transform.Format,
-			stagedPath,
-		}
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			_ = os.Remove(stagedPath)
-			return nil, fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+		if isBitmapSubtitleCodecName(stream.Codec) {
+			if bitmapStreams == nil {
+				probed, probeErr := probeSubtitleStreams(ctx, plan.InputPath)
+				if probeErr != nil {
+					return nil, fmt.Errorf("OCR subtitle scan failed: %w", probeErr)
+				}
+				bitmapStreams = map[int]FFProbeStream{}
+				for _, candidate := range probed {
+					bitmapStreams[candidate.Index] = candidate
+				}
+			}
+			bitmapStream, found := bitmapStreams[stream.Index]
+			if !found {
+				return nil, fmt.Errorf("bitmap subtitle stream %d disappeared before OCR", stream.Index)
+			}
+			ocrLanguage := transform.OCRLanguage
+			if strings.TrimSpace(ocrLanguage) == "" {
+				ocrLanguage = transform.Language
+			}
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, stagedPath); err != nil {
+				return nil, err
+			}
+		} else if !subtitleCanConvertText(stream.Codec) {
+			return nil, fmt.Errorf("subtitle stream %d (%s) cannot be converted to %s", stream.Index, stream.Codec, strings.ToUpper(transform.Format))
+		} else {
+			args := []string{
+				"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+				"-i", plan.InputPath,
+				"-map", fmt.Sprintf("0:%d", stream.Index),
+				"-vn", "-an",
+				"-c:s", transform.Format,
+				"-f", transform.Format,
+				stagedPath,
+			}
+			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				_ = os.Remove(stagedPath)
+				return nil, fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+			}
 		}
 		info, err := os.Stat(stagedPath)
 		if err != nil || info.IsDir() || info.Size() == 0 {

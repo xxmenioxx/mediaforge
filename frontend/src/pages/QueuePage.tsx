@@ -124,7 +124,6 @@ export function QueuePage() {
         subtitleTransforms: undefined,
       }),
       trackProfileKey: trackProfile?.key,
-      processingMode: input.processingMode,
     });
   }
 
@@ -205,7 +204,7 @@ export function QueuePage() {
     setForm({
       mediaPath: job.mediaPath,
       libraryId: job.libraryId,
-      profileId: (job.processingMode || conversion?.processingMode) === 'audio_only' ? 0 : job.profileId,
+      profileId: job.processingMode === 'audio_only' ? 0 : job.profileId,
       trackProfileKey: job.trackProfileKey,
       processingMode: job.processingMode || undefined,
       audioProfileKey: job.audioProfileKey,

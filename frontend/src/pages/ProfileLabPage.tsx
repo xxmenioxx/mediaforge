@@ -20,6 +20,11 @@ import {
   Stack,
   Tab,
   Tabs,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   TextField,
   Tooltip,
   Typography,
@@ -31,6 +36,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
 import TuneIcon from '@mui/icons-material/Tune';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -41,10 +47,13 @@ import type {
   Asset,
   AssetConversionOverrideState,
   AudioEnhancementProfile,
+  CompatiblePreviewOptions,
   MediaStreamInfo,
   Profile,
   ProfileInput,
   ProfileSuggestion,
+  PreviewVideoCharacteristics,
+  PreviewFrameMetrics,
   ScanResult,
   StreamMetadataOverride,
 } from '../api/types';
@@ -68,6 +77,25 @@ type LabRecommendationReport = {
 
 type RecommendationSectionState = Record<LabSection, boolean>;
 
+type LabFidelityInspection = {
+  assetPath: string;
+  source: PreviewVideoCharacteristics;
+  reference: PreviewVideoCharacteristics;
+  conversion: PreviewVideoCharacteristics;
+  requestedEncoder: string;
+  effectiveEncoder: string;
+  referenceEncoder: string;
+  normalization: {
+    mode: 'preserve' | 'normalize_bt709';
+    applied: boolean;
+    filter?: string;
+    reason: string;
+    sarPreserved: boolean;
+    aliasWarnings?: string[];
+  };
+  metrics: PreviewFrameMetrics;
+};
+
 type TrackProfile = {
   key: string;
   name: string;
@@ -86,6 +114,7 @@ type TrackProfile = {
     removeEmbedded: boolean;
     makeDefault: boolean;
     language: string;
+    ocrLanguage?: string;
     title?: string;
   }>;
   videoMode: 'first' | 'all' | 'require-one';
@@ -132,19 +161,6 @@ const videoCodecOptions = [
   { value: 'copy', label: 'Keep original video' },
 ] as const;
 
-const audioCodecOptions = [
-  { value: 'copy', label: 'Keep original audio' },
-  { value: 'aac', label: 'AAC (best compatibility)' },
-  { value: 'ac3', label: 'AC-3 (home theater)' },
-  { value: 'opus', label: 'Opus (small files)' },
-] as const;
-
-const workModeOptions = [
-  { value: '', label: 'Profile default' },
-  { value: 'full_encode', label: 'Re-encode video' },
-  { value: 'audio_only', label: 'Audio/subtitle fixes only' },
-] as const;
-
 const encoderPresetOptions = [
   { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful for quick tests.' },
   { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
@@ -173,9 +189,9 @@ const videoEncoderOptions = [
 const deinterlaceOptions = [
   { value: 'off', label: 'Off' },
   { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
-  { value: 'force', label: 'Force' },
-  { value: 'ivtc_tff', label: 'Inverse telecine (TFF DVD)' },
-  { value: 'ivtc_bff', label: 'Inverse telecine (BFF DVD)' },
+  { value: 'force', label: 'Force · bwdif (single-rate)' },
+  { value: 'ivtc_tff', label: 'Inverse telecine · fieldmatch + decimate (TFF)' },
+  { value: 'ivtc_bff', label: 'Inverse telecine · fieldmatch + decimate (BFF)' },
 ] as const;
 
 const denoiseOptions = [
@@ -473,7 +489,23 @@ const emptyVideoDraft: ProfileInput = {
 };
 
 function profileInputFromSavedProfile(profile: Profile): ProfileInput {
-  return {
+  const workerConfig = { ...emptyVideoDraft.workerConfig, ...profile.workerConfig };
+  delete workerConfig.processingMode;
+  const requestedPreference = typeof workerConfig.preferredEncoder === 'string' ? workerConfig.preferredEncoder : '';
+  const hardwareSupported = hardwareEncodingSupportedForCodec(profile.videoCodec);
+  const preference = requestedPreference === 'hardware' && !hardwareSupported
+    ? 'software'
+    : requestedPreference === 'hardware' || requestedPreference === 'software'
+      ? requestedPreference
+      : workerConfig.useHardwareIfAvailable === true ? 'hardware' : 'software';
+  workerConfig.preferredEncoder = preference;
+  workerConfig.useHardwareIfAvailable = preference !== 'software' && hardwareSupported;
+  if (preference === 'software') {
+    workerConfig.videoEncoder = 'auto';
+  } else if (!isHardwareEncoderOption(String(workerConfig.videoEncoder ?? ''))) {
+    workerConfig.videoEncoder = 'auto';
+  }
+  return synchronizeLabAuthoritativeContract({
     name: profile.name,
     description: profile.description,
     container: profile.container,
@@ -486,15 +518,15 @@ function profileInputFromSavedProfile(profile: Profile): ProfileInput {
     bitDepth: profile.bitDepth,
     pixelFormat: profile.pixelFormat,
     qualityStrategy: profile.qualityStrategy,
-    audioCodec: profile.audioCodec,
+    audioCodec: 'copy',
     qualityMode: profile.qualityMode,
     qualityValue: profile.qualityValue,
     preserveHdr: profile.preserveHdr,
     preserveSubtitles: profile.preserveSubtitles,
     preserveChapters: profile.preserveChapters,
-    workerConfig: { ...emptyVideoDraft.workerConfig, ...profile.workerConfig },
+    workerConfig,
     disabled: profile.disabled,
-  };
+  });
 }
 
 const emptyAudioDraft: AudioEnhancementProfile = {
@@ -541,6 +573,7 @@ export function ProfileLabPage() {
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const labAssets = useMemo(
     () => uniqueAssets([
       ...(assets.data?.unprocessed ?? []),
@@ -556,6 +589,7 @@ export function ProfileLabPage() {
   const [assetPath, setAssetPath] = useState('');
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
+  const [previewNormalization, setPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
@@ -564,7 +598,6 @@ export function ProfileLabPage() {
   const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
   const [audioPreviewStreamIndex, setAudioPreviewStreamIndex] = useState<number | null>(null);
-  const [subtitlePreviewStreamIndex, setSubtitlePreviewStreamIndex] = useState<number | null>(null);
   const [processedAudioFilters, setProcessedAudioFilters] = useState('');
   const [processedAudioChannelMode, setProcessedAudioChannelMode] = useState<AudioEnhancementProfile['channelMode']>('preserve');
   const [audioFilterChain, setAudioFilterChain] = useState(effectiveAudioFilters(emptyAudioDraft));
@@ -579,6 +612,10 @@ export function ProfileLabPage() {
   const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
   const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
+  const [terminalCommandOpen, setTerminalCommandOpen] = useState(false);
+  const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
+  const [fidelityOpen, setFidelityOpen] = useState(true);
+  const [fidelityTab, setFidelityTab] = useState<'previews' | 'frames' | 'characteristics'>('previews');
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
@@ -595,6 +632,16 @@ export function ProfileLabPage() {
     selectedAudioStarterPreset: string;
   } | null>(null);
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
+  const selectedHardwareEncoder = videoWorkerValue(videoDraft, 'videoEncoder', 'auto');
+  const selectedHardwareCapability = selectedHardwareEncoder === 'auto'
+    ? undefined
+    : runtimeSnapshot.data?.encoders?.[selectedHardwareEncoder];
+  const hasUsableHardwareEncoder = videoEncoderOptions.some(
+    (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
+  );
+  const defaultHardwareEncoder = videoEncoderOptions.find(
+    (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
+  )?.value ?? '';
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
   const videoPreviewStale =
@@ -603,6 +650,16 @@ export function ProfileLabPage() {
     (processedVideoCodec !== videoDraft.videoCodec ||
       processedVideoQualityValue !== videoDraft.qualityValue ||
       JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft)));
+
+  useEffect(() => {
+    if (
+      videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' &&
+      !isHardwareEncoderOption(selectedHardwareEncoder) &&
+      defaultHardwareEncoder
+    ) {
+      updateVideoHardwareEncoder(setVideoDraft, defaultHardwareEncoder);
+    }
+  }, [defaultHardwareEncoder, selectedHardwareEncoder, videoDraft]);
 
   useEffect(() => {
     const videoProfileId = Number(searchParams.get('videoProfileId') || 0);
@@ -712,14 +769,45 @@ export function ProfileLabPage() {
   });
 
   const trackSnapshot = useMutation({ mutationFn: api.scan });
+  const fidelityInspection = useMutation({
+    mutationFn: async ({
+      reference,
+      conversion,
+    }: {
+      reference: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
+      conversion: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
+    }): Promise<LabFidelityInspection> => {
+      const [referenceInspection, conversionInspection, metrics] = await Promise.all([
+        api.inspectCompatibleAssetPreview(reference),
+        api.inspectCompatibleAssetPreview(conversion),
+        api.compatibleAssetFrameMetrics(conversion),
+      ]);
+      return {
+        assetPath: conversion.path,
+        source: referenceInspection.source,
+        reference: referenceInspection.output,
+        conversion: conversionInspection.output,
+        requestedEncoder: conversionInspection.requestedEncoder,
+        effectiveEncoder: conversionInspection.effectiveEncoder,
+        referenceEncoder: referenceInspection.effectiveEncoder,
+        normalization: referenceInspection.normalization,
+        metrics,
+      };
+    },
+  });
+  const currentFidelityInspection = fidelityInspection.data?.assetPath === assetPath
+    ? fidelityInspection.data
+    : undefined;
   const availableAudioStreams = trackSnapshot.data?.audioStreams ?? [];
-  const availableSubtitleStreams = trackSnapshot.data?.subtitleStreams ?? [];
   const selectedAudioStreamIndex = availableAudioStreams.some((stream) => stream.index === audioPreviewStreamIndex)
     ? audioPreviewStreamIndex ?? undefined
     : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
 
   useEffect(() => {
     setTrackConversionDraft({});
+    setPreviewNonce(0);
+    resetProcessedPreviews();
+    fidelityInspection.reset();
     if (assetPath) {
       trackSnapshot.reset();
       trackSnapshot.mutate({ path: assetPath });
@@ -734,18 +822,13 @@ export function ProfileLabPage() {
     setSavedVideoProfileId(null);
     setVideoProfileSaveMessage('');
     setSelectedVideoStarterPreset('');
+    const draft = profileInputFromSavedProfile(profile);
     setVideoDraft({
+      ...draft,
       name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
       description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
-      container: profile.container,
-      videoCodec: profile.videoCodec,
-      audioCodec: profile.audioCodec,
-      qualityMode: profile.qualityMode,
-      qualityValue: profile.qualityValue,
-      preserveHdr: profile.preserveHdr,
-      preserveSubtitles: profile.preserveSubtitles,
-      preserveChapters: profile.preserveChapters,
-      workerConfig: { ...profile.workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
+      audioCodec: 'copy',
+      workerConfig: { ...draft.workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
     });
   }
 
@@ -764,7 +847,9 @@ export function ProfileLabPage() {
     const cropSuggestionAvailable = cropStatus === 'detected' && Boolean(recommendedCrop);
     const cropSuggestionSafe = cropSuggestionAvailable && bitmapSubtitleStreams.length === 0;
     const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
-    const needsVideoCorrection = interlaceStatus === 'interlaced' || interlaceStatus === 'telecine_suspected';
+    const needsVideoCorrection = interlaceStatus === 'interlaced' ||
+      interlaceStatus === 'telecine_suspected' ||
+      scan.interlaceAnalysis.fieldOrderMismatch === true;
     const targetVideoCodec = sourceIsHEVC && !needsVideoCorrection ? 'copy' : proposed.videoCodec;
     const videoReasons = targetVideoCodec === 'copy'
       ? ['The source is already HEVC and no definite filter correction was detected, so video copy avoids generational loss.']
@@ -773,6 +858,11 @@ export function ProfileLabPage() {
     if (interlaceStatus === 'progressive') {
       deinterlaceMode = 'off';
       videoReasons.push('The analyzed motion window is progressive, so deinterlacing was disabled.');
+      if (scan.interlaceAnalysis.fieldOrderMismatch) {
+        videoReasons.push(
+          `The container declares ${(scan.interlaceAnalysis.containerFieldOrder || 'interlaced').toUpperCase()}, but the sampled frames are progressive; output field metadata will be corrected without deinterlacing.`,
+        );
+      }
     } else if (interlaceStatus === 'interlaced') {
       deinterlaceMode = 'force';
       videoReasons.push('Interlacing was detected, so bwdif was enabled for the video draft.');
@@ -810,6 +900,7 @@ export function ProfileLabPage() {
     const workerConfig = {
       ...proposed.workerConfig,
       deinterlaceMode,
+      correctProgressiveFieldMetadata: scan.interlaceAnalysis.fieldOrderMismatch === true,
       denoise: 'off',
       deflicker: 'off',
       deblockFilter: 'off',
@@ -829,7 +920,7 @@ export function ProfileLabPage() {
       whitePoint: 100,
     };
     videoReasons.push('Image adjustment controls remain neutral because snapshot metadata alone cannot justify exposure, levels, color, or detail corrections.');
-    const recommendedVideoDraft: ProfileInput = {
+    const recommendedVideoDraft: ProfileInput = synchronizeLabAuthoritativeContract({
       ...proposed,
       name: `Auto recommended - ${sourceName}`,
       description: `Generated in Profile Lab from the current snapshot of ${sourceName}.`,
@@ -841,7 +932,7 @@ export function ProfileLabPage() {
         derivedFromAsset: selectedAsset?.path ?? scan.path,
         videoFilters: buildVideoFilterChain(workerConfig),
       },
-    };
+    });
     if (section === 'video') {
       setSelectedVideoStarterPreset('');
       setVideoDraft(recommendedVideoDraft);
@@ -1033,6 +1124,7 @@ export function ProfileLabPage() {
   function saveVideoProfile() {
     saveVideoProfileMutation.mutate({
       ...videoDraft,
+      audioCodec: 'copy',
       workerConfig: {
         ...videoDraft.workerConfig,
         source: 'profile-lab',
@@ -1151,12 +1243,75 @@ export function ProfileLabPage() {
   }
 
   function processVideoPreview() {
+    const options = videoPreviewOptions(videoDraft);
     setProcessedVideoCodec(videoDraft.videoCodec);
     setProcessedVideoQualityValue(videoDraft.qualityValue);
-    setProcessedVideoOptions(videoPreviewOptions(videoDraft));
+    setProcessedVideoOptions(options);
     setVideoPreviewStatus('loading');
     setVideoPreviewNonce((current) => current + 1);
+    if (assetPath) {
+      fidelityInspection.mutate({
+        reference: {
+          path: assetPath,
+          start,
+          seconds,
+          mode: 'quality',
+          videoCodec: 'x264',
+          qualityValue: 16,
+          videoPreset: 'medium',
+          pixFmt: 'yuv420p',
+          videoEncoder: 'libx264',
+          useHardwareIfAvailable: false,
+          globalQuality: 21,
+          previewNormalization,
+        },
+        conversion: {
+          path: assetPath,
+          start,
+          seconds,
+          videoCodec: videoDraft.videoCodec,
+          qualityValue: videoDraft.qualityValue,
+          mode: 'quality',
+          previewNormalization,
+          ...options,
+        },
+      });
+    }
     scrollToPreviews();
+  }
+
+  function changePreviewColorDomain(next: 'preserve' | 'normalize_bt709') {
+    setPreviewNormalization(next);
+    if (!assetPath || previewNonce === 0 || videoPreviewNonce === 0) {
+      return;
+    }
+    const options = videoPreviewOptions(videoDraft);
+    fidelityInspection.mutate({
+      reference: {
+        path: assetPath,
+        start,
+        seconds,
+        mode: 'quality',
+        videoCodec: 'x264',
+        qualityValue: 16,
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p',
+        videoEncoder: 'libx264',
+        useHardwareIfAvailable: false,
+        globalQuality: 21,
+        previewNormalization: next,
+      },
+      conversion: {
+        path: assetPath,
+        start,
+        seconds,
+        videoCodec: videoDraft.videoCodec,
+        qualityValue: videoDraft.qualityValue,
+        mode: 'quality',
+        previewNormalization: next,
+        ...options,
+      },
+    });
   }
 
   function resetProcessedAudioPreview() {
@@ -1169,6 +1324,7 @@ export function ProfileLabPage() {
   function resetProcessedVideoPreview() {
     setVideoPreviewNonce(0);
     setVideoPreviewStatus('idle');
+    fidelityInspection.reset();
   }
 
   function resetProcessedPreviews() {
@@ -1180,6 +1336,54 @@ export function ProfileLabPage() {
     window.requestAnimationFrame(() => {
       previewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
+  }
+
+  const combinedTerminalCommand = buildCombinedLabFFmpegCommand({
+    assetPath,
+    start,
+    seconds,
+    video: videoDraft,
+    audio: audioDraft,
+    tracks: trackConversionDraft,
+    scan: trackSnapshot.data,
+    selectedAudioStreamIndex,
+  });
+  const sourceFrameOptions: CompatiblePreviewOptions = {
+    path: assetPath,
+    start,
+    seconds,
+    mode: 'quality',
+    videoCodec: 'x264',
+    qualityValue: 16,
+    videoPreset: 'medium',
+    pixFmt: 'yuv420p',
+    videoEncoder: 'libx264',
+    useHardwareIfAvailable: false,
+    globalQuality: 21,
+    previewNormalization,
+  };
+  const outputFrameOptions: CompatiblePreviewOptions = {
+    path: assetPath,
+    start,
+    seconds,
+    videoCodec: processedVideoCodec,
+    qualityValue: processedVideoQualityValue,
+    mode: 'quality',
+    previewNormalization,
+    ...processedVideoOptions,
+  };
+  const sourceFrameUrl = assetPath && videoPreviewNonce > 0
+    ? `${api.compatibleAssetFrameUrl(sourceFrameOptions, 'source')}&nonce=${videoPreviewNonce}`
+    : '';
+  const outputFrameUrl = assetPath && videoPreviewNonce > 0
+    ? `${api.compatibleAssetFrameUrl(outputFrameOptions, 'output')}&nonce=${videoPreviewNonce}`
+    : '';
+
+  async function copyCombinedTerminalCommand() {
+    if (!combinedTerminalCommand) return;
+    await copyTextToClipboard(combinedTerminalCommand);
+    setTerminalCommandCopied(true);
+    window.setTimeout(() => setTerminalCommandCopied(false), 1800);
   }
 
   return (
@@ -1200,7 +1404,6 @@ export function ProfileLabPage() {
                   onChange={(asset) => {
                     setAssetPath(asset?.path ?? '');
                     setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
-                    setSubtitlePreviewStreamIndex(null);
                     resetProcessedPreviews();
                     setRecommendationReport(null);
                     setRecommendationSuggestion(null);
@@ -1208,30 +1411,6 @@ export function ProfileLabPage() {
                     setRecommendationOpen(false);
                   }}
                 />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 5, lg: 2 }}>
-                <TextField
-                  label="Preview subtitles"
-                  size="small"
-                  value={subtitlePreviewStreamIndex ?? ''}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setSubtitlePreviewStreamIndex(value === '' ? null : Number(value));
-                    setPreviewNonce((current) => current > 0 ? current + 1 : current);
-                    setVideoPreviewNonce((current) => current > 0 ? current + 1 : current);
-                  }}
-                  disabled={!assetPath || trackSnapshot.isPending}
-                  helperText={trackSnapshot.isPending ? 'Loading tracks…' : undefined}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {availableSubtitleStreams.map((stream) => (
-                    <MenuItem key={stream.index} value={stream.index}>
-                      {subtitlePreviewLabel(stream)}
-                    </MenuItem>
-                  ))}
-                </TextField>
               </Grid>
               <Grid size={{ xs: 6, sm: 3, lg: 1.25 }}>
                 <TextField
@@ -1295,11 +1474,83 @@ export function ProfileLabPage() {
                 </Stack>
               </Grid>
             </Grid>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mt: 1.5 }}>
+              <TextField
+                label="Preview color domain"
+                size="small"
+                value={previewNormalization}
+                onChange={(event) => changePreviewColorDomain(event.target.value as 'preserve' | 'normalize_bt709')}
+                select
+                sx={{ width: { xs: '100%', md: 280 } }}
+              >
+                <MenuItem value="normalize_bt709">Canonical BT.709 · recommended</MenuItem>
+                <MenuItem value="preserve">Preserve source characteristics</MenuItem>
+              </TextField>
+              <Typography variant="body2" color="text.secondary">
+                {previewNormalization === 'normalize_bt709'
+                  ? 'A and B receive the same mathematical color conversion before encoding. This affects LAB previews only; it is not saved into the final profile.'
+                  : 'A and B retain the declared source color domain where their encoders support it. Browser rendering may still differ by codec or platform.'}
+              </Typography>
+            </Stack>
             {autoRecommendation.isError ? (
               <Alert severity="error" sx={{ mt: 1.5 }}>
                 Auto recommendation failed: {autoRecommendation.error instanceof Error ? autoRecommendation.error.message : 'unknown error'}
               </Alert>
             ) : null}
+          </CardContent>
+        </Card>
+        <Card sx={{ mb: 2 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Stack spacing={1.25}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                <Stack spacing={0.25}>
+                  <Typography fontWeight={700}>Combined FFmpeg terminal command</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Uses the current {seconds}s range and combines the Video, Audio, and Tracks drafts in one output.
+                  </Typography>
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ pt: 0.5 }}>
+                    <Chip size="small" label={`Video: ${videoDraft.name || 'Draft'}`} />
+                    <Chip size="small" label={`Audio: ${audioDraft.name || 'Draft'}`} />
+                    <Chip size="small" label={`Tracks: ${trackDraft.name || 'Draft'}`} />
+                  </Stack>
+                </Stack>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" variant="text" onClick={() => setTerminalCommandOpen((current) => !current)}>
+                    {terminalCommandOpen ? 'Hide' : 'Show command'}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ContentCopyIcon />}
+                    disabled={!combinedTerminalCommand}
+                    onClick={copyCombinedTerminalCommand}
+                  >
+                    {terminalCommandCopied ? 'Copied' : 'Copy'}
+                  </Button>
+                </Stack>
+              </Stack>
+              <Collapse in={terminalCommandOpen}>
+                <Stack spacing={1}>
+                  <TextField
+                    value={combinedTerminalCommand || 'Select an asset to generate the command.'}
+                    multiline
+                    minRows={8}
+                    maxRows={18}
+                    inputProps={{ readOnly: true, spellCheck: false }}
+                    fullWidth
+                    sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.78rem', lineHeight: 1.45 } }}
+                  />
+                  <Alert severity="info">
+                    The command uses the media path visible to the MVForge backend and writes a temporary MKV/MP4 under <code>/tmp</code>. Run it in an environment where that input path and FFmpeg are available. Hardware Auto uses the matching software encoder as a portable terminal fallback.
+                  </Alert>
+                  {trackConversionDraft.subtitleTransforms?.length ? (
+                    <Alert severity="warning">
+                      Subtitle sidecar extraction and OCR run as a pre-conversion pipeline phase and are not represented inside this single FFmpeg media command.
+                    </Alert>
+                  ) : null}
+                </Stack>
+              </Collapse>
+            </Stack>
           </CardContent>
         </Card>
         <Dialog open={recommendationOpen && Boolean(recommendationReport)} onClose={() => setRecommendationOpen(false)} fullWidth maxWidth="md">
@@ -1327,25 +1578,31 @@ export function ProfileLabPage() {
           <Stack spacing={2}>
               {assetPath && previewNonce > 0 ? (
                 <Alert severity="info">
-                  Sample A is a high-quality H.264/AAC browser-compatible reference generated from the original. Sample B uses the requested duration, source resolution, and current profile draft.
-                </Alert>
-              ) : null}
-              {assetPath && previewNonce > 0 && selectedPreviewSubtitleIsBitmap(availableSubtitleStreams, subtitlePreviewStreamIndex) && processedVideoUsesCrop(processedVideoOptions) ? (
-                <Alert severity="warning">
-                  The selected subtitle track is bitmap-based and the video draft applies crop. Subtitles positioned in the removed bars may be clipped; disable crop or verify several subtitled scenes.
+                  Sample A is a browser-compatible reference generated from the source; it is not the original stream. Sample B uses the same segment and the current profile draft. The fidelity validation below reports what FFmpeg actually produced.
                 </Alert>
               ) : null}
               {assetPath && previewNonce > 0 ? (
+                <Card variant="outlined">
+                  <CardContent sx={{ py: 0, '&:last-child': { pb: 0 } }}>
+                    <Tabs value={fidelityTab} onChange={(_, value) => setFidelityTab(value)} variant="scrollable" scrollButtons="auto">
+                      <Tab value="previews" label="A/B Previews" />
+                      <Tab value="frames" label="Frame Fidelity" />
+                      <Tab value="characteristics" label="Characteristics" />
+                    </Tabs>
+                  </CardContent>
+                </Card>
+              ) : null}
+              {assetPath && previewNonce > 0 && fidelityTab === 'previews' ? (
                 <Grid container spacing={2} alignItems="stretch">
                   <Grid size={{ xs: 12, lg: 6 }}>
                     <SampleCard
-                      title="Sample A"
-                      subtitle="Original content in a temporary browser-compatible reference"
+                      title="Source reference"
+                      subtitle="Temporary H.264/AAC representation for browser playback"
                     >
                       <Stack spacing={2}>
                         <VideoPreview
                           key={`original-compatible-${previewNonce}`}
-                          label="Original · browser-compatible H.264 reference"
+                          label="Source reference · browser-compatible H.264"
                           src={api.compatibleAssetPreviewUrl({
                             path: assetPath,
                             start,
@@ -1358,18 +1615,18 @@ export function ProfileLabPage() {
                             videoEncoder: 'libx264',
                             useHardwareIfAvailable: false,
                             globalQuality: 21,
-                            subtitleStreamIndex: subtitlePreviewStreamIndex ?? undefined,
+                            previewNormalization,
                           })}
                         />
                         <AudioPreview
-                          label="Original · browser-compatible AAC stereo 192 kbps"
+                          label="Source audio reference · AAC stereo 192 kbps"
                           src={api.audioPreviewUrl({ path: assetPath, start, seconds, compatibility: true, streamIndex: selectedAudioStreamIndex })}
                         />
                       </Stack>
                     </SampleCard>
                   </Grid>
                   <Grid size={{ xs: 12, lg: 6 }}>
-                    <SampleCard title="Sample B" subtitle="Current video and audio profile drafts">
+                    <SampleCard title="Profile result" subtitle="Current video and audio profile drafts">
                       <Stack spacing={2}>
                         {videoPreviewNonce > 0 ? (
                           <VideoPreview
@@ -1382,7 +1639,7 @@ export function ProfileLabPage() {
                               videoCodec: processedVideoCodec,
                               qualityValue: processedVideoQualityValue,
                               mode: 'quality',
-                              subtitleStreamIndex: subtitlePreviewStreamIndex ?? undefined,
+                              previewNormalization,
                               ...processedVideoOptions,
                             })}
                             onStatusChange={setVideoPreviewStatus}
@@ -1415,6 +1672,44 @@ export function ProfileLabPage() {
                   </CardContent>
                 </Card>
               )}
+              {assetPath && previewNonce > 0 && fidelityTab !== 'previews' ? (
+                <Card variant="outlined">
+                  <CardContent>
+                    <Stack spacing={1.5}>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
+                        <Box>
+                          <Typography variant="h3">Fidelity validation</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Source, browser reference, and profile result are probed separately after generation.
+                          </Typography>
+                        </Box>
+                        <Button size="small" onClick={() => setFidelityOpen((current) => !current)} endIcon={<ExpandMoreIcon />}>
+                          {fidelityOpen ? 'Hide' : 'Show'}
+                        </Button>
+                      </Stack>
+                      {fidelityInspection.isPending ? <Alert severity="info">Generating both previews and validating their video characteristics…</Alert> : null}
+                      {fidelityInspection.isError ? (
+                        <Alert severity="warning">
+                          Fidelity validation failed: {fidelityInspection.error instanceof Error ? fidelityInspection.error.message : 'unknown backend error'}
+                        </Alert>
+                      ) : null}
+                      <Collapse in={fidelityOpen}>
+                        {currentFidelityInspection ? (
+                          fidelityTab === 'frames' ? (
+                            <FrameFidelityComparison sourceUrl={sourceFrameUrl} outputUrl={outputFrameUrl} inspection={currentFidelityInspection} />
+                          ) : (
+                            <FidelityCharacteristicsTable inspection={currentFidelityInspection} />
+                          )
+                        ) : (
+                          !fidelityInspection.isPending
+                            ? <Alert severity="info">Process Video to generate and validate the current profile result.</Alert>
+                            : null
+                        )}
+                      </Collapse>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ) : null}
             </Stack>
         </Box>
 
@@ -1483,117 +1778,229 @@ export function ProfileLabPage() {
                     you need smaller files, compatibility, or filters.
                   </Alert>
                   <Grid container spacing={2}>
-                    <Grid size={{ xs: 12, md: 4 }}>
-                      <TextField label="Starter preset" value={selectedVideoStarterPreset} onChange={(event) => applyStarterVideoPreset(event.target.value)} select fullWidth>
-                        <MenuItem value="" disabled>
-                          Choose a video preset
-                        </MenuItem>
-                        {videoStarterPresets.map((preset) => (
-                          <MenuItem key={preset.key} value={preset.key}>
-                            {preset.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                    <Grid size={{ xs: 12, lg: 6 }}>
+                      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, height: '100%', bgcolor: 'rgba(255,255,255,0.018)' }}>
+                        <Stack spacing={2}>
+                          <Typography fontWeight={700}>Profile information</Typography>
+                          <TextField label="Starter preset" value={selectedVideoStarterPreset} onChange={(event) => applyStarterVideoPreset(event.target.value)} select fullWidth>
+                            <MenuItem value="" disabled>Choose a video preset</MenuItem>
+                            {videoStarterPresets.map((preset) => (
+                              <MenuItem key={preset.key} value={preset.key}>{preset.label}</MenuItem>
+                            ))}
+                          </TextField>
+                          <VideoProfileAutocomplete profiles={profiles.data ?? []} onChange={(profile) => profile ? selectVideoProfile(profile.id) : undefined} />
+                          <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} fullWidth />
+                          <Grid container spacing={1}>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <FormControlLabel
+                                control={<Checkbox checked={videoDraft.preserveHdr} onChange={(event) => setVideoDraft((current) => ({ ...current, preserveHdr: event.target.checked }))} />}
+                                label="Preserve HDR"
+                              />
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <FormControlLabel
+                                control={<Checkbox checked={videoDraft.preserveChapters} onChange={(event) => setVideoDraft((current) => ({ ...current, preserveChapters: event.target.checked }))} />}
+                                label="Preserve chapters"
+                              />
+                            </Grid>
+                          </Grid>
+                          <TextField
+                            select
+                            fullWidth
+                            label="Convert all subtitles"
+                            value={videoExternalSubtitleFormat(videoDraft)}
+                            onChange={(event) => updateVideoSubtitleExternalization(setVideoDraft, event.target.value)}
+                            helperText="Creates validated sidecars and removes every embedded subtitle. A selected Tracks Profile takes priority."
+                          >
+                            <MenuItem value="source">Keep embedded subtitle tracks</MenuItem>
+                            <MenuItem value="srt">External SRT · remove embedded tracks</MenuItem>
+                            <MenuItem value="ass">External ASS · remove embedded tracks</MenuItem>
+                          </TextField>
+                        </Stack>
+                      </Box>
                     </Grid>
-                    <Grid size={{ xs: 12, md: 8 }}>
-                      <VideoProfileAutocomplete profiles={profiles.data ?? []} onChange={(profile) => profile ? selectVideoProfile(profile.id) : undefined} />
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 7 }}>
-                      <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} fullWidth />
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 5 }}>
-                      <TextField label="Video codec" value={displayVideoCodec(videoDraft.videoCodec)} onChange={(event) => setVideoDraft({ ...videoDraft, videoCodec: event.target.value })} select fullWidth>
-                        {videoCodecOptions.map((codec) => (
-                          <MenuItem key={codec.value} value={codec.value}>
-                            {codec.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Grid>
-                    <Grid size={{ xs: 12, sm: 4 }}>
-                      <TextField label="Container" value={videoDraft.container} onChange={(event) => setVideoDraft({ ...videoDraft, container: event.target.value })} select fullWidth>
-                        {['mkv', 'mp4'].map((container) => (
-                          <MenuItem key={container} value={container}>
-                            {container}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Grid>
-                    <Grid size={{ xs: 12, sm: 4 }}>
-                      <TextField label="Audio codec" value={videoDraft.audioCodec} onChange={(event) => setVideoDraft({ ...videoDraft, audioCodec: event.target.value })} select fullWidth>
-                        {audioCodecOptions.map((codec) => (
-                          <MenuItem key={codec.value} value={codec.value}>
-                            {codec.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Grid>
-                    <Grid size={{ xs: 12, sm: 4 }}>
-                      <TextField
-                        label="Work mode"
-                        value={videoWorkerValue(videoDraft, 'processingMode')}
-                        onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'processingMode', event.target.value)}
-                        select
-                        fullWidth
-                      >
-                        {workModeOptions.map((mode) => (
-                          <MenuItem key={mode.value || 'default'} value={mode.value}>
-                            {mode.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                    <Grid size={{ xs: 12, lg: 6 }}>
+                      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, height: '100%', bgcolor: 'rgba(255,255,255,0.018)' }}>
+                        <Stack spacing={2}>
+                          <Typography fontWeight={700}>Technical settings</Typography>
+                          <Grid container spacing={2}>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField label="Video codec" value={displayVideoCodec(videoDraft.videoCodec)} onChange={(event) => updateVideoCodecDraft(setVideoDraft, event.target.value)} select fullWidth>
+                                {videoCodecOptions
+                                  .filter((codec) => videoWorkerValue(videoDraft, 'preferredEncoder', 'software') !== 'hardware' || hardwareEncodingSupportedForCodec(codec.value))
+                                  .map((codec) => (
+                                    <MenuItem key={codec.value} value={codec.value}>{codec.label}</MenuItem>
+                                  ))}
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField label="Container type" value={videoDraft.container} onChange={(event) => setVideoDraft({ ...videoDraft, container: event.target.value })} select fullWidth>
+                                {['mkv', 'mp4'].map((container) => (
+                                  <MenuItem key={container} value={container}>{container}</MenuItem>
+                                ))}
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField
+                                label="Encoding speed"
+                                value={videoWorkerValue(videoDraft, 'videoPreset', 'medium')}
+                                onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoPreset', event.target.value)}
+                                helperText={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'software'
+                                  ? encoderPresetDescription(videoWorkerValue(videoDraft, 'videoPreset', 'medium'))
+                                  : 'Hardware-supported FFmpeg preset.'}
+                                select
+                                size="small"
+                                fullWidth
+                              >
+                                {encoderPresetOptions.map((preset) => (
+                                  <MenuItem key={preset.value} value={preset.value}>{preset.label}</MenuItem>
+                                ))}
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <FormControlLabel
+                                control={<Checkbox checked={videoAACTrackEnabled(videoDraft)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'addAacStereoTrack', event.target.checked)} />}
+                                label="Add AAC stereo track"
+                              />
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField
+                                label="AAC compatibility quality"
+                                value={numberWorkerValue(videoDraft, 'aacStereoBitrateKbps', 192)}
+                                onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoBitrateKbps', Number(event.target.value))}
+                                disabled={!videoAACTrackEnabled(videoDraft)}
+                                helperText="192 kb/s default"
+                                select
+                                fullWidth
+                              >
+                                {[128, 160, 192, 224, 256].map((value) => (
+                                  <MenuItem key={value} value={value}>{value} kb/s</MenuItem>
+                                ))}
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12 }}>
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={videoWorkerBool(videoDraft, 'preserveOriginalAudio', true)}
+                                    disabled={!videoAACTrackEnabled(videoDraft)}
+                                    onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preserveOriginalAudio', event.target.checked)}
+                                  />
+                                }
+                                label="Original audio secondary"
+                              />
+                            </Grid>
+                          </Grid>
+                        </Stack>
+                      </Box>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
                       <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
                         <Grid container spacing={2} alignItems="flex-start">
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                             <TextField
-                              label="Hardware preference"
+                              label="Processing preference"
                               value={videoWorkerValue(videoDraft, 'preferredEncoder', 'software')}
-                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preferredEncoder', event.target.value)}
-                              helperText="Choose quality-first software, hardware speed, or automatic selection."
-                              select
-                              size="small"
-                              disabled={videoDraft.videoCodec === 'copy' || !videoWorkerBool(videoDraft, 'useHardwareIfAvailable') || videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
-                              fullWidth
-                            >
-                              <MenuItem value="software">Prefer software quality</MenuItem>
-                              <MenuItem value="hardware">Prefer hardware speed</MenuItem>
-                              <MenuItem value="auto">Auto</MenuItem>
-                            </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              label="Encoder"
-                              value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
-                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoEncoder', event.target.value)}
-                              helperText={videoEncoderDescription(videoWorkerValue(videoDraft, 'videoEncoder', 'auto'))}
+                              onChange={(event) => updateVideoProcessingPreference(setVideoDraft, event.target.value as 'software' | 'hardware', defaultHardwareEncoder)}
+                              helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
                               select
                               size="small"
                               disabled={videoDraft.videoCodec === 'copy'}
                               fullWidth
                             >
-                              {videoEncoderOptions.map((encoder) => (
-                                <MenuItem key={encoder.value} value={encoder.value} disabled={isHardwareEncoderOption(encoder.value) && !videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}>
+                              <MenuItem value="software">Software · match Video Codec</MenuItem>
+                              <MenuItem
+                                value="hardware"
+                                disabled={!hardwareEncodingSupportedForCodec(videoDraft.videoCodec) || runtimeSnapshot.isLoading || !hasUsableHardwareEncoder}
+                              >
+                                Hardware
+                              </MenuItem>
+                            </TextField>
+                          </Grid>
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                            <TextField
+                              label="Hardware encoder"
+                              value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
+                              onChange={(event) => updateVideoHardwareEncoder(setVideoDraft, event.target.value)}
+                              helperText={selectedHardwareCapability && !selectedHardwareCapability.usable
+                                ? selectedHardwareCapability.reason
+                                : videoEncoderDescription(selectedHardwareEncoder)}
+                              select
+                              size="small"
+                              fullWidth
+                            >
+                              {videoEncoderOptions.filter((encoder) => isHardwareEncoderOption(encoder.value)).map((encoder) => (
+                                <MenuItem
+                                  key={encoder.value}
+                                  value={encoder.value}
+                                  disabled={runtimeSnapshot.data?.encoders?.[encoder.value]?.usable === false}
+                                >
                                   {encoder.label}
+                                  {runtimeSnapshot.data?.encoders?.[encoder.value]?.usable === false ? ' · unavailable' : ''}
                                 </MenuItem>
                               ))}
                             </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                          </Grid> : null}
+                          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                             <TextField
-                              label="Hardware quality"
+                              label="Color depth"
+                              value={videoWorkerValue(videoDraft, 'pixFmt', videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? defaultHardwareMain10PixelFormat(selectedHardwareEncoder) : 'yuv420p10le')}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'pixFmt', event.target.value)}
+                              helperText={pixelFormatDescription(videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le'))}
+                              select
+                              size="small"
+                              fullWidth
+                            >
+                              {compatiblePixelFormatOptions(videoWorkerValue(videoDraft, 'preferredEncoder', 'software'), selectedHardwareEncoder).map((pixFmt) => (
+                                <MenuItem key={pixFmt.value} value={pixFmt.value}>{pixFmt.label}</MenuItem>
+                              ))}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                            <TextField
+                              label={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware'
+                                ? 'Software fallback CRF'
+                                : 'Software CRF'}
+                              value={videoDraft.qualityValue}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                setVideoDraft((current) => ({
+                                  ...current,
+                                  qualityValue: Number.isFinite(value) ? Math.min(30, Math.max(14, value)) : current.qualityValue,
+                                }));
+                              }}
+                              type="number"
+                              inputProps={{ min: 14, max: 30, step: 1 }}
+                              disabled={videoDraft.videoCodec === 'copy'}
+                              helperText={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware'
+                                ? 'Only used if hardware falls back to software.'
+                                : 'Lower preserves more detail; higher creates smaller files.'}
+                              size="small"
+                              fullWidth
+                            />
+                          </Grid>
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? (
+                            <Grid size={{ xs: 12 }}>
+                              {selectedHardwareCapability && !selectedHardwareCapability.usable ? (
+                                <Alert severity="warning">
+                                  {selectedHardwareEncoder} is listed by FFmpeg but failed its real encoding smoke test. MVForge will use the matching software encoder instead.
+                                </Alert>
+                              ) : null}
+                            </Grid>
+                          ) : null}
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && hardwareUsesGlobalQuality(selectedHardwareEncoder) ? <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                            <TextField
+                              label={selectedHardwareEncoder === 'hevc_qsv' ? 'QSV quality (ICQ)' : 'Hardware quality'}
                               value={numberWorkerValue(videoDraft, 'globalQuality', qsvQualityRangeForCrf(videoDraft.qualityValue || 20).recommended)}
                               onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'globalQuality', Number(event.target.value))}
                               type="number"
                               inputProps={{ min: 15, max: 35 }}
                               helperText={hardwareQualityHelper(videoDraft.qualityValue)}
                               size="small"
-                              disabled={videoDraft.videoCodec === 'copy' || !videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}
                               fullWidth
                             />
-                          </Grid>
-                          {videoWorkerBool(videoDraft, 'useHardwareIfAvailable') && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
+                          </Grid> : null}
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_qsv' ? (
                             <>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <TextField
@@ -1640,7 +2047,7 @@ export function ProfileLabPage() {
                               </Grid>
                             </>
                           ) : null}
-                          {videoWorkerBool(videoDraft, 'useHardwareIfAvailable') && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                             <>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
@@ -1653,186 +2060,11 @@ export function ProfileLabPage() {
                               </Grid>
                             </>
                           ) : null}
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoWorkerBool(videoDraft, 'useHardwareIfAvailable')}
-                                  onChange={(event) => setVideoDraft((current) => ({ ...current, workerConfig: { ...current.workerConfig, useHardwareIfAvailable: event.target.checked, ...(event.target.checked ? {} : { videoEncoder: 'libx265', preferredEncoder: 'software' }) } }))}
-                                />
-                              }
-                              label="Use hardware if available"
-                            />
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoAACTrackEnabled(videoDraft)}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'addAacStereoTrack', event.target.checked)}
-                                />
-                              }
-                              label="Add AAC stereo track"
-                            />
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              label="AAC compatibility quality"
-                              value={numberWorkerValue(videoDraft, 'aacStereoBitrateKbps', 192)}
-                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoBitrateKbps', Number(event.target.value))}
-                              disabled={!videoAACTrackEnabled(videoDraft)}
-                              helperText="192 kb/s recommended"
-                              select
-                              fullWidth
-                            >
-                              {[128, 160, 192, 224, 256].map((value) => (
-                                <MenuItem key={value} value={value}>{value} kb/s</MenuItem>
-                              ))}
-                            </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoAACTrackDefault(videoDraft)}
-                                  disabled={!videoAACTrackEnabled(videoDraft)}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoDefault', event.target.checked)}
-                                />
-                              }
-                              label="Make AAC stereo default"
-                            />
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoWorkerBool(videoDraft, 'preserveOriginalAudio', true)}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preserveOriginalAudio', event.target.checked)}
-                                />
-                              }
-                              label="Original audio secondary"
-                            />
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              select
-                              fullWidth
-                              label="Subtitle output format"
-                              value={videoSubtitleOutputFormat(videoDraft)}
-                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'subtitleOutputFormat', event.target.value)}
-                              helperText="Bitmap tracks remain unchanged"
-                            >
-                              <MenuItem value="source">Preserve source format</MenuItem>
-                              <MenuItem value="srt">Convert text to SRT</MenuItem>
-                              <MenuItem value="ass">Convert text to ASS</MenuItem>
-                            </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={videoWorkerBool(videoDraft, 'warnSubtitleFormats', true)}
-                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'warnSubtitleFormats', event.target.checked)}
-                                />
-                              }
-                              label="Warn ASS/PGS/VobSub"
-                            />
-                          </Grid>
                         </Grid>
                       </Box>
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 5 }}>
-                      <Box sx={{ maxWidth: 440, pb: 1.5 }}>
-                        <Stack spacing={0.5}>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                            <Typography fontWeight={700}>Quality</Typography>
-                            <Tooltip title="Lower CRF keeps more detail. Higher CRF creates smaller files.">
-                              <Chip label={videoDraft.videoCodec === 'copy' ? 'Original' : `CRF ${videoDraft.qualityValue}`} size="small" />
-                            </Tooltip>
-                          </Stack>
-                          <Slider
-                            value={videoDraft.qualityValue}
-                            min={14}
-                            max={30}
-                            step={1}
-                            marks={[
-                              { value: 14, label: '14' },
-                              { value: 22, label: '22' },
-                              { value: 30, label: '30' },
-                            ]}
-                            disabled={videoDraft.videoCodec === 'copy'}
-                            onChange={(_, value) => setVideoDraft({ ...videoDraft, qualityValue: Array.isArray(value) ? value[0] : value })}
-                            valueLabelDisplay="auto"
-                            size="small"
-                            sx={{
-                              mx: 1,
-                              mt: 0.25,
-                              mb: 2,
-                              width: 'calc(100% - 16px)',
-                              '& .MuiSlider-markLabel': { fontSize: 12, color: 'text.secondary', top: 28 },
-                            }}
-                          />
-                        </Stack>
-                      </Box>
-                    </Grid>
-                    <Grid size={{ xs: 12, md: 7 }}>
-                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ alignItems: 'center', minHeight: 48 }}>
-                        <PreserveButton
-                          active={videoDraft.preserveHdr}
-                          label="HDR"
-                          tooltip="Keep HDR metadata and source color information when possible."
-                          onClick={() => setVideoDraft((current) => ({ ...current, preserveHdr: !current.preserveHdr }))}
-                        />
-                        <PreserveButton
-                          active={videoDraft.preserveSubtitles}
-                          label="Subtitles"
-                          tooltip="Keep subtitle streams unless a tracks profile removes specific ones."
-                          onClick={() => setVideoDraft((current) => ({ ...current, preserveSubtitles: !current.preserveSubtitles }))}
-                        />
-                        <PreserveButton
-                          active={videoDraft.preserveChapters}
-                          label="Chapters"
-                          tooltip="Keep chapter markers from the source."
-                          onClick={() => setVideoDraft((current) => ({ ...current, preserveChapters: !current.preserveChapters }))}
-                        />
-                      </Stack>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
                       <Grid container spacing={2}>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField
-                            label="Encoding speed"
-                            value={videoWorkerValue(videoDraft, 'videoPreset', 'medium')}
-                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoPreset', event.target.value)}
-                            helperText={encoderPresetDescription(videoWorkerValue(videoDraft, 'videoPreset', 'medium'))}
-                            select
-                            size="small"
-                            fullWidth
-                          >
-                            {encoderPresetOptions.map((preset) => (
-                              <MenuItem key={preset.value} value={preset.value}>
-                                {preset.label}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                        </Grid>
-                        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                          <TextField
-                            label="Color depth"
-                            value={videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le')}
-                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'pixFmt', event.target.value)}
-                            helperText={pixelFormatDescription(videoWorkerValue(videoDraft, 'pixFmt', 'yuv420p10le'))}
-                            select
-                            size="small"
-                            fullWidth
-                          >
-                            {pixelFormatOptions.map((pixFmt) => (
-                              <MenuItem key={pixFmt.value} value={pixFmt.value}>
-                                {pixFmt.label}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                        </Grid>
                         <Grid size={{ xs: 12 }}>
                           <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
                             <Stack spacing={2}>
@@ -1852,6 +2084,9 @@ export function ProfileLabPage() {
                                     label="Deinterlace"
                                     value={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto')}
                                     onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deinterlaceMode', event.target.value)}
+                                    helperText={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto') === 'force'
+                                      ? 'FFmpeg: bwdif=mode=send_frame:parity=auto:deint=all · output metadata becomes progressive automatically.'
+                                      : 'Output field metadata follows the analyzed correction automatically.'}
                                     select
                                     fullWidth
                                   >
@@ -2658,6 +2893,256 @@ export function ProfileLabPage() {
   );
 }
 
+function FrameFidelityComparison({ sourceUrl, outputUrl, inspection }: { sourceUrl: string; outputUrl: string; inspection: LabFidelityInspection }) {
+  const [mode, setMode] = useState<'slider' | 'side-by-side' | 'blink'>('slider');
+  const [position, setPosition] = useState(50);
+  const [blinkSource, setBlinkSource] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    setLoadError('');
+  }, [sourceUrl, outputUrl]);
+
+  useEffect(() => {
+    if (mode !== 'blink') {
+      setBlinkSource(true);
+      return;
+    }
+    const timer = window.setInterval(() => setBlinkSource((current) => !current), 650);
+    return () => window.clearInterval(timer);
+  }, [mode]);
+
+  if (!sourceUrl || !outputUrl) {
+    return <Alert severity="info">Process Video to create the canonical source and decoded output frames.</Alert>;
+  }
+
+  const frameStyle = {
+    display: 'block',
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain' as const,
+    bgcolor: 'black',
+  };
+  const sourceDimensions = squarePixelDimensions(inspection.source);
+  const outputDimensions = squarePixelDimensions(inspection.conversion);
+  const dimensionsMatch = sourceDimensions === outputDimensions;
+
+  return (
+    <Stack spacing={1.5}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button size="small" variant={mode === 'slider' ? 'contained' : 'outlined'} onClick={() => setMode('slider')}>Before / after</Button>
+          <Button size="small" variant={mode === 'side-by-side' ? 'contained' : 'outlined'} onClick={() => setMode('side-by-side')}>Side by side</Button>
+          <Button size="small" variant={mode === 'blink' ? 'contained' : 'outlined'} onClick={() => setMode('blink')}>Blink</Button>
+        </Stack>
+        <Typography variant="caption" color="text.secondary">
+          PNG frames decoded by FFmpeg · square-pixel display geometry
+        </Typography>
+      </Stack>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip size="small" label={`Source frame · ${sourceDimensions}`} />
+        <Chip size="small" label={`Result frame · ${outputDimensions}`} />
+        <Chip size="small" color={dimensionsMatch ? 'success' : 'warning'} label={dimensionsMatch ? 'Geometry aligned' : 'Geometry differs'} />
+        {inspection.metrics.comparable ? <Chip size="small" color="info" label={`SSIM ${inspection.metrics.ssim?.toFixed(4)}`} /> : null}
+        {inspection.metrics.comparable ? <Chip size="small" color="info" label={`PSNR ${inspection.metrics.psnr?.toFixed(2)} dB`} /> : null}
+      </Stack>
+      {!dimensionsMatch ? (
+        <Alert severity="warning">The displayed frame dimensions differ. Overlay and future pixel metrics are not considered geometrically equivalent.</Alert>
+      ) : null}
+      <Typography variant="caption" color="text.secondary">{inspection.metrics.reason}</Typography>
+      {loadError ? <Alert severity="warning">{loadError}</Alert> : null}
+      {mode === 'side-by-side' ? (
+        <Grid container spacing={1.5}>
+          <Grid size={{ xs: 12, md: 6 }}>
+            <FrameImage label="Canonical source" src={sourceUrl} onError={() => setLoadError('The canonical source PNG could not be generated.')} />
+          </Grid>
+          <Grid size={{ xs: 12, md: 6 }}>
+            <FrameImage label="Decoded profile result" src={outputUrl} onError={() => setLoadError('The profile-result PNG could not be generated.')} />
+          </Grid>
+        </Grid>
+      ) : (
+        <Box>
+          <Box sx={{ position: 'relative', width: '100%', height: { xs: 280, md: 520 }, overflow: 'hidden', bgcolor: 'black', borderRadius: 1 }}>
+            <Box component="img" src={outputUrl} alt="Decoded profile result frame" onError={() => setLoadError('The profile-result PNG could not be generated.')} sx={frameStyle} />
+            {mode === 'slider' ? (
+              <>
+                <Box
+                  component="img"
+                  src={sourceUrl}
+                  alt="Canonical source frame"
+                  onError={() => setLoadError('The canonical source PNG could not be generated.')}
+                  sx={{ ...frameStyle, position: 'absolute', inset: 0, clipPath: `inset(0 ${100 - position}% 0 0)` }}
+                />
+                <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${position}%`, width: 2, bgcolor: 'primary.main', transform: 'translateX(-1px)' }} />
+                <Chip size="small" label="Canonical source" sx={{ position: 'absolute', left: 12, top: 12 }} />
+                <Chip size="small" label="Profile result" sx={{ position: 'absolute', right: 12, top: 12 }} />
+              </>
+            ) : (
+              <>
+                <Box
+                  component="img"
+                  src={sourceUrl}
+                  alt="Canonical source frame"
+                  onError={() => setLoadError('The canonical source PNG could not be generated.')}
+                  sx={{ ...frameStyle, position: 'absolute', inset: 0, opacity: blinkSource ? 1 : 0 }}
+                />
+                <Chip size="small" color={blinkSource ? 'info' : 'warning'} label={blinkSource ? 'Canonical source' : 'Profile result'} sx={{ position: 'absolute', left: 12, top: 12 }} />
+              </>
+            )}
+          </Box>
+          {mode === 'slider' ? (
+            <Slider value={position} min={0} max={100} onChange={(_, value) => setPosition(Array.isArray(value) ? value[0] : value)} aria-label="Before and after frame position" />
+          ) : null}
+        </Box>
+      )}
+      <Alert severity="info">
+        Frame Fidelity bypasses browser video decoding. The source frame receives the selected preview color policy; the result frame is decoded from the generated profile preview.
+      </Alert>
+    </Stack>
+  );
+}
+
+function squarePixelDimensions(characteristics: PreviewVideoCharacteristics) {
+  const parts = (characteristics.sampleAspectRatio || '1:1').split(':').map(Number);
+  const ratio = parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : 1;
+  return `${Math.round(characteristics.width * ratio)}×${characteristics.height}`;
+}
+
+function FrameImage({ label, src, onError }: { label: string; src: string; onError: () => void }) {
+  return (
+    <Stack spacing={0.75}>
+      <Typography fontWeight={700} variant="body2">{label}</Typography>
+      <Box component="img" src={src} alt={`${label} frame`} onError={onError} sx={{ display: 'block', width: '100%', height: { xs: 260, md: 420 }, objectFit: 'contain', bgcolor: 'black', borderRadius: 1 }} />
+    </Stack>
+  );
+}
+
+function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityInspection }) {
+  const rows: Array<{
+    label: string;
+    value: (item: PreviewVideoCharacteristics) => string;
+    expectedToChange?: boolean;
+  }> = [
+    { label: 'Codec', value: (item) => item.codec || 'Unknown', expectedToChange: true },
+    { label: 'Profile', value: (item) => item.profile || 'Unknown', expectedToChange: true },
+    { label: 'Pixel format', value: (item) => item.pixelFormat || 'Unknown', expectedToChange: true },
+    { label: 'Bit depth', value: (item) => item.bitDepth ? `${item.bitDepth}-bit` : 'Unknown', expectedToChange: true },
+    { label: 'Frame size', value: (item) => item.width && item.height ? `${item.width}×${item.height}` : 'Unknown' },
+    { label: 'SAR', value: (item) => item.sampleAspectRatio || 'Unknown' },
+    { label: 'DAR', value: (item) => item.displayAspectRatio || 'Unknown' },
+    { label: 'Frame rate', value: (item) => item.frameRate || 'Unknown' },
+    { label: 'Field order', value: (item) => item.fieldOrder || 'Unknown', expectedToChange: true },
+    { label: 'Range', value: (item) => item.colorRange || 'Unknown', expectedToChange: inspection.normalization.applied },
+    { label: 'Matrix', value: (item) => item.colorSpace || 'Unknown', expectedToChange: inspection.normalization.applied },
+    { label: 'Transfer', value: (item) => item.colorTransfer || 'Unknown', expectedToChange: inspection.normalization.applied },
+    { label: 'Primaries', value: (item) => item.colorPrimaries || 'Unknown', expectedToChange: inspection.normalization.applied },
+    { label: 'Chroma location', value: (item) => item.chromaLocation || 'Unknown' },
+  ];
+  const unexpected = rows.filter((row) => {
+    if (row.expectedToChange) return false;
+    const source = row.value(inspection.source);
+    const conversion = row.value(inspection.conversion);
+    return source !== 'Unknown' && conversion !== 'Unknown' && source !== conversion;
+  });
+  const encoderFallback = Boolean(
+    inspection.requestedEncoder &&
+    inspection.requestedEncoder !== 'auto' &&
+    inspection.effectiveEncoder &&
+    inspection.requestedEncoder !== inspection.effectiveEncoder,
+  );
+
+  return (
+    <Stack spacing={1.5}>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip size="small" label={`Source · ${inspection.source.codec || 'unknown'} ${inspection.source.width}×${inspection.source.height}`} />
+        <Chip
+          size="small"
+          color={inspection.normalization.applied ? 'info' : 'default'}
+          label={inspection.normalization.applied ? 'Preview · BT.709 converted' : `Preview · ${inspection.normalization.mode === 'preserve' ? 'source domain' : 'normalization skipped'}`}
+        />
+        <Chip size="small" color="info" label={`Browser reference · ${inspection.reference.codec || 'unknown'} ${inspection.reference.pixelFormat || ''}`} />
+        <Chip size="small" color={encoderFallback ? 'warning' : 'success'} label={`Encoder · ${inspection.effectiveEncoder || 'unknown'}`} />
+        <Chip size="small" color={unexpected.length ? 'warning' : 'success'} label={`Profile result · ${unexpected.length ? `${unexpected.length} unexpected difference(s)` : 'structure preserved'}`} />
+      </Stack>
+      {encoderFallback ? (
+        <Alert severity="warning">
+          Requested {inspection.requestedEncoder}, but the runtime smoke test rejected it. This preview was actually encoded with {inspection.effectiveEncoder}.
+        </Alert>
+      ) : null}
+      <Alert severity={inspection.normalization.applied || inspection.normalization.mode === 'preserve' ? 'info' : 'warning'}>
+        {inspection.normalization.reason}
+        {inspection.normalization.filter ? <><br /><code>{inspection.normalization.filter}</code></> : null}
+      </Alert>
+      {inspection.normalization.aliasWarnings?.map((warning) => (
+        <Alert key={warning} severity="warning">{warning}</Alert>
+      ))}
+      {unexpected.length ? (
+        <Alert severity="warning">
+          Unexpected output differences were found in: {unexpected.map((row) => row.label).join(', ')}. Codec, profile, pixel format, bit depth, and field order may change intentionally.
+        </Alert>
+      ) : (
+        <Alert severity="success">No unexpected geometry or color metadata differences were detected in the generated profile preview.</Alert>
+      )}
+      <Box sx={{ overflowX: 'auto' }}>
+        <Table size="small" aria-label="Preview fidelity characteristics">
+          <TableHead>
+            <TableRow>
+              <TableCell>Characteristic</TableCell>
+              <TableCell>Source</TableCell>
+              <TableCell>Browser reference</TableCell>
+              <TableCell>Profile result</TableCell>
+              <TableCell>Result</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableRow>
+              <TableCell>Encoder</TableCell>
+              <TableCell>Source stream</TableCell>
+              <TableCell>{inspection.referenceEncoder || 'libx264'}</TableCell>
+              <TableCell>
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{inspection.effectiveEncoder || 'Unknown'}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Requested: {inspection.requestedEncoder || 'auto'}
+                  </Typography>
+                </Stack>
+              </TableCell>
+              <TableCell>
+                <Chip
+                  size="small"
+                  color={encoderFallback ? 'warning' : 'success'}
+                  label={encoderFallback ? 'Software fallback' : inspection.requestedEncoder === 'auto' ? 'Selected automatically' : 'Requested encoder used'}
+                />
+              </TableCell>
+            </TableRow>
+            {rows.map((row) => {
+              const source = row.value(inspection.source);
+              const reference = row.value(inspection.reference);
+              const conversion = row.value(inspection.conversion);
+              const unknown = source === 'Unknown' || conversion === 'Unknown';
+              const equal = source === conversion;
+              const status = unknown ? 'Unknown' : equal ? 'Preserved' : row.expectedToChange ? 'Changed intentionally' : 'Changed unexpectedly';
+              const color = status === 'Changed unexpectedly' ? 'warning' : status === 'Preserved' ? 'success' : 'default';
+              return (
+                <TableRow key={row.label}>
+                  <TableCell>{row.label}</TableCell>
+                  <TableCell>{source}</TableCell>
+                  <TableCell>{reference}</TableCell>
+                  <TableCell>{conversion}</TableCell>
+                  <TableCell><Chip size="small" color={color} label={status} /></TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </Box>
+      <Typography variant="caption" color="text.secondary">
+        The browser reference is a temporary H.264 representation. Its differences describe preview normalization only and do not change the final-output policy saved in the video profile.
+      </Typography>
+    </Stack>
+  );
+}
+
 function SampleCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
     <Card sx={{ height: '100%' }}>
@@ -2673,32 +3158,6 @@ function SampleCard({ title, subtitle, children }: { title: string; subtitle: st
         </Stack>
       </CardContent>
     </Card>
-  );
-}
-
-function PreserveButton({
-  active,
-  label,
-  tooltip,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  tooltip: string;
-  onClick: () => void;
-}) {
-  return (
-    <Tooltip title={tooltip}>
-      <Button
-        type="button"
-        size="small"
-        variant={active ? 'contained' : 'outlined'}
-        onClick={onClick}
-        sx={{ minHeight: 32, borderRadius: 1, px: 1.25, whiteSpace: 'nowrap' }}
-      >
-        {active ? 'Preserve ' : 'Remove '}{label}
-      </Button>
-    </Tooltip>
   );
 }
 
@@ -3079,6 +3538,36 @@ function videoSubtitleOutputFormat(draft: ProfileInput) {
   return videoWorkerBool(draft, 'preferSrtSubtitles') ? 'srt' : 'source';
 }
 
+function videoExternalSubtitleFormat(draft: ProfileInput) {
+  const configured = videoWorkerValue(draft, 'externalSubtitleFormat').toLowerCase();
+  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+    return configured;
+  }
+  // Treat the previous embedded-conversion setting as the new safe
+  // externalization behavior when an older profile is opened in LAB.
+  const legacy = videoSubtitleOutputFormat(draft);
+  return legacy === 'srt' || legacy === 'ass' ? legacy : 'source';
+}
+
+function updateVideoSubtitleExternalization(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  format: string,
+) {
+  const normalized = format === 'srt' || format === 'ass' ? format : 'source';
+  setVideoDraft((current) => ({
+    ...current,
+    preserveSubtitles: normalized === 'source',
+    workerConfig: {
+      ...current.workerConfig,
+      externalSubtitleFormat: normalized,
+      // Externalization is handled before the media command. Keep FFmpeg from
+      // independently transcoding the remaining subtitle streams.
+      subtitleOutputFormat: 'source',
+      preferSrtSubtitles: false,
+    },
+  }));
+}
+
 function videoAACTrackEnabled(draft: ProfileInput) {
   return draft.workerConfig && 'addAacStereoTrack' in draft.workerConfig
     ? videoWorkerBool(draft, 'addAacStereoTrack')
@@ -3107,7 +3596,7 @@ function updateVideoWorkerConfig(
       : pixelFormat.includes('10') || pixelFormat.includes('p010')
         ? 10
         : undefined;
-    return {
+    const next = {
       ...current,
       ...(key === 'pixFmt' ? {
         videoCodec: displayVideoCodec(current.videoCodec),
@@ -3119,6 +3608,75 @@ function updateVideoWorkerConfig(
         [key]: value,
       },
     };
+    return key === 'videoEncoder' || key === 'pixFmt'
+      ? synchronizeLabAuthoritativeContract(next)
+      : next;
+  });
+}
+
+function updateVideoProcessingPreference(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  preference: 'software' | 'hardware',
+  defaultHardwareEncoder = '',
+) {
+  setVideoDraft((current) => {
+    const hardware = preference === 'hardware';
+    const hardwareAvailable = hardwareEncodingSupportedForCodec(current.videoCodec);
+    const currentEncoder = videoWorkerValue(current, 'videoEncoder', 'auto');
+    const hardwareEncoder = isHardwareEncoderOption(currentEncoder) ? currentEncoder : defaultHardwareEncoder;
+    const pixelFormat = hardware
+      ? defaultHardwareMain10PixelFormat(hardwareEncoder)
+      : 'yuv420p10le';
+    const workerConfig = {
+      ...current.workerConfig,
+      preferredEncoder: preference,
+      useHardwareIfAvailable: hardware && hardwareAvailable,
+      videoEncoder: preference === 'software'
+        ? 'auto'
+        : hardwareEncoder,
+      pixFmt: pixelFormat,
+    };
+    return synchronizeLabAuthoritativeContract({
+      ...current,
+      workerConfig: hardware ? workerConfig : {
+        ...workerConfig,
+        qsvRateControl: undefined,
+        qsvLookAheadDepth: undefined,
+        qsvExtendedBRC: undefined,
+        qsvAdaptiveI: undefined,
+        qsvAdaptiveB: undefined,
+      },
+    });
+  });
+}
+
+function updateVideoHardwareEncoder(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  encoder: string,
+) {
+  setVideoDraft((current) => synchronizeLabAuthoritativeContract({
+    ...current,
+    workerConfig: {
+      ...current.workerConfig,
+      preferredEncoder: 'hardware',
+      useHardwareIfAvailable: true,
+      videoEncoder: encoder,
+      pixFmt: defaultHardwareMain10PixelFormat(encoder),
+    },
+  }));
+}
+
+function updateVideoCodecDraft(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  videoCodec: string,
+) {
+  setVideoDraft((current) => {
+    const preference = videoWorkerValue(current, 'preferredEncoder', 'software');
+    const mustUseSoftware = videoCodec === 'copy' || preference === 'hardware' && !hardwareEncodingSupportedForCodec(videoCodec);
+    const workerConfig = mustUseSoftware
+      ? { ...current.workerConfig, preferredEncoder: 'software', useHardwareIfAvailable: false, videoEncoder: 'auto' }
+      : current.workerConfig;
+    return synchronizeLabAuthoritativeContract({ ...current, videoCodec, workerConfig });
   });
 }
 
@@ -3128,6 +3686,24 @@ function encoderPresetDescription(value: string) {
 
 function pixelFormatDescription(value: string) {
   return pixelFormatOptions.find((option) => option.value === value)?.description ?? 'Controls output color depth and playback compatibility.';
+}
+
+function compatiblePixelFormatOptions(preference: string, encoder: string) {
+  if (preference !== 'hardware') {
+    return pixelFormatOptions.filter((option) => ['auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+  }
+  if (encoder === 'hevc_qsv' || encoder === 'hevc_vaapi' || encoder === 'auto') {
+    return pixelFormatOptions.filter((option) => ['auto', 'p010le', 'nv12'].includes(option.value));
+  }
+  return pixelFormatOptions.filter((option) => ['auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+}
+
+function defaultHardwareMain10PixelFormat(encoder: string) {
+  return encoder === 'hevc_qsv' || encoder === 'hevc_vaapi' ? 'p010le' : 'yuv420p10le';
+}
+
+function hardwareUsesGlobalQuality(encoder: string) {
+  return encoder !== 'hevc_videotoolbox';
 }
 
 function videoEncoderDescription(value: string) {
@@ -3140,6 +3716,70 @@ function displayVideoCodec(value: string) {
 
 function isHardwareEncoderOption(value: string) {
   return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
+}
+
+function hardwareEncodingSupportedForCodec(codec: string) {
+  return codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
+}
+
+function synchronizeLabAuthoritativeContract(profile: ProfileInput): ProfileInput {
+  const workerConfig = { ...profile.workerConfig };
+  delete workerConfig.processingMode;
+  profile = { ...profile, workerConfig };
+  const codec = profile.videoCodec.toLowerCase();
+  const codecFamily = codec === 'copy'
+    ? 'copy'
+    : codec.includes('265') || codec.includes('hevc')
+      ? 'hevc'
+      : codec.includes('264')
+        ? 'h264'
+        : codec.includes('av1')
+          ? 'av1'
+          : codec;
+  if (codecFamily === 'copy') {
+    return {
+      ...profile,
+      codecFamily: 'copy',
+      encoderPolicy: 'locked',
+      preferredEncoder: 'copy',
+      allowedEncoders: ['copy'],
+      fallbackPolicy: 'wait',
+      bitDepth: 0,
+      pixelFormat: '',
+      qualityStrategy: 'source',
+    };
+  }
+  const software = codecFamily === 'h264' ? 'libx264' : codecFamily === 'av1' ? 'libsvtav1' : 'libx265';
+  const configured = videoWorkerValue(profile, 'videoEncoder', 'auto');
+  const hardwareAllowed = videoWorkerBool(profile, 'useHardwareIfAvailable') && codecFamily === 'hevc';
+  const hardware = hardwareAllowed ? ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'] : [];
+  const pixelFormat = videoWorkerValue(profile, 'pixFmt', profile.pixelFormat || 'yuv420p');
+  const bitDepth = pixelFormat === 'auto' ? 0 : pixelFormat.includes('10') || pixelFormat.includes('p010') ? 10 : 8;
+  if (configured === 'auto' || configured === 'ffmpeg') {
+    return {
+      ...profile,
+      codecFamily,
+      encoderPolicy: hardwareAllowed ? 'automatic' : 'locked',
+      preferredEncoder: hardwareAllowed ? hardware[0] : software,
+      allowedEncoders: hardwareAllowed ? [...hardware, software] : [software],
+      fallbackPolicy: hardwareAllowed ? 'allowed_only' : 'wait',
+      bitDepth,
+      pixelFormat,
+      qualityStrategy: 'crf',
+    };
+  }
+  const validHardware = hardware.includes(configured);
+  return {
+    ...profile,
+    codecFamily,
+    encoderPolicy: validHardware ? 'restricted' : 'locked',
+    preferredEncoder: validHardware ? configured : software,
+    allowedEncoders: validHardware ? [configured, software] : [software],
+    fallbackPolicy: validHardware ? 'allowed_only' : 'wait',
+    bitDepth,
+    pixelFormat,
+    qualityStrategy: 'crf',
+  };
 }
 
 function hardwareQualityHelper(softwareCRF: number) {
@@ -3198,6 +3838,7 @@ function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<Pro
 function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
   const deinterlaceMode = stringValue(workerConfig.deinterlaceMode, 'auto');
+  const correctProgressiveFieldMetadata = workerConfig.correctProgressiveFieldMetadata === true;
   const denoise = stringValue(workerConfig.denoise, 'off');
   const deflicker = stringValue(workerConfig.deflicker, 'off');
   const deblockFilter = stringValue(workerConfig.deblockFilter, 'off');
@@ -3218,10 +3859,15 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
 
   if (deinterlaceMode === 'force') {
     filters.push('bwdif=mode=send_frame:parity=auto:deint=all');
+    filters.push('setfield=prog');
   } else if (deinterlaceMode === 'ivtc_tff') {
     filters.push('fieldmatch=order=tff,decimate');
+    filters.push('setfield=prog');
   } else if (deinterlaceMode === 'ivtc_bff') {
     filters.push('fieldmatch=order=bff,decimate');
+    filters.push('setfield=prog');
+  } else if (correctProgressiveFieldMetadata) {
+    filters.push('setfield=prog');
   }
   if (deflicker === 'light') {
     filters.push('deflicker=size=5:mode=pm');
@@ -3592,34 +4238,9 @@ function isCommentaryStream(stream: MediaStreamInfo) {
   return stream.comment || ['commentary', 'comentario', 'director comments'].some((term) => metadata.includes(term));
 }
 
-function subtitlePreviewLabel(stream: MediaStreamInfo) {
-  const language = stream.language || 'und';
-  const title = stream.title?.trim();
-  const flags = [stream.default ? 'default' : '', stream.forced ? 'forced' : ''].filter(Boolean).join(', ');
-  return [
-    `#${stream.index}`,
-    language.toUpperCase(),
-    stream.codec.toUpperCase(),
-    title,
-    flags ? `(${flags})` : '',
-  ].filter(Boolean).join(' · ');
-}
-
 function isBitmapSubtitleStream(stream: MediaStreamInfo) {
   const codec = stream.codec.toLowerCase();
   return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec);
-}
-
-function selectedPreviewSubtitleIsBitmap(streams: MediaStreamInfo[], selectedIndex: number | null) {
-  if (selectedIndex === null) {
-    return false;
-  }
-  const stream = streams.find((candidate) => candidate.index === selectedIndex);
-  return stream ? isBitmapSubtitleStream(stream) : false;
-}
-
-function processedVideoUsesCrop(options: ReturnType<typeof videoPreviewOptions>) {
-  return /(^|,)crop=/.test(options.videoFilters);
 }
 
 function TrackProfileAutocomplete({
@@ -3749,6 +4370,7 @@ function subtitleTransformsValue(value: unknown): TrackProfile['subtitleTransfor
       removeEmbedded: candidate.removeEmbedded !== false,
       makeDefault: candidate.makeDefault === true,
       language: typeof candidate.language === 'string' ? candidate.language : 'und',
+      ocrLanguage: typeof candidate.ocrLanguage === 'string' ? candidate.ocrLanguage : undefined,
       title: typeof candidate.title === 'string' ? candidate.title : undefined,
     }];
   });
@@ -4004,6 +4626,226 @@ function effectiveAudioFilters(profile: AudioEnhancementProfile) {
   return sanitizeAudioFilterChain([rnnoiseFilter(profile.rnnoiseModelPath), channelFilter(profile), normalizedBaseFilters(profile), eqFilterChain(profile.eqBands)]
     .filter(Boolean)
     .join(','));
+}
+
+type CombinedLabCommandInput = {
+  assetPath: string;
+  start: string;
+  seconds: number;
+  video: ProfileInput;
+  audio: AudioEnhancementProfile;
+  tracks: AssetConversionOverrideState;
+  scan?: ScanResult;
+  selectedAudioStreamIndex?: number;
+};
+
+function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
+  if (!input.assetPath || !input.scan) return '';
+
+  const videoIndexes = conversionStreamIndexes(input.tracks, input.scan, 'video');
+  let audioIndexes = conversionStreamIndexes(input.tracks, input.scan, 'audio');
+  const subtitleIndexes = conversionStreamIndexes(input.tracks, input.scan, 'subtitle');
+  const audioExplicitlyRemoved = Array.isArray(input.tracks.keepAudioStreams) && input.tracks.keepAudioStreams.length === 0;
+  const sourceAudioIndex = audioExplicitlyRemoved
+    ? undefined
+    : input.selectedAudioStreamIndex !== undefined && input.scan.audioStreams.some((stream) => stream.index === input.selectedAudioStreamIndex)
+      ? input.selectedAudioStreamIndex
+      : audioIndexes[0];
+  if (sourceAudioIndex !== undefined && !audioIndexes.includes(sourceAudioIndex)) {
+    audioIndexes = [...audioIndexes, sourceAudioIndex];
+  }
+
+  const args = ['ffmpeg', '-hide_banner', '-y', '-ss', input.start || '00:00:00', '-i', shellQuote(input.assetPath), '-t', String(Math.max(1, Math.min(60, input.seconds || 20)))];
+  videoIndexes.forEach((index) => args.push('-map', `0:${index}`));
+  audioIndexes.forEach((index) => args.push('-map', `0:${index}`));
+  subtitleIndexes.forEach((index) => args.push('-map', `0:${index}`));
+
+  let processedAudioOutputIndex = sourceAudioIndex === undefined ? -1 : audioIndexes.indexOf(sourceAudioIndex);
+  if (sourceAudioIndex !== undefined && input.audio.preserveOriginalTrack) {
+    args.push('-map', `0:${sourceAudioIndex}`);
+    processedAudioOutputIndex = audioIndexes.length;
+  }
+  args.push('-c', 'copy');
+  args.push(...combinedVideoCommandArgs(input.video, input.scan));
+
+  if (processedAudioOutputIndex >= 0) {
+    const filters = effectiveAudioFilters(input.audio);
+    const codec = terminalAudioCodec(input.audio.outputCodec);
+    if (filters) args.push(`-filter:a:${processedAudioOutputIndex}`, shellQuote(filters));
+    args.push(`-c:a:${processedAudioOutputIndex}`, codec);
+    args.push(`-metadata:s:a:${processedAudioOutputIndex}`, shellQuote(`title=${input.audio.name || 'MVForge Lab audio'}`));
+  }
+
+  appendTerminalMetadata(args, 'v', videoIndexes, input.tracks.videoMetadata);
+  appendTerminalMetadata(args, 'a', audioIndexes, input.tracks.audioMetadata);
+  appendTerminalMetadata(args, 's', subtitleIndexes, input.tracks.subtitleMetadata);
+  if (input.video.preserveChapters) args.push('-map_chapters', '0');
+
+  const baseName = input.assetPath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'mvforge-lab';
+  const container = input.video.container === 'mp4' ? 'mp4' : 'mkv';
+  args.push(shellQuote(`/tmp/${baseName}.mvforge-lab.${container}`));
+  return args.join(' ');
+}
+
+function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
+  if (profile.videoCodec === 'copy') return ['-c:v', 'copy'];
+  const preference = videoWorkerValue(profile, 'preferredEncoder', 'software');
+  const configuredEncoder = videoWorkerValue(profile, 'videoEncoder', 'auto');
+  const encoder = preference === 'hardware' && configuredEncoder !== 'auto'
+    ? configuredEncoder
+    : softwareEncoderForLabCodec(profile.videoCodec);
+  const worker = profile.workerConfig ?? {};
+  let filters = buildVideoFilterChain(worker);
+  const args = ['-c:v', encoder];
+  const automaticMotion = combinedAutomaticMotionFilters(profile, scan);
+  if (automaticMotion.length) {
+    filters = [automaticMotion.join(','), filters].filter(Boolean).join(',');
+  }
+
+  if (encoder === 'hevc_qsv') {
+    args.push('-init_hw_device', 'qsv=hw,child_device=/dev/dri/renderD128');
+    args.push('-global_quality', String(numberWorkerValue(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue).recommended)));
+    args.push('-preset', videoWorkerValue(profile, 'videoPreset', 'medium'));
+    const pixFmt = videoWorkerValue(profile, 'pixFmt', 'yuv420p10le') === 'yuv420p10le' ? 'p010le' : videoWorkerValue(profile, 'pixFmt', 'nv12');
+    args.push('-pix_fmt', pixFmt);
+    if (videoWorkerValue(profile, 'qsvRateControl', 'icq') === 'la_icq') args.push('-look_ahead', '1');
+  } else if (encoder === 'hevc_vaapi') {
+    const format = videoWorkerValue(profile, 'pixFmt', 'yuv420p10le').includes('10') ? 'p010le' : 'nv12';
+    filters = [filters, `format=${format}`, 'hwupload'].filter(Boolean).join(',');
+    args.push('-vaapi_device', '/dev/dri/renderD128');
+    args.push('-global_quality', String(numberWorkerValue(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue).recommended)));
+  } else if (encoder === 'hevc_videotoolbox') {
+    const bitrate = numberWorkerValue(profile, 'videoToolboxBitrateMbps', 6);
+    args.push('-b:v', `${bitrate}M`, '-maxrate', `${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', 8)}M`, '-bufsize', `${numberWorkerValue(profile, 'videoToolboxBufferMbps', 12)}M`);
+    const tenBit = isTenBitDraft(profile);
+    args.push('-profile:v', tenBit ? 'main10' : 'main', '-pix_fmt', tenBit ? 'p010le' : 'yuv420p');
+    const color = combinedVideoToolboxColorConversion(scan);
+    if (color.filter) {
+      filters = [filters, color.filter].filter(Boolean).join(',');
+    }
+    if (color.outputColor) {
+      args.push(
+        '-colorspace', color.outputColor.space,
+        '-color_trc', color.outputColor.transfer,
+        '-color_primaries', color.outputColor.primaries,
+        '-color_range', color.outputColor.range,
+      );
+    }
+  } else if (isHardwareEncoderOption(encoder)) {
+    args.push('-cq', String(numberWorkerValue(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue).recommended)));
+  } else {
+    args.push('-crf', String(profile.qualityValue || 20));
+    args.push('-preset', videoWorkerValue(profile, 'videoPreset', 'medium'));
+    const pixFmt = videoWorkerValue(profile, 'pixFmt', 'auto');
+    if (pixFmt !== 'auto') args.push('-pix_fmt', pixFmt);
+    if (encoder === 'libx265') {
+      const x265Params = videoWorkerValue(profile, 'x265Params');
+      if (x265Params) args.push('-x265-params', shellQuote(x265Params));
+    }
+  }
+  if (filters) args.push('-vf', shellQuote(filters));
+  return args;
+}
+
+function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
+  if (videoFilterControlValue(profile, 'deinterlaceMode', 'auto') !== 'auto') return [];
+  const status = scan.interlaceAnalysis.status;
+  if (status === 'interlaced') {
+    const detected = (scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder || '').toLowerCase();
+    const parity = detected.startsWith('b') ? 'bff' : detected.startsWith('t') ? 'tff' : 'auto';
+    return [`bwdif=mode=send_frame:parity=${parity}:deint=all`, 'setfield=prog'];
+  }
+  if (status === 'telecine_suspected') {
+    const mode = scan.interlaceAnalysis.recommendedMode;
+    const order = mode === 'ivtc_bff' ? 'bff' : 'tff';
+    return [`fieldmatch=order=${order}`, 'decimate', 'setfield=prog'];
+  }
+  if (status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch) {
+    return ['setfield=prog'];
+  }
+  return [];
+}
+
+function combinedVideoToolboxColorConversion(scan: ScanResult): {
+  filter?: string;
+  outputColor?: { space: string; transfer: string; primaries: string; range: string };
+} {
+  const source = scan.videoStreams[0];
+  if (!source) return {};
+  const space = (source.colorSpace || '').toLowerCase();
+  const transfer = (source.colorTransfer || '').toLowerCase();
+  const primaries = (source.colorPrimaries || '').toLowerCase();
+  const range = (source.colorRange || '').toLowerCase();
+  const outputRange = range === 'pc' || range === 'full' ? 'pc' : 'tv';
+  if (space === 'bt709' && transfer === 'bt709' && primaries === 'bt709') {
+    return { outputColor: { space: 'bt709', transfer: 'bt709', primaries: 'bt709', range: outputRange } };
+  }
+  const supportedSpace = new Set(['bt470bg', 'smpte170m', 'smpte240m', 'bt709']);
+  const supportedPrimaries = new Set(['bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'bt709']);
+  const supportedTransfer = new Set(['bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'bt709']);
+  if (!supportedSpace.has(space) || !supportedPrimaries.has(primaries) || !supportedTransfer.has(transfer) || !['tv', 'limited', 'pc', 'full'].includes(range)) {
+    return {};
+  }
+  const inputRange = range === 'pc' || range === 'full' ? 'pc' : 'tv';
+  return {
+    filter: `colorspace=ispace=${space}:iprimaries=${primaries}:itrc=${transfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv`,
+    outputColor: { space: 'bt709', transfer: 'bt709', primaries: 'bt709', range: 'tv' },
+  };
+}
+
+function softwareEncoderForLabCodec(codec: string) {
+  const normalized = codec.toLowerCase();
+  if (normalized.includes('264')) return 'libx264';
+  if (normalized.includes('av1')) return 'libsvtav1';
+  return 'libx265';
+}
+
+function terminalAudioCodec(codec: string) {
+  switch (codec.toLowerCase()) {
+    case 'opus':
+      return 'libopus';
+    case 'copy':
+      return 'aac';
+    default:
+      return codec || 'aac';
+  }
+}
+
+function appendTerminalMetadata(
+  args: string[],
+  type: 'v' | 'a' | 's',
+  inputIndexes: number[],
+  metadata?: Record<string, StreamMetadataOverride>,
+) {
+  inputIndexes.forEach((inputIndex, outputIndex) => {
+    const value = metadata?.[String(inputIndex)];
+    if (!value) return;
+    if (value.language) args.push(`-metadata:s:${type}:${outputIndex}`, shellQuote(`language=${value.language}`));
+    if (value.title) args.push(`-metadata:s:${type}:${outputIndex}`, shellQuote(`title=${value.title}`));
+    if (value.default !== undefined || value.forced !== undefined) {
+      const disposition = [value.default ? 'default' : '', value.forced ? 'forced' : ''].filter(Boolean).join('+') || '0';
+      args.push(`-disposition:${type}:${outputIndex}`, disposition);
+    }
+  });
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
 }
 
 function channelFilter(profile: AudioEnhancementProfile) {

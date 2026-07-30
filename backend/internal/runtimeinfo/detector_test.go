@@ -54,6 +54,15 @@ func TestParseVMStat(t *testing.T) {
 	}
 }
 
+func TestParseDRMEngineCountersAndUsage(t *testing.T) {
+	first := parseDRMEngineCounters("drm-driver: i915\ndrm-engine-render: 100000000 ns\ndrm-engine-video: 200000000 ns\n")
+	second := parseDRMEngineCounters("drm-engine-render: 150000000 ns\ndrm-engine-video: 300000000 ns\n")
+	usage := drmEngineUsage(first, second, 0.5)
+	if usage["render"] != 10 || usage["video"] != 20 {
+		t.Fatalf("unexpected DRM engine usage: %#v", usage)
+	}
+}
+
 func TestSelectProfile(t *testing.T) {
 	tests := []struct {
 		name     string

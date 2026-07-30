@@ -29,6 +29,9 @@ import type {
   RuntimeSnapshot,
   RuntimeProfilesResponse,
   ScanResult,
+  CompatiblePreviewOptions,
+  PreviewInspection,
+  PreviewFrameMetrics,
   SoftwareVersions,
   UpdateLibraryInput,
   UpdateProfileInput,
@@ -67,7 +70,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
 
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `Expected a JSON API response but received ${contentType || 'an unknown content type'}. The MVForge frontend and backend may be running different versions.`,
+    );
+  }
   return response.json() as Promise<T>;
+}
+
+function compatiblePreviewPath({
+  path,
+  profileId = 0,
+  start = '00:00:00',
+  seconds = 20,
+  videoCodec = '',
+  qualityValue = 0,
+  videoPreset = '',
+  pixFmt = '',
+  videoFilters = '',
+  x265Params = '',
+  videoEncoder = 'auto',
+  useHardwareIfAvailable = false,
+  globalQuality = 25,
+  qsvRateControl = 'icq',
+  qsvLookAheadDepth = 40,
+  qsvExtendedBRC = false,
+  qsvAdaptiveI = false,
+  qsvAdaptiveB = false,
+  mode = 'quick',
+  previewNormalization = 'normalize_bt709',
+  subtitleStreamIndex,
+}: CompatiblePreviewOptions) {
+  return `/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&mode=${mode}&previewNormalization=${encodeURIComponent(previewNormalization)}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`;
 }
 
 export const api = {
@@ -277,50 +312,14 @@ export const api = {
       body: JSON.stringify({ path, force, analysisSeconds }),
   }),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
-  compatibleAssetPreviewUrl: ({
-    path,
-    profileId = 0,
-    start = '00:00:00',
-    seconds = 20,
-    videoCodec = '',
-    qualityValue = 0,
-    videoPreset = '',
-    pixFmt = '',
-    videoFilters = '',
-    x265Params = '',
-    videoEncoder = 'auto',
-    useHardwareIfAvailable = false,
-    globalQuality = 25,
-    qsvRateControl = 'icq',
-    qsvLookAheadDepth = 40,
-    qsvExtendedBRC = false,
-    qsvAdaptiveI = false,
-    qsvAdaptiveB = false,
-    mode = 'quick',
-    subtitleStreamIndex,
-  }: {
-    path: string;
-    profileId?: number;
-    start?: string;
-    seconds?: number;
-    videoCodec?: string;
-    qualityValue?: number;
-    videoPreset?: string;
-    pixFmt?: string;
-    videoFilters?: string;
-    x265Params?: string;
-    videoEncoder?: string;
-    useHardwareIfAvailable?: boolean;
-    globalQuality?: number;
-    qsvRateControl?: string;
-    qsvLookAheadDepth?: number;
-    qsvExtendedBRC?: boolean;
-    qsvAdaptiveI?: boolean;
-    qsvAdaptiveB?: boolean;
-    mode?: 'quick' | 'quality';
-    subtitleStreamIndex?: number;
-  }) =>
-    `${API_BASE_URL}/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&mode=${mode}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`,
+  compatibleAssetPreviewUrl: (options: CompatiblePreviewOptions) =>
+    `${API_BASE_URL}${compatiblePreviewPath(options)}`,
+  compatibleAssetFrameUrl: (options: CompatiblePreviewOptions, frame: 'source' | 'output') =>
+    `${API_BASE_URL}${compatiblePreviewPath(options)}&frame=${frame}`,
+  compatibleAssetFrameMetrics: (options: CompatiblePreviewOptions) =>
+    request<PreviewFrameMetrics>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/metrics')),
+  inspectCompatibleAssetPreview: (options: CompatiblePreviewOptions) =>
+    request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect')),
   audioPreviewUrl: ({
     path,
     profileKey = '',

@@ -543,7 +543,7 @@ function AssetGroupRow({
 	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
 	  return Promise.all(queueable.map(async ({ asset, result }) => {
 	    if (trackProfile) {
-	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), processingMode: copyVideo ? 'audio_only' : 'full_encode', trackProfileKey: trackProfile.key });
+	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), trackProfileKey: trackProfile.key });
 	    }
 	    return api.createQueueJob({
             mediaPath: asset.path,
@@ -1076,7 +1076,7 @@ function AssetRow({
         if (!result.applies && pathTrackProfile.validationMode === 'block') {
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
-        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode', trackProfileKey: pathTrackProfile.key });
+        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), trackProfileKey: pathTrackProfile.key });
         if (!result.applies) {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
@@ -1084,7 +1084,6 @@ function AssetRow({
         await api.updateAssetConversion({
           path: asset.path,
           ...cleanConversionOverride(conversionDraft),
-          processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode',
         });
       }
       return api.createQueueJob(input);
@@ -1220,7 +1219,10 @@ function AssetRow({
     const withoutMotion = withoutMotionFilters(conversionDraft.videoFilters);
     const recommendedMotionFilter = scan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
     const motionPatch: AssetConversionOverrideState = status === 'progressive'
-      ? { deinterlaceMode: 'off', videoFilters: withoutMotion }
+      ? {
+          deinterlaceMode: 'off',
+          videoFilters: withoutMotion,
+        }
       : status === 'interlaced'
         ? { deinterlaceMode: 'force', videoFilters: withoutMotion }
         : status === 'telecine_suspected'
@@ -1238,14 +1240,16 @@ function AssetRow({
       qualityValue: suggestion.insights.recommendedCrf || proposed.qualityValue,
       videoPreset: stringFromRecord(workerConfig, 'videoPreset'),
       pixFmt: stringFromRecord(workerConfig, 'pixFmt') || stringFromRecord(workerConfig, 'pixelFormat'),
-      processingMode: stringFromRecord(workerConfig, 'processingMode'),
       preserveHdr: proposed.preserveHdr,
       preserveSubtitles: proposed.preserveSubtitles,
       preserveChapters: proposed.preserveChapters,
       addAacStereoTrack: typeof workerConfig.addAacStereoTrack === 'boolean' ? workerConfig.addAacStereoTrack : conversionDraft.addAacStereoTrack,
       aacStereoDefault: typeof workerConfig.addAacStereoDefault === 'boolean' ? workerConfig.addAacStereoDefault : conversionDraft.aacStereoDefault,
       useHardwareIfAvailable: hardwareEnabled,
-      videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || (hardwareEnabled ? 'auto' : 'libx265'),
+      preferredEncoder: hardwareEnabled
+        ? (stringFromRecord(workerConfig, 'preferredEncoder') === 'auto' ? 'auto' : 'hardware')
+        : 'software',
+      videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || 'auto',
       globalQuality: Number(workerConfig.globalQuality || qsvQualityRangeForCrf(suggestion.insights.recommendedCrf || proposed.qualityValue).recommended),
       qsvRateControl: stringFromRecord(workerConfig, 'qsvRateControl') === 'la_icq' ? 'la_icq' : 'icq',
       qsvLookAheadDepth: Number(workerConfig.qsvLookAheadDepth || 40),
@@ -2241,9 +2245,9 @@ const deinterlaceOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
   { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
   { value: 'off', label: 'Never deinterlace' },
-  { value: 'force', label: 'Force deinterlace' },
-  { value: 'ivtc_tff', label: 'Inverse telecine · TFF' },
-  { value: 'ivtc_bff', label: 'Inverse telecine · BFF' },
+  { value: 'force', label: 'Force · bwdif (single-rate)' },
+  { value: 'ivtc_tff', label: 'IVTC · fieldmatch + decimate (TFF)' },
+  { value: 'ivtc_bff', label: 'IVTC · fieldmatch + decimate (BFF)' },
 ];
 
 const assetEncoderOptions: SelectOption[] = [
@@ -2281,10 +2285,53 @@ function AssetConversionOverridePanel({
   const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
   const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
   const bitmapSubtitleCount = scan?.subtitleStreams.filter((stream) => isBitmapSubtitleCodec(stream.codec)).length ?? 0;
-  const hardwareEnabled = draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true;
-  const effectiveVideoEncoder = draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto';
-  const qsvSelected = hardwareEnabled && effectiveVideoEncoder === 'hevc_qsv';
-  const videoToolboxSelected = hardwareEnabled && effectiveVideoEncoder === 'hevc_videotoolbox';
+  const processingPreference = draft.preferredEncoder ?? '';
+  const effectiveVideoCodec = draft.videoCodec || profile?.videoCodec || 'copy';
+  const hardwareCodecSupported = hardwareEncodingSupportedForAssetCodec(effectiveVideoCodec);
+  const hardwareSelected = processingPreference === 'hardware';
+  const effectiveVideoEncoder = draft.videoEncoder || 'auto';
+  const qsvSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_qsv';
+  const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
+
+  function changeProcessingPreference(value: '' | 'auto' | 'software' | 'hardware') {
+    if (value === '') {
+      onChange('preferredEncoder', undefined);
+      onChange('useHardwareIfAvailable', undefined);
+      onChange('videoEncoder', undefined);
+      onChange('globalQuality', undefined);
+      onChange('qsvRateControl', undefined);
+      onChange('qsvLookAheadDepth', undefined);
+      onChange('qsvExtendedBrc', undefined);
+      onChange('qsvAdaptiveI', undefined);
+      onChange('qsvAdaptiveB', undefined);
+      return;
+    }
+    onChange('preferredEncoder', value);
+    if (value === 'software') {
+      onChange('useHardwareIfAvailable', false);
+      onChange('videoEncoder', 'auto');
+      onChange('globalQuality', undefined);
+      onChange('qsvRateControl', undefined);
+      onChange('qsvLookAheadDepth', undefined);
+      onChange('qsvExtendedBrc', undefined);
+      onChange('qsvAdaptiveI', undefined);
+      onChange('qsvAdaptiveB', undefined);
+      return;
+    }
+    onChange('useHardwareIfAvailable', hardwareCodecSupported);
+    if (value === 'auto') {
+      onChange('videoEncoder', 'auto');
+    } else if (!isHardwareAssetEncoder(effectiveVideoEncoder)) {
+      onChange('videoEncoder', 'auto');
+    }
+  }
+
+  function changeAssetVideoCodec(value: string) {
+    onChange('videoCodec', value);
+    if ((value === 'copy' || !hardwareEncodingSupportedForAssetCodec(value)) && processingPreference === 'hardware') {
+      changeProcessingPreference('software');
+    }
+  }
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2313,7 +2360,7 @@ function AssetConversionOverridePanel({
               select
               label="Video codec"
               value={draft.videoCodec ?? ''}
-              onChange={(event) => onChange('videoCodec', event.target.value)}
+              onChange={(event) => changeAssetVideoCodec(event.target.value)}
               size="small"
               fullWidth
             >
@@ -2357,20 +2404,6 @@ function AssetConversionOverridePanel({
                   {option.label}
                 </MenuItem>
               ))}
-            </TextField>
-          </Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField
-              select
-              label="Work mode"
-              value={draft.processingMode ?? ''}
-              onChange={(event) => onChange('processingMode', event.target.value)}
-              size="small"
-              fullWidth
-            >
-              <MenuItem value="">Profile default</MenuItem>
-              <MenuItem value="full_encode">Re-encode video</MenuItem>
-              <MenuItem value="audio_only">Audio/subtitle fixes only</MenuItem>
             </TextField>
           </Grid>
           <Grid size={{ xs: 12 }}>
@@ -2442,6 +2475,9 @@ function AssetConversionOverridePanel({
               label="Deinterlacing"
               value={draft.deinterlaceMode ?? ''}
               onChange={(event) => onChange('deinterlaceMode', event.target.value as AssetConversionOverrideState['deinterlaceMode'])}
+              helperText={draft.deinterlaceMode === 'force'
+                ? 'bwdif=mode=send_frame:parity=auto:deint=all · output is marked progressive automatically.'
+                : 'Field metadata is updated automatically when Analysis applies a correction.'}
               size="small"
               fullWidth
             >
@@ -2487,70 +2523,50 @@ function AssetConversionOverridePanel({
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
               <Grid container spacing={2} alignItems="flex-start">
                 <Grid size={{ xs: 12, md: 4 }}>
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true}
-                        onChange={(event) => {
-                          onChange('useHardwareIfAvailable', event.target.checked);
-                          if (!event.target.checked) onChange('videoEncoder', 'libx265');
-                        }}
-                      />
-                    }
-                    label="Use hardware if available"
-                  />
-                </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     select
-                    label="Hardware preference"
-                    value={draft.preferredEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'preferredEncoder') || 'software'}
-                    onChange={(event) => onChange('preferredEncoder', event.target.value as AssetConversionOverrideState['preferredEncoder'])}
-                    disabled={!hardwareEnabled}
-                    helperText="Choose quality-first software, hardware speed, or automatic selection."
+                    label="Processing preference"
+                    value={processingPreference}
+                    onChange={(event) => changeProcessingPreference(event.target.value as '' | 'auto' | 'software' | 'hardware')}
+                    helperText="Override the profile with software, automatic selection, or a specific hardware encoder."
                     size="small"
                     fullWidth
                   >
-                    <MenuItem value="software">Prefer software quality</MenuItem>
-                    <MenuItem value="hardware">Prefer hardware speed</MenuItem>
+                    <MenuItem value="">Profile default</MenuItem>
                     <MenuItem value="auto">Auto</MenuItem>
+                    <MenuItem value="software">Software · match Video Codec</MenuItem>
+                    <MenuItem value="hardware" disabled={!hardwareCodecSupported}>Hardware</MenuItem>
                   </TextField>
                 </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
+                {hardwareSelected ? <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     select
-                    label="Encoder"
-                    value={draft.videoEncoder || stringFromRecord(profile?.workerConfig ?? {}, 'videoEncoder') || 'auto'}
+                    label="Hardware encoder"
+                    value={effectiveVideoEncoder}
                     onChange={(event) => onChange('videoEncoder', event.target.value)}
-                    disabled={!hardwareEnabled || videoToolboxSelected}
-                    helperText="Hardware encoders are enabled only when hardware use is allowed."
+                    helperText="Auto uses the first compatible encoder validated by the worker."
                     size="small"
                     fullWidth
                   >
-                    {assetEncoderOptions.map((option) => (
-                      <MenuItem
-                        key={option.value}
-                        value={option.value}
-                        disabled={isHardwareAssetEncoder(option.value) && !(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
-                      >
+                    {assetEncoderOptions.filter((option) => option.value === 'auto' || isHardwareAssetEncoder(option.value)).map((option) => (
+                      <MenuItem key={option.value} value={option.value}>
                         {option.label}
                       </MenuItem>
                     ))}
                   </TextField>
-                </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
+                </Grid> : null}
+                {hardwareSelected ? <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     label="Hardware quality"
                     type="number"
                     value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? qsvQualityRangeForCrf(draft.qualityValue ?? profile?.qualityValue ?? 22).recommended)}
                     onChange={(event) => onChange('globalQuality', Number(event.target.value))}
-                    disabled={!(draft.useHardwareIfAvailable ?? profile?.workerConfig?.useHardwareIfAvailable === true)}
                     inputProps={{ min: 15, max: 35 }}
                     helperText={qsvQualityHelper(draft.qualityValue ?? profile?.qualityValue ?? 22)}
                     size="small"
                     fullWidth
                   />
-                </Grid>
+                </Grid> : null}
               </Grid>
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
@@ -3238,6 +3254,11 @@ function isHardwareAssetEncoder(value: string) {
   return ['hevc_qsv', 'hevc_vaapi', 'hevc_nvenc', 'hevc_videotoolbox', 'hevc_amf'].includes(value);
 }
 
+function hardwareEncodingSupportedForAssetCodec(codec: string) {
+  const normalized = codec.toLowerCase();
+  return normalized.includes('265') || normalized.includes('hevc');
+}
+
 function stringFromRecord(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === 'string' ? value : '';
@@ -3257,12 +3278,19 @@ function normalizeAssetConversionOverride(value?: AssetConversionOverrideState):
   if (!value) {
     return {};
   }
-  return cleanConversionOverride({
+  const normalized = cleanConversionOverride({
     ...value,
     keepVideoStreams: Array.isArray(value.keepVideoStreams) ? normalizeNumberList(value.keepVideoStreams) : undefined,
     keepAudioStreams: Array.isArray(value.keepAudioStreams) ? normalizeNumberList(value.keepAudioStreams) : undefined,
     keepSubtitleStreams: Array.isArray(value.keepSubtitleStreams) ? normalizeNumberList(value.keepSubtitleStreams) : undefined,
   });
+  if (!normalized.preferredEncoder && typeof normalized.useHardwareIfAvailable === 'boolean') {
+    normalized.preferredEncoder = normalized.useHardwareIfAvailable ? 'hardware' : 'software';
+    if (normalized.useHardwareIfAvailable && !normalized.videoEncoder) {
+      normalized.videoEncoder = 'auto';
+    }
+  }
+  return normalized;
 }
 
 function cleanConversionOverride(value: AssetConversionOverrideState): AssetConversionOverrideState {
@@ -3302,7 +3330,6 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
     'pixFmt',
     'videoFilters',
     'x265Params',
-    'processingMode',
     'videoEncoder',
   ] as const).forEach((key) => {
     const text = value[key]?.trim();

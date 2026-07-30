@@ -109,7 +109,14 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
   const window = analysis?.windowSeconds ? ` · ${analysis.windowSeconds}s sample` : '';
   switch (analysis?.status) {
     case 'progressive':
-      return { title: `Progressive${confidence}`, detail: `No deinterlacing is recommended${window}.`, severity: 'success', action: 'Apply: no deinterlace' };
+      return {
+        title: `Progressive${confidence}`,
+        detail: analysis.fieldOrderMismatch
+          ? `Sampled frames are progressive, but the container declares ${(analysis.containerFieldOrder || 'interlaced').toUpperCase()}. Correct field metadata to progressive without deinterlacing${window}.`
+          : `No deinterlacing is recommended${window}.`,
+        severity: analysis.fieldOrderMismatch ? 'warning' : 'success',
+        action: analysis.fieldOrderMismatch ? 'Apply progressive metadata' : 'Apply: no deinterlace',
+      };
     case 'interlaced':
       return { title: `Interlaced${confidence}`, detail: `${analysis.recommendedFilter ? `Recommended filter: ${analysis.recommendedFilter}.` : 'Deinterlacing is recommended.'}${window}`, severity: 'warning', action: 'Apply bwdif' };
     case 'mixed':

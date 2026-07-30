@@ -132,6 +132,128 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 	}
 }
 
+func TestAssetProcessingPreferencePreventsContradictoryHardwareFlags(t *testing.T) {
+	enabled := true
+	software := applyAssetConversionOverrideToProfile(models.Profile{
+		VideoCodec: "x265", WorkerConfig: models.JSONMap{},
+	}, AssetConversionOverrideState{
+		PreferredEncoder:       "software",
+		UseHardwareIfAvailable: &enabled,
+		VideoEncoder:           "hevc_qsv",
+	})
+	if software.WorkerConfig["useHardwareIfAvailable"] != false || software.WorkerConfig["videoEncoder"] != "auto" {
+		t.Fatalf("software preference did not win: %#v", software.WorkerConfig)
+	}
+
+	auto := applyAssetConversionOverrideToProfile(models.Profile{
+		VideoCodec: "x265", WorkerConfig: models.JSONMap{},
+	}, AssetConversionOverrideState{
+		PreferredEncoder: "auto",
+		VideoEncoder:     "hevc_qsv",
+	})
+	if auto.WorkerConfig["useHardwareIfAvailable"] != true || auto.WorkerConfig["videoEncoder"] != "auto" {
+		t.Fatalf("auto preference was not normalized: %#v", auto.WorkerConfig)
+	}
+
+	h264Auto := applyAssetConversionOverrideToProfile(models.Profile{
+		VideoCodec: "x264", WorkerConfig: models.JSONMap{},
+	}, AssetConversionOverrideState{PreferredEncoder: "auto"})
+	if h264Auto.WorkerConfig["useHardwareIfAvailable"] != false || h264Auto.WorkerConfig["videoEncoder"] != "auto" {
+		t.Fatalf("unsupported H.264 hardware path must remain software: %#v", h264Auto.WorkerConfig)
+	}
+}
+
+func TestSoftwarePreferenceUsesEncoderMatchingSelectedVideoCodec(t *testing.T) {
+	disabled := false
+	for _, test := range []struct {
+		codec   string
+		encoder string
+	}{
+		{codec: "x264", encoder: "libx264"},
+		{codec: "x265", encoder: "libx265"},
+		{codec: "x265_10bit", encoder: "libx265"},
+	} {
+		profile := models.Profile{
+			VideoCodec: test.codec,
+			WorkerConfig: models.JSONMap{
+				"preferredEncoder":       "software",
+				"useHardwareIfAvailable": disabled,
+				"videoEncoder":           "auto",
+			},
+		}
+		if got := resolvedVideoEncoder(profile); got != test.encoder {
+			t.Fatalf("codec %s resolved %s, want %s", test.codec, got, test.encoder)
+		}
+	}
+}
+
+func TestFFmpegCommandUsesH264SoftwareEncoderSelectedByProcessingPreference(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x264", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+			WorkerConfig: models.JSONMap{
+				"preferredEncoder":       "software",
+				"useHardwareIfAvailable": false,
+				"videoEncoder":           "auto",
+			},
+		},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-c:v libx264")
+	assertNotContains(t, command, "libx265")
+	assertNotContains(t, command, "hevc_qsv")
+}
+
+func TestProcessingModeIsDerivedFromEffectiveVideoCodec(t *testing.T) {
+	if got := mediaProcessingMode(models.Profile{VideoCodec: "x265"}); got != ProcessingModeFullEncode {
+		t.Fatalf("x265 mode=%q, want %q", got, ProcessingModeFullEncode)
+	}
+	if got := mediaProcessingMode(models.Profile{VideoCodec: "copy"}); got != ProcessingModeAudioOnly {
+		t.Fatalf("copy mode=%q, want %q", got, ProcessingModeAudioOnly)
+	}
+	if got := mediaProcessingMode(models.Profile{
+		VideoCodec:   "x264",
+		WorkerConfig: models.JSONMap{"processingMode": "audio_only"},
+	}); got != ProcessingModeFullEncode {
+		t.Fatalf("legacy Work mode overrode selected video codec: %q", got)
+	}
+}
+
+func TestMismatchedHardwareEncoderFallsBackToSelectedCodecSoftware(t *testing.T) {
+	profile := models.Profile{
+		VideoCodec: "x264",
+		WorkerConfig: models.JSONMap{
+			"useHardwareIfAvailable": true,
+			"videoEncoder":           "hevc_qsv",
+		},
+	}
+	if got := resolvedVideoEncoder(profile); got != "libx264" {
+		t.Fatalf("mismatched HEVC hardware encoder resolved %s, want libx264", got)
+	}
+}
+
+func TestSoftwareAssetPreferenceUsesEncoderForSelectedVideoCodec(t *testing.T) {
+	profile := applyAssetConversionOverrideToProfile(models.Profile{
+		VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+		WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "useHardwareIfAvailable": true},
+	}, AssetConversionOverrideState{
+		VideoCodec:       "x264",
+		PreferredEncoder: "software",
+		VideoEncoder:     "hevc_qsv",
+	})
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/h264.mkv", OutputPath: "/media/staging/h264.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        profile,
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-c:v libx264")
+	assertNotContains(t, command, "libx265")
+	assertNotContains(t, command, "hevc_qsv")
+}
+
 func TestDefaultQSVQualityUsesConservativeStartingPoint(t *testing.T) {
 	tests := map[int]int{
 		18: 16,
@@ -192,6 +314,25 @@ func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf bwdif=mode=send_frame:parity=auto:deint=all")
+}
+
+func TestFFmpegCommandBuilderCorrectsProgressiveFieldMetadataWithoutDeinterlacing(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{
+				"deinterlaceMode": "off",
+				"videoFilters":    "hqdn3d=1.5:1.5:6:6",
+			},
+		},
+		Interlace: InterlaceAnalysis{Status: "progressive", ContainerFieldOrder: "tt", FieldOrderMismatch: true},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-vf hqdn3d=1.5:1.5:6:6,setfield=prog")
+	assertNotContains(t, command, "bwdif")
 }
 
 func TestFFmpegCommandBuilderDoesNotAutomaticallyFilterTelecine(t *testing.T) {
@@ -387,7 +528,7 @@ func TestFFmpegCommandBuilderRemovesExportedSubtitleFromContainer(t *testing.T) 
 	assertContains(t, command, "-c copy")
 }
 
-func TestSanitizeConversionOverrideKeepsBitmapSubtitleWhenOCRWouldBeRequired(t *testing.T) {
+func TestSanitizeConversionOverrideSchedulesBitmapSubtitleOCR(t *testing.T) {
 	override, warnings := sanitizeConversionOverride(
 		AssetConversionOverrideState{SubtitleTransforms: []SubtitleTransform{{
 			StreamIndex: 4, Format: "srt", RemoveEmbedded: true, Language: "spa",
@@ -395,11 +536,70 @@ func TestSanitizeConversionOverrideKeepsBitmapSubtitleWhenOCRWouldBeRequired(t *
 		MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "hdmv_pgs_subtitle"}}},
 	)
 
-	if len(override.SubtitleTransforms) != 0 {
-		t.Fatalf("expected unsupported bitmap transformation to be omitted: %#v", override.SubtitleTransforms)
+	if len(override.SubtitleTransforms) != 1 {
+		t.Fatalf("expected bitmap OCR transformation to remain scheduled: %#v", override.SubtitleTransforms)
 	}
 	if len(warnings) != 1 || !strings.Contains(strings.ToLower(warnings[0]), "ocr") {
 		t.Fatalf("expected OCR warning, got %#v", warnings)
+	}
+}
+
+func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt"}},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng", Default: true},
+			{Index: 4, Codec: "dvd_subtitle", Language: "spa"},
+		}},
+	}
+
+	applyProfileSubtitleExternalization(&plan)
+
+	if len(plan.Override.SubtitleTransforms) != 2 {
+		t.Fatalf("expected every subtitle to be externalized, got %#v", plan.Override.SubtitleTransforms)
+	}
+	for _, transform := range plan.Override.SubtitleTransforms {
+		if transform.Format != "srt" || !transform.RemoveEmbedded {
+			t.Fatalf("expected validated SRT externalization with embedded removal, got %#v", transform)
+		}
+	}
+	if !plan.Override.SubtitleTransforms[0].MakeDefault {
+		t.Fatalf("expected source default disposition to be retained in sidecar naming")
+	}
+}
+
+func TestTrackProfileTakesPriorityOverVideoSubtitleExternalization(t *testing.T) {
+	trackTransform := SubtitleTransform{StreamIndex: 4, Format: "ass", RemoveEmbedded: false, Language: "jpn"}
+	plan := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt"}},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng"},
+			{Index: 4, Codec: "ass", Language: "jpn"},
+		}},
+		Override: AssetConversionOverrideState{
+			TrackProfileKey:    "japanese-subs",
+			SubtitleTransforms: []SubtitleTransform{trackTransform},
+		},
+	}
+
+	applyProfileSubtitleExternalization(&plan)
+
+	if len(plan.Override.SubtitleTransforms) != 1 || plan.Override.SubtitleTransforms[0] != trackTransform {
+		t.Fatalf("video profile replaced the selected track profile: %#v", plan.Override.SubtitleTransforms)
+	}
+}
+
+func TestEmptyTrackProfileStillDisablesGlobalSubtitleExternalization(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile:  models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "ass"}},
+		Streams:  MediaStreamInventory{Subtitle: []MediaStream{{Index: 2, Codec: "subrip"}}},
+		Override: AssetConversionOverrideState{TrackProfileKey: "preserve-selected-tracks"},
+	}
+
+	applyProfileSubtitleExternalization(&plan)
+
+	if len(plan.Override.SubtitleTransforms) != 0 {
+		t.Fatalf("selected track profile must have complete priority: %#v", plan.Override.SubtitleTransforms)
 	}
 }
 
@@ -437,6 +637,40 @@ func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 	assertNotContains(t, command, "-global_quality")
 	assertNotContains(t, command, "-pix_fmt yuv420p10le")
 	assertNotContains(t, command, "-preset medium")
+}
+
+func TestVideoToolboxLegacyColorIsConvertedToBT709(t *testing.T) {
+	profile := models.Profile{
+		VideoCodec: "x265", AudioCodec: "copy",
+		WorkerConfig: models.JSONMap{"videoFilters": "bwdif=mode=send_frame:parity=bff:deint=all,setfield=prog"},
+	}
+	source := MediaStream{
+		ColorSpace: "bt470bg", ColorTransfer: "bt470m", ColorPrimaries: "bt470m", ColorRange: "tv",
+	}
+	effective := profileWithAutomaticVideoToolboxColorForEncoder(profile, source, "hevc_videotoolbox")
+	filter := workerStringValue(effective.WorkerConfig["videoFilters"])
+	assertContains(t, filter, "bwdif=mode=send_frame:parity=bff:deint=all,setfield=prog,colorspace=")
+	assertContains(t, filter, "ispace=bt470bg")
+	assertContains(t, filter, "iprimaries=bt470m")
+	assertContains(t, filter, "itrc=bt470m")
+	assertContains(t, filter, "space=bt709")
+	colorArgs := shellJoin(videoColorMetadataArgs(effective))
+	assertContains(t, colorArgs, "-colorspace bt709")
+	assertContains(t, colorArgs, "-color_trc bt709")
+	assertContains(t, colorArgs, "-color_primaries bt709")
+	assertContains(t, colorArgs, "-color_range tv")
+}
+
+func TestVideoToolboxBT709IsTaggedWithoutRedundantConversion(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{}}
+	source := MediaStream{
+		ColorSpace: "bt709", ColorTransfer: "bt709", ColorPrimaries: "bt709", ColorRange: "tv",
+	}
+	effective := profileWithAutomaticVideoToolboxColorForEncoder(profile, source, "hevc_videotoolbox")
+	if filter := workerStringValue(effective.WorkerConfig["videoFilters"]); strings.Contains(filter, "colorspace=") {
+		t.Fatalf("BT.709 source received redundant conversion: %q", filter)
+	}
+	assertContains(t, shellJoin(videoColorMetadataArgs(effective)), "-color_primaries bt709")
 }
 
 func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing.T) {

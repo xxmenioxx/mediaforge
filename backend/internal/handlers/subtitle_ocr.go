@@ -118,6 +118,63 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 	return result, nil
 }
 
+func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, outputPath string) error {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format != "srt" && format != "ass" {
+		return fmt.Errorf("OCR output format must be srt or ass")
+	}
+	language := normalizedOCRLanguage(ocrLanguage, stream.Tags["language"])
+	if _, err := exec.LookPath("seconv"); err != nil {
+		return fmt.Errorf("OCR is not available in this backend image (seconv was not found)")
+	}
+	if _, err := exec.LookPath("tesseract"); err != nil {
+		return fmt.Errorf("OCR is not available in this backend image (Tesseract was not found)")
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("cannot create OCR output directory: %w", err)
+	}
+	tempDir, err := os.MkdirTemp(filepath.Dir(outputPath), ".mvforge-ocr-*")
+	if err != nil {
+		return fmt.Errorf("cannot create OCR workspace: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	tempPath := filepath.Join(tempDir, "ocr."+format)
+	args := []string{
+		mediaPath,
+		seconvFormat(format),
+		"--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)),
+		"--ocr-engine:tesseract",
+		"--ocr-language:" + language,
+		"--output-filename:" + tempPath,
+		"--overwrite",
+	}
+	cmd := exec.CommandContext(ctx, "seconv", args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
+		return fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
+	}
+	content, err := os.ReadFile(tempPath)
+	if err != nil {
+		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
+		if summary := emptyOCRTrackMessage(stream.Index, language, message); summary != "" {
+			return fmt.Errorf("%s", summary)
+		}
+		return fmt.Errorf("OCR produced no %s subtitle for stream %d: %s", strings.ToUpper(format), stream.Index, conciseCommandOutput(fallback(message, "SeConv completed without reporting a reason"), 1200))
+	}
+	if !validSubtitleSidecar(format, content) {
+		return fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
+	}
+	_ = os.Remove(outputPath)
+	if err := os.Rename(tempPath, outputPath); err != nil {
+		return fmt.Errorf("cannot stage OCR subtitle: %w", err)
+	}
+	return nil
+}
+
 func emptyOCRTrackMessage(streamIndex int, language string, output string) string {
 	dropped := ocrDroppedCountPattern.FindStringSubmatch(output)
 	if len(dropped) != 2 {

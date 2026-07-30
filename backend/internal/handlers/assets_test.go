@@ -981,6 +981,90 @@ func TestPreviewCacheKeyChangesWithSourceAndOptions(t *testing.T) {
 	}
 }
 
+func TestPixelFormatBitDepth(t *testing.T) {
+	tests := map[string]int{
+		"yuv420p":     8,
+		"nv12":        8,
+		"yuv420p10le": 10,
+		"p010le":      10,
+		"yuv444p12le": 12,
+		"":            0,
+	}
+	for pixelFormat, expected := range tests {
+		if actual := pixelFormatBitDepth(pixelFormat); actual != expected {
+			t.Fatalf("pixelFormatBitDepth(%q)=%d, expected %d", pixelFormat, actual, expected)
+		}
+	}
+}
+
+func TestColorspaceAliasesCoverLegacyDVDAndBT709(t *testing.T) {
+	tests := []struct {
+		value    string
+		kind     string
+		expected string
+	}{
+		{value: "bt470bg", kind: "matrix", expected: "bt470bg"},
+		{value: "bt470m", kind: "primaries", expected: "bt470m"},
+		{value: "bt470m", kind: "transfer", expected: "bt470m"},
+		{value: "smpte170m", kind: "transfer", expected: "smpte170m"},
+		{value: "bt709", kind: "matrix", expected: "bt709"},
+		{value: "tv", kind: "range", expected: "tv"},
+		{value: "pc", kind: "range", expected: "pc"},
+	}
+	for _, test := range tests {
+		actual, ok := colorspaceColorAlias(test.value, test.kind)
+		if !ok || actual != test.expected {
+			t.Fatalf("colorspaceColorAlias(%q, %q)=(%q, %t), expected (%q, true)", test.value, test.kind, actual, ok, test.expected)
+		}
+	}
+	if _, ok := colorspaceColorAlias("unknown", "matrix"); ok {
+		t.Fatal("unknown matrix must not be accepted")
+	}
+}
+
+func TestJoinPreviewFiltersKeepsCanonicalPipelineFirst(t *testing.T) {
+	actual := joinPreviewFilters("colorspace=ispace=bt470bg:space=bt709", "bwdif,crop=720:460:0:10")
+	expected := "colorspace=ispace=bt470bg:space=bt709,bwdif,crop=720:460:0:10"
+	if actual != expected {
+		t.Fatalf("joinPreviewFilters=%q, expected %q", actual, expected)
+	}
+	if actual := joinPreviewFilters("", "null"); actual != "null" {
+		t.Fatalf("empty filter chain=%q, expected null", actual)
+	}
+}
+
+func TestValidAspectRatio(t *testing.T) {
+	if !validAspectRatio("8:9") || !validAspectRatio("1:1") {
+		t.Fatal("valid aspect ratios were rejected")
+	}
+	for _, value := range []string{"", "0:1", "1:0", "1", "a:b"} {
+		if validAspectRatio(value) {
+			t.Fatalf("invalid aspect ratio %q was accepted", value)
+		}
+	}
+}
+
+func TestSquarePixelFrameFilterPreservesDisplayedDVDGeometry(t *testing.T) {
+	source := previewVideoCharacteristics{Width: 720, Height: 480, SampleAspectRatio: "8:9"}
+	if actual := squarePixelFrameFilter(source); actual != "scale=640:480:flags=lanczos,setsar=1" {
+		t.Fatalf("squarePixelFrameFilter=%q", actual)
+	}
+	source.SampleAspectRatio = "1:1"
+	if actual := squarePixelFrameFilter(source); actual != "setsar=1" {
+		t.Fatalf("square-pixel filter=%q", actual)
+	}
+}
+
+func TestArgumentValueReportsEffectivePreviewEncoder(t *testing.T) {
+	args := []string{"-c:v", "libx265", "-crf", "20"}
+	if actual := argumentValue(args, "-c:v"); actual != "libx265" {
+		t.Fatalf("argumentValue encoder=%q", actual)
+	}
+	if actual := argumentValue(args, "-pix_fmt"); actual != "" {
+		t.Fatalf("missing argument value=%q", actual)
+	}
+}
+
 func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "success")
 	relative := filepath.Join("movies", "movie.mkv")
