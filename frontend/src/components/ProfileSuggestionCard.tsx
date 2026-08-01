@@ -7,7 +7,7 @@ import type { Profile, ProfileSuggestion } from '../api/types';
 
 type MotionStatus = NonNullable<ProfileSuggestion['scan']['interlaceAnalysis']>['status'];
 
-export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecommendation }: { suggestion: ProfileSuggestion; onSelect?: (profile: Profile) => void; onApplyMotionRecommendation?: (status: MotionStatus) => Promise<string> }) {
+export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecommendation, onReviewInLab }: { suggestion: ProfileSuggestion; onSelect?: (profile: Profile) => void; onApplyMotionRecommendation?: (status: MotionStatus) => Promise<string>; onReviewInLab?: () => void }) {
   const queryClient = useQueryClient();
   const create = useMutation({
     mutationFn: api.createProfile,
@@ -28,7 +28,7 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
       <CardContent>
         <Stack spacing={1.5}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Typography variant="h3">Suggested profile</Typography>
+            <Typography variant="h3">MVForge Suggestions</Typography>
             <Chip label={suggestion.matchType === 'existing' ? 'Existing match' : 'New profile proposed'} color={suggestion.matchType === 'existing' ? 'success' : 'primary'} size="small" />
           </Stack>
           <Typography color="text.secondary">{suggestion.summary}</Typography>
@@ -53,6 +53,7 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
                 {applyMotion.isPending ? 'Applying…' : 'Apply recommendations'}
               </Button>
             ) : null}
+            {onReviewInLab ? <Button variant="outlined" size="small" onClick={onReviewInLab}>Review in Lab</Button> : null}
             {suggestion.insights ? (
               <>
                 <Chip label={`Recommended CRF ${suggestion.insights.recommendedCrf}`} color="primary" size="small" />

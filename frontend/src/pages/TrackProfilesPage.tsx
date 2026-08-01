@@ -53,6 +53,7 @@ export function TrackProfilesPage() {
         makeDefault: true,
         language: stream.language || 'und',
         ocrLanguage: isBitmapSubtitle(stream.codec) ? defaultOCRLanguage(stream.language) : undefined,
+        ocrMode: isBitmapSubtitle(stream.codec) ? 'accurate' : undefined,
         title: stream.title || undefined,
       }] : remaining,
     });
@@ -132,13 +133,28 @@ export function TrackProfilesPage() {
                             fullWidth
                           />
                           {bitmap ? (
-                            <TextField
-                              label="OCR language"
-                              value={transform.ocrLanguage || defaultOCRLanguage(stream.language)}
-                              onChange={(event) => updateSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value.toLowerCase() })}
-                              helperText="Tesseract language, for example spa, eng or jpn."
-                              fullWidth
-                            />
+                            <>
+                              <TextField
+                                select
+                                label="OCR language"
+                                value={transform.ocrLanguage || defaultOCRLanguage(stream.language)}
+                                onChange={(event) => updateSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value.toLowerCase() })}
+                                helperText="Use the language displayed in the bitmap track."
+                                fullWidth
+                              >
+                                <MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem>
+                              </TextField>
+                              <TextField
+                                select
+                                label="OCR quality"
+                                value={transform.ocrMode || 'accurate'}
+                                onChange={(event) => updateSubtitleTransformValue(stream.index, { ocrMode: event.target.value as SubtitleTransform['ocrMode'] })}
+                                helperText="Accurate compares two traditional OCR passes."
+                                fullWidth
+                              >
+                                <MenuItem value="raw">Raw · one pass</MenuItem><MenuItem value="clean">Clean · corrected</MenuItem><MenuItem value="accurate">Accurate · two passes</MenuItem>
+                              </TextField>
+                            </>
                           ) : null}
                           <FormControlLabel
                             control={<Switch checked={transform.makeDefault} onChange={(_, value) => updateSubtitleTransformValue(stream.index, { makeDefault: value })} />}

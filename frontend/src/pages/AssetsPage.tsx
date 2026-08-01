@@ -56,6 +56,7 @@ import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
+import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -152,6 +153,11 @@ export function AssetsPage() {
                 ) : null}
               </Stack>
             </Stack>
+            {tab === 'converted' ? (
+              <Alert severity="info" sx={{ mt: 1.25 }}>
+                Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
+              </Alert>
+            ) : null}
             {syncAssets.isSuccess ? (
               <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
                 Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.
@@ -750,11 +756,7 @@ function AssetGroupRow({
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
-                {isArchiveGroup ? null : isConvertedGroup ? (
-                  <Alert severity="info">
-                    Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
-                  </Alert>
-                ) : isPublishedAsIsGroup ? (
+                {isArchiveGroup ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
                   <Alert severity="info">
                     Published as-is assets must be returned to Raw before they can be queued for conversion.
                   </Alert>
@@ -1288,7 +1290,8 @@ function AssetRow({
   }
 
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
-    setConversionDraft((current) => ({ ...current, [key]: value }));
+    const customHardwareControl = ['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBrc', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxAllowFrameReordering', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(String(key));
+    setConversionDraft((current) => ({ ...current, [key]: value, ...(customHardwareControl ? { hardwareQualityPreset: 'custom' } : {}) }));
   }
 
   function updateStreamMetadata(type: 'video' | 'audio' | 'subtitle', index: number, patch: StreamMetadataOverride) {
@@ -1310,14 +1313,14 @@ function AssetRow({
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
   }
 
-  async function generateExternalSubtitle(streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string) {
+  async function generateExternalSubtitle(streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string, ocrMode?: 'raw' | 'clean' | 'accurate') {
     const key = subtitleGenerationKey(streamIndex, format);
     setSubtitleGenerations((current) => ({
       ...current,
       [key]: { status: 'running', streamIndex, format },
     }));
     try {
-      const result = await api.extractAssetSubtitles({ path: asset.path, streamIndex, format, ocrLanguage });
+      const result = await api.extractAssetSubtitles({ path: asset.path, streamIndex, format, ocrLanguage, ocrMode });
       setSubtitleGenerations((current) => ({
         ...current,
         [key]: {
@@ -1499,6 +1502,7 @@ function AssetRow({
             <ConvertedMediaSummary
               technical={snapshot.data ? {
                 videoCodec: snapshot.data.videoCodec,
+                encoder: asset.technical?.encoder,
                 width: snapshot.data.width,
                 height: snapshot.data.height,
                 duration: snapshot.data.duration,
@@ -1796,8 +1800,8 @@ function AssetRow({
               <>
                 <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
                   <Tab label="General & Tracks" />
-                  <Tab label="Suggested profile" />
-                  <Tab label="Asset Overrides" />
+                  <Tab label="MVForge Suggestions" />
+                  <Tab label="Quick Asset Overrides" />
                 </Tabs>
                 <Box hidden={snapshotTab !== 0}>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
@@ -1891,6 +1895,7 @@ function AssetRow({
                         suggestion={profileSuggestion.data}
                         onSelect={(profile) => setSelectedProfileId(profile.id)}
                         onApplyMotionRecommendation={() => applySnapshotRecommendations(profileSuggestion.data!)}
+                        onReviewInLab={() => { window.location.href = `/profile-lab?assetPath=${encodeURIComponent(asset.path)}`; }}
                       />
                     ) : null}
                     {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}
@@ -2054,9 +2059,10 @@ function EmbeddedSubtitleActions({
 }: {
   streams: MediaStreamInfo[];
   generations: Record<string, SubtitleGenerationState>;
-  onGenerate: (streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string) => void;
+  onGenerate: (streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string, ocrMode?: 'raw' | 'clean' | 'accurate') => void;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
+  const [ocrModes, setOcrModes] = useState<Record<number, 'raw' | 'clean' | 'accurate'>>({});
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
       <Stack spacing={1.25}>
@@ -2095,10 +2101,12 @@ function EmbeddedSubtitleActions({
                       <MenuItem value="eng">English</MenuItem>
                       <MenuItem value="spa">Spanish</MenuItem>
                       <MenuItem value="jpn">Japanese</MenuItem>
+                      <MenuItem value="jpn_vert">Japanese vertical</MenuItem>
                     </TextField>
                   ) : null}
-                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate SRT</Button>
-                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined)}>Generate ASS</Button>
+                  {bitmap ? <TextField select size="small" label="OCR quality" value={ocrModes[stream.index] || 'accurate'} onChange={(event) => setOcrModes((current) => ({ ...current, [stream.index]: event.target.value as 'raw' | 'clean' | 'accurate' }))} sx={{ minWidth: 155 }}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField> : null}
+                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
+                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
                 </Stack>
               </Stack>
               {streamGenerations.map((generation) => (
@@ -2280,6 +2288,7 @@ function AssetConversionOverridePanel({
   readOnly?: boolean;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const recommendedCrop = scan?.cropAnalysis?.status === 'detected' ? (scan.cropAnalysis.recommendedCrop ?? '').trim() : '';
   const currentCropFilter = cropFilterFromChain(draft.videoFilters);
   const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
@@ -2289,11 +2298,14 @@ function AssetConversionOverridePanel({
   const effectiveVideoCodec = draft.videoCodec || profile?.videoCodec || 'copy';
   const hardwareCodecSupported = hardwareEncodingSupportedForAssetCodec(effectiveVideoCodec);
   const hardwareSelected = processingPreference === 'hardware';
-  const effectiveVideoEncoder = draft.videoEncoder || 'auto';
+  const defaultHardwareEncoder = assetEncoderOptions.find(
+    (option) => isHardwareAssetEncoder(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
+  )?.value ?? '';
+  const effectiveVideoEncoder = draft.videoEncoder || defaultHardwareEncoder;
   const qsvSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_qsv';
   const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
 
-  function changeProcessingPreference(value: '' | 'auto' | 'software' | 'hardware') {
+  function changeProcessingPreference(value: '' | 'software' | 'hardware') {
     if (value === '') {
       onChange('preferredEncoder', undefined);
       onChange('useHardwareIfAvailable', undefined);
@@ -2316,14 +2328,13 @@ function AssetConversionOverridePanel({
       onChange('qsvExtendedBrc', undefined);
       onChange('qsvAdaptiveI', undefined);
       onChange('qsvAdaptiveB', undefined);
+      onChange('pixFmt', 'yuv420p10le');
       return;
     }
     onChange('useHardwareIfAvailable', hardwareCodecSupported);
-    if (value === 'auto') {
-      onChange('videoEncoder', 'auto');
-    } else if (!isHardwareAssetEncoder(effectiveVideoEncoder)) {
-      onChange('videoEncoder', 'auto');
-    }
+    const encoder = isHardwareAssetEncoder(effectiveVideoEncoder) ? effectiveVideoEncoder : defaultHardwareEncoder;
+    onChange('videoEncoder', encoder);
+    onChange('pixFmt', defaultHardwareMain10PixelFormatForAsset(encoder));
   }
 
   function changeAssetVideoCodec(value: string) {
@@ -2393,37 +2404,6 @@ function AssetConversionOverridePanel({
           <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
-              label="Audio codec"
-              value={draft.audioCodec ?? ''}
-              onChange={(event) => onChange('audioCodec', event.target.value)}
-              size="small"
-              fullWidth
-            >
-              {optionItems(audioCodecOptions, draft.audioCodec).map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Grid>
-          <Grid size={{ xs: 12 }}>
-            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, px: 2, pt: 1.25, pb: 1 }}>
-            <Stack spacing={0.5}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography fontWeight={700}>Software quality · CRF {draft.qualityValue ?? profile?.qualityValue ?? 22}</Typography>
-                {draft.qualityValue ? <Button size="small" onClick={() => onChange('qualityValue', undefined)}>Use profile</Button> : <Chip label="Profile default" size="small" />}
-              </Stack>
-              <Slider value={draft.qualityValue ?? profile?.qualityValue ?? 22} min={14} max={30} step={1} onChange={(_, value) => onChange('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" size="small" sx={{ mx: 0.5, width: 'calc(100% - 8px)' }} />
-              <Stack direction="row" justifyContent="space-between">
-                <Typography variant="caption" color="text.secondary">14 · higher quality</Typography>
-                <Typography variant="caption" color="text.secondary">30 · smaller file</Typography>
-              </Stack>
-            </Stack>
-            </Box>
-          </Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField
-              select
               label="Speed"
               value={draft.videoPreset ?? ''}
               onChange={(event) => onChange('videoPreset', event.target.value)}
@@ -2431,22 +2411,6 @@ function AssetConversionOverridePanel({
               fullWidth
             >
               {optionItems(speedOptions, draft.videoPreset).map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField
-              select
-              label="Color depth"
-              value={draft.pixFmt ?? ''}
-              onChange={(event) => onChange('pixFmt', event.target.value)}
-              size="small"
-              fullWidth
-            >
-              {optionItems(colorDepthOptions, draft.pixFmt).map((option) => (
                 <MenuItem key={option.value} value={option.value}>
                   {option.label}
                 </MenuItem>
@@ -2527,15 +2491,29 @@ function AssetConversionOverridePanel({
                     select
                     label="Processing preference"
                     value={processingPreference}
-                    onChange={(event) => changeProcessingPreference(event.target.value as '' | 'auto' | 'software' | 'hardware')}
-                    helperText="Override the profile with software, automatic selection, or a specific hardware encoder."
+                    onChange={(event) => changeProcessingPreference(event.target.value as '' | 'software' | 'hardware')}
+                    helperText="Use the profile default, force software, or select validated hardware."
                     size="small"
                     fullWidth
                   >
                     <MenuItem value="">Profile default</MenuItem>
-                    <MenuItem value="auto">Auto</MenuItem>
                     <MenuItem value="software">Software · match Video Codec</MenuItem>
-                    <MenuItem value="hardware" disabled={!hardwareCodecSupported}>Hardware</MenuItem>
+                    <MenuItem value="hardware" disabled={!hardwareCodecSupported || runtimeSnapshot.isLoading || !defaultHardwareEncoder}>Hardware</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    select
+                    label="Final color policy"
+                    value={draft.finalColorPolicy || stringFromRecord(profile?.workerConfig ?? {}, 'finalColorPolicy') || 'preserve'}
+                    onChange={(event) => onChange('finalColorPolicy', event.target.value as 'automatic' | 'preserve' | 'normalize_bt709')}
+                    helperText="Defaults to no correction; override it only when analysis or visual validation justifies a change."
+                    size="small"
+                    fullWidth
+                  >
+                    <MenuItem value="preserve">No correction · preserve source</MenuItem>
+                    <MenuItem value="automatic">Automatic correction when justified</MenuItem>
+                    <MenuItem value="normalize_bt709">Normalize mathematically to BT.709</MenuItem>
                   </TextField>
                 </Grid>
                 {hardwareSelected ? <Grid size={{ xs: 12, md: 4 }}>
@@ -2543,21 +2521,50 @@ function AssetConversionOverridePanel({
                     select
                     label="Hardware encoder"
                     value={effectiveVideoEncoder}
-                    onChange={(event) => onChange('videoEncoder', event.target.value)}
-                    helperText="Auto uses the first compatible encoder validated by the worker."
+                    onChange={(event) => {
+                      onChange('videoEncoder', event.target.value);
+                      onChange('pixFmt', defaultHardwareMain10PixelFormatForAsset(event.target.value));
+                    }}
+                    helperText="Only encoders reported by the current runtime are selectable."
                     size="small"
                     fullWidth
                   >
-                    {assetEncoderOptions.filter((option) => option.value === 'auto' || isHardwareAssetEncoder(option.value)).map((option) => (
-                      <MenuItem key={option.value} value={option.value}>
+                    {assetEncoderOptions.filter((option) => isHardwareAssetEncoder(option.value)).map((option) => (
+                      <MenuItem key={option.value} value={option.value} disabled={runtimeSnapshot.data?.encoders?.[option.value]?.usable === false}>
                         {option.label}
                       </MenuItem>
                     ))}
                   </TextField>
                 </Grid> : null}
-                {hardwareSelected ? <Grid size={{ xs: 12, md: 4 }}>
+                <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
-                    label="Hardware quality"
+                    select
+                    label="Color depth"
+                    value={draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt') || (hardwareSelected ? defaultHardwareMain10PixelFormatForAsset(effectiveVideoEncoder) : 'yuv420p10le')}
+                    onChange={(event) => onChange('pixFmt', event.target.value)}
+                    size="small"
+                    fullWidth
+                  >
+                    {compatibleAssetColorDepthOptions(hardwareSelected, effectiveVideoEncoder).map((option) => (
+                      <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    label={hardwareSelected ? 'Software fallback CRF' : 'Software CRF'}
+                    type="number"
+                    value={draft.qualityValue ?? profile?.qualityValue ?? 22}
+                    onChange={(event) => onChange('qualityValue', Math.min(30, Math.max(14, Number(event.target.value))))}
+                    inputProps={{ min: 14, max: 30, step: 1 }}
+                    helperText={hardwareSelected ? 'Used only if hardware falls back to software.' : 'Lower preserves more detail.'}
+                    size="small"
+                    fullWidth
+                  />
+                </Grid>
+                {hardwareSelected && effectiveVideoEncoder !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    label={qsvSelected ? 'QSV quality (ICQ)' : 'Hardware quality'}
                     type="number"
                     value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? qsvQualityRangeForCrf(draft.qualityValue ?? profile?.qualityValue ?? 22).recommended)}
                     onChange={(event) => onChange('globalQuality', Number(event.target.value))}
@@ -2570,6 +2577,7 @@ function AssetConversionOverridePanel({
               </Grid>
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Applies coordinated QSV quality, rate-control, look-ahead, adaptive-frame and bit-depth values." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
@@ -2596,17 +2604,36 @@ function AssetConversionOverridePanel({
               {videoToolboxSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={draft.videoToolboxBitrateMbps ?? Number(profile?.workerConfig?.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
+                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={draft.videoToolboxBitrateMbps ?? Number(profile?.workerConfig?.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={draft.videoToolboxMaxrateMbps ?? Number(profile?.workerConfig?.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
+                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={draft.videoToolboxMaxrateMbps ?? Number(profile?.workerConfig?.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField label="VideoToolbox buffer (Mbps)" type="number" value={draft.videoToolboxBufferMbps ?? Number(profile?.workerConfig?.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
+                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={draft.videoToolboxBufferMbps ?? Number(profile?.workerConfig?.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
                   </Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase file size." label="GOP" type="number" value={draft.videoToolboxGop ?? Number(profile?.workerConfig?.videoToolboxGop ?? 0)} onChange={(event) => onChange('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
+                  <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Allows B-frame/reordered-frame compression. Usually improves efficiency but increases decoding and encoding latency." control={<Checkbox checked={draft.videoToolboxAllowFrameReordering ?? profile?.workerConfig?.videoToolboxAllowFrameReordering === true} onChange={(event) => onChange('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Asks VideoToolbox to favor an energy-efficient encode path." control={<Checkbox checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
             </Box>
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              select
+              label="Convert all subtitles"
+              value={draft.externalSubtitleFormat || stringFromRecord(profile?.workerConfig ?? {}, 'externalSubtitleFormat') || 'source'}
+              onChange={(event) => onChange('externalSubtitleFormat', event.target.value as 'source' | 'srt' | 'ass')}
+              helperText="Creates validated sidecars and removes embedded tracks. A Tracks Profile takes priority."
+              size="small"
+              fullWidth
+            >
+              <MenuItem value="source">Keep embedded tracks</MenuItem>
+              <MenuItem value="srt">External SRT · remove embedded</MenuItem>
+              <MenuItem value="ass">External ASS · remove embedded</MenuItem>
+            </TextField>
           </Grid>
           <Grid size={{ xs: 12 }}>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -2723,6 +2750,15 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const mode = stringFromRecord(report, 'processingMode') || modeFromNotes(job?.notes ?? '');
   const audioProfile = job?.audioProfileKey || audioProfileFromNotes(job?.notes ?? '');
   const status = jobPublishesAsset(asset, job) ? 'Published' : job?.publicationRetiredAt ? 'Publication retired' : job?.status === 'completed' ? 'Converted' : job?.status || 'Converted';
+  const command = conversionCommandFromNotes(job?.notes ?? '');
+  const effectiveEncoder = encoderFromFFmpegCommand(command);
+  const workerConfig = recordFromRecord(job?.profileSnapshot ?? {}, 'workerConfig');
+  const requestedEncoder = stringFromRecord(workerConfig, 'videoEncoder') ||
+    stringFromRecord(job?.profileSnapshot ?? {}, 'preferredEncoder') ||
+    'Unknown';
+  const colorPolicy = recordFromRecord(report, 'colorPolicy');
+  const sourceColor = recordFromRecord(colorPolicy, 'source');
+  const outputColor = recordFromRecord(colorPolicy, 'output');
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2754,6 +2790,82 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
             </Typography>
           ) : null}
         </Stack>
+        {job ? (
+          <>
+            <Divider />
+            <Typography fontWeight={700}>Conversion execution</Typography>
+            <Grid container spacing={1}>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Requested encoder</Typography>
+                <Typography>{requestedEncoder}</Typography>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Effective encoder</Typography>
+                <Typography>{effectiveEncoder || 'Unknown'}</Typography>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Worker</Typography>
+                <Typography>{job.workerName || 'Unknown'}</Typography>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Processing mode</Typography>
+                <Typography>{mode || 'Unknown'}</Typography>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Profile</Typography>
+                <Typography>#{job.profileId} · version {job.profileVersion || 1}</Typography>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <Typography variant="caption" color="text.secondary">Completed</Typography>
+                <Typography>{job.finishedAt ? new Date(job.finishedAt).toLocaleString() : 'Unknown'}</Typography>
+              </Grid>
+            </Grid>
+            {command ? (
+              <Box
+                component="pre"
+                sx={{
+                  border: 1,
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  m: 0,
+                  p: 1.5,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  color: 'text.secondary',
+                  bgcolor: 'rgba(255,255,255,0.025)',
+                  maxHeight: 240,
+                  overflow: 'auto',
+                }}
+              >
+                {command}
+              </Box>
+            ) : (
+              <Alert severity="warning">This job record does not contain its FFmpeg conversion command.</Alert>
+            )}
+            {Object.keys(colorPolicy).length > 0 ? (
+              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography fontWeight={700}>Final color validation</Typography>
+                    <Chip
+                      size="small"
+                      label={stringFromRecord(colorPolicy, 'status') || 'unverified'}
+                      color={stringFromRecord(colorPolicy, 'status') === 'passed' ? 'success' : 'warning'}
+                    />
+                    <Chip size="small" label={`Requested: ${stringFromRecord(colorPolicy, 'requestedPolicy') || 'automatic'}`} />
+                    <Chip size="small" label={`Effective: ${stringFromRecord(colorPolicy, 'effectivePolicy') || 'unknown'}`} />
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    Source: {colorCharacteristicsLabel(sourceColor)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Output: {colorCharacteristicsLabel(outputColor)}
+                  </Typography>
+                </Stack>
+              </Box>
+            ) : null}
+          </>
+        ) : null}
         <Alert severity="info">
           AS-IS and result JSON reports are saved in the configured reports folders. This view summarizes the final job metadata and current asset snapshot for quick human review.
         </Alert>
@@ -3259,9 +3371,55 @@ function hardwareEncodingSupportedForAssetCodec(codec: string) {
   return normalized.includes('265') || normalized.includes('hevc');
 }
 
+function defaultHardwareMain10PixelFormatForAsset(encoder: string) {
+  return encoder === 'hevc_qsv' || encoder === 'hevc_vaapi' || encoder === 'hevc_videotoolbox' ? 'p010le' : 'yuv420p10le';
+}
+
+function compatibleAssetColorDepthOptions(hardware: boolean, encoder: string) {
+  if (!hardware) {
+    return colorDepthOptions.filter((option) => ['', 'auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+  }
+  if (encoder === 'hevc_qsv' || encoder === 'hevc_vaapi') {
+    return colorDepthOptions.filter((option) => ['', 'auto', 'p010le', 'nv12'].includes(option.value));
+  }
+  if (encoder === 'hevc_videotoolbox') {
+    return colorDepthOptions.filter((option) => ['', 'auto', 'p010le', 'yuv420p'].includes(option.value));
+  }
+  return colorDepthOptions.filter((option) => ['', 'auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+}
+
 function stringFromRecord(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === 'string' ? value : '';
+}
+
+function recordFromRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function conversionCommandFromNotes(notes: string) {
+  const match = notes.match(/Conversion command:\s*(ffmpeg[^\n\r]*)/i);
+  return match?.[1]?.trim() ?? '';
+}
+
+function encoderFromFFmpegCommand(command: string) {
+  const matches = [...command.matchAll(/(?:^|\s)-(?:c:v|codec:v|vcodec)\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))/gi)];
+  const match = matches.at(-1);
+  return match ? (match[1] || match[2] || match[3] || '').trim() : '';
+}
+
+function colorCharacteristicsLabel(value: Record<string, unknown>) {
+  if (!Object.keys(value).length) return 'Unknown';
+  return [
+    stringFromRecord(value, 'colorSpace') || 'space unknown',
+    stringFromRecord(value, 'colorTransfer') || 'transfer unknown',
+    stringFromRecord(value, 'colorPrimaries') || 'primaries unknown',
+    stringFromRecord(value, 'colorRange') || 'range unknown',
+    stringFromRecord(value, 'pixelFormat') || '',
+  ].filter(Boolean).join(' · ');
 }
 
 function modeFromNotes(notes: string) {
@@ -3337,6 +3495,12 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
       clean[key] = text;
     }
   });
+  if (value.externalSubtitleFormat === 'source' || value.externalSubtitleFormat === 'srt' || value.externalSubtitleFormat === 'ass') {
+    clean.externalSubtitleFormat = value.externalSubtitleFormat;
+  }
+  if (value.finalColorPolicy === 'automatic' || value.finalColorPolicy === 'preserve' || value.finalColorPolicy === 'normalize_bt709') {
+    clean.finalColorPolicy = value.finalColorPolicy;
+  }
   if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
@@ -3675,6 +3839,14 @@ function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function applyAssetHardwareQualityPreset(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, preset: string, encoder: string) {
+  const values = applySharedHardwareQualityPreset({}, encoder, preset);
+  Object.entries(values).filter(([key]) => key !== 'hardwareQualityPreset').forEach(([key, value]) => {
+    onChange((key === 'qsvExtendedBRC' ? 'qsvExtendedBrc' : key) as keyof AssetConversionOverrideState, value as never);
+  });
+  onChange('hardwareQualityPreset', values.hardwareQualityPreset as never);
+}
+
 function createBatchId(group: AssetGroup) {
   const random = Math.random().toString(36).slice(2, 8);
   return `batch-${group.libraryId}-${Date.now()}-${random}`;
@@ -3690,6 +3862,7 @@ function ConvertedMediaSummary({ technical }: { technical?: Asset['technical'] }
             .join(' ')
         : 'Not scanned',
     },
+    { label: 'Encoder', value: technical?.encoder || 'Unknown' },
     { label: 'Duration', value: technical ? formatMediaDuration(technical.duration) : '—' },
     { label: 'Bitrate', value: technical ? formatMediaBitrate(technical.bitrate) : '—' },
     { label: 'Range', value: technical ? technical.hdr ? 'HDR' : 'SDR' : '—' },
@@ -3699,7 +3872,7 @@ function ConvertedMediaSummary({ technical }: { technical?: Asset['technical'] }
     <Box
       sx={{
         display: 'grid',
-        gridTemplateColumns: '1.35fr 1fr 1fr 0.65fr',
+        gridTemplateColumns: '1.35fr 1fr 1fr 1fr 0.65fr',
         gap: 1.25,
         alignItems: 'start',
       }}

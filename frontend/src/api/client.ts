@@ -132,11 +132,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  extractAssetSubtitles: (input: string | { path: string; streamIndex?: number; format?: 'srt' | 'ass'; ocrLanguage?: string }) => {
+  extractAssetSubtitles: (input: string | { path: string; streamIndex?: number; format?: 'srt' | 'ass'; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }) => {
     const value = typeof input === 'string' ? { path: input } : input;
     return request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {
       method: 'POST',
-      body: JSON.stringify({ streamIndex: value.streamIndex, format: value.format, ocrLanguage: value.ocrLanguage }),
+      body: JSON.stringify({ streamIndex: value.streamIndex, format: value.format, ocrLanguage: value.ocrLanguage, ocrMode: value.ocrMode }),
     });
   },
   externalAssetSubtitles: (path: string) =>

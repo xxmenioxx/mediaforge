@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -70,31 +72,14 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 
 	tempName := "ocr." + format
 	tempPath := filepath.Join(tempDir, tempName)
-	args := []string{
-		mediaPath,
-		seconvFormat(format),
-		"--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)),
-		"--ocr-engine:tesseract",
-		"--ocr-language:" + language,
-		"--output-filename:" + tempPath,
-		"--overwrite",
-	}
-	cmd := exec.CommandContext(ctx, "seconv", args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
-		if message == "" {
-			message = err.Error()
-		}
-		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, message)
+	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
+	message, err := runBitmapOCR(ctx, mediaPath, stream, format, language, input.OCRMode, tempPath, rawTempPath)
+	if err != nil {
+		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
 	}
 
 	content, err := os.ReadFile(tempPath)
 	if err != nil {
-		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
 		if summary := emptyOCRTrackMessage(stream.Index, language, message); summary != "" {
 			return result, fmt.Errorf("%s", summary)
 		}
@@ -115,10 +100,20 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 		return result, fmt.Errorf("cannot publish OCR subtitle beside the asset: %w", err)
 	}
 	result.Created = append(result.Created, outputPath)
+	if normalizedOCRMode(input.OCRMode) != "raw" {
+		rawOutputPath := strings.TrimSuffix(outputPath, "."+format) + ".raw." + format
+		if rawContent, readErr := os.ReadFile(rawTempPath); readErr == nil && validSubtitleSidecar(format, rawContent) {
+			if linkErr := os.Link(rawTempPath, rawOutputPath); linkErr == nil {
+				result.Created = append(result.Created, rawOutputPath)
+			} else if os.IsExist(linkErr) {
+				result.Existing = append(result.Existing, rawOutputPath)
+			}
+		}
+	}
 	return result, nil
 }
 
-func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, outputPath string) error {
+func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string) error {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format != "srt" && format != "ass" {
 		return fmt.Errorf("OCR output format must be srt or ass")
@@ -139,27 +134,13 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	}
 	defer os.RemoveAll(tempDir)
 	tempPath := filepath.Join(tempDir, "ocr."+format)
-	args := []string{
-		mediaPath,
-		seconvFormat(format),
-		"--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)),
-		"--ocr-engine:tesseract",
-		"--ocr-language:" + language,
-		"--output-filename:" + tempPath,
-		"--overwrite",
-	}
-	cmd := exec.CommandContext(ctx, "seconv", args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
-		return fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
+	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
+	message, runErr := runBitmapOCR(ctx, mediaPath, stream, format, language, ocrMode, tempPath, rawTempPath)
+	if runErr != nil {
+		return fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, runErr.Error()))
 	}
 	content, err := os.ReadFile(tempPath)
 	if err != nil {
-		message := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
 		if summary := emptyOCRTrackMessage(stream.Index, language, message); summary != "" {
 			return fmt.Errorf("%s", summary)
 		}
@@ -173,6 +154,131 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 		return fmt.Errorf("cannot stage OCR subtitle: %w", err)
 	}
 	return nil
+}
+
+func normalizedOCRMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "raw":
+		return "raw"
+	case "clean":
+		return "clean"
+	default:
+		return "accurate"
+	}
+}
+
+func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, format, language, mode, outputPath, rawOutputPath string) (string, error) {
+	mode = normalizedOCRMode(mode)
+	dir := filepath.Dir(outputPath)
+	first := filepath.Join(dir, "ocr-isolated."+format)
+	message, err := runSeConvOCRPass(ctx, mediaPath, stream, format, language, first, false)
+	if err != nil {
+		return message, err
+	}
+	chosen := first
+	if mode == "accurate" {
+		second := filepath.Join(dir, "ocr-colors."+format)
+		secondMessage, secondErr := runSeConvOCRPass(ctx, mediaPath, stream, format, language, second, true)
+		message = strings.TrimSpace(message + "\n" + secondMessage)
+		if secondErr == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
+			chosen = second
+		}
+	}
+	if err := copyFileContents(chosen, rawOutputPath); err != nil {
+		return message, err
+	}
+	if mode == "raw" {
+		return message, copyFileContents(chosen, outputPath)
+	}
+	cleanMessage, cleanErr := runSeConvCleanup(ctx, chosen, format, language, outputPath)
+	return strings.TrimSpace(message + "\n" + cleanMessage), cleanErr
+}
+
+func runSeConvOCRPass(ctx context.Context, mediaPath string, stream FFProbeStream, format, language, outputPath string, preserveColors bool) (string, error) {
+	args := []string{mediaPath, seconvFormat(format), "--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)), "--ocr-engine:tesseract", "--ocr-language:" + language, "--output-filename:" + outputPath, "--overwrite"}
+	if preserveColors {
+		args = append(args, "--no-vobsub-isolate-colors", "--no-pgs-isolate-colors")
+	}
+	return runSeConv(ctx, args)
+}
+
+func runSeConvCleanup(ctx context.Context, inputPath, format, language, outputPath string) (string, error) {
+	// Keep this pass deliberately conservative. In SeConv 5.1,
+	// --remove-unicode-control-chars can also remove valid subtitle line breaks,
+	// while merge operations can join distinct signs sharing a timestamp.
+	args := []string{inputPath, seconvFormat(format), "--output-filename:" + outputPath, "--overwrite", "--fix-common-errors-rules:FixEmptyLines,FixInvalidItalicTags,FixMissingSpaces,FixUnneededSpaces,NormalizeStrings,FixUppercaseIInsideWords,FixCommonOcrErrors", "--fce-language:" + fceLanguage(language)}
+	if dictionary := ocrDictionaryFolder(); dictionary != "" {
+		args = append(args, "--dictionary-folder:"+dictionary)
+	}
+	return runSeConv(ctx, args)
+}
+
+func runSeConv(ctx context.Context, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "seconv", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n")), err
+}
+
+func ocrDictionaryFolder() string {
+	for _, path := range []string{"/usr/share/hunspell", "/usr/local/share/hunspell", "/opt/homebrew/share/hunspell"} {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func fceLanguage(language string) string {
+	if language == "spa" {
+		return "es"
+	}
+	if language == "jpn" || language == "jpn_vert" {
+		return "ja"
+	}
+	return "en"
+}
+
+func copyFileContents(source, destination string) error {
+	content, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destination, content, 0o644)
+}
+
+func subtitleOCRFileScore(path, format string) float64 {
+	content, err := os.ReadFile(path)
+	if err != nil || !validSubtitleSidecar(format, content) {
+		return math.Inf(-1)
+	}
+	return subtitleOCRScore(string(content))
+}
+
+func subtitleOCRScore(content string) float64 {
+	letters, digits, suspicious, replacement := 0, 0, 0, 0
+	for _, r := range content {
+		switch {
+		case unicode.IsLetter(r):
+			letters++
+		case unicode.IsDigit(r):
+			digits++
+		case r == unicode.ReplacementChar:
+			replacement++
+		case !unicode.IsSpace(r) && !unicode.IsPunct(r):
+			suspicious++
+		}
+	}
+	return float64(letters) + float64(digits)*0.1 - float64(suspicious)*6 - float64(replacement)*25
+}
+
+func preferSecondaryOCR(primary, secondary float64) bool {
+	// Colour isolation is the reliable default for bitmap subtitles. Select the
+	// alternate pass only when its structural score is materially better; tiny
+	// differences usually indicate different OCR mistakes, not an improvement.
+	margin := math.Max(25, math.Abs(primary)*0.05)
+	return secondary > primary+margin
 }
 
 func emptyOCRTrackMessage(streamIndex int, language string, output string) string {
@@ -220,6 +326,8 @@ func normalizedOCRLanguage(requested string, detected string) string {
 		return "spa"
 	case "ja", "jp", "jpn", "japanese":
 		return "jpn"
+	case "jpn_vert", "ja_vert", "japanese_vertical":
+		return "jpn_vert"
 	case "en", "eng", "english":
 		return "eng"
 	default:

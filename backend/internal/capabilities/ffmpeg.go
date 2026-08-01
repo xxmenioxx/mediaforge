@@ -9,15 +9,18 @@ import (
 )
 
 type EncoderCapability struct {
-	Listed, Usable bool
-	Reason         string
-	Main10         bool
-	ICQ            bool
-	LowPower       bool
-	LookAhead      bool
-	ExtendedBRC    bool
-	AdaptiveI      bool
-	AdaptiveB      bool
+	Listed, Usable     bool
+	Reason             string
+	Main10             bool
+	ICQ                bool
+	LowPower           bool
+	LookAhead          bool
+	ExtendedBRC        bool
+	AdaptiveI          bool
+	AdaptiveB          bool
+	QSVFullCombination bool
+	VideoToolboxMain   bool
+	VideoToolboxMain10 bool
 }
 
 var encoderCandidates = []string{
@@ -107,6 +110,11 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.ExtendedBRC = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-extbrc", "1", "-look_ahead_depth", "40")
 			result.AdaptiveI = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_i", "1")
 			result.AdaptiveB = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_b", "1")
+			result.QSVFullCombination = result.Main10 && qsvFeatureSmokeTest("p010le", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
+		}
+		if encoder == "hevc_videotoolbox" {
+			result.VideoToolboxMain = result.Usable
+			result.VideoToolboxMain10 = result.Main10
 		}
 	}
 	encoderCache.probed[encoder] = result

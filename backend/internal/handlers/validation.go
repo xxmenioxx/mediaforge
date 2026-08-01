@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -154,6 +155,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 
 	var directPlayReport scheduler.DirectPlayReport
 	directPlayEvaluated := false
+	colorReport := models.JSONMap{}
 	if outputExists {
 		probe := ffprobeJSON(job.OutputPath)
 		if probeError, failed := probe["error"].(string); failed {
@@ -165,6 +167,13 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			if report.Enabled && report.Risk != "low" {
 				warnings = append(warnings, "Final DirectPlay risk is "+report.Risk+" for at least one target client.")
 			}
+		}
+	}
+	if outputExists {
+		var colorWarning string
+		colorReport, colorWarning = validateJobColorPolicy(db, job)
+		if colorWarning != "" {
+			warnings = append(warnings, colorWarning)
 		}
 	}
 
@@ -189,6 +198,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	if directPlayEvaluated {
 		report["directPlay"] = directPlayReport
 	}
+	if len(colorReport) > 0 {
+		report["colorPolicy"] = colorReport
+	}
 
 	return ValidationResult{
 		JobID:    job.ID,
@@ -211,4 +223,99 @@ func checksToJSON(checks []CheckResult) []models.JSONMap {
 		})
 	}
 	return values
+}
+
+func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, string) {
+	policy := "preserve"
+	if worker := unknownRecord(job.ProfileSnapshot["workerConfig"]); worker != nil {
+		if value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["finalColorPolicy"]))); value != "" {
+			policy = value
+		}
+	}
+	override := conversionOverrideForJob(job, assetConversionOverrides(db))
+	if value := strings.ToLower(strings.TrimSpace(override.FinalColorPolicy)); value != "" {
+		policy = value
+	}
+	source := firstVideoColorCharacteristics(ffprobeJSON(job.MediaPath))
+	output := firstVideoColorCharacteristics(ffprobeJSON(job.OutputPath))
+	report := models.JSONMap{"requestedPolicy": policy, "source": source, "output": output}
+	if len(source) == 0 || len(output) == 0 {
+		report["status"] = "unverified"
+		return report, "Final color policy could not be verified because source or output color metadata is incomplete."
+	}
+	expected := cloneJSONMap(source)
+	effective := "preserve"
+	sourceStream := MediaStream{
+		ColorSpace: stringFromUnknown(source["colorSpace"]), ColorTransfer: stringFromUnknown(source["colorTransfer"]),
+		ColorPrimaries: stringFromUnknown(source["colorPrimaries"]), ColorRange: stringFromUnknown(source["colorRange"]),
+	}
+	normalize := policy == "normalize_bt709" ||
+		(policy == "automatic" && strings.Contains(strings.ToLower(job.Notes), "-c:v hevc_videotoolbox") && !sourceUsesBT709(sourceStream) && !sourceUsesHDRTransfer(sourceStream))
+	if normalize && !sourceUsesHDRTransfer(sourceStream) {
+		effective = "normalize_bt709"
+		expected = models.JSONMap{"colorSpace": "bt709", "colorTransfer": "bt709", "colorPrimaries": "bt709", "colorRange": "tv"}
+	}
+	report["effectivePolicy"] = effective
+	report["expected"] = expected
+	matches := colorCharacteristicsMatch(expected, output)
+	report["status"] = map[bool]string{true: "passed", false: "mismatch"}[matches]
+	if !matches {
+		return report, "Final output color characteristics do not match the effective color policy."
+	}
+	return report, ""
+}
+
+func unknownRecord(value interface{}) map[string]interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return typed
+	case models.JSONMap:
+		return map[string]interface{}(typed)
+	default:
+		return nil
+	}
+}
+
+func firstVideoColorCharacteristics(probe map[string]any) models.JSONMap {
+	rawStreams, ok := probe["streams"].([]interface{})
+	if !ok {
+		return nil
+	}
+	for _, raw := range rawStreams {
+		stream, ok := raw.(map[string]interface{})
+		if !ok || !strings.EqualFold(stringFromUnknown(stream["codec_type"]), "video") {
+			continue
+		}
+		result := models.JSONMap{
+			"colorSpace":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_space"]))),
+			"colorTransfer":  strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_transfer"]))),
+			"colorPrimaries": strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_primaries"]))),
+			"colorRange":     normalizedFFmpegRange(stringFromUnknown(stream["color_range"])),
+			"pixelFormat":    strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["pix_fmt"]))),
+		}
+		if result["colorSpace"] == "" || result["colorTransfer"] == "" || result["colorPrimaries"] == "" {
+			return nil
+		}
+		return result
+	}
+	return nil
+}
+
+func cloneJSONMap(value models.JSONMap) models.JSONMap {
+	result := models.JSONMap{}
+	for key, item := range value {
+		if key != "pixelFormat" {
+			result[key] = item
+		}
+	}
+	return result
+}
+
+func colorCharacteristicsMatch(expected, actual models.JSONMap) bool {
+	for _, key := range []string{"colorSpace", "colorTransfer", "colorPrimaries", "colorRange"} {
+		if !strings.EqualFold(stringFromUnknown(expected[key]), stringFromUnknown(actual[key])) {
+			return false
+		}
+	}
+	return true
 }

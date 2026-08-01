@@ -16,7 +16,6 @@ import {
   FormControlLabel,
   Grid,
   MenuItem,
-  Slider,
   Stack,
   Table,
   TableBody,
@@ -40,6 +39,7 @@ import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
+import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -78,6 +78,8 @@ const initialProfile: ProfileInput = {
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
     warnSubtitleFormats: true,
+    subtitleOCRMode: 'accurate',
+    subtitleOCRLanguage: 'auto',
   },
 };
 
@@ -91,7 +93,7 @@ const encoderPresetOptions = [
 const pixelFormatOptions = [
   { value: 'auto', label: 'Auto / codec default', description: 'Lets MVForge choose a compatible pixel format from the codec and encoder.' },
   { value: 'yuv420p10le', label: '10-bit Main10', description: 'Recommended for x265, anime, and DVD sources. Helps reduce banding.' },
-  { value: 'p010le', label: 'QSV 10-bit Main10 (P010)', description: 'Native 10-bit input format for Intel Quick Sync HEVC Main10.' },
+  { value: 'p010le', label: 'Hardware 10-bit Main10 (P010)', description: 'Native 10-bit format for hardware HEVC Main10, including Quick Sync and VideoToolbox.' },
   { value: 'yuv420p', label: '8-bit compatibility', description: 'Use for older devices or simple compatibility-focused outputs.' },
   { value: 'nv12', label: 'QSV 8-bit Main (NV12)', description: 'Native 8-bit input format for Intel Quick Sync HEVC Main.' },
 ] as const;
@@ -113,11 +115,15 @@ export function ProfilesPage() {
     queryKey: ['profiles', 'admin'],
     queryFn: api.profilesAdmin,
   });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const [form, setForm] = useState<ProfileInput>(initialProfile);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [profileJson, setProfileJson] = useState(JSON.stringify(initialProfile, null, 2));
   const visibleProfiles = (profiles.data ?? []).filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt));
+  const defaultHardwareEncoder = videoEncoderOptions.find(
+    (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
+  )?.value ?? '';
 
   const createProfile = useMutation({
     mutationFn: api.createProfile,
@@ -172,25 +178,26 @@ export function ProfilesPage() {
       workerConfig: {
         ...form.workerConfig,
         [key]: value,
+        ...(['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBRC', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxAllowFrameReordering', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(key) ? { hardwareQualityPreset: 'custom' } : {}),
         ...(disablingHardware ? { videoEncoder: 'libx265', preferredEncoder: 'software' } : {}),
       },
     };
     setProfileForm(['videoEncoder', 'useHardwareIfAvailable', 'pixFmt'].includes(key) ? synchronizeAuthoritativeContract(next) : next);
   }
 
-  function updateProcessingPreference(preference: 'auto' | 'software' | 'hardware') {
+  function updateProcessingPreference(preference: 'software' | 'hardware') {
     const currentEncoder = workerConfigString(form, 'videoEncoder', 'auto');
     const hardware = preference === 'hardware';
     const hardwareAvailable = hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length > 0;
+    const hardwareEncoder = isHardwareEncoderOption(currentEncoder) ? currentEncoder : defaultHardwareEncoder;
     const next = {
       ...form,
       workerConfig: {
         ...form.workerConfig,
         preferredEncoder: preference,
-        useHardwareIfAvailable: preference !== 'software' && hardwareAvailable,
-        videoEncoder: preference === 'software' || preference === 'auto'
-          ? 'auto'
-          : isHardwareEncoderOption(currentEncoder) ? currentEncoder : 'auto',
+        useHardwareIfAvailable: hardware && hardwareAvailable,
+        videoEncoder: preference === 'software' ? 'auto' : hardwareEncoder,
+        pixFmt: hardware ? defaultProfileHardwareMain10PixelFormat(hardwareEncoder) : 'yuv420p10le',
         ...(!hardware ? {
           qsvRateControl: undefined,
           qsvLookAheadDepth: undefined,
@@ -201,6 +208,33 @@ export function ProfilesPage() {
       },
     };
     setProfileForm(synchronizeAuthoritativeContract(next));
+  }
+
+  function updateHardwareEncoder(encoder: string) {
+    setProfileForm(synchronizeAuthoritativeContract({
+      ...form,
+      workerConfig: {
+        ...form.workerConfig,
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+        videoEncoder: encoder,
+        pixFmt: defaultProfileHardwareMain10PixelFormat(encoder),
+      },
+    }));
+  }
+
+  function updateExternalSubtitleFormat(value: string) {
+    const format = value === 'srt' || value === 'ass' ? value : 'source';
+    setProfileForm({
+      ...form,
+      preserveSubtitles: format === 'source',
+      workerConfig: {
+        ...form.workerConfig,
+        externalSubtitleFormat: format,
+        subtitleOutputFormat: 'source',
+        preferSrtSubtitles: false,
+      },
+    });
   }
 
   function updateX265Param(key: string, value: string) {
@@ -583,17 +617,7 @@ export function ProfilesPage() {
                       fullWidth
                     />
                   </Grid>
-                  <Grid size={{ xs: 12, md: 7 }}>
-                    <Stack spacing={1.25}>
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                        <Typography fontWeight={700}>Quality</Typography>
-                        <Chip label={form.videoCodec === 'copy' ? 'Original' : `CRF ${form.qualityValue}`} size="small" />
-                      </Stack>
-                      <Slider value={form.qualityValue} min={14} max={30} step={1} marks={[{ value: 14, label: '14' }, { value: 22, label: '22' }, { value: 30, label: '30' }]} disabled={form.videoCodec === 'copy'} onChange={(_, value) => updateField('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="on" />
-                      <Typography variant="body2" color="text.secondary">Lower CRF preserves more detail; higher CRF reduces file size.</Typography>
-                    </Stack>
-                  </Grid>
-                  <Grid size={{ xs: 12, md: 5 }}>
+                  <Grid size={{ xs: 12 }}>
                     <Stack spacing={1.25} sx={{ minHeight: 128 }}>
                       <Typography fontWeight={700}>Preserve</Typography>
                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -634,41 +658,78 @@ export function ProfilesPage() {
                           <TextField
                             label="Processing preference"
                             value={workerConfigString(form, 'preferredEncoder', 'software')}
-                            onChange={(event) => updateProcessingPreference(event.target.value as 'auto' | 'software' | 'hardware')}
+                            onChange={(event) => updateProcessingPreference(event.target.value as 'software' | 'hardware')}
                             helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
                             disabled={form.videoCodec === 'copy'}
                             select
                             fullWidth
                           >
-                            <MenuItem value="auto">Auto</MenuItem>
                             <MenuItem value="software">Software · match Video Codec</MenuItem>
-                            <MenuItem value="hardware" disabled={hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length === 0}>Hardware</MenuItem>
+                            <MenuItem value="hardware" disabled={hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length === 0 || runtimeSnapshot.isLoading || !defaultHardwareEncoder}>Hardware</MenuItem>
                           </TextField>
                         </Grid>
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label="Hardware encoder"
-                            value={workerConfigString(form, 'videoEncoder', 'auto')}
-                            onChange={(event) => updateWorkerConfig('videoEncoder', event.target.value)}
+                            value={isHardwareEncoderOption(workerConfigString(form, 'videoEncoder', 'auto')) ? workerConfigString(form, 'videoEncoder', 'auto') : defaultHardwareEncoder}
+                            onChange={(event) => updateHardwareEncoder(event.target.value)}
                             helperText={videoEncoderDescription(workerConfigString(form, 'videoEncoder', 'auto'))}
                             select
                             fullWidth
                           >
-                            <MenuItem value="auto">Auto</MenuItem>
                             {videoEncoderOptions.filter((option) => isHardwareEncoderOption(option.value)).map((option) => (
-                              <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                              <MenuItem key={option.value} value={option.value} disabled={runtimeSnapshot.data?.encoders?.[option.value]?.usable === false}>{option.label}</MenuItem>
                             ))}
                           </TextField>
                         </Grid> : null}
-                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}>
+                        <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
-                            label="Hardware quality"
+                            label="Color depth"
+                            value={workerConfigString(form, 'pixFmt', workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? defaultProfileHardwareMain10PixelFormat(workerConfigString(form, 'videoEncoder', defaultHardwareEncoder)) : 'yuv420p10le')}
+                            onChange={(event) => updateWorkerConfig('pixFmt', event.target.value)}
+                            helperText={pixelFormatDescription(workerConfigString(form, 'pixFmt', 'yuv420p10le'))}
+                            select
+                            fullWidth
+                          >
+                            {compatibleProfilePixelFormats(workerConfigString(form, 'preferredEncoder', 'software'), workerConfigString(form, 'videoEncoder', defaultHardwareEncoder)).map((option) => (
+                              <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                            ))}
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label="Final color policy"
+                            value={workerConfigString(form, 'finalColorPolicy', 'preserve')}
+                            onChange={(event) => updateWorkerConfig('finalColorPolicy', event.target.value)}
+                            helperText="Defaults to no correction. Any selected correction is validated in the result snapshot."
+                            select
+                            fullWidth
+                          >
+                            <MenuItem value="preserve">No correction · preserve source</MenuItem>
+                            <MenuItem value="automatic">Automatic correction when justified</MenuItem>
+                            <MenuItem value="normalize_bt709">Normalize mathematically to BT.709</MenuItem>
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label={workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? 'Software fallback CRF' : 'Software CRF'}
+                            value={form.qualityValue}
+                            onChange={(event) => updateField('qualityValue', Math.min(30, Math.max(14, Number(event.target.value))))}
+                            helperText={workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? 'Used only if hardware falls back to software.' : 'Lower preserves more detail.'}
+                            type="number"
+                            inputProps={{ min: 14, max: 30, step: 1 }}
+                            disabled={form.videoCodec === 'copy'}
+                            fullWidth
+                          />
+                        </Grid>
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
+                            label={workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) === 'hevc_qsv' ? 'QSV quality (ICQ)' : 'Hardware quality'}
                             value={workerConfigNumber(form, 'globalQuality', qsvQualityRangeForCrf(form.qualityValue || 20).recommended)}
                             onChange={(event) => updateWorkerConfig('globalQuality', Number(event.target.value))}
                             helperText={hardwareQualityHelper(form.qualityValue)}
                             type="number"
                             inputProps={{ min: 15, max: 35 }}
-                            disabled={workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox'}
                             fullWidth
                           />
                         </Grid> : null}
@@ -698,6 +759,7 @@ export function ProfilesPage() {
                                 fullWidth
                               />
                             </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(updateWorkerConfig, event.target.value, 'hevc_qsv')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
@@ -718,6 +780,7 @@ export function ProfilesPage() {
                         ) : null}
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(updateWorkerConfig, event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
                             </Grid>
@@ -727,6 +790,9 @@ export function ProfilesPage() {
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 12)} onChange={(event) => updateWorkerConfig('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} fullWidth />
                             </Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={workerConfigString(form, 'videoToolboxProfile', '')} onChange={(event) => updateWorkerConfig('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" fullWidth /></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={workerConfigNumber(form, 'videoToolboxGop', 0)} onChange={(event) => updateWorkerConfig('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" fullWidth /></Grid>
+                            <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Allows reordered frames for better compression at the cost of latency." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateWorkerConfig('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Asks VideoToolbox to favor an energy-efficient encoding path." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxPowerEfficiency')} onChange={(event) => updateWorkerConfig('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                           </>
                         ) : null}
                         <Grid size={{ xs: 12, md: 4 }}>
@@ -782,27 +848,28 @@ export function ProfilesPage() {
                           <TextField
                             select
                             fullWidth
-                            label="Subtitle output format"
-                            value={subtitleOutputFormat(form)}
-                            onChange={(event) => updateWorkerConfig('subtitleOutputFormat', event.target.value)}
-                            helperText="Text tracks only; bitmap subtitles are preserved"
+                            label="Convert all subtitles"
+                            value={externalSubtitleFormat(form)}
+                            onChange={(event) => updateExternalSubtitleFormat(event.target.value)}
+                            helperText="Creates validated sidecars and removes embedded tracks. A Tracks Profile takes priority."
                           >
-                            <MenuItem value="source">Preserve source format</MenuItem>
-                            <MenuItem value="srt">Convert text subtitles to SRT</MenuItem>
-                            <MenuItem value="ass">Convert text subtitles to ASS</MenuItem>
+                            <MenuItem value="source">Keep embedded tracks</MenuItem>
+                            <MenuItem value="srt">External SRT · remove embedded</MenuItem>
+                            <MenuItem value="ass">External ASS · remove embedded</MenuItem>
                           </TextField>
                         </Grid>
-                        <Grid size={{ xs: 12, md: 4 }}>
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={workerConfigBool(form, 'warnSubtitleFormats', true)}
-                                onChange={(event) => updateWorkerConfig('warnSubtitleFormats', event.target.checked)}
-                              />
-                            }
-                            label="Warn about ASS/PGS/VobSub"
-                          />
-                        </Grid>
+                        {externalSubtitleFormat(form) !== 'source' ? <>
+                          <Grid size={{ xs: 12, md: 4 }}>
+                            <TextField select fullWidth label="Bitmap OCR quality" value={workerConfigString(form, 'subtitleOCRMode', 'accurate')} onChange={(event) => updateWorkerConfig('subtitleOCRMode', event.target.value)} helperText="Accurate compares isolated-color and original-color OCR passes.">
+                              <MenuItem value="raw">Raw · one pass</MenuItem><MenuItem value="clean">Clean · corrected</MenuItem><MenuItem value="accurate">Accurate · two passes</MenuItem>
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, md: 4 }}>
+                            <TextField select fullWidth label="Bitmap OCR language" value={workerConfigString(form, 'subtitleOCRLanguage', 'auto')} onChange={(event) => updateWorkerConfig('subtitleOCRLanguage', event.target.value)} helperText="Automatic uses the language metadata of each subtitle track.">
+                              <MenuItem value="auto">Automatic per track</MenuItem><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem>
+                            </TextField>
+                          </Grid>
+                        </> : null}
                       </Grid>
                     </Box>
                   </Grid>
@@ -848,27 +915,6 @@ export function ProfilesPage() {
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
-                              label="Audio codec"
-                              value={form.audioCodec}
-                              onChange={(event) => updateField('audioCodec', event.target.value)}
-                              select
-                              fullWidth
-                            >
-                              {['copy', 'aac', 'ac3', 'opus'].map((value) => (
-                                <MenuItem key={value} value={value}>
-                                  {value}
-                                </MenuItem>
-                              ))}
-                            </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <Stack spacing={0.5}>
-                              <Typography variant="body2">CRF {form.qualityValue}</Typography>
-                              <Slider value={form.qualityValue} min={14} max={30} step={1} disabled={form.videoCodec === 'copy'} onChange={(_, value) => updateField('qualityValue', Array.isArray(value) ? value[0] : value)} valueLabelDisplay="auto" />
-                            </Stack>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
                               label="Preset"
                               value={workerConfigString(form, 'videoPreset', 'medium')}
                               onChange={(event) => updateWorkerConfig('videoPreset', event.target.value)}
@@ -878,23 +924,6 @@ export function ProfilesPage() {
                               fullWidth
                             >
                               {encoderPresetOptions.map((option) => (
-                                <MenuItem key={option.value} value={option.value}>
-                                  {option.label}
-                                </MenuItem>
-                              ))}
-                            </TextField>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              label="Color depth"
-                              value={workerConfigString(form, 'pixFmt', 'yuv420p10le')}
-                              onChange={(event) => updateWorkerConfig('pixFmt', event.target.value)}
-                              helperText={pixelFormatDescription(workerConfigString(form, 'pixFmt', 'yuv420p10le'))}
-                              disabled={form.videoCodec === 'copy'}
-                              select
-                              fullWidth
-                            >
-                              {pixelFormatOptions.map((option) => (
                                 <MenuItem key={option.value} value={option.value}>
                                   {option.label}
                                 </MenuItem>
@@ -1169,6 +1198,14 @@ function subtitleOutputFormat(profile: ProfileInput) {
   return workerConfigBool(profile, 'preferSrtSubtitles') ? 'srt' : 'source';
 }
 
+function externalSubtitleFormat(profile: ProfileInput) {
+  const configured = workerConfigString(profile, 'externalSubtitleFormat').toLowerCase();
+  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+    return configured;
+  }
+  return subtitleOutputFormat(profile);
+}
+
 function synchronizeAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const workerConfig = { ...profile.workerConfig };
   delete workerConfig.processingMode;
@@ -1266,6 +1303,12 @@ function workerConfigBool(profile: ProfileInput, key: string, fallback = false) 
   return fallback;
 }
 
+function applyProfileHardwareQualityPreset(update: (key: string, value: unknown) => void, preset: string, encoder: string) {
+  const values = applySharedHardwareQualityPreset({}, encoder, preset);
+  Object.entries(values).filter(([key]) => key !== 'hardwareQualityPreset').forEach(([key, value]) => update(key, value));
+  update('hardwareQualityPreset', values.hardwareQualityPreset);
+}
+
 function aacTrackEnabled(profile: ProfileInput) {
   return profile.workerConfig && 'addAacStereoTrack' in profile.workerConfig
     ? workerConfigBool(profile, 'addAacStereoTrack')
@@ -1316,6 +1359,23 @@ function pixelFormatDescription(value: string) {
   return pixelFormatOptions.find((option) => option.value === value)?.description ?? 'Controls output color depth and playback compatibility.';
 }
 
+function defaultProfileHardwareMain10PixelFormat(encoder: string) {
+  return encoder === 'hevc_qsv' || encoder === 'hevc_vaapi' || encoder === 'hevc_videotoolbox' ? 'p010le' : 'yuv420p10le';
+}
+
+function compatibleProfilePixelFormats(preference: string, encoder: string) {
+  if (preference !== 'hardware') {
+    return pixelFormatOptions.filter((option) => ['auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+  }
+  if (encoder === 'hevc_qsv' || encoder === 'hevc_vaapi') {
+    return pixelFormatOptions.filter((option) => ['auto', 'p010le', 'nv12'].includes(option.value));
+  }
+  if (encoder === 'hevc_videotoolbox') {
+    return pixelFormatOptions.filter((option) => ['auto', 'p010le', 'yuv420p'].includes(option.value));
+  }
+  return pixelFormatOptions.filter((option) => ['auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+}
+
 function videoEncoderDescription(value: string) {
   return videoEncoderOptions.find((option) => option.value === value)?.description ?? 'Controls whether the worker uses hardware HEVC or software x265.';
 }
@@ -1353,8 +1413,8 @@ function buildDryRunCommand(profile: ProfileInput) {
     : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue || 20).recommended)}` : '';
   const qsvArgs = resolvedEncoder === 'hevc_qsv'
     ? [
-        workerConfigString(profile, 'qsvRateControl', 'icq') === 'la_icq' ? '-look_ahead 1' : '',
-        workerConfigBool(profile, 'qsvExtendedBRC') ? `-extbrc 1 -look_ahead_depth ${workerConfigNumber(profile, 'qsvLookAheadDepth', 40)}` : '',
+        workerConfigString(profile, 'qsvRateControl', 'icq') === 'la_icq' ? `-look_ahead 1 -look_ahead_depth ${workerConfigNumber(profile, 'qsvLookAheadDepth', 40)}` : '',
+        workerConfigBool(profile, 'qsvExtendedBRC') ? '-extbrc 1' : '',
         workerConfigBool(profile, 'qsvAdaptiveI') ? '-adaptive_i 1' : '',
         workerConfigBool(profile, 'qsvAdaptiveB') ? '-adaptive_b 1' : '',
       ].filter(Boolean).join(' ')

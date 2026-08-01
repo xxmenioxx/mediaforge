@@ -584,13 +584,14 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	}
 
 	first := run()
-	if len(first.Created) != 3 || len(first.Existing) != 0 || len(first.Unsupported) != 0 {
+	if len(first.Created) != 4 || len(first.Existing) != 0 || len(first.Unsupported) != 0 {
 		t.Fatalf("unexpected first extraction result: %#v", first)
 	}
 	for _, path := range []string{
 		filepath.Join(root, "Baccano.spa.2.ass"),
 		filepath.Join(root, "Baccano.eng.3.srt"),
 		filepath.Join(root, "Baccano.jpn.4.srt"),
+		filepath.Join(root, "Baccano.jpn.4.raw.srt"),
 	} {
 		content, err := os.ReadFile(path)
 		if err != nil || len(content) == 0 {
@@ -640,6 +641,7 @@ for argument do
     --ocr-language:*) language="${argument#--ocr-language:}" ;;
   esac
 done
+[ -z "$track" ] && { printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_filename"; exit 0; }
 [ "$track" = "7" ] || exit 20
 [ "$language" = "spa" ] || exit 21
 printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_filename"
@@ -689,6 +691,20 @@ func TestBitmapSubtitleOCRHelpers(t *testing.T) {
 		if got := normalizedOCRLanguage(input, ""); got != want {
 			t.Fatalf("OCR language %q = %q, want %q", input, got, want)
 		}
+	}
+	if got := normalizedOCRLanguage("jpn_vert", ""); got != "jpn_vert" {
+		t.Fatalf("vertical Japanese OCR language = %q", got)
+	}
+	for input, want := range map[string]string{"": "accurate", "unknown": "accurate", "raw": "raw", "clean": "clean", "accurate": "accurate"} {
+		if got := normalizedOCRMode(input); got != want {
+			t.Fatalf("OCR mode %q = %q, want %q", input, got, want)
+		}
+	}
+	if preferSecondaryOCR(1000, 1030) {
+		t.Fatal("a marginal alternate OCR score should not replace the isolated pass")
+	}
+	if !preferSecondaryOCR(1000, 1100) {
+		t.Fatal("a materially better alternate OCR score should be selected")
 	}
 	message := emptyOCRTrackMessage(3, "eng", `
 Running tesseract OCR on 1 MKV VobSub image(s) (track #4)...

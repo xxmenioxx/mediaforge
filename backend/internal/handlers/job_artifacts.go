@@ -448,6 +448,12 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.PreserveChapters != nil {
 		values["preserveChapters"] = *override.PreserveChapters
 	}
+	if strings.TrimSpace(override.ExternalSubtitleFormat) != "" {
+		values["externalSubtitleFormat"] = override.ExternalSubtitleFormat
+	}
+	if strings.TrimSpace(override.FinalColorPolicy) != "" {
+		values["finalColorPolicy"] = override.FinalColorPolicy
+	}
 	if override.AddAACStereoTrack != nil {
 		values["addAacStereoTrack"] = *override.AddAACStereoTrack
 	}
@@ -492,6 +498,24 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	}
 	if override.VideoToolboxBufferMbps > 0 {
 		values["videoToolboxBufferMbps"] = override.VideoToolboxBufferMbps
+	}
+	if override.VideoToolboxProfile != "" {
+		values["videoToolboxProfile"] = override.VideoToolboxProfile
+	}
+	if override.VideoToolboxGOP > 0 {
+		values["videoToolboxGop"] = override.VideoToolboxGOP
+	}
+	if override.VideoToolboxRealtime != nil {
+		values["videoToolboxRealtime"] = *override.VideoToolboxRealtime
+	}
+	if override.VideoToolboxAllowFrameReordering != nil {
+		values["videoToolboxAllowFrameReordering"] = *override.VideoToolboxAllowFrameReordering
+	}
+	if override.VideoToolboxPowerEfficiency != nil {
+		values["videoToolboxPowerEfficiency"] = *override.VideoToolboxPowerEfficiency
+	}
+	if override.HardwareQualityPreset != "" {
+		values["hardwareQualityPreset"] = override.HardwareQualityPreset
 	}
 	if len(values) == 0 {
 		return nil

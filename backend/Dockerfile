@@ -225,7 +225,7 @@ RUN apt-get update \
        libopus0 libsoxr0 libsqlite3-0 \
        libvorbis0a libvorbisenc2 libvpx9 libwebp7 libx264-164 libx265-215 \
        libx11-6 libxext6 libxfixes3 libwayland-client0 \
-       libzimg2 ocl-icd-libopencl1 sqlite3 tesseract-ocr \
+       libzimg2 ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es tesseract-ocr \
        tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-spa tzdata \
     && rm -rf /var/lib/apt/lists/*
 

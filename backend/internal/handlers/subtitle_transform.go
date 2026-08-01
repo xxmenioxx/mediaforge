@@ -76,7 +76,7 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 			if strings.TrimSpace(ocrLanguage) == "" {
 				ocrLanguage = transform.Language
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, stagedPath); err != nil {
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath); err != nil {
 				return nil, err
 			}
 		} else if !subtitleCanConvertText(stream.Codec) {

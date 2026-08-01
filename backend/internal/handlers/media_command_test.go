@@ -34,7 +34,7 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 		Streams: MediaStreamInventory{
 			ChapterCount: 1,
 			Audio: []MediaAudioStream{
-				{Index: 1, Codec: "ac3", Channels: 1, ChannelLayout: "mono", Default: true},
+				{Index: 1, Codec: "ac3", Channels: 1, ChannelLayout: "mono", Language: "jpn", Default: true},
 			},
 		},
 	}
@@ -44,11 +44,13 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 
 	assertContains(t, command, "-map 0")
 	assertContains(t, command, "-map 0:1")
-	assertContains(t, command, "-c copy")
+	assertContains(t, command, "-c:a copy")
+	assertContains(t, command, "-c:s copy")
 	assertContains(t, command, "-c:v copy")
 	assertContains(t, command, "-filter:a:1")
 	assertContains(t, command, "-c:a:1 aac")
-	assertContains(t, command, "-metadata:s:a:0 \"title=Original Mono\"")
+	assertContains(t, command, "-metadata:s:a:0 \"title=Original Japanese Mono\"")
+	assertContains(t, command, "-metadata:s:a:0 language=jpn")
 	assertContains(t, command, "-metadata:s:a:1 \"title=Stereo Enhanced (MVForge)\"")
 	assertContains(t, command, "-disposition:a:0 0")
 	assertContains(t, command, "-disposition:a:1 default")
@@ -278,14 +280,60 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 		"qsvAdaptiveB":      true,
 	}}
 	args := qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{
-		ICQ: true, LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false,
+		ICQ: true, LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false, QSVFullCombination: true,
 	})
 	command := strings.Join(args, " ")
 	assertContains(t, command, "-look_ahead 1")
 	assertContains(t, command, "-adaptive_i 1")
 	assertNotContains(t, command, "-extbrc")
 	assertNotContains(t, command, "-adaptive_b")
-	assertNotContains(t, command, "-look_ahead_depth")
+	assertContains(t, command, "-look_ahead_depth 40")
+}
+
+func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
+	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality",
+	}})
+	if qsv.WorkerConfig["globalQuality"] != 22 || qsv.WorkerConfig["qsvRateControl"] != "la_icq" || qsv.WorkerConfig["pixFmt"] != "p010le" {
+		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
+	}
+	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
+		t.Fatalf("QSV preset must not opt into unverified advanced features: %#v", qsv.WorkerConfig)
+	}
+	videoToolbox := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended",
+	}})
+	if videoToolbox.WorkerConfig["videoToolboxProfile"] != "main10" || videoToolbox.WorkerConfig["pixFmt"] != "p010le" {
+		t.Fatalf("unexpected VideoToolbox preset normalization: %#v", videoToolbox.WorkerConfig)
+	}
+	custom := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "custom", "globalQuality": 19,
+	}})
+	if custom.WorkerConfig["globalQuality"] != 19 {
+		t.Fatalf("custom preset must preserve manual controls: %#v", custom.WorkerConfig)
+	}
+}
+
+func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended"}}
+	target, maxrate, buffer, ok := adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 4_000_000})
+	if !ok || target != 2795 || maxrate != 4193 || buffer != 6988 {
+		t.Fatalf("unexpected adaptive VideoToolbox result: target=%d maxrate=%d buffer=%d ok=%v", target, maxrate, buffer, ok)
+	}
+	profile.WorkerConfig["hardwareQualityPreset"] = "custom"
+	if _, _, _, ok := adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 4_000_000}); ok {
+		t.Fatal("custom VideoToolbox bitrate must not be replaced by source adaptation")
+	}
+	profile.WorkerConfig["hardwareQualityPreset"] = "recommended"
+	target, _, _, ok = adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 12_000_000})
+	if !ok || target != 4000 {
+		t.Fatalf("SD Recommended must cap an excessive source bitrate at 4000k, got %dk", target)
+	}
+}
+
+func TestCropPreservesDisplayedAspectRatio(t *testing.T) {
+	filters := applyCropAspectPolicy("crop=720:460:0:10", models.Profile{}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
+	assertContains(t, filters, "crop=720:460:0:10,setsar=2649600/3110400,setdar=5760/4320")
 }
 
 func TestExplicitNV12OverridesLegacyMain10ProfileMetadata(t *testing.T) {
@@ -362,7 +410,7 @@ func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "-c:s")
+	assertContains(t, command, "-c:s copy")
 	assertNotContains(t, command, "-sn")
 	assertNotContains(t, command, "-map_chapters")
 }
@@ -525,7 +573,7 @@ func TestFFmpegCommandBuilderRemovesExportedSubtitleFromContainer(t *testing.T) 
 	assertContains(t, command, "-map 0:1")
 	assertContains(t, command, "-map 0:3")
 	assertNotContains(t, command, "-map 0:2")
-	assertContains(t, command, "-c copy")
+	assertContains(t, command, "-c:a copy")
 }
 
 func TestSanitizeConversionOverrideSchedulesBitmapSubtitleOCR(t *testing.T) {
@@ -544,9 +592,37 @@ func TestSanitizeConversionOverrideSchedulesBitmapSubtitleOCR(t *testing.T) {
 	}
 }
 
+func TestAssetOverrideExternalizesAllSubtitlesBeforeConversion(t *testing.T) {
+	profile := applyAssetConversionOverrideToProfile(
+		models.Profile{PreserveSubtitles: true, WorkerConfig: models.JSONMap{"subtitleOutputFormat": "source"}},
+		AssetConversionOverrideState{ExternalSubtitleFormat: "ass"},
+	)
+	plan := MediaJobPlan{
+		Profile: profile,
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng"},
+			{Index: 3, Codec: "hdmv_pgs_subtitle", Language: "spa"},
+		}},
+	}
+
+	applyProfileSubtitleExternalization(&plan)
+
+	if profile.PreserveSubtitles {
+		t.Fatal("externalizing subtitles must disable embedded subtitle preservation")
+	}
+	if len(plan.Override.SubtitleTransforms) != 2 {
+		t.Fatalf("expected every subtitle to use the asset override, got %#v", plan.Override.SubtitleTransforms)
+	}
+	for _, transform := range plan.Override.SubtitleTransforms {
+		if transform.Format != "ass" || !transform.RemoveEmbedded {
+			t.Fatalf("unexpected subtitle externalization: %#v", transform)
+		}
+	}
+}
+
 func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing.T) {
 	plan := MediaJobPlan{
-		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt"}},
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt", "subtitleOCRMode": "clean", "subtitleOCRLanguage": "spa"}},
 		Streams: MediaStreamInventory{Subtitle: []MediaStream{
 			{Index: 2, Codec: "subrip", Language: "eng", Default: true},
 			{Index: 4, Codec: "dvd_subtitle", Language: "spa"},
@@ -561,6 +637,9 @@ func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing
 	for _, transform := range plan.Override.SubtitleTransforms {
 		if transform.Format != "srt" || !transform.RemoveEmbedded {
 			t.Fatalf("expected validated SRT externalization with embedded removal, got %#v", transform)
+		}
+		if transform.OCRMode != "clean" || transform.OCRLanguage != "spa" {
+			t.Fatalf("expected profile OCR settings to reach every generated transform, got %#v", transform)
 		}
 	}
 	if !plan.Override.SubtitleTransforms[0].MakeDefault {
@@ -642,7 +721,10 @@ func TestFFmpegCommandBuilderUsesVideoToolboxBitrateAndMain10(t *testing.T) {
 func TestVideoToolboxLegacyColorIsConvertedToBT709(t *testing.T) {
 	profile := models.Profile{
 		VideoCodec: "x265", AudioCodec: "copy",
-		WorkerConfig: models.JSONMap{"videoFilters": "bwdif=mode=send_frame:parity=bff:deint=all,setfield=prog"},
+		WorkerConfig: models.JSONMap{
+			"finalColorPolicy": "automatic",
+			"videoFilters":     "bwdif=mode=send_frame:parity=bff:deint=all,setfield=prog",
+		},
 	}
 	source := MediaStream{
 		ColorSpace: "bt470bg", ColorTransfer: "bt470m", ColorPrimaries: "bt470m", ColorRange: "tv",
@@ -661,6 +743,28 @@ func TestVideoToolboxLegacyColorIsConvertedToBT709(t *testing.T) {
 	assertContains(t, colorArgs, "-color_range tv")
 }
 
+func TestVideoToolboxQualityPresetOptionsReachFFmpeg(t *testing.T) {
+	profile := models.Profile{
+		VideoCodec: "x265", QualityMode: "crf", QualityValue: 20,
+		WorkerConfig: models.JSONMap{
+			"videoEncoder": "hevc_videotoolbox", "preferredEncoder": "hardware", "useHardwareIfAvailable": true, "videoToolboxQualityProfile": 80,
+			"videoToolboxBitrateMbps": 12, "videoToolboxMaxrateMbps": 16, "videoToolboxBufferMbps": 32,
+			"videoToolboxProfile": "main10", "videoToolboxGop": 90,
+			"videoToolboxRealtime": false, "videoToolboxAllowFrameReordering": true, "videoToolboxPowerEfficiency": false,
+		},
+	}
+	if resolvedVideoEncoder(profile) != "hevc_videotoolbox" {
+		t.Skip("VideoToolbox is listed but not usable in this test runtime")
+	}
+	command := shellJoin(videoCodecArgs(profile))
+	for _, expected := range []string{"-b:v 12M", "-maxrate 16M", "-bufsize 32M", "-g 90", "-bf 3", "-power_efficient 0", "-profile:v main10", "-pix_fmt p010le"} {
+		assertContains(t, command, expected)
+	}
+	assertNotContains(t, command, "-realtime")
+	assertNotContains(t, command, "-q:v")
+	assertNotContains(t, command, "-allow_frame_reordering")
+}
+
 func TestVideoToolboxBT709IsTaggedWithoutRedundantConversion(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{}}
 	source := MediaStream{
@@ -671,6 +775,44 @@ func TestVideoToolboxBT709IsTaggedWithoutRedundantConversion(t *testing.T) {
 		t.Fatalf("BT.709 source received redundant conversion: %q", filter)
 	}
 	assertContains(t, shellJoin(videoColorMetadataArgs(effective)), "-color_primaries bt709")
+}
+
+func TestFinalColorPolicyPreservesSourceMetadataForSoftware(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"finalColorPolicy": "preserve"}}
+	source := MediaStream{ColorSpace: "bt470bg", ColorTransfer: "bt470m", ColorPrimaries: "bt470m", ColorRange: "tv"}
+	effective := profileWithFinalColorPolicy(profile, source, "libx265")
+
+	if filter := workerStringValue(effective.WorkerConfig["videoFilters"]); strings.Contains(filter, "colorspace=") {
+		t.Fatalf("preserve policy must not transform pixels: %q", filter)
+	}
+	colorArgs := shellJoin(videoColorMetadataArgs(effective))
+	assertContains(t, colorArgs, "-colorspace bt470bg")
+	assertContains(t, colorArgs, "-color_trc bt470m")
+	assertContains(t, colorArgs, "-color_primaries bt470m")
+	assertContains(t, colorArgs, "-color_range tv")
+}
+
+func TestFinalColorPolicyNormalizesPixelsBeforeWritingBT709Metadata(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"finalColorPolicy": "normalize_bt709"}}
+	source := MediaStream{ColorSpace: "bt470bg", ColorTransfer: "bt470m", ColorPrimaries: "bt470m", ColorRange: "tv"}
+	effective := profileWithFinalColorPolicy(profile, source, "libx265")
+
+	filter := workerStringValue(effective.WorkerConfig["videoFilters"])
+	assertContains(t, filter, "colorspace=ispace=bt470bg")
+	assertContains(t, filter, "space=bt709")
+	assertContains(t, shellJoin(videoColorMetadataArgs(effective)), "-color_primaries bt709")
+}
+
+func TestFinalColorPolicyDoesNotNormalizeHDRWithoutToneMapping(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"finalColorPolicy": "normalize_bt709"}}
+	source := MediaStream{ColorSpace: "bt2020nc", ColorTransfer: "smpte2084", ColorPrimaries: "bt2020", ColorRange: "tv"}
+	effective := profileWithFinalColorPolicy(profile, source, "libx265")
+
+	if filter := workerStringValue(effective.WorkerConfig["videoFilters"]); strings.Contains(filter, "colorspace=") {
+		t.Fatalf("HDR must not be normalized without tone mapping: %q", filter)
+	}
+	assertContains(t, workerStringValue(effective.WorkerConfig["colorPolicyWarning"]), "tone mapping")
+	assertContains(t, shellJoin(videoColorMetadataArgs(effective)), "-color_trc smpte2084")
 }
 
 func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing.T) {
@@ -743,7 +885,7 @@ func TestFFmpegCommandBuilderCopiesBitmapSubtitlesWhenSRTIsPreferred(t *testing.
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "-c:s")
+	assertContains(t, command, "-c:s copy")
 }
 
 func TestFFmpegCommandBuilderConvertsOnlyTextSubtitlesToSRT(t *testing.T) {
@@ -796,7 +938,7 @@ func TestFFmpegCommandBuilderPreservesSubtitleFormatWhenRequested(t *testing.T) 
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "-c:s")
+	assertContains(t, command, "-c:s copy")
 }
 
 func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {

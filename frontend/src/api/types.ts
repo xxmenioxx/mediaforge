@@ -75,6 +75,7 @@ export type Asset = {
   publicationMode?: 'as_is';
   technical?: {
     videoCodec: string;
+    encoder?: string;
     width: number;
     height: number;
     duration: number;
@@ -129,6 +130,7 @@ export type AssetConversionOverrideState = {
     makeDefault: boolean;
     language: string;
     ocrLanguage?: string;
+    ocrMode?: 'raw' | 'clean' | 'accurate';
     title?: string;
   }>;
   videoCodec?: string;
@@ -143,6 +145,8 @@ export type AssetConversionOverrideState = {
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;
+  externalSubtitleFormat?: 'source' | 'srt' | 'ass';
+  finalColorPolicy?: 'automatic' | 'preserve' | 'normalize_bt709';
   addAacStereoTrack?: boolean;
   aacStereoDefault?: boolean;
   enhancedAudioSourceStreamIndex?: number;
@@ -158,6 +162,13 @@ export type AssetConversionOverrideState = {
   videoToolboxBitrateMbps?: number;
   videoToolboxMaxrateMbps?: number;
   videoToolboxBufferMbps?: number;
+  videoToolboxQualityProfile?: number;
+  videoToolboxProfile?: string;
+  videoToolboxGop?: number;
+  videoToolboxRealtime?: boolean;
+  videoToolboxAllowFrameReordering?: boolean;
+  videoToolboxPowerEfficiency?: boolean;
+  hardwareQualityPreset?: string;
   updatedAt?: string;
 };
 
@@ -395,7 +406,7 @@ export type RuntimeSnapshot = {
   powerSource: string;
   onBattery: boolean;
   disks: Record<string, unknown>;
-  encoders: Record<string, { listed: boolean; usable: boolean; reason: string }>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean }>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;

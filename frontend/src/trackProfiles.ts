@@ -7,6 +7,7 @@ export type SubtitleTransform = {
   makeDefault: boolean;
   language: string;
   ocrLanguage?: string;
+  ocrMode?: 'raw' | 'clean' | 'accurate';
   title?: string;
 };
 
@@ -84,6 +85,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
         makeDefault: value.makeDefault === true,
         language: typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : 'und',
         ocrLanguage: typeof value.ocrLanguage === 'string' && value.ocrLanguage.trim() ? value.ocrLanguage.trim().toLowerCase() : undefined,
+        ocrMode: (value.ocrMode === 'raw' || value.ocrMode === 'clean' ? value.ocrMode : 'accurate') as SubtitleTransform['ocrMode'],
         title: typeof value.title === 'string' ? value.title : undefined,
       }];
     });

@@ -40,6 +40,7 @@ type SubtitleExtractionInput struct {
 	StreamIndex *int   `json:"streamIndex"`
 	Format      string `json:"format"`
 	OCRLanguage string `json:"ocrLanguage,omitempty"`
+	OCRMode     string `json:"ocrMode,omitempty"`
 }
 
 type ExternalSubtitle struct {
@@ -151,43 +152,52 @@ type AssetMetadataState struct {
 }
 
 type AssetConversionOverrideState struct {
-	TrackProfileKey                string                         `json:"trackProfileKey,omitempty"`
-	KeepVideoStreams               []int                          `json:"keepVideoStreams"`
-	KeepAudioStreams               []int                          `json:"keepAudioStreams"`
-	KeepSubtitleStreams            []int                          `json:"keepSubtitleStreams"`
-	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
-	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
-	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
-	SubtitleTransforms             []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
-	VideoCodec                     string                         `json:"videoCodec,omitempty"`
-	AudioCodec                     string                         `json:"audioCodec,omitempty"`
-	QualityMode                    string                         `json:"qualityMode,omitempty"`
-	QualityValue                   int                            `json:"qualityValue,omitempty"`
-	VideoPreset                    string                         `json:"videoPreset,omitempty"`
-	PixFmt                         string                         `json:"pixFmt,omitempty"`
-	VideoFilters                   string                         `json:"videoFilters,omitempty"`
-	DeinterlaceMode                string                         `json:"deinterlaceMode,omitempty"`
-	X265Params                     string                         `json:"x265Params,omitempty"`
-	ProcessingMode                 string                         `json:"processingMode,omitempty"`
-	PreserveHDR                    *bool                          `json:"preserveHdr,omitempty"`
-	PreserveSubtitles              *bool                          `json:"preserveSubtitles,omitempty"`
-	PreserveChapters               *bool                          `json:"preserveChapters,omitempty"`
-	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack,omitempty"`
-	AACStereoDefault               *bool                          `json:"aacStereoDefault,omitempty"`
-	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex,omitempty"`
-	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable,omitempty"`
-	VideoEncoder                   string                         `json:"videoEncoder,omitempty"`
-	PreferredEncoder               string                         `json:"preferredEncoder,omitempty"`
-	GlobalQuality                  int                            `json:"globalQuality,omitempty"`
-	QSVRateControl                 string                         `json:"qsvRateControl,omitempty"`
-	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth,omitempty"`
-	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc,omitempty"`
-	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI,omitempty"`
-	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB,omitempty"`
-	VideoToolboxBitrateMbps        int                            `json:"videoToolboxBitrateMbps,omitempty"`
-	VideoToolboxMaxrateMbps        int                            `json:"videoToolboxMaxrateMbps,omitempty"`
-	VideoToolboxBufferMbps         int                            `json:"videoToolboxBufferMbps,omitempty"`
-	UpdatedAt                      *time.Time                     `json:"updatedAt,omitempty"`
+	TrackProfileKey                  string                         `json:"trackProfileKey,omitempty"`
+	KeepVideoStreams                 []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams                 []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams              []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata                    map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
+	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
+	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
+	VideoCodec                       string                         `json:"videoCodec,omitempty"`
+	AudioCodec                       string                         `json:"audioCodec,omitempty"`
+	QualityMode                      string                         `json:"qualityMode,omitempty"`
+	QualityValue                     int                            `json:"qualityValue,omitempty"`
+	VideoPreset                      string                         `json:"videoPreset,omitempty"`
+	PixFmt                           string                         `json:"pixFmt,omitempty"`
+	VideoFilters                     string                         `json:"videoFilters,omitempty"`
+	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
+	X265Params                       string                         `json:"x265Params,omitempty"`
+	ProcessingMode                   string                         `json:"processingMode,omitempty"`
+	PreserveHDR                      *bool                          `json:"preserveHdr,omitempty"`
+	PreserveSubtitles                *bool                          `json:"preserveSubtitles,omitempty"`
+	PreserveChapters                 *bool                          `json:"preserveChapters,omitempty"`
+	ExternalSubtitleFormat           string                         `json:"externalSubtitleFormat,omitempty"`
+	FinalColorPolicy                 string                         `json:"finalColorPolicy,omitempty"`
+	AddAACStereoTrack                *bool                          `json:"addAacStereoTrack,omitempty"`
+	AACStereoDefault                 *bool                          `json:"aacStereoDefault,omitempty"`
+	EnhancedAudioSourceStreamIndex   *int                           `json:"enhancedAudioSourceStreamIndex,omitempty"`
+	UseHardwareIfAvailable           *bool                          `json:"useHardwareIfAvailable,omitempty"`
+	VideoEncoder                     string                         `json:"videoEncoder,omitempty"`
+	PreferredEncoder                 string                         `json:"preferredEncoder,omitempty"`
+	GlobalQuality                    int                            `json:"globalQuality,omitempty"`
+	QSVRateControl                   string                         `json:"qsvRateControl,omitempty"`
+	QSVLookAheadDepth                int                            `json:"qsvLookAheadDepth,omitempty"`
+	QSVExtendedBRC                   *bool                          `json:"qsvExtendedBrc,omitempty"`
+	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI,omitempty"`
+	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB,omitempty"`
+	VideoToolboxBitrateMbps          int                            `json:"videoToolboxBitrateMbps,omitempty"`
+	VideoToolboxMaxrateMbps          int                            `json:"videoToolboxMaxrateMbps,omitempty"`
+	VideoToolboxBufferMbps           int                            `json:"videoToolboxBufferMbps,omitempty"`
+	VideoToolboxQualityProfile       int                            `json:"videoToolboxQualityProfile,omitempty"`
+	VideoToolboxProfile              string                         `json:"videoToolboxProfile,omitempty"`
+	VideoToolboxGOP                  int                            `json:"videoToolboxGop,omitempty"`
+	VideoToolboxRealtime             *bool                          `json:"videoToolboxRealtime,omitempty"`
+	VideoToolboxAllowFrameReordering *bool                          `json:"videoToolboxAllowFrameReordering,omitempty"`
+	VideoToolboxPowerEfficiency      *bool                          `json:"videoToolboxPowerEfficiency,omitempty"`
+	HardwareQualityPreset            string                         `json:"hardwareQualityPreset,omitempty"`
+	UpdatedAt                        *time.Time                     `json:"updatedAt,omitempty"`
 }
 
 type StreamMetadataOverride struct {
@@ -204,6 +214,7 @@ type SubtitleTransform struct {
 	MakeDefault    bool   `json:"makeDefault"`
 	Language       string `json:"language"`
 	OCRLanguage    string `json:"ocrLanguage,omitempty"`
+	OCRMode        string `json:"ocrMode,omitempty"`
 	Title          string `json:"title,omitempty"`
 }
 
@@ -229,6 +240,7 @@ type Asset struct {
 
 type AssetTechnicalInfo struct {
 	VideoCodec string  `json:"videoCodec"`
+	Encoder    string  `json:"encoder,omitempty"`
 	Width      int     `json:"width"`
 	Height     int     `json:"height"`
 	Duration   float64 `json:"duration"`
@@ -266,42 +278,51 @@ type AssetMetadataUpdateInput struct {
 }
 
 type AssetConversionUpdateInput struct {
-	TrackProfileKey                string                         `json:"trackProfileKey"`
-	KeepVideoStreams               []int                          `json:"keepVideoStreams"`
-	KeepAudioStreams               []int                          `json:"keepAudioStreams"`
-	KeepSubtitleStreams            []int                          `json:"keepSubtitleStreams"`
-	VideoMetadata                  map[int]StreamMetadataOverride `json:"videoMetadata"`
-	AudioMetadata                  map[int]StreamMetadataOverride `json:"audioMetadata"`
-	SubtitleMetadata               map[int]StreamMetadataOverride `json:"subtitleMetadata"`
-	SubtitleTransforms             []SubtitleTransform            `json:"subtitleTransforms"`
-	VideoCodec                     string                         `json:"videoCodec"`
-	AudioCodec                     string                         `json:"audioCodec"`
-	QualityMode                    string                         `json:"qualityMode"`
-	QualityValue                   int                            `json:"qualityValue"`
-	VideoPreset                    string                         `json:"videoPreset"`
-	PixFmt                         string                         `json:"pixFmt"`
-	VideoFilters                   string                         `json:"videoFilters"`
-	DeinterlaceMode                string                         `json:"deinterlaceMode"`
-	X265Params                     string                         `json:"x265Params"`
-	ProcessingMode                 string                         `json:"processingMode"`
-	PreserveHDR                    *bool                          `json:"preserveHdr"`
-	PreserveSubtitles              *bool                          `json:"preserveSubtitles"`
-	PreserveChapters               *bool                          `json:"preserveChapters"`
-	AddAACStereoTrack              *bool                          `json:"addAacStereoTrack"`
-	AACStereoDefault               *bool                          `json:"aacStereoDefault"`
-	EnhancedAudioSourceStreamIndex *int                           `json:"enhancedAudioSourceStreamIndex"`
-	UseHardwareIfAvailable         *bool                          `json:"useHardwareIfAvailable"`
-	VideoEncoder                   string                         `json:"videoEncoder"`
-	PreferredEncoder               string                         `json:"preferredEncoder"`
-	GlobalQuality                  int                            `json:"globalQuality"`
-	QSVRateControl                 string                         `json:"qsvRateControl"`
-	QSVLookAheadDepth              int                            `json:"qsvLookAheadDepth"`
-	QSVExtendedBRC                 *bool                          `json:"qsvExtendedBrc"`
-	QSVAdaptiveI                   *bool                          `json:"qsvAdaptiveI"`
-	QSVAdaptiveB                   *bool                          `json:"qsvAdaptiveB"`
-	VideoToolboxBitrateMbps        int                            `json:"videoToolboxBitrateMbps"`
-	VideoToolboxMaxrateMbps        int                            `json:"videoToolboxMaxrateMbps"`
-	VideoToolboxBufferMbps         int                            `json:"videoToolboxBufferMbps"`
+	TrackProfileKey                  string                         `json:"trackProfileKey"`
+	KeepVideoStreams                 []int                          `json:"keepVideoStreams"`
+	KeepAudioStreams                 []int                          `json:"keepAudioStreams"`
+	KeepSubtitleStreams              []int                          `json:"keepSubtitleStreams"`
+	VideoMetadata                    map[int]StreamMetadataOverride `json:"videoMetadata"`
+	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata"`
+	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata"`
+	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms"`
+	VideoCodec                       string                         `json:"videoCodec"`
+	AudioCodec                       string                         `json:"audioCodec"`
+	QualityMode                      string                         `json:"qualityMode"`
+	QualityValue                     int                            `json:"qualityValue"`
+	VideoPreset                      string                         `json:"videoPreset"`
+	PixFmt                           string                         `json:"pixFmt"`
+	VideoFilters                     string                         `json:"videoFilters"`
+	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
+	X265Params                       string                         `json:"x265Params"`
+	ProcessingMode                   string                         `json:"processingMode"`
+	PreserveHDR                      *bool                          `json:"preserveHdr"`
+	PreserveSubtitles                *bool                          `json:"preserveSubtitles"`
+	PreserveChapters                 *bool                          `json:"preserveChapters"`
+	ExternalSubtitleFormat           string                         `json:"externalSubtitleFormat"`
+	FinalColorPolicy                 string                         `json:"finalColorPolicy"`
+	AddAACStereoTrack                *bool                          `json:"addAacStereoTrack"`
+	AACStereoDefault                 *bool                          `json:"aacStereoDefault"`
+	EnhancedAudioSourceStreamIndex   *int                           `json:"enhancedAudioSourceStreamIndex"`
+	UseHardwareIfAvailable           *bool                          `json:"useHardwareIfAvailable"`
+	VideoEncoder                     string                         `json:"videoEncoder"`
+	PreferredEncoder                 string                         `json:"preferredEncoder"`
+	GlobalQuality                    int                            `json:"globalQuality"`
+	QSVRateControl                   string                         `json:"qsvRateControl"`
+	QSVLookAheadDepth                int                            `json:"qsvLookAheadDepth"`
+	QSVExtendedBRC                   *bool                          `json:"qsvExtendedBrc"`
+	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI"`
+	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB"`
+	VideoToolboxBitrateMbps          int                            `json:"videoToolboxBitrateMbps"`
+	VideoToolboxMaxrateMbps          int                            `json:"videoToolboxMaxrateMbps"`
+	VideoToolboxBufferMbps           int                            `json:"videoToolboxBufferMbps"`
+	VideoToolboxQualityProfile       int                            `json:"videoToolboxQualityProfile"`
+	VideoToolboxProfile              string                         `json:"videoToolboxProfile"`
+	VideoToolboxGOP                  int                            `json:"videoToolboxGop"`
+	VideoToolboxRealtime             *bool                          `json:"videoToolboxRealtime"`
+	VideoToolboxAllowFrameReordering *bool                          `json:"videoToolboxAllowFrameReordering"`
+	VideoToolboxPowerEfficiency      *bool                          `json:"videoToolboxPowerEfficiency"`
+	HardwareQualityPreset            string                         `json:"hardwareQualityPreset"`
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
@@ -1911,6 +1932,8 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		PreserveHDR:                    input.PreserveHDR,
 		PreserveSubtitles:              input.PreserveSubtitles,
 		PreserveChapters:               input.PreserveChapters,
+		ExternalSubtitleFormat:         strings.TrimSpace(input.ExternalSubtitleFormat),
+		FinalColorPolicy:               strings.TrimSpace(input.FinalColorPolicy),
 		AddAACStereoTrack:              input.AddAACStereoTrack,
 		AACStereoDefault:               input.AACStereoDefault,
 		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
@@ -2576,6 +2599,7 @@ func colorspaceColorAlias(value string, kind string) (string, bool) {
 		"transfer": {
 			"bt709": "bt709", "bt470m": "bt470m", "bt470bg": "bt470bg",
 			"smpte170m": "smpte170m", "smpte240m": "smpte240m", "bt2020-10": "bt2020-10", "bt2020-12": "bt2020-12",
+			"smpte2084": "smpte2084", "arib-std-b67": "arib-std-b67",
 		},
 		"range": {
 			"tv": "tv", "limited": "tv", "pc": "pc", "full": "pc",
@@ -3340,6 +3364,26 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		}
 	}
 	technicalByPath := map[string]*AssetTechnicalInfo{}
+	encoderByPath := map[string]string{}
+	var jobs []models.QueueJob
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		_ = h.db.Where("status = ? AND (published_path <> '' OR output_path <> '')", "completed").Order("id desc").Find(&jobs).Error
+		for _, job := range jobs {
+			worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
+			if worker == nil {
+				continue
+			}
+			profile := models.Profile{VideoCodec: stringFromUnknown(job.ProfileSnapshot["videoCodec"]), WorkerConfig: models.JSONMap(worker)}
+			encoder := resolvedVideoEncoder(profile)
+			for _, candidate := range []string{job.PublishedPath, job.OutputPath} {
+				if candidate != "" {
+					if _, exists := encoderByPath[filepath.Clean(candidate)]; !exists {
+						encoderByPath[filepath.Clean(candidate)] = encoder
+					}
+				}
+			}
+		}
+	}
 	for _, scan := range scans {
 		path := filepath.Clean(scan.Path)
 		if _, exists := technicalByPath[path]; exists {
@@ -3347,6 +3391,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		}
 		technicalByPath[path] = &AssetTechnicalInfo{
 			VideoCodec: scan.VideoCodec,
+			Encoder:    encoderByPath[path],
 			Width:      scan.Width,
 			Height:     scan.Height,
 			Duration:   scan.Duration,
@@ -4379,6 +4424,8 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.PreserveHDR == nil &&
 		override.PreserveSubtitles == nil &&
 		override.PreserveChapters == nil &&
+		strings.TrimSpace(override.ExternalSubtitleFormat) == "" &&
+		strings.TrimSpace(override.FinalColorPolicy) == "" &&
 		override.AddAACStereoTrack == nil &&
 		override.AACStereoDefault == nil &&
 		override.EnhancedAudioSourceStreamIndex == nil &&
@@ -4417,6 +4464,7 @@ func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransfor
 			value.Language = "und"
 		}
 		value.OCRLanguage = strings.ToLower(strings.TrimSpace(value.OCRLanguage))
+		value.OCRMode = normalizedOCRMode(value.OCRMode)
 		result = append(result, value)
 	}
 	return result
