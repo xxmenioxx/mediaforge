@@ -35,6 +35,25 @@ func TestClassifyCropCandidatesRejectsVariableBorders(t *testing.T) {
 	}
 }
 
+func TestClassifyCropCandidatesOffersConservativeDisabledCandidateForSimilarBorders(t *testing.T) {
+	analysis := CropAnalysis{Status: "unknown", OriginalWidth: 720, OriginalHeight: 480, Windows: 3}
+	result := classifyCropCandidates(analysis, []cropCandidate{
+		{width: 674, height: 442, x: 24, y: 18},
+		{width: 680, height: 444, x: 22, y: 18},
+		{width: 676, height: 442, x: 22, y: 18},
+	})
+
+	if result.Status != "variable" {
+		t.Fatalf("nearby candidates must remain manual, got %q", result.Status)
+	}
+	if result.RecommendedCrop != "680:444:22:18" {
+		t.Fatalf("unexpected conservative crop: %q", result.RecommendedCrop)
+	}
+	if result.MatchingWindows != 3 || result.Confidence != 1 {
+		t.Fatalf("unexpected clustered confidence: %d %.2f", result.MatchingWindows, result.Confidence)
+	}
+}
+
 func TestClassifyCropCandidatesIgnoresSmallOverscan(t *testing.T) {
 	analysis := CropAnalysis{Status: "unknown", OriginalWidth: 1920, OriginalHeight: 1080, Windows: 3}
 	candidate := cropCandidate{width: 1912, height: 1076, x: 4, y: 2}

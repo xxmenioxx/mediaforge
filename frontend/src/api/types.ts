@@ -702,6 +702,7 @@ export type ScanResult = {
     recommendations?: string[];
   };
   interlaceAnalysis: {
+    version?: number;
     status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';
     fieldOrder?: string;
     containerFieldOrder?: string;

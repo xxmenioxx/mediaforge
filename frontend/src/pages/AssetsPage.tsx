@@ -2289,7 +2289,8 @@ function AssetConversionOverridePanel({
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
-  const recommendedCrop = scan?.cropAnalysis?.status === 'detected' ? (scan.cropAnalysis.recommendedCrop ?? '').trim() : '';
+  const recommendedCrop = ['detected', 'variable'].includes(scan?.cropAnalysis?.status ?? '') ? (scan?.cropAnalysis?.recommendedCrop ?? '').trim() : '';
+  const manualCropCandidate = scan?.cropAnalysis?.status === 'variable' && Boolean(recommendedCrop);
   const currentCropFilter = cropFilterFromChain(draft.videoFilters);
   const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
   const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
@@ -2309,6 +2310,10 @@ function AssetConversionOverridePanel({
   const qsvLookAheadAvailable = qsvMain10Selected && qsvCapability?.qsvLaIcqMain10 === true;
   const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
+  const selectedHardwareQualityPreset = String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended');
+  const effectiveHardwarePresetConfig = selectedHardwareQualityPreset !== 'custom'
+    ? applySharedHardwareQualityPreset({ ...(profile?.workerConfig ?? {}), ...draft }, effectiveVideoEncoder, selectedHardwareQualityPreset, scan)
+    : { ...(profile?.workerConfig ?? {}), ...draft };
   const effectivePixFmt = (draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase();
   const videoToolboxMain10Selected = (draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')).toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(effectivePixFmt);
@@ -2346,7 +2351,7 @@ function AssetConversionOverridePanel({
     onChange('useHardwareIfAvailable', hardwareCodecSupported);
     const encoder = isHardwareAssetEncoder(effectiveVideoEncoder) ? effectiveVideoEncoder : defaultHardwareEncoder;
     onChange('videoEncoder', encoder);
-    onChange('pixFmt', defaultHardwareMain10PixelFormatForAsset(encoder));
+    applyAssetHardwareQualityPreset(onChange, 'recommended', encoder, scan);
   }
 
   function changeAssetVideoCodec(value: string) {
@@ -2481,9 +2486,10 @@ function AssetConversionOverridePanel({
                     }
                     label="Enable suggested crop"
                   />
-                  {recommendedCrop ? <Chip size="small" color={suggestedCropEnabled ? 'primary' : 'default'} label={`crop=${recommendedCrop}`} /> : <Chip size="small" label="No stable crop suggested" />}
+                  {recommendedCrop ? <Chip size="small" color={suggestedCropEnabled ? 'primary' : 'default'} label={`${manualCropCandidate ? 'Manual candidate · ' : ''}crop=${recommendedCrop}`} /> : <Chip size="small" label="No stable crop suggested" />}
                 </Stack>
                 {scan?.cropAnalysis?.reason ? <Typography variant="body2" color="text.secondary">{scan.cropAnalysis.reason}</Typography> : null}
+                {manualCropCandidate ? <Alert severity="warning">This value groups similar borders from multiple scenes. It is intentionally disabled until you review framing and subtitles in LAB.</Alert> : null}
                 {currentCropFilter && !suggestedCropEnabled ? (
                   <Alert severity="info">A custom crop is currently active: {currentCropFilter}. Enabling the suggestion will replace it.</Alert>
                 ) : null}
@@ -2535,7 +2541,7 @@ function AssetConversionOverridePanel({
                     value={effectiveVideoEncoder}
                     onChange={(event) => {
                       onChange('videoEncoder', event.target.value);
-                      onChange('pixFmt', defaultHardwareMain10PixelFormatForAsset(event.target.value));
+                      applyAssetHardwareQualityPreset(onChange, 'recommended', event.target.value, scan);
                     }}
                     helperText="Only encoders reported by the current runtime are selectable."
                     size="small"
@@ -2589,7 +2595,7 @@ function AssetConversionOverridePanel({
               </Grid>
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
-                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Applies coordinated QSV quality, rate-control, look-ahead, adaptive-frame and bit-depth values." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Applies coordinated QSV quality, rate-control, look-ahead, adaptive-frame and bit-depth values." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_qsv', scan)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
@@ -2616,15 +2622,15 @@ function AssetConversionOverridePanel({
               {videoToolboxSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={draft.videoToolboxBitrateMbps ?? Number(profile?.workerConfig?.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
+                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={draft.videoToolboxMaxrateMbps ?? Number(profile?.workerConfig?.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
+                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={draft.videoToolboxBufferMbps ?? Number(profile?.workerConfig?.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
+                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
                   </Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_videotoolbox', scan)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase file size." label="GOP" type="number" value={draft.videoToolboxGop ?? Number(profile?.workerConfig?.videoToolboxGop ?? 0)} onChange={(event) => onChange('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={draft.videoToolboxAllowFrameReordering ?? profile?.workerConfig?.videoToolboxAllowFrameReordering === true} onChange={(event) => onChange('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
@@ -3887,8 +3893,8 @@ function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function applyAssetHardwareQualityPreset(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, preset: string, encoder: string) {
-  const values = applySharedHardwareQualityPreset({}, encoder, preset);
+function applyAssetHardwareQualityPreset(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, preset: string, encoder: string, scan?: ScanResult) {
+  const values = applySharedHardwareQualityPreset({}, encoder, preset, scan);
   Object.entries(values).filter(([key]) => key !== 'hardwareQualityPreset').forEach(([key, value]) => {
     onChange((key === 'qsvExtendedBRC' ? 'qsvExtendedBrc' : key) as keyof AssetConversionOverrideState, value as never);
   });

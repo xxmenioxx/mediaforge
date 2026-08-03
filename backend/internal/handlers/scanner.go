@@ -275,9 +275,9 @@ func enrichCachedScan(result *models.ScanResult) {
 	if result.RawProbe == nil {
 		result.RawProbe = models.JSONMap{}
 	}
-	if len(result.InterlaceAnalysis) == 0 {
+	if len(result.InterlaceAnalysis) == 0 || jsonMapInt(result.InterlaceAnalysis, "version") < interlaceAnalysisVersion {
 		result.InterlaceAnalysis = interlaceAnalysisFromRaw(result.RawProbe)
-		if len(result.InterlaceAnalysis) == 0 {
+		if len(result.InterlaceAnalysis) == 0 || jsonMapInt(result.InterlaceAnalysis, "version") < interlaceAnalysisVersion {
 			fieldOrder := fieldOrderFromRawProbe(result.RawProbe)
 			analysis := detectInterlace(result.Path, fieldOrder, result.Duration, 20)
 			encoded, _ := json.Marshal(analysis)
@@ -285,9 +285,9 @@ func enrichCachedScan(result *models.ScanResult) {
 			result.RawProbe["interlaceAnalysis"] = analysis
 		}
 	}
-	if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 2 {
+	if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 3 {
 		result.CropAnalysis = analysisMapFromRaw(result.RawProbe, "cropAnalysis")
-		if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 2 {
+		if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 3 {
 			analysis := detectCrop(result.Path, result.Width, result.Height, result.Duration)
 			encoded, _ := json.Marshal(analysis)
 			_ = json.Unmarshal(encoded, &result.CropAnalysis)

@@ -10,6 +10,28 @@ func TestClassifyInterlace(t *testing.T) {
 	}
 }
 
+func TestClassifyInterlacePersistsVersionAndMeasuredBFF(t *testing.T) {
+	analysis := InterlaceAnalysis{BFF: 501, SampledFrames: 501}
+	classifyInterlace(&analysis)
+
+	if analysis.Version != interlaceAnalysisVersion {
+		t.Fatalf("expected analysis version %d, got %d", interlaceAnalysisVersion, analysis.Version)
+	}
+	if analysis.DetectedFieldOrder != "bff" {
+		t.Fatalf("expected measured BFF order, got %q", analysis.DetectedFieldOrder)
+	}
+	if analysis.RecommendedFilter != "bwdif=mode=send_frame:parity=bff:deint=all" {
+		t.Fatalf("expected explicit BFF recommendation, got %q", analysis.RecommendedFilter)
+	}
+}
+
+func TestBWDIFRecoversParityFromLegacyFrameCounts(t *testing.T) {
+	analysis := InterlaceAnalysis{Status: "interlaced", BFF: 501, SampledFrames: 501}
+	if filter := bwdifFilter(analysis); filter != "bwdif=mode=send_frame:parity=bff:deint=all" {
+		t.Fatalf("expected legacy counts to recover BFF parity, got %q", filter)
+	}
+}
+
 func TestClassifyInterlaceKeepsMixedForReview(t *testing.T) {
 	analysis := InterlaceAnalysis{TFF: 100, BFF: 0, Progressive: 300, SampledFrames: 500}
 	classifyInterlace(&analysis)

@@ -61,7 +61,7 @@ import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
-import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
+import { adaptiveVideoToolboxPresetKbps as sharedAdaptiveVideoToolboxPresetKbps, applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -792,7 +792,16 @@ export function ProfileLabPage() {
     },
   });
 
-  const trackSnapshot = useMutation({ mutationFn: api.scan });
+  const trackSnapshot = useMutation({ mutationFn: api.scan, onSuccess: (scan) => {
+    setVideoDraft((current) => {
+      const encoder = videoWorkerValue(current, 'videoEncoder', 'auto');
+      const preset = videoWorkerValue(current, 'hardwareQualityPreset', '');
+      if (!isHardwareEncoderOption(encoder) || !preset || preset === 'custom') return current;
+      const workerConfig = applySharedHardwareQualityPreset(current.workerConfig ?? {}, encoder, preset, scan);
+      if (JSON.stringify(workerConfig) === JSON.stringify(current.workerConfig)) return current;
+      return synchronizeLabAuthoritativeContract({ ...current, workerConfig });
+    });
+  } });
   const fidelityInspection = useMutation({
     mutationFn: async ({
       reference,
@@ -858,12 +867,17 @@ export function ProfileLabPage() {
     setVideoProfileSaveMessage('');
     setSelectedVideoStarterPreset('');
     const draft = profileInputFromSavedProfile(profile);
+    const encoder = videoWorkerValue(draft, 'videoEncoder', 'auto');
+    const qualityPreset = videoWorkerValue(draft, 'hardwareQualityPreset', '');
+    const workerConfig = isHardwareEncoderOption(encoder) && qualityPreset && qualityPreset !== 'custom'
+      ? applySharedHardwareQualityPreset(draft.workerConfig ?? {}, encoder, qualityPreset, trackSnapshot.data)
+      : draft.workerConfig;
     setVideoDraft({
       ...draft,
       name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
       description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
       audioCodec: 'copy',
-      workerConfig: { ...draft.workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
+      workerConfig: { ...workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
     });
   }
 
@@ -879,7 +893,7 @@ export function ProfileLabPage() {
     const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
     const recommendedCrop = scan.cropAnalysis?.recommendedCrop?.trim() ?? '';
     const bitmapSubtitleStreams = scan.subtitleStreams.filter(isBitmapSubtitleStream);
-    const cropSuggestionAvailable = cropStatus === 'detected' && Boolean(recommendedCrop);
+    const cropSuggestionAvailable = ['detected', 'variable'].includes(cropStatus) && Boolean(recommendedCrop);
     const cropSuggestionSafe = cropSuggestionAvailable && bitmapSubtitleStreams.length === 0;
     const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
     const needsVideoCorrection = interlaceStatus === 'interlaced' ||
@@ -930,7 +944,9 @@ export function ProfileLabPage() {
         `Stable black bars were detected, but crop remains disabled because ${bitmapSubtitleStreams.length} bitmap subtitle track(s) may be positioned inside those bars.`,
       );
     } else if (cropStatus === 'variable') {
-      videoReasons.push('Black bars varied between samples, so crop remains disabled and requires manual review.');
+      videoReasons.push(recommendedCrop
+        ? `Black bars varied slightly between samples; conservative candidate crop=${recommendedCrop} was added but remains disabled for manual review.`
+        : 'Black bars varied between samples, so crop remains disabled and requires manual review.');
     }
     const workerConfig = {
       ...proposed.workerConfig,
@@ -1999,7 +2015,7 @@ export function ProfileLabPage() {
                             <TextField
                               label="Processing preference"
                               value={videoWorkerValue(videoDraft, 'preferredEncoder', 'software')}
-                              onChange={(event) => updateVideoProcessingPreference(setVideoDraft, event.target.value as 'software' | 'hardware', defaultHardwareEncoder)}
+                              onChange={(event) => updateVideoProcessingPreference(setVideoDraft, event.target.value as 'software' | 'hardware', defaultHardwareEncoder, trackSnapshot.data)}
                               helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
                               select
                               size="small"
@@ -2019,7 +2035,7 @@ export function ProfileLabPage() {
                             <TextField
                               label="Hardware encoder"
                               value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
-                              onChange={(event) => updateVideoHardwareEncoder(setVideoDraft, event.target.value)}
+                              onChange={(event) => updateVideoHardwareEncoder(setVideoDraft, event.target.value, trackSnapshot.data)}
                               helperText={selectedHardwareCapability && !selectedHardwareCapability.usable
                                 ? selectedHardwareCapability.reason
                                 : videoEncoderDescription(selectedHardwareEncoder)}
@@ -3766,6 +3782,7 @@ function updateVideoProcessingPreference(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   preference: 'software' | 'hardware',
   defaultHardwareEncoder = '',
+  scan?: ScanResult,
 ) {
   setVideoDraft((current) => {
     const hardware = preference === 'hardware';
@@ -3775,7 +3792,7 @@ function updateVideoProcessingPreference(
     const pixelFormat = hardware
       ? defaultHardwareMain10PixelFormat(hardwareEncoder)
       : 'yuv420p10le';
-    const workerConfig = {
+    const baseWorkerConfig = {
       ...current.workerConfig,
       preferredEncoder: preference,
       useHardwareIfAvailable: hardware && hardwareAvailable,
@@ -3784,6 +3801,9 @@ function updateVideoProcessingPreference(
         : hardwareEncoder,
       pixFmt: pixelFormat,
     };
+    const workerConfig = hardware
+      ? applySharedHardwareQualityPreset(baseWorkerConfig, hardwareEncoder, 'recommended', scan)
+      : baseWorkerConfig;
     return synchronizeLabAuthoritativeContract({
       ...current,
       workerConfig: hardware ? workerConfig : {
@@ -3801,31 +3821,24 @@ function updateVideoProcessingPreference(
 function updateVideoHardwareEncoder(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   encoder: string,
+  scan?: ScanResult,
 ) {
   setVideoDraft((current) => synchronizeLabAuthoritativeContract({
     ...current,
-    workerConfig: {
+    workerConfig: applySharedHardwareQualityPreset({
       ...current.workerConfig,
       preferredEncoder: 'hardware',
       useHardwareIfAvailable: true,
       videoEncoder: encoder,
       pixFmt: defaultHardwareMain10PixelFormat(encoder),
-    },
+    }, encoder, 'recommended', scan),
   }));
 }
 
 function applyHardwareQualityPreset(setter: Dispatch<SetStateAction<ProfileInput>>, preset: string, scan?: ScanResult) {
   setter((current) => {
     const encoder = videoWorkerValue(current, 'videoEncoder', 'auto');
-    const workerConfig = applySharedHardwareQualityPreset(current.workerConfig ?? {}, encoder, preset);
-    if (encoder === 'hevc_videotoolbox' && preset !== 'custom' && scan) {
-      const rates = adaptiveVideoToolboxPresetKbps({ ...current, workerConfig }, scan);
-      if (rates) {
-        workerConfig.videoToolboxBitrateMbps = Math.ceil(rates.target / 1000);
-        workerConfig.videoToolboxMaxrateMbps = Math.ceil(rates.maxrate / 1000);
-        workerConfig.videoToolboxBufferMbps = Math.ceil(rates.buffer / 1000);
-      }
-    }
+    const workerConfig = applySharedHardwareQualityPreset(current.workerConfig ?? {}, encoder, preset, scan);
     // pixFmt is part of a hardware preset. Keep the top-level Color depth and
     // Pixel format fields in lockstep with it instead of leaving LAB in an
     // impossible Main/Main10 state until the user touches another control.
@@ -4391,8 +4404,10 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
       ? 'Keep crop disabled because bitmap subtitles may be positioned inside the detected black bars.'
       : crop === 'detected'
         ? `Add crop ${scan.cropAnalysis.recommendedCrop} as a disabled suggestion for visual confirmation.`
-      : crop === 'variable'
-        ? 'Keep crop disabled because the detected borders vary between scenes.'
+      : crop === 'variable' && scan.cropAnalysis.recommendedCrop
+        ? `Add conservative candidate crop ${scan.cropAnalysis.recommendedCrop}, disabled by default because the detected borders vary slightly between scenes.`
+        : crop === 'variable'
+          ? 'Keep crop disabled because the detected borders vary between scenes.'
         : 'Keep crop disabled because no stable black bars were detected.',
   ];
   const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase())).length;
@@ -4447,7 +4462,7 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
               {asset.fileName}
             </Typography>
             <Typography color="text.secondary" variant="body2" noWrap>
-              {asset.status.toUpperCase()} · {asset.libraryName || 'Unassigned'} · {asset.relativePath || asset.path}
+              {labAssetLocationLabel(asset)} · {asset.relativePath || asset.path}
             </Typography>
           </Stack>
         </Box>
@@ -4455,6 +4470,13 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
       fullWidth
     />
   );
+}
+
+function labAssetLocationLabel(asset: Asset) {
+  if (asset.status === 'unprocessed') {
+    return 'RAW · Unprocessed';
+  }
+  return `${asset.status.toUpperCase()} · ${asset.libraryName || 'Unassigned library'}`;
 }
 
 function uniqueAssets(assets: Asset[]) {
@@ -5006,23 +5028,7 @@ function adaptiveVideoToolboxPreviewRates(profile: ProfileInput, scan: ScanResul
 }
 
 function adaptiveVideoToolboxPresetKbps(profile: ProfileInput, scan: ScanResult) {
-  const preset = videoWorkerValue(profile, 'hardwareQualityPreset', 'custom');
-  const multiplier = ({ compact: 0.40, medium: 0.52, recommended: 0.65, best_quality: 0.80, high_quality: 0.95 } as Record<string, number>)[preset];
-  const source = scan.videoStreams[0]?.bitrate || scan.bitrate;
-  if (!multiplier || source <= 0) {
-    return undefined;
-  }
-  const floors: Record<string, number[]> = {
-    compact: [1500, 2200, 3000, 6000], medium: [2000, 3000, 4000, 8000], recommended: [2500, 4000, 5000, 10000], best_quality: [3200, 5000, 6000, 12000], high_quality: [4000, 6500, 7000, 14000],
-  };
-  const sourceHeight = scan.height || scan.videoStreams[0]?.height || 1080;
-  const crop = videoWorkerValue(profile, 'videoFilters', '').match(/(?:^|,)crop=\\d+:(\\d+)/);
-  const height = crop?.[1] ? Number(crop[1]) : sourceHeight;
-  const index = height <= 576 ? 0 : height <= 720 ? 1 : height <= 1080 ? 2 : 3;
-  let targetKbps = Math.max(floors[preset][index], Math.ceil(source * multiplier * (height <= 576 ? 1.075 : 1) / 1000));
-  const sdCeilings: Record<string, number> = { compact: 2500, medium: 3200, recommended: 4000, best_quality: 5000, high_quality: 6000 };
-  if (height <= 576) targetKbps = Math.min(targetKbps, sdCeilings[preset]);
-  return { target: targetKbps, maxrate: Math.ceil(targetKbps * 1.5), buffer: Math.ceil(targetKbps * 2.5) };
+  return sharedAdaptiveVideoToolboxPresetKbps(profile.workerConfig ?? {}, scan);
 }
 
 function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {

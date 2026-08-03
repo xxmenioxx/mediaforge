@@ -180,7 +180,12 @@ func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
 		confidence, _ := scan.CropAnalysis["confidence"].(float64)
 		recommendations = append(recommendations, fmt.Sprintf("Stable black bars were detected. LAB can preview crop=%s (%.0f%% confidence); verify subtitles and framing before saving.", crop, confidence*100))
 	} else if status == "variable" {
-		recommendations = append(recommendations, "Black borders vary across sampled scenes. Do not crop automatically; inspect multiple LAB previews.")
+		crop, _ := scan.CropAnalysis["recommendedCrop"].(string)
+		if crop != "" {
+			recommendations = append(recommendations, fmt.Sprintf("Black borders vary slightly across sampled scenes. LAB can preview the conservative candidate crop=%s, but it remains disabled by default and requires multi-scene review.", crop))
+		} else {
+			recommendations = append(recommendations, "Black borders vary across sampled scenes. Do not crop automatically; inspect multiple LAB previews.")
+		}
 	}
 	if high <= 0 {
 		recommendations = append(recommendations, "The estimated output is not smaller than the source, so conversion is not recommended for storage savings alone.")

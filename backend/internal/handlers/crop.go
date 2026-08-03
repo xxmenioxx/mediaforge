@@ -40,7 +40,7 @@ var cropDetectPattern = regexp.MustCompile(`crop=(\d+):(\d+):(\d+):(\d+)`)
 
 func detectCrop(path string, width, height int, duration float64) CropAnalysis {
 	analysis := CropAnalysis{
-		Version: 2, Status: "unknown", Source: "cropdetect", OriginalWidth: width, OriginalHeight: height,
+		Version: 3, Status: "unknown", Source: "cropdetect", OriginalWidth: width, OriginalHeight: height,
 		Reason: "Crop detection did not return enough stable samples.",
 	}
 	if width <= 0 || height <= 0 {
@@ -152,7 +152,15 @@ func classifyCropCandidates(analysis CropAnalysis, candidates []cropCandidate) C
 	}
 	if bestCount < requiredMatches || analysis.Confidence < 0.66 {
 		analysis.Status = "variable"
-		analysis.Reason = "Black borders vary between sampled scenes; review manually before cropping."
+		if candidate, matches, ok := conservativeVariableCrop(analysis.OriginalWidth, analysis.OriginalHeight, candidates); ok {
+			analysis.MatchingWindows = matches
+			analysis.Confidence = float64(matches) / float64(max(analysis.Windows, 1))
+			analysis.OutputWidth, analysis.OutputHeight, analysis.X, analysis.Y = candidate.width, candidate.height, candidate.x, candidate.y
+			analysis.RecommendedCrop = strconv.Itoa(candidate.width) + ":" + strconv.Itoa(candidate.height) + ":" + strconv.Itoa(candidate.x) + ":" + strconv.Itoa(candidate.y)
+			analysis.Reason = "Similar black borders were detected with small scene-to-scene variation. A conservative crop candidate is available for manual review and remains disabled by default."
+		} else {
+			analysis.Reason = "Black borders vary between sampled scenes; review manually before cropping."
+		}
 		return analysis
 	}
 	analysis.Status = "detected"
@@ -167,4 +175,49 @@ func classifyCropCandidates(analysis CropAnalysis, candidates []cropCandidate) C
 		analysis.Reason = "Stable black bars were detected on the top and bottom."
 	}
 	return analysis
+}
+
+func conservativeVariableCrop(width, height int, candidates []cropCandidate) (cropCandidate, int, bool) {
+	if len(candidates) < 2 || width <= 0 || height <= 0 {
+		return cropCandidate{}, 0, false
+	}
+	toleranceX := max(4, width/100)
+	toleranceY := max(4, height/100)
+	bestCluster := []cropCandidate{}
+	for _, anchor := range candidates {
+		cluster := []cropCandidate{}
+		for _, candidate := range candidates {
+			if absInt(anchor.x-candidate.x) <= toleranceX &&
+				absInt((width-anchor.x-anchor.width)-(width-candidate.x-candidate.width)) <= toleranceX &&
+				absInt(anchor.y-candidate.y) <= toleranceY &&
+				absInt((height-anchor.y-anchor.height)-(height-candidate.y-candidate.height)) <= toleranceY {
+				cluster = append(cluster, candidate)
+			}
+		}
+		if len(cluster) > len(bestCluster) {
+			bestCluster = cluster
+		}
+	}
+	if len(bestCluster) < 2 {
+		return cropCandidate{}, 0, false
+	}
+	left, top, right, bottom := width, height, width, height
+	for _, candidate := range bestCluster {
+		left = min(left, candidate.x)
+		top = min(top, candidate.y)
+		right = min(right, width-candidate.x-candidate.width)
+		bottom = min(bottom, height-candidate.y-candidate.height)
+	}
+	result := cropCandidate{width: width - left - right, height: height - top - bottom, x: left, y: top}
+	if width-result.width < max(8, width/100) && height-result.height < max(8, height/100) {
+		return cropCandidate{}, 0, false
+	}
+	return result, len(bestCluster), true
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

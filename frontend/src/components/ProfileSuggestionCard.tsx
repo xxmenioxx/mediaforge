@@ -22,6 +22,10 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
   const existing = suggestion.suggestedProfile;
   const proposed = suggestion.proposedProfile;
   const motion = motionDiagnosis(suggestion);
+  const staleMotionAnalysis = (suggestion.scan.interlaceAnalysis?.version ?? 0) < 2;
+  const motionDetail = staleMotionAnalysis
+    ? 'This motion analysis was created by an older detector and must be analyzed again before its correction can be applied.'
+    : motion.detail;
 
   return (
     <Card variant="outlined">
@@ -32,12 +36,12 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
             <Chip label={suggestion.matchType === 'existing' ? 'Existing match' : 'New profile proposed'} color={suggestion.matchType === 'existing' ? 'success' : 'primary'} size="small" />
           </Stack>
           <Typography color="text.secondary">{suggestion.summary}</Typography>
-          <Alert severity={motion.severity}>
+          <Alert severity={staleMotionAnalysis ? 'warning' : motion.severity}>
             <Typography fontWeight={700}>{motion.title}</Typography>
-            <Typography variant="body2">{motion.detail}</Typography>
+            <Typography variant="body2">{motionDetail}</Typography>
             <Stack spacing={0.5} sx={{ mt: 1 }}>
               <Typography fontWeight={700} variant="body2">All recommendations</Typography>
-              {allRecommendations(suggestion, motion.detail).map((recommendation) => (
+              {allRecommendations(suggestion, motionDetail).map((recommendation) => (
                 <Typography key={recommendation} variant="body2">• {recommendation}</Typography>
               ))}
             </Stack>
@@ -47,7 +51,7 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyMotionRecom
               <Button
                 variant="contained"
                 size="small"
-                disabled={applyMotion.isPending}
+                disabled={applyMotion.isPending || staleMotionAnalysis}
                 onClick={() => applyMotion.mutate()}
               >
                 {applyMotion.isPending ? 'Applying…' : 'Apply recommendations'}

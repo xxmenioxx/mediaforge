@@ -201,22 +201,23 @@ export function ProfilesPage() {
     const hardware = preference === 'hardware';
     const hardwareAvailable = hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length > 0;
     const hardwareEncoder = isHardwareEncoderOption(currentEncoder) ? currentEncoder : defaultHardwareEncoder;
+    const baseWorkerConfig = {
+      ...form.workerConfig,
+      preferredEncoder: preference,
+      useHardwareIfAvailable: hardware && hardwareAvailable,
+      videoEncoder: preference === 'software' ? 'auto' : hardwareEncoder,
+      pixFmt: hardware ? defaultProfileHardwareMain10PixelFormat(hardwareEncoder) : 'yuv420p10le',
+      ...(!hardware ? {
+        qsvRateControl: undefined,
+        qsvLookAheadDepth: undefined,
+        qsvExtendedBRC: undefined,
+        qsvAdaptiveI: undefined,
+        qsvAdaptiveB: undefined,
+      } : {}),
+    };
     const next = {
       ...form,
-      workerConfig: {
-        ...form.workerConfig,
-        preferredEncoder: preference,
-        useHardwareIfAvailable: hardware && hardwareAvailable,
-        videoEncoder: preference === 'software' ? 'auto' : hardwareEncoder,
-        pixFmt: hardware ? defaultProfileHardwareMain10PixelFormat(hardwareEncoder) : 'yuv420p10le',
-        ...(!hardware ? {
-          qsvRateControl: undefined,
-          qsvLookAheadDepth: undefined,
-          qsvExtendedBRC: undefined,
-          qsvAdaptiveI: undefined,
-          qsvAdaptiveB: undefined,
-        } : {}),
-      },
+      workerConfig: hardware ? applySharedHardwareQualityPreset(baseWorkerConfig, hardwareEncoder, 'recommended') : baseWorkerConfig,
     };
     setProfileForm(synchronizeAuthoritativeContract(next));
   }
@@ -224,14 +225,19 @@ export function ProfilesPage() {
   function updateHardwareEncoder(encoder: string) {
     setProfileForm(synchronizeAuthoritativeContract({
       ...form,
-      workerConfig: {
+      workerConfig: applySharedHardwareQualityPreset({
         ...form.workerConfig,
         preferredEncoder: 'hardware',
         useHardwareIfAvailable: true,
         videoEncoder: encoder,
         pixFmt: defaultProfileHardwareMain10PixelFormat(encoder),
-      },
+      }, encoder, 'recommended'),
     }));
+  }
+
+  function applyProfileHardwareQualityPreset(preset: string, encoder: string) {
+    const workerConfig = applySharedHardwareQualityPreset(form.workerConfig ?? {}, encoder, preset);
+    setProfileForm(synchronizeAuthoritativeContract({ ...form, workerConfig }));
   }
 
   function updateExternalSubtitleFormat(value: string) {
@@ -770,7 +776,7 @@ export function ProfilesPage() {
                                 fullWidth
                               />
                             </Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(updateWorkerConfig, event.target.value, 'hevc_qsv')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_qsv')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
@@ -791,7 +797,7 @@ export function ProfilesPage() {
                         ) : null}
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(updateWorkerConfig, event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
                             </Grid>
@@ -1312,12 +1318,6 @@ function workerConfigBool(profile: ProfileInput, key: string, fallback = false) 
     return ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase());
   }
   return fallback;
-}
-
-function applyProfileHardwareQualityPreset(update: (key: string, value: unknown) => void, preset: string, encoder: string) {
-  const values = applySharedHardwareQualityPreset({}, encoder, preset);
-  Object.entries(values).filter(([key]) => key !== 'hardwareQualityPreset').forEach(([key, value]) => update(key, value));
-  update('hardwareQualityPreset', values.hardwareQualityPreset);
 }
 
 function aacTrackEnabled(profile: ProfileInput) {

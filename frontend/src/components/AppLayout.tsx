@@ -1,6 +1,8 @@
 import {
   Box,
   Divider,
+  Drawer,
+  IconButton,
   List,
   ListItemButton,
   ListItemIcon,
@@ -24,6 +26,8 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import ScienceIcon from '@mui/icons-material/Science';
 import TroubleshootIcon from '@mui/icons-material/Troubleshoot';
 import AltRouteIcon from '@mui/icons-material/AltRoute';
+import MenuIcon from '@mui/icons-material/Menu';
+import CloseIcon from '@mui/icons-material/Close';
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import packageJson from '../../package.json';
@@ -81,11 +85,73 @@ const collapsedWidth = 76;
 
 export function AppLayout() {
   const [isHovering, setIsHovering] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const isExpanded = isHovering;
   const drawerWidth = isExpanded ? expandedWidth : collapsedWidth;
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+      <Box
+        component="header"
+        sx={{
+          display: { xs: 'flex', md: 'none' },
+          position: 'fixed',
+          inset: '0 0 auto 0',
+          height: 56,
+          px: 1.25,
+          alignItems: 'center',
+          gap: 1,
+          bgcolor: 'background.paper',
+          borderBottom: 1,
+          borderColor: 'divider',
+          zIndex: (theme) => theme.zIndex.appBar,
+        }}
+      >
+        <IconButton aria-label="Open navigation" onClick={() => setMobileOpen(true)} edge="start">
+          <MenuIcon />
+        </IconButton>
+        <Typography variant="h2" noWrap sx={{ fontSize: '1.15rem' }}>MVForge</Typography>
+        <Typography color="text.secondary" variant="caption" noWrap sx={{ ml: 'auto' }}>v{packageJson.version}</Typography>
+      </Box>
+      <Drawer
+        open={mobileOpen}
+        onClose={() => setMobileOpen(false)}
+        variant="temporary"
+        ModalProps={{ keepMounted: true }}
+        sx={{ display: { xs: 'block', md: 'none' }, '& .MuiDrawer-paper': { width: 280, maxWidth: '88vw' } }}
+      >
+        <Stack sx={{ height: '100%' }}>
+          <Toolbar sx={{ minHeight: 56, px: 2, gap: 1 }}>
+            <Typography variant="h2" sx={{ fontSize: '1.15rem', flex: 1 }}>MVForge</Typography>
+            <IconButton aria-label="Close navigation" onClick={() => setMobileOpen(false)}><CloseIcon /></IconButton>
+          </Toolbar>
+          <Divider />
+          <List sx={{ px: 1, py: 1, flex: 1, overflowY: 'auto' }}>
+            {navSections.map((section) => (
+              <Box key={section.label} sx={{ mb: 1 }}>
+                <Typography color="text.secondary" variant="caption" sx={{ display: 'block', px: 1.5, py: 0.75, fontWeight: 700, textTransform: 'uppercase' }}>
+                  {section.label}
+                </Typography>
+                {section.items.map((item) => (
+                  <ListItemButton
+                    key={item.path}
+                    component={NavLink}
+                    to={item.path}
+                    end={item.path === '/'}
+                    onClick={() => setMobileOpen(false)}
+                    sx={{ borderRadius: 1, mb: 0.25, minHeight: 44, color: 'text.secondary', '&.active': { bgcolor: 'rgba(79,179,255,0.14)', color: 'primary.main' } }}
+                  >
+                    <ListItemIcon sx={{ color: 'inherit', minWidth: 40 }}>{item.icon}</ListItemIcon>
+                    <ListItemText primary={item.label} />
+                  </ListItemButton>
+                ))}
+              </Box>
+            ))}
+          </List>
+          <Divider />
+          <Typography color="text.secondary" variant="caption" sx={{ p: 2 }}>Media & Video Forge · v{packageJson.version}</Typography>
+        </Stack>
+      </Drawer>
       <Box
         component="aside"
         onMouseEnter={() => setIsHovering(true)}
@@ -190,7 +256,7 @@ export function AppLayout() {
           </Box>
         </Stack>
       </Box>
-      <Box component="main" sx={{ flex: 1, minWidth: 0, ml: { md: `${collapsedWidth}px` } }}>
+      <Box component="main" sx={{ flex: 1, minWidth: 0, ml: { md: `${collapsedWidth}px` }, pt: { xs: '56px', md: 0 }, maxWidth: '100%' }}>
         <Outlet />
       </Box>
     </Box>

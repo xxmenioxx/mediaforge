@@ -12,6 +12,7 @@ import (
 )
 
 type InterlaceAnalysis struct {
+	Version                      int             `json:"version"`
 	Status                       string          `json:"status"`
 	FieldOrder                   string          `json:"fieldOrder"`
 	ContainerFieldOrder          string          `json:"containerFieldOrder"`
@@ -36,6 +37,8 @@ type InterlaceAnalysis struct {
 	IVTCValidation               *IVTCValidation `json:"ivtcValidation,omitempty"`
 }
 
+const interlaceAnalysisVersion = 2
+
 type IVTCValidation struct {
 	TFFProgressive      int     `json:"tffProgressive"`
 	TFFClassified       int     `json:"tffClassified"`
@@ -56,7 +59,8 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
 	containerOrder := normalizeFieldOrder(fieldOrder)
 	analysis := InterlaceAnalysis{
-		Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: containerOrder,
+		Version: interlaceAnalysisVersion,
+		Status:  interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: containerOrder,
 		ContainerFieldOrder: containerOrder, Source: "ffprobe", WindowSeconds: windowSeconds,
 	}
 	for _, start := range distributedInterlaceStarts(duration, windowSeconds) {
@@ -236,6 +240,10 @@ func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation
 }
 
 func classifyInterlace(analysis *InterlaceAnalysis) {
+	analysis.Version = interlaceAnalysisVersion
+	if analysis.DetectedFieldOrder == "" {
+		analysis.DetectedFieldOrder = dominantFieldOrder(analysis.TFF, analysis.BFF)
+	}
 	classified := analysis.TFF + analysis.BFF + analysis.Progressive
 	if classified == 0 {
 		return
@@ -305,6 +313,12 @@ func effectiveDeinterlaceFilter(profileMode string, analysis InterlaceAnalysis) 
 
 func bwdifFilter(analysis InterlaceAnalysis) string {
 	parity := analysis.DetectedFieldOrder
+	if parity != "tff" && parity != "bff" {
+		// Older snapshots did not persist detectedFieldOrder even when IDET's
+		// frame counts provided decisive evidence. Never discard that evidence
+		// and fall back to possibly incorrect container metadata.
+		parity = dominantFieldOrder(analysis.TFF, analysis.BFF)
+	}
 	if parity != "tff" && parity != "bff" {
 		parity = "auto"
 	}
