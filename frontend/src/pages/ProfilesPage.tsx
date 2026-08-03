@@ -877,10 +877,15 @@ export function ProfilesPage() {
                             control={
                               <Checkbox
                                 checked={workerConfigBool(form, 'preserveOriginalAudio', true)}
-                                onChange={(event) => updateWorkerConfig('preserveOriginalAudio', event.target.checked)}
+                                onChange={(event) => {
+                                  updateWorkerConfig('preserveOriginalAudio', event.target.checked);
+                                  if (event.target.checked) {
+                                    updateWorkerConfig('aacStereoDefault', true);
+                                  }
+                                }}
                               />
                             }
-                            label="Keep original audio as secondary"
+                            label="Keep original audio as secondary (AAC is default)"
                           />
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>

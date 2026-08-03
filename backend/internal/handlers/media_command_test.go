@@ -947,9 +947,29 @@ func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing
 	assertContains(t, command, "-c:a:1 aac")
 	assertContains(t, command, "-b:a:1 224k")
 	assertContains(t, command, "-ac:a:1 2")
-	assertContains(t, command, "-disposition:a:0 default")
-	assertContains(t, command, "-disposition:a:1 0")
+	assertContains(t, command, "-disposition:a:0 0")
+	assertContains(t, command, "-disposition:a:1 default")
 	assertContains(t, command, "-c:s:0 srt")
+}
+
+func TestFFmpegCommandBuilderMakesAACDefaultWhenOriginalIsSecondary(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{
+				"addAacStereoTrack":     true,
+				"aacStereoDefault":      false,
+				"preserveOriginalAudio": true,
+			},
+		},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{{Index: 1, Codec: "ac3", Channels: 6, Default: true}}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-disposition:a:0 0")
+	assertContains(t, command, "-disposition:a:1 default")
 }
 
 func TestFFmpegCommandBuilderUsesDefaultAACCompatibilityBitrate(t *testing.T) {

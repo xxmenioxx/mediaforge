@@ -115,6 +115,14 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	needsAACCompatibility := addAACStereoTrack && !hasAACStereoStream(selectedAudioStreams)
 	preserveOriginalAudio := profileWorkerBool(plan.Profile, "preserveOriginalAudio", true)
 	mappedAudioStreams := selectedAudioStreams
+	// Keeping the source audio as secondary means the generated compatibility
+	// track is the primary/default track. Older profiles could persist the
+	// contradictory combination preserveOriginalAudio=true and
+	// aacStereoDefault=false, so resolve the effective disposition here as well
+	// as in the UI.
+	if needsAACCompatibility && preserveOriginalAudio {
+		aacStereoDefault = true
+	}
 	if planHasStreamSelection(plan.Override) {
 		args = appendSelectedStreamMaps(args, plan)
 	} else if needsAACCompatibility && !preserveOriginalAudio {

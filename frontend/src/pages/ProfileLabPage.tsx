@@ -2056,10 +2056,15 @@ export function ProfileLabPage() {
                                   <Checkbox
                                     checked={videoWorkerBool(videoDraft, 'preserveOriginalAudio', true)}
                                     disabled={!videoAACTrackEnabled(videoDraft)}
-                                    onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'preserveOriginalAudio', event.target.checked)}
+                                    onChange={(event) => {
+                                      updateVideoWorkerConfig(setVideoDraft, 'preserveOriginalAudio', event.target.checked);
+                                      if (event.target.checked) {
+                                        updateVideoWorkerConfig(setVideoDraft, 'aacStereoDefault', true);
+                                      }
+                                    }}
                                   />
                                 }
-                                label="Original audio secondary"
+                                label="Keep original audio as secondary (AAC is default)"
                               />
                             </Grid>
                           </Grid>
