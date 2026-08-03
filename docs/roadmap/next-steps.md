@@ -172,6 +172,86 @@ Estado: `propuesto`.
 - [ ] Notificaciones opcionales por correo para jobs, batches y revisiones.
 - [ ] Housekeeping con políticas y previews más claros.
 
+### Fase — Timeline visual de stages en Queue
+
+Estado: `planificado`.
+
+#### Problema
+
+Queue muestra únicamente el stage vigente junto con todos los datos operativos
+en una misma línea. Esto dificulta reconocer qué etapas ya terminaron, dónde se
+encuentra el asset y en cuál falló. La preparación de subtítulos también agrupa
+extracción, conversión y OCR bajo un solo stage.
+
+#### Resultado verificable
+
+Cada job mostrará dos renglones debajo de su encabezado:
+
+1. Un timeline de tags con los stages aplicables al asset.
+2. Worker, prioridad, progreso, biblioteca, perfiles, tiempo transcurrido y ETA.
+
+Los tags usarán estos estados visuales:
+
+- Sin color: pendiente, omitido o todavía no alcanzado.
+- Azul: stage actual.
+- Verde: stage completado correctamente según `stageHistory`.
+- Rojo: stage operativo donde ocurrió el error.
+- `failed` y `canceled` permanecerán como resultados terminales explícitos.
+
+El primer alcance usará los stages que ya persiste el backend:
+
+1. `queued`
+2. `claimed`
+3. `preparing_workspace`
+4. `copying_to_workspace`
+5. `analyzing_as_is`
+6. `preparing_subtitles`
+7. `converting`
+8. `validating`
+9. `directplay_analysis`
+10. `ready_to_publish`
+11. `publishing`
+12. `archiving_original`
+13. `cleaning_workspace`
+14. `completed`
+15. `failed`
+16. `canceled`
+
+Una ampliación posterior dividirá el trabajo de subtítulos en stages medibles:
+
+- `preparing_subtitles`
+- `extracting_subtitles`
+- `converting_subtitles`
+- `ocr_subtitles`
+- `subtitle_artifacts_ready`
+
+No se agregará `preparing_asset` mientras se solape con
+`preparing_workspace` y `analyzing_as_is`.
+
+#### Dependencias
+
+- Usar `stageHistory` como fuente del recorrido, sin inferirlo del porcentaje.
+- Registrar el stage operativo que falla antes de transicionar a `failed`.
+- Definir qué stages son opcionales para conversión, remux, publicación as-is y
+  jobs sin subtítulos.
+- Añadir transiciones persistentes antes de mostrar los nuevos substages de
+  subtítulos en la UI.
+
+#### Riesgos
+
+- Un stage omitido no debe aparentar un fallo.
+- Los jobs históricos con `stageHistory` incompleto deben degradar a una vista
+  neutral sin inventar etapas completadas.
+- El timeline debe envolver correctamente en móvil y no ampliar el ancho de la
+  tarjeta de Queue.
+
+#### Criterio de aceptación
+
+Un operador puede reconocer visualmente el stage actual, todos los stages ya
+completados y el punto exacto de fallo. La información operativa queda en un
+renglón independiente y los jobs históricos continúan siendo legibles aunque
+carezcan de un historial completo.
+
 ### Widget global de conversiones
 
 El layout principal mostrará un widget flotante y minimizable, similar al panel
@@ -235,6 +315,62 @@ Estado: `propuesto`.
 - [ ] Traducción de subtítulos asistida por IA, opcional y revisable.
 
 Estas funciones no deben retrasar los gates de seguridad, recuperación y calidad del piloto.
+
+## Fase posterior — Matriz multicodec
+
+Estado: `diferido`.
+
+Ampliar la selección actual para que el flujo sea:
+
+`Codec → Software/Hardware → Encoder probado → Preset y controles compatibles`
+
+La UI no debe anunciar una combinación sólo porque FFmpeg liste el encoder. Las
+opciones disponibles deben proceder de probes del worker y mantener separadas la
+configuración solicitada y la efectiva. Cada codec nuevo debe cubrir LAB,
+Profiles, Quick Asset Overrides, pipeline, estimaciones, command preview,
+snapshots, jobs, reportes, logs y pruebas de generación de comandos.
+
+### Orden recomendado
+
+1. H.264/AVC completo: `libx264`, QSV y VideoToolbox primero; NVENC/VAAPI después.
+2. AV1 software con SVT-AV1.
+3. AV1 hardware mediante QSV, NVENC o VAAPI únicamente cuando el probe real lo valide.
+4. FFV1 o ProRes para preservación y masters intermedios.
+5. VP9 sólo si existe una necesidad web concreta.
+6. MPEG-2 únicamente para workflows legacy.
+
+### Esfuerzo estimado
+
+| Codec | Implementaciones previstas | Esfuerzo |
+| --- | --- | ---: |
+| H.264/AVC | libx264, QSV, VideoToolbox, NVENC, VAAPI | 5–8 días |
+| AV1 | SVT-AV1/AOM, QSV, NVENC, VAAPI | 8–13 días |
+| VP9 | libvpx-vp9 y hardware validado | 5–8 días |
+| MPEG-2 | mpeg2video, principalmente software | 2–4 días |
+| ProRes | prores_ks y VideoToolbox | 4–7 días |
+| FFV1 | software lossless | 2–4 días |
+
+Las validaciones finales por familia de hardware pueden agregar uno o dos días.
+
+### Trabajo obligatorio por codec
+
+- Normalización de familia, nombres y contenedores compatibles.
+- Encoders de software y hardware independientes.
+- Probes por encoder, pixel format, bit depth, profile y rate control.
+- Presets calibrados por codec, encoder, resolución y tipo de fuente.
+- Exclusión en UI de parámetros incompatibles.
+- Cálculo de bitrate, tamaño, ahorro y tiempo esperado.
+- Fallbacks explícitos y registro de opciones descartadas.
+- Fidelity, review técnico y command preview consistentes.
+- Persistencia de configuración solicitada y efectiva en artefactos del job.
+- Pruebas unitarias de presets, mappings y comandos FFmpeg.
+
+### Primer incremento recomendado
+
+Implementar H.264 software, QSV y VideoToolbox. Debe incluir profiles
+Baseline/Main/High, 8-bit, pixel formats compatibles, GOP, B-frames y controles
+de calidad propios de cada encoder. No se deben reutilizar directamente los
+valores de HEVC ni asumir equivalencia entre CRF, ICQ y bitrate.
 
 ## Deuda conocida al publicar v0.1.0
 

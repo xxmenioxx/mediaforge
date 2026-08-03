@@ -493,6 +493,33 @@ func TestEnhancedAudioSourceFallsBackToDefaultTrack(t *testing.T) {
 	}
 }
 
+func TestAACStereoSourceUsesProfileSelection(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"aacStereoSourceStreamIndex": 4}},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{
+			{Index: 1, Default: true, Language: "jpn"},
+			{Index: 4, Language: "spa"},
+		}},
+	}
+	if got := aacStereoSourceIndex(plan); got != 4 {
+		t.Fatalf("expected configured AAC source stream 4, got %d", got)
+	}
+}
+
+func TestAACStereoSourceFallsBackWhenProfileSelectionIsMissing(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"aacStereoSourceStreamIndex": 8}},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{{Index: 1, Default: true}}},
+	}
+	warnings := validateAACStereoSource(&plan)
+	if got := aacStereoSourceIndex(plan); got != 1 {
+		t.Fatalf("expected default AAC source stream 1, got %d", got)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "stream 8") {
+		t.Fatalf("expected missing source warning, got %#v", warnings)
+	}
+}
+
 func TestSanitizeConversionOverrideOmitsMissingStreamsAndMetadata(t *testing.T) {
 	missingAudioSource := 8
 	override := AssetConversionOverrideState{
@@ -680,6 +707,29 @@ func TestEmptyTrackProfileStillDisablesGlobalSubtitleExternalization(t *testing.
 
 	if len(plan.Override.SubtitleTransforms) != 0 {
 		t.Fatalf("selected track profile must have complete priority: %#v", plan.Override.SubtitleTransforms)
+	}
+}
+
+func TestTrackProfileKeepSelectionOverridesVideoRemovePolicy(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile:  models.Profile{PreserveSubtitles: false, WorkerConfig: models.JSONMap{"externalSubtitleFormat": "remove"}},
+		Streams:  MediaStreamInventory{Subtitle: []MediaStream{{Index: 2}, {Index: 4}}},
+		Override: AssetConversionOverrideState{TrackProfileKey: "keep-spanish", KeepSubtitleStreams: []int{4}},
+	}
+	selected := selectedSubtitleStreams(plan)
+	if len(selected) != 1 || selected[0].Index != 4 {
+		t.Fatalf("tracks profile did not override video subtitle policy: %#v", selected)
+	}
+}
+
+func TestDisabledVideoSubtitlePolicyPreservesSafelyWithoutTracksProfile(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{PreserveSubtitles: false, WorkerConfig: models.JSONMap{"externalSubtitleFormat": "disabled"}},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 2}}},
+	}
+	selected := selectedSubtitleStreams(plan)
+	if len(selected) != 1 || selected[0].Index != 2 {
+		t.Fatalf("disabled video policy should defer to safe preservation: %#v", selected)
 	}
 }
 
@@ -1001,6 +1051,25 @@ func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-c:a:1 aac")
 	assertContains(t, command, "-disposition:a:1 default")
+}
+
+func TestFFmpegCommandBuilderMapsConfiguredAACCompatibilitySource(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "copy", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"addAacStereoTrack": true, "aacStereoSourceStreamIndex": 4},
+		},
+		Streams: MediaStreamInventory{Audio: []MediaAudioStream{
+			{Index: 1, Codec: "ac3", Channels: 6, Default: true},
+			{Index: 4, Codec: "dts", Channels: 6},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:4")
+	assertContains(t, command, "-c:a:2 aac")
 }
 
 func TestFFmpegCommandBuilderAllowsAssetToDisableAACCompatibility(t *testing.T) {

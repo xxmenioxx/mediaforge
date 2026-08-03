@@ -119,8 +119,22 @@ export function ProfilesPage() {
   const [form, setForm] = useState<ProfileInput>(initialProfile);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [profileSearch, setProfileSearch] = useState('');
   const [profileJson, setProfileJson] = useState(JSON.stringify(initialProfile, null, 2));
-  const visibleProfiles = (profiles.data ?? []).filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt));
+  const normalizedProfileSearch = profileSearch.trim().toLowerCase();
+  const visibleProfiles = (profiles.data ?? [])
+    .filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt))
+    .filter((profile) => !normalizedProfileSearch || [
+      profile.name,
+      profile.description,
+      profile.container,
+      profile.videoCodec,
+      profile.audioCodec,
+      profile.codecFamily,
+      profile.preferredEncoder,
+      profile.qualityMode,
+      String(profile.qualityValue),
+    ].some((value) => String(value ?? '').toLowerCase().includes(normalizedProfileSearch)));
   const defaultHardwareEncoder = videoEncoderOptions.find(
     (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
@@ -241,10 +255,10 @@ export function ProfilesPage() {
   }
 
   function updateExternalSubtitleFormat(value: string) {
-    const format = value === 'srt' || value === 'ass' ? value : 'source';
+    const format = value === 'disabled' || value === 'srt' || value === 'ass' || value === 'remove' ? value : 'source';
     setProfileForm({
       ...form,
-      preserveSubtitles: format === 'source',
+      preserveSubtitles: format === 'disabled' || format === 'source',
       workerConfig: {
         ...form.workerConfig,
         externalSubtitleFormat: format,
@@ -535,10 +549,18 @@ export function ProfilesPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {profiles.isError ? <Alert severity="warning">Unable to load profiles.</Alert> : null}
-        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ mb: 2 }} spacing={1}>
+        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mb: 2 }} spacing={1}>
           <FormControlLabel
             control={<Checkbox checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />}
             label="Show disabled/deleted profiles"
+          />
+          <TextField
+            label="Search video profiles"
+            value={profileSearch}
+            onChange={(event) => setProfileSearch(event.target.value)}
+            placeholder="Name, codec, encoder, quality…"
+            size="small"
+            sx={{ width: { xs: '100%', md: 360 } }}
           />
           <Button startIcon={<AddIcon />} variant="contained" onClick={addProfile}>
             Add Profile
@@ -863,6 +885,18 @@ export function ProfilesPage() {
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
+                            label="AAC source stream index"
+                            type="number"
+                            value={workerConfigNumber(form, 'aacStereoSourceStreamIndex', -1)}
+                            onChange={(event) => updateWorkerConfig('aacStereoSourceStreamIndex', Number(event.target.value))}
+                            disabled={!aacTrackEnabled(form)}
+                            inputProps={{ min: -1 }}
+                            helperText="-1 = automatic/default. LAB can select a track from an analyzed asset."
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
                             select
                             fullWidth
                             label="Convert all subtitles"
@@ -870,12 +904,14 @@ export function ProfilesPage() {
                             onChange={(event) => updateExternalSubtitleFormat(event.target.value)}
                             helperText="Creates validated sidecars and removes embedded tracks. A Tracks Profile takes priority."
                           >
+                            <MenuItem value="disabled">Disabled · defer to Tracks Profile</MenuItem>
                             <MenuItem value="source">Keep embedded tracks</MenuItem>
                             <MenuItem value="srt">External SRT · remove embedded</MenuItem>
                             <MenuItem value="ass">External ASS · remove embedded</MenuItem>
+                            <MenuItem value="remove">Remove embedded tracks</MenuItem>
                           </TextField>
                         </Grid>
-                        {externalSubtitleFormat(form) !== 'source' ? <>
+                        {externalSubtitleFormat(form) === 'srt' || externalSubtitleFormat(form) === 'ass' ? <>
                           <Grid size={{ xs: 12, md: 4 }}>
                             <TextField select fullWidth label="Bitmap OCR quality" value={workerConfigString(form, 'subtitleOCRMode', 'accurate')} onChange={(event) => updateWorkerConfig('subtitleOCRMode', event.target.value)} helperText="Accurate compares isolated-color and original-color OCR passes.">
                               <MenuItem value="raw">Raw · one pass</MenuItem><MenuItem value="clean">Clean · corrected</MenuItem><MenuItem value="accurate">Accurate · two passes</MenuItem>
@@ -1159,7 +1195,7 @@ export function ProfilesPage() {
           </Box>
           {!profiles.isLoading && visibleProfiles.length === 0 ? (
             <CardContent>
-              <Alert severity="info">No profiles have been configured yet.</Alert>
+              <Alert severity="info">{normalizedProfileSearch ? 'No video profiles match this search.' : 'No profiles have been configured yet.'}</Alert>
             </CardContent>
           ) : null}
         </Card>
@@ -1217,7 +1253,7 @@ function subtitleOutputFormat(profile: ProfileInput) {
 
 function externalSubtitleFormat(profile: ProfileInput) {
   const configured = workerConfigString(profile, 'externalSubtitleFormat').toLowerCase();
-  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+  if (configured === 'disabled' || configured === 'srt' || configured === 'ass' || configured === 'source' || configured === 'remove') {
     return configured;
   }
   return subtitleOutputFormat(profile);

@@ -2403,13 +2403,14 @@ function AssetConversionOverridePanel({
             <Grid size={{ xs: 12, md: 4 }}>
               <TextField
                 select
-                label="Enhanced audio source"
-                value={draft.enhancedAudioSourceStreamIndex ?? ''}
+                label="AAC / enhanced audio source"
+                value={draft.enhancedAudioSourceStreamIndex ?? Number(profile?.workerConfig?.aacStereoSourceStreamIndex ?? -1)}
                 onChange={(event) => onChange('enhancedAudioSourceStreamIndex', event.target.value === '' ? undefined : Number(event.target.value))}
+                helperText="Asset override takes priority over the profile AAC source."
                 size="small"
                 fullWidth
               >
-                <MenuItem value="">Default audio track</MenuItem>
+                <MenuItem value={-1}>Automatic / default audio track</MenuItem>
                 {scan.audioStreams.map((stream) => (
                   <MenuItem key={stream.index} value={stream.index}>
                     #{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}
@@ -2643,14 +2644,16 @@ function AssetConversionOverridePanel({
               select
               label="Convert all subtitles"
               value={draft.externalSubtitleFormat || stringFromRecord(profile?.workerConfig ?? {}, 'externalSubtitleFormat') || 'source'}
-              onChange={(event) => onChange('externalSubtitleFormat', event.target.value as 'source' | 'srt' | 'ass')}
+              onChange={(event) => onChange('externalSubtitleFormat', event.target.value as 'disabled' | 'source' | 'srt' | 'ass' | 'remove')}
               helperText="Creates validated sidecars and removes embedded tracks. A Tracks Profile takes priority."
               size="small"
               fullWidth
             >
+              <MenuItem value="disabled">Disabled · defer to Tracks Profile</MenuItem>
               <MenuItem value="source">Keep embedded tracks</MenuItem>
               <MenuItem value="srt">External SRT · remove embedded</MenuItem>
               <MenuItem value="ass">External ASS · remove embedded</MenuItem>
+              <MenuItem value="remove">Remove embedded tracks</MenuItem>
             </TextField>
           </Grid>
           <Grid size={{ xs: 12 }}>
@@ -3549,7 +3552,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
       clean[key] = text;
     }
   });
-  if (value.externalSubtitleFormat === 'source' || value.externalSubtitleFormat === 'srt' || value.externalSubtitleFormat === 'ass') {
+  if (value.externalSubtitleFormat === 'disabled' || value.externalSubtitleFormat === 'source' || value.externalSubtitleFormat === 'srt' || value.externalSubtitleFormat === 'ass' || value.externalSubtitleFormat === 'remove') {
     clean.externalSubtitleFormat = value.externalSubtitleFormat;
   }
   if (value.finalColorPolicy === 'automatic' || value.finalColorPolicy === 'preserve' || value.finalColorPolicy === 'normalize_bt709') {

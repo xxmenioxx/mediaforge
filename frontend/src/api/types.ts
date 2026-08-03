@@ -145,7 +145,7 @@ export type AssetConversionOverrideState = {
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;
-  externalSubtitleFormat?: 'source' | 'srt' | 'ass';
+  externalSubtitleFormat?: 'disabled' | 'source' | 'srt' | 'ass' | 'remove';
   finalColorPolicy?: 'automatic' | 'preserve' | 'normalize_bt709';
   addAacStereoTrack?: boolean;
   aacStereoDefault?: boolean;

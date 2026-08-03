@@ -88,13 +88,26 @@ export function AudioProfilesPage() {
   const activeAudioProfiles = audioProfiles.filter((profile) => !profile.disabled && !profile.deletedAt);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [profileSearch, setProfileSearch] = useState('');
   const [form, setForm] = useState<AudioEnhancementProfile>(emptyProfile);
   const [testAssetPath, setTestAssetPath] = useState('');
   const [testProfileKey, setTestProfileKey] = useState('');
   const [testStart, setTestStart] = useState('00:00:00');
   const [testSeconds, setTestSeconds] = useState(20);
   const [previewNonce, setPreviewNonce] = useState(0);
-  const visibleAudioProfiles = audioProfiles.filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt));
+  const normalizedProfileSearch = profileSearch.trim().toLowerCase();
+  const visibleAudioProfiles = audioProfiles
+    .filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt))
+    .filter((profile) => !normalizedProfileSearch || [
+      profile.name,
+      profile.key,
+      profile.description,
+      profile.intent,
+      profile.outputCodec,
+      profile.channelMode,
+      profile.filters,
+      profile.notes,
+    ].some((value) => String(value ?? '').toLowerCase().includes(normalizedProfileSearch)));
   const selectedTestProfile = activeAudioProfiles.find((profile) => profile.key === testProfileKey);
   const rawAssets = assets.data?.unprocessed ?? [];
   const selectedTestAsset = rawAssets.find((asset) => asset.path === testAssetPath) ?? null;
@@ -161,10 +174,18 @@ export function AudioProfilesPage() {
         {updateSetting.isSuccess ? <Alert severity="success" sx={{ mb: 2 }}>Audio profiles saved.</Alert> : null}
         {updateSetting.isError ? <Alert severity="warning" sx={{ mb: 2 }}>Audio profiles could not be saved.</Alert> : null}
 
-        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ mb: 2 }} spacing={1}>
+        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mb: 2 }} spacing={1}>
           <FormControlLabel
             control={<Checkbox checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />}
             label="Show disabled/deleted audio profiles"
+          />
+          <TextField
+            label="Search audio profiles"
+            value={profileSearch}
+            onChange={(event) => setProfileSearch(event.target.value)}
+            placeholder="Name, intent, codec, filter…"
+            size="small"
+            sx={{ width: { xs: '100%', md: 360 } }}
           />
           <Button startIcon={<AddIcon />} variant="contained" onClick={addProfile}>
             Add Audio Profile
@@ -394,6 +415,9 @@ export function AudioProfilesPage() {
                     </TableCell>
                   </TableRow>
                 ))}
+                {!visibleAudioProfiles.length ? (
+                  <TableRow><TableCell colSpan={5}><Alert severity="info">{normalizedProfileSearch ? 'No audio profiles match this search.' : 'No audio profiles have been configured yet.'}</Alert></TableCell></TableRow>
+                ) : null}
               </TableBody>
             </Table>
           </CardContent>

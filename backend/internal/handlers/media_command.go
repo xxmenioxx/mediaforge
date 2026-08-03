@@ -132,7 +132,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = append(args, "-map", fmt.Sprintf("0:%d", enhancedSourceIndex))
 	} else if needsAACCompatibility && len(selectedAudioStreams) > 0 {
 		aacStereoIndex = len(mappedAudioStreams)
-		args = append(args, "-map", fmt.Sprintf("0:%d", enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)))
+		args = append(args, "-map", fmt.Sprintf("0:%d", aacStereoSourceIndex(plan)))
 	}
 
 	// Set copy behavior per stream type before applying explicit overrides.
@@ -231,9 +231,9 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	sourceHasSubtitles := len(plan.Streams.Subtitle) > 0
 	hasSelectedSubtitles := len(selectedSubtitleStreams(plan)) > 0
-	if sourceHasSubtitles && !planHasStreamSelection(plan.Override) && !plan.Profile.PreserveSubtitles {
+	if sourceHasSubtitles && !planHasStreamSelection(plan.Override) && len(selectedSubtitleStreams(plan)) == 0 {
 		args = append(args, "-sn")
-	} else if hasSelectedSubtitles && plan.Profile.PreserveSubtitles {
+	} else if hasSelectedSubtitles {
 		subtitleCodec := effectiveSubtitleOutputFormat(plan.Profile)
 		for index, stream := range selectedSubtitleStreams(plan) {
 			if subtitleCodec != "source" && subtitleCanConvertText(stream.Codec) {
@@ -514,6 +514,7 @@ func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile 
 		return MediaJobPlan{}, err
 	}
 	plan.Override, plan.StreamValidationWarnings = sanitizeConversionOverride(override, plan.Streams)
+	plan.StreamValidationWarnings = append(plan.StreamValidationWarnings, validateAACStereoSource(&plan)...)
 	applyProfileSubtitleExternalization(&plan)
 	plan.ProcessingMode = mediaProcessingMode(effectiveProfile)
 	// audio_only represents "no video profile selected" while the queue still
@@ -573,6 +574,25 @@ func effectiveExternalSubtitleFormat(profile models.Profile) string {
 		return "ass"
 	default:
 		return ""
+	}
+}
+
+func effectiveSubtitlePolicy(profile models.Profile) string {
+	configured := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["externalSubtitleFormat"])))
+	switch configured {
+	case "disabled", "defer":
+		return "disabled"
+	case "source":
+		return "source"
+	case "srt", "ass", "ssa":
+		return "externalize"
+	case "remove":
+		return "remove"
+	default:
+		if profile.PreserveSubtitles {
+			return "source"
+		}
+		return "remove"
 	}
 }
 
@@ -680,10 +700,10 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	for key, value := range profile.WorkerConfig {
 		workerConfig[key] = value
 	}
-	if value := strings.ToLower(strings.TrimSpace(override.ExternalSubtitleFormat)); value == "source" || value == "srt" || value == "ass" {
+	if value := strings.ToLower(strings.TrimSpace(override.ExternalSubtitleFormat)); value == "disabled" || value == "source" || value == "srt" || value == "ass" || value == "remove" {
 		workerConfig["externalSubtitleFormat"] = value
 		workerConfig["subtitleOutputFormat"] = "source"
-		profile.PreserveSubtitles = value == "source"
+		profile.PreserveSubtitles = value == "disabled" || value == "source"
 	}
 	if value := strings.ToLower(strings.TrimSpace(override.FinalColorPolicy)); value == "automatic" || value == "preserve" || value == "normalize_bt709" {
 		workerConfig["finalColorPolicy"] = value
@@ -790,14 +810,8 @@ func appendSelectedStreamMaps(args []string, plan MediaJobPlan) []string {
 	for _, index := range selectedStreamIndexes(audioStreamIndexes(plan.Streams.Audio), plan.Override.KeepAudioStreams) {
 		args = append(args, "-map", fmt.Sprintf("0:%d", index))
 	}
-	if plan.Profile.PreserveSubtitles {
-		removed := removedEmbeddedSubtitleSet(plan.Override.SubtitleTransforms)
-		for _, index := range selectedStreamIndexes(streamIndexes(plan.Streams.Subtitle), plan.Override.KeepSubtitleStreams) {
-			if _, remove := removed[index]; remove {
-				continue
-			}
-			args = append(args, "-map", fmt.Sprintf("0:%d", index))
-		}
+	for _, stream := range selectedSubtitleStreams(plan) {
+		args = append(args, "-map", fmt.Sprintf("0:%d", stream.Index))
 	}
 	return args
 }
@@ -843,7 +857,10 @@ func selectedAudioStreams(streams []MediaAudioStream, override AssetConversionOv
 }
 
 func selectedSubtitleStreams(plan MediaJobPlan) []MediaStream {
-	if !plan.Profile.PreserveSubtitles {
+	// A Tracks Profile owns the complete subtitle decision. Video-profile
+	// preservation flags must not erase tracks that the Tracks Profile kept.
+	trackProfileSelected := strings.TrimSpace(plan.Override.TrackProfileKey) != ""
+	if !trackProfileSelected && effectiveSubtitlePolicy(plan.Profile) == "remove" {
 		return []MediaStream{}
 	}
 	selectedIndexes := selectedStreamIndexes(streamIndexes(plan.Streams.Subtitle), plan.Override.KeepSubtitleStreams)
@@ -921,6 +938,37 @@ func enhancedAudioSourceIndex(streams []MediaAudioStream, override AssetConversi
 		return streams[0].Index
 	}
 	return 0
+}
+
+func aacStereoSourceIndex(plan MediaJobPlan) int {
+	if plan.Override.EnhancedAudioSourceStreamIndex != nil {
+		return enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)
+	}
+	configured := workerIntValue(plan.Profile.WorkerConfig["aacStereoSourceStreamIndex"], -1)
+	if configured >= 0 {
+		for _, stream := range selectedAudioStreams(plan.Streams.Audio, plan.Override) {
+			if stream.Index == configured {
+				return configured
+			}
+		}
+	}
+	return enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)
+}
+
+func validateAACStereoSource(plan *MediaJobPlan) []string {
+	if plan == nil || plan.Override.EnhancedAudioSourceStreamIndex != nil {
+		return nil
+	}
+	configured := workerIntValue(plan.Profile.WorkerConfig["aacStereoSourceStreamIndex"], -1)
+	if configured < 0 {
+		return nil
+	}
+	for _, stream := range selectedAudioStreams(plan.Streams.Audio, plan.Override) {
+		if stream.Index == configured {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("AAC compatibility source stream %d is not available in this asset; the selected default audio stream will be used.", configured)}
 }
 
 func selectedStreamIndexes(all []int, selected []int) []int {

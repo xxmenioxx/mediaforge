@@ -62,6 +62,7 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { adaptiveVideoToolboxPresetKbps as sharedAdaptiveVideoToolboxPresetKbps, applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
+import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -95,44 +96,6 @@ type LabFidelityInspection = {
     aliasWarnings?: string[];
   };
   metrics: PreviewFrameMetrics;
-};
-
-type TrackProfile = {
-  key: string;
-  name: string;
-  description: string;
-  sourceAssetPath?: string;
-  sourceAssetName?: string;
-  keepVideoStreams?: number[];
-  keepAudioStreams?: number[];
-  keepSubtitleStreams?: number[];
-  videoMetadata?: Record<string, StreamMetadataOverride>;
-  audioMetadata?: Record<string, StreamMetadataOverride>;
-  subtitleMetadata?: Record<string, StreamMetadataOverride>;
-  subtitleTransforms?: Array<{
-    streamIndex: number;
-    format: 'srt' | 'ass';
-    removeEmbedded: boolean;
-    makeDefault: boolean;
-    language: string;
-    ocrLanguage?: string;
-    ocrMode?: 'raw' | 'clean' | 'accurate';
-    title?: string;
-  }>;
-  videoMode: 'first' | 'all' | 'require-one';
-  audioMode: 'all' | 'default' | 'languages' | 'none';
-  audioLanguages: string[];
-  audioRequired: boolean;
-  dropCommentary: boolean;
-  defaultAudioLanguage: string;
-  subtitleMode: 'all' | 'none' | 'forced' | 'languages' | 'forced-or-languages';
-  subtitleLanguages: string[];
-  subtitlesRequired: boolean;
-  defaultSubtitleLanguage: string;
-  validationMode: 'block' | 'review' | 'warn';
-  notes: string;
-  disabled?: boolean;
-  deletedAt?: string;
 };
 
 const languageOptions = [
@@ -589,6 +552,8 @@ export function ProfileLabPage() {
   );
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
   const trackProfiles = useMemo(() => getTrackProfiles(settings.data), [settings.data]);
+  const allAudioProfiles = useMemo(() => getAudioProfiles(settings.data, true), [settings.data]);
+  const allTrackProfiles = useMemo(() => getTrackProfiles(settings.data, true), [settings.data]);
   const [labSection, setLabSection] = useState<LabSection>('video');
   const [assetPath, setAssetPath] = useState('');
   const [start, setStart] = useState('00:00:00');
@@ -613,8 +578,10 @@ export function ProfileLabPage() {
   const [selectedVideoStarterPreset, setSelectedVideoStarterPreset] = useState('');
   const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
+  const [savedAudioProfileKey, setSavedAudioProfileKey] = useState<string | null>(null);
   const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
   const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
+  const [savedTrackProfileKey, setSavedTrackProfileKey] = useState<string | null>(null);
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
   const [terminalCommandOpen, setTerminalCommandOpen] = useState(false);
   const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
@@ -626,6 +593,9 @@ export function ProfileLabPage() {
   const [recommendationApplied, setRecommendationApplied] = useState<RecommendationSectionState>({ video: false, audio: false, tracks: false });
   const [recommendationSelected, setRecommendationSelected] = useState<RecommendationSectionState>({ video: true, audio: true, tracks: true });
   const [videoSaveReviewOpen, setVideoSaveReviewOpen] = useState(false);
+  const [audioSaveReviewOpen, setAudioSaveReviewOpen] = useState(false);
+  const [trackSaveReviewOpen, setTrackSaveReviewOpen] = useState(false);
+  const [pendingTrackProfileSave, setPendingTrackProfileSave] = useState<TrackProfile | null>(null);
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const loadedEditRequestRef = useRef('');
   const recommendationDefaultsRef = useRef<{
@@ -638,6 +608,15 @@ export function ProfileLabPage() {
     selectedAudioStarterPreset: string;
   } | null>(null);
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
+  const videoNameConflict = Boolean(videoDraft.name.trim()) && [...(profiles.data ?? []), ...(adminProfiles.data ?? [])].some(
+    (profile) => profile.id !== savedVideoProfileId && sameProfileName(profile.name, videoDraft.name),
+  );
+  const audioNameConflict = Boolean(audioDraft.name.trim()) && allAudioProfiles.some(
+    (profile) => profile.key !== savedAudioProfileKey && sameProfileName(profile.name, audioDraft.name),
+  );
+  const trackNameConflict = Boolean(trackDraft.name.trim()) && allTrackProfiles.some(
+    (profile) => profile.key !== savedTrackProfileKey && sameProfileName(profile.name, trackDraft.name),
+  );
   useEffect(() => {
     const requestedAssetPath = searchParams.get('assetPath') || '';
     if (requestedAssetPath && labAssets.some((asset) => asset.path === requestedAssetPath) && assetPath !== requestedAssetPath) {
@@ -715,30 +694,26 @@ export function ProfileLabPage() {
       }
       setLabSection('audio');
       setAudioDraft({ ...profile, eqBands: normalizeEqBands(profile.eqBands) });
+      setSavedAudioProfileKey(profile.key);
       setAudioFilterChainEdited(false);
       setSelectedAudioStarterPreset('');
     } else {
-      const profile = trackProfiles.find((candidate) => candidate.key === trackProfileKey);
+      const profile = allTrackProfiles.find((candidate) => candidate.key === trackProfileKey);
       if (!profile) {
         return;
       }
       setLabSection('tracks');
       setTrackDraft({ ...profile });
-      setTrackConversionDraft({
-        keepVideoStreams: profile.keepVideoStreams,
-        keepAudioStreams: profile.keepAudioStreams,
-        keepSubtitleStreams: profile.keepSubtitleStreams,
-        videoMetadata: profile.videoMetadata,
-        audioMetadata: profile.audioMetadata,
-        subtitleMetadata: profile.subtitleMetadata,
-        subtitleTransforms: profile.subtitleTransforms,
-      });
-      if (profile.sourceAssetPath && labAssets.some((asset) => asset.path === profile.sourceAssetPath)) {
-        setAssetPath(profile.sourceAssetPath);
+      setSavedTrackProfileKey(profile.key);
+      setTrackConversionDraft(trackProfileOverride(profile));
+      const sourceAsset = labAssets.find((asset) => asset.path === profile.sourceAssetPath)
+        ?? labAssets.find((asset) => Boolean(profile.sourceAssetName) && asset.fileName === profile.sourceAssetName);
+      if (sourceAsset) {
+        setAssetPath(sourceAsset.path);
       }
     }
     loadedEditRequestRef.current = requestKey;
-  }, [adminProfiles.data, audioProfiles, labAssets, profiles.data, searchParams, trackProfiles]);
+  }, [adminProfiles.data, allTrackProfiles, audioProfiles, labAssets, profiles.data, searchParams]);
 
   useEffect(() => {
     if (!audioFilterChainEdited) {
@@ -756,13 +731,22 @@ export function ProfileLabPage() {
     onSuccess: async ({ profile, action }) => {
       setSavedVideoProfileId(profile.id);
       setVideoProfileSaveMessage(action === 'updated' ? 'Video profile updated.' : 'Video profile saved.');
+      setVideoSaveReviewOpen(false);
       await queryClient.invalidateQueries({ queryKey: ['profiles'] });
     },
   });
 
   const updateSetting = useMutation({
     mutationFn: api.updateSetting,
-    onSuccess: async () => {
+    onSuccess: async (_setting, variables) => {
+      if (variables.key === 'audioEnhancementProfiles') {
+        setSavedAudioProfileKey(slugify(audioDraft.key || audioDraft.name));
+        setAudioSaveReviewOpen(false);
+      } else if (variables.key === 'trackProfiles') {
+        setSavedTrackProfileKey(pendingTrackProfileSave?.key ?? slugify(trackDraft.key || trackDraft.name));
+        setPendingTrackProfileSave(null);
+        setTrackSaveReviewOpen(false);
+      }
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
@@ -845,7 +829,6 @@ export function ProfileLabPage() {
     : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
 
   useEffect(() => {
-    setTrackConversionDraft({});
     // Sample A is generated automatically when an asset is selected. The old
     // Preview button used to initialize this nonce; without it the entire
     // Fidelity workbench remained hidden and Sample B actions stayed disabled.
@@ -888,6 +871,10 @@ export function ProfileLabPage() {
     if (section === 'video') {
       setSavedVideoProfileId(null);
       setVideoProfileSaveMessage('');
+    } else if (section === 'audio') {
+      setSavedAudioProfileKey(null);
+    } else if (section === 'tracks') {
+      setSavedTrackProfileKey(null);
     }
     const interlaceStatus = scan.interlaceAnalysis.status ?? 'unknown';
     const cropStatus = scan.cropAnalysis?.status ?? 'unknown';
@@ -1012,6 +999,7 @@ export function ProfileLabPage() {
     };
     if (section === 'audio') {
       setSelectedAudioStarterPreset('');
+      setSavedAudioProfileKey(null);
       setAudioDraft(recommendedAudioDraft);
       setAudioFilterChainEdited(false);
       setPreviewNonce((current) => current + 1);
@@ -1055,6 +1043,7 @@ export function ProfileLabPage() {
       keepAudioStreams: commentaryIndexes.length > 0 ? keptAudioIndexes : undefined,
     };
     if (section === 'tracks') {
+      setSavedTrackProfileKey(null);
       setTrackDraft(recommendedTrackDraft);
       setTrackConversionDraft(recommendedTrackConversion);
     }
@@ -1144,6 +1133,7 @@ export function ProfileLabPage() {
       return;
     }
     setSelectedAudioStarterPreset('');
+    setSavedAudioProfileKey(null);
     const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
     setAudioDraft({
       ...profile,
@@ -1161,6 +1151,7 @@ export function ProfileLabPage() {
       return;
     }
     setSelectedAudioStarterPreset(profileKey);
+    setSavedAudioProfileKey(null);
     const baseName = selectedAsset?.fileName ? `${profile.name} - ${selectedAsset.fileName}` : `${profile.name} Lab`;
     setAudioDraft({
       ...profile,
@@ -1173,10 +1164,13 @@ export function ProfileLabPage() {
   }
 
   function saveVideoProfile() {
+    if (videoNameConflict) return;
+    saveVideoProfileMutation.reset();
     setVideoSaveReviewOpen(true);
   }
 
   function confirmSaveVideoProfile() {
+    if (videoNameConflict) return;
     saveVideoProfileMutation.mutate({
       ...videoDraft,
       audioCodec: 'copy',
@@ -1186,33 +1180,44 @@ export function ProfileLabPage() {
         derivedFromAsset: selectedAsset?.path ?? '',
       },
     });
-    setVideoSaveReviewOpen(false);
   }
 
   function saveAudioProfile() {
-    if (!window.confirm(`Review audio profile before saving\n\nName: ${audioDraft.name}\nCodec: ${audioDraft.outputCodec}\nChannel mode: ${audioDraft.channelMode}\n\nSave this profile?`)) return;
-    const normalized = {
-      ...audioDraft,
-      key: slugify(audioDraft.key || audioDraft.name),
-      filters: audioFilterChainEdited ? previewAudioFilters : audioDraft.filters,
-      channelMode: audioFilterChainEdited ? 'preserve' as const : audioDraft.channelMode,
-      eqBands: audioFilterChainEdited ? defaultEqBands() : normalizeEqBands(audioDraft.eqBands),
-    };
-    const existing = audioProfiles.filter((profile) => profile.key !== normalized.key);
+    if (audioNameConflict) return;
+    updateSetting.reset();
+    setAudioSaveReviewOpen(true);
+  }
+
+  function confirmSaveAudioProfile() {
+    if (audioNameConflict) return;
+    const normalized = normalizedAudioProfileForSave(audioDraft, audioFilterChainEdited, previewAudioFilters);
+    const existing = allAudioProfiles.filter((profile) => profile.key !== (savedAudioProfileKey ?? normalized.key));
     updateSetting.mutate({ key: 'audioEnhancementProfiles', value: { profiles: [...existing, normalized] } });
   }
 
   function saveTrackProfile() {
-    if (!window.confirm(`Review track profile before saving\n\nName: ${trackDraft.name}\nAudio tracks: ${trackDraft.keepAudioStreams?.join(', ') || 'default'}\nSubtitle tracks: ${trackDraft.keepSubtitleStreams?.join(', ') || 'default'}\n\nSave this profile?`)) return;
+    if (trackNameConflict) return;
+    updateSetting.reset();
+    setPendingTrackProfileSave(normalizedTrackProfileDraft());
+    setTrackSaveReviewOpen(true);
+  }
+
+  function confirmSaveTrackProfile() {
+    if (trackNameConflict || !pendingTrackProfileSave) return;
+    const existing = allTrackProfiles.filter((profile) => profile.key !== (savedTrackProfileKey ?? pendingTrackProfileSave.key));
+    updateSetting.mutate({ key: 'trackProfiles', value: { profiles: [...existing, pendingTrackProfileSave] } });
+  }
+
+  function normalizedTrackProfileDraft(): TrackProfile {
     const conversion = cleanTrackConversionOverride(trackConversionDraft);
-    const normalized = {
+    return {
       ...trackDraft,
       key: slugify(trackDraft.key || trackDraft.name),
       sourceAssetPath: selectedAsset?.path ?? trackDraft.sourceAssetPath ?? '',
       sourceAssetName: selectedAsset?.fileName ?? trackDraft.sourceAssetName ?? '',
-      keepVideoStreams: conversion.keepVideoStreams,
-      keepAudioStreams: conversion.keepAudioStreams,
-      keepSubtitleStreams: conversion.keepSubtitleStreams,
+      keepVideoStreams: conversion.keepVideoStreams ?? undefined,
+      keepAudioStreams: conversion.keepAudioStreams ?? undefined,
+      keepSubtitleStreams: conversion.keepSubtitleStreams ?? undefined,
       videoMetadata: conversion.videoMetadata,
       audioMetadata: conversion.audioMetadata,
       subtitleMetadata: conversion.subtitleMetadata,
@@ -1222,8 +1227,6 @@ export function ProfileLabPage() {
       defaultAudioLanguage: trackDraft.defaultAudioLanguage.trim().toLowerCase(),
       defaultSubtitleLanguage: trackDraft.defaultSubtitleLanguage.trim().toLowerCase(),
     };
-    const existing = trackProfiles.filter((profile) => profile.key !== normalized.key);
-    updateSetting.mutate({ key: 'trackProfiles', value: { profiles: [...existing, normalized] } });
   }
 
   function scanTrackAsset(force = false) {
@@ -1238,6 +1241,7 @@ export function ProfileLabPage() {
       return;
     }
     const nextName = `${profile.name} Lab`;
+    setSavedTrackProfileKey(null);
     setTrackDraft({
       ...profile,
       key: uniqueTrackKey(`${profile.key}-lab`, trackProfiles),
@@ -1245,15 +1249,7 @@ export function ProfileLabPage() {
       sourceAssetPath: selectedAsset?.path ?? profile.sourceAssetPath,
       sourceAssetName: selectedAsset?.fileName ?? profile.sourceAssetName,
     });
-    setTrackConversionDraft({
-      keepVideoStreams: profile.keepVideoStreams,
-      keepAudioStreams: profile.keepAudioStreams,
-      keepSubtitleStreams: profile.keepSubtitleStreams,
-      videoMetadata: profile.videoMetadata,
-      audioMetadata: profile.audioMetadata,
-      subtitleMetadata: profile.subtitleMetadata,
-      subtitleTransforms: profile.subtitleTransforms,
-    });
+    setTrackConversionDraft(trackProfileOverride(profile));
   }
 
   function updateTrackSubtitleTransform(stream: MediaStreamInfo, format: '' | 'srt' | 'ass') {
@@ -1261,8 +1257,13 @@ export function ProfileLabPage() {
       const remaining = (current.subtitleTransforms ?? []).filter((item) => item.streamIndex !== stream.index);
       if (!format) return { ...current, subtitleTransforms: remaining.length ? remaining : undefined };
       const bitmap = isBitmapSubtitleStream(stream);
+      const allSubtitleIndexes = trackSnapshot.data ? streamIndexesForType(trackSnapshot.data, 'subtitle') : [];
+      const selectedSubtitleIndexes = trackSnapshot.data
+        ? conversionStreamIndexes(current, trackSnapshot.data, 'subtitle').filter((index) => index !== stream.index)
+        : (current.keepSubtitleStreams ?? []).filter((index) => index !== stream.index);
       return {
         ...current,
+        keepSubtitleStreams: selectedOrUndefined(selectedSubtitleIndexes, allSubtitleIndexes),
         subtitleTransforms: [...remaining, {
           streamIndex: stream.index,
           format,
@@ -1289,20 +1290,24 @@ export function ProfileLabPage() {
     if (!scan) {
       return;
     }
-    const allIndexes = streamIndexesForType(scan, type);
-    const current = conversionStreamIndexes(trackConversionDraft, scan, type);
-    const next = keep ? normalizeNumberList([...current, index]) : current.filter((candidate) => candidate !== index);
-    updateTrackDraftStream(type, selectedOrUndefined(next, allIndexes));
-  }
-
-  function updateTrackDraftStream(type: MediaStreamInfo['type'], indexes: number[] | undefined) {
     setTrackConversionDraft((current) => {
-      if (type === 'video') {
-        return { ...current, keepVideoStreams: indexes };
+      if (type === 'subtitle' && keep && current.subtitleTransforms?.some((item) => item.streamIndex === index && item.removeEmbedded)) {
+        const allIndexes = streamIndexesForType(scan, 'subtitle');
+        const selected = conversionStreamIndexes(current, scan, 'subtitle');
+        const next = normalizeNumberList([...selected, index]);
+        const transforms = (current.subtitleTransforms ?? []).filter((item) => item.streamIndex !== index);
+        return {
+          ...current,
+          keepSubtitleStreams: selectedOrUndefined(next, allIndexes),
+          subtitleTransforms: transforms.length ? transforms : undefined,
+        };
       }
-      if (type === 'audio') {
-        return { ...current, keepAudioStreams: indexes };
-      }
+      const allIndexes = streamIndexesForType(scan, type);
+      const selected = conversionStreamIndexes(current, scan, type);
+      const next = keep ? normalizeNumberList([...selected, index]) : selected.filter((candidate) => candidate !== index);
+      const indexes = selectedOrUndefined(next, allIndexes);
+      if (type === 'video') return { ...current, keepVideoStreams: indexes };
+      if (type === 'audio') return { ...current, keepAudioStreams: indexes };
       return { ...current, keepSubtitleStreams: indexes };
     });
   }
@@ -1490,6 +1495,9 @@ export function ProfileLabPage() {
                   assets={labAssets}
                   value={selectedAsset}
                   onChange={(asset) => {
+                    if (!savedTrackProfileKey) {
+                      setTrackConversionDraft({});
+                    }
                     setAssetPath(asset?.path ?? '');
                     setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
                     resetProcessedPreviews();
@@ -1632,11 +1640,41 @@ export function ProfileLabPage() {
           <DialogTitle>Review Video Profile</DialogTitle>
           <DialogContent dividers>
             <VideoProfileSaveReview profile={videoDraft} source={trackSnapshot.data} asset={selectedAsset} previewNormalization={previewNormalization} />
+            {videoNameConflict ? <Alert severity="error" sx={{ mt: 2 }}>A video profile named “{videoDraft.name.trim()}” already exists. Choose a different name.</Alert> : null}
+            {saveVideoProfileMutation.isError ? <Alert severity="error" sx={{ mt: 2 }}>{saveVideoProfileMutation.error instanceof Error ? saveVideoProfileMutation.error.message : 'Video profile could not be saved.'}</Alert> : null}
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setVideoSaveReviewOpen(false)}>Continue editing</Button>
-            <Button variant="contained" startIcon={<SaveIcon />} disabled={saveVideoProfileMutation.isPending} onClick={confirmSaveVideoProfile}>
+            <Button variant="contained" startIcon={<SaveIcon />} disabled={saveVideoProfileMutation.isPending || videoNameConflict} onClick={confirmSaveVideoProfile}>
               {saveVideoProfileMutation.isPending ? 'Saving…' : savedVideoProfileId ? 'Update profile' : 'Create profile'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+        <Dialog open={audioSaveReviewOpen} onClose={() => !updateSetting.isPending && setAudioSaveReviewOpen(false)} fullWidth maxWidth="lg">
+          <DialogTitle>Review Audio Profile</DialogTitle>
+          <DialogContent dividers>
+            <AudioProfileSaveReview profile={normalizedAudioProfileForSave(audioDraft, audioFilterChainEdited, previewAudioFilters)} source={trackSnapshot.data} asset={selectedAsset} />
+            {audioNameConflict ? <Alert severity="error" sx={{ mt: 2 }}>An audio profile named “{audioDraft.name.trim()}” already exists. Choose a different name.</Alert> : null}
+            {updateSetting.isError ? <Alert severity="error" sx={{ mt: 2 }}>{updateSetting.error instanceof Error ? updateSetting.error.message : 'Audio profile could not be saved.'}</Alert> : null}
+          </DialogContent>
+          <DialogActions>
+            <Button disabled={updateSetting.isPending} onClick={() => setAudioSaveReviewOpen(false)}>Continue editing</Button>
+            <Button variant="contained" startIcon={<SaveIcon />} disabled={updateSetting.isPending || audioNameConflict} onClick={confirmSaveAudioProfile}>
+              {updateSetting.isPending ? 'Saving…' : savedAudioProfileKey ? 'Update profile' : 'Create profile'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+        <Dialog open={trackSaveReviewOpen} onClose={() => { if (!updateSetting.isPending) { setTrackSaveReviewOpen(false); setPendingTrackProfileSave(null); } }} fullWidth maxWidth="lg">
+          <DialogTitle>Review Track Profile</DialogTitle>
+          <DialogContent dividers>
+            {pendingTrackProfileSave ? <TrackProfileSaveReview profile={pendingTrackProfileSave} conversion={trackProfileOverride(pendingTrackProfileSave)} source={trackSnapshot.data} asset={selectedAsset} /> : null}
+            {trackNameConflict ? <Alert severity="error" sx={{ mt: 2 }}>A track profile named “{trackDraft.name.trim()}” already exists. Choose a different name.</Alert> : null}
+            {updateSetting.isError ? <Alert severity="error" sx={{ mt: 2 }}>{updateSetting.error instanceof Error ? updateSetting.error.message : 'Track profile could not be saved.'}</Alert> : null}
+          </DialogContent>
+          <DialogActions>
+            <Button disabled={updateSetting.isPending} onClick={() => { setTrackSaveReviewOpen(false); setPendingTrackProfileSave(null); }}>Continue editing</Button>
+            <Button variant="contained" startIcon={<SaveIcon />} disabled={updateSetting.isPending || trackNameConflict || !pendingTrackProfileSave} onClick={confirmSaveTrackProfile}>
+              {updateSetting.isPending ? 'Saving…' : savedTrackProfileKey ? 'Update profile' : 'Create profile'}
             </Button>
           </DialogActions>
         </Dialog>
@@ -1848,7 +1886,7 @@ export function ProfileLabPage() {
                         startIcon={<SaveIcon />}
                         variant="outlined"
                         size="small"
-                        disabled={!videoDraft.name || saveVideoProfileMutation.isPending}
+                        disabled={!videoDraft.name || videoNameConflict || saveVideoProfileMutation.isPending}
                         onClick={saveVideoProfile}
                         sx={{ minHeight: 32 }}
                       >
@@ -1889,7 +1927,7 @@ export function ProfileLabPage() {
                             ))}
                           </TextField>
                           <VideoProfileAutocomplete profiles={profiles.data ?? []} onChange={(profile) => profile ? selectVideoProfile(profile.id) : undefined} />
-                          <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} fullWidth />
+                          <TextField label="New video profile name" value={videoDraft.name} onChange={(event) => setVideoDraft({ ...videoDraft, name: event.target.value })} error={videoNameConflict} helperText={videoNameConflict ? 'A video profile with this name already exists.' : ' '} fullWidth />
                           <Grid container spacing={1}>
                             <Grid size={{ xs: 12, sm: 6 }}>
                               <FormControlLabel
@@ -1912,11 +1950,13 @@ export function ProfileLabPage() {
                             onChange={(event) => updateVideoSubtitleExternalization(setVideoDraft, event.target.value)}
                             helperText="Creates validated sidecars and removes every embedded subtitle. A selected Tracks Profile takes priority."
                           >
+                            <MenuItem value="disabled">Disabled · defer to Tracks Profile</MenuItem>
                             <MenuItem value="source">Keep embedded subtitle tracks</MenuItem>
                             <MenuItem value="srt">External SRT · remove embedded tracks</MenuItem>
                             <MenuItem value="ass">External ASS · remove embedded tracks</MenuItem>
+                            <MenuItem value="remove">Remove embedded subtitle tracks</MenuItem>
                           </TextField>
-                          {videoExternalSubtitleFormat(videoDraft) !== 'source' ? (
+                          {videoExternalSubtitleFormat(videoDraft) === 'srt' || videoExternalSubtitleFormat(videoDraft) === 'ass' ? (
                             <Grid container spacing={1.5}>
                               <Grid size={{ xs: 12, sm: 6 }}>
                                 <TextField select fullWidth label="Bitmap OCR quality" value={videoWorkerValue(videoDraft, 'subtitleOCRMode', 'accurate')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'subtitleOCRMode', event.target.value)} helperText="Accurate compares two traditional OCR passes.">
@@ -1945,6 +1985,24 @@ export function ProfileLabPage() {
                                   .map((codec) => (
                                     <MenuItem key={codec.value} value={codec.value}>{codec.label}</MenuItem>
                                   ))}
+                              </TextField>
+                            </Grid>
+                            <Grid size={{ xs: 12, sm: 6 }}>
+                              <TextField
+                                select
+                                fullWidth
+                                label="AAC source track"
+                                value={numberWorkerValue(videoDraft, 'aacStereoSourceStreamIndex', -1)}
+                                onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'aacStereoSourceStreamIndex', Number(event.target.value))}
+                                disabled={!videoAACTrackEnabled(videoDraft)}
+                                helperText="Automatic uses the selected default audio track; an asset override takes priority."
+                              >
+                                <MenuItem value={-1}>Automatic</MenuItem>
+                                {availableAudioStreams.map((stream) => (
+                                  <MenuItem key={stream.index} value={stream.index}>
+                                    #{stream.index} · {stream.language || 'und'} · {stream.title || stream.codec || 'audio'}{stream.default ? ' · default' : ''}
+                                  </MenuItem>
+                                ))}
                               </TextField>
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>
@@ -2562,7 +2620,7 @@ export function ProfileLabPage() {
                         startIcon={<SaveIcon />}
                         variant="outlined"
                         size="small"
-                        disabled={!audioDraft.name || updateSetting.isPending}
+                        disabled={!audioDraft.name || audioNameConflict || updateSetting.isPending}
                         onClick={saveAudioProfile}
                         sx={{ minHeight: 32 }}
                       >
@@ -2611,7 +2669,7 @@ export function ProfileLabPage() {
                       <AudioProfileAutocomplete profiles={audioProfiles} onChange={(profile) => profile ? selectAudioProfile(profile.key) : undefined} />
                     </Grid>
                     <Grid size={{ xs: 12 }}>
-                      <TextField label="New audio profile name" value={audioDraft.name} onChange={(event) => setAudioDraft({ ...audioDraft, name: event.target.value, key: slugify(event.target.value) })} size="small" fullWidth />
+                      <TextField label="New audio profile name" value={audioDraft.name} onChange={(event) => setAudioDraft({ ...audioDraft, name: event.target.value, key: slugify(event.target.value) })} error={audioNameConflict} helperText={audioNameConflict ? 'An audio profile with this name already exists.' : ' '} size="small" fullWidth />
                     </Grid>
                     <Grid size={{ xs: 12 }}>
                       <TextField
@@ -2899,7 +2957,7 @@ export function ProfileLabPage() {
                         startIcon={<SaveIcon />}
                         variant="contained"
                         size="small"
-                        disabled={!trackDraft.name || updateSetting.isPending}
+                        disabled={!trackDraft.name || trackNameConflict || updateSetting.isPending}
                         onClick={saveTrackProfile}
                         sx={{ minHeight: 32 }}
                       >
@@ -2913,15 +2971,18 @@ export function ProfileLabPage() {
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 12, md: 4 }}>
                       <TrackProfileAutocomplete
-                        profiles={trackProfiles}
+                        profiles={allTrackProfiles}
+                        selectedKey={savedTrackProfileKey}
                         onChange={selectTrackProfile}
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 4 }}>
                       <TextField
-                        label="New track profile name"
+                        label={savedTrackProfileKey ? 'Track profile name' : 'New track profile name'}
                         value={trackDraft.name}
                         onChange={(event) => setTrackDraft({ ...trackDraft, name: event.target.value, key: slugify(event.target.value) })}
+                        error={trackNameConflict}
+                        helperText={trackNameConflict ? 'A track profile with this name already exists.' : ' '}
                         fullWidth
                       />
                     </Grid>
@@ -3015,6 +3076,23 @@ export function ProfileLabPage() {
                           </Stack>
                         ) : null}
                       </Stack>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
+                        <Stack spacing={2}>
+                          <Stack><Typography fontWeight={700}>Reusable selection rules</Typography><Typography color="text.secondary" variant="body2">Saved fallback rules used when stream indexes differ on another asset.</Typography></Stack>
+                          <Grid container spacing={1.5}>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Video rule" value={trackDraft.videoMode} onChange={(event) => setTrackDraft({ ...trackDraft, videoMode: event.target.value as TrackProfile['videoMode'] })}><MenuItem value="first">Keep first video</MenuItem><MenuItem value="all">Keep all video</MenuItem><MenuItem value="require-one">Require one video</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Audio rule" value={trackDraft.audioMode} onChange={(event) => setTrackDraft({ ...trackDraft, audioMode: event.target.value as TrackProfile['audioMode'] })}><MenuItem value="all">Keep all audio</MenuItem><MenuItem value="default">Keep default audio</MenuItem><MenuItem value="languages">Keep selected languages</MenuItem><MenuItem value="none">Remove all audio</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Subtitle rule" value={trackDraft.subtitleMode} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleMode: event.target.value as TrackProfile['subtitleMode'] })}><MenuItem value="all">Keep all subtitles</MenuItem><MenuItem value="none">Remove all subtitles</MenuItem><MenuItem value="forced">Forced only</MenuItem><MenuItem value="languages">Selected languages</MenuItem><MenuItem value="forced-or-languages">Forced or selected languages</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.audioLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, audioLanguages: normalizeStringList(values) })} disabled={trackDraft.audioMode !== 'languages'} renderInput={(params) => <TextField {...params} label="Audio languages" helperText="Select or enter ISO language codes." />} /></Grid>
+                            <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.subtitleLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, subtitleLanguages: normalizeStringList(values) })} disabled={trackDraft.subtitleMode !== 'languages' && trackDraft.subtitleMode !== 'forced-or-languages'} renderInput={(params) => <TextField {...params} label="Subtitle languages" helperText="Select or enter ISO language codes." />} /></Grid>
+                            <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default audio language" value={trackDraft.defaultAudioLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultAudioLanguage: event.target.value.toLowerCase() })} /></Grid>
+                            <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={trackDraft.defaultSubtitleLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultSubtitleLanguage: event.target.value.toLowerCase() })} /></Grid>
+                            <Grid size={{ xs: 12 }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap><FormControlLabel control={<Checkbox checked={trackDraft.audioRequired} onChange={(event) => setTrackDraft({ ...trackDraft, audioRequired: event.target.checked })} />} label="Require matching audio" /><FormControlLabel control={<Checkbox checked={trackDraft.subtitlesRequired} onChange={(event) => setTrackDraft({ ...trackDraft, subtitlesRequired: event.target.checked })} />} label="Require matching subtitles" /><FormControlLabel control={<Checkbox checked={trackDraft.dropCommentary} onChange={(event) => setTrackDraft({ ...trackDraft, dropCommentary: event.target.checked })} />} label="Remove commentary tracks" /></Stack></Grid>
+                          </Grid>
+                        </Stack>
+                      </Box>
                     </Grid>
                     <Grid size={{ xs: 12 }}>
                       <TextField
@@ -3703,7 +3781,7 @@ function videoSubtitleOutputFormat(draft: ProfileInput) {
 
 function videoExternalSubtitleFormat(draft: ProfileInput) {
   const configured = videoWorkerValue(draft, 'externalSubtitleFormat').toLowerCase();
-  if (configured === 'srt' || configured === 'ass' || configured === 'source') {
+  if (configured === 'disabled' || configured === 'srt' || configured === 'ass' || configured === 'source' || configured === 'remove') {
     return configured;
   }
   // Treat the previous embedded-conversion setting as the new safe
@@ -3716,10 +3794,10 @@ function updateVideoSubtitleExternalization(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   format: string,
 ) {
-  const normalized = format === 'srt' || format === 'ass' ? format : 'source';
+  const normalized = format === 'disabled' || format === 'srt' || format === 'ass' || format === 'remove' ? format : 'source';
   setVideoDraft((current) => ({
     ...current,
-    preserveSubtitles: normalized === 'source',
+    preserveSubtitles: normalized === 'disabled' || normalized === 'source',
     workerConfig: {
       ...current.workerConfig,
       externalSubtitleFormat: normalized,
@@ -4287,6 +4365,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
     ['HDR', source?.hdr ? 'HDR' : 'SDR or unknown', profile.preserveHdr ? 'Preserve' : 'Not preserved', profile.preserveHdr ? 'Protected' : 'Review required'],
     ['Subtitles', `${source?.subtitleTracks ?? 0} embedded`, videoWorkerValue(profile, 'externalSubtitleFormat', 'source'), profile.preserveSubtitles ? 'Preserved' : 'Externalize/remove as configured'],
     ['Bitmap subtitle OCR', 'Only applies to PGS/VobSub/DVB tracks', `${videoWorkerValue(profile, 'subtitleOCRMode', 'accurate')} · ${videoWorkerValue(profile, 'subtitleOCRLanguage', 'auto')}`, videoExternalSubtitleFormat(profile) === 'source' ? 'Not used while embedded tracks are preserved' : 'Runs before FFmpeg; Tracks Profile takes priority'],
+    ['AAC compatibility track', `${source?.audioStreams?.length ?? 0} source tracks`, videoAACTrackEnabled(profile) ? `${numberWorkerValue(profile, 'aacStereoBitrateKbps', 192)} kb/s · source ${numberWorkerValue(profile, 'aacStereoSourceStreamIndex', -1) < 0 ? 'automatic/default' : `stream #${numberWorkerValue(profile, 'aacStereoSourceStreamIndex', -1)}`}` : 'Disabled', 'Asset override takes priority; missing sources fall back with a warning'],
     ['Chapters', `${source?.chapters ?? 0}`, profile.preserveChapters ? 'Preserve' : 'Remove', profile.preserveChapters ? 'Preserved' : 'Changed intentionally'],
   ];
   return (
@@ -4310,6 +4389,152 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
       {profile.description ? <Alert severity="info">{profile.description}</Alert> : null}
     </Stack>
   );
+}
+
+function AudioProfileSaveReview({ profile, source, asset }: { profile: AudioEnhancementProfile; source?: ScanResult; asset: Asset | null }) {
+  const adjustedBands = Object.entries(normalizeEqBands(profile.eqBands)).filter(([, value]) => value !== 0);
+  const sourceAudio = source?.audioStreams ?? [];
+  const sourceAudioLabel = sourceAudio.length
+    ? sourceAudio.map((stream) => `#${stream.index} ${stream.codec}${stream.language ? ` · ${stream.language}` : ''}${stream.channels ? ` · ${stream.channels}ch` : ''}${stream.default ? ' · default' : ''}`).join(' | ')
+    : 'Unknown';
+  const stereoDetail = profile.channelMode === 'force-stereo'
+    ? `${profile.forceStereoMode} · delay ${profile.stereoDelayMs} ms · width ${profile.stereoWidth}%`
+    : 'Not applicable';
+  const rows = [
+    ['Audio tracks', sourceAudioLabel, profile.preserveOriginalTrack ? 'Original track(s) + enhanced track' : 'Enhanced track from selected source', profile.preserveOriginalTrack ? 'Source audio is retained' : 'Selected source may be replaced'],
+    ['Codec', sourceAudio.length ? Array.from(new Set(sourceAudio.map((stream) => stream.codec))).join(' · ') : 'Unknown', profile.outputCodec || 'copy', profile.outputCodec === 'copy' ? 'Filters cannot be applied while copying' : 'Enhanced output is encoded'],
+    ['Channel layout', sourceAudio.length ? sourceAudio.map((stream) => stream.channelLayout || `${stream.channels || '?'}ch`).join(' | ') : 'Unknown', profile.channelMode, profile.channelMode === 'preserve' ? 'Preserve source layout' : 'Channel layout transformation'],
+    ['Stereo method', 'Source channel layout', stereoDetail, profile.channelMode === 'force-stereo' ? 'Applied by the audio filter chain' : 'Disabled for this channel mode'],
+    ['Loudness', 'Source / unmeasured in profile review', `${profile.targetLoudness} LUFS · ${profile.truePeak} dBTP`, 'Applied only when present in the effective filter chain'],
+    ['Noise reduction', 'Source noise floor', profile.rnnoiseModelPath || 'Disabled', profile.rnnoiseModelPath ? 'External RNNoise model required by worker' : 'No RNNoise processing'],
+    ['Graphic EQ', 'Neutral source', adjustedBands.length ? adjustedBands.map(([frequency, value]) => `${frequency}: ${value > 0 ? '+' : ''}${value} dB`).join(' · ') : 'Neutral', adjustedBands.length ? 'EQ filters will be generated' : 'No EQ adjustment'],
+    ['Effective filter chain', 'Unfiltered source', profile.filters.trim() || 'anull', profile.filters.trim() && profile.filters.trim() !== 'anull' ? 'FFmpeg audio processing enabled' : 'No audio filter'],
+  ];
+  return (
+    <Stack spacing={2}>
+      <Alert severity="info">Review the audio processing contract that will be saved. This does not process or queue the asset.</Alert>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip label={profile.name || 'Unnamed profile'} color="primary" />
+        <Chip label={asset?.fileName || 'No LAB asset selected'} />
+        <Chip label={profile.outputCodec.toUpperCase()} />
+      </Stack>
+      <Table size="small" aria-label="Audio profile technical review">
+        <TableHead><TableRow><TableCell>Characteristic</TableCell><TableCell>Source</TableCell><TableCell>Profile result</TableCell><TableCell>Effect</TableCell></TableRow></TableHead>
+        <TableBody>{rows.map(([label, sourceValue, targetValue, effect]) => <TableRow key={label}><TableCell sx={{ fontWeight: 700 }}>{label}</TableCell><TableCell sx={{ wordBreak: 'break-word' }}>{sourceValue}</TableCell><TableCell sx={{ wordBreak: 'break-word' }}>{targetValue}</TableCell><TableCell>{effect}</TableCell></TableRow>)}</TableBody>
+      </Table>
+      {profile.description ? <Alert severity="info">{profile.description}</Alert> : null}
+    </Stack>
+  );
+}
+
+function TrackProfileSaveReview({ profile, conversion, source, asset }: { profile: TrackProfile; conversion: AssetConversionOverrideState; source?: ScanResult; asset: Asset | null }) {
+  const clean = cleanTrackConversionOverride(conversion);
+  const streamLabel = (stream: MediaStreamInfo) => `#${stream.index} ${stream.codec}${stream.language ? ` · ${stream.language}` : ''}${stream.title ? ` · ${stream.title}` : ''}`;
+  const streamDelta = (streams: MediaStreamInfo[] | undefined, kept: number[] | null | undefined) => {
+    const available = streams ?? [];
+    const keptSet = kept == null ? new Set(available.map((stream) => stream.index)) : new Set(kept);
+    return {
+      kept: available.filter((stream) => keptSet.has(stream.index)),
+      removed: available.filter((stream) => !keptSet.has(stream.index)),
+    };
+  };
+  const videoDelta = streamDelta(source?.videoStreams, clean.keepVideoStreams);
+  const audioDelta = streamDelta(source?.audioStreams, clean.keepAudioStreams);
+  const subtitleDelta = streamDelta(source?.subtitleStreams, clean.keepSubtitleStreams);
+  const transforms = clean.subtitleTransforms ?? [];
+  const metadataActions = ([
+    ['Video', clean.videoMetadata],
+    ['Audio', clean.audioMetadata],
+    ['Subtitle', clean.subtitleMetadata],
+  ] as const).flatMap(([type, values]) => Object.entries(values ?? {}).map(([index, override]) => {
+    const changes = [
+      override.language ? `language=${override.language}` : '',
+      override.title ? `title=${override.title}` : '',
+      override.default !== undefined ? `default=${override.default ? 'yes' : 'no'}` : '',
+      override.forced !== undefined ? `forced=${override.forced ? 'yes' : 'no'}` : '',
+    ].filter(Boolean);
+    return `${type} #${index}: ${changes.join(' · ') || 'no effective metadata change'}`;
+  }));
+  const removalActions = [
+    ...videoDelta.removed.map((stream) => `Remove video ${streamLabel(stream)}`),
+    ...audioDelta.removed.map((stream) => `Remove audio ${streamLabel(stream)}`),
+    ...subtitleDelta.removed.map((stream) => `Remove subtitle ${streamLabel(stream)}`),
+  ];
+  const subtitleActions = transforms.map((item) => {
+    const stream = source?.subtitleStreams?.find((candidate) => candidate.index === item.streamIndex);
+    const details = [
+      `Convert subtitle ${stream ? streamLabel(stream) : `#${item.streamIndex}`} to ${item.format.toUpperCase()}`,
+      item.removeEmbedded ? 'remove embedded track' : 'keep embedded track',
+      item.makeDefault ? 'external subtitle becomes default' : '',
+      item.ocrMode ? `OCR ${item.ocrMode}${item.ocrLanguage ? ` (${item.ocrLanguage})` : ''}` : '',
+    ].filter(Boolean);
+    return details.join(' · ');
+  });
+  const ruleActions = [
+    profile.dropCommentary ? 'Rule: remove tracks identified as commentary' : '',
+    profile.audioMode === 'none' ? 'Rule: remove all audio tracks' : '',
+    profile.audioMode === 'default' ? 'Rule: keep only the default audio track' : '',
+    profile.audioMode === 'languages' ? `Rule: keep audio languages ${profile.audioLanguages.join(', ') || 'none configured'}` : '',
+    profile.subtitleMode === 'none' ? 'Rule: remove all embedded subtitle tracks' : '',
+    profile.subtitleMode === 'forced' ? 'Rule: keep only forced subtitles' : '',
+    profile.subtitleMode === 'languages' || profile.subtitleMode === 'forced-or-languages' ? `Rule: keep subtitle languages ${profile.subtitleLanguages.join(', ') || 'none configured'}${profile.subtitleMode === 'forced-or-languages' ? ' plus forced tracks' : ''}` : '',
+  ].filter(Boolean);
+  const effectiveActions = [...removalActions, ...subtitleActions, ...metadataActions, ...ruleActions];
+  const sourceSummary = (delta: { kept: MediaStreamInfo[]; removed: MediaStreamInfo[] }) => [...delta.kept, ...delta.removed].length
+    ? [...delta.kept, ...delta.removed].sort((left, right) => left.index - right.index).map(streamLabel).join(' | ')
+    : 'None detected';
+  const resultSummary = (delta: { kept: MediaStreamInfo[]; removed: MediaStreamInfo[] }) => [
+    `Keep: ${delta.kept.length ? delta.kept.map(streamLabel).join(' | ') : 'none'}`,
+    `Remove: ${delta.removed.length ? delta.removed.map(streamLabel).join(' | ') : 'none'}`,
+  ].join(' — ');
+  const rows = [
+    ['Video streams', sourceSummary(videoDelta), resultSummary(videoDelta), `Selection mode: ${profile.videoMode}`],
+    ['Audio streams', sourceSummary(audioDelta), resultSummary(audioDelta), `${profile.audioMode} · languages ${profile.audioLanguages.join(', ') || 'none'}`],
+    ['Subtitle streams', sourceSummary(subtitleDelta), resultSummary(subtitleDelta), `${profile.subtitleMode} · languages ${profile.subtitleLanguages.join(', ') || 'none'}`],
+    ['Commentary tracks', audioDelta.kept.concat(audioDelta.removed).filter(isCommentaryStream).map(streamLabel).join(' | ') || 'None identified', profile.dropCommentary ? 'Remove identified commentary' : 'Keep', 'Metadata-based detection; validate against the source snapshot'],
+    ['Default audio', source?.audioStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultAudioLanguage || 'Unchanged', profile.audioRequired ? 'Required track/language' : 'Optional'],
+    ['Default subtitle', source?.subtitleStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultSubtitleLanguage || 'Unchanged', profile.subtitlesRequired ? 'Required track/language' : 'Optional'],
+    ['Subtitle exports', source?.subtitleStreams?.length ? source.subtitleStreams.map(streamLabel).join(' | ') : 'None detected', transforms.length ? transforms.map((item) => `#${item.streamIndex} → ${item.format.toUpperCase()}${item.removeEmbedded ? ' · remove embedded' : ''}${item.makeDefault ? ' · default' : ''}`).join(' | ') : 'None', transforms.some((item) => item.ocrMode) ? 'Bitmap exports run OCR before media conversion' : 'Text conversion or no export'],
+    ['Metadata', metadataActions.length ? 'Selected source-track metadata' : 'Preserve source metadata', metadataActions.length ? metadataActions.join(' | ') : 'Unchanged', 'Language, title, default and forced values are applied per stream'],
+    ['Validation', 'Source snapshot', profile.validationMode, 'Missing required tracks follow this policy'],
+  ];
+  return (
+    <Stack spacing={2}>
+      <Alert severity="info">Review the stream-selection contract that will be saved. A snapshot stores metadata only; restoring a removed stream requires the archived original.</Alert>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip label={profile.name || 'Unnamed profile'} color="primary" />
+        <Chip label={asset?.fileName || profile.sourceAssetName || 'No LAB asset selected'} />
+        <Chip label={`${source?.videoStreams?.length ?? 0}V · ${source?.audioStreams?.length ?? 0}A · ${source?.subtitleStreams?.length ?? 0}S source`} />
+      </Stack>
+      <Alert severity={effectiveActions.length ? 'warning' : 'success'}>
+        <Typography fontWeight={700}>{effectiveActions.length ? 'Changes that this profile will apply' : 'No explicit stream removals, subtitle conversions, or metadata changes'}</Typography>
+        {effectiveActions.length ? (
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
+            {effectiveActions.map((action, index) => <Typography key={`${index}-${action}`} variant="body2">• {action}</Typography>)}
+          </Stack>
+        ) : null}
+      </Alert>
+      <Table size="small" aria-label="Track profile technical review">
+        <TableHead><TableRow><TableCell>Characteristic</TableCell><TableCell>Source</TableCell><TableCell>Profile result</TableCell><TableCell>Effect</TableCell></TableRow></TableHead>
+        <TableBody>{rows.map(([label, sourceValue, targetValue, effect]) => <TableRow key={label}><TableCell sx={{ fontWeight: 700 }}>{label}</TableCell><TableCell sx={{ wordBreak: 'break-word' }}>{sourceValue}</TableCell><TableCell sx={{ wordBreak: 'break-word' }}>{targetValue}</TableCell><TableCell>{effect}</TableCell></TableRow>)}</TableBody>
+      </Table>
+      {profile.description ? <Alert severity="info">{profile.description}</Alert> : null}
+    </Stack>
+  );
+}
+
+function sameProfileName(left: string, right: string) {
+  return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+}
+
+function normalizedAudioProfileForSave(profile: AudioEnhancementProfile, filterChainEdited: boolean, editedFilters: string): AudioEnhancementProfile {
+  return {
+    ...profile,
+    key: slugify(profile.key || profile.name),
+    filters: filterChainEdited ? editedFilters : profile.filters,
+    channelMode: filterChainEdited ? 'preserve' : profile.channelMode,
+    eqBands: filterChainEdited ? defaultEqBands() : normalizeEqBands(profile.eqBands),
+  };
 }
 
 function softwareEncoderForCodec(codec: string) {
@@ -4512,19 +4737,21 @@ function defaultTrackOCRLanguage(language: string) {
 
 function TrackProfileAutocomplete({
   profiles,
+  selectedKey,
   onChange,
 }: {
   profiles: TrackProfile[];
+  selectedKey: string | null;
   onChange: (profile: TrackProfile | null) => void;
 }) {
   return (
     <Autocomplete
       options={profiles}
-      value={null}
+      value={profiles.find((profile) => profile.key === selectedKey) ?? null}
       onChange={(_, profile) => onChange(profile)}
       getOptionLabel={(profile) => `${profile.name} · ${profileTrackSummary(profile)}`}
       isOptionEqualToValue={(option, selected) => option.key === selected.key}
-      renderInput={(params) => <TextField {...params} label="Start from track profile" />}
+      renderInput={(params) => <TextField {...params} label={selectedKey ? 'Editing track profile' : 'Start from track profile'} />}
       fullWidth
     />
   );
@@ -4574,103 +4801,6 @@ function LanguageSelect({
       ))}
     </TextField>
   );
-}
-
-function getTrackProfiles(settings?: AppSetting[]) {
-  const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((profile) => normalizeTrackProfile(profile))
-    .filter((profile): profile is TrackProfile => Boolean(profile))
-    .filter((profile) => !profile.disabled && !profile.deletedAt);
-}
-
-function normalizeTrackProfile(value: unknown): TrackProfile | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.key !== 'string' || typeof candidate.name !== 'string') {
-    return null;
-  }
-  return {
-    key: candidate.key,
-    name: candidate.name,
-    description: stringValue(candidate.description),
-    sourceAssetPath: stringValue(candidate.sourceAssetPath),
-    sourceAssetName: stringValue(candidate.sourceAssetName),
-    keepVideoStreams: optionalNumberList(candidate.keepVideoStreams),
-    keepAudioStreams: optionalNumberList(candidate.keepAudioStreams),
-    keepSubtitleStreams: optionalNumberList(candidate.keepSubtitleStreams),
-    videoMetadata: streamMetadataMapValue(candidate.videoMetadata),
-    audioMetadata: streamMetadataMapValue(candidate.audioMetadata),
-    subtitleMetadata: streamMetadataMapValue(candidate.subtitleMetadata),
-    subtitleTransforms: subtitleTransformsValue(candidate.subtitleTransforms),
-    videoMode: trackVideoMode(candidate.videoMode),
-    audioMode: trackAudioMode(candidate.audioMode),
-    audioLanguages: stringArrayValue(candidate.audioLanguages),
-    audioRequired: booleanValue(candidate.audioRequired, false),
-    dropCommentary: booleanValue(candidate.dropCommentary, true),
-    defaultAudioLanguage: stringValue(candidate.defaultAudioLanguage),
-    subtitleMode: trackSubtitleMode(candidate.subtitleMode),
-    subtitleLanguages: stringArrayValue(candidate.subtitleLanguages),
-    subtitlesRequired: booleanValue(candidate.subtitlesRequired, false),
-    defaultSubtitleLanguage: stringValue(candidate.defaultSubtitleLanguage),
-    validationMode: trackValidationMode(candidate.validationMode),
-    notes: stringValue(candidate.notes),
-    disabled: booleanValue(candidate.disabled, false),
-    deletedAt: stringValue(candidate.deletedAt),
-  };
-}
-
-function subtitleTransformsValue(value: unknown): TrackProfile['subtitleTransforms'] {
-  if (!Array.isArray(value)) return undefined;
-  const result = value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return [];
-    const candidate = item as Record<string, unknown>;
-    if (!Number.isInteger(candidate.streamIndex) || (candidate.format !== 'srt' && candidate.format !== 'ass')) return [];
-    return [{
-      streamIndex: candidate.streamIndex as number,
-      format: candidate.format as 'srt' | 'ass',
-      removeEmbedded: candidate.removeEmbedded !== false,
-      makeDefault: candidate.makeDefault === true,
-      language: typeof candidate.language === 'string' ? candidate.language : 'und',
-      ocrLanguage: typeof candidate.ocrLanguage === 'string' ? candidate.ocrLanguage : undefined,
-      ocrMode: (candidate.ocrMode === 'raw' || candidate.ocrMode === 'clean' ? candidate.ocrMode : 'accurate') as 'raw' | 'clean' | 'accurate',
-      title: typeof candidate.title === 'string' ? candidate.title : undefined,
-    }];
-  });
-  return result.length ? result : undefined;
-}
-
-function trackVideoMode(value: unknown): TrackProfile['videoMode'] {
-  if (value === 'all' || value === 'require-one') {
-    return value;
-  }
-  return 'first';
-}
-
-function trackAudioMode(value: unknown): TrackProfile['audioMode'] {
-  if (value === 'all' || value === 'default' || value === 'none') {
-    return value;
-  }
-  return 'languages';
-}
-
-function trackSubtitleMode(value: unknown): TrackProfile['subtitleMode'] {
-  if (value === 'all' || value === 'none' || value === 'forced' || value === 'languages') {
-    return value;
-  }
-  return 'forced-or-languages';
-}
-
-function trackValidationMode(value: unknown): TrackProfile['validationMode'] {
-  if (value === 'block' || value === 'warn') {
-    return value;
-  }
-  return 'review';
 }
 
 function trackRuleLabel(value: string) {
@@ -4828,7 +4958,7 @@ function normalizeNumberList(values: number[]) {
   return Array.from(new Set(values.filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
 }
 
-function getAudioProfiles(settings?: AppSetting[]) {
+function getAudioProfiles(settings?: AppSetting[], includeInactive = false) {
   const value = settings?.find((setting) => setting.key === 'audioEnhancementProfiles')?.value.profiles;
   if (!Array.isArray(value)) {
     return [];
@@ -4836,7 +4966,7 @@ function getAudioProfiles(settings?: AppSetting[]) {
   return value
     .map((profile) => normalizeAudioProfile(profile))
     .filter((profile): profile is AudioEnhancementProfile => Boolean(profile))
-    .filter((profile) => !profile.disabled && !profile.deletedAt);
+    .filter((profile) => includeInactive || (!profile.disabled && !profile.deletedAt));
 }
 
 function stringArrayValue(value: unknown) {

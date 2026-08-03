@@ -16,6 +16,7 @@ export function TrackProfilesPage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const profiles = getTrackProfiles(settings.data, true);
   const [showDisabled, setShowDisabled] = useState(false);
+  const [profileSearch, setProfileSearch] = useState('');
   const [draft, setDraft] = useState<TrackProfile | null>(null);
   const update = useMutation({ mutationFn: api.updateSetting, onSuccess: () => client.invalidateQueries({ queryKey: ['settings'] }) });
   const save = () => {
@@ -25,7 +26,20 @@ export function TrackProfilesPage() {
     update.mutate({ key: 'trackProfiles', value: { profiles: next } }, { onSuccess: () => setDraft(null) });
   };
   const toggle = (profile: TrackProfile) => update.mutate({ key: 'trackProfiles', value: { profiles: profiles.map((item) => item.key === profile.key ? { ...item, disabled: !item.disabled } : item) } });
-  const visible = profiles.filter((profile) => showDisabled || (!profile.disabled && !profile.deletedAt));
+  const normalizedProfileSearch = profileSearch.trim().toLowerCase();
+  const visible = profiles
+    .filter((profile) => showDisabled || (!profile.disabled && !profile.deletedAt))
+    .filter((profile) => !normalizedProfileSearch || [
+      profile.name,
+      profile.key,
+      profile.description,
+      profile.audioMode,
+      profile.subtitleMode,
+      profile.validationMode,
+      profile.audioLanguages.join(' '),
+      profile.subtitleLanguages.join(' '),
+      profile.notes,
+    ].some((value) => String(value ?? '').toLowerCase().includes(normalizedProfileSearch)));
   const sourceScan = findSourceScan(settings.data, draft);
   const updateStreamSelection = (type: MediaStreamInfo['type'], index: number, keep: boolean) => {
     if (!draft || !sourceScan) return;
@@ -69,10 +83,14 @@ export function TrackProfilesPage() {
     <PageHeader title="Track Profiles" eyebrow="Stream selection"><Typography color="text.secondary" sx={{ mt: 1 }}>Reusable video, audio, subtitle and metadata selection rules.</Typography></PageHeader>
     <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}><Stack spacing={2}>
       {settings.isError ? <Alert severity="warning">Unable to load track profiles.</Alert> : null}
-      <Stack direction="row" justifyContent="space-between"><FormControlLabel control={<Switch checked={showDisabled} onChange={(_, value) => setShowDisabled(value)} />} label="Show disabled" /><Button startIcon={<AddIcon />} variant="contained" onClick={() => setDraft({ ...emptyTrackProfile })}>Add Track Profile</Button></Stack>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
+        <FormControlLabel control={<Switch checked={showDisabled} onChange={(_, value) => setShowDisabled(value)} />} label="Show disabled" />
+        <TextField label="Search track profiles" value={profileSearch} onChange={(event) => setProfileSearch(event.target.value)} placeholder="Name, rule, language…" size="small" sx={{ width: { xs: '100%', md: 360 } }} />
+        <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDraft({ ...emptyTrackProfile })}>Add Track Profile</Button>
+      </Stack>
       <Card><CardContent sx={{ p: 0 }}><Table><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Streams</TableCell><TableCell>Rules</TableCell><TableCell>Status</TableCell><TableCell /></TableRow></TableHead><TableBody>
         {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
-        {!visible.length ? <TableRow><TableCell colSpan={5}><Alert severity="info">No track profiles yet. Create one here or from Profile Lab.</Alert></TableCell></TableRow> : null}
+        {!visible.length ? <TableRow><TableCell colSpan={5}><Alert severity="info">{normalizedProfileSearch ? 'No track profiles match this search.' : 'No track profiles yet. Create one here or from Profile Lab.'}</Alert></TableCell></TableRow> : null}
       </TableBody></Table></CardContent></Card>
     </Stack></Box>
     <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} maxWidth="lg" fullWidth><DialogTitle>New Track Profile</DialogTitle><DialogContent>{draft ? <Stack spacing={2} sx={{ mt: 1 }}>
