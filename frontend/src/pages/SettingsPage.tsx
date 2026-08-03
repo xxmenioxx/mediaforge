@@ -787,11 +787,12 @@ export function SettingsPage() {
 
                             <Typography variant="h4">FFmpeg encoders</Typography>
                             <Table size="small">
-                              <TableHead><TableRow><TableCell>Encoder</TableCell><TableCell>Listed</TableCell><TableCell>Usable</TableCell><TableCell>Diagnostic</TableCell></TableRow></TableHead>
+                              <TableHead><TableRow><TableCell>Encoder</TableCell><TableCell>Listed</TableCell><TableCell>Usable</TableCell><TableCell>Verified combinations</TableCell><TableCell>Diagnostic</TableCell></TableRow></TableHead>
                               <TableBody>
                                 {Object.entries(safeRuntimeRecord(runtimeSnapshot.data.encoders)).map(([name, rawEncoder]) => {
                                   const encoder = runtimeEncoder(rawEncoder);
-                                  return <TableRow key={name}><TableCell>{name}</TableCell><TableCell>{encoder.listed ? 'Yes' : 'No'}</TableCell><TableCell><Chip size="small" color={encoder.usable ? 'success' : 'default'} label={encoder.usable ? 'Usable' : 'Unavailable'} /></TableCell><TableCell>{encoder.reason || 'Passed capability check'}</TableCell></TableRow>;
+                                  const modes = runtimeEncoderCapabilities(rawEncoder);
+                                  return <TableRow key={name}><TableCell>{name}</TableCell><TableCell>{encoder.listed ? 'Yes' : 'No'}</TableCell><TableCell><Chip size="small" color={encoder.usable ? 'success' : 'default'} label={encoder.usable ? 'Usable' : 'Unavailable'} /></TableCell><TableCell><Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{modes.map((mode) => <Chip key={mode.key} size="small" variant="outlined" color={mode.passed ? 'success' : 'warning'} label={`${mode.label} · ${mode.passed ? 'passed' : 'failed'}`} title={mode.reason || undefined} />)}{modes.length === 0 ? '—' : null}</Stack></TableCell><TableCell>{encoder.reason || 'Passed capability check'}</TableCell></TableRow>;
                                 })}
                               </TableBody>
                             </Table>
@@ -1905,6 +1906,16 @@ function runtimeEncoder(value: unknown) {
     usable: encoder.usable === true,
     reason: typeof encoder.reason === 'string' ? encoder.reason : '',
   };
+}
+
+function runtimeEncoderCapabilities(value: unknown) {
+  const encoder = safeRuntimeRecord(value);
+  const tested = safeRuntimeRecord(encoder.testedModes);
+  const reasons = safeRuntimeRecord(encoder.modeReasons);
+  const labels: Array<[string, string]> = [
+    ['qsvIcqMain8', 'QSV ICQ Main'], ['qsvIcqMain10', 'QSV ICQ Main10'], ['qsvLowPowerMain8', 'QSV low-power Main'], ['qsvLowPowerMain10', 'QSV low-power Main10'], ['qsvLaIcqMain10', 'QSV LA-ICQ Main10'], ['qsvExtendedBrcMain10', 'QSV ExtBRC Main10'], ['qsvAdaptiveIMain10', 'QSV adaptive I Main10'], ['qsvAdaptiveBMain10', 'QSV adaptive B Main10'], ['qsvFullCombination', 'QSV advanced'], ['videoToolboxMain', 'VT Main'], ['videoToolboxMain10', 'VT Main10'], ['videoToolboxBFramesMain', 'VT B-frames Main'], ['videoToolboxBFramesMain10', 'VT B-frames Main10'], ['videoToolboxPowerEfficientMain', 'VT power efficient Main'], ['videoToolboxPowerEfficientMain10', 'VT power efficient Main10'],
+  ];
+  return labels.filter(([key]) => typeof tested[key] === 'boolean' || typeof encoder[key] === 'boolean').map(([key, label]) => ({ key, label, passed: tested[key] === true || encoder[key] === true, reason: typeof reasons[key] === 'string' ? reasons[key] as string : '' }));
 }
 
 function runtimeDisk(value: unknown): { path: string; type: string; totalBytes: number; availableBytes: number } {

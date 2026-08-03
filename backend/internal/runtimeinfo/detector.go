@@ -79,7 +79,11 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 			"icq": capability.ICQ, "lowPower": capability.LowPower,
 			"lookAhead": capability.LookAhead, "extendedBrc": capability.ExtendedBRC,
 			"adaptiveI": capability.AdaptiveI, "adaptiveB": capability.AdaptiveB, "qsvFullCombination": capability.QSVFullCombination,
-			"videoToolboxMain": capability.VideoToolboxMain, "videoToolboxMain10": capability.VideoToolboxMain10,
+			"qsvIcqMain8": capability.QSVICQMain8, "qsvIcqMain10": capability.QSVICQMain10, "qsvLaIcqMain10": capability.QSVLAICQMain10,
+			"qsvLowPowerMain10": capability.QSVLowPowerMain10,
+			"videoToolboxMain":  capability.VideoToolboxMain, "videoToolboxMain10": capability.VideoToolboxMain10,
+			"videoToolboxBFrames": capability.VideoToolboxBFrames, "videoToolboxPowerEfficient": capability.VideoToolboxPowerEfficient,
+			"testedModes": capability.TestedModes, "modeReasons": capability.ModeReasons,
 			"reason": capability.Reason,
 		}
 	}

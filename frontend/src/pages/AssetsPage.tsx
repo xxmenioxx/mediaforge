@@ -2304,6 +2304,18 @@ function AssetConversionOverridePanel({
   const effectiveVideoEncoder = draft.videoEncoder || defaultHardwareEncoder;
   const qsvSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_qsv';
   const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
+  const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
+  const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes((draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase());
+  const qsvLookAheadAvailable = qsvMain10Selected && qsvCapability?.qsvLaIcqMain10 === true;
+  const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
+  const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
+  const effectivePixFmt = (draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase();
+  const videoToolboxMain10Selected = (draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')).toLowerCase() === 'main10'
+    || ['p010le', 'yuv420p10le'].includes(effectivePixFmt);
+  const videoToolboxBFramesAvailable = videoToolboxCapability?.videoToolboxBFrames === true
+    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxBFramesMain10 === true);
+  const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
+    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
 
   function changeProcessingPreference(value: '' | 'software' | 'hardware') {
     if (value === '') {
@@ -2546,7 +2558,7 @@ function AssetConversionOverridePanel({
                     fullWidth
                   >
                     {compatibleAssetColorDepthOptions(hardwareSelected, effectiveVideoEncoder).map((option) => (
-                      <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                      <MenuItem key={option.value} value={option.value} disabled={assetHardwareTenBitUnavailable(effectiveVideoEncoder, option.value, runtimeSnapshot.data?.encoders)}>{option.label}</MenuItem>
                     ))}
                   </TextField>
                 </Grid>
@@ -2581,17 +2593,17 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
-                      <MenuItem value="la_icq">LA-ICQ</MenuItem>
+                      <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 required</MenuItem>
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                    <TextField label="Look-ahead depth" type="number" value={draft.qsvLookAheadDepth ?? Number(profile?.workerConfig?.qsvLookAheadDepth ?? 40)} onChange={(event) => onChange('qsvLookAheadDepth', Number(event.target.value))} inputProps={{ min: 10, max: 100 }} size="small" fullWidth />
+                    <TextField label="Look-ahead depth" type="number" value={draft.qsvLookAheadDepth ?? Number(profile?.workerConfig?.qsvLookAheadDepth ?? 40)} onChange={(event) => onChange('qsvLookAheadDepth', Number(event.target.value))} inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, md: 6 }}>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      <FormControlLabel control={<Checkbox checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
-                      <FormControlLabel control={<Checkbox checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)} />} label="Adaptive I" />
-                      <FormControlLabel control={<Checkbox checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)} />} label="Adaptive B" />
+                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
+                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)} />} label="Adaptive I" />
+                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)} />} label="Adaptive B" />
                     </Stack>
                   </Grid>
                   <Grid size={{ xs: 12 }}>
@@ -2615,7 +2627,7 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase file size." label="GOP" type="number" value={draft.videoToolboxGop ?? Number(profile?.workerConfig?.videoToolboxGop ?? 0)} onChange={(event) => onChange('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
-                  <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Allows B-frame/reordered-frame compression. Usually improves efficiency but increases decoding and encoding latency." control={<Checkbox checked={draft.videoToolboxAllowFrameReordering ?? profile?.workerConfig?.videoToolboxAllowFrameReordering === true} onChange={(event) => onChange('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Asks VideoToolbox to favor an energy-efficient encode path." control={<Checkbox checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
+                  <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={draft.videoToolboxAllowFrameReordering ?? profile?.workerConfig?.videoToolboxAllowFrameReordering === true} onChange={(event) => onChange('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
             </Box>
@@ -2759,6 +2771,8 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const colorPolicy = recordFromRecord(report, 'colorPolicy');
   const sourceColor = recordFromRecord(colorPolicy, 'source');
   const outputColor = recordFromRecord(colorPolicy, 'output');
+  const frameFidelity = recordFromRecord(colorPolicy, 'frameFidelity');
+  const frameFidelityFields = recordFromRecord(frameFidelity, 'fields');
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
@@ -2861,6 +2875,29 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
                   <Typography variant="body2" color="text.secondary">
                     Output: {colorCharacteristicsLabel(outputColor)}
                   </Typography>
+                </Stack>
+              </Box>
+            ) : null}
+            {Object.keys(frameFidelityFields).length > 0 ? (
+              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography fontWeight={700}>Frame fidelity validation</Typography>
+                    <Chip size="small" label={stringFromRecord(frameFidelity, 'status') || 'unverified'} color={stringFromRecord(frameFidelity, 'status') === 'passed' ? 'success' : 'warning'} />
+                  </Stack>
+                  <Grid container spacing={1}>
+                    {Object.entries(frameFidelityFields).map(([key, raw]) => {
+                      const field = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+                      const status = stringFromRecord(field, 'status') || 'unverified';
+                      return (
+                        <Grid key={key} size={{ xs: 12, sm: 6, md: 4 }}>
+                          <Typography variant="caption" color="text.secondary">{frameFidelityLabel(key)}</Typography>
+                          <Typography variant="body2">{stringFromRecord(field, 'source') || 'Unknown'} → {stringFromRecord(field, 'output') || 'Unknown'}</Typography>
+                          <Chip size="small" label={status.replaceAll('_', ' ')} color={status === 'changed_unexpectedly' ? 'warning' : 'default'} />
+                        </Grid>
+                      );
+                    })}
+                  </Grid>
                 </Stack>
               </Box>
             ) : null}
@@ -3388,6 +3425,13 @@ function compatibleAssetColorDepthOptions(hardware: boolean, encoder: string) {
   return colorDepthOptions.filter((option) => ['', 'auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
 }
 
+function assetHardwareTenBitUnavailable(encoder: string, pixelFormat: string, encoders?: Record<string, { main10?: boolean; videoToolboxMain10?: boolean }>) {
+  if (pixelFormat !== 'p010le') return false;
+  if (encoder === 'hevc_qsv') return encoders?.hevc_qsv?.main10 === false;
+  if (encoder === 'hevc_videotoolbox') return encoders?.hevc_videotoolbox?.videoToolboxMain10 === false;
+  return false;
+}
+
 function stringFromRecord(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === 'string' ? value : '';
@@ -3420,6 +3464,10 @@ function colorCharacteristicsLabel(value: Record<string, unknown>) {
     stringFromRecord(value, 'colorRange') || 'range unknown',
     stringFromRecord(value, 'pixelFormat') || '',
   ].filter(Boolean).join(' · ');
+}
+
+function frameFidelityLabel(key: string) {
+  return ({ sampleAspectRatio: 'SAR', displayAspectRatio: 'DAR', frameRate: 'Frame rate', chromaLocation: 'Chroma location', fieldOrder: 'Field order', pixelFormat: 'Pixel format', bitDepth: 'Bit depth', frameSize: 'Frame size' } as Record<string, string>)[key] || key;
 }
 
 function modeFromNotes(notes: string) {

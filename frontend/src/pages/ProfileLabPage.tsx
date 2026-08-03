@@ -649,6 +649,15 @@ export function ProfileLabPage() {
   const selectedHardwareCapability = selectedHardwareEncoder === 'auto'
     ? undefined
     : runtimeSnapshot.data?.encoders?.[selectedHardwareEncoder];
+  const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
+  const qsvLookAheadAvailable = qsvMain10Selected && selectedHardwareCapability?.qsvLaIcqMain10 === true;
+  const qsvAdvancedAvailable = qsvMain10Selected && selectedHardwareCapability?.qsvFullCombination === true;
+  const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
+    || ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
+  const videoToolboxBFramesAvailable = selectedHardwareCapability?.videoToolboxBFrames === true
+    && (!videoToolboxMain10Selected || selectedHardwareCapability.testedModes?.videoToolboxBFramesMain10 === true);
+  const videoToolboxPowerAvailable = selectedHardwareCapability?.videoToolboxPowerEfficient === true
+    && (!videoToolboxMain10Selected || selectedHardwareCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
   const hasUsableHardwareEncoder = videoEncoderOptions.some(
     (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
   );
@@ -812,6 +821,12 @@ export function ProfileLabPage() {
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
+  const profileSampleEstimate = useMutation({ mutationFn: api.estimateCompatibleAssetProfile });
+  const currentProfileSampleEstimate = profileSampleEstimate.data?.assetPath === assetPath
+    && profileSampleEstimate.variables?.path === assetPath
+    && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
+    ? profileSampleEstimate.data
+    : undefined;
   const currentFidelityInspection = fidelityInspection.data?.assetPath === assetPath
     ? fidelityInspection.data
     : undefined;
@@ -1751,6 +1766,12 @@ export function ProfileLabPage() {
                         </Button>
                       </Stack>
                       {fidelityInspection.isPending ? <Alert severity="info">Generating both previews and validating their video characteristics…</Alert> : null}
+                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                        <Button size="small" variant="outlined" disabled={profileSampleEstimate.isPending || !assetPath} onClick={() => profileSampleEstimate.mutate({ path: assetPath, profileId: savedVideoProfileId ?? 0, profile: videoDraft, seconds: 20 })}>Measure 5 samples</Button>
+                        {profileSampleEstimate.isPending ? <Typography variant="body2" color="text.secondary">Encoding five distributed samples…</Typography> : null}
+                        {currentProfileSampleEstimate ? <Chip size="small" color={currentProfileSampleEstimate.persisted ? 'success' : 'warning'} label={`Video estimate ${formatBytes(currentProfileSampleEstimate.estimatedVideoBytes)} · ${currentProfileSampleEstimate.effectiveEncoder}${currentProfileSampleEstimate.persisted ? ' · saved for Queue' : ' · profile changed or is not saved'}`} /> : null}
+                      </Stack>
+                      {profileSampleEstimate.isError && profileSampleEstimate.variables?.path === assetPath ? <Alert severity="warning">Sample estimate failed: {profileSampleEstimate.error instanceof Error ? profileSampleEstimate.error.message : 'unknown error'}</Alert> : null}
                       {fidelityInspection.isError && !isCanceledFidelityRequest(fidelityInspection.error) ? (
                         <Alert severity="warning">
                           Fidelity validation failed: {fidelityInspection.error instanceof Error ? fidelityInspection.error.message : 'unknown backend error'}
@@ -2109,7 +2130,7 @@ export function ProfileLabPage() {
                                   fullWidth
                                 >
                                   <MenuItem value="icq">ICQ · safe default</MenuItem>
-                                  <MenuItem value="la_icq">LA-ICQ · capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 capability required</MenuItem>
                                 </TextField>
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2118,7 +2139,7 @@ export function ProfileLabPage() {
                                   type="number"
                                   value={numberWorkerValue(videoDraft, 'qsvLookAheadDepth', 40)}
                                   onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvLookAheadDepth', Number(event.target.value))}
-                                  inputProps={{ min: 10, max: 100 }}
+                                  inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable}
                                   size="small"
                                   fullWidth
                                 />
@@ -2126,18 +2147,18 @@ export function ProfileLabPage() {
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyHardwareQualityPreset(setVideoDraft, event.target.value, trackSnapshot.data)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!selectedHardwareCapability?.qsvFullCombination} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
                                   label="Extended BRC"
                                 />
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <Stack>
                                   <FormControlLabel
-                                    control={<Checkbox disabled={!selectedHardwareCapability?.qsvFullCombination} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveI', event.target.checked)} />}
+                                    control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveI', event.target.checked)} />}
                                     label="Adaptive I"
                                   />
                                   <FormControlLabel
-                                    control={<Checkbox disabled={!selectedHardwareCapability?.qsvFullCombination} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveB', event.target.checked)} />}
+                                    control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveB', event.target.checked)} />}
                                     label="Adaptive B"
                                   />
                                 </Stack>
@@ -2158,7 +2179,7 @@ export function ProfileLabPage() {
                                 </Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={videoWorkerValue(videoDraft, 'videoToolboxProfile', '')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxGop', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
-                                <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Allows reordered frames for better compression at the cost of latency." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Asks VideoToolbox to favor an energy-efficient encoding path." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
+                                <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                               </>
                           ) : null}
                         </Grid>
@@ -5267,4 +5288,16 @@ function numberValue(value: unknown, fallback: number) {
 
 function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 'Unknown';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(index > 1 ? 2 : 0)} ${units[index]}`;
 }

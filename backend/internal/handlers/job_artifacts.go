@@ -32,6 +32,8 @@ type jobArtifact struct {
 	OutputProbe     map[string]any        `json:"outputProbe,omitempty"`
 	Result          map[string]any        `json:"result,omitempty"`
 	Notes           string                `json:"notes,omitempty"`
+	ExecutionPlan   models.JSONMap        `json:"executionPlan,omitempty"`
+	EncoderDecision models.JSONMap        `json:"encoderDecision,omitempty"`
 }
 
 type AssetConversionReport struct {
@@ -122,11 +124,31 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 		SourceProbe:     sourceProbe,
 		Notes:           job.Notes,
 	}
+	artifact.EncoderDecision = encoderDecisionForProfile(profile)
+	if job.ActiveExecutionPlanID != nil {
+		var plan models.ExecutionPlan
+		if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil {
+			artifact.ExecutionPlan = models.JSONMap{"id": plan.ID, "estimateConfidence": plan.EstimateConfidence, "evaluation": plan.Evaluation, "estimatedOutputMinBytes": plan.EstimatedOutputMinBytes, "estimatedOutputMaxBytes": plan.EstimatedOutputMaxBytes}
+		}
+	}
 	if audioProfile != nil {
 		artifact.AudioProfileKey = audioProfile.Key
 	}
 	appendAnalysisRecordForJob(db, job, sourceProbe, artifact.AssetConversion)
 	return writeJobArtifact(db, job, "as-is", artifact)
+}
+
+func encoderDecisionForProfile(profile models.Profile) models.JSONMap {
+	requestedEncoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
+	if requestedEncoder == "" || requestedEncoder == "auto" {
+		requestedEncoder = ffmpegCodecName(profile.VideoCodec)
+	}
+	effectiveEncoder := resolvedVideoEncoder(profile)
+	decision := models.JSONMap{"requested": requestedEncoder, "effective": effectiveEncoder, "downgraded": requestedEncoder != effectiveEncoder}
+	if requestedEncoder != effectiveEncoder {
+		decision["reason"] = "requested encoder or bit-depth combination did not pass the active worker capability probe"
+	}
+	return decision
 }
 
 func appendAnalysisRecordForJob(db *gorm.DB, job models.QueueJob, sourceProbe map[string]any, conversion AssetConversionReport) {

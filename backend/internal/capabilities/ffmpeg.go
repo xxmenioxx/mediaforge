@@ -9,18 +9,26 @@ import (
 )
 
 type EncoderCapability struct {
-	Listed, Usable     bool
-	Reason             string
-	Main10             bool
-	ICQ                bool
-	LowPower           bool
-	LookAhead          bool
-	ExtendedBRC        bool
-	AdaptiveI          bool
-	AdaptiveB          bool
-	QSVFullCombination bool
-	VideoToolboxMain   bool
-	VideoToolboxMain10 bool
+	Listed, Usable             bool
+	Reason                     string
+	Main10                     bool
+	ICQ                        bool
+	LowPower                   bool
+	LookAhead                  bool
+	ExtendedBRC                bool
+	AdaptiveI                  bool
+	AdaptiveB                  bool
+	QSVFullCombination         bool
+	QSVICQMain8                bool
+	QSVICQMain10               bool
+	QSVLAICQMain10             bool
+	QSVLowPowerMain10          bool
+	VideoToolboxMain           bool
+	VideoToolboxMain10         bool
+	VideoToolboxBFrames        bool
+	VideoToolboxPowerEfficient bool
+	TestedModes                map[string]bool
+	ModeReasons                map[string]string
 }
 
 var encoderCandidates = []string{
@@ -79,7 +87,7 @@ func CheckEncoder(encoder string) EncoderCapability {
 		encoderCache.probed[encoder] = result
 		return result
 	}
-	result := EncoderCapability{Listed: true, Usable: true}
+	result := EncoderCapability{Listed: true, Usable: true, TestedModes: map[string]bool{}, ModeReasons: map[string]string{}}
 	if isHardwareEncoder(encoder) {
 		mainPixelFormat := "yuv420p"
 		if strings.HasSuffix(encoder, "_qsv") || strings.HasSuffix(encoder, "_vaapi") {
@@ -88,6 +96,14 @@ func CheckEncoder(encoder string) EncoderCapability {
 		var mainReason, main10Reason string
 		result.Usable, mainReason = hardwareEncoderSmokeTest(encoder, mainPixelFormat)
 		result.Main10, main10Reason = hardwareEncoderSmokeTest(encoder, "p010le")
+		result.TestedModes["main"] = result.Usable
+		result.TestedModes["main10"] = result.Main10
+		if !result.Usable {
+			result.ModeReasons["main"] = mainReason
+		}
+		if !result.Main10 {
+			result.ModeReasons["main10"] = main10Reason
+		}
 		if !result.Usable && result.Main10 {
 			result.Usable = true
 		}
@@ -104,17 +120,83 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.Reason = encoder + " is usable for HEVC Main but Main10 is unavailable"
 		}
 		if encoder == "hevc_qsv" && result.Usable {
-			result.ICQ = qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18")
-			result.LowPower = qsvFeatureSmokeTest(mainPixelFormat, "-low_power", "1")
-			result.LookAhead = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-look_ahead", "1")
-			result.ExtendedBRC = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-extbrc", "1", "-look_ahead_depth", "40")
-			result.AdaptiveI = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_i", "1")
-			result.AdaptiveB = result.ICQ && qsvFeatureSmokeTest(mainPixelFormat, "-global_quality", "18", "-adaptive_b", "1")
-			result.QSVFullCombination = result.Main10 && qsvFeatureSmokeTest("p010le", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
+			probe := func(name, format string, args ...string) bool {
+				passed, reason := qsvFeatureSmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			skip := func(name, reason string) bool {
+				result.TestedModes[name] = false
+				result.ModeReasons[name] = reason
+				return false
+			}
+			result.QSVICQMain8 = probe("qsvIcqMain8", "nv12", "-profile:v", "main", "-global_quality", "25")
+			if result.Main10 {
+				result.QSVICQMain10 = probe("qsvIcqMain10", "p010le", "-profile:v", "main10", "-global_quality", "25")
+			} else {
+				result.QSVICQMain10 = skip("qsvIcqMain10", "skipped because the QSV Main10 base probe failed")
+			}
+			result.ICQ = result.QSVICQMain8 || result.QSVICQMain10
+			result.LowPower = probe("qsvLowPowerMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-low_power", "1")
+			if result.QSVICQMain10 {
+				result.QSVLowPowerMain10 = probe("qsvLowPowerMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-low_power", "1")
+				result.QSVLAICQMain10 = probe("qsvLaIcqMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40")
+			} else {
+				result.QSVLowPowerMain10 = skip("qsvLowPowerMain10", "skipped because QSV ICQ Main10 is unavailable")
+				result.QSVLAICQMain10 = skip("qsvLaIcqMain10", "skipped because QSV ICQ Main10 is unavailable")
+			}
+			result.LookAhead = result.QSVLAICQMain10
+			if result.QSVLAICQMain10 {
+				result.ExtendedBRC = probe("qsvExtendedBrcMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-extbrc", "1")
+			} else {
+				result.ExtendedBRC = skip("qsvExtendedBrcMain10", "skipped because QSV LA-ICQ Main10 is unavailable")
+			}
+			if result.QSVICQMain10 {
+				result.AdaptiveI = probe("qsvAdaptiveIMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_i", "1")
+				result.AdaptiveB = probe("qsvAdaptiveBMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_b", "1")
+			} else {
+				result.AdaptiveI = skip("qsvAdaptiveIMain10", "skipped because QSV ICQ Main10 is unavailable")
+				result.AdaptiveB = skip("qsvAdaptiveBMain10", "skipped because QSV ICQ Main10 is unavailable")
+			}
+			if result.QSVLAICQMain10 {
+				result.QSVFullCombination = probe("qsvFullCombination", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
+			} else {
+				result.QSVFullCombination = skip("qsvFullCombination", "skipped because QSV LA-ICQ Main10 is unavailable")
+			}
 		}
 		if encoder == "hevc_videotoolbox" {
 			result.VideoToolboxMain = result.Usable
 			result.VideoToolboxMain10 = result.Main10
+			result.TestedModes["videoToolboxMain"] = result.Usable
+			result.TestedModes["videoToolboxMain10"] = result.Main10
+			if !result.Usable {
+				result.ModeReasons["videoToolboxMain"] = mainReason
+			}
+			if !result.Main10 {
+				result.ModeReasons["videoToolboxMain10"] = main10Reason
+			}
+			vtProbe := func(name, format string, args ...string) bool {
+				passed, reason := videoToolboxFeatureSmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			result.VideoToolboxBFrames = result.Usable && vtProbe("videoToolboxBFramesMain", "yuv420p", "-profile:v", "main", "-bf", "3")
+			result.VideoToolboxPowerEfficient = result.Usable && vtProbe("videoToolboxPowerEfficientMain", "yuv420p", "-profile:v", "main", "-power_efficient", "1")
+			if result.Main10 {
+				result.TestedModes["videoToolboxBFramesMain10"] = vtProbe("videoToolboxBFramesMain10", "p010le", "-profile:v", "main10", "-bf", "3")
+				result.TestedModes["videoToolboxPowerEfficientMain10"] = vtProbe("videoToolboxPowerEfficientMain10", "p010le", "-profile:v", "main10", "-power_efficient", "1")
+			} else {
+				result.TestedModes["videoToolboxBFramesMain10"] = false
+				result.TestedModes["videoToolboxPowerEfficientMain10"] = false
+				result.ModeReasons["videoToolboxBFramesMain10"] = "skipped because the VideoToolbox Main10 base probe failed"
+				result.ModeReasons["videoToolboxPowerEfficientMain10"] = "skipped because the VideoToolbox Main10 base probe failed"
+			}
 		}
 	}
 	encoderCache.probed[encoder] = result
@@ -170,12 +252,23 @@ func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 }
 
 func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {
+	passed, _ := qsvFeatureSmokeProbe(pixelFormat, featureArgs...)
+	return passed
+}
+
+func qsvFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	return err == nil, summarizedProbeReason(output, err)
+}
+
+func qsvFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-init_hw_device", "qsv=hw,child_device=/dev/dri/renderD128",
-		"-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30",
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
 		"-frames:v", "30", "-an",
 		"-c:v", "hevc_qsv",
 		"-b:v", "1M",
@@ -183,7 +276,34 @@ func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {
 	}
 	args = append(args, featureArgs...)
 	args = append(args, "-f", "null", "-")
+	return args
+}
+
+func videoToolboxFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := videoToolboxFeatureSmokeArgs(pixelFormat, featureArgs...)
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
-	_ = output
-	return err == nil
+	return err == nil, summarizedProbeReason(output, err)
+}
+
+func videoToolboxFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-frames:v", "30", "-an", "-c:v", "hevc_videotoolbox", "-b:v", "1M", "-pix_fmt", pixelFormat}
+	args = append(args, featureArgs...)
+	args = append(args, "-f", "null", "-")
+	return args
+}
+
+func summarizedProbeReason(output []byte, err error) string {
+	if err == nil {
+		return ""
+	}
+	reason := strings.Join(strings.Fields(string(output)), " ")
+	if reason == "" {
+		reason = err.Error()
+	}
+	if len(reason) > 500 {
+		reason = reason[:500] + "…"
+	}
+	return reason
 }

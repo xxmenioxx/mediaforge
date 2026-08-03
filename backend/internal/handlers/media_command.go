@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os/exec"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
+	"github.com/anuelvs/mvforge/backend/internal/encodingpolicy"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
@@ -978,65 +978,7 @@ func adaptiveVideoToolboxBitrate(profile models.Profile, source *MediaStream) (i
 	if source == nil || source.Bitrate <= 0 || strings.ToLower(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"])) == "custom" {
 		return 0, 0, 0, false
 	}
-	preset := strings.ToLower(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))
-	multiplier, known := map[string]float64{"compact": 0.40, "medium": 0.52, "recommended": 0.65, "best_quality": 0.80, "high_quality": 0.95}[preset]
-	if !known {
-		return 0, 0, 0, false
-	}
-	adjustment := 1.0
-	outputHeight := effectiveVideoToolboxOutputHeight(profile, source.Height)
-	if outputHeight > 0 && outputHeight <= 576 { // DVD / SD detail retention.
-		adjustment += 0.075
-	}
-	target := int(math.Ceil(float64(source.Bitrate) * multiplier * adjustment / 1000.0))
-	if floor := videoToolboxBitrateFloorKbps(preset, outputHeight); target < floor {
-		target = floor
-	}
-	if ceiling := videoToolboxBitrateCeilingKbps(preset, outputHeight); ceiling > 0 && target > ceiling {
-		target = ceiling
-	}
-	return target, int(math.Ceil(float64(target) * 1.5)), int(math.Ceil(float64(target) * 2.5)), true
-}
-
-func videoToolboxBitrateCeilingKbps(preset string, height int) int {
-	if height <= 0 || height > 576 {
-		return 0
-	}
-	return map[string]int{"compact": 2500, "medium": 3200, "recommended": 4000, "best_quality": 5000, "high_quality": 6000}[preset]
-}
-
-func effectiveVideoToolboxOutputHeight(profile models.Profile, sourceHeight int) int {
-	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
-	for _, part := range strings.Split(filters, ",") {
-		part = strings.TrimSpace(part)
-		if !strings.HasPrefix(part, "crop=") {
-			continue
-		}
-		values := strings.Split(strings.TrimPrefix(part, "crop="), ":")
-		if len(values) < 2 {
-			continue
-		}
-		if height := int(parseInt(values[1])); height > 0 {
-			return height
-		}
-	}
-	return sourceHeight
-}
-
-func videoToolboxBitrateFloorKbps(preset string, height int) int {
-	values := map[string][]int{
-		"compact": {1500, 2200, 3000, 6000}, "medium": {2000, 3000, 4000, 8000},
-		"recommended": {2500, 4000, 5000, 10000}, "best_quality": {3200, 5000, 6000, 12000}, "high_quality": {4000, 6500, 7000, 14000},
-	}
-	index := 2
-	if height > 0 && height <= 576 {
-		index = 0
-	} else if height <= 720 {
-		index = 1
-	} else if height > 1080 {
-		index = 3
-	}
-	return values[preset][index]
+	return encodingpolicy.VideoToolboxBitrate(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), source.Bitrate, source.Height, workerStringValue(profile.WorkerConfig["videoFilters"]))
 }
 
 func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []string {
@@ -1080,6 +1022,7 @@ func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []stri
 		}
 	}
 	if encoder == "hevc_videotoolbox" {
+		capability := capabilities.CheckEncoder("hevc_videotoolbox")
 		videoToolboxProfile := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoToolboxProfile"])))
 		if videoToolboxProfile != "main" && videoToolboxProfile != "main10" {
 			if profileUsesTenBit(profile) {
@@ -1091,13 +1034,16 @@ func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []stri
 		if gop := workerIntValue(profile.WorkerConfig["videoToolboxGop"], 0); gop > 0 {
 			args = append(args, "-g", fmt.Sprintf("%d", gop))
 		}
-		if value, ok := profile.WorkerConfig["videoToolboxAllowFrameReordering"].(bool); ok {
+		main10 := videoToolboxProfile == "main10"
+		bFramesSupported := videoToolboxOptionalFeatureSupported(capability, "bframes", main10)
+		powerSupported := videoToolboxOptionalFeatureSupported(capability, "power_efficiency", main10)
+		if value, ok := profile.WorkerConfig["videoToolboxAllowFrameReordering"].(bool); ok && bFramesSupported {
 			args = append(args, "-bf", map[bool]string{true: "3", false: "0"}[value])
 		}
-		if value, ok := profile.WorkerConfig["videoToolboxPowerEfficiency"].(bool); ok {
+		if value, ok := profile.WorkerConfig["videoToolboxPowerEfficiency"].(bool); ok && powerSupported {
 			args = append(args, "-power_efficient", map[bool]string{true: "1", false: "0"}[value])
 		}
-		if videoToolboxProfile == "main10" {
+		if main10 && capability.VideoToolboxMain10 {
 			args = append(args, "-profile:v", "main10", "-pix_fmt", "p010le")
 		} else {
 			args = append(args, "-profile:v", "main", "-pix_fmt", "yuv420p")
@@ -1107,6 +1053,17 @@ func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []stri
 		args = append(args, "-pix_fmt", "yuv420p10le")
 	}
 	return args
+}
+
+func videoToolboxOptionalFeatureSupported(capability capabilities.EncoderCapability, feature string, main10 bool) bool {
+	switch feature {
+	case "bframes":
+		return capability.VideoToolboxBFrames && (!main10 || capability.TestedModes["videoToolboxBFramesMain10"])
+	case "power_efficiency":
+		return capability.VideoToolboxPowerEfficient && (!main10 || capability.TestedModes["videoToolboxPowerEfficientMain10"])
+	default:
+		return false
+	}
 }
 
 func resolvedVideoEncoder(profile models.Profile) string {
@@ -1289,11 +1246,16 @@ func qsvWorkerArgs(profile models.Profile) []string {
 
 func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.EncoderCapability) []string {
 	args := []string{}
-	if profileWorkerBool(profile, "qsvLowPower", false) && capability.LowPower {
+	main10 := profileUsesTenBit(profile)
+	lowPowerSupported := capability.TestedModes["qsvLowPowerMain8"]
+	if main10 {
+		lowPowerSupported = capability.QSVLowPowerMain10
+	}
+	if profileWorkerBool(profile, "qsvLowPower", false) && lowPowerSupported {
 		args = append(args, "-low_power", "1")
 	}
 	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
-	lookAheadEnabled := rateControl == "la_icq" && capability.LookAhead
+	lookAheadEnabled := main10 && rateControl == "la_icq" && capability.QSVLAICQMain10
 	if lookAheadEnabled {
 		args = append(args, "-look_ahead", "1")
 	}
@@ -1301,7 +1263,7 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if lookAheadEnabled && lookAheadDepth > 0 {
 		args = append(args, "-look_ahead_depth", fmt.Sprintf("%d", min(100, max(10, lookAheadDepth))))
 	}
-	advancedCombination := capability.QSVFullCombination
+	advancedCombination := main10 && capability.QSVFullCombination
 	if profileWorkerBool(profile, "qsvExtendedBRC", false) && capability.ExtendedBRC && advancedCombination {
 		args = append(args, "-extbrc", "1")
 		if !lookAheadEnabled && lookAheadDepth > 0 {
@@ -1339,7 +1301,7 @@ func ffmpegEncoderAvailableForProfile(encoder string, profile models.Profile) bo
 	if !capability.Usable {
 		return false
 	}
-	return (encoder != "hevc_qsv" && encoder != "hevc_vaapi") || !profileUsesTenBit(profile) || capability.Main10
+	return (encoder != "hevc_qsv" && encoder != "hevc_vaapi" && encoder != "hevc_videotoolbox") || !profileUsesTenBit(profile) || capability.Main10
 }
 
 func defaultQSVQuality(softwareCRF int) int {

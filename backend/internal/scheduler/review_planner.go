@@ -222,13 +222,35 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	minRatio, maxRatio := estimateRatios(plan.CodecFamily, plan.QualityValue)
 	minOutput := int64(float64(inputSize) * minRatio)
 	maxOutput := int64(float64(inputSize) * maxRatio)
+	estimateMethod := "profile_heuristic_v1"
+	estimateConfidence := "low"
+	if plan.Evaluation == nil {
+		plan.Evaluation = models.JSONMap{}
+	}
+	if source, probed := probeMediaEstimate(job.MediaPath); probed {
+		if estimate, estimated := estimatePlannedOutput(profile, plan.SelectedEncoder, source, inputSize); estimated {
+			if sampledVideoBytes, sampleEncoder, found := persistedProfileSampleEstimate(db, job.MediaPath, profile); found && sampleEncoder == plan.SelectedEncoder {
+				total := sampledVideoBytes + estimate.AudioBytes + estimate.SubtitleBytes
+				overhead := maxInt64(16<<10, total/100)
+				estimate.MinBytes, estimate.MaxBytes = int64(float64(total+overhead)*.98), int64(float64(total+overhead)*1.02)
+				estimate.VideoBytes, estimate.Confidence, estimate.Method = sampledVideoBytes, "high", "five_distributed_profile_samples"
+			}
+			minOutput, maxOutput = estimate.MinBytes, estimate.MaxBytes
+			estimateMethod, estimateConfidence = estimate.Method, estimate.Confidence
+			plan.Evaluation["outputEstimate"] = models.JSONMap{
+				"videoBytes": estimate.VideoBytes, "audioBytes": estimate.AudioBytes, "subtitleBytes": estimate.SubtitleBytes,
+				"durationSeconds": source.DurationSeconds, "sourceVideoBitrate": source.VideoBitrate,
+			}
+		}
+	}
 	plan.OutputPath = reviewOutputPath(job.MediaPath, library, profile.Container)
 	plan.InputSizeBytes = inputSize
 	plan.EstimatedOutputMinBytes = minOutput
 	plan.EstimatedOutputMaxBytes = maxOutput
 	plan.EstimatedWorkspaceBytes = inputSize + maxOutput + maxOutput/5
-	plan.EstimateConfidence = "low"
-	plan.Evaluation = models.JSONMap{"method": "profile_heuristic_v1", "requiresLabSampleForHigherConfidence": true}
+	plan.EstimateConfidence = estimateConfidence
+	plan.Evaluation["method"] = estimateMethod
+	plan.Evaluation["requiresLabSampleForHigherConfidence"] = estimateConfidence != "high"
 	if plan.RuntimeSnapshotID != nil {
 		plan.Evaluation["runtimeSnapshotId"] = *plan.RuntimeSnapshotID
 	}
@@ -251,9 +273,11 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		}
 	}
 	plan.DecisionReasons = append(plan.DecisionReasons,
-		fmt.Sprintf("Estimated output range is %d-%d bytes using profile heuristics", minOutput, maxOutput),
-		"A Lab sample is required for a medium or high confidence size estimate",
+		fmt.Sprintf("Estimated output range is %d-%d bytes using %s", minOutput, maxOutput, estimateMethod),
 	)
+	if estimateConfidence != "high" {
+		plan.DecisionReasons = append(plan.DecisionReasons, "A saved LAB measurement can raise this estimate to high confidence")
+	}
 	if plan.SelectedEncoder == "" {
 		plan.Status, plan.WaitingState, plan.ApprovalStatus = ExecutionPlanWaiting, "WAITING_ENCODER", ApprovalPending
 		plan.Warnings = append(plan.Warnings, encoderFailure)

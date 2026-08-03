@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -20,7 +21,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -85,6 +88,7 @@ var previewCacheState = struct {
 }{inFlight: map[string]*previewGeneration{}}
 
 var previewFilterCapabilityCache sync.Map
+var profileSampleEstimateSlot = make(chan struct{}, 1)
 
 var assetInventorySyncMu sync.Mutex
 
@@ -2326,6 +2330,135 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	c.Header("X-MVForge-Requested-Encoder", requestedVideoEncoder)
 	c.Header("X-MVForge-Effective-Encoder", effectiveVideoEncoder)
 	c.File(cachePath)
+}
+
+// SampleEstimate deliberately runs only when requested from LAB. It encodes
+// five distributed, short video-only samples using the current draft options,
+// then extrapolates their measured bitrate to the complete duration.
+type profileSampleEstimateInput struct {
+	Path      string         `json:"path"`
+	ProfileID uint           `json:"profileId"`
+	Profile   models.Profile `json:"profile"`
+	Seconds   int            `json:"seconds"`
+}
+
+func (h AssetHandler) SampleEstimate(c *gin.Context) {
+	var input profileSampleEstimateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path and profile are required"})
+		return
+	}
+	select {
+	case profileSampleEstimateSlot <- struct{}{}:
+		defer func() { <-profileSampleEstimateSlot }()
+	case <-c.Request.Context().Done():
+		c.JSON(http.StatusRequestTimeout, gin.H{"error": "sample estimate canceled while waiting for capacity"})
+		return
+	}
+	path := strings.TrimSpace(input.Path)
+	resolvedPath, err := h.resolveMediaPath(path)
+	if path == "" || err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a readable media path is required"})
+		return
+	}
+	allowed, err := h.pathBelongsToReadableMediaRoot(resolvedPath)
+	if err != nil || !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
+		return
+	}
+	streams, err := probeMediaStreams(resolvedPath)
+	if err != nil || streams.Duration <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "could not determine media duration"})
+		return
+	}
+	seconds := min(60, max(5, input.Seconds))
+	if input.Seconds == 0 {
+		seconds = 20
+	}
+	profile := normalizeHardwareQualityPreset(input.Profile)
+	if len(streams.Video) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "asset has no video stream"})
+		return
+	}
+	profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
+	codecArgs := videoCodecArgsForSource(profile, &streams.Video[0])
+	workerArgs := videoWorkerArgsForSource(profile, &streams.Video[0])
+	dir, err := os.MkdirTemp("", "mvforge-sample-estimate-")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer os.RemoveAll(dir)
+	starts := distributedInterlaceStarts(streams.Duration, seconds)
+	totalBytes := int64(0)
+	completed := []float64{}
+	for index, start := range starts {
+		output := filepath.Join(dir, fmt.Sprintf("sample-%d.mkv", index))
+		args := []string{"-hide_banner", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start), "-i", resolvedPath, "-t", strconv.Itoa(seconds), "-map", "0:v:0?"}
+		args = append(args, codecArgs...)
+		args = append(args, workerArgs...)
+		args = append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-f", "matroska", "-y", output)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(seconds+90)*time.Second)
+		err := exec.CommandContext(ctx, "ffmpeg", args...).Run()
+		cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "sample estimate failed: " + err.Error()})
+			return
+		}
+		if info, statErr := os.Stat(output); statErr == nil && info.Size() > 0 {
+			totalBytes += info.Size()
+			completed = append(completed, start)
+		}
+	}
+	measuredSeconds := float64(len(completed) * seconds)
+	if measuredSeconds <= 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "sample estimate produced no output"})
+		return
+	}
+	videoBytes := int64(float64(totalBytes) / measuredSeconds * streams.Duration)
+	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "five_distributed_profile_samples", "effectiveEncoder": argumentValue(codecArgs, "-c:v"), "persisted": false}
+	if input.ProfileID > 0 {
+		var saved models.Profile
+		if h.db.First(&saved, input.ProfileID).Error == nil && scheduler.ProfileEstimateFingerprint(saved) == scheduler.ProfileEstimateFingerprint(input.Profile) {
+			if err := persistProfileSampleEstimate(h.db, resolvedPath, saved, result); err != nil {
+				applog.Event("warn", "analysis", "profile_sample_estimate_persist_failed", map[string]any{"path": resolvedPath, "profileId": input.ProfileID}, err)
+			} else {
+				result["persisted"] = true
+			}
+		}
+	}
+	applog.Event("info", "analysis", "profile_sample_estimate", map[string]any{"path": resolvedPath, "profileId": input.ProfileID, "estimatedVideoBytes": videoBytes, "effectiveEncoder": result["effectiveEncoder"], "sampleCount": len(completed), "persisted": result["persisted"]}, nil)
+	c.JSON(http.StatusOK, result)
+}
+
+func persistProfileSampleEstimate(db *gorm.DB, path string, profile models.Profile, estimate models.JSONMap) error {
+	const key = "profileSampleEstimates"
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat sample source: %w", err)
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var setting models.AppSetting
+		queryErr := tx.First(&setting, "key = ?", key).Error
+		if queryErr != nil && !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+			return queryErr
+		}
+		records, _ := setting.Value["records"].([]interface{})
+		record := models.JSONMap{"path": path, "profileId": profile.ID, "profileVersion": profile.ProfileVersion, "profileFingerprint": scheduler.ProfileEstimateFingerprint(profile), "sourceSize": strconv.FormatInt(info.Size(), 10), "sourceModifiedNs": strconv.FormatInt(info.ModTime().UnixNano(), 10), "recordedAt": time.Now().UTC().Format(time.RFC3339), "estimate": estimate}
+		next := []interface{}{record}
+		for _, existing := range records {
+			entry := unknownRecord(existing)
+			if entry != nil && stringFromUnknown(entry["path"]) == path && uint(workerIntValue(entry["profileId"], 0)) == profile.ID {
+				continue
+			}
+			next = append(next, existing)
+		}
+		if len(next) > 100 {
+			next = next[:100]
+		}
+		setting.Key, setting.Value = key, models.JSONMap{"records": next}
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"})}).Create(&setting).Error
+	})
 }
 
 func argumentValue(args []string, name string) string {

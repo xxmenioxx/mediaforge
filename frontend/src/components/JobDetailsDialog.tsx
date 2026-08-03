@@ -54,6 +54,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const profile = objectValue(asIs, 'profile');
   const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
   const directPlayPlan = activePlan ? objectValue(activePlan.evaluation, 'directPlay') : undefined;
+  const outputEstimate = activePlan ? objectValue(activePlan.evaluation, 'outputEstimate') : undefined;
 
   return (
     <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
@@ -147,6 +148,12 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                       ['Codec family', activePlan.codecFamily || 'Pending'],
                       ['Selected encoder', activePlan.selectedEncoder || 'Pending scheduler evaluation'],
                       ['Estimated output', `${formatBytes(activePlan.estimatedOutputMinBytes)}–${formatBytes(activePlan.estimatedOutputMaxBytes)}`],
+                      ...(outputEstimate ? [
+                        ['Estimated video', formatBytes(planNumber(outputEstimate, 'videoBytes'))],
+                        ['Estimated audio', formatBytes(planNumber(outputEstimate, 'audioBytes'))],
+                        ['Estimated subtitles', formatBytes(planNumber(outputEstimate, 'subtitleBytes'))],
+                        ['Estimate source bitrate', formatBitrate(planNumber(outputEstimate, 'sourceVideoBitrate'))],
+                      ] as Array<[string, string]> : []),
                       ['Workspace needed', formatBytes(activePlan.estimatedWorkspaceBytes)],
                       ['Estimate confidence', activePlan.estimateConfidence || 'Pending'],
                       ['Approval', activePlan.approvalStatus || 'Pending'],
@@ -186,6 +193,11 @@ function planString(value: Record<string, unknown>, key: string) {
 
 function planNumber(value: Record<string, unknown>, key: string) {
   return typeof value?.[key] === 'number' ? value[key] as number : 0;
+}
+
+function formatBitrate(value: number) {
+  if (!value) return 'Unknown';
+  return `${(value / 1_000_000).toFixed(2)} Mbps`;
 }
 
 function SummaryGrid({ items }: { items: Array<[string, string]> }) {

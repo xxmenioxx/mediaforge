@@ -406,7 +406,7 @@ export type RuntimeSnapshot = {
   powerSource: string;
   onBattery: boolean;
   disks: Record<string, unknown>;
-  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean }>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;
@@ -825,4 +825,19 @@ export type CompatiblePreviewOptions = {
   mode?: 'quick' | 'quality';
   previewNormalization?: 'preserve' | 'normalize_bt709';
   subtitleStreamIndex?: number;
+};
+
+export type ProfileSampleEstimate = {
+  assetPath: string;
+  durationSeconds: number;
+  sampleSeconds: number;
+  sampleStarts: number[];
+  sampleCount: number;
+  measuredVideoBytes: number;
+  estimatedVideoBytes: number;
+  measuredVideoBitrate: number;
+  confidence: 'high';
+  source: string;
+  effectiveEncoder: string;
+  persisted: boolean;
 };

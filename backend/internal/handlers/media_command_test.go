@@ -272,7 +272,8 @@ func TestDefaultQSVQualityUsesConservativeStartingPoint(t *testing.T) {
 }
 
 func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
-	profile := models.Profile{WorkerConfig: models.JSONMap{
+	profile := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{
+		"pixFmt":            "p010le",
 		"qsvRateControl":    "la_icq",
 		"qsvExtendedBRC":    true,
 		"qsvLookAheadDepth": 40,
@@ -280,7 +281,7 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 		"qsvAdaptiveB":      true,
 	}}
 	args := qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{
-		ICQ: true, LookAhead: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false, QSVFullCombination: true,
+		ICQ: true, LookAhead: true, QSVLAICQMain10: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false, QSVFullCombination: true,
 	})
 	command := strings.Join(args, " ")
 	assertContains(t, command, "-look_ahead 1")
@@ -763,6 +764,49 @@ func TestVideoToolboxQualityPresetOptionsReachFFmpeg(t *testing.T) {
 	assertNotContains(t, command, "-realtime")
 	assertNotContains(t, command, "-q:v")
 	assertNotContains(t, command, "-allow_frame_reordering")
+}
+
+func TestVideoToolboxMain10OptionalFeaturesRequireMatchingProbe(t *testing.T) {
+	capability := capabilities.EncoderCapability{
+		VideoToolboxBFrames:        true,
+		VideoToolboxPowerEfficient: true,
+		TestedModes:                map[string]bool{},
+	}
+	if !videoToolboxOptionalFeatureSupported(capability, "bframes", false) {
+		t.Fatal("Main B-frames should use the successful Main probe")
+	}
+	if videoToolboxOptionalFeatureSupported(capability, "bframes", true) || videoToolboxOptionalFeatureSupported(capability, "power_efficiency", true) {
+		t.Fatal("Main10 optional features must not reuse Main capability evidence")
+	}
+	capability.TestedModes["videoToolboxBFramesMain10"] = true
+	capability.TestedModes["videoToolboxPowerEfficientMain10"] = true
+	if !videoToolboxOptionalFeatureSupported(capability, "bframes", true) || !videoToolboxOptionalFeatureSupported(capability, "power_efficiency", true) {
+		t.Fatal("successful Main10 probes should enable matching optional features")
+	}
+}
+
+func TestQSVMainDoesNotReuseMain10AdvancedCapabilities(t *testing.T) {
+	capability := capabilities.EncoderCapability{
+		LowPower:           true,
+		LookAhead:          true,
+		ExtendedBRC:        true,
+		AdaptiveI:          true,
+		AdaptiveB:          true,
+		QSVLAICQMain10:     true,
+		QSVLowPowerMain10:  true,
+		QSVFullCombination: true,
+		TestedModes:        map[string]bool{"qsvLowPowerMain8": true},
+	}
+	profile := models.Profile{VideoCodec: "x265", BitDepth: 8, WorkerConfig: models.JSONMap{"pixFmt": "nv12", "qsvRateControl": "la_icq", "qsvLowPower": true, "qsvExtendedBRC": true, "qsvAdaptiveI": true, "qsvAdaptiveB": true}}
+	args := strings.Join(qsvWorkerArgsForCapability(profile, capability), " ")
+	if !strings.Contains(args, "-low_power 1") {
+		t.Fatalf("expected independently probed Main low-power option: %s", args)
+	}
+	for _, unsupported := range []string{"-look_ahead", "-extbrc", "-adaptive_i", "-adaptive_b"} {
+		if strings.Contains(args, unsupported) {
+			t.Fatalf("Main profile reused a Main10-only capability %s: %s", unsupported, args)
+		}
+	}
 }
 
 func TestVideoToolboxBT709IsTaggedWithoutRedundantConversion(t *testing.T) {

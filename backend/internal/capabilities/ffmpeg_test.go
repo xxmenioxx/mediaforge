@@ -2,6 +2,7 @@ package capabilities
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,16 @@ func TestEncoderCapabilityCanReportMainWithoutMain10(t *testing.T) {
 	}
 	if capability.Main10 {
 		t.Fatal("did not expect Main10 support")
+	}
+}
+
+func TestHardwareFeatureProbesUseRepresentativeFrameSize(t *testing.T) {
+	qsvArgs := qsvFeatureSmokeArgs("nv12")
+	if !strings.Contains(strings.Join(qsvArgs, " "), "testsrc2=size=640x360:rate=30") {
+		t.Fatalf("QSV feature probe uses an unreliable tiny frame: %v", qsvArgs)
+	}
+	videoToolboxArgs := videoToolboxFeatureSmokeArgs("yuv420p")
+	if !strings.Contains(strings.Join(videoToolboxArgs, " "), "testsrc2=size=640x360:rate=30") {
+		t.Fatalf("VideoToolbox feature probe uses an unreliable tiny frame: %v", videoToolboxArgs)
 	}
 }

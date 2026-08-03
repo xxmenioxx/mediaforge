@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,6 +177,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		if colorWarning != "" {
 			warnings = append(warnings, colorWarning)
 		}
+		if fidelity := validateJobFrameFidelity(job); len(fidelity) > 0 {
+			colorReport["frameFidelity"] = fidelity
+		}
 	}
 
 	if score < 0 {
@@ -265,6 +270,59 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, s
 	return report, ""
 }
 
+// validateJobFrameFidelity records the characteristics that are not purely a
+// color policy: frame geometry, aspect, fields, chroma siting and output bit
+// depth. It is informational by design; codec, depth and field order can be
+// deliberate profile changes and must not make an otherwise valid job fail.
+func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
+	source := firstVideoFrameCharacteristics(ffprobeJSON(job.MediaPath))
+	output := firstVideoFrameCharacteristics(ffprobeJSON(job.OutputPath))
+	if len(source) == 0 || len(output) == 0 {
+		return models.JSONMap{"status": "unverified", "source": source, "output": output}
+	}
+	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	filters := ""
+	if worker != nil {
+		filters = strings.ToLower(stringFromUnknown(worker["videoFilters"]))
+	}
+	effectiveCommand := strings.ToLower(job.Notes)
+	filters += "," + effectiveCommand
+	fields := models.JSONMap{}
+	fields["sampleAspectRatio"] = frameFidelityValue(source, output, "sampleAspectRatio", strings.Contains(filters, "crop=") || strings.Contains(filters, "setsar="))
+	fields["displayAspectRatio"] = frameFidelityValue(source, output, "displayAspectRatio", strings.Contains(filters, "setdar="))
+	fields["frameRate"] = frameFidelityValue(source, output, "frameRate", strings.Contains(filters, "decimate") || strings.Contains(filters, "fps="))
+	fields["chromaLocation"] = frameFidelityValue(source, output, "chromaLocation", false)
+	fields["fieldOrder"] = frameFidelityValue(source, output, "fieldOrder", strings.Contains(filters, "bwdif") || strings.Contains(filters, "yadif") || strings.Contains(filters, "deinterlace"))
+	fields["pixelFormat"] = frameFidelityValue(source, output, "pixelFormat", true)
+	fields["bitDepth"] = frameFidelityValue(source, output, "bitDepth", true)
+	fields["frameSize"] = frameFidelityValue(source, output, "frameSize", strings.Contains(filters, "crop=") || strings.Contains(filters, "scale="))
+
+	status := "passed"
+	for _, raw := range fields {
+		if value, ok := raw.(models.JSONMap); ok && value["status"] == "changed_unexpectedly" {
+			status = "warning"
+			break
+		}
+	}
+	return models.JSONMap{"status": status, "source": source, "output": output, "fields": fields}
+}
+
+func frameFidelityValue(source, output models.JSONMap, key string, allowedChange bool) models.JSONMap {
+	from, to := stringFromUnknown(source[key]), stringFromUnknown(output[key])
+	if from == "" || to == "" {
+		return models.JSONMap{"source": from, "output": to, "status": "unverified"}
+	}
+	status := "preserved"
+	if !strings.EqualFold(from, to) {
+		if allowedChange {
+			status = "changed_intentionally"
+		} else {
+			status = "changed_unexpectedly"
+		}
+	}
+	return models.JSONMap{"source": from, "output": to, "status": status}
+}
+
 func unknownRecord(value interface{}) map[string]interface{} {
 	switch typed := value.(type) {
 	case map[string]interface{}:
@@ -277,6 +335,14 @@ func unknownRecord(value interface{}) map[string]interface{} {
 }
 
 func firstVideoColorCharacteristics(probe map[string]any) models.JSONMap {
+	result := firstVideoFrameCharacteristics(probe)
+	if len(result) == 0 || result["colorSpace"] == "" || result["colorTransfer"] == "" || result["colorPrimaries"] == "" {
+		return nil
+	}
+	return result
+}
+
+func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 	rawStreams, ok := probe["streams"].([]interface{})
 	if !ok {
 		return nil
@@ -287,18 +353,50 @@ func firstVideoColorCharacteristics(probe map[string]any) models.JSONMap {
 			continue
 		}
 		result := models.JSONMap{
-			"colorSpace":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_space"]))),
-			"colorTransfer":  strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_transfer"]))),
-			"colorPrimaries": strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_primaries"]))),
-			"colorRange":     normalizedFFmpegRange(stringFromUnknown(stream["color_range"])),
-			"pixelFormat":    strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["pix_fmt"]))),
-		}
-		if result["colorSpace"] == "" || result["colorTransfer"] == "" || result["colorPrimaries"] == "" {
-			return nil
+			"colorSpace":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_space"]))),
+			"colorTransfer":      strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_transfer"]))),
+			"colorPrimaries":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_primaries"]))),
+			"colorRange":         normalizedFFmpegRange(stringFromUnknown(stream["color_range"])),
+			"pixelFormat":        strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["pix_fmt"]))),
+			"bitDepth":           bitDepthFromPixelFormat(stringFromUnknown(stream["pix_fmt"])),
+			"frameSize":          characteristicString(stream["width"]) + "x" + characteristicString(stream["height"]),
+			"sampleAspectRatio":  strings.TrimSpace(stringFromUnknown(stream["sample_aspect_ratio"])),
+			"displayAspectRatio": strings.TrimSpace(stringFromUnknown(stream["display_aspect_ratio"])),
+			"frameRate":          strings.TrimSpace(stringFromUnknown(stream["avg_frame_rate"])),
+			"fieldOrder":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["field_order"]))),
+			"chromaLocation":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["chroma_location"]))),
 		}
 		return result
 	}
 	return nil
+}
+
+func bitDepthFromPixelFormat(pixelFormat string) string {
+	pixelFormat = strings.ToLower(pixelFormat)
+	if strings.Contains(pixelFormat, "p010") || strings.Contains(pixelFormat, "10") {
+		return "10-bit"
+	}
+	if strings.Contains(pixelFormat, "12") {
+		return "12-bit"
+	}
+	if pixelFormat != "" {
+		return "8-bit"
+	}
+	return ""
+}
+
+func characteristicString(value interface{}) string {
+	if text := stringFromUnknown(value); text != "" {
+		return text
+	}
+	switch typed := value.(type) {
+	case float64:
+		return fmt.Sprintf("%.0f", typed)
+	case int:
+		return strconv.Itoa(typed)
+	default:
+		return ""
+	}
 }
 
 func cloneJSONMap(value models.JSONMap) models.JSONMap {

@@ -124,6 +124,17 @@ export function ProfilesPage() {
   const defaultHardwareEncoder = videoEncoderOptions.find(
     (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
+  const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
+  const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
+  const qsvLookAheadAvailable = qsvMain10Selected && qsvCapability?.qsvLaIcqMain10 === true;
+  const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
+  const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
+  const videoToolboxMain10Selected = workerConfigString(form, 'videoToolboxProfile', '').toLowerCase() === 'main10'
+    || ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
+  const videoToolboxBFramesAvailable = videoToolboxCapability?.videoToolboxBFrames === true
+    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxBFramesMain10 === true);
+  const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
+    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
 
   const createProfile = useMutation({
     mutationFn: api.createProfile,
@@ -692,7 +703,7 @@ export function ProfilesPage() {
                             fullWidth
                           >
                             {compatibleProfilePixelFormats(workerConfigString(form, 'preferredEncoder', 'software'), workerConfigString(form, 'videoEncoder', defaultHardwareEncoder)).map((option) => (
-                              <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+                              <MenuItem key={option.value} value={option.value} disabled={hardwareTenBitUnavailable(workerConfigString(form, 'videoEncoder', defaultHardwareEncoder), option.value, runtimeSnapshot.data?.encoders)}>{option.label}</MenuItem>
                             ))}
                           </TextField>
                         </Grid>
@@ -745,7 +756,7 @@ export function ProfilesPage() {
                                 fullWidth
                               >
                                 <MenuItem value="icq">ICQ · safest default</MenuItem>
-                                <MenuItem value="la_icq">LA-ICQ · capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 capability required</MenuItem>
                               </TextField>
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
@@ -754,7 +765,7 @@ export function ProfilesPage() {
                                 type="number"
                                 value={workerConfigNumber(form, 'qsvLookAheadDepth', 40)}
                                 onChange={(event) => updateWorkerConfig('qsvLookAheadDepth', Number(event.target.value))}
-                                inputProps={{ min: 10, max: 100 }}
+                                inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable}
                                 helperText="Used with supported extended BRC; 40 is a conservative starting point."
                                 fullWidth
                               />
@@ -763,15 +774,15 @@ export function ProfilesPage() {
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
-                                  control={<Checkbox checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
                                   label="QSV Extended BRC"
                                 />
                                 <FormControlLabel
-                                  control={<Checkbox checked={workerConfigBool(form, 'qsvAdaptiveI')} onChange={(event) => updateWorkerConfig('qsvAdaptiveI', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvAdaptiveI')} onChange={(event) => updateWorkerConfig('qsvAdaptiveI', event.target.checked)} />}
                                   label="QSV Adaptive I"
                                 />
                                 <FormControlLabel
-                                  control={<Checkbox checked={workerConfigBool(form, 'qsvAdaptiveB')} onChange={(event) => updateWorkerConfig('qsvAdaptiveB', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvAdaptiveB')} onChange={(event) => updateWorkerConfig('qsvAdaptiveB', event.target.checked)} />}
                                   label="QSV Adaptive B"
                                 />
                               </Stack>
@@ -792,7 +803,7 @@ export function ProfilesPage() {
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={workerConfigString(form, 'videoToolboxProfile', '')} onChange={(event) => updateWorkerConfig('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" fullWidth /></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={workerConfigNumber(form, 'videoToolboxGop', 0)} onChange={(event) => updateWorkerConfig('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" fullWidth /></Grid>
-                            <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Allows reordered frames for better compression at the cost of latency." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateWorkerConfig('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Asks VideoToolbox to favor an energy-efficient encoding path." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxPowerEfficiency')} onChange={(event) => updateWorkerConfig('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
+                            <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={workerConfigBool(form, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateWorkerConfig('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={workerConfigBool(form, 'videoToolboxPowerEfficiency')} onChange={(event) => updateWorkerConfig('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                           </>
                         ) : null}
                         <Grid size={{ xs: 12, md: 4 }}>
@@ -1374,6 +1385,13 @@ function compatibleProfilePixelFormats(preference: string, encoder: string) {
     return pixelFormatOptions.filter((option) => ['auto', 'p010le', 'yuv420p'].includes(option.value));
   }
   return pixelFormatOptions.filter((option) => ['auto', 'yuv420p10le', 'yuv420p'].includes(option.value));
+}
+
+function hardwareTenBitUnavailable(encoder: string, pixelFormat: string, encoders?: Record<string, { main10?: boolean; videoToolboxMain10?: boolean }>) {
+  if (pixelFormat !== 'p010le') return false;
+  if (encoder === 'hevc_qsv') return encoders?.hevc_qsv?.main10 === false;
+  if (encoder === 'hevc_videotoolbox') return encoders?.hevc_videotoolbox?.videoToolboxMain10 === false;
+  return false;
 }
 
 function videoEncoderDescription(value: string) {

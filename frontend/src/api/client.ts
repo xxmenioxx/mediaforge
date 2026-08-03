@@ -30,6 +30,7 @@ import type {
   RuntimeProfilesResponse,
   ScanResult,
   CompatiblePreviewOptions,
+  ProfileSampleEstimate,
   PreviewInspection,
   PreviewFrameMetrics,
   SoftwareVersions,
@@ -320,6 +321,8 @@ export const api = {
     request<PreviewFrameMetrics>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/metrics')),
   inspectCompatibleAssetPreview: (options: CompatiblePreviewOptions) =>
     request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect')),
+  estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }) =>
+    request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input) }),
   audioPreviewUrl: ({
     path,
     profileKey = '',

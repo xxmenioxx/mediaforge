@@ -732,6 +732,11 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
+	encoderDecision := encoderDecisionForProfile(plan.Profile)
+	job.Notes = appendNote(job.Notes, fmt.Sprintf("Encoder decision: requested=%s effective=%s", stringFromUnknown(encoderDecision["requested"]), stringFromUnknown(encoderDecision["effective"])))
+	if encoderDecision["downgraded"] == true {
+		job.Notes = appendNote(job.Notes, "Encoder downgrade: "+stringFromUnknown(encoderDecision["reason"]))
+	}
 	if !assetConversionOverrideEmpty(override) {
 		job.Notes = appendNote(job.Notes, "Asset conversion overrides applied")
 	}

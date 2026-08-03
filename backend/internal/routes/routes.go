@@ -82,6 +82,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/assets/conversion", assets.UpdateConversion)
 		api.GET("/assets/preview", assets.Preview)
 		api.GET("/assets/preview/compatible", assets.CompatiblePreview)
+		api.POST("/assets/preview/estimate", assets.SampleEstimate)
 		api.GET("/assets/preview/inspect", assets.CompatiblePreviewInspection)
 		api.GET("/assets/preview/metrics", assets.CompatiblePreviewMetrics)
 		api.GET("/assets/preview/audio", assets.AudioPreview)
@@ -141,6 +142,12 @@ func productionLogger() gin.HandlerFunc {
 		}
 		c.Set("requestId", requestID)
 		c.Header("X-Request-ID", requestID)
+
+		ctx := c.Request.Context()
+		if ctx.Err() != nil {
+			return
+		}
+
 		c.Next()
 
 		level := "info"
