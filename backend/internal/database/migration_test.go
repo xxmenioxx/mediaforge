@@ -81,3 +81,42 @@ func TestMigrateRuntimePolicyPreservesLegacyCustomLimitsAsOverrides(t *testing.T
 		t.Fatalf("legacy values not preserved: %#v", overrides)
 	}
 }
+
+func TestMigrateReclassifiesLegacyHardwareQualityPreset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "preset.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{Name: "Legacy Compact", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "compact"}}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&profile, profile.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if profile.WorkerConfig["hardwareQualityPreset"] != "recommended" || intFromJSON(profile.WorkerConfig["hardwareQualityPresetScale"]) != 2 {
+		t.Fatalf("legacy preset quality intent was not preserved: %#v", profile.WorkerConfig)
+	}
+}
+
+func TestMigratePreservesEveryLegacyHardwareQualityLevel(t *testing.T) {
+	cases := map[string]string{
+		"compact": "recommended", "medium": "best_quality", "recommended": "high_quality",
+		"best_quality": "archive", "high_quality": "master",
+	}
+	for legacy, expected := range cases {
+		profile := models.Profile{ProfileVersion: 1, WorkerConfig: models.JSONMap{"hardwareQualityPreset": legacy}}
+		if !migrateHardwareQualityPresetScale(&profile) {
+			t.Fatalf("legacy preset %s was not migrated", legacy)
+		}
+		if profile.WorkerConfig["hardwareQualityPreset"] != expected || intFromJSON(profile.WorkerConfig["hardwareQualityPresetScale"]) != 2 {
+			t.Fatalf("legacy preset %s migrated to %#v, expected %s", legacy, profile.WorkerConfig, expected)
+		}
+	}
+}

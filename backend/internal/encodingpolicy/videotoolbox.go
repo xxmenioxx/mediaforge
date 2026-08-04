@@ -11,7 +11,7 @@ import (
 // function so estimates cannot drift from execution.
 func VideoToolboxBitrate(preset string, sourceBitrate int64, sourceHeight int, filters string) (targetKbps, maxrateKbps, bufferKbps int, ok bool) {
 	preset = strings.ToLower(strings.TrimSpace(preset))
-	multiplier, known := map[string]float64{"compact": .40, "medium": .52, "recommended": .65, "best_quality": .80, "high_quality": .95}[preset]
+	multiplier, known := map[string]float64{"compact": .25, "medium": .33, "recommended": .40, "best_quality": .52, "high_quality": .65, "archive": .80, "master": .95}[preset]
 	if !known || sourceBitrate <= 0 {
 		return 0, 0, 0, false
 	}
@@ -48,8 +48,10 @@ func outputHeight(filters string, sourceHeight int) int {
 
 func bitrateFloor(preset string, height int) int {
 	values := map[string][]int{
-		"compact": {1500, 2200, 3000, 6000}, "medium": {2000, 3000, 4000, 8000},
-		"recommended": {2500, 4000, 5000, 10000}, "best_quality": {3200, 5000, 6000, 12000}, "high_quality": {4000, 6500, 7000, 14000},
+		"compact": {900, 1400, 2000, 4000}, "medium": {1200, 1800, 2500, 5000},
+		"recommended": {1500, 2200, 3000, 6000}, "best_quality": {2000, 3000, 4000, 8000},
+		"high_quality": {2500, 4000, 5000, 10000}, "archive": {3200, 5000, 6000, 12000},
+		"master": {4000, 6500, 7000, 14000},
 	}
 	index := 2
 	if height > 0 && height <= 576 {
@@ -66,5 +68,5 @@ func bitrateCeiling(preset string, height int) int {
 	if height <= 0 || height > 576 {
 		return 0
 	}
-	return map[string]int{"compact": 2500, "medium": 3200, "recommended": 4000, "best_quality": 5000, "high_quality": 6000}[preset]
+	return map[string]int{"compact": 1700, "medium": 2200, "recommended": 2500, "best_quality": 3200, "high_quality": 4000, "archive": 5000, "master": 6000}[preset]
 }

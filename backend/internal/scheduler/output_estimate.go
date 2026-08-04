@@ -166,7 +166,8 @@ func videoToolboxTargetKbps(profile models.Profile, sourceBitrate int64, sourceH
 
 func qsvOutputRatios(preset string) (float64, float64, bool) {
 	values, ok := map[string][2]float64{
-		"compact": {.40, .55}, "medium": {.50, .65}, "recommended": {.60, .75}, "best_quality": {.70, .85}, "high_quality": {.80, 1.00},
+		"compact": {.25, .40}, "medium": {.32, .47}, "recommended": {.40, .55},
+		"best_quality": {.50, .65}, "high_quality": {.60, .75}, "archive": {.70, .85}, "master": {.80, 1.00},
 	}[preset]
 	return values[0], values[1], ok
 }

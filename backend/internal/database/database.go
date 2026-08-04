@@ -265,7 +265,13 @@ func normalizeProfileContracts(db *gorm.DB) error {
 	}
 	for i := range profiles {
 		profile := &profiles[i]
+		presetChanged := migrateHardwareQualityPresetScale(profile)
 		if profile.CodecFamily != "" && profile.EncoderPolicy != "" && len(profile.AllowedEncoders) > 0 {
+			if presetChanged {
+				if err := db.Save(profile).Error; err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if err := scheduler.ApplyAuthoritativeContract(profile); err != nil {
@@ -276,6 +282,28 @@ func normalizeProfileContracts(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func migrateHardwareQualityPresetScale(profile *models.Profile) bool {
+	if profile.WorkerConfig == nil || intFromJSON(profile.WorkerConfig["hardwareQualityPresetScale"]) >= 2 {
+		return false
+	}
+	presetValue, _ := profile.WorkerConfig["hardwareQualityPreset"].(string)
+	preset := strings.ToLower(strings.TrimSpace(presetValue))
+	if preset == "" || preset == "custom" {
+		return false
+	}
+	mapped := map[string]string{
+		"compact": "recommended", "medium": "best_quality", "recommended": "high_quality",
+		"best_quality": "archive", "high_quality": "master",
+	}[preset]
+	if mapped == "" {
+		mapped = "custom"
+	}
+	profile.WorkerConfig["hardwareQualityPreset"] = mapped
+	profile.WorkerConfig["hardwareQualityPresetScale"] = 2
+	profile.ProfileVersion = max(profile.ProfileVersion+1, 2)
+	return true
 }
 
 func Seed(db *gorm.DB) error {

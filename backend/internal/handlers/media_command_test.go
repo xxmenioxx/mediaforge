@@ -293,18 +293,18 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 
 func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
-		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality",
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2,
 	}})
-	if qsv.WorkerConfig["globalQuality"] != 22 || qsv.WorkerConfig["qsvRateControl"] != "la_icq" || qsv.WorkerConfig["pixFmt"] != "p010le" {
+	if qsv.WorkerConfig["globalQuality"] != 27 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
 		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
 	}
 	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
 		t.Fatalf("QSV preset must not opt into unverified advanced features: %#v", qsv.WorkerConfig)
 	}
 	videoToolbox := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
-		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended",
+		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
 	}})
-	if videoToolbox.WorkerConfig["videoToolboxProfile"] != "main10" || videoToolbox.WorkerConfig["pixFmt"] != "p010le" {
+	if videoToolbox.WorkerConfig["videoToolboxProfile"] != "main" || videoToolbox.WorkerConfig["pixFmt"] != "yuv420p" {
 		t.Fatalf("unexpected VideoToolbox preset normalization: %#v", videoToolbox.WorkerConfig)
 	}
 	custom := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
@@ -315,10 +315,28 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestHardwareQualityPresetsTranslateLegacyNamesWithoutChangingIntent(t *testing.T) {
+	profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "compact",
+	}})
+	if profile.WorkerConfig["hardwareQualityPreset"] != "recommended" || profile.WorkerConfig["hardwareQualityPresetScale"] != 2 {
+		t.Fatalf("legacy Compact must become the recalibrated Recommended preset: %#v", profile.WorkerConfig)
+	}
+}
+
+func TestHardwareQualityPresetsTranslateLegacyRecommendedToHighQuality(t *testing.T) {
+	profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended",
+	}})
+	if profile.WorkerConfig["hardwareQualityPreset"] != "high_quality" || profile.WorkerConfig["globalQuality"] != 25 {
+		t.Fatalf("legacy Recommended must preserve ICQ 25 as High Quality: %#v", profile.WorkerConfig)
+	}
+}
+
 func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended"}}
 	target, maxrate, buffer, ok := adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 4_000_000})
-	if !ok || target != 2795 || maxrate != 4193 || buffer != 6988 {
+	if !ok || target != 1720 || maxrate != 2580 || buffer != 4300 {
 		t.Fatalf("unexpected adaptive VideoToolbox result: target=%d maxrate=%d buffer=%d ok=%v", target, maxrate, buffer, ok)
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "custom"
@@ -327,8 +345,8 @@ func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "recommended"
 	target, _, _, ok = adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 12_000_000})
-	if !ok || target != 4000 {
-		t.Fatalf("SD Recommended must cap an excessive source bitrate at 4000k, got %dk", target)
+	if !ok || target != 2500 {
+		t.Fatalf("SD Recommended must cap an excessive source bitrate at 2500k, got %dk", target)
 	}
 }
 
