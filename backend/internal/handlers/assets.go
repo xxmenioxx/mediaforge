@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/anuelvs/mvforge/backend/internal/applog"
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
@@ -2380,6 +2381,12 @@ func (h AssetHandler) SampleEstimate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "asset has no video stream"})
 		return
 	}
+	if streams.Video[0].Bitrate <= 0 {
+		streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
+	}
+	qualityIntent := qualityIntentForMedia(profile, resolvedPath, streams)
+	profile = applyVideoToolboxQualityRecommendation(profile, qualityIntent)
+	profile = applyQSVQualityRecommendation(profile, qualityIntent, capabilities.CheckEncoder("hevc_qsv"))
 	profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
 	codecArgs := videoCodecArgsForSource(profile, &streams.Video[0])
 	workerArgs := videoWorkerArgsForSource(profile, &streams.Video[0])
@@ -2416,7 +2423,7 @@ func (h AssetHandler) SampleEstimate(c *gin.Context) {
 		return
 	}
 	videoBytes := int64(float64(totalBytes) / measuredSeconds * streams.Duration)
-	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "five_distributed_profile_samples", "effectiveEncoder": argumentValue(codecArgs, "-c:v"), "persisted": false}
+	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "five_distributed_profile_samples", "effectiveEncoder": argumentValue(codecArgs, "-c:v"), "hardwareQualityPreset": workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "sourceVideoBitrate": streams.Video[0].Bitrate, "sourceWidth": streams.Video[0].Width, "sourceHeight": streams.Video[0].Height, "persisted": false}
 	if input.ProfileID > 0 {
 		var saved models.Profile
 		if h.db.First(&saved, input.ProfileID).Error == nil && scheduler.ProfileEstimateFingerprint(saved) == scheduler.ProfileEstimateFingerprint(input.Profile) {

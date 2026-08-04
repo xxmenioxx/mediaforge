@@ -2,11 +2,67 @@ package capabilities
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 )
+
+// DecodeEncoderCapability reconstructs the exact capability evidence stored in
+// a runtime snapshot. Keeping this conversion here lets the scheduler, LAB and
+// worker use the same probe result without reinterpreting individual fields.
+func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return EncoderCapability{}, false
+	}
+	var value struct {
+		Listed                     bool              `json:"listed"`
+		Usable                     bool              `json:"usable"`
+		Main10                     bool              `json:"main10"`
+		ICQ                        bool              `json:"icq"`
+		LowPower                   bool              `json:"lowPower"`
+		LookAhead                  bool              `json:"lookAhead"`
+		ExtendedBRC                bool              `json:"extendedBrc"`
+		AdaptiveI                  bool              `json:"adaptiveI"`
+		AdaptiveB                  bool              `json:"adaptiveB"`
+		QSVFullCombination         bool              `json:"qsvFullCombination"`
+		QSVICQMain8                bool              `json:"qsvIcqMain8"`
+		QSVICQMain10               bool              `json:"qsvIcqMain10"`
+		QSVLAICQMain10             bool              `json:"qsvLaIcqMain10"`
+		QSVCQPMain8                bool              `json:"qsvCqpMain8"`
+		QSVCQPMain10               bool              `json:"qsvCqpMain10"`
+		QSVVBRMain8                bool              `json:"qsvVbrMain8"`
+		QSVVBRMain10               bool              `json:"qsvVbrMain10"`
+		QSVCBRMain8                bool              `json:"qsvCbrMain8"`
+		QSVCBRMain10               bool              `json:"qsvCbrMain10"`
+		QSVLowPowerMain10          bool              `json:"qsvLowPowerMain10"`
+		VideoToolboxMain           bool              `json:"videoToolboxMain"`
+		VideoToolboxMain10         bool              `json:"videoToolboxMain10"`
+		VideoToolboxBFrames        bool              `json:"videoToolboxBFrames"`
+		VideoToolboxPowerEfficient bool              `json:"videoToolboxPowerEfficient"`
+		Reason                     string            `json:"reason"`
+		TestedModes                map[string]bool   `json:"testedModes"`
+		ModeReasons                map[string]string `json:"modeReasons"`
+	}
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return EncoderCapability{}, false
+	}
+	return EncoderCapability{
+		Listed: value.Listed, Usable: value.Usable, Main10: value.Main10, ICQ: value.ICQ,
+		LowPower: value.LowPower, LookAhead: value.LookAhead, ExtendedBRC: value.ExtendedBRC,
+		AdaptiveI: value.AdaptiveI, AdaptiveB: value.AdaptiveB, QSVFullCombination: value.QSVFullCombination,
+		QSVICQMain8: value.QSVICQMain8, QSVICQMain10: value.QSVICQMain10, QSVLAICQMain10: value.QSVLAICQMain10,
+		QSVCQPMain8: value.QSVCQPMain8, QSVCQPMain10: value.QSVCQPMain10,
+		QSVVBRMain8: value.QSVVBRMain8, QSVVBRMain10: value.QSVVBRMain10,
+		QSVCBRMain8: value.QSVCBRMain8, QSVCBRMain10: value.QSVCBRMain10,
+		QSVLowPowerMain10: value.QSVLowPowerMain10,
+		VideoToolboxMain:  value.VideoToolboxMain, VideoToolboxMain10: value.VideoToolboxMain10,
+		VideoToolboxBFrames: value.VideoToolboxBFrames, VideoToolboxPowerEfficient: value.VideoToolboxPowerEfficient,
+		Reason: value.Reason, TestedModes: value.TestedModes, ModeReasons: value.ModeReasons,
+	}, true
+}
 
 type EncoderCapability struct {
 	Listed, Usable             bool
@@ -22,6 +78,12 @@ type EncoderCapability struct {
 	QSVICQMain8                bool
 	QSVICQMain10               bool
 	QSVLAICQMain10             bool
+	QSVCQPMain8                bool
+	QSVCQPMain10               bool
+	QSVVBRMain8                bool
+	QSVVBRMain10               bool
+	QSVCBRMain8                bool
+	QSVCBRMain10               bool
 	QSVLowPowerMain10          bool
 	VideoToolboxMain           bool
 	VideoToolboxMain10         bool
@@ -134,10 +196,19 @@ func CheckEncoder(encoder string) EncoderCapability {
 				return false
 			}
 			result.QSVICQMain8 = probe("qsvIcqMain8", "nv12", "-profile:v", "main", "-global_quality", "25")
+			result.QSVCQPMain8 = probe("qsvCqpMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-flags", "+qscale")
+			result.QSVVBRMain8 = probe("qsvVbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
+			result.QSVCBRMain8 = probe("qsvCbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
 			if result.Main10 {
 				result.QSVICQMain10 = probe("qsvIcqMain10", "p010le", "-profile:v", "main10", "-global_quality", "25")
+				result.QSVCQPMain10 = probe("qsvCqpMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-flags", "+qscale")
+				result.QSVVBRMain10 = probe("qsvVbrMain10", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
+				result.QSVCBRMain10 = probe("qsvCbrMain10", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
 			} else {
 				result.QSVICQMain10 = skip("qsvIcqMain10", "skipped because the QSV Main10 base probe failed")
+				result.QSVCQPMain10 = skip("qsvCqpMain10", "skipped because the QSV Main10 base probe failed")
+				result.QSVVBRMain10 = skip("qsvVbrMain10", "skipped because the QSV Main10 base probe failed")
+				result.QSVCBRMain10 = skip("qsvCbrMain10", "skipped because the QSV Main10 base probe failed")
 			}
 			result.ICQ = result.QSVICQMain8 || result.QSVICQMain10
 			result.LowPower = probe("qsvLowPowerMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-low_power", "1")

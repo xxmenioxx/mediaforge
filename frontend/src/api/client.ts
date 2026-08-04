@@ -31,6 +31,7 @@ import type {
   ScanResult,
   CompatiblePreviewOptions,
   ProfileSampleEstimate,
+  QualityRecommendationResponse,
   PreviewInspection,
   PreviewFrameMetrics,
   SoftwareVersions,
@@ -323,6 +324,8 @@ export const api = {
     request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect')),
   estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }) =>
     request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input) }),
+  recommendEncoderQuality: (input: { path?: string; profile: ProfileInput }) =>
+    request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input) }),
   audioPreviewUrl: ({
     path,
     profileKey = '',

@@ -219,6 +219,19 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/assets/quality-recommendation": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Assets", "Profiles"},
+				"summary":     "Translate a quality intent using active worker capabilities",
+				"operationId": "recommendEncoderQuality",
+				"requestBody": requestBody(ref("QualityRecommendationInput")),
+				"responses": gin.H{
+					"200": jsonResponse("Effective encoder recommendation", ref("QualityRecommendationResponse")),
+					"400": jsonResponse("Unsupported encoder or invalid draft", ref("Error")),
+					"403": jsonResponse("Path outside configured libraries", ref("Error")),
+				},
+			},
+		},
 		"/api/assets/preview/audio": gin.H{
 			"get": gin.H{
 				"tags":        []string{"Assets"},
@@ -750,6 +763,43 @@ func openAPIComponents() gin.H {
 				"createdAt": gin.H{"type": "string", "format": "date-time"},
 				"updatedAt": gin.H{"type": "string", "format": "date-time"},
 			}),
+			"QualityRecommendationInput": gin.H{
+				"type":     "object",
+				"required": []string{"profile"},
+				"properties": gin.H{
+					"path":    gin.H{"type": "string", "description": "Optional readable asset used for adaptive calculations."},
+					"profile": ref("ProfileInput"),
+				},
+			},
+			"EncoderRecommendation": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"encoder":              gin.H{"type": "string", "enum": []string{"hevc_qsv", "hevc_videotoolbox"}},
+					"requestedRateControl": gin.H{"type": "string"},
+					"effectiveRateControl": gin.H{"type": "string"},
+					"rateControlFallback":  gin.H{"type": "string"},
+					"targetBitrate":        gin.H{"type": "integer", "format": "int64"},
+					"globalQuality":        gin.H{"type": "integer"},
+					"profile":              gin.H{"type": "string"},
+					"pixelFormat":          gin.H{"type": "string"},
+					"estimateConfidence":   gin.H{"type": "string", "enum": []string{"low", "medium", "high"}},
+					"warnings":             gin.H{"type": "array", "items": gin.H{"type": "string"}},
+				},
+			},
+			"QualityRecommendationResponse": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"requestedProfile":         ref("Profile"),
+					"effectiveProfile":         ref("Profile"),
+					"recommendation":           ref("EncoderRecommendation"),
+					"capabilitySource":         gin.H{"type": "string", "enum": []string{"active_runtime_snapshot", "live_backend_probe"}},
+					"ffmpegVideoArguments":     gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"estimatedOutputMinBytes":  gin.H{"type": "integer", "format": "int64"},
+					"estimatedOutputMaxBytes":  gin.H{"type": "integer", "format": "int64"},
+					"estimatedSavingsMinBytes": gin.H{"type": "integer", "format": "int64"},
+					"estimatedSavingsMaxBytes": gin.H{"type": "integer", "format": "int64"},
+				},
+			},
 			"ProfileInput": gin.H{
 				"type": "object",
 				"required": []string{

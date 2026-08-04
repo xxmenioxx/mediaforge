@@ -202,6 +202,14 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			job.Notes = appendNote(job.Notes, "Published fingerprint warning: "+fingerprintErr.Error())
 		}
 	}
+	if err := transitionJobStage(h.db, &job, JobStageAnalyzingFinal); err != nil {
+		return PublishResult{}, err
+	}
+	if _, snapshotErr := captureFinalAssetSnapshot(h.db, destinationPath); snapshotErr != nil {
+		job.Notes = appendNote(job.Notes, "Final asset snapshot warning: "+snapshotErr.Error())
+	} else {
+		job.Notes = appendNote(job.Notes, "Final asset snapshot captured: "+destinationPath)
+	}
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
 		if err := transitionJobStage(h.db, &job, JobStageCleaningWorkspace); err != nil {
 			return PublishResult{}, err
@@ -301,6 +309,14 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		} else {
 			job.Notes = appendNote(job.Notes, "Published fingerprint warning: "+fingerprintErr.Error())
 		}
+	}
+	if err := transitionJobStage(h.db, &job, JobStageAnalyzingFinal); err != nil {
+		return PublishResult{}, err
+	}
+	if _, snapshotErr := captureFinalAssetSnapshot(h.db, target); snapshotErr != nil {
+		job.Notes = appendNote(job.Notes, "Final asset snapshot warning: "+snapshotErr.Error())
+	} else {
+		job.Notes = appendNote(job.Notes, "Final asset snapshot captured: "+target)
 	}
 	if err := h.db.Save(&job).Error; err != nil {
 		return PublishResult{}, err

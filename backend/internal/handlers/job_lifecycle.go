@@ -20,6 +20,7 @@ const (
 	JobStageReadyToPublish     = "ready_to_publish"
 	JobStagePublishing         = "publishing"
 	JobStageArchivingOriginal  = "archiving_original"
+	JobStageAnalyzingFinal     = "analyzing_final"
 	JobStageCleaningWorkspace  = "cleaning_workspace"
 	JobStageCompleted          = "completed"
 	JobStageFailed             = "failed"

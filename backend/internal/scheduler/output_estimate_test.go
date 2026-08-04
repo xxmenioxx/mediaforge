@@ -89,14 +89,71 @@ func TestQSVOutputEstimateIsRangeAndKeepsAudio(t *testing.T) {
 	if !ok || estimate.MinBytes >= estimate.MaxBytes {
 		t.Fatalf("expected QSV estimate range, got %#v (ok=%v)", estimate, ok)
 	}
-	if estimate.AudioBytes != 8_000_000 || estimate.Method != "qsv_icq_source_video_range" || estimate.Confidence != "low" {
+	if estimate.AudioBytes != 8_000_000 || estimate.Method != "qsv_preset_calibration_range" || estimate.Confidence != "low" {
 		t.Fatalf("unexpected QSV estimate: %#v", estimate)
+	}
+}
+
+func TestQSVOutputEstimateUsesMeasuredAndHistoricalEvidence(t *testing.T) {
+	profile := models.Profile{AudioCodec: "copy", WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended", "qsvRateControl": "icq"}}
+	measured := mediaEstimate{DurationSeconds: 100, VideoBitrate: 4_000_000, MeasuredVideoBitrate: 900_000}
+	estimate, ok := estimatePlannedOutput(profile, "hevc_qsv", measured, 0)
+	if !ok || estimate.Confidence != "high" || estimate.Method != "five_distributed_profile_samples" {
+		t.Fatalf("unexpected measured estimate: %#v", estimate)
+	}
+	historical := mediaEstimate{DurationSeconds: 100, VideoBitrate: 4_000_000, HistoricalRatioMin: .2, HistoricalRatioMax: .3, HistoricalSamples: 3}
+	estimate, ok = estimatePlannedOutput(profile, "hevc_qsv", historical, 0)
+	if !ok || estimate.Confidence != "medium" || estimate.Method != "qsv_historical_encoder_ratios" {
+		t.Fatalf("unexpected historical estimate: %#v", estimate)
+	}
+}
+
+func TestHistoricalQSVRatiosRequireTwoCompatibleSamples(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:qsv-history?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []interface{}{
+		models.JSONMap{"estimate": models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "durationSeconds": 100.0, "sourceVideoBitrate": int64(4_000_000), "estimatedVideoBytes": int64(10_000_000)}},
+		models.JSONMap{"estimate": models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "durationSeconds": 100.0, "sourceVideoBitrate": int64(4_000_000), "estimatedVideoBytes": int64(15_000_000)}},
+	}
+	if err := db.Create(&models.AppSetting{Key: "profileSampleEstimates", Value: models.JSONMap{"records": records}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum, count := historicalQSVSampleRatios(db, "recommended")
+	if count != 2 || minimum != .2 || maximum != .3 {
+		t.Fatalf("unexpected historical ratios: min=%f max=%f count=%d", minimum, maximum, count)
+	}
+}
+
+func TestHistoricalQSVRatiosIncludeCompletedEncoderResults(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:qsv-completed-history?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []interface{}{
+		models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "sourceVideoBitrate": 4_000_000.0, "outputVideoBitrate": 2_000_000.0},
+		models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "sourceVideoBitrate": 4_000_000.0, "outputVideoBitrate": 2_400_000.0},
+		models.JSONMap{"effectiveEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended", "sourceVideoBitrate": 4_000_000.0, "outputVideoBitrate": 1_000_000.0},
+	}
+	if err := db.Create(&models.AppSetting{Key: "encoderResultHistory", Value: models.JSONMap{"records": records}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum, count := historicalQSVSampleRatios(db, "recommended")
+	if count != 2 || minimum != 0.5 || maximum != 0.6 {
+		t.Fatalf("completed QSV history = %.2f..%.2f (%d), want 0.50..0.60 (2)", minimum, maximum, count)
 	}
 }
 
 func TestVideoToolboxEstimateUsesCroppedOutputHeight(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended", "videoFilters": "crop=720:460:0:10"}}
-	target, ok := videoToolboxTargetKbps(profile, 1_000_000, 1080)
+	target, ok := videoToolboxTargetKbps(profile, mediaEstimate{VideoBitrate: 1_000_000, VideoWidth: 1920, VideoHeight: 1080})
 	if !ok || target != 1500 {
 		t.Fatalf("expected SD floor after crop, got %d (ok=%v)", target, ok)
 	}

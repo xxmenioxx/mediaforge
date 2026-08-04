@@ -11,6 +11,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"gorm.io/gorm"
 )
@@ -201,6 +202,7 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		plan.Warnings = append(plan.Warnings, "No runtime snapshot was available; desktop_safe policy was selected")
 	}
 	encoderFailure := ""
+	selectedCapability := capabilities.EncoderCapability{}
 	for _, candidate := range uniqueStrings(append([]string{profile.PreferredEncoder}, []string(profile.AllowedEncoders)...)) {
 		capability, recorded := recordedEncoderCapability(runtimeEncoders, candidate)
 		if !recorded {
@@ -208,6 +210,7 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		}
 		if capability.Usable {
 			plan.SelectedEncoder = candidate
+			selectedCapability = capability
 			break
 		}
 		if capability.Reason != "" {
@@ -228,19 +231,19 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		plan.Evaluation = models.JSONMap{}
 	}
 	if source, probed := probeMediaEstimate(job.MediaPath); probed {
-		if estimate, estimated := estimatePlannedOutput(profile, plan.SelectedEncoder, source, inputSize); estimated {
-			if sampledVideoBytes, sampleEncoder, found := persistedProfileSampleEstimate(db, job.MediaPath, profile); found && sampleEncoder == plan.SelectedEncoder {
-				total := sampledVideoBytes + estimate.AudioBytes + estimate.SubtitleBytes
-				overhead := maxInt64(16<<10, total/100)
-				estimate.MinBytes, estimate.MaxBytes = int64(float64(total+overhead)*.98), int64(float64(total+overhead)*1.02)
-				estimate.VideoBytes, estimate.Confidence, estimate.Method = sampledVideoBytes, "high", "five_distributed_profile_samples"
-			}
+		if sampledVideoBytes, sampleEncoder, found := persistedProfileSampleEstimate(db, job.MediaPath, profile); found && sampleEncoder == plan.SelectedEncoder {
+			source.MeasuredVideoBitrate = int64(float64(sampledVideoBytes) * 8 / source.DurationSeconds)
+		} else if plan.SelectedEncoder == "hevc_qsv" {
+			source.HistoricalRatioMin, source.HistoricalRatioMax, source.HistoricalSamples = historicalQSVSampleRatios(db, configString(profile.WorkerConfig, "hardwareQualityPreset"))
+		}
+		if estimate, estimated := estimatePlannedOutput(profile, plan.SelectedEncoder, source, inputSize, schedulerQualityCapabilities(plan.SelectedEncoder, profile, selectedCapability)); estimated {
 			minOutput, maxOutput = estimate.MinBytes, estimate.MaxBytes
 			estimateMethod, estimateConfidence = estimate.Method, estimate.Confidence
 			plan.Evaluation["outputEstimate"] = models.JSONMap{
 				"videoBytes": estimate.VideoBytes, "audioBytes": estimate.AudioBytes, "subtitleBytes": estimate.SubtitleBytes,
 				"durationSeconds": source.DurationSeconds, "sourceVideoBitrate": source.VideoBitrate,
 			}
+			plan.Evaluation["encoderRecommendation"] = estimate.Recommendation
 		}
 	}
 	plan.OutputPath = reviewOutputPath(job.MediaPath, library, profile.Container)
@@ -333,27 +336,30 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	return db.Save(plan).Error
 }
 
+func schedulerQualityCapabilities(encoder string, profile models.Profile, capability capabilities.EncoderCapability) quality.WorkerCapabilities {
+	if encoder != "hevc_qsv" {
+		return quality.WorkerCapabilities{}
+	}
+	main10 := profile.BitDepth >= 10 || configString(profile.WorkerConfig, "pixFmt") == "p010le"
+	result := quality.WorkerCapabilities{
+		Encoder: encoder, Main: capability.Usable, Main10: capability.Main10,
+		ICQ: capability.QSVICQMain8, CQP: capability.QSVCQPMain8, VBR: capability.QSVVBRMain8, CBR: capability.QSVCBRMain8,
+		LowPower: capability.LowPower, ExtendedBRC: capability.ExtendedBRC, AdaptiveI: capability.AdaptiveI,
+		AdaptiveB: capability.AdaptiveB, FullCombination: capability.QSVFullCombination,
+	}
+	if main10 && capability.Main10 {
+		result.ICQ, result.LAICQ = capability.QSVICQMain10, capability.QSVLAICQMain10
+		result.CQP, result.VBR, result.CBR = capability.QSVCQPMain10, capability.QSVVBRMain10, capability.QSVCBRMain10
+	}
+	return result
+}
+
 func recordedEncoderCapability(encoders models.JSONMap, encoder string) (capabilities.EncoderCapability, bool) {
 	raw, ok := encoders[encoder]
 	if !ok {
 		return capabilities.EncoderCapability{}, false
 	}
-	var value map[string]any
-	switch typed := raw.(type) {
-	case models.JSONMap:
-		value = typed
-	case map[string]any:
-		value = typed
-	default:
-		return capabilities.EncoderCapability{}, false
-	}
-	listed, listedOK := value["listed"].(bool)
-	usable, usableOK := value["usable"].(bool)
-	if !listedOK || !usableOK {
-		return capabilities.EncoderCapability{}, false
-	}
-	reason, _ := value["reason"].(string)
-	return capabilities.EncoderCapability{Listed: listed, Usable: usable, Reason: reason}, true
+	return capabilities.DecodeEncoderCapability(raw)
 }
 
 func SetPlanApproval(db *gorm.DB, jobID, planID uint, approve bool) (models.ExecutionPlan, error) {

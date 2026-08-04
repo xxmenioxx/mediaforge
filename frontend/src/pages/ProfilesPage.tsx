@@ -176,6 +176,7 @@ export function ProfilesPage() {
       await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
     },
   });
+  const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
 
   function updateField<K extends keyof ProfileInput>(field: K, value: ProfileInput[K]) {
     let next = { ...form, [field]: value };
@@ -233,11 +234,13 @@ export function ProfilesPage() {
       ...form,
       workerConfig: hardware ? applySharedHardwareQualityPreset(baseWorkerConfig, hardwareEncoder, 'recommended') : baseWorkerConfig,
     };
-    setProfileForm(synchronizeAuthoritativeContract(next));
+    const requested = synchronizeAuthoritativeContract(next);
+    setProfileForm(requested);
+    if (hardware && hardwareEncoder) requestProfileHardwareRecommendation(requested);
   }
 
   function updateHardwareEncoder(encoder: string) {
-    setProfileForm(synchronizeAuthoritativeContract({
+    const requested = synchronizeAuthoritativeContract({
       ...form,
       workerConfig: applySharedHardwareQualityPreset({
         ...form.workerConfig,
@@ -246,12 +249,23 @@ export function ProfilesPage() {
         videoEncoder: encoder,
         pixFmt: defaultProfileHardwareMain10PixelFormat(encoder),
       }, encoder, 'recommended'),
-    }));
+    });
+    setProfileForm(requested);
+    requestProfileHardwareRecommendation(requested);
   }
 
   function applyProfileHardwareQualityPreset(preset: string, encoder: string) {
     const workerConfig = applySharedHardwareQualityPreset(form.workerConfig ?? {}, encoder, preset);
-    setProfileForm(synchronizeAuthoritativeContract({ ...form, workerConfig }));
+    const requested = synchronizeAuthoritativeContract({ ...form, workerConfig });
+    setProfileForm(requested);
+    if (preset === 'custom') return;
+    requestProfileHardwareRecommendation(requested);
+  }
+
+  function requestProfileHardwareRecommendation(requested: ProfileInput) {
+    encoderQualityRecommendation.mutate({ profile: requested }, {
+      onSuccess: (result) => setProfileForm(synchronizeAuthoritativeContract(result.effectiveProfile)),
+    });
   }
 
   function updateExternalSubtitleFormat(value: string) {
@@ -834,6 +848,9 @@ export function ProfilesPage() {
                             <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={workerConfigBool(form, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateWorkerConfig('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={workerConfigBool(form, 'videoToolboxPowerEfficiency')} onChange={(event) => updateWorkerConfig('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                           </>
                         ) : null}
+                        {encoderQualityRecommendation.isPending ? <Grid size={{ xs: 12 }}><Alert severity="info">Resolving effective values from the active worker capabilities…</Alert></Grid> : null}
+                        {encoderQualityRecommendation.isError ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
+                        {encoderQualityRecommendation.data ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Alert severity={encoderQualityRecommendation.data.recommendation.warnings.length ? 'warning' : 'success'}>Effective {encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'} · confidence {encoderQualityRecommendation.data.recommendation.estimateConfidence}{encoderQualityRecommendation.data.recommendation.rateControlFallback ? ` · ${encoderQualityRecommendation.data.recommendation.rateControlFallback}` : ''}</Alert><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         <Grid size={{ xs: 12, md: 4 }}>
                           <FormControlLabel
                             control={

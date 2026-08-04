@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestIsHDRDoesNotTreatTenBitSDRAsHDR(t *testing.T) {
@@ -16,6 +18,31 @@ func TestIsHDRDoesNotTreatTenBitSDRAsHDR(t *testing.T) {
 	}
 	if isHDR(stream) {
 		t.Fatal("10-bit SDR must not be classified as HDR")
+	}
+}
+
+func TestPersistFinalAssetSnapshotReplacesStalePathAtomically(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:final-asset-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/library/anime/Akira (1988)/Akira (1988).mkv"
+	if err := db.Create(&models.ScanResult{Path: path, FileName: "Akira (1988).mkv", VideoCodec: "mpeg2video", SizeBytes: 10}).Error; err != nil {
+		t.Fatal(err)
+	}
+	final := models.ScanResult{Path: path, FileName: "Akira (1988).mkv", VideoCodec: "hevc", SizeBytes: 20, Width: 720, Height: 460}
+	if err := persistFinalAssetSnapshot(db, &final); err != nil {
+		t.Fatal(err)
+	}
+	var scans []models.ScanResult
+	if err := db.Where("path = ?", path).Find(&scans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(scans) != 1 || scans[0].VideoCodec != "hevc" || scans[0].SizeBytes != 20 || scans[0].Height != 460 {
+		t.Fatalf("unexpected final snapshot: %#v", scans)
 	}
 }
 

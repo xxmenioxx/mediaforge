@@ -295,7 +295,7 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2,
 	}})
-	if qsv.WorkerConfig["globalQuality"] != 27 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
+	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "la_icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
 		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
 	}
 	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
@@ -328,8 +328,79 @@ func TestHardwareQualityPresetsTranslateLegacyRecommendedToHighQuality(t *testin
 	profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended",
 	}})
-	if profile.WorkerConfig["hardwareQualityPreset"] != "high_quality" || profile.WorkerConfig["globalQuality"] != 25 {
-		t.Fatalf("legacy Recommended must preserve ICQ 25 as High Quality: %#v", profile.WorkerConfig)
+	if profile.WorkerConfig["hardwareQualityPreset"] != "high_quality" || profile.WorkerConfig["globalQuality"] != 22 {
+		t.Fatalf("legacy Recommended must map to the recalibrated High Quality preset: %#v", profile.WorkerConfig)
+	}
+}
+
+func TestQSVHardwareQualityPresetScale(t *testing.T) {
+	expected := map[string]int{
+		"compact": 32, "medium": 30, "recommended": 28, "best_quality": 25,
+		"high_quality": 22, "archive": 19, "master": 16,
+	}
+	for preset, quality := range expected {
+		t.Run(preset, func(t *testing.T) {
+			profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+				"videoEncoder": "hevc_qsv", "hardwareQualityPreset": preset, "hardwareQualityPresetScale": 2,
+			}})
+			if profile.WorkerConfig["globalQuality"] != quality {
+				t.Fatalf("preset %s: expected global quality %d, got %#v", preset, quality, profile.WorkerConfig["globalQuality"])
+			}
+		})
+	}
+}
+
+func TestQSVRecommendationStoresRequestedEffectiveAndFallback(t *testing.T) {
+	profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
+		"qsvRateControl": "la_icq",
+	}})
+	intent := qualityIntentForMedia(profile, "/media/raw/anime/Rayearth/episode.mkv", MediaStreamInventory{
+		Duration: 100, Video: []MediaStream{{Width: 1440, Height: 1080, Bitrate: 6_000_000}},
+	})
+	effective := applyQSVQualityRecommendation(profile, intent, capabilities.EncoderCapability{
+		Usable: true, QSVICQMain8: true, QSVCQPMain8: true,
+	})
+	if effective.WorkerConfig["qsvRequestedRateControl"] != "la_icq" || effective.WorkerConfig["qsvEffectiveRateControl"] != "icq" || effective.WorkerConfig["qsvRateControlFallbackReason"] == "" {
+		t.Fatalf("unexpected stored QSV recommendation: %#v", effective.WorkerConfig)
+	}
+	if effective.WorkerConfig["qsvRequestedGlobalQuality"] != 28 || effective.WorkerConfig["qsvEffectiveGlobalQuality"] != 27 {
+		t.Fatalf("anime adjustment was not stored: %#v", effective.WorkerConfig)
+	}
+}
+
+func TestQSVEffectiveRateControlGeneratesMatchingArguments(t *testing.T) {
+	for _, test := range []struct {
+		mode     string
+		config   models.JSONMap
+		contains []string
+		excludes []string
+	}{
+		{"icq", models.JSONMap{"qsvEffectiveRateControl": "icq", "globalQuality": 25}, []string{"-global_quality 25"}, []string{"+qscale", "-b:v"}},
+		{"la_icq", models.JSONMap{"qsvEffectiveRateControl": "la_icq", "globalQuality": 24}, []string{"-global_quality 24"}, []string{"+qscale", "-b:v"}},
+		{"cqp", models.JSONMap{"qsvEffectiveRateControl": "cqp", "globalQuality": 23}, []string{"-global_quality 23", "-flags +qscale"}, []string{"-b:v"}},
+		{"vbr", models.JSONMap{"qsvEffectiveRateControl": "vbr", "qsvTargetBitrate": int64(2_000_000), "qsvMaxrate": int64(3_000_000), "qsvBuffer": int64(4_000_000)}, []string{"-b:v 2000000", "-maxrate 3000000", "-bufsize 4000000"}, []string{"-global_quality"}},
+		{"cbr", models.JSONMap{"qsvEffectiveRateControl": "cbr", "qsvTargetBitrate": int64(2_000_000), "qsvMaxrate": int64(2_000_000), "qsvBuffer": int64(4_000_000)}, []string{"-b:v 2000000", "-maxrate 2000000", "-bufsize 4000000"}, []string{"-global_quality"}},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			test.config["videoEncoder"] = "hevc_qsv"
+			profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: test.config}
+			command := strings.Join(qsvRateControlArgs(profile), " ")
+			for _, expected := range test.contains {
+				assertContains(t, command, expected)
+			}
+			for _, excluded := range test.excludes {
+				assertNotContains(t, command, excluded)
+			}
+		})
+	}
+}
+
+func TestQSVCustomQualityIsNotRewrittenByTranslator(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "custom", "globalQuality": 23}}
+	effective := applyQSVQualityRecommendation(profile, qualityIntentForMedia(profile, "/media/raw/anime/title.mkv", MediaStreamInventory{}), capabilities.EncoderCapability{QSVICQMain8: true})
+	if effective.WorkerConfig["globalQuality"] != 23 {
+		t.Fatalf("custom QSV quality must not be adjusted: %#v", effective.WorkerConfig)
 	}
 }
 
@@ -347,6 +418,21 @@ func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	target, _, _, ok = adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 12_000_000})
 	if !ok || target != 2500 {
 		t.Fatalf("SD Recommended must cap an excessive source bitrate at 2500k, got %dk", target)
+	}
+}
+
+func TestVideoToolboxRecommendationIsStoredOnEffectivePlan(t *testing.T) {
+	profile := normalizeHardwareQualityPreset(models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
+		"videoFilters": "crop=720:460:0:10",
+	}})
+	intent := qualityIntentForMedia(profile, "/media/raw/anime/Akira/movie.mkv", MediaStreamInventory{
+		Duration: 100, Video: []MediaStream{{Width: 720, Height: 480, Bitrate: 4_000_000}},
+		Audio: []MediaAudioStream{{Bitrate: 192_000}},
+	})
+	effective := applyVideoToolboxQualityRecommendation(profile, intent)
+	if effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_720) || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
+		t.Fatalf("unexpected stored VideoToolbox recommendation: %#v", effective.WorkerConfig)
 	}
 }
 

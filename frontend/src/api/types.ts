@@ -406,7 +406,7 @@ export type RuntimeSnapshot = {
   powerSource: string;
   onBattery: boolean;
   disks: Record<string, unknown>;
-  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;
@@ -841,4 +841,42 @@ export type ProfileSampleEstimate = {
   source: string;
   effectiveEncoder: string;
   persisted: boolean;
+};
+
+export type EncoderRecommendation = {
+  encoder: string;
+  requestedRateControl: string;
+  effectiveRateControl: string;
+  rateControlFallback?: string;
+  targetBitrate?: number;
+  requestedGlobalQuality?: number;
+  globalQuality?: number;
+  qualityAdjustment: number;
+  qualityReasons: string[];
+  maxrate?: number;
+  buffer?: number;
+  profile: string;
+  pixelFormat: string;
+  lookAhead: boolean;
+  lookAheadDepth: number;
+  lowPower: boolean;
+  extendedBRC: boolean;
+  adaptiveI: boolean;
+  adaptiveB: boolean;
+  estimatedVideoBitrate?: number;
+  estimatedOutputSize?: number;
+  estimateConfidence: 'high' | 'medium' | 'low';
+  warnings: string[];
+};
+
+export type QualityRecommendationResponse = {
+  requestedProfile: Profile;
+  effectiveProfile: Profile;
+  recommendation: EncoderRecommendation;
+  capabilitySource: 'active_runtime_snapshot' | 'live_backend_probe';
+  ffmpegVideoArguments: string[];
+  estimatedOutputMinBytes: number;
+  estimatedOutputMaxBytes: number;
+  estimatedSavingsMinBytes: number;
+  estimatedSavingsMaxBytes: number;
 };

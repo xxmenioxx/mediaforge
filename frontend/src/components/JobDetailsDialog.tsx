@@ -55,6 +55,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
   const directPlayPlan = activePlan ? objectValue(activePlan.evaluation, 'directPlay') : undefined;
   const outputEstimate = activePlan ? objectValue(activePlan.evaluation, 'outputEstimate') : undefined;
+  const encoderRecommendation = activePlan ? objectValue(activePlan.evaluation, 'encoderRecommendation') : undefined;
 
   return (
     <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
@@ -156,6 +157,9 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                       ] as Array<[string, string]> : []),
                       ['Workspace needed', formatBytes(activePlan.estimatedWorkspaceBytes)],
                       ['Estimate confidence', activePlan.estimateConfidence || 'Pending'],
+                      ['Effective rate control', stringValue(encoderRecommendation, 'effectiveRateControl') || 'Pending'],
+                      ['Effective encoder quality', numberValue(encoderRecommendation, 'globalQuality') > 0 ? String(numberValue(encoderRecommendation, 'globalQuality')) : 'Bitrate controlled'],
+                      ['Encoder fallback', stringValue(encoderRecommendation, 'rateControlFallback') || 'None'],
                       ['Approval', activePlan.approvalStatus || 'Pending'],
                       ['Quality', `${activePlan.qualityMode.toUpperCase()} ${activePlan.qualityValue}`],
                       ['Runtime policy', activePlan.runtimeProfile || 'Pending'],

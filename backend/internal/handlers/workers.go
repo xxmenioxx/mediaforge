@@ -684,6 +684,16 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
+	if effectiveProfile.WorkerConfig == nil {
+		effectiveProfile.WorkerConfig = models.JSONMap{}
+	} else {
+		workerConfig := models.JSONMap{}
+		for key, value := range effectiveProfile.WorkerConfig {
+			workerConfig[key] = value
+		}
+		effectiveProfile.WorkerConfig = workerConfig
+	}
+	effectiveProfile.WorkerConfig["qsvAssetAnalysisPath"] = job.MediaPath
 	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	if !overwrite {
 		if _, err := os.Stat(outputPath); err == nil {
@@ -734,6 +744,17 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
 	encoderDecision := encoderDecisionForProfile(plan.Profile)
 	job.Notes = appendNote(job.Notes, fmt.Sprintf("Encoder decision: requested=%s effective=%s", stringFromUnknown(encoderDecision["requested"]), stringFromUnknown(encoderDecision["effective"])))
+	if effectiveRateControl := workerStringValue(plan.Profile.WorkerConfig["qsvEffectiveRateControl"]); effectiveRateControl != "" {
+		job.Notes = appendNote(job.Notes, fmt.Sprintf("QSV rate control: requested=%s effective=%s fallback=%s",
+			workerStringValue(plan.Profile.WorkerConfig["qsvRequestedRateControl"]), effectiveRateControl,
+			workerStringValue(plan.Profile.WorkerConfig["qsvRateControlFallbackReason"])))
+	}
+	if adjustment := workerIntValue(plan.Profile.WorkerConfig["qsvAssetQualityAdjustment"], 0); adjustment != 0 {
+		job.Notes = appendNote(job.Notes, fmt.Sprintf("QSV asset quality: requested=%d adjustment=%+d effective=%d reasons=%s",
+			workerIntValue(plan.Profile.WorkerConfig["qsvRequestedGlobalQuality"], 0), adjustment,
+			workerIntValue(plan.Profile.WorkerConfig["qsvEffectiveGlobalQuality"], 0),
+			strings.Join(workerStringSlice(plan.Profile.WorkerConfig["qsvAssetQualityReasons"]), "; ")))
+	}
 	if encoderDecision["downgraded"] == true {
 		job.Notes = appendNote(job.Notes, "Encoder downgrade: "+stringFromUnknown(encoderDecision["reason"]))
 	}

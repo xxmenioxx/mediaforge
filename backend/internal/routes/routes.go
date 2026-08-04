@@ -83,6 +83,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets/preview", assets.Preview)
 		api.GET("/assets/preview/compatible", assets.CompatiblePreview)
 		api.POST("/assets/preview/estimate", assets.SampleEstimate)
+		api.POST("/assets/quality-recommendation", assets.QualityRecommendation)
 		api.GET("/assets/preview/inspect", assets.CompatiblePreviewInspection)
 		api.GET("/assets/preview/metrics", assets.CompatiblePreviewMetrics)
 		api.GET("/assets/preview/audio", assets.AudioPreview)

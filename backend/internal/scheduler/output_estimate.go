@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/anuelvs/mvforge/backend/internal/encodingpolicy"
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"gorm.io/gorm"
 )
 
@@ -20,18 +21,24 @@ import (
 // preflight size estimate. It keeps probing and estimation independent from
 // the conversion command builder.
 type mediaEstimate struct {
-	DurationSeconds float64
-	VideoBitrate    int64
-	AudioBitrate    int64
-	SubtitleBitrate int64
-	VideoHeight     int
-	AudioTracks     int64
+	DurationSeconds      float64
+	VideoBitrate         int64
+	AudioBitrate         int64
+	SubtitleBitrate      int64
+	VideoHeight          int
+	VideoWidth           int
+	AudioTracks          int64
+	MeasuredVideoBitrate int64
+	HistoricalRatioMin   float64
+	HistoricalRatioMax   float64
+	HistoricalSamples    int
 }
 
 type ffprobeEstimateResponse struct {
 	Streams []struct {
 		CodecType string            `json:"codec_type"`
 		Bitrate   string            `json:"bit_rate"`
+		Width     int               `json:"width"`
 		Height    int               `json:"height"`
 		Tags      map[string]string `json:"tags"`
 	} `json:"streams"`
@@ -46,7 +53,7 @@ type ffprobeEstimateResponse struct {
 func probeMediaEstimate(path string) (mediaEstimate, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration,bit_rate:stream=codec_type,bit_rate,height:stream_tags", "-of", "json", path).Output()
+	output, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration,bit_rate:stream=codec_type,bit_rate,width,height:stream_tags", "-of", "json", path).Output()
 	if err != nil {
 		return mediaEstimate{}, false
 	}
@@ -63,6 +70,9 @@ func probeMediaEstimate(path string) (mediaEstimate, bool) {
 		switch strings.ToLower(stream.CodecType) {
 		case "video":
 			estimate.VideoBitrate += bitrate
+			if estimate.VideoWidth == 0 {
+				estimate.VideoWidth = stream.Width
+			}
 			if estimate.VideoHeight == 0 {
 				estimate.VideoHeight = stream.Height
 			}
@@ -103,16 +113,17 @@ func bitrateFromStreamTags(tags map[string]string, duration float64) int64 {
 }
 
 type outputEstimate struct {
-	MinBytes      int64
-	MaxBytes      int64
-	Confidence    string
-	Method        string
-	VideoBytes    int64
-	AudioBytes    int64
-	SubtitleBytes int64
+	MinBytes       int64
+	MaxBytes       int64
+	Confidence     string
+	Method         string
+	VideoBytes     int64
+	AudioBytes     int64
+	SubtitleBytes  int64
+	Recommendation models.JSONMap
 }
 
-func estimatePlannedOutput(profile models.Profile, encoder string, source mediaEstimate, inputSize int64) (outputEstimate, bool) {
+func estimatePlannedOutput(profile models.Profile, encoder string, source mediaEstimate, inputSize int64, workerCapabilities ...quality.WorkerCapabilities) (outputEstimate, bool) {
 	if source.DurationSeconds <= 0 || source.VideoBitrate <= 0 {
 		return outputEstimate{}, false
 	}
@@ -136,40 +147,60 @@ func estimatePlannedOutput(profile models.Profile, encoder string, source mediaE
 	overhead := func(total int64) int64 { return maxInt64(16<<10, total/100) }
 
 	if encoder == "hevc_videotoolbox" {
-		targetKbps, ok := videoToolboxTargetKbps(profile, source.VideoBitrate, source.VideoHeight)
+		targetKbps, ok := videoToolboxTargetKbps(profile, source)
 		if !ok {
 			return outputEstimate{}, false
 		}
 		videoBytes := bitrateBytes(int64(targetKbps)*1000, duration)
 		total := videoBytes + audioBytes + subtitleBytes
 		total += overhead(total)
-		return outputEstimate{MinBytes: int64(float64(total) * .95), MaxBytes: int64(float64(total) * 1.05), Confidence: "medium", Method: "videotoolbox_source_video_bitrate", VideoBytes: videoBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes}, true
+		return outputEstimate{MinBytes: int64(float64(total) * .95), MaxBytes: int64(float64(total) * 1.05), Confidence: "medium", Method: "videotoolbox_source_video_bitrate", VideoBytes: videoBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes, Recommendation: models.JSONMap{"effectiveRateControl": "vbr", "targetBitrate": targetKbps * 1000, "estimateConfidence": "medium"}}, true
 	}
 	if encoder == "hevc_qsv" {
-		minRatio, maxRatio, ok := qsvOutputRatios(configString(profile.WorkerConfig, "hardwareQualityPreset"))
-		if !ok {
+		intent := quality.NewIntent(quality.IntentInput{
+			Preset:      configString(profile.WorkerConfig, "hardwareQualityPreset"),
+			SourceWidth: source.VideoWidth, SourceHeight: source.VideoHeight,
+			SourceVideoBitrate: source.VideoBitrate, DurationSeconds: source.DurationSeconds,
+			AudioBitrate: source.AudioBitrate, SubtitleSize: bitrateBytes(source.SubtitleBitrate, source.DurationSeconds),
+			VideoFilters:         configString(profile.WorkerConfig, "videoFilters"),
+			RequestedRateControl: configString(profile.WorkerConfig, "qsvRateControl"),
+			RequestedBitDepth:    profile.BitDepth, RequestedPixelFormat: configString(profile.WorkerConfig, "pixFmt"),
+			MeasuredVideoBitrate: source.MeasuredVideoBitrate,
+			HistoricalRatioMin:   source.HistoricalRatioMin, HistoricalRatioMax: source.HistoricalRatioMax, HistoricalSamples: source.HistoricalSamples,
+		})
+		capability := quality.WorkerCapabilities{Main: true, Main10: true, ICQ: true, LAICQ: true, CQP: true, VBR: true, CBR: true}
+		if len(workerCapabilities) > 0 {
+			capability = workerCapabilities[0]
+		}
+		recommendation, err := (quality.QSVTranslator{}).Translate(intent, capability)
+		if err != nil || recommendation.EstimatedOutputSizeMin == nil || recommendation.EstimatedOutputSizeMax == nil {
 			return outputEstimate{}, false
 		}
-		videoSourceBytes := bitrateBytes(source.VideoBitrate, duration)
-		min := int64(float64(videoSourceBytes)*minRatio) + audioBytes + subtitleBytes
-		max := int64(float64(videoSourceBytes)*maxRatio) + audioBytes + subtitleBytes
-		return outputEstimate{MinBytes: min + overhead(min), MaxBytes: max + overhead(max), Confidence: "low", Method: "qsv_icq_source_video_range", VideoBytes: videoSourceBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes}, true
+		min := *recommendation.EstimatedOutputSizeMin + audioBytes + subtitleBytes
+		max := *recommendation.EstimatedOutputSizeMax + audioBytes + subtitleBytes
+		method := map[string]string{"high": "five_distributed_profile_samples", "medium": "qsv_historical_encoder_ratios", "low": "qsv_preset_calibration_range"}[recommendation.EstimateConfidence]
+		videoBytes := (*recommendation.EstimatedOutputSizeMin + *recommendation.EstimatedOutputSizeMax) / 2
+		return outputEstimate{MinBytes: min + overhead(min), MaxBytes: max + overhead(max), Confidence: recommendation.EstimateConfidence, Method: method, VideoBytes: videoBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes, Recommendation: models.JSONMap{"requestedRateControl": recommendation.RequestedRateControl, "effectiveRateControl": recommendation.EffectiveRateControl, "rateControlFallback": recommendation.RateControlFallback, "globalQuality": recommendation.GlobalQuality, "profile": recommendation.Profile, "pixelFormat": recommendation.PixelFormat, "estimateConfidence": recommendation.EstimateConfidence, "warnings": recommendation.Warnings}}, true
 	}
 	_ = inputSize
 	return outputEstimate{}, false
 }
 
-func videoToolboxTargetKbps(profile models.Profile, sourceBitrate int64, sourceHeight int) (int, bool) {
-	target, _, _, ok := encodingpolicy.VideoToolboxBitrate(configString(profile.WorkerConfig, "hardwareQualityPreset"), sourceBitrate, sourceHeight, configString(profile.WorkerConfig, "videoFilters"))
-	return target, ok
-}
-
-func qsvOutputRatios(preset string) (float64, float64, bool) {
-	values, ok := map[string][2]float64{
-		"compact": {.25, .40}, "medium": {.32, .47}, "recommended": {.40, .55},
-		"best_quality": {.50, .65}, "high_quality": {.60, .75}, "archive": {.70, .85}, "master": {.80, 1.00},
-	}[preset]
-	return values[0], values[1], ok
+func videoToolboxTargetKbps(profile models.Profile, source mediaEstimate) (int, bool) {
+	intent := quality.NewIntent(quality.IntentInput{
+		Preset:      configString(profile.WorkerConfig, "hardwareQualityPreset"),
+		SourceWidth: source.VideoWidth, SourceHeight: source.VideoHeight,
+		SourceVideoBitrate: source.VideoBitrate, DurationSeconds: source.DurationSeconds,
+		AudioBitrate: source.AudioBitrate,
+		SubtitleSize: bitrateBytes(source.SubtitleBitrate, source.DurationSeconds),
+		VideoFilters: configString(profile.WorkerConfig, "videoFilters"),
+		ColorPolicy:  configString(profile.WorkerConfig, "finalColorPolicy"),
+	})
+	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+	if err != nil || recommendation.TargetBitrate == nil {
+		return 0, false
+	}
+	return int(*recommendation.TargetBitrate / 1000), true
 }
 
 func bitrateBytes(bitrate int64, duration float64) int64 {
@@ -220,6 +251,50 @@ func persistedProfileSampleEstimate(db *gorm.DB, path string, profile models.Pro
 		}
 	}
 	return 0, "", false
+}
+
+func historicalQSVSampleRatios(db *gorm.DB, preset string) (float64, float64, int) {
+	ratios := []float64{}
+	var sampleSetting models.AppSetting
+	if db.First(&sampleSetting, "key = ?", "profileSampleEstimates").Error == nil {
+		records, _ := sampleSetting.Value["records"].([]interface{})
+		for _, raw := range records {
+			record, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			estimate, ok := record["estimate"].(map[string]interface{})
+			if !ok || recordString(estimate["effectiveEncoder"]) != "hevc_qsv" || recordString(estimate["hardwareQualityPreset"]) != preset {
+				continue
+			}
+			duration := recordNumber(estimate["durationSeconds"])
+			sourceBitrate := recordNumber(estimate["sourceVideoBitrate"])
+			estimatedBytes := recordNumber(estimate["estimatedVideoBytes"])
+			if duration > 0 && sourceBitrate > 0 && estimatedBytes > 0 {
+				ratios = append(ratios, estimatedBytes/(sourceBitrate*duration/8))
+			}
+		}
+	}
+	var resultSetting models.AppSetting
+	if db.First(&resultSetting, "key = ?", "encoderResultHistory").Error == nil {
+		records, _ := resultSetting.Value["records"].([]interface{})
+		for _, raw := range records {
+			record, ok := raw.(map[string]interface{})
+			if !ok || recordString(record["effectiveEncoder"]) != "hevc_qsv" || recordString(record["hardwareQualityPreset"]) != preset {
+				continue
+			}
+			sourceBitrate := recordNumber(record["sourceVideoBitrate"])
+			outputBitrate := recordNumber(record["outputVideoBitrate"])
+			if sourceBitrate > 0 && outputBitrate > 0 {
+				ratios = append(ratios, outputBitrate/sourceBitrate)
+			}
+		}
+	}
+	if len(ratios) < 2 {
+		return 0, 0, len(ratios)
+	}
+	sort.Float64s(ratios)
+	return ratios[0], ratios[len(ratios)-1], len(ratios)
 }
 
 // ProfileEstimateFingerprint identifies every profile value that can affect a

@@ -271,6 +271,42 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	return result
 }
 
+// captureFinalAssetSnapshot persists the technical state of the published
+// file while it is known to be readable. Converted inventory and the Snapshot
+// dialog can then use this record without probing the media on first view.
+func captureFinalAssetSnapshot(db *gorm.DB, path string) (models.ScanResult, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	info, err := os.Stat(path)
+	if err != nil {
+		return models.ScanResult{}, err
+	}
+	if info.IsDir() {
+		return models.ScanResult{}, fmt.Errorf("final asset path must point to a file")
+	}
+	probe, raw, err := runFFProbe(path, 20)
+	if err != nil {
+		return models.ScanResult{}, err
+	}
+	result := buildScanResult(path, info.Size(), probe, raw)
+	if err := persistFinalAssetSnapshot(db, &result); err != nil {
+		return models.ScanResult{}, err
+	}
+	return result, nil
+}
+
+func persistFinalAssetSnapshot(db *gorm.DB, result *models.ScanResult) error {
+	if db == nil || result == nil || strings.TrimSpace(result.Path) == "" {
+		return fmt.Errorf("final asset snapshot requires a database and path")
+	}
+	result.Path = filepath.Clean(result.Path)
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("path = ?", result.Path).Delete(&models.ScanResult{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(result).Error
+	})
+}
+
 func enrichCachedScan(result *models.ScanResult) {
 	if result.RawProbe == nil {
 		result.RawProbe = models.JSONMap{}

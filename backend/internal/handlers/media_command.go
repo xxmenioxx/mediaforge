@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
-	"github.com/anuelvs/mvforge/backend/internal/encodingpolicy"
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 )
 
 const (
@@ -503,6 +503,16 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	if processingMode == ProcessingModeFullEncode {
 		analysis = detectInterlace(inputPath, fieldOrder, streams.Duration, 20)
 	}
+	qualityAnalysisPath := strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]))
+	if qualityAnalysisPath == "" {
+		qualityAnalysisPath = strings.TrimSpace(workerStringValue(profile.WorkerConfig["derivedFromAsset"]))
+	}
+	if qualityAnalysisPath == "" {
+		qualityAnalysisPath = inputPath
+	}
+	intent := qualityIntentForMedia(profile, qualityAnalysisPath, streams)
+	profile = applyVideoToolboxQualityRecommendation(profile, intent)
+	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
 	return MediaJobPlan{
 		InputPath:      inputPath,
 		OutputPath:     outputPath,
@@ -1034,25 +1044,36 @@ func adaptiveVideoToolboxBitrate(profile models.Profile, source *MediaStream) (i
 	if source == nil || source.Bitrate <= 0 || strings.ToLower(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"])) == "custom" {
 		return 0, 0, 0, false
 	}
-	return encodingpolicy.VideoToolboxBitrate(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), source.Bitrate, source.Height, workerStringValue(profile.WorkerConfig["videoFilters"]))
+	if target := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedTargetKbps"], 0); target > 0 {
+		maxrate := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedMaxrateKbps"], 0)
+		buffer := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedBufferKbps"], 0)
+		if maxrate > 0 && buffer > 0 {
+			return target, maxrate, buffer, true
+		}
+	}
+	intent := qualityIntentForMedia(profile, workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]), MediaStreamInventory{Video: []MediaStream{*source}})
+	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+	if err != nil || recommendation.TargetBitrate == nil || recommendation.Maxrate == nil || recommendation.Buffer == nil {
+		return 0, 0, 0, false
+	}
+	return int(*recommendation.TargetBitrate / 1000), int(*recommendation.Maxrate / 1000), int(*recommendation.Buffer / 1000), true
 }
 
 func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []string {
+	return videoCodecArgsForResolvedEncoder(profile, source, resolvedVideoEncoder(profile))
+}
+
+func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStream, encoder string) []string {
 	if profile.VideoCodec == "" || profile.VideoCodec == "copy" {
 		return []string{"-c:v", "copy"}
 	}
-	encoder := resolvedVideoEncoder(profile)
 	args := []string{"-c:v", encoder}
 	if profile.QualityMode == "crf" && profile.QualityValue > 0 {
 		switch encoder {
 		case "libx264", "libx265":
 			args = append(args, "-crf", fmt.Sprintf("%d", profile.QualityValue))
 		case "hevc_qsv":
-			if capabilities.CheckEncoder("hevc_qsv").ICQ {
-				args = append(args, "-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
-			} else {
-				args = append(args, "-b:v", fmt.Sprintf("%dM", defaultHardwareBitrateMbps(profile.QualityValue)))
-			}
+			args = append(args, qsvRateControlArgs(profile)...)
 		case "hevc_vaapi":
 			args = append(args, "-qp", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
 		case "hevc_nvenc":
@@ -1109,6 +1130,27 @@ func videoCodecArgsForSource(profile models.Profile, source *MediaStream) []stri
 		args = append(args, "-pix_fmt", "yuv420p10le")
 	}
 	return args
+}
+
+func qsvRateControlArgs(profile models.Profile) []string {
+	effectiveRateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvEffectiveRateControl"])))
+	switch effectiveRateControl {
+	case "cqp":
+		return []string{"-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))), "-flags", "+qscale"}
+	case "vbr", "cbr":
+		target := workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0)
+		maxrate := workerIntValue(profile.WorkerConfig["qsvMaxrate"], target)
+		buffer := workerIntValue(profile.WorkerConfig["qsvBuffer"], target*2)
+		if target > 0 {
+			return []string{"-b:v", fmt.Sprintf("%d", target), "-maxrate", fmt.Sprintf("%d", maxrate), "-bufsize", fmt.Sprintf("%d", buffer)}
+		}
+	case "icq", "la_icq":
+		return []string{"-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue)))}
+	}
+	if capabilities.CheckEncoder("hevc_qsv").ICQ {
+		return []string{"-global_quality", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue)))}
+	}
+	return []string{"-b:v", fmt.Sprintf("%dM", defaultHardwareBitrateMbps(profile.QualityValue))}
 }
 
 func videoToolboxOptionalFeatureSupported(capability capabilities.EncoderCapability, feature string, main10 bool) bool {
@@ -1310,7 +1352,10 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if profileWorkerBool(profile, "qsvLowPower", false) && lowPowerSupported {
 		args = append(args, "-low_power", "1")
 	}
-	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
+	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvEffectiveRateControl"])))
+	if rateControl == "" {
+		rateControl = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
+	}
 	lookAheadEnabled := main10 && rateControl == "la_icq" && capability.QSVLAICQMain10
 	if lookAheadEnabled {
 		args = append(args, "-look_ahead", "1")

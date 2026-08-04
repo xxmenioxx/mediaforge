@@ -100,3 +100,52 @@ func TestProfileFitRejectsMissingRequiredPreservation(t *testing.T) {
 		t.Fatalf("profile missing HDR/subtitle/chapter preservation must not be suggested, got %d", score)
 	}
 }
+
+func TestAdvisorTreatsExternalSubtitleConversionAsPreservation(t *testing.T) {
+	for _, format := range []string{"srt", "ass"} {
+		profile := models.Profile{
+			VideoCodec: "x265", AudioCodec: "copy", PreserveSubtitles: false,
+			WorkerConfig: models.JSONMap{"externalSubtitleFormat": format},
+		}
+		response := evaluateConversion(models.ScanResult{VideoCodec: "h264", SubtitleTracks: 2}, profile, false)
+		for _, warning := range response.Warnings {
+			if strings.Contains(warning, "does not preserve subtitles") {
+				t.Fatalf("%s externalization produced a false preservation warning: %#v", format, response.Warnings)
+			}
+		}
+		found := false
+		for _, reason := range response.Reasons {
+			if strings.Contains(reason, strings.ToUpper(format)) && strings.Contains(reason, "sidecars") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s externalization was not explained: %#v", format, response.Reasons)
+		}
+	}
+}
+
+func TestAdvisorWarnsOnlyWhenSubtitlePolicyReallyRemovesSubtitles(t *testing.T) {
+	profile := models.Profile{
+		VideoCodec: "x265", AudioCodec: "copy", PreserveSubtitles: true,
+		WorkerConfig: models.JSONMap{"externalSubtitleFormat": "remove"},
+	}
+	response := evaluateConversion(models.ScanResult{VideoCodec: "h264", SubtitleTracks: 1}, profile, false)
+	if len(response.Warnings) == 0 || !strings.Contains(response.Warnings[0], "embedded or external form") {
+		t.Fatalf("explicit subtitle removal must be reported: %#v", response.Warnings)
+	}
+}
+
+func TestProfileFitAcceptsExternalSubtitlePreservation(t *testing.T) {
+	scan := models.ScanResult{SubtitleTracks: 1}
+	proposal := proposedProfileForScan(scan)
+	profile := models.Profile{
+		VideoCodec: "x265", CodecFamily: "hevc", Container: "mkv", QualityMode: "crf",
+		QualityValue: proposal.QualityValue, BitDepth: 10,
+		WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt"},
+	}
+	score, reasons := profileFit(profile, proposal, scan)
+	if score != 100 {
+		t.Fatalf("external subtitle preservation must not reduce profile fit: score=%d reasons=%#v", score, reasons)
+	}
+}

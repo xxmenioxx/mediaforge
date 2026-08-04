@@ -61,7 +61,7 @@ import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
-import { adaptiveVideoToolboxPresetKbps as sharedAdaptiveVideoToolboxPresetKbps, applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
+import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -776,16 +776,8 @@ export function ProfileLabPage() {
     },
   });
 
-  const trackSnapshot = useMutation({ mutationFn: api.scan, onSuccess: (scan) => {
-    setVideoDraft((current) => {
-      const encoder = videoWorkerValue(current, 'videoEncoder', 'auto');
-      const preset = videoWorkerValue(current, 'hardwareQualityPreset', '');
-      if (!isHardwareEncoderOption(encoder) || !preset || preset === 'custom') return current;
-      const workerConfig = applySharedHardwareQualityPreset(current.workerConfig ?? {}, encoder, preset, scan);
-      if (JSON.stringify(workerConfig) === JSON.stringify(current.workerConfig)) return current;
-      return synchronizeLabAuthoritativeContract({ ...current, workerConfig });
-    });
-  } });
+  const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
+  const trackSnapshot = useMutation({ mutationFn: api.scan });
   const fidelityInspection = useMutation({
     mutationFn: async ({
       reference,
@@ -820,6 +812,9 @@ export function ProfileLabPage() {
     && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
     ? profileSampleEstimate.data
     : undefined;
+  const currentEncoderRecommendation = encoderQualityRecommendation.variables?.path === (assetPath || undefined)
+    ? encoderQualityRecommendation.data
+    : undefined;
   const currentFidelityInspection = fidelityInspection.data?.assetPath === assetPath
     ? fidelityInspection.data
     : undefined;
@@ -853,14 +848,50 @@ export function ProfileLabPage() {
     const encoder = videoWorkerValue(draft, 'videoEncoder', 'auto');
     const qualityPreset = videoWorkerValue(draft, 'hardwareQualityPreset', '');
     const workerConfig = isHardwareEncoderOption(encoder) && qualityPreset && qualityPreset !== 'custom'
-      ? applySharedHardwareQualityPreset(draft.workerConfig ?? {}, encoder, qualityPreset, trackSnapshot.data)
+      ? applySharedHardwareQualityPreset(draft.workerConfig ?? {}, encoder, qualityPreset)
       : draft.workerConfig;
-    setVideoDraft({
+    const selectedDraft = {
       ...draft,
       name: `${profile.name} - ${selectedAsset?.fileName ?? 'Asset'} Lab`,
       description: `Derived in Profile Lab from ${profile.name}${selectedAsset ? ` for ${selectedAsset.relativePath || selectedAsset.fileName}` : ''}.`,
       audioCodec: 'copy',
       workerConfig: { ...workerConfig, derivedFromProfileId: profile.id, derivedFromAsset: selectedAsset?.path ?? '' },
+    };
+    setVideoDraft(selectedDraft);
+    if (isHardwareEncoderOption(encoder) && qualityPreset && qualityPreset !== 'custom') {
+      encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: selectedDraft }, {
+        onSuccess: (result) => setVideoDraft(synchronizeLabAuthoritativeContract(result.effectiveProfile)),
+      });
+    }
+  }
+
+  function selectHardwareQualityPreset(preset: string) {
+    const encoder = videoWorkerValue(videoDraft, 'videoEncoder', 'auto');
+    const requested = synchronizeLabAuthoritativeContract({
+      ...videoDraft,
+      workerConfig: applySharedHardwareQualityPreset(videoDraft.workerConfig ?? {}, encoder, preset),
+    });
+    setVideoDraft(requested);
+    if (preset === 'custom') return;
+    encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: requested }, {
+      onSuccess: (result) => setVideoDraft(synchronizeLabAuthoritativeContract(result.effectiveProfile)),
+    });
+  }
+
+  function selectHardwareEncoder(encoder: string) {
+    const requested = synchronizeLabAuthoritativeContract({
+      ...videoDraft,
+      workerConfig: applySharedHardwareQualityPreset({
+        ...videoDraft.workerConfig,
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+        videoEncoder: encoder,
+        pixFmt: defaultHardwareMain10PixelFormat(encoder),
+      }, encoder, 'recommended'),
+    });
+    setVideoDraft(requested);
+    encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: requested }, {
+      onSuccess: (result) => setVideoDraft(synchronizeLabAuthoritativeContract(result.effectiveProfile)),
     });
   }
 
@@ -2078,7 +2109,7 @@ export function ProfileLabPage() {
                             <TextField
                               label="Processing preference"
                               value={videoWorkerValue(videoDraft, 'preferredEncoder', 'software')}
-                              onChange={(event) => updateVideoProcessingPreference(setVideoDraft, event.target.value as 'software' | 'hardware', defaultHardwareEncoder, trackSnapshot.data)}
+                              onChange={(event) => updateVideoProcessingPreference(setVideoDraft, event.target.value as 'software' | 'hardware', defaultHardwareEncoder)}
                               helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
                               select
                               size="small"
@@ -2098,7 +2129,7 @@ export function ProfileLabPage() {
                             <TextField
                               label="Hardware encoder"
                               value={videoWorkerValue(videoDraft, 'videoEncoder', 'auto')}
-                              onChange={(event) => updateVideoHardwareEncoder(setVideoDraft, event.target.value, trackSnapshot.data)}
+                              onChange={(event) => selectHardwareEncoder(event.target.value)}
                               helperText={selectedHardwareCapability && !selectedHardwareCapability.usable
                                 ? selectedHardwareCapability.reason
                                 : videoEncoderDescription(selectedHardwareEncoder)}
@@ -2191,7 +2222,7 @@ export function ProfileLabPage() {
                               onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'globalQuality', Number(event.target.value))}
                               type="number"
                               inputProps={{ min: 15, max: 35 }}
-                              helperText={hardwareQualityHelper(videoDraft.qualityValue)}
+                              helperText={qsvAssetQualitySummary(videoDraft.workerConfig ?? {}) ?? hardwareQualityHelper(videoDraft.qualityValue)}
                               size="small"
                               fullWidth
                             />
@@ -2223,7 +2254,7 @@ export function ProfileLabPage() {
                                   fullWidth
                                 />
                               </Grid>
-                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyHardwareQualityPreset(setVideoDraft, event.target.value, trackSnapshot.data)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
                                   control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
@@ -2246,7 +2277,7 @@ export function ProfileLabPage() {
                           ) : null}
                           {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                             <>
-                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyHardwareQualityPreset(setVideoDraft, event.target.value, trackSnapshot.data)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <TextField label="Custom target bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} helperText="Named presets adapt to the selected asset. Editing uses Custom." size="small" fullWidth />
                               </Grid>
@@ -2261,6 +2292,9 @@ export function ProfileLabPage() {
                                 <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                               </>
                           ) : null}
+                          {encoderQualityRecommendation.isPending ? <Grid size={{ xs: 12 }}><Alert severity="info">Calculating effective encoder settings from the active worker probe…</Alert></Grid> : null}
+                          {encoderQualityRecommendation.isError ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
+                          {currentEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${currentEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${currentEncoderRecommendation.recommendation.estimateConfidence}`} />{currentEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(currentEncoderRecommendation.estimatedOutputMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedOutputMaxBytes)}`} /> : null}{currentEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(currentEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {currentEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         </Grid>
                       </Box>
                     </Grid>
@@ -3865,7 +3899,6 @@ function updateVideoProcessingPreference(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   preference: 'software' | 'hardware',
   defaultHardwareEncoder = '',
-  scan?: ScanResult,
 ) {
   setVideoDraft((current) => {
     const hardware = preference === 'hardware';
@@ -3885,7 +3918,7 @@ function updateVideoProcessingPreference(
       pixFmt: pixelFormat,
     };
     const workerConfig = hardware
-      ? applySharedHardwareQualityPreset(baseWorkerConfig, hardwareEncoder, 'recommended', scan)
+      ? applySharedHardwareQualityPreset(baseWorkerConfig, hardwareEncoder, 'recommended')
       : baseWorkerConfig;
     return synchronizeLabAuthoritativeContract({
       ...current,
@@ -3904,7 +3937,6 @@ function updateVideoProcessingPreference(
 function updateVideoHardwareEncoder(
   setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
   encoder: string,
-  scan?: ScanResult,
 ) {
   setVideoDraft((current) => synchronizeLabAuthoritativeContract({
     ...current,
@@ -3914,22 +3946,8 @@ function updateVideoHardwareEncoder(
       useHardwareIfAvailable: true,
       videoEncoder: encoder,
       pixFmt: defaultHardwareMain10PixelFormat(encoder),
-    }, encoder, 'recommended', scan),
+    }, encoder, 'recommended'),
   }));
-}
-
-function applyHardwareQualityPreset(setter: Dispatch<SetStateAction<ProfileInput>>, preset: string, scan?: ScanResult) {
-  setter((current) => {
-    const encoder = videoWorkerValue(current, 'videoEncoder', 'auto');
-    const workerConfig = applySharedHardwareQualityPreset(current.workerConfig ?? {}, encoder, preset, scan);
-    // pixFmt is part of a hardware preset. Keep the top-level Color depth and
-    // Pixel format fields in lockstep with it instead of leaving LAB in an
-    // impossible Main/Main10 state until the user touches another control.
-    return synchronizeLabAuthoritativeContract({
-      ...current,
-      workerConfig,
-    });
-  });
 }
 
 function updateVideoCodecDraft(
@@ -4366,6 +4384,10 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
     ['Preview color domain', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', previewNormalization === 'normalize_bt709' ? 'Normalize preview to BT.709' : 'Preserve source domain', 'LAB/Fidelity only · not saved in the profile'],
     ['Final output color policy', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', finalColorPolicyReviewLabel(videoWorkerValue(profile, 'finalColorPolicy', 'preserve')), videoWorkerValue(profile, 'finalColorPolicy', 'preserve') === 'normalize_bt709' ? 'Pixel conversion and BT.709 metadata applied by pipeline' : 'No forced BT.709 output conversion'],
     ['Quality / rate control', source?.bitrate ? `${(source.bitrate / 1_000_000).toFixed(2)} Mbps source` : 'Unknown', quality, 'Configured output target'],
+    ...(encoder === 'hevc_qsv' ? [
+      ['QSV requested mode', 'Worker capability dependent', videoWorkerValue(profile, 'qsvRequestedRateControl', videoWorkerValue(profile, 'qsvRateControl', 'la_icq')), 'Preserved as requested evidence'],
+      ['QSV effective mode', 'Active worker probe', videoWorkerValue(profile, 'qsvEffectiveRateControl', 'Pending worker resolution'), videoWorkerValue(profile, 'qsvRateControlFallbackReason') || 'No fallback'],
+    ] : []),
     ['Video filters', 'Source image', filters || 'None', filters ? 'Image processing enabled' : 'No image cleanup'],
     ['HDR', source?.hdr ? 'HDR' : 'SDR or unknown', profile.preserveHdr ? 'Preserve' : 'Not preserved', profile.preserveHdr ? 'Protected' : 'Review required'],
     ['Subtitles', `${source?.subtitleTracks ?? 0} embedded`, videoWorkerValue(profile, 'externalSubtitleFormat', 'source'), profile.preserveSubtitles ? 'Preserved' : 'Externalize/remove as configured'],
@@ -5151,19 +5173,13 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
 }
 
 function adaptiveVideoToolboxPreviewRates(profile: ProfileInput, scan: ScanResult) {
-  const preset = videoWorkerValue(profile, 'hardwareQualityPreset', 'custom');
-  if (preset === 'custom') {
-    const bitrate = numberWorkerValue(profile, 'videoToolboxBitrateMbps', 6);
-    return { target: `${bitrate}M`, maxrate: `${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', Math.ceil(bitrate * 1.5))}M`, buffer: `${numberWorkerValue(profile, 'videoToolboxBufferMbps', Math.ceil(bitrate * 2.5))}M` };
-  }
-  const rates = adaptiveVideoToolboxPresetKbps(profile, scan);
-  if (rates) return { target: `${rates.target}k`, maxrate: `${rates.maxrate}k`, buffer: `${rates.buffer}k` };
+	void scan;
+  const target = numberWorkerValue(profile, 'videoToolboxRecommendedTargetKbps', 0);
+  const maxrate = numberWorkerValue(profile, 'videoToolboxRecommendedMaxrateKbps', 0);
+  const buffer = numberWorkerValue(profile, 'videoToolboxRecommendedBufferKbps', 0);
+  if (target > 0 && maxrate > 0 && buffer > 0) return { target: `${target}k`, maxrate: `${maxrate}k`, buffer: `${buffer}k` };
   const bitrate = numberWorkerValue(profile, 'videoToolboxBitrateMbps', 6);
-  return { target: `${bitrate}M`, maxrate: `${Math.ceil(bitrate * 1.5)}M`, buffer: `${Math.ceil(bitrate * 2.5)}M` };
-}
-
-function adaptiveVideoToolboxPresetKbps(profile: ProfileInput, scan: ScanResult) {
-  return sharedAdaptiveVideoToolboxPresetKbps(profile.workerConfig ?? {}, scan);
+  return { target: `${bitrate}M`, maxrate: `${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', Math.ceil(bitrate * 1.5))}M`, buffer: `${numberWorkerValue(profile, 'videoToolboxBufferMbps', Math.ceil(bitrate * 2.5))}M` };
 }
 
 function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {

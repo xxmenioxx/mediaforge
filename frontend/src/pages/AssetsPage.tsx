@@ -53,10 +53,10 @@ import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
+import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
-import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
+import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -1906,6 +1906,7 @@ function AssetRow({
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isArchive ? (
                       <AssetConversionOverridePanel
+                        assetPath={asset.path}
                         draft={conversionDraft}
                         profile={profiles.find((profile) => profile.id === selectedProfileId)}
                         scan={snapshot.data}
@@ -2269,6 +2270,7 @@ const assetEncoderOptions: SelectOption[] = [
 ];
 
 function AssetConversionOverridePanel({
+  assetPath,
   draft,
   profile,
   scan,
@@ -2278,6 +2280,7 @@ function AssetConversionOverridePanel({
   saving,
   readOnly = false,
 }: {
+  assetPath: string;
   draft: AssetConversionOverrideState;
   profile?: Profile;
   scan?: ScanResult;
@@ -2289,6 +2292,7 @@ function AssetConversionOverridePanel({
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
   const recommendedCrop = ['detected', 'variable'].includes(scan?.cropAnalysis?.status ?? '') ? (scan?.cropAnalysis?.recommendedCrop ?? '').trim() : '';
   const manualCropCandidate = scan?.cropAnalysis?.status === 'variable' && Boolean(recommendedCrop);
   const currentCropFilter = cropFilterFromChain(draft.videoFilters);
@@ -2312,7 +2316,7 @@ function AssetConversionOverridePanel({
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const selectedHardwareQualityPreset = String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended');
   const effectiveHardwarePresetConfig = selectedHardwareQualityPreset !== 'custom'
-    ? applySharedHardwareQualityPreset({ ...(profile?.workerConfig ?? {}), ...draft }, effectiveVideoEncoder, selectedHardwareQualityPreset, scan)
+    ? applySharedHardwareQualityPreset({ ...(profile?.workerConfig ?? {}), ...draft }, effectiveVideoEncoder, selectedHardwareQualityPreset)
     : { ...(profile?.workerConfig ?? {}), ...draft };
   const effectivePixFmt = (draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase();
   const videoToolboxMain10Selected = (draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')).toLowerCase() === 'main10'
@@ -2321,6 +2325,15 @@ function AssetConversionOverridePanel({
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxBFramesMain10 === true);
   const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
+
+  function selectHardwareQualityPreset(preset: string, encoder: string) {
+    onChange('hardwareQualityPreset', preset);
+    if (preset === 'custom') return;
+    const requested = assetQualityProfile(profile, draft, encoder, preset);
+    encoderQualityRecommendation.mutate({ path: assetPath, profile: requested }, {
+      onSuccess: (result) => applyEffectiveProfileToAssetOverrides(onChange, result.effectiveProfile),
+    });
+  }
 
   function changeProcessingPreference(value: '' | 'software' | 'hardware') {
     if (value === '') {
@@ -2351,7 +2364,7 @@ function AssetConversionOverridePanel({
     onChange('useHardwareIfAvailable', hardwareCodecSupported);
     const encoder = isHardwareAssetEncoder(effectiveVideoEncoder) ? effectiveVideoEncoder : defaultHardwareEncoder;
     onChange('videoEncoder', encoder);
-    applyAssetHardwareQualityPreset(onChange, 'recommended', encoder, scan);
+    selectHardwareQualityPreset('recommended', encoder);
   }
 
   function changeAssetVideoCodec(value: string) {
@@ -2542,7 +2555,7 @@ function AssetConversionOverridePanel({
                     value={effectiveVideoEncoder}
                     onChange={(event) => {
                       onChange('videoEncoder', event.target.value);
-                      applyAssetHardwareQualityPreset(onChange, 'recommended', event.target.value, scan);
+                      selectHardwareQualityPreset('recommended', event.target.value);
                     }}
                     helperText="Only encoders reported by the current runtime are selectable."
                     size="small"
@@ -2588,7 +2601,7 @@ function AssetConversionOverridePanel({
                     value={draft.globalQuality ?? Number(profile?.workerConfig?.globalQuality ?? qsvQualityRangeForCrf(draft.qualityValue ?? profile?.qualityValue ?? 22).recommended)}
                     onChange={(event) => onChange('globalQuality', Number(event.target.value))}
                     inputProps={{ min: 15, max: 35 }}
-                    helperText={qsvQualityHelper(draft.qualityValue ?? profile?.qualityValue ?? 22)}
+                    helperText={qsvAssetQualitySummary({ ...(profile?.workerConfig ?? {}), ...draft }) ?? qsvQualityHelper(draft.qualityValue ?? profile?.qualityValue ?? 22)}
                     size="small"
                     fullWidth
                   />
@@ -2596,7 +2609,7 @@ function AssetConversionOverridePanel({
               </Grid>
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
-                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Applies coordinated QSV quality, rate-control, look-ahead, adaptive-frame and bit-depth values." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_qsv', scan)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="The backend translates this intent using the active worker probe." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
@@ -2631,12 +2644,15 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                     <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
                   </Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => applyAssetHardwareQualityPreset(onChange, event.target.value, 'hevc_videotoolbox', scan)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase file size." label="GOP" type="number" value={draft.videoToolboxGop ?? Number(profile?.workerConfig?.videoToolboxGop ?? 0)} onChange={(event) => onChange('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={draft.videoToolboxAllowFrameReordering ?? profile?.workerConfig?.videoToolboxAllowFrameReordering === true} onChange={(event) => onChange('videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
+              {encoderQualityRecommendation.isPending ? <Alert severity="info">Resolving this asset against the active worker probe…</Alert> : null}
+              {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
+              {encoderQualityRecommendation.data ? <Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />{encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack> : null}
             </Box>
           </Grid>
           <Grid size={{ xs: 12, md: 4 }}>
@@ -3896,12 +3912,54 @@ function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function applyAssetHardwareQualityPreset(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, preset: string, encoder: string, scan?: ScanResult) {
-  const values = applySharedHardwareQualityPreset({}, encoder, preset, scan);
-  Object.entries(values).filter(([key]) => key !== 'hardwareQualityPreset').forEach(([key, value]) => {
-    onChange((key === 'qsvExtendedBRC' ? 'qsvExtendedBrc' : key) as keyof AssetConversionOverrideState, value as never);
+function assetQualityProfile(profile: Profile | undefined, draft: AssetConversionOverrideState, encoder: string, preset: string): ProfileInput {
+  const pixelFormat = draft.pixFmt || String(profile?.workerConfig?.pixFmt ?? (encoder === 'hevc_qsv' ? 'nv12' : 'yuv420p'));
+  return {
+    name: profile?.name ?? 'Asset quality recommendation',
+    description: profile?.description ?? '',
+    container: profile?.container ?? 'mkv',
+    videoCodec: draft.videoCodec || profile?.videoCodec || 'x265',
+    codecFamily: profile?.codecFamily ?? 'hevc',
+    encoderPolicy: profile?.encoderPolicy ?? 'locked',
+    preferredEncoder: encoder,
+    allowedEncoders: [encoder],
+    fallbackPolicy: profile?.fallbackPolicy ?? 'wait',
+    bitDepth: pixelFormat.includes('10') || pixelFormat.includes('p010') ? 10 : 8,
+    pixelFormat,
+    qualityStrategy: profile?.qualityStrategy ?? 'hardware',
+    audioCodec: draft.audioCodec || profile?.audioCodec || 'copy',
+    qualityMode: draft.qualityMode || profile?.qualityMode || 'crf',
+    qualityValue: draft.qualityValue ?? profile?.qualityValue ?? 20,
+    preserveHdr: draft.preserveHdr ?? profile?.preserveHdr ?? true,
+    preserveSubtitles: draft.preserveSubtitles ?? profile?.preserveSubtitles ?? true,
+    preserveChapters: draft.preserveChapters ?? profile?.preserveChapters ?? true,
+    disabled: false,
+    workerConfig: {
+      ...(profile?.workerConfig ?? {}),
+      ...draft,
+      qsvExtendedBRC: draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC,
+      videoEncoder: encoder,
+      useHardwareIfAvailable: true,
+      preferredEncoder: 'hardware',
+      pixFmt: pixelFormat,
+      hardwareQualityPreset: preset,
+    },
+  };
+}
+
+function applyEffectiveProfileToAssetOverrides(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, profile: Profile) {
+  const config = profile.workerConfig ?? {};
+  const mapping: Array<[keyof AssetConversionOverrideState, unknown]> = [
+    ['hardwareQualityPreset', config.hardwareQualityPreset], ['globalQuality', config.globalQuality],
+    ['qsvRateControl', config.qsvRateControl], ['qsvLookAheadDepth', config.qsvLookAheadDepth],
+    ['qsvExtendedBrc', config.qsvExtendedBRC], ['qsvAdaptiveI', config.qsvAdaptiveI], ['qsvAdaptiveB', config.qsvAdaptiveB],
+    ['videoToolboxBitrateMbps', config.videoToolboxBitrateMbps], ['videoToolboxMaxrateMbps', config.videoToolboxMaxrateMbps],
+    ['videoToolboxBufferMbps', config.videoToolboxBufferMbps], ['videoToolboxProfile', config.videoToolboxProfile],
+    ['pixFmt', config.pixFmt],
+  ];
+  mapping.forEach(([key, value]) => {
+    if (value !== undefined) onChange(key, value as never);
   });
-  onChange('hardwareQualityPreset', values.hardwareQualityPreset as never);
 }
 
 function createBatchId(group: AssetGroup) {

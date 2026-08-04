@@ -235,7 +235,7 @@ func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanR
 		score -= 35
 		reasons = append(reasons, "HDR would not be preserved.")
 	}
-	if scan.SubtitleTracks > 0 && !profile.PreserveSubtitles {
+	if preserved, _ := advisorSubtitlePreservation(profile); scan.SubtitleTracks > 0 && !preserved {
 		score -= 20
 		reasons = append(reasons, "Subtitle tracks would not be preserved.")
 	}
@@ -349,13 +349,14 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 		warnings = append(warnings, "HDR was detected but the selected profile does not preserve HDR.")
 	}
 
-	if scan.SubtitleTracks > 0 && profile.PreserveSubtitles {
-		reasons = append(reasons, "Subtitle tracks are present and the selected profile preserves subtitles.")
-	}
-
-	if scan.SubtitleTracks > 0 && !profile.PreserveSubtitles {
-		score -= 10
-		warnings = append(warnings, "Subtitle tracks are present but the selected profile does not preserve subtitles.")
+	if scan.SubtitleTracks > 0 {
+		preserved, reason := advisorSubtitlePreservation(profile)
+		if preserved {
+			reasons = append(reasons, reason)
+		} else {
+			score -= 10
+			warnings = append(warnings, "Subtitle tracks are present but the selected profile does not preserve subtitles in embedded or external form.")
+		}
 	}
 
 	if scan.AudioTracks > 1 && strings.ToLower(profile.AudioCodec) != "copy" {
@@ -385,6 +386,20 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 		},
 		Scan:    scan,
 		Profile: profile,
+	}
+}
+
+func advisorSubtitlePreservation(profile models.Profile) (bool, string) {
+	if format := effectiveExternalSubtitleFormat(profile); format != "" {
+		return true, fmt.Sprintf("Subtitle tracks are present and the selected profile preserves them as external %s sidecars.", strings.ToUpper(format))
+	}
+	switch effectiveSubtitlePolicy(profile) {
+	case "source":
+		return true, "Subtitle tracks are present and the selected profile preserves the embedded subtitle tracks."
+	case "disabled":
+		return true, "Subtitle tracks are present and the selected profile leaves subtitle handling unchanged, so the tracks remain preserved."
+	default:
+		return false, ""
 	}
 }
 

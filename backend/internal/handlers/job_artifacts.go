@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -600,18 +601,153 @@ func intListLabel(values []int) string {
 }
 
 func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]any) error {
+	if db != nil && job.ID > 0 {
+		var current models.QueueJob
+		if db.First(&current, job.ID).Error == nil {
+			job = current
+		}
+	}
+	probePath := job.OutputPath
+	for _, candidate := range []string{job.PublishedPath, job.PlannedPublishedPath, job.OutputPath} {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			probePath = candidate
+			break
+		}
+	}
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
 	artifact := jobArtifact{
 		GeneratedAt:     time.Now(),
 		Kind:            "result",
 		Job:             job,
 		AssetConversion: assetConversionReport(override),
-		OutputProbe:     ffprobeJSON(job.OutputPath),
+		OutputProbe:     ffprobeJSON(probePath),
 		Result:          result,
 		Notes:           job.Notes,
 	}
+	if profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); err == nil {
+		artifact.Profile = profile
+		artifact.EncoderDecision = encoderDecisionForProfile(profile)
+	}
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
+	persistCompletedEncoderResult(db, artifact)
 	return writeJobArtifact(db, job, "result", artifact)
+}
+
+func persistCompletedEncoderResult(db *gorm.DB, artifact jobArtifact) {
+	if db == nil || artifact.Job.ID == 0 || artifact.Result["status"] != "completed" {
+		return
+	}
+	effectiveEncoder := workerStringValue(artifact.EncoderDecision["effective"])
+	var activePlan models.ExecutionPlan
+	hasActivePlan := false
+	if artifact.Job.ActiveExecutionPlanID != nil && db.First(&activePlan, *artifact.Job.ActiveExecutionPlanID).Error == nil {
+		hasActivePlan = true
+		if strings.TrimSpace(activePlan.SelectedEncoder) != "" {
+			effectiveEncoder = activePlan.SelectedEncoder
+		}
+	}
+	if effectiveEncoder != "hevc_qsv" && effectiveEncoder != "hevc_videotoolbox" {
+		return
+	}
+	inputArtifact, _, err := readLatestJobArtifact(db, artifact.Job, "as-is")
+	if err != nil {
+		return
+	}
+	sourceProbe, _ := inputArtifact["sourceProbe"].(map[string]any)
+	source := videoProbeFacts(sourceProbe)
+	output := videoProbeFacts(artifact.OutputProbe)
+	if source.Bitrate <= 0 || source.Duration <= 0 || output.Bitrate <= 0 {
+		return
+	}
+	actualOutputBytes := probeFormatInt64(artifact.OutputProbe, "size")
+	if actualOutputBytes <= 0 {
+		actualOutputBytes = int64(float64(output.Bitrate) * output.Duration / 8)
+	}
+	record := models.JSONMap{
+		"jobId": artifact.Job.ID, "recordedAt": time.Now().UTC().Format(time.RFC3339),
+		"effectiveEncoder":      effectiveEncoder,
+		"hardwareQualityPreset": workerStringValue(artifact.Profile.WorkerConfig["hardwareQualityPreset"]),
+		"sourceVideoBitrate":    source.Bitrate, "outputVideoBitrate": output.Bitrate,
+		"durationSeconds": source.Duration, "sourceWidth": source.Width, "sourceHeight": source.Height,
+		"outputWidth": output.Width, "outputHeight": output.Height,
+		"actualOutputBytes": actualOutputBytes,
+	}
+	if hasActivePlan {
+		record["estimatedOutputMinBytes"] = activePlan.EstimatedOutputMinBytes
+		record["estimatedOutputMaxBytes"] = activePlan.EstimatedOutputMaxBytes
+		record["estimateConfidence"] = activePlan.EstimateConfidence
+		record["encoderRecommendation"] = activePlan.Evaluation["encoderRecommendation"]
+	}
+	const key = "encoderResultHistory"
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		var setting models.AppSetting
+		err := tx.First(&setting, "key = ?", key).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		records := []any{}
+		if err == nil {
+			records, _ = setting.Value["records"].([]any)
+		}
+		records = append([]any{record}, records...)
+		if len(records) > 500 {
+			records = records[:500]
+		}
+		if err == gorm.ErrRecordNotFound {
+			return tx.Create(&models.AppSetting{Key: key, Value: models.JSONMap{"records": records}}).Error
+		}
+		setting.Value = models.JSONMap{"records": records}
+		return tx.Save(&setting).Error
+	})
+}
+
+type encoderVideoProbeFacts struct {
+	Bitrate  int64
+	Duration float64
+	Width    int
+	Height   int
+}
+
+func videoProbeFacts(probe map[string]any) encoderVideoProbeFacts {
+	facts := encoderVideoProbeFacts{Duration: probeFormatFloat64(probe, "duration")}
+	streams, _ := probe["streams"].([]any)
+	for _, raw := range streams {
+		stream, _ := raw.(map[string]any)
+		if workerStringValue(stream["codec_type"]) != "video" {
+			continue
+		}
+		facts.Bitrate = jsonInt64(stream["bit_rate"])
+		facts.Width = int(jsonInt64(stream["width"]))
+		facts.Height = int(jsonInt64(stream["height"]))
+		if facts.Duration <= 0 {
+			facts.Duration = jsonFloat64(stream["duration"])
+		}
+		break
+	}
+	if facts.Bitrate <= 0 {
+		facts.Bitrate = probeFormatInt64(probe, "bit_rate")
+	}
+	return facts
+}
+
+func probeFormatInt64(probe map[string]any, key string) int64 {
+	format, _ := probe["format"].(map[string]any)
+	return jsonInt64(format[key])
+}
+
+func probeFormatFloat64(probe map[string]any, key string) float64 {
+	format, _ := probe["format"].(map[string]any)
+	return jsonFloat64(format[key])
+}
+
+func jsonInt64(value any) int64 {
+	parsed, _ := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 64)
+	return parsed
+}
+
+func jsonFloat64(value any) float64 {
+	parsed, _ := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+	return parsed
 }
 
 func writeJobArtifact(db *gorm.DB, job models.QueueJob, kind string, artifact jobArtifact) error {

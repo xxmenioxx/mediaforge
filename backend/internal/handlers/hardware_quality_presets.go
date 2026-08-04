@@ -1,10 +1,29 @@
 package handlers
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 )
+
+func workerStringSlice(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
 
 // normalizeHardwareQualityPreset is the execution authority for the UI presets.
 // It deliberately runs when a job is planned as profiles can also arrive through
@@ -33,45 +52,48 @@ func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
 	}
 	encoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
 	if encoder == "hevc_qsv" {
-		quality := map[string]int{"compact": 36, "medium": 33, "recommended": 30, "best_quality": 27, "high_quality": 25, "archive": 22, "master": 20}[preset]
-		if quality == 0 {
-			preset, quality = "recommended", 30
+		baseQuality, ok := quality.QSVBaseQuality(quality.Preset(preset))
+		qsvProfile, pixelFormat, formatOK := quality.QSVFormat(quality.Preset(preset))
+		if !ok || !formatOK {
+			preset = "recommended"
+			baseQuality, _ = quality.QSVBaseQuality(quality.PresetRecommended)
+			qsvProfile, pixelFormat, _ = quality.QSVFormat(quality.PresetRecommended)
 		}
 		profile.WorkerConfig["hardwareQualityPreset"] = preset
-		profile.WorkerConfig["globalQuality"] = quality
-		profile.WorkerConfig["qsvRateControl"] = map[string]string{"archive": "la_icq", "master": "la_icq"}[preset]
-		if profile.WorkerConfig["qsvRateControl"] == "" {
-			profile.WorkerConfig["qsvRateControl"] = "icq"
-		}
+		profile.WorkerConfig["globalQuality"] = baseQuality
+		profile.WorkerConfig["qsvRequestedGlobalQuality"] = baseQuality
+		profile.WorkerConfig["qsvEffectiveGlobalQuality"] = baseQuality
+		profile.WorkerConfig["qsvAssetQualityAdjustment"] = 0
+		profile.WorkerConfig["qsvAssetQualityReasons"] = []string{}
+		profile.WorkerConfig["qsvRateControl"] = "la_icq"
 		profile.WorkerConfig["qsvLookAheadDepth"] = 40
 		profile.WorkerConfig["qsvExtendedBRC"] = false
 		profile.WorkerConfig["qsvAdaptiveI"] = false
 		profile.WorkerConfig["qsvAdaptiveB"] = false
-		if preset == "compact" || preset == "medium" || preset == "recommended" || preset == "best_quality" {
-			profile.WorkerConfig["pixFmt"] = "nv12"
+		profile.WorkerConfig["pixFmt"] = pixelFormat
+		profile.PixelFormat = pixelFormat
+		if qsvProfile == "main10" {
+			profile.BitDepth = 10
 		} else {
-			profile.WorkerConfig["pixFmt"] = "p010le"
+			profile.BitDepth = 8
 		}
 		return profile
 	}
 	if encoder == "hevc_videotoolbox" {
-		type settings struct{ profile, pixFmt string }
-		values := map[string]settings{
-			"compact": {"main", "yuv420p"}, "medium": {"main", "yuv420p"},
-			"recommended": {"main", "yuv420p"}, "best_quality": {"main", "yuv420p"},
-			"high_quality": {"main10", "p010le"}, "archive": {"main10", "p010le"}, "master": {"main10", "p010le"},
-		}
-		value, ok := values[preset]
-		if !ok {
-			preset, value = "recommended", values["recommended"]
+		intent := quality.NewIntent(quality.IntentInput{Preset: preset, ColorPolicy: workerStringValue(profile.WorkerConfig["finalColorPolicy"])})
+		recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+		if err != nil {
+			preset = "recommended"
+			intent = quality.NewIntent(quality.IntentInput{Preset: preset, ColorPolicy: workerStringValue(profile.WorkerConfig["finalColorPolicy"])})
+			recommendation, _ = (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
 		}
 		profile.WorkerConfig["hardwareQualityPreset"] = preset
-		profile.WorkerConfig["videoToolboxProfile"] = value.profile
+		profile.WorkerConfig["videoToolboxProfile"] = recommendation.Profile
 		profile.WorkerConfig["videoToolboxGop"] = 120
 		delete(profile.WorkerConfig, "videoToolboxRealtime")
 		profile.WorkerConfig["videoToolboxAllowFrameReordering"] = false
 		profile.WorkerConfig["videoToolboxPowerEfficiency"] = true
-		profile.WorkerConfig["pixFmt"] = value.pixFmt
+		profile.WorkerConfig["pixFmt"] = recommendation.PixelFormat
 		delete(profile.WorkerConfig, "videoToolboxQualityProfile")
 	}
 	return profile
