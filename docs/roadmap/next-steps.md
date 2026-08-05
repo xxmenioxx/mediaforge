@@ -372,6 +372,55 @@ Baseline/Main/High, 8-bit, pixel formats compatibles, GOP, B-frames y controles
 de calidad propios de cada encoder. No se deben reutilizar directamente los
 valores de HEVC ni asumir equivalencia entre CRF, ICQ y bitrate.
 
+## Fase posterior — Limpieza cromática para fuentes DVD
+
+Estado: `propuesto`.
+
+### Problema
+
+Algunas fuentes MPEG-2/DVD conservan líneas horizontales de color, chroma crawl
+o rainbowing aun después de un IVTC correcto. El defecto puede confundirse con
+entrelazado residual y provocar que el usuario aplique deinterlazado adicional,
+suavizando innecesariamente los contornos. El caso de referencia es *El
+increíble Castillo Vagabundo (2004)* entre 04:05 y 04:09: tanto libx265 como
+VideoToolbox conservan el defecto cromático, mientras el análisis temporal
+clasifica la salida como progresiva.
+
+### Resultado verificable
+
+- Detectar candidatos donde el patrón conflictivo esté principalmente en
+  chroma y no en luminancia.
+- Distinguir chroma crawl/rainbowing de combing, banding y aliasing.
+- Añadir `Chroma cleanup` como control independiente de Denoise y Deinterlace.
+- Ofrecer inicialmente `Off`, `Very light`, `Light` y `Medium`.
+- Mantener `Off` por defecto y presentar la sugerencia como revisable.
+- Aplicar el mismo comportamiento en LAB, Profiles, Quick Asset Overrides,
+  command preview, pipeline, snapshots, reportes y logs.
+- Permitir comparación A/B sobre un rango representativo antes de guardar.
+
+### Dependencias
+
+- Fixtures DVD/MPEG-2 con chroma crawl real y permiso para pruebas.
+- Métricas separadas para planos de luminancia y chroma.
+- Evaluar filtros FFmpeg disponibles, incluyendo reducción cromática
+  espacial/temporal, sin asumir que `chromanr` será la implementación final.
+- Integración con el análisis distribuido para evitar conclusiones basadas en
+  un solo frame o escena.
+
+### Riesgos
+
+- Una corrección excesiva puede desteñir bordes rojos, azules y amarillos.
+- No debe recomendarse `bwdif` cuando la salida ya sea temporalmente progresiva.
+- La mejora no debe borrar detalle de luminancia ni cambiar la colorimetría.
+- Contenido animado con líneas horizontales legítimas puede producir falsos
+  positivos.
+
+### Criterio de aceptación
+
+En las muestras de referencia, `Very light` reduce las líneas cromáticas sin
+degradar perceptiblemente los contornos de luminancia. El análisis explica por
+qué propone limpieza cromática y por qué no propone deinterlazado adicional.
+
 ## Deuda conocida al publicar v0.1.0
 
 - El lint del frontend tiene una línea base pendiente y es informativo en CI.

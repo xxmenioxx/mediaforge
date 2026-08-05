@@ -190,6 +190,8 @@ func applyQSVEstimate(recommendation *EncoderRecommendation, intent QualityInten
 }
 
 func setQSVEstimate(recommendation *EncoderRecommendation, intent QualityIntent, minRate, maxRate int64, confidence string) {
+	minRate = roundBitrateToTwoDecimalMbps(minRate)
+	maxRate = roundBitrateToTwoDecimalMbps(maxRate)
 	midpoint := (minRate + maxRate) / 2
 	recommendation.EstimatedVideoBitrate = &midpoint
 	recommendation.EstimatedVideoBitrateMin = &minRate

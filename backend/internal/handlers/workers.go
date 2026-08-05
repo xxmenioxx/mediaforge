@@ -768,7 +768,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		job.Notes = appendNote(job.Notes, "Audio enhancement profile: "+audioProfile.Key)
 		job.Notes = appendNote(job.Notes, "Processing mode: "+plan.ProcessingMode)
 	}
-	if err := writeJobAsIsArtifact(h.db, job, plan.Profile, audioProfile, command, plan.ProcessingMode); err != nil {
+	if err := writeJobAsIsArtifact(h.db, job, plan.Profile, audioProfile, command, plan.ProcessingMode, resolveEffectiveStreamPlan(plan)); err != nil {
 		job.Notes = appendNote(job.Notes, "AS-IS artifact warning: "+err.Error())
 	}
 	if job.StartedAt == nil {

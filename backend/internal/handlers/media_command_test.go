@@ -45,7 +45,7 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 	assertContains(t, command, "-map 0")
 	assertContains(t, command, "-map 0:1")
 	assertContains(t, command, "-c:a copy")
-	assertContains(t, command, "-c:s copy")
+	assertNotContains(t, command, "-c:s copy")
 	assertContains(t, command, "-c:v copy")
 	assertContains(t, command, "-filter:a:1")
 	assertContains(t, command, "-c:a:1 aac")
@@ -127,9 +127,9 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		profile.WorkerConfig["qsvExtendedBRC"] != true ||
 		profile.WorkerConfig["qsvAdaptiveI"] != true ||
 		profile.WorkerConfig["qsvAdaptiveB"] != false ||
-		profile.WorkerConfig["videoToolboxBitrateMbps"] != 6 ||
-		profile.WorkerConfig["videoToolboxMaxrateMbps"] != 8 ||
-		profile.WorkerConfig["videoToolboxBufferMbps"] != 12 {
+		profile.WorkerConfig["videoToolboxBitrateMbps"] != float64(6) ||
+		profile.WorkerConfig["videoToolboxMaxrateMbps"] != float64(8) ||
+		profile.WorkerConfig["videoToolboxBufferMbps"] != float64(12) {
 		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
 	}
 }
@@ -407,7 +407,7 @@ func TestQSVCustomQualityIsNotRewrittenByTranslator(t *testing.T) {
 func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended"}}
 	target, maxrate, buffer, ok := adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 4_000_000})
-	if !ok || target != 1720 || maxrate != 2580 || buffer != 4300 {
+	if !ok || target != 1290 || maxrate != 1940 || buffer != 3230 {
 		t.Fatalf("unexpected adaptive VideoToolbox result: target=%d maxrate=%d buffer=%d ok=%v", target, maxrate, buffer, ok)
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "custom"
@@ -416,8 +416,8 @@ func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "recommended"
 	target, _, _, ok = adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 12_000_000})
-	if !ok || target != 2500 {
-		t.Fatalf("SD Recommended must cap an excessive source bitrate at 2500k, got %dk", target)
+	if !ok || target != 2000 {
+		t.Fatalf("SD Recommended must cap an excessive source bitrate at 2000k, got %dk", target)
 	}
 }
 
@@ -431,14 +431,15 @@ func TestVideoToolboxRecommendationIsStoredOnEffectivePlan(t *testing.T) {
 		Audio: []MediaAudioStream{{Bitrate: 192_000}},
 	})
 	effective := applyVideoToolboxQualityRecommendation(profile, intent)
-	if effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_720) || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
+	if effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_290) || effective.WorkerConfig["videoToolboxBitrateMbps"] != 1.29 || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
 		t.Fatalf("unexpected stored VideoToolbox recommendation: %#v", effective.WorkerConfig)
 	}
 }
 
 func TestCropPreservesDisplayedAspectRatio(t *testing.T) {
 	filters := applyCropAspectPolicy("crop=720:460:0:10", models.Profile{}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
-	assertContains(t, filters, "crop=720:460:0:10,setsar=2649600/3110400,setdar=5760/4320")
+	assertContains(t, filters, "crop=720:460:0:10,setsar=23/27")
+	assertNotContains(t, filters, "setdar=")
 }
 
 func TestExplicitNV12OverridesLegacyMain10ProfileMetadata(t *testing.T) {
@@ -515,7 +516,7 @@ func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertContains(t, command, "-c:s copy")
+	assertNotContains(t, command, "-c:s copy")
 	assertNotContains(t, command, "-sn")
 	assertNotContains(t, command, "-map_chapters")
 }
@@ -920,6 +921,37 @@ func TestVideoToolboxQualityPresetOptionsReachFFmpeg(t *testing.T) {
 	assertNotContains(t, command, "-allow_frame_reordering")
 }
 
+func TestVideoToolboxProfileFollowsOutputBitDepth(t *testing.T) {
+	tenBit := models.Profile{
+		BitDepth: 10,
+		WorkerConfig: models.JSONMap{
+			"pixFmt": "p010le", "videoToolboxProfile": "main",
+		},
+	}
+	if got := normalizedVideoToolboxProfile(tenBit); got != "main10" {
+		t.Fatalf("P010 output must use VideoToolbox Main10, got %q", got)
+	}
+
+	eightBit := models.Profile{
+		BitDepth: 8,
+		WorkerConfig: models.JSONMap{
+			"pixFmt": "nv12", "videoToolboxProfile": "main10",
+		},
+	}
+	if got := normalizedVideoToolboxProfile(eightBit); got != "main" {
+		t.Fatalf("NV12 output must use VideoToolbox Main, got %q", got)
+	}
+}
+
+func TestVideoToolboxFractionalMbpsIsPreservedForFFmpeg(t *testing.T) {
+	if got := formatMbps(1.773); got != "1.77M" {
+		t.Fatalf("fractional VideoToolbox bitrate was rounded: %q", got)
+	}
+	if got := formatMbps(3); got != "3M" {
+		t.Fatalf("whole VideoToolbox bitrate should remain compact: %q", got)
+	}
+}
+
 func TestVideoToolboxMain10OptionalFeaturesRequireMatchingProbe(t *testing.T) {
 	capability := capabilities.EncoderCapability{
 		VideoToolboxBFrames:        true,
@@ -1225,8 +1257,9 @@ func TestFFmpegCommandBuilderDoesNotDuplicateSingleAACStereoTrack(t *testing.T) 
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertContains(t, command, "-map 0")
-	assertNotContains(t, command, "-map 0:2")
+	if count := strings.Count(command, "-map 0:2"); count != 1 {
+		t.Fatalf("existing AAC stream should be mapped exactly once, got %d: %s", count, command)
+	}
 	assertNotContains(t, command, "-c:a:1 aac")
 	assertNotContains(t, command, "AAC Stereo (MVForge)")
 }
@@ -1249,6 +1282,102 @@ func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *tes
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertNotContains(t, command, "AAC Stereo (MVForge)")
 	assertNotContains(t, command, "-map 0:1 -c copy")
+}
+
+func TestResolvedStreamPlanAssignsDerivedAudioAfterOriginalAudio(t *testing.T) {
+	plan := MediaJobPlan{
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{VideoCodec: "x265", PreserveSubtitles: true, WorkerConfig: models.JSONMap{
+			"videoEncoder": "hevc_videotoolbox", "aacStereoSourceStreamIndex": 1,
+		}},
+		Streams: MediaStreamInventory{
+			Video:    []MediaStream{{Index: 0}},
+			Audio:    []MediaAudioStream{{Index: 1, Language: "spa"}, {Index: 4, Language: "jpn"}},
+			Subtitle: []MediaStream{{Index: 5}, {Index: 6}},
+		},
+	}
+	resolved := resolveStreamPlan(plan, plan.Streams.Audio, true)
+	if len(resolved.Audio) != 3 {
+		t.Fatalf("expected two originals plus derived AAC: %#v", resolved.Audio)
+	}
+	derived := resolved.Audio[2]
+	if derived.OutputTypeIndex != 2 || derived.InputIndex != 1 || derived.DuplicateOf == nil || *derived.DuplicateOf != 1 || derived.Codec != "aac" {
+		t.Fatalf("incorrect derived AAC mapping: %#v", derived)
+	}
+	if resolved.Subtitles[0].OutputTypeIndex != 0 || resolved.Subtitles[1].OutputTypeIndex != 1 {
+		t.Fatalf("subtitle indexes changed audio-relative indexing: %#v", resolved.Subtitles)
+	}
+}
+
+func TestFFmpegCommandBuilderTargetsMetadataByResolvedOutputIndex(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/input.mkv", OutputPath: "/output.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{VideoCodec: "x265", AudioCodec: "copy", PreserveSubtitles: true, WorkerConfig: models.JSONMap{
+			"videoEncoder": "libx265", "addAacStereoTrack": true, "aacStereoSourceStreamIndex": 4,
+		}},
+		Streams: MediaStreamInventory{
+			Video:    []MediaStream{{Index: 0}},
+			Audio:    []MediaAudioStream{{Index: 1, Language: "eng"}, {Index: 4, Language: "spa", Title: "Spanish Surround"}},
+			Subtitle: []MediaStream{{Index: 5, Language: "spa"}},
+		},
+		Override: AssetConversionOverrideState{KeepAudioStreams: []int{4}, AudioMetadata: map[int]StreamMetadataOverride{
+			4: {Title: "Original Spanish Surround", Language: "spa"},
+		}},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:4")
+	assertContains(t, command, `-metadata:s:a:0 "title=Original Spanish Surround"`)
+	assertContains(t, command, "-metadata:s:a:0 language=spa")
+	assertContains(t, command, "-c:a:1 aac")
+	assertNotContains(t, command, "-metadata:s:a:4")
+}
+
+func TestFFmpegCommandBuilderEmitsCodecsOnlyForMappedTypes(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/input.mkv", OutputPath: "/output.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}},
+		Streams:        MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Attachment: []MediaStream{{Index: 3}}},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	if strings.Count(command, "-c:v") != 1 {
+		t.Fatalf("video codec must be emitted exactly once: %s", command)
+	}
+	assertContains(t, command, "-map 0:3")
+	assertContains(t, command, "-c:t copy")
+	assertNotContains(t, command, "-c:a copy")
+	assertNotContains(t, command, "-c:s copy")
+	assertNotContains(t, command, "-c:d copy")
+}
+
+func TestFFmpegCommandBuilderClearsInheritedMatroskaStreamStatistics(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/input.mkv", OutputPath: "/output.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "x265", AudioCodec: "copy", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_videotoolbox"}},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{{Index: 0}},
+			Audio: []MediaAudioStream{{Index: 1}},
+		},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	for _, expected := range []string{
+		"-metadata:s:v:0 BPS-eng=",
+		"-metadata:s:v:0 NUMBER_OF_BYTES-eng=",
+		"-metadata:s:v:0 _STATISTICS_WRITING_APP-eng=",
+		"-metadata:s:a:0 BPS-eng=",
+	} {
+		assertContains(t, command, expected)
+	}
+	assertNotContains(t, command, "-metadata:s:s:0 BPS-eng=")
+}
+
+func TestCropAspectPolicyReducesCastleSARAndPreservesDAR(t *testing.T) {
+	filters := applyCropAspectPolicy("crop=672:438:24:20", models.Profile{}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
+	assertContains(t, filters, "setsar=73/84")
+	assertNotContains(t, filters, "setdar=")
 }
 
 func TestApplySelectedEncoderUsesExecutionPlanWithoutMutatingSnapshot(t *testing.T) {

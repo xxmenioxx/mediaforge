@@ -68,9 +68,9 @@ const initialProfile: ProfileInput = {
     pixFmt: 'yuv420p10le',
     videoEncoder: 'auto',
     useHardwareIfAvailable: false,
-    videoToolboxBitrateMbps: 6,
-    videoToolboxMaxrateMbps: 8,
-    videoToolboxBufferMbps: 12,
+    videoToolboxBitrateMbps: 2,
+    videoToolboxMaxrateMbps: 3,
+    videoToolboxBufferMbps: 5,
     preferredEncoder: 'software',
     addAacStereoTrack: false,
     aacStereoBitrateKbps: 192,
@@ -835,13 +835,13 @@ export function ProfilesPage() {
                           <>
                             <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 6)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} fullWidth />
+                              <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxMaxrateMbps', 8)} onChange={(event) => updateWorkerConfig('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} fullWidth />
+                              <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxMaxrateMbps', 3)} onChange={(event) => updateWorkerConfig('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 12)} onChange={(event) => updateWorkerConfig('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} fullWidth />
+                              <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 5)} onChange={(event) => updateWorkerConfig('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={workerConfigString(form, 'videoToolboxProfile', '')} onChange={(event) => updateWorkerConfig('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" fullWidth /></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={workerConfigNumber(form, 'videoToolboxGop', 0)} onChange={(event) => updateWorkerConfig('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" fullWidth /></Grid>
@@ -1485,7 +1485,7 @@ function buildDryRunCommand(profile: ProfileInput) {
   const tuneArgs = profile.videoCodec === 'copy' || !workerConfigString(profile, 'tune') ? '' : `-tune ${workerConfigString(profile, 'tune')}`;
   const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
   const hardwareQualityArgs = isVideoToolbox
-    ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 6)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 8)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 12)}M`
+    ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 2)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 3)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 5)}M`
     : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue || 20).recommended)}` : '';
   const qsvArgs = resolvedEncoder === 'hevc_qsv'
     ? [

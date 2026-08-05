@@ -16,7 +16,7 @@ func TestNewIntentUsesOutputCropAndContentPath(t *testing.T) {
 func TestVideoToolboxTranslatorPreservesAdaptiveSDCalculation(t *testing.T) {
 	intent := NewIntent(IntentInput{Preset: "recommended", SourceWidth: 720, SourceHeight: 1080, SourceVideoBitrate: 4_000_000, VideoFilters: "crop=720:460:0:10"})
 	recommendation, err := (VideoToolboxTranslator{}).Translate(intent, WorkerCapabilities{})
-	if err != nil || recommendation.TargetBitrate == nil || *recommendation.TargetBitrate != 1_720_000 || recommendation.Maxrate == nil || *recommendation.Maxrate != 2_580_000 || recommendation.Buffer == nil || *recommendation.Buffer != 4_300_000 {
+	if err != nil || recommendation.TargetBitrate == nil || *recommendation.TargetBitrate != 1_290_000 || recommendation.Maxrate == nil || *recommendation.Maxrate != 1_940_000 || recommendation.Buffer == nil || *recommendation.Buffer != 3_230_000 {
 		t.Fatalf("unexpected VideoToolbox recommendation: %#v err=%v", recommendation, err)
 	}
 	if recommendation.Profile != "main" || recommendation.PixelFormat != "yuv420p" {

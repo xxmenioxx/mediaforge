@@ -35,6 +35,7 @@ type jobArtifact struct {
 	Notes           string                `json:"notes,omitempty"`
 	ExecutionPlan   models.JSONMap        `json:"executionPlan,omitempty"`
 	EncoderDecision models.JSONMap        `json:"encoderDecision,omitempty"`
+	StreamPlan      ResolvedStreamPlan    `json:"streamPlan"`
 }
 
 type AssetConversionReport struct {
@@ -110,7 +111,7 @@ func BackfillAnalysisFromAsIsReports(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profile, audioProfile *audioEnhancementProfile, command string, processingMode string) error {
+func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profile, audioProfile *audioEnhancementProfile, command string, processingMode string, streamPlan ResolvedStreamPlan) error {
 	sourceProbe := ffprobeJSON(job.MediaPath)
 	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
 	artifact := jobArtifact{
@@ -124,6 +125,7 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 		AssetConversion: assetConversionReport(override),
 		SourceProbe:     sourceProbe,
 		Notes:           job.Notes,
+		StreamPlan:      streamPlan,
 	}
 	artifact.EncoderDecision = encoderDecisionForProfile(profile)
 	if job.ActiveExecutionPlanID != nil {
@@ -623,6 +625,13 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		OutputProbe:     ffprobeJSON(probePath),
 		Result:          result,
 		Notes:           job.Notes,
+	}
+	if asIs, _, err := readLatestJobArtifact(db, job, "as-is"); err == nil {
+		if raw, ok := asIs["streamPlan"]; ok {
+			if encoded, marshalErr := json.Marshal(raw); marshalErr == nil {
+				_ = json.Unmarshal(encoded, &artifact.StreamPlan)
+			}
+		}
 	}
 	if profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); err == nil {
 		artifact.Profile = profile

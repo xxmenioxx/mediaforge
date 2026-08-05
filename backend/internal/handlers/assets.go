@@ -192,9 +192,9 @@ type AssetConversionOverrideState struct {
 	QSVExtendedBRC                   *bool                          `json:"qsvExtendedBrc,omitempty"`
 	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI,omitempty"`
 	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB,omitempty"`
-	VideoToolboxBitrateMbps          int                            `json:"videoToolboxBitrateMbps,omitempty"`
-	VideoToolboxMaxrateMbps          int                            `json:"videoToolboxMaxrateMbps,omitempty"`
-	VideoToolboxBufferMbps           int                            `json:"videoToolboxBufferMbps,omitempty"`
+	VideoToolboxBitrateMbps          float64                        `json:"videoToolboxBitrateMbps,omitempty"`
+	VideoToolboxMaxrateMbps          float64                        `json:"videoToolboxMaxrateMbps,omitempty"`
+	VideoToolboxBufferMbps           float64                        `json:"videoToolboxBufferMbps,omitempty"`
 	VideoToolboxQualityProfile       int                            `json:"videoToolboxQualityProfile,omitempty"`
 	VideoToolboxProfile              string                         `json:"videoToolboxProfile,omitempty"`
 	VideoToolboxGOP                  int                            `json:"videoToolboxGop,omitempty"`
@@ -318,9 +318,9 @@ type AssetConversionUpdateInput struct {
 	QSVExtendedBRC                   *bool                          `json:"qsvExtendedBrc"`
 	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI"`
 	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB"`
-	VideoToolboxBitrateMbps          int                            `json:"videoToolboxBitrateMbps"`
-	VideoToolboxMaxrateMbps          int                            `json:"videoToolboxMaxrateMbps"`
-	VideoToolboxBufferMbps           int                            `json:"videoToolboxBufferMbps"`
+	VideoToolboxBitrateMbps          float64                        `json:"videoToolboxBitrateMbps"`
+	VideoToolboxMaxrateMbps          float64                        `json:"videoToolboxMaxrateMbps"`
+	VideoToolboxBufferMbps           float64                        `json:"videoToolboxBufferMbps"`
 	VideoToolboxQualityProfile       int                            `json:"videoToolboxQualityProfile"`
 	VideoToolboxProfile              string                         `json:"videoToolboxProfile"`
 	VideoToolboxGOP                  int                            `json:"videoToolboxGop"`

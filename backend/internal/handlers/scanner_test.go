@@ -65,6 +65,22 @@ func TestStreamSizeBytesUsesMatroskaStatistics(t *testing.T) {
 	}
 }
 
+func TestStreamStatisticsIgnoreInheritedMakeMKVValuesAfterEncode(t *testing.T) {
+	stream := FFProbeStream{Tags: map[string]string{
+		"ENCODER":                          "Lavc62.28.101 hevc_videotoolbox",
+		"BPS-eng":                          "5494883",
+		"NUMBER_OF_BYTES-eng":              "4913281376",
+		"_STATISTICS_WRITING_APP-eng":      "MakeMKV v1.18.3 darwin(x64-release)",
+		"_STATISTICS_WRITING_DATE_UTC-eng": "2026-06-23 19:47:26",
+	}}
+	if got := streamSizeBytes(stream); got != 0 {
+		t.Fatalf("stale size=%d want=0", got)
+	}
+	if got := streamBitrate(stream); got != 0 {
+		t.Fatalf("stale bitrate=%d want=0", got)
+	}
+}
+
 func TestScanCacheInvalidatesWhenMediaWasReplaced(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "episode.mkv")
 	if err := os.WriteFile(path, []byte("new converted asset"), 0o644); err != nil {

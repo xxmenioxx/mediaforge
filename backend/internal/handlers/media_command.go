@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
@@ -34,9 +37,35 @@ type MediaStreamInventory struct {
 	Video        []MediaStream
 	Audio        []MediaAudioStream
 	Subtitle     []MediaStream
+	Attachment   []MediaStream
+	Data         []MediaStream
 	Duration     float64
 	ChapterCount int
 	TotalBitrate int64
+}
+
+type PlannedStream struct {
+	InputIndex      int    `json:"inputIndex"`
+	InputType       string `json:"inputType"`
+	InputTypeIndex  int    `json:"inputTypeIndex"`
+	OutputIndex     int    `json:"outputIndex"`
+	OutputTypeIndex int    `json:"outputTypeIndex"`
+	Action          string `json:"action"`
+	Codec           string `json:"codec"`
+	Language        string `json:"language,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Default         bool   `json:"default"`
+	Forced          bool   `json:"forced"`
+	DuplicateOf     *int   `json:"duplicateOfInput,omitempty"`
+	Optional        bool   `json:"optional"`
+}
+
+type ResolvedStreamPlan struct {
+	Video       []PlannedStream `json:"video"`
+	Audio       []PlannedStream `json:"audio"`
+	Subtitles   []PlannedStream `json:"subtitles"`
+	Attachments []PlannedStream `json:"attachments"`
+	Data        []PlannedStream `json:"data"`
 }
 
 type MediaStream struct {
@@ -123,29 +152,20 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	if needsAACCompatibility && preserveOriginalAudio {
 		aacStereoDefault = true
 	}
-	if planHasStreamSelection(plan.Override) {
-		args = appendSelectedStreamMaps(args, plan)
-	} else if needsAACCompatibility && !preserveOriginalAudio {
-		args = appendNonAudioStreamMaps(args, plan)
+	if needsAACCompatibility && !preserveOriginalAudio {
 		mappedAudioStreams = []MediaAudioStream{}
-	} else {
-		args = append(args, "-map", "0")
 	}
+	streamPlan := resolveEffectiveStreamPlan(plan)
+	args = appendResolvedStreamMaps(args, streamPlan)
 
 	enhancedAudioIndex := -1
 	aacStereoIndex := -1
 	if plan.AudioProfile != nil && len(plan.Streams.Audio) > 0 {
 		enhancedAudioIndex = len(mappedAudioStreams)
-		enhancedSourceIndex := enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)
-		args = append(args, "-map", fmt.Sprintf("0:%d", enhancedSourceIndex))
 	} else if needsAACCompatibility && len(selectedAudioStreams) > 0 {
 		aacStereoIndex = len(mappedAudioStreams)
-		args = append(args, "-map", fmt.Sprintf("0:%d", aacStereoSourceIndex(plan)))
 	}
 
-	// Set copy behavior per stream type before applying explicit overrides.
-	// This is clearer than a global -c copy and prevents accidental defaults.
-	args = append(args, "-c:v", "copy", "-c:a", "copy", "-c:s", "copy", "-c:d", "copy", "-c:t", "copy")
 	if plan.ProcessingMode == ProcessingModeFullEncode {
 		effectiveProfile := profileWithAutomaticDeinterlace(plan.Profile, plan.Interlace)
 		if len(plan.Streams.Video) > 0 {
@@ -160,6 +180,18 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = append(args, videoColorMetadataArgs(effectiveProfile)...)
 	} else {
 		args = append(args, "-c:v", "copy")
+	}
+	if len(streamPlan.Audio) > 0 {
+		args = append(args, "-c:a", "copy")
+	}
+	if len(streamPlan.Subtitles) > 0 {
+		args = append(args, "-c:s", "copy")
+	}
+	if len(streamPlan.Attachments) > 0 {
+		args = append(args, "-c:t", "copy")
+	}
+	if len(streamPlan.Data) > 0 {
+		args = append(args, "-c:d", "copy")
 	}
 
 	if enhancedAudioIndex >= 0 {
@@ -189,6 +221,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	} else {
 		args = appendAudioCodecArgs(args, plan.Profile)
 	}
+	args = appendClearInheritedStreamStatistics(args, streamPlan)
 
 	for index, stream := range selectedVideoStreams(plan.Streams.Video, plan.Override) {
 		metadata := metadataOverrideFor(plan.Override.VideoMetadata, stream.Index)
@@ -257,6 +290,16 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	args = append(args, plan.OutputPath)
 	return args
+}
+
+func resolveEffectiveStreamPlan(plan MediaJobPlan) ResolvedStreamPlan {
+	selectedAudio := selectedAudioStreams(plan.Streams.Audio, plan.Override)
+	needsAAC := effectiveAACOption(plan, plan.Override.AddAACStereoTrack, "addAacStereoTrack", "addAacStereoDefault", false) && !hasAACStereoStream(selectedAudio)
+	mappedAudio := selectedAudio
+	if needsAAC && !profileWorkerBool(plan.Profile, "preserveOriginalAudio", true) {
+		mappedAudio = []MediaAudioStream{}
+	}
+	return resolveStreamPlan(plan, mappedAudio, needsAAC)
 }
 
 func aacStereoBitrateKbps(profile models.Profile) int {
@@ -821,6 +864,163 @@ func planHasStreamSelection(override AssetConversionOverrideState) bool {
 	return override.KeepVideoStreams != nil || override.KeepAudioStreams != nil || override.KeepSubtitleStreams != nil || len(override.SubtitleTransforms) > 0
 }
 
+func resolveStreamPlan(plan MediaJobPlan, mappedAudio []MediaAudioStream, needsAACCompatibility bool) ResolvedStreamPlan {
+	resolved := ResolvedStreamPlan{}
+	outputIndex := 0
+	aacStereoDefault := effectiveAACOption(plan, plan.Override.AACStereoDefault, "aacStereoDefault", "", false)
+	preserveOriginalAudio := profileWorkerBool(plan.Profile, "preserveOriginalAudio", true)
+	if needsAACCompatibility && preserveOriginalAudio {
+		aacStereoDefault = true
+	}
+	derivedAudioDefault := plan.AudioProfile != nil || (needsAACCompatibility && aacStereoDefault)
+	for typeIndex, stream := range selectedVideoStreams(plan.Streams.Video, plan.Override) {
+		action, codec := "copy", "copy"
+		if plan.ProcessingMode == ProcessingModeFullEncode {
+			action, codec = "encode", resolvedVideoEncoder(plan.Profile)
+		}
+		metadata := metadataOverrideFor(plan.Override.VideoMetadata, stream.Index)
+		resolved.Video = append(resolved.Video, plannedMediaStream(stream, "video", typeIndex, outputIndex, action, codec, metadata))
+		outputIndex++
+	}
+	for typeIndex, stream := range mappedAudio {
+		metadata := metadataOverrideFor(plan.Override.AudioMetadata, stream.Index)
+		title := metadata.Title
+		if title == "" {
+			title = originalAudioTitle(stream)
+		}
+		language := metadata.Language
+		if language == "" {
+			language = stream.Language
+		}
+		isDefault, isForced := stream.Default && !derivedAudioDefault, stream.Forced
+		if metadata.Default != nil {
+			isDefault = *metadata.Default
+		}
+		if metadata.Forced != nil {
+			isForced = *metadata.Forced
+		}
+		resolved.Audio = append(resolved.Audio, PlannedStream{
+			InputIndex: stream.Index, InputType: "audio", InputTypeIndex: audioTypeIndex(plan.Streams.Audio, stream.Index),
+			OutputIndex: outputIndex, OutputTypeIndex: typeIndex, Action: "copy", Codec: "copy",
+			Language: language, Title: title, Default: isDefault, Forced: isForced,
+		})
+		outputIndex++
+	}
+	for typeIndex, stream := range selectedSubtitleStreams(plan) {
+		metadata := metadataOverrideFor(plan.Override.SubtitleMetadata, stream.Index)
+		codec := "copy"
+		if output := effectiveSubtitleOutputFormat(plan.Profile); output != "source" && subtitleCanConvertText(stream.Codec) {
+			codec = output
+		}
+		resolved.Subtitles = append(resolved.Subtitles, plannedMediaStream(stream, "subtitle", typeIndex, outputIndex, map[bool]string{true: "copy", false: "encode"}[codec == "copy"], codec, metadata))
+		outputIndex++
+	}
+	for typeIndex, stream := range plan.Streams.Attachment {
+		resolved.Attachments = append(resolved.Attachments, plannedMediaStream(stream, "attachment", typeIndex, outputIndex, "copy", "copy", StreamMetadataOverride{}))
+		outputIndex++
+	}
+	for typeIndex, stream := range plan.Streams.Data {
+		resolved.Data = append(resolved.Data, plannedMediaStream(stream, "data", typeIndex, outputIndex, "copy", "copy", StreamMetadataOverride{}))
+		outputIndex++
+	}
+	if (plan.AudioProfile != nil || needsAACCompatibility) && len(plan.Streams.Audio) > 0 {
+		sourceIndex := enhancedAudioSourceIndex(plan.Streams.Audio, plan.Override)
+		codec := "aac"
+		title := "AAC Stereo (MVForge)"
+		if plan.AudioProfile != nil {
+			codec = ffmpegCodecName(plan.AudioProfile.OutputCodec)
+			if codec == "" || codec == "copy" {
+				codec = "aac"
+			}
+			title = enhancedAudioTitle(*plan.AudioProfile)
+		} else {
+			sourceIndex = aacStereoSourceIndex(plan)
+		}
+		duplicate := sourceIndex
+		resolved.Audio = append(resolved.Audio, PlannedStream{
+			InputIndex: sourceIndex, InputType: "audio", InputTypeIndex: audioTypeIndex(plan.Streams.Audio, sourceIndex),
+			OutputIndex: outputIndex, OutputTypeIndex: len(mappedAudio), Action: "derive", Codec: codec,
+			Title: title, Default: derivedAudioDefault, DuplicateOf: &duplicate,
+		})
+	}
+	return resolved
+}
+
+func plannedMediaStream(stream MediaStream, streamType string, typeIndex, outputIndex int, action, codec string, metadata StreamMetadataOverride) PlannedStream {
+	language, title := stream.Language, stream.Title
+	isDefault, isForced := stream.Default, stream.Forced
+	if metadata.Language != "" {
+		language = metadata.Language
+	}
+	if metadata.Title != "" {
+		title = metadata.Title
+	}
+	if metadata.Default != nil {
+		isDefault = *metadata.Default
+	}
+	if metadata.Forced != nil {
+		isForced = *metadata.Forced
+	}
+	return PlannedStream{InputIndex: stream.Index, InputType: streamType, InputTypeIndex: typeIndex, OutputIndex: outputIndex, OutputTypeIndex: typeIndex, Action: action, Codec: codec, Language: language, Title: title, Default: isDefault, Forced: isForced}
+}
+
+func audioTypeIndex(streams []MediaAudioStream, inputIndex int) int {
+	for index, stream := range streams {
+		if stream.Index == inputIndex {
+			return index
+		}
+	}
+	return -1
+}
+
+func appendResolvedStreamMaps(args []string, plan ResolvedStreamPlan) []string {
+	streams := append([]PlannedStream{}, plan.Video...)
+	streams = append(streams, plan.Audio...)
+	streams = append(streams, plan.Subtitles...)
+	streams = append(streams, plan.Attachments...)
+	streams = append(streams, plan.Data...)
+	sort.SliceStable(streams, func(left, right int) bool { return streams[left].OutputIndex < streams[right].OutputIndex })
+	for _, stream := range streams {
+		args = append(args, "-map", fmt.Sprintf("0:%d", stream.InputIndex))
+	}
+	return args
+}
+
+var inheritedStreamStatisticTags = []string{
+	"BPS", "BPS-eng",
+	"DURATION", "DURATION-eng",
+	"NUMBER_OF_FRAMES", "NUMBER_OF_FRAMES-eng",
+	"NUMBER_OF_BYTES", "NUMBER_OF_BYTES-eng",
+	"_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_APP-eng",
+	"_STATISTICS_WRITING_DATE_UTC", "_STATISTICS_WRITING_DATE_UTC-eng",
+	"_STATISTICS_TAGS", "_STATISTICS_TAGS-eng",
+}
+
+// Matroska stream statistics describe the source bitstream. Copying them onto
+// a re-encoded or remuxed output makes snapshots report source bytes/bitrate as
+// if they belonged to the output. Clear them on every mapped output stream;
+// ffprobe must describe the newly written container instead.
+func appendClearInheritedStreamStatistics(args []string, plan ResolvedStreamPlan) []string {
+	groups := []struct {
+		typeCode string
+		streams  []PlannedStream
+	}{
+		{typeCode: "v", streams: plan.Video},
+		{typeCode: "a", streams: plan.Audio},
+		{typeCode: "s", streams: plan.Subtitles},
+		{typeCode: "t", streams: plan.Attachments},
+		{typeCode: "d", streams: plan.Data},
+	}
+	for _, group := range groups {
+		for _, stream := range group.streams {
+			for _, tag := range inheritedStreamStatisticTags {
+				args = append(args, fmt.Sprintf("-metadata:s:%s:%d", group.typeCode, stream.OutputTypeIndex), tag+"=")
+			}
+		}
+	}
+	return args
+}
+
 func appendSelectedStreamMaps(args []string, plan MediaJobPlan) []string {
 	for _, index := range selectedStreamIndexes(streamIndexes(plan.Streams.Video), plan.Override.KeepVideoStreams) {
 		args = append(args, "-map", fmt.Sprintf("0:%d", index))
@@ -1082,10 +1282,10 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 			if targetKbps, maxrateKbps, bufferKbps, ok := adaptiveVideoToolboxBitrate(profile, source); ok {
 				args = append(args, "-b:v", fmt.Sprintf("%dk", targetKbps), "-maxrate", fmt.Sprintf("%dk", maxrateKbps), "-bufsize", fmt.Sprintf("%dk", bufferKbps))
 			} else {
-				bitrate := workerIntValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
-				maxrate := workerIntValue(profile.WorkerConfig["videoToolboxMaxrateMbps"], max(bitrate+1, bitrate*3/2))
-				buffer := workerIntValue(profile.WorkerConfig["videoToolboxBufferMbps"], max(bitrate+1, bitrate*5/2))
-				args = append(args, "-b:v", fmt.Sprintf("%dM", bitrate), "-maxrate", fmt.Sprintf("%dM", maxrate), "-bufsize", fmt.Sprintf("%dM", buffer))
+				bitrate := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
+				maxrate := workerNumberValue(profile.WorkerConfig["videoToolboxMaxrateMbps"], bitrate*1.5)
+				buffer := workerNumberValue(profile.WorkerConfig["videoToolboxBufferMbps"], bitrate*2.5)
+				args = append(args, "-b:v", formatMbps(bitrate), "-maxrate", formatMbps(maxrate), "-bufsize", formatMbps(buffer))
 			}
 		case "hevc_amf":
 			args = append(args, "-qp_i", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
@@ -1100,14 +1300,7 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 	}
 	if encoder == "hevc_videotoolbox" {
 		capability := capabilities.CheckEncoder("hevc_videotoolbox")
-		videoToolboxProfile := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoToolboxProfile"])))
-		if videoToolboxProfile != "main" && videoToolboxProfile != "main10" {
-			if profileUsesTenBit(profile) {
-				videoToolboxProfile = "main10"
-			} else {
-				videoToolboxProfile = "main"
-			}
-		}
+		videoToolboxProfile := normalizedVideoToolboxProfile(profile)
 		if gop := workerIntValue(profile.WorkerConfig["videoToolboxGop"], 0); gop > 0 {
 			args = append(args, "-g", fmt.Sprintf("%d", gop))
 		}
@@ -1327,7 +1520,24 @@ func applyCropAspectPolicy(filters string, profile models.Profile, source *Media
 	if numerator <= 0 || denominator <= 0 {
 		return filters
 	}
-	return filters + fmt.Sprintf(",setsar=%d/%d,setdar=%d/%d", numerator, denominator, source.Width*sarNum, source.Height*sarDen)
+	divisor := greatestCommonDivisor(numerator, denominator)
+	return filters + fmt.Sprintf(",setsar=%d/%d", numerator/divisor, denominator/divisor)
+}
+
+func greatestCommonDivisor(left, right int) int {
+	if left < 0 {
+		left = -left
+	}
+	if right < 0 {
+		right = -right
+	}
+	for right != 0 {
+		left, right = right, left%right
+	}
+	if left == 0 {
+		return 1
+	}
+	return left
 }
 
 func aspectRatioParts(value string) (int, int) {
@@ -1429,15 +1639,27 @@ func profileUsesTenBit(profile models.Profile) bool {
 	return strings.Contains(pixelFormat, "10") || strings.Contains(pixelFormat, "p010")
 }
 
-func defaultVideoToolboxBitrateMbps(quality int) int {
+func normalizedVideoToolboxProfile(profile models.Profile) string {
+	if profileUsesTenBit(profile) {
+		return "main10"
+	}
+	return "main"
+}
+
+func defaultVideoToolboxBitrateMbps(quality int) float64 {
 	switch {
 	case quality > 0 && quality <= 18:
-		return 8
-	case quality >= 25:
 		return 4
+	case quality >= 25:
+		return 1.5
 	default:
-		return 6
+		return 2
 	}
+}
+
+func formatMbps(value float64) string {
+	value = math.Round(value*100) / 100
+	return strconv.FormatFloat(value, 'f', -1, 64) + "M"
 }
 
 func isHardwareVideoEncoder(encoder string) bool {
@@ -1602,7 +1824,7 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 		return MediaStreamInventory{}, err
 	}
 
-	inventory := MediaStreamInventory{Video: []MediaStream{}, Audio: []MediaAudioStream{}, Subtitle: []MediaStream{}, Duration: parseFloat(response.Format.Duration), ChapterCount: len(response.Chapters), TotalBitrate: parseInt(response.Format.Bitrate)}
+	inventory := MediaStreamInventory{Video: []MediaStream{}, Audio: []MediaAudioStream{}, Subtitle: []MediaStream{}, Attachment: []MediaStream{}, Data: []MediaStream{}, Duration: parseFloat(response.Format.Duration), ChapterCount: len(response.Chapters), TotalBitrate: parseInt(response.Format.Bitrate)}
 	for _, stream := range response.Streams {
 		common := MediaStream{
 			Index:              stream.Index,
@@ -1641,6 +1863,10 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			})
 		case "subtitle":
 			inventory.Subtitle = append(inventory.Subtitle, common)
+		case "attachment":
+			inventory.Attachment = append(inventory.Attachment, common)
+		case "data":
+			inventory.Data = append(inventory.Data, common)
 		}
 	}
 	return inventory, nil

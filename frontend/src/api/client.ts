@@ -47,6 +47,13 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
+export class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -69,7 +76,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         message = text.trim();
       }
     }
-    throw new Error(message);
+    throw new ApiRequestError(message, response.status);
   }
 
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';

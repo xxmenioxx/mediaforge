@@ -2636,13 +2636,13 @@ function AssetConversionOverridePanel({
               {videoToolboxSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBitrateMbps ?? 6)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 200 }} size="small" fullWidth />
+                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBitrateMbps ?? 2)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxMaxrateMbps ?? 8)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 1, max: 250 }} size="small" fullWidth />
+                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxMaxrateMbps ?? 3)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 12)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 1, max: 500 }} size="small" fullWidth />
+                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 5)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
@@ -3616,9 +3616,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.qsvExtendedBrc === 'boolean') clean.qsvExtendedBrc = value.qsvExtendedBrc;
   if (typeof value.qsvAdaptiveI === 'boolean') clean.qsvAdaptiveI = value.qsvAdaptiveI;
   if (typeof value.qsvAdaptiveB === 'boolean') clean.qsvAdaptiveB = value.qsvAdaptiveB;
-  if (typeof value.videoToolboxBitrateMbps === 'number' && Number.isFinite(value.videoToolboxBitrateMbps) && value.videoToolboxBitrateMbps > 0) clean.videoToolboxBitrateMbps = Math.min(200, Math.round(value.videoToolboxBitrateMbps));
-  if (typeof value.videoToolboxMaxrateMbps === 'number' && Number.isFinite(value.videoToolboxMaxrateMbps) && value.videoToolboxMaxrateMbps > 0) clean.videoToolboxMaxrateMbps = Math.min(250, Math.round(value.videoToolboxMaxrateMbps));
-  if (typeof value.videoToolboxBufferMbps === 'number' && Number.isFinite(value.videoToolboxBufferMbps) && value.videoToolboxBufferMbps > 0) clean.videoToolboxBufferMbps = Math.min(500, Math.round(value.videoToolboxBufferMbps));
+  if (typeof value.videoToolboxBitrateMbps === 'number' && Number.isFinite(value.videoToolboxBitrateMbps) && value.videoToolboxBitrateMbps > 0) clean.videoToolboxBitrateMbps = Math.min(200, Math.round(value.videoToolboxBitrateMbps * 100) / 100);
+  if (typeof value.videoToolboxMaxrateMbps === 'number' && Number.isFinite(value.videoToolboxMaxrateMbps) && value.videoToolboxMaxrateMbps > 0) clean.videoToolboxMaxrateMbps = Math.min(250, Math.round(value.videoToolboxMaxrateMbps * 100) / 100);
+  if (typeof value.videoToolboxBufferMbps === 'number' && Number.isFinite(value.videoToolboxBufferMbps) && value.videoToolboxBufferMbps > 0) clean.videoToolboxBufferMbps = Math.min(500, Math.round(value.videoToolboxBufferMbps * 100) / 100);
   return clean;
 }
 

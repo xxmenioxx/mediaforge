@@ -53,3 +53,15 @@ func TestQSVTranslatorEstimateConfidence(t *testing.T) {
 		t.Fatalf("expected high estimate: %#v", high)
 	}
 }
+
+func TestQSVEstimatedBitratesRoundToTwoDecimalMbps(t *testing.T) {
+	recommendation, err := (QSVTranslator{}).Translate(NewIntent(IntentInput{
+		Preset: "recommended", SourceVideoBitrate: 3_333_333, RequestedRateControl: "icq",
+	}), WorkerCapabilities{ICQ: true})
+	if err != nil || recommendation.EstimatedVideoBitrateMin == nil || recommendation.EstimatedVideoBitrateMax == nil {
+		t.Fatalf("missing QSV estimate: %#v err=%v", recommendation, err)
+	}
+	if *recommendation.EstimatedVideoBitrateMin%10_000 != 0 || *recommendation.EstimatedVideoBitrateMax%10_000 != 0 {
+		t.Fatalf("QSV Mbps estimates must have at most two decimals: %#v", recommendation)
+	}
+}

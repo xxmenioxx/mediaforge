@@ -28,15 +28,15 @@ func (VideoToolboxTranslator) Translate(intent QualityIntent, _ WorkerCapabiliti
 		recommendation.Warnings = append(recommendation.Warnings, "Source video bitrate is unavailable; explicit VideoToolbox bitrate controls are required")
 		return recommendation, nil
 	}
-	target := int64(math.Ceil(float64(intent.SourceVideoBitrate)*settings.multiplier*videoToolboxResolutionAdjustment(intent.OutputHeight)/1000)) * 1000
+	target := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(intent.SourceVideoBitrate) * settings.multiplier * videoToolboxResolutionAdjustment(intent.OutputHeight))))
 	if floor := videoToolboxBitrateFloor(intent.Preset, intent.OutputHeight); target < floor {
 		target = floor
 	}
 	if ceiling := videoToolboxBitrateCeiling(intent.Preset, intent.OutputHeight); ceiling > 0 && target > ceiling {
 		target = ceiling
 	}
-	maxrate := int64(math.Ceil(float64(target) * 1.5))
-	buffer := int64(math.Ceil(float64(target) * 2.5))
+	maxrate := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(target) * 1.5)))
+	buffer := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(target) * 2.5)))
 	recommendation.TargetBitrate = &target
 	recommendation.Maxrate = &maxrate
 	recommendation.Buffer = &buffer
@@ -49,6 +49,10 @@ func (VideoToolboxTranslator) Translate(intent QualityIntent, _ WorkerCapabiliti
 	return recommendation, nil
 }
 
+func roundBitrateToTwoDecimalMbps(bitsPerSecond int64) int64 {
+	return int64(math.Round(float64(bitsPerSecond)/10_000)) * 10_000
+}
+
 type videoToolboxSettings struct {
 	multiplier  float64
 	profile     string
@@ -57,9 +61,9 @@ type videoToolboxSettings struct {
 
 func videoToolboxPresetSettings(preset Preset) (videoToolboxSettings, bool) {
 	value, ok := map[Preset]videoToolboxSettings{
-		PresetCompact: {0.25, "main", "yuv420p"}, PresetMedium: {0.33, "main", "yuv420p"},
-		PresetRecommended: {0.40, "main", "yuv420p"}, PresetBest: {0.52, "main", "yuv420p"},
-		PresetHighQuality: {0.65, "main10", "p010le"}, PresetArchive: {0.80, "main10", "p010le"},
+		PresetCompact: {0.18, "main", "yuv420p"}, PresetMedium: {0.24, "main", "yuv420p"},
+		PresetRecommended: {0.30, "main", "yuv420p"}, PresetBest: {0.38, "main", "yuv420p"},
+		PresetHighQuality: {0.48, "main10", "p010le"}, PresetArchive: {0.65, "main10", "p010le"},
 		PresetMaster: {0.95, "main10", "p010le"},
 	}[preset]
 	return value, ok
@@ -74,8 +78,8 @@ func videoToolboxResolutionAdjustment(height int) float64 {
 
 func videoToolboxBitrateFloor(preset Preset, height int) int64 {
 	values := map[Preset][]int64{
-		PresetCompact: {900_000, 1_400_000, 2_000_000, 4_000_000}, PresetMedium: {1_200_000, 1_800_000, 2_500_000, 5_000_000},
-		PresetRecommended: {1_500_000, 2_200_000, 3_000_000, 6_000_000}, PresetBest: {2_000_000, 3_000_000, 4_000_000, 8_000_000},
+		PresetCompact: {700_000, 1_100_000, 1_600_000, 3_200_000}, PresetMedium: {950_000, 1_450_000, 2_000_000, 4_000_000},
+		PresetRecommended: {1_250_000, 1_800_000, 2_500_000, 5_000_000}, PresetBest: {1_600_000, 2_400_000, 3_200_000, 6_400_000},
 		PresetHighQuality: {2_500_000, 4_000_000, 5_000_000, 10_000_000}, PresetArchive: {3_200_000, 5_000_000, 6_000_000, 12_000_000},
 		PresetMaster: {4_000_000, 6_500_000, 7_000_000, 14_000_000},
 	}
@@ -95,7 +99,7 @@ func videoToolboxBitrateCeiling(preset Preset, height int) int64 {
 		return 0
 	}
 	return map[Preset]int64{
-		PresetCompact: 1_700_000, PresetMedium: 2_200_000, PresetRecommended: 2_500_000,
-		PresetBest: 3_200_000, PresetHighQuality: 4_000_000, PresetArchive: 5_000_000, PresetMaster: 6_000_000,
+		PresetCompact: 1_300_000, PresetMedium: 1_600_000, PresetRecommended: 2_000_000,
+		PresetBest: 2_600_000, PresetHighQuality: 3_400_000, PresetArchive: 4_500_000, PresetMaster: 6_000_000,
 	}[preset]
 }

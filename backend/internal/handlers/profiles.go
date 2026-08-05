@@ -129,14 +129,20 @@ func (h ProfileHandler) Update(c *gin.Context) {
 	delete(input.WorkerConfig, "processingMode")
 
 	var profile models.Profile
-	if err := h.db.First(&profile, uint(id)).Error; err != nil {
+	if err := h.db.Unscoped().First(&profile, uint(id)).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+			if nameErr := h.db.Unscoped().Where("LOWER(name) = LOWER(?)", input.Name).First(&profile).Error; nameErr != nil {
+				if nameErr == gorm.ErrRecordNotFound {
+					c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": nameErr.Error()})
+				return
+			}
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
 	}
 
 	profile.Name = input.Name
@@ -159,13 +165,14 @@ func (h ProfileHandler) Update(c *gin.Context) {
 	profile.PreserveChapters = input.PreserveChapters
 	profile.WorkerConfig = input.WorkerConfig
 	profile.Disabled = input.Disabled
+	profile.DeletedAt = gorm.DeletedAt{}
 	profile.ProfileVersion = max(profile.ProfileVersion, 1) + 1
 	if err := scheduler.ApplyAuthoritativeContract(&profile); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := h.db.Save(&profile).Error; err != nil {
+	if err := h.db.Unscoped().Save(&profile).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

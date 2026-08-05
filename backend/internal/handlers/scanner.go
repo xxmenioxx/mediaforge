@@ -454,6 +454,9 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 }
 
 func streamSizeBytes(stream FFProbeStream) int64 {
+	if inheritedMatroskaStatisticsAreStale(stream) {
+		return 0
+	}
 	for _, key := range []string{"NUMBER_OF_BYTES", "NUMBER_OF_BYTES-eng"} {
 		if value := parseInt(tagValue(stream.Tags, key, "")); value > 0 {
 			return value
@@ -466,12 +469,30 @@ func streamBitrate(stream FFProbeStream) int64 {
 	if value := parseInt(stream.Bitrate); value > 0 {
 		return value
 	}
+	if inheritedMatroskaStatisticsAreStale(stream) {
+		return 0
+	}
 	for _, key := range []string{"BPS", "BPS-eng"} {
 		if value := parseInt(tagValue(stream.Tags, key, "")); value > 0 {
 			return value
 		}
 	}
 	return 0
+}
+
+func inheritedMatroskaStatisticsAreStale(stream FFProbeStream) bool {
+	encoder := strings.TrimSpace(tagValue(stream.Tags, "ENCODER", ""))
+	if encoder == "" {
+		encoder = strings.TrimSpace(tagValue(stream.Tags, "encoder", ""))
+	}
+	statisticsWriter := strings.TrimSpace(tagValue(stream.Tags, "_STATISTICS_WRITING_APP", ""))
+	if statisticsWriter == "" {
+		statisticsWriter = strings.TrimSpace(tagValue(stream.Tags, "_STATISTICS_WRITING_APP-eng", ""))
+	}
+	// FFmpeg writes ENCODER on a newly encoded stream. MakeMKV statistics still
+	// attached to that stream describe its pre-conversion source and must not be
+	// used as output facts.
+	return encoder != "" && statisticsWriter != "" && !strings.Contains(strings.ToLower(statisticsWriter), strings.ToLower(encoder))
 }
 
 func interlaceAnalysisFromRaw(raw models.JSONMap) models.JSONMap {

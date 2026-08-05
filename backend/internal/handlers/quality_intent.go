@@ -115,15 +115,15 @@ func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quali
 	profile.WorkerConfig["videoToolboxRecommendationWarnings"] = recommendation.Warnings
 	if recommendation.TargetBitrate != nil {
 		profile.WorkerConfig["videoToolboxRecommendedTargetKbps"] = *recommendation.TargetBitrate / 1000
-		profile.WorkerConfig["videoToolboxBitrateMbps"] = int(math.Ceil(float64(*recommendation.TargetBitrate) / 1_000_000))
+		profile.WorkerConfig["videoToolboxBitrateMbps"] = fractionalMbps(*recommendation.TargetBitrate)
 	}
 	if recommendation.Maxrate != nil {
 		profile.WorkerConfig["videoToolboxRecommendedMaxrateKbps"] = *recommendation.Maxrate / 1000
-		profile.WorkerConfig["videoToolboxMaxrateMbps"] = int(math.Ceil(float64(*recommendation.Maxrate) / 1_000_000))
+		profile.WorkerConfig["videoToolboxMaxrateMbps"] = fractionalMbps(*recommendation.Maxrate)
 	}
 	if recommendation.Buffer != nil {
 		profile.WorkerConfig["videoToolboxRecommendedBufferKbps"] = *recommendation.Buffer / 1000
-		profile.WorkerConfig["videoToolboxBufferMbps"] = int(math.Ceil(float64(*recommendation.Buffer) / 1_000_000))
+		profile.WorkerConfig["videoToolboxBufferMbps"] = fractionalMbps(*recommendation.Buffer)
 	}
 	if recommendation.EstimatedOutputSize != nil {
 		profile.WorkerConfig["videoToolboxEstimatedVideoBytes"] = *recommendation.EstimatedOutputSize
@@ -137,6 +137,10 @@ func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quali
 		profile.BitDepth = 8
 	}
 	return profile
+}
+
+func fractionalMbps(bitsPerSecond int64) float64 {
+	return math.Round(float64(bitsPerSecond)/10_000) / 100
 }
 
 func qualityScore(config models.JSONMap, key string) (float64, bool) {

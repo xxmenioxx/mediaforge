@@ -52,6 +52,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const outputProbe = objectValue(result, 'outputProbe');
   const resultPayload = objectValue(result, 'result');
   const profile = objectValue(asIs, 'profile');
+  const streamPlan = objectValue(result, 'streamPlan') ?? objectValue(asIs, 'streamPlan');
   const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
   const directPlayPlan = activePlan ? objectValue(activePlan.evaluation, 'directPlay') : undefined;
   const outputEstimate = activePlan ? objectValue(activePlan.evaluation, 'outputEstimate') : undefined;
@@ -105,6 +106,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                 ]}
               />
               <InfoBlock title="Conversion command" value={stringValue(asIs, 'command') || commandFromNotes(job.notes)} />
+              {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
               <ArtifactBlock title="AS-IS JSON" value={asIs} />
             </Stack>
           ) : tab === 1 ? (
@@ -131,6 +133,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                 ]}
               />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
+              {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
               <ArtifactBlock title="Lifecycle history" value={{ currentStage: job.stage || job.status, stageUpdatedAt: job.stageUpdatedAt, history: job.stageHistory ?? [] }} />
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />

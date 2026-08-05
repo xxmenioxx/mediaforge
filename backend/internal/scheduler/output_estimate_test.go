@@ -19,9 +19,9 @@ func TestVideoToolboxOutputEstimateIncludesCopiedAudio(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a VideoToolbox source-aware estimate")
 	}
-	// Recommended SD uses 1.72 Mbps for this low-bitrate source after the DVD adjustment; audio must be
+	// Recommended SD uses 1.29 Mbps for this low-bitrate source after the DVD adjustment; audio must be
 	// added independently rather than hidden in the source container bitrate.
-	if estimate.VideoBytes != 774_000_000 || estimate.AudioBytes != 172_800_000 || estimate.SubtitleBytes != 3_600_000 {
+	if estimate.VideoBytes != 580_500_000 || estimate.AudioBytes != 172_800_000 || estimate.SubtitleBytes != 3_600_000 {
 		t.Fatalf("unexpected stream breakdown: %#v", estimate)
 	}
 	if estimate.MinBytes >= estimate.MaxBytes || estimate.Method != "videotoolbox_source_video_bitrate" || estimate.Confidence != "medium" {
@@ -154,7 +154,7 @@ func TestHistoricalQSVRatiosIncludeCompletedEncoderResults(t *testing.T) {
 func TestVideoToolboxEstimateUsesCroppedOutputHeight(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended", "videoFilters": "crop=720:460:0:10"}}
 	target, ok := videoToolboxTargetKbps(profile, mediaEstimate{VideoBitrate: 1_000_000, VideoWidth: 1920, VideoHeight: 1080})
-	if !ok || target != 1500 {
+	if !ok || target != 1250 {
 		t.Fatalf("expected SD floor after crop, got %d (ok=%v)", target, ok)
 	}
 }
