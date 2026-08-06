@@ -5319,7 +5319,45 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
     args.push('-preset', videoWorkerValue(profile, 'videoPreset', 'medium'));
     const pixFmt = videoWorkerValue(profile, 'pixFmt', 'yuv420p10le') === 'yuv420p10le' ? 'p010le' : videoWorkerValue(profile, 'pixFmt', 'nv12');
     args.push('-pix_fmt', pixFmt);
-    if (videoWorkerValue(profile, 'qsvRateControl', 'icq') === 'la_icq') args.push('-look_ahead', '1');
+    
+    const qsvTenBit = pixFmt === 'p010le';
+
+    args.push(
+      '-profile:v',
+      qsvTenBit ? 'main10' : 'main',
+    );
+
+    if (videoWorkerBool(profile, 'qsvLowPower')) {
+      args.push('-low_power', '1');
+    }
+
+    const qsvRateControl = videoWorkerValue(
+      profile,
+      'qsvEffectiveRateControl',
+      videoWorkerValue(profile, 'qsvRateControl', 'icq'),
+    );
+
+    if (qsvRateControl === 'la_icq') {
+      args.push(
+        '-look_ahead',
+        '1',
+        '-look_ahead_depth',
+        String(numberWorkerValue(profile, 'qsvLookAheadDepth', 40)),
+      );
+    }
+
+    if (videoWorkerBool(profile, 'qsvExtendedBRC')) {
+      args.push('-extbrc', '1');
+    }
+
+    if (videoWorkerBool(profile, 'qsvAdaptiveI')) {
+      args.push('-adaptive_i', '1');
+    }
+
+    if (videoWorkerBool(profile, 'qsvAdaptiveB')) {
+      args.push('-adaptive_b', '1');
+    }
+
   } else if (encoder === 'hevc_vaapi') {
     const format = videoWorkerValue(profile, 'pixFmt', 'yuv420p10le').includes('10') ? 'p010le' : 'nv12';
     filters = [filters, `format=${format}`, 'hwupload'].filter(Boolean).join(',');
