@@ -5391,7 +5391,6 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
   }
 
   if (encoder === 'hevc_qsv') {
-    args.push('-global_quality', String(numberWorkerValue(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue).recommended)));
     args.push('-preset', videoWorkerValue(profile, 'videoPreset', 'medium'));
     
     const configuredPixFmt = videoWorkerValue(
