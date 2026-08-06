@@ -786,6 +786,9 @@ export type PreviewInspection = {
   generatedPath: string;
   requestedEncoder: string;
   effectiveEncoder: string;
+  requestedQSVRateControl: string;
+  effectiveQSVRateControl: string;
+  ffmpegArgs: string[];
   normalization: {
     mode: 'preserve' | 'normalize_bt709';
     applied: boolean;

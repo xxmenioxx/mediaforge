@@ -2245,16 +2245,49 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	} else {
 		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
 	}
+
 	requestedVideoEncoder := strings.ToLower(strings.TrimSpace(videoEncoderOverride))
-	
+
+	if requestedVideoEncoder == "" && previewProfile != nil {
+		requestedVideoEncoder = strings.ToLower(
+			strings.TrimSpace(resolvedVideoEncoder(*previewProfile)),
+		)
+	}
+
+	var effectivePreviewProfile *models.Profile
+
 	var videoCodecArguments []string
 
 	if previewProfile != nil {
 		profile := normalizeHardwareQualityPreset(*previewProfile)
-		videoCodecArguments = append(
-			videoCodecArgs(profile),
-			videoWorkerArgs(profile)...,
-		)
+
+		if streams, probeErr := probeMediaStreams(path); probeErr == nil && len(streams.Video) > 0 {
+			if streams.Video[0].Bitrate <= 0 {
+				streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
+			}
+
+			qualityIntent := qualityIntentForMedia(profile, path, streams)
+
+			profile = applyQSVQualityRecommendation(
+				profile,
+				qualityIntent,
+				capabilities.CheckEncoder("hevc_qsv"),
+			)
+
+			effectivePreviewProfile = &profile
+
+			videoCodecArguments = append(
+				videoCodecArgsForSource(profile, &streams.Video[0]),
+				videoWorkerArgsForSource(profile, &streams.Video[0])...,
+			)
+		} else {
+			effectivePreviewProfile = &profile
+
+			videoCodecArguments = append(
+				videoCodecArgs(profile),
+				videoWorkerArgs(profile)...,
+			)
+		}
 	} else {
 		videoCodecArguments = previewVideoCodecArgs(
 			h.db,
@@ -2336,6 +2369,29 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		c.JSON(http.StatusOK, metrics)
 		return
 	}
+	
+	requestedQSVRateControl := ""
+
+	if previewProfile != nil {
+		requestedQSVRateControl = strings.ToLower(strings.TrimSpace(
+			workerStringValue(previewProfile.WorkerConfig["qsvRateControl"]),
+		))
+	}
+
+	effectiveQSVRateControl := ""
+
+	if effectivePreviewProfile != nil {
+		effectiveQSVRateControl = strings.ToLower(strings.TrimSpace(
+			workerStringValue(effectivePreviewProfile.WorkerConfig["qsvEffectiveRateControl"]),
+		))
+
+		if effectiveQSVRateControl == "" {
+			effectiveQSVRateControl = strings.ToLower(strings.TrimSpace(
+				workerStringValue(effectivePreviewProfile.WorkerConfig["qsvRateControl"]),
+			))
+		}
+	}
+
 	if strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true") {
 		source, sourceErr := probePreviewCharacteristics(path)
 		if sourceErr != nil {
@@ -2358,6 +2414,9 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			"normalization":    normalization,
 			"requestedEncoder": requestedVideoEncoder,
 			"effectiveEncoder": effectiveVideoEncoder,
+			"requestedQSVRateControl": requestedQSVRateControl,
+			"effectiveQSVRateControl": effectiveQSVRateControl,
+			"ffmpegArgs":       args,
 		})
 		return
 	}
