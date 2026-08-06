@@ -2307,7 +2307,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			qsvAdaptiveBOverride,
 		)
 	}
-	
+
 	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
 	args = append(args, videoCodecArguments...)
 	if normalization.Applied && normalization.Mode == "normalize_bt709" {
@@ -2369,7 +2369,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		c.JSON(http.StatusOK, metrics)
 		return
 	}
-	
+
 	requestedQSVRateControl := ""
 
 	if previewProfile != nil {
@@ -2403,20 +2403,62 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "generated preview validation failed: " + outputErr.Error()})
 			return
 		}
+
+		sourceFrameStructure, sourceFrameErr := analyzeVideoFrameStructure(
+			c.Request.Context(),
+			path,
+			500,
+		)
+		if sourceFrameErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "source frame structure analysis failed: " + sourceFrameErr.Error(),
+			})
+			return
+		}
+
+		outputFrameStructure, outputFrameErr := analyzeVideoFrameStructure(
+			c.Request.Context(),
+			cachePath,
+			500,
+		)
+		if outputFrameErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "output frame structure analysis failed: " + outputFrameErr.Error(),
+			})
+			return
+		}
+
+		qsvFrameWarnings := []string{}
+
+		if effectiveVideoEncoder == "hevc_qsv" && effectivePreviewProfile != nil {
+			adaptiveBRequested := boolSetting(
+				effectivePreviewProfile.WorkerConfig["qsvAdaptiveB"],
+				false,
+			)
+
+			qsvFrameWarnings = qsvFrameStructureWarnings(
+				adaptiveBRequested,
+				outputFrameStructure,
+			)
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"source":           source,
-			"output":           output,
-			"cacheHit":         cacheHit,
-			"previewMode":      previewMode,
-			"start":            start,
-			"seconds":          seconds,
-			"generatedPath":    cachePath,
-			"normalization":    normalization,
-			"requestedEncoder": requestedVideoEncoder,
-			"effectiveEncoder": effectiveVideoEncoder,
+			"source":                  source,
+			"output":                  output,
+			"sourceFrameStructure":    sourceFrameStructure,
+			"outputFrameStructure":    outputFrameStructure,
+			"qsvFrameWarnings":        qsvFrameWarnings,
+			"cacheHit":                cacheHit,
+			"previewMode":             previewMode,
+			"start":                   start,
+			"seconds":                 seconds,
+			"generatedPath":           cachePath,
+			"normalization":           normalization,
+			"requestedEncoder":        requestedVideoEncoder,
+			"effectiveEncoder":        effectiveVideoEncoder,
 			"requestedQSVRateControl": requestedQSVRateControl,
 			"effectiveQSVRateControl": effectiveQSVRateControl,
-			"ffmpegArgs":       args,
+			"ffmpegArgs":              args,
 		})
 		return
 	}
