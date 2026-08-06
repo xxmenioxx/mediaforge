@@ -29,12 +29,16 @@ func workerStringSlice(value any) []string {
 // It deliberately runs when a job is planned as profiles can also arrive through
 // saved records, imports, or per-asset overrides rather than the current UI.
 func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
+	if profile.WorkerConfig == nil {
+		profile.WorkerConfig = models.JSONMap{}
+	}
+	encoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
+	if encoder == "hevc_videotoolbox" {
+		normalizeLegacyVideoToolboxStrategy(profile.WorkerConfig)
+	}
 	preset := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"])))
 	if preset == "" || preset == "custom" {
 		return profile
-	}
-	if profile.WorkerConfig == nil {
-		profile.WorkerConfig = models.JSONMap{}
 	}
 	if workerIntValue(profile.WorkerConfig["hardwareQualityPresetScale"], 0) < 2 {
 		preset = map[string]string{
@@ -50,7 +54,6 @@ func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
 			return profile
 		}
 	}
-	encoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
 	if encoder == "hevc_qsv" {
 		baseQuality, ok := quality.QSVBaseQuality(quality.Preset(preset))
 		qsvProfile, pixelFormat, formatOK := quality.QSVFormat(quality.Preset(preset))
@@ -90,11 +93,34 @@ func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
 		profile.WorkerConfig["hardwareQualityPreset"] = preset
 		profile.WorkerConfig["videoToolboxProfile"] = recommendation.Profile
 		profile.WorkerConfig["videoToolboxGop"] = 120
-		delete(profile.WorkerConfig, "videoToolboxRealtime")
-		profile.WorkerConfig["videoToolboxAllowFrameReordering"] = false
+		profile.WorkerConfig["videoToolboxRealtime"] = false
+		profile.WorkerConfig["videoToolboxBFramePolicy"] = "auto"
+		profile.WorkerConfig["videoToolboxBFrames"] = 3
+		profile.WorkerConfig["videoToolboxAutoAdjustBitrate"] = true
+		delete(profile.WorkerConfig, "videoToolboxAllowFrameReordering")
 		profile.WorkerConfig["videoToolboxPowerEfficiency"] = true
 		profile.WorkerConfig["pixFmt"] = recommendation.PixelFormat
 		delete(profile.WorkerConfig, "videoToolboxQualityProfile")
 	}
 	return profile
+}
+
+func normalizeLegacyVideoToolboxStrategy(config models.JSONMap) {
+	if _, exists := config["videoToolboxBFramePolicy"]; !exists {
+		policy := "auto"
+		if legacy, ok := config["videoToolboxAllowFrameReordering"].(bool); ok && legacy {
+			policy = "enabled"
+		}
+		config["videoToolboxBFramePolicy"] = policy
+	}
+	if _, exists := config["videoToolboxBFrames"]; !exists {
+		config["videoToolboxBFrames"] = 3
+	}
+	if _, exists := config["videoToolboxRealtime"]; !exists {
+		config["videoToolboxRealtime"] = false
+	}
+	if _, exists := config["videoToolboxAutoAdjustBitrate"]; !exists {
+		config["videoToolboxAutoAdjustBitrate"] = false
+	}
+	delete(config, "videoToolboxAllowFrameReordering")
 }

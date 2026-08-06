@@ -744,6 +744,16 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
 	encoderDecision := encoderDecisionForProfile(plan.Profile)
 	job.Notes = appendNote(job.Notes, fmt.Sprintf("Encoder decision: requested=%s effective=%s", stringFromUnknown(encoderDecision["requested"]), stringFromUnknown(encoderDecision["effective"])))
+	if resolvedVideoEncoder(plan.Profile) == "hevc_videotoolbox" {
+		job.Notes = appendNote(job.Notes, fmt.Sprintf("VideoToolbox strategy: realtime requested=%t effective=%t; B-frames requested=%s effective=%s; multiplier=%.2f; observed=%d; fallback=%s",
+			profileWorkerBool(plan.Profile, "videoToolboxRequestedRealtime", profileWorkerBool(plan.Profile, "videoToolboxRealtime", false)),
+			profileWorkerBool(plan.Profile, "videoToolboxEffectiveRealtime", profileWorkerBool(plan.Profile, "videoToolboxRealtime", false)),
+			workerStringValue(plan.Profile.WorkerConfig["videoToolboxRequestedBFramePolicy"]),
+			workerStringValue(plan.Profile.WorkerConfig["videoToolboxEffectiveBFramePolicy"]),
+			workerNumberValue(plan.Profile.WorkerConfig["videoToolboxBFrameEfficiencyMultiplier"], 1),
+			workerIntValue(plan.Profile.WorkerConfig["videoToolboxObservedBFrameCount"], 0),
+			workerStringValue(plan.Profile.WorkerConfig["videoToolboxBFrameDowngradeReason"])))
+	}
 	if effectiveRateControl := workerStringValue(plan.Profile.WorkerConfig["qsvEffectiveRateControl"]); effectiveRateControl != "" {
 		job.Notes = appendNote(job.Notes, fmt.Sprintf("QSV rate control: requested=%s effective=%s fallback=%s",
 			workerStringValue(plan.Profile.WorkerConfig["qsvRequestedRateControl"]), effectiveRateControl,

@@ -75,8 +75,20 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		recommendation, err = (quality.QSVTranslator{}).Translate(intent, qsvQualityCapabilities(capability, intent))
 		profile = applyQSVQualityRecommendation(profile, intent, capability)
 	case "hevc_videotoolbox":
-		recommendation, err = (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
-		profile = applyVideoToolboxQualityRecommendation(profile, intent)
+		recommendation, err = (quality.VideoToolboxTranslator{}).Translate(intent, videoToolboxQualityCapabilities(capability, profileUsesTenBit(profile)))
+		if err == nil && strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") {
+			baseMbps := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
+			targetMbps, maxrateMbps, bufferMbps := explicitVideoToolboxRates(profile, capability)
+			base, target := int64(baseMbps*1_000_000), int64(targetMbps*1_000_000)
+			maxrate, buffer := int64(maxrateMbps*1_000_000), int64(bufferMbps*1_000_000)
+			recommendation.BaseTargetBitrate, recommendation.TargetBitrate = &base, &target
+			recommendation.Maxrate, recommendation.Buffer = &maxrate, &buffer
+			if intent.Duration > 0 {
+				size := int64(float64(target) * intent.Duration.Seconds() / 8)
+				recommendation.EstimatedOutputSize = &size
+			}
+		}
+		profile = applyVideoToolboxQualityRecommendation(profile, intent, capability)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quality recommendations currently support hevc_qsv and hevc_videotoolbox"})
 		return

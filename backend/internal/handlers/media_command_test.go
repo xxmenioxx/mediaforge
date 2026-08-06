@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -407,7 +408,7 @@ func TestQSVCustomQualityIsNotRewrittenByTranslator(t *testing.T) {
 func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended"}}
 	target, maxrate, buffer, ok := adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 4_000_000})
-	if !ok || target != 1290 || maxrate != 1940 || buffer != 3230 {
+	if !ok || target != 1330 || maxrate != 2000 || buffer != 3330 {
 		t.Fatalf("unexpected adaptive VideoToolbox result: target=%d maxrate=%d buffer=%d ok=%v", target, maxrate, buffer, ok)
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "custom"
@@ -416,8 +417,8 @@ func TestVideoToolboxPresetUsesAdaptiveSourceBitrate(t *testing.T) {
 	}
 	profile.WorkerConfig["hardwareQualityPreset"] = "recommended"
 	target, _, _, ok = adaptiveVideoToolboxBitrate(profile, &MediaStream{Height: 480, Bitrate: 12_000_000})
-	if !ok || target != 2000 {
-		t.Fatalf("SD Recommended must cap an excessive source bitrate at 2000k, got %dk", target)
+	if !ok || target != 2060 {
+		t.Fatalf("SD Recommended base must cap before the Auto efficiency adjustment, got %dk", target)
 	}
 }
 
@@ -431,7 +432,7 @@ func TestVideoToolboxRecommendationIsStoredOnEffectivePlan(t *testing.T) {
 		Audio: []MediaAudioStream{{Bitrate: 192_000}},
 	})
 	effective := applyVideoToolboxQualityRecommendation(profile, intent)
-	if effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_290) || effective.WorkerConfig["videoToolboxBitrateMbps"] != 1.29 || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
+	if effective.WorkerConfig["videoToolboxBaseTargetKbps"] != int64(1_290) || effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_330) || effective.WorkerConfig["videoToolboxBitrateMbps"] != 1.33 || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
 		t.Fatalf("unexpected stored VideoToolbox recommendation: %#v", effective.WorkerConfig)
 	}
 }
@@ -913,12 +914,84 @@ func TestVideoToolboxQualityPresetOptionsReachFFmpeg(t *testing.T) {
 		t.Skip("VideoToolbox is listed but not usable in this test runtime")
 	}
 	command := shellJoin(videoCodecArgs(profile))
-	for _, expected := range []string{"-b:v 12M", "-maxrate 16M", "-bufsize 32M", "-g 90", "-bf 3", "-power_efficient 0", "-profile:v main10", "-pix_fmt p010le"} {
+	for _, expected := range []string{"-b:v 12M", "-maxrate 16M", "-bufsize 32M", "-g 90", "-bf 3", "-realtime 0", "-power_efficient 0", "-profile:v main10", "-pix_fmt p010le"} {
 		assertContains(t, command, expected)
 	}
-	assertNotContains(t, command, "-realtime")
 	assertNotContains(t, command, "-q:v")
 	assertNotContains(t, command, "-allow_frame_reordering")
+}
+
+func TestVideoToolboxRealtimeAndBFramePoliciesAreDistinct(t *testing.T) {
+	capability := capabilities.EncoderCapability{
+		VideoToolboxBFrames: true, VideoToolboxBFramesDisabled: true,
+		TestedModes: map[string]bool{"videoToolboxBFramesMain10": true, "videoToolboxBFramesDisabledMain10": true},
+	}
+	tests := []struct {
+		name     string
+		config   models.JSONMap
+		contains []string
+		absent   []string
+	}{
+		{name: "offline auto", config: models.JSONMap{}, contains: []string{"-realtime 0"}, absent: []string{"-bf"}},
+		{name: "realtime auto disables", config: models.JSONMap{"videoToolboxRealtime": true}, contains: []string{"-realtime 1", "-bf 0"}},
+		{name: "enabled count", config: models.JSONMap{"videoToolboxBFramePolicy": "enabled", "videoToolboxBFrames": 4}, contains: []string{"-realtime 0", "-bf 4"}},
+		{name: "disabled", config: models.JSONMap{"videoToolboxBFramePolicy": "disabled"}, contains: []string{"-realtime 0", "-bf 0"}},
+		{name: "legacy missing false is auto", config: models.JSONMap{"videoToolboxAllowFrameReordering": false}, contains: []string{"-realtime 0"}, absent: []string{"-bf"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{WorkerConfig: test.config}
+			command := shellJoin(videoToolboxRealtimeAndBFrameArgs(profile, capability, false))
+			for _, expected := range test.contains {
+				assertContains(t, command, expected)
+			}
+			for _, absent := range test.absent {
+				assertNotContains(t, command, absent)
+			}
+		})
+	}
+}
+
+func TestVideoToolboxEnabledFallsBackToAutoWithoutEffectiveProbe(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"videoToolboxBFramePolicy": "enabled", "videoToolboxBFrames": 3}}
+	command := shellJoin(videoToolboxRealtimeAndBFrameArgs(profile, capabilities.EncoderCapability{VideoToolboxBFramesVerified: true}, false))
+	assertContains(t, command, "-realtime 0")
+	assertNotContains(t, command, "-bf")
+}
+
+func TestLegacyVideoToolboxBFrameBooleanMigratesWithoutDisabling(t *testing.T) {
+	for _, test := range []struct {
+		legacy bool
+		want   string
+	}{{legacy: false, want: "auto"}, {legacy: true, want: "enabled"}} {
+		profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
+			"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "custom", "videoToolboxAllowFrameReordering": test.legacy,
+		}})
+		if got := workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]); got != test.want {
+			t.Fatalf("legacy %t migrated to %q, want %q", test.legacy, got, test.want)
+		}
+		if _, exists := profile.WorkerConfig["videoToolboxAllowFrameReordering"]; exists {
+			t.Fatal("legacy ambiguous field was retained")
+		}
+	}
+}
+
+func TestVideoToolboxCustomManualRatesRemainExplicitUnlessAdjustmentEnabled(t *testing.T) {
+	capability := capabilities.EncoderCapability{VideoToolboxBFramesDisabled: true}
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"hardwareQualityPreset": "custom", "videoToolboxBitrateMbps": 1.65,
+		"videoToolboxMaxrateMbps": 2.48, "videoToolboxBufferMbps": 4.13,
+		"videoToolboxBFramePolicy": "disabled",
+	}}
+	target, maxrate, buffer := explicitVideoToolboxRates(profile, capability)
+	if target != 1.65 || maxrate != 2.48 || buffer != 4.13 {
+		t.Fatalf("manual custom rates changed without opt-in: %.2f %.2f %.2f", target, maxrate, buffer)
+	}
+	profile.WorkerConfig["videoToolboxAutoAdjustBitrate"] = true
+	target, maxrate, buffer = explicitVideoToolboxRates(profile, capability)
+	if math.Abs(target-1.782) > 0.0001 || math.Abs(maxrate-2.673) > 0.0001 || math.Abs(buffer-4.455) > 0.0001 {
+		t.Fatalf("custom strategy adjustment not applied before limits: %.3f %.3f %.3f", target, maxrate, buffer)
+	}
 }
 
 func TestVideoToolboxProfileFollowsOutputBitDepth(t *testing.T) {

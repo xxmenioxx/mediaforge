@@ -44,6 +44,10 @@ func qualityIntentForMedia(profile models.Profile, sourcePath string, streams Me
 		RequestedRateControl: workerStringValue(profile.WorkerConfig["qsvRateControl"]),
 		RequestedBitDepth:    profile.BitDepth,
 		RequestedPixelFormat: workerStringValue(profile.WorkerConfig["pixFmt"]),
+		VideoToolboxRealtime: profileWorkerBool(profile, "videoToolboxRealtime", false),
+		BFramePolicy:         workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]),
+		BFrameCount:          workerIntValue(profile.WorkerConfig["videoToolboxBFrames"], 3),
+		AutoAdjustBitrate:    profileWorkerBool(profile, "videoToolboxAutoAdjustBitrate", false),
 	})
 }
 
@@ -97,14 +101,15 @@ func storeInt64Recommendation(config models.JSONMap, key string, value *int64) {
 	}
 }
 
-func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quality.QualityIntent) models.Profile {
+func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quality.QualityIntent, supplied ...capabilities.EncoderCapability) models.Profile {
 	if profile.WorkerConfig == nil || !strings.EqualFold(workerStringValue(profile.WorkerConfig["videoEncoder"]), "hevc_videotoolbox") {
 		return profile
 	}
-	if strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") {
-		return profile
+	capability := capabilities.CheckEncoder("hevc_videotoolbox")
+	if len(supplied) > 0 {
+		capability = supplied[0]
 	}
-	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, videoToolboxQualityCapabilities(capability, profileUsesTenBit(profile)))
 	if err != nil {
 		return profile
 	}
@@ -113,6 +118,25 @@ func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quali
 	profile.WorkerConfig["videoToolboxEffectiveRateControl"] = recommendation.EffectiveRateControl
 	profile.WorkerConfig["videoToolboxEstimateConfidence"] = recommendation.EstimateConfidence
 	profile.WorkerConfig["videoToolboxRecommendationWarnings"] = recommendation.Warnings
+	profile.WorkerConfig["videoToolboxRequestedRealtime"] = recommendation.RequestedRealtime
+	profile.WorkerConfig["videoToolboxEffectiveRealtime"] = recommendation.EffectiveRealtime
+	profile.WorkerConfig["videoToolboxRequestedBFramePolicy"] = recommendation.RequestedBFramePolicy
+	profile.WorkerConfig["videoToolboxEffectiveBFramePolicy"] = recommendation.EffectiveBFramePolicy
+	profile.WorkerConfig["videoToolboxRequestedBFrames"] = recommendation.RequestedBFrames
+	profile.WorkerConfig["videoToolboxObservedBFrameCount"] = recommendation.ObservedBFrameCount
+	profile.WorkerConfig["videoToolboxBFrameEfficiencyMultiplier"] = recommendation.BFrameEfficiencyMultiplier
+	profile.WorkerConfig["videoToolboxBFrameDowngradeReason"] = recommendation.BFrameDowngradeReason
+	if recommendation.BaseTargetBitrate != nil {
+		profile.WorkerConfig["videoToolboxBaseTargetKbps"] = *recommendation.BaseTargetBitrate / 1000
+	}
+	if strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") {
+		baseMbps := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
+		targetMbps, maxrateMbps, bufferMbps := explicitVideoToolboxRates(profile, capability)
+		profile.WorkerConfig["videoToolboxBaseTargetKbps"] = int64(baseMbps * 1000)
+		profile.WorkerConfig["videoToolboxRecommendedTargetKbps"] = int64(targetMbps * 1000)
+		profile.WorkerConfig["videoToolboxRecommendedMaxrateKbps"] = int64(maxrateMbps * 1000)
+		profile.WorkerConfig["videoToolboxRecommendedBufferKbps"] = int64(bufferMbps * 1000)
+	}
 	if recommendation.TargetBitrate != nil {
 		profile.WorkerConfig["videoToolboxRecommendedTargetKbps"] = *recommendation.TargetBitrate / 1000
 		profile.WorkerConfig["videoToolboxBitrateMbps"] = fractionalMbps(*recommendation.TargetBitrate)
@@ -137,6 +161,25 @@ func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quali
 		profile.BitDepth = 8
 	}
 	return profile
+}
+
+func videoToolboxQualityCapabilities(capability capabilities.EncoderCapability, main10 bool) quality.WorkerCapabilities {
+	effective := capability.VideoToolboxBFrames
+	disabled := capability.VideoToolboxBFramesDisabled
+	autoEffective := capability.TestedModes["videoToolboxAutoBFramesMain"]
+	if main10 {
+		effective = capability.TestedModes["videoToolboxBFramesMain10"]
+		disabled = capability.TestedModes["videoToolboxBFramesDisabledMain10"]
+		autoEffective = capability.TestedModes["videoToolboxAutoBFramesMain10"]
+	}
+	return quality.WorkerCapabilities{
+		Encoder: "hevc_videotoolbox", Main: capability.VideoToolboxMain, Main10: capability.VideoToolboxMain10,
+		BFramesVerified:         capability.VideoToolboxBFramesVerified,
+		BFramesEffective:        effective,
+		BFramesDisabledVerified: disabled,
+		ObservedBFrameCount:     capability.VideoToolboxObservedBFrames,
+		AutoBFramesEffective:    autoEffective,
+	}
 }
 
 func fractionalMbps(bitsPerSecond int64) float64 {

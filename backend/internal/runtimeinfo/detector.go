@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var encoderCandidates = []string{"libx264", "libx265", "libsvtav1", "hevc_videotoolbox", "hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_amf"}
+var encoderCandidates = []string{"libx264", "libx265", "libsvtav1", "hevc_videotoolbox", "h264_videotoolbox", "hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_amf"}
 
 type Detector struct {
 	db   *gorm.DB
@@ -85,8 +85,12 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 			"qsvCbrMain8": capability.QSVCBRMain8, "qsvCbrMain10": capability.QSVCBRMain10,
 			"qsvLowPowerMain10": capability.QSVLowPowerMain10,
 			"videoToolboxMain":  capability.VideoToolboxMain, "videoToolboxMain10": capability.VideoToolboxMain10,
-			"videoToolboxBFrames": capability.VideoToolboxBFrames, "videoToolboxPowerEfficient": capability.VideoToolboxPowerEfficient,
-			"testedModes": capability.TestedModes, "modeReasons": capability.ModeReasons,
+			"videoToolboxBFrames":         capability.VideoToolboxBFrames,
+			"videoToolboxBFramesVerified": capability.VideoToolboxBFramesVerified,
+			"videoToolboxBFramesDisabled": capability.VideoToolboxBFramesDisabled,
+			"videoToolboxObservedBFrames": capability.VideoToolboxObservedBFrames,
+			"videoToolboxPowerEfficient":  capability.VideoToolboxPowerEfficient,
+			"testedModes":                 capability.TestedModes, "modeReasons": capability.ModeReasons,
 			"reason": capability.Reason,
 		}
 	}

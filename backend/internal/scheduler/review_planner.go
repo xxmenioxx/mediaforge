@@ -337,6 +337,23 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 }
 
 func schedulerQualityCapabilities(encoder string, profile models.Profile, capability capabilities.EncoderCapability) quality.WorkerCapabilities {
+	if encoder == "hevc_videotoolbox" {
+		main10 := profile.BitDepth >= 10 || configString(profile.WorkerConfig, "pixFmt") == "p010le"
+		effective := capability.VideoToolboxBFrames
+		disabled := capability.VideoToolboxBFramesDisabled
+		autoEffective := capability.TestedModes["videoToolboxAutoBFramesMain"]
+		if main10 {
+			effective = capability.TestedModes["videoToolboxBFramesMain10"]
+			disabled = capability.TestedModes["videoToolboxBFramesDisabledMain10"]
+			autoEffective = capability.TestedModes["videoToolboxAutoBFramesMain10"]
+		}
+		return quality.WorkerCapabilities{
+			Encoder: encoder, Main: capability.Usable, Main10: capability.Main10,
+			BFramesVerified: capability.VideoToolboxBFramesVerified, BFramesEffective: effective,
+			BFramesDisabledVerified: disabled, ObservedBFrameCount: capability.VideoToolboxObservedBFrames,
+			AutoBFramesEffective: autoEffective,
+		}
+	}
 	if encoder != "hevc_qsv" {
 		return quality.WorkerCapabilities{}
 	}

@@ -199,6 +199,9 @@ type AssetConversionOverrideState struct {
 	VideoToolboxProfile              string                         `json:"videoToolboxProfile,omitempty"`
 	VideoToolboxGOP                  int                            `json:"videoToolboxGop,omitempty"`
 	VideoToolboxRealtime             *bool                          `json:"videoToolboxRealtime,omitempty"`
+	VideoToolboxBFramePolicy         string                         `json:"videoToolboxBFramePolicy,omitempty"`
+	VideoToolboxBFrames              int                            `json:"videoToolboxBFrames,omitempty"`
+	VideoToolboxAutoAdjustBitrate    *bool                          `json:"videoToolboxAutoAdjustBitrate,omitempty"`
 	VideoToolboxAllowFrameReordering *bool                          `json:"videoToolboxAllowFrameReordering,omitempty"`
 	VideoToolboxPowerEfficiency      *bool                          `json:"videoToolboxPowerEfficiency,omitempty"`
 	HardwareQualityPreset            string                         `json:"hardwareQualityPreset,omitempty"`
@@ -325,6 +328,9 @@ type AssetConversionUpdateInput struct {
 	VideoToolboxProfile              string                         `json:"videoToolboxProfile"`
 	VideoToolboxGOP                  int                            `json:"videoToolboxGop"`
 	VideoToolboxRealtime             *bool                          `json:"videoToolboxRealtime"`
+	VideoToolboxBFramePolicy         string                         `json:"videoToolboxBFramePolicy"`
+	VideoToolboxBFrames              int                            `json:"videoToolboxBFrames"`
+	VideoToolboxAutoAdjustBitrate    *bool                          `json:"videoToolboxAutoAdjustBitrate"`
 	VideoToolboxAllowFrameReordering *bool                          `json:"videoToolboxAllowFrameReordering"`
 	VideoToolboxPowerEfficiency      *bool                          `json:"videoToolboxPowerEfficiency"`
 	HardwareQualityPreset            string                         `json:"hardwareQualityPreset"`
@@ -2125,6 +2131,18 @@ func (h AssetHandler) Preview(c *gin.Context) {
 func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	profileID := strings.TrimSpace(c.Query("profileId"))
+
+	var previewProfile *models.Profile
+	if rawProfile := strings.TrimSpace(c.Query("profile")); rawProfile != "" {
+		var parsedProfile models.Profile
+		if err := json.Unmarshal([]byte(rawProfile), &parsedProfile); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "profile must contain valid JSON: " + err.Error(),
+			})
+			return
+		}
+		previewProfile = &parsedProfile
+	}
 	videoCodecOverride := strings.TrimSpace(c.Query("videoCodec"))
 	qualityValueOverride := strings.TrimSpace(c.Query("qualityValue"))
 	videoPresetOverride := strings.TrimSpace(c.Query("videoPreset"))
@@ -2228,11 +2246,35 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
 	}
 	requestedVideoEncoder := strings.ToLower(strings.TrimSpace(videoEncoderOverride))
-	videoCodecArguments := previewVideoCodecArgs(
-		h.db, profileID, videoCodecOverride, qualityValueOverride, videoPresetOverride, pixFmtOverride, x265ParamsOverride,
-		videoEncoderOverride, useHardwareOverride, globalQualityOverride,
-		qsvRateControlOverride, qsvLookAheadDepthOverride, qsvExtendedBRCOverride, qsvAdaptiveIOverride, qsvAdaptiveBOverride,
-	)
+	
+	var videoCodecArguments []string
+
+	if previewProfile != nil {
+		profile := normalizeHardwareQualityPreset(*previewProfile)
+		videoCodecArguments = append(
+			videoCodecArgs(profile),
+			videoWorkerArgs(profile)...,
+		)
+	} else {
+		videoCodecArguments = previewVideoCodecArgs(
+			h.db,
+			profileID,
+			videoCodecOverride,
+			qualityValueOverride,
+			videoPresetOverride,
+			pixFmtOverride,
+			x265ParamsOverride,
+			videoEncoderOverride,
+			useHardwareOverride,
+			globalQualityOverride,
+			qsvRateControlOverride,
+			qsvLookAheadDepthOverride,
+			qsvExtendedBRCOverride,
+			qsvAdaptiveIOverride,
+			qsvAdaptiveBOverride,
+		)
+	}
+	
 	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
 	args = append(args, videoCodecArguments...)
 	if normalization.Applied && normalization.Mode == "normalize_bt709" {

@@ -20,22 +20,23 @@ import (
 )
 
 type jobArtifact struct {
-	GeneratedAt     time.Time             `json:"generatedAt"`
-	Kind            string                `json:"kind"`
-	Job             models.QueueJob       `json:"job"`
-	Command         string                `json:"command,omitempty"`
-	ExecutionEngine string                `json:"executionEngine,omitempty"`
-	Profile         models.Profile        `json:"profile"`
-	AudioProfileKey string                `json:"audioProfileKey,omitempty"`
-	ProcessingMode  string                `json:"processingMode,omitempty"`
-	AssetConversion AssetConversionReport `json:"assetConversion,omitempty"`
-	SourceProbe     map[string]any        `json:"sourceProbe,omitempty"`
-	OutputProbe     map[string]any        `json:"outputProbe,omitempty"`
-	Result          map[string]any        `json:"result,omitempty"`
-	Notes           string                `json:"notes,omitempty"`
-	ExecutionPlan   models.JSONMap        `json:"executionPlan,omitempty"`
-	EncoderDecision models.JSONMap        `json:"encoderDecision,omitempty"`
-	StreamPlan      ResolvedStreamPlan    `json:"streamPlan"`
+	GeneratedAt          time.Time             `json:"generatedAt"`
+	Kind                 string                `json:"kind"`
+	Job                  models.QueueJob       `json:"job"`
+	Command              string                `json:"command,omitempty"`
+	ExecutionEngine      string                `json:"executionEngine,omitempty"`
+	Profile              models.Profile        `json:"profile"`
+	AudioProfileKey      string                `json:"audioProfileKey,omitempty"`
+	ProcessingMode       string                `json:"processingMode,omitempty"`
+	AssetConversion      AssetConversionReport `json:"assetConversion,omitempty"`
+	SourceProbe          map[string]any        `json:"sourceProbe,omitempty"`
+	OutputProbe          map[string]any        `json:"outputProbe,omitempty"`
+	Result               map[string]any        `json:"result,omitempty"`
+	Notes                string                `json:"notes,omitempty"`
+	ExecutionPlan        models.JSONMap        `json:"executionPlan,omitempty"`
+	EncoderDecision      models.JSONMap        `json:"encoderDecision,omitempty"`
+	StreamPlan           ResolvedStreamPlan    `json:"streamPlan"`
+	VideoToolboxStrategy models.JSONMap        `json:"videoToolboxStrategy,omitempty"`
 }
 
 type AssetConversionReport struct {
@@ -128,6 +129,7 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 		StreamPlan:      streamPlan,
 	}
 	artifact.EncoderDecision = encoderDecisionForProfile(profile)
+	artifact.VideoToolboxStrategy = videoToolboxStrategyReport(profile)
 	if job.ActiveExecutionPlanID != nil {
 		var plan models.ExecutionPlan
 		if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil {
@@ -533,6 +535,15 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.VideoToolboxRealtime != nil {
 		values["videoToolboxRealtime"] = *override.VideoToolboxRealtime
 	}
+	if override.VideoToolboxBFramePolicy != "" {
+		values["videoToolboxBFramePolicy"] = override.VideoToolboxBFramePolicy
+	}
+	if override.VideoToolboxBFrames > 0 {
+		values["videoToolboxBFrames"] = override.VideoToolboxBFrames
+	}
+	if override.VideoToolboxAutoAdjustBitrate != nil {
+		values["videoToolboxAutoAdjustBitrate"] = *override.VideoToolboxAutoAdjustBitrate
+	}
 	if override.VideoToolboxAllowFrameReordering != nil {
 		values["videoToolboxAllowFrameReordering"] = *override.VideoToolboxAllowFrameReordering
 	}
@@ -632,6 +643,9 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 				_ = json.Unmarshal(encoded, &artifact.StreamPlan)
 			}
 		}
+		if raw, ok := asIs["videoToolboxStrategy"].(map[string]any); ok {
+			artifact.VideoToolboxStrategy = models.JSONMap(raw)
+		}
 	}
 	if profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); err == nil {
 		artifact.Profile = profile
@@ -640,6 +654,27 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
 	persistCompletedEncoderResult(db, artifact)
 	return writeJobArtifact(db, job, "result", artifact)
+}
+
+func videoToolboxStrategyReport(profile models.Profile) models.JSONMap {
+	if resolvedVideoEncoder(profile) != "hevc_videotoolbox" {
+		return nil
+	}
+	keys := []string{
+		"videoToolboxRequestedRealtime", "videoToolboxEffectiveRealtime",
+		"videoToolboxRequestedBFramePolicy", "videoToolboxEffectiveBFramePolicy",
+		"videoToolboxRequestedBFrames", "videoToolboxObservedBFrameCount",
+		"videoToolboxBFrameEfficiencyMultiplier", "videoToolboxBFrameDowngradeReason",
+		"videoToolboxBaseTargetKbps", "videoToolboxRecommendedTargetKbps",
+		"videoToolboxRecommendedMaxrateKbps", "videoToolboxRecommendedBufferKbps",
+	}
+	result := models.JSONMap{}
+	for _, key := range keys {
+		if value, ok := profile.WorkerConfig[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func persistCompletedEncoderResult(db *gorm.DB, artifact jobArtifact) {

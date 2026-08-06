@@ -847,8 +847,20 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if override.VideoToolboxRealtime != nil {
 		workerConfig["videoToolboxRealtime"] = *override.VideoToolboxRealtime
 	}
+	if policy := strings.ToLower(strings.TrimSpace(override.VideoToolboxBFramePolicy)); policy == "auto" || policy == "enabled" || policy == "disabled" {
+		workerConfig["videoToolboxBFramePolicy"] = policy
+	}
+	if override.VideoToolboxBFrames > 0 {
+		workerConfig["videoToolboxBFrames"] = clampVideoToolboxBFrames(override.VideoToolboxBFrames)
+	}
+	if override.VideoToolboxAutoAdjustBitrate != nil {
+		workerConfig["videoToolboxAutoAdjustBitrate"] = *override.VideoToolboxAutoAdjustBitrate
+	}
 	if override.VideoToolboxAllowFrameReordering != nil {
-		workerConfig["videoToolboxAllowFrameReordering"] = *override.VideoToolboxAllowFrameReordering
+		if *override.VideoToolboxAllowFrameReordering {
+			workerConfig["videoToolboxBFramePolicy"] = "enabled"
+		}
+		delete(workerConfig, "videoToolboxAllowFrameReordering")
 	}
 	if override.VideoToolboxPowerEfficiency != nil {
 		workerConfig["videoToolboxPowerEfficiency"] = *override.VideoToolboxPowerEfficiency
@@ -1240,19 +1252,17 @@ func videoCodecArgs(profile models.Profile) []string {
 
 // adaptiveVideoToolboxBitrate uses source-video bitrate for named presets.
 // Custom intentionally keeps explicit user bitrate controls unchanged.
-func adaptiveVideoToolboxBitrate(profile models.Profile, source *MediaStream) (int, int, int, bool) {
+func adaptiveVideoToolboxBitrate(profile models.Profile, source *MediaStream, encoders ...string) (int, int, int, bool) {
 	if source == nil || source.Bitrate <= 0 || strings.ToLower(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"])) == "custom" {
 		return 0, 0, 0, false
 	}
-	if target := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedTargetKbps"], 0); target > 0 {
-		maxrate := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedMaxrateKbps"], 0)
-		buffer := workerIntValue(profile.WorkerConfig["videoToolboxRecommendedBufferKbps"], 0)
-		if maxrate > 0 && buffer > 0 {
-			return target, maxrate, buffer, true
-		}
-	}
 	intent := qualityIntentForMedia(profile, workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]), MediaStreamInventory{Video: []MediaStream{*source}})
-	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+	encoder := "hevc_videotoolbox"
+	if len(encoders) > 0 && strings.HasSuffix(encoders[0], "_videotoolbox") {
+		encoder = encoders[0]
+	}
+	capability := capabilities.CheckEncoder(encoder)
+	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, videoToolboxQualityCapabilities(capability, profileUsesTenBit(profile)))
 	if err != nil || recommendation.TargetBitrate == nil || recommendation.Maxrate == nil || recommendation.Buffer == nil {
 		return 0, 0, 0, false
 	}
@@ -1278,13 +1288,11 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 			args = append(args, "-qp", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], defaultQSVQuality(profile.QualityValue))))
 		case "hevc_nvenc":
 			args = append(args, "-cq", fmt.Sprintf("%d", workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)))
-		case "hevc_videotoolbox":
-			if targetKbps, maxrateKbps, bufferKbps, ok := adaptiveVideoToolboxBitrate(profile, source); ok {
+		case "hevc_videotoolbox", "h264_videotoolbox":
+			if targetKbps, maxrateKbps, bufferKbps, ok := adaptiveVideoToolboxBitrate(profile, source, encoder); ok {
 				args = append(args, "-b:v", fmt.Sprintf("%dk", targetKbps), "-maxrate", fmt.Sprintf("%dk", maxrateKbps), "-bufsize", fmt.Sprintf("%dk", bufferKbps))
 			} else {
-				bitrate := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
-				maxrate := workerNumberValue(profile.WorkerConfig["videoToolboxMaxrateMbps"], bitrate*1.5)
-				buffer := workerNumberValue(profile.WorkerConfig["videoToolboxBufferMbps"], bitrate*2.5)
+				bitrate, maxrate, buffer := explicitVideoToolboxRates(profile, capabilities.CheckEncoder(encoder))
 				args = append(args, "-b:v", formatMbps(bitrate), "-maxrate", formatMbps(maxrate), "-bufsize", formatMbps(buffer))
 			}
 		case "hevc_amf":
@@ -1298,23 +1306,25 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 			args = append(args, "-profile:v", "main")
 		}
 	}
-	if encoder == "hevc_videotoolbox" {
-		capability := capabilities.CheckEncoder("hevc_videotoolbox")
+	if encoder == "hevc_videotoolbox" || encoder == "h264_videotoolbox" {
+		capability := capabilities.CheckEncoder(encoder)
 		videoToolboxProfile := normalizedVideoToolboxProfile(profile)
+		if encoder == "h264_videotoolbox" {
+			videoToolboxProfile = "high"
+		}
 		if gop := workerIntValue(profile.WorkerConfig["videoToolboxGop"], 0); gop > 0 {
 			args = append(args, "-g", fmt.Sprintf("%d", gop))
 		}
-		main10 := videoToolboxProfile == "main10"
-		bFramesSupported := videoToolboxOptionalFeatureSupported(capability, "bframes", main10)
+		main10 := encoder == "hevc_videotoolbox" && videoToolboxProfile == "main10"
 		powerSupported := videoToolboxOptionalFeatureSupported(capability, "power_efficiency", main10)
-		if value, ok := profile.WorkerConfig["videoToolboxAllowFrameReordering"].(bool); ok && bFramesSupported {
-			args = append(args, "-bf", map[bool]string{true: "3", false: "0"}[value])
-		}
+		args = append(args, videoToolboxRealtimeAndBFrameArgs(profile, capability, main10)...)
 		if value, ok := profile.WorkerConfig["videoToolboxPowerEfficiency"].(bool); ok && powerSupported {
 			args = append(args, "-power_efficient", map[bool]string{true: "1", false: "0"}[value])
 		}
 		if main10 && capability.VideoToolboxMain10 {
 			args = append(args, "-profile:v", "main10", "-pix_fmt", "p010le")
+		} else if encoder == "h264_videotoolbox" {
+			args = append(args, "-profile:v", "high", "-pix_fmt", "yuv420p")
 		} else {
 			args = append(args, "-profile:v", "main", "-pix_fmt", "yuv420p")
 		}
@@ -1323,6 +1333,101 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 		args = append(args, "-pix_fmt", "yuv420p10le")
 	}
 	return args
+}
+
+func explicitVideoToolboxRates(profile models.Profile, capability capabilities.EncoderCapability) (float64, float64, float64) {
+	bitrate := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
+	maxrate := workerNumberValue(profile.WorkerConfig["videoToolboxMaxrateMbps"], bitrate*1.5)
+	buffer := workerNumberValue(profile.WorkerConfig["videoToolboxBufferMbps"], bitrate*2.5)
+	if strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") && profileWorkerBool(profile, "videoToolboxAutoAdjustBitrate", false) {
+		bitrate *= videoToolboxStrategyMultiplier(profile, capability)
+		maxrate = bitrate * 1.5
+		buffer = bitrate * 2.5
+	}
+	return bitrate, maxrate, buffer
+}
+
+func requestedVideoToolboxBFramePolicy(profile models.Profile) string {
+	switch strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]))) {
+	case "enabled":
+		return "enabled"
+	case "disabled":
+		return "disabled"
+	case "auto":
+		return "auto"
+	}
+	// Legacy true meant an explicit positive -bf value. Legacy false was also
+	// the zero value used for missing settings, so it must migrate to Auto.
+	if legacy, ok := profile.WorkerConfig["videoToolboxAllowFrameReordering"].(bool); ok && legacy {
+		return "enabled"
+	}
+	return "auto"
+}
+
+func videoToolboxRealtimeAndBFrameArgs(profile models.Profile, capability capabilities.EncoderCapability, main10 bool) []string {
+	realtime := profileWorkerBool(profile, "videoToolboxRealtime", false)
+	args := []string{"-realtime", map[bool]string{true: "1", false: "0"}[realtime]}
+	policy := requestedVideoToolboxBFramePolicy(profile)
+	if policy == "auto" && realtime {
+		policy = "disabled"
+	}
+	switch policy {
+	case "enabled":
+		if videoToolboxOptionalFeatureSupported(capability, "bframes", main10) {
+			args = append(args, "-bf", strconv.Itoa(clampVideoToolboxBFrames(workerIntValue(profile.WorkerConfig["videoToolboxBFrames"], 3))))
+		}
+	case "disabled":
+		if videoToolboxBFramesDisabledSupported(capability, main10) {
+			args = append(args, "-bf", "0")
+		}
+	}
+	return args
+}
+
+func clampVideoToolboxBFrames(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 4 {
+		return 4
+	}
+	return value
+}
+
+func videoToolboxBFramesDisabledSupported(capability capabilities.EncoderCapability, main10 bool) bool {
+	if main10 {
+		return capability.TestedModes["videoToolboxBFramesDisabledMain10"]
+	}
+	return capability.VideoToolboxBFramesDisabled
+}
+
+func videoToolboxStrategyMultiplier(profile models.Profile, capability capabilities.EncoderCapability) float64 {
+	main10 := profileUsesTenBit(profile)
+	policy := requestedVideoToolboxBFramePolicy(profile)
+	if policy == "auto" && profileWorkerBool(profile, "videoToolboxRealtime", false) {
+		policy = "disabled"
+	}
+	switch policy {
+	case "enabled":
+		if videoToolboxOptionalFeatureSupported(capability, "bframes", main10) {
+			return 1
+		}
+		return 1.03
+	case "disabled":
+		if videoToolboxBFramesDisabledSupported(capability, main10) {
+			return 1.08
+		}
+		return 1.03
+	default:
+		key := "videoToolboxAutoBFramesMain"
+		if main10 {
+			key = "videoToolboxAutoBFramesMain10"
+		}
+		if capability.TestedModes[key] {
+			return 1
+		}
+		return 1.03
+	}
 }
 
 func qsvRateControlArgs(profile models.Profile) []string {

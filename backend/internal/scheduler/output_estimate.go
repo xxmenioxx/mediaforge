@@ -147,14 +147,19 @@ func estimatePlannedOutput(profile models.Profile, encoder string, source mediaE
 	overhead := func(total int64) int64 { return maxInt64(16<<10, total/100) }
 
 	if encoder == "hevc_videotoolbox" {
-		targetKbps, ok := videoToolboxTargetKbps(profile, source)
+		capability := quality.WorkerCapabilities{}
+		if len(workerCapabilities) > 0 {
+			capability = workerCapabilities[0]
+		}
+		recommendation, ok := videoToolboxRecommendation(profile, source, capability)
 		if !ok {
 			return outputEstimate{}, false
 		}
+		targetKbps := int(*recommendation.TargetBitrate / 1000)
 		videoBytes := bitrateBytes(int64(targetKbps)*1000, duration)
 		total := videoBytes + audioBytes + subtitleBytes
 		total += overhead(total)
-		return outputEstimate{MinBytes: int64(float64(total) * .95), MaxBytes: int64(float64(total) * 1.05), Confidence: "medium", Method: "videotoolbox_source_video_bitrate", VideoBytes: videoBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes, Recommendation: models.JSONMap{"effectiveRateControl": "vbr", "targetBitrate": targetKbps * 1000, "estimateConfidence": "medium"}}, true
+		return outputEstimate{MinBytes: int64(float64(total) * .95), MaxBytes: int64(float64(total) * 1.05), Confidence: "medium", Method: "videotoolbox_source_video_bitrate", VideoBytes: videoBytes, AudioBytes: audioBytes, SubtitleBytes: subtitleBytes, Recommendation: models.JSONMap{"effectiveRateControl": "vbr", "baseTargetBitrate": recommendation.BaseTargetBitrate, "targetBitrate": targetKbps * 1000, "maxrate": recommendation.Maxrate, "buffer": recommendation.Buffer, "requestedRealtime": recommendation.RequestedRealtime, "effectiveRealtime": recommendation.EffectiveRealtime, "requestedBFramePolicy": recommendation.RequestedBFramePolicy, "effectiveBFramePolicy": recommendation.EffectiveBFramePolicy, "bFrameEfficiencyMultiplier": recommendation.BFrameEfficiencyMultiplier, "bFrameDowngradeReason": recommendation.BFrameDowngradeReason, "estimateConfidence": "medium"}}, true
 	}
 	if encoder == "hevc_qsv" {
 		intent := quality.NewIntent(quality.IntentInput{
@@ -186,21 +191,37 @@ func estimatePlannedOutput(profile models.Profile, encoder string, source mediaE
 	return outputEstimate{}, false
 }
 
-func videoToolboxTargetKbps(profile models.Profile, source mediaEstimate) (int, bool) {
+func videoToolboxTargetKbps(profile models.Profile, source mediaEstimate, capabilities ...quality.WorkerCapabilities) (int, bool) {
+	recommendation, ok := videoToolboxRecommendation(profile, source, capabilities...)
+	if !ok {
+		return 0, false
+	}
+	return int(*recommendation.TargetBitrate / 1000), true
+}
+
+func videoToolboxRecommendation(profile models.Profile, source mediaEstimate, capabilities ...quality.WorkerCapabilities) (quality.EncoderRecommendation, bool) {
+	capability := quality.WorkerCapabilities{}
+	if len(capabilities) > 0 {
+		capability = capabilities[0]
+	}
 	intent := quality.NewIntent(quality.IntentInput{
 		Preset:      configString(profile.WorkerConfig, "hardwareQualityPreset"),
 		SourceWidth: source.VideoWidth, SourceHeight: source.VideoHeight,
 		SourceVideoBitrate: source.VideoBitrate, DurationSeconds: source.DurationSeconds,
-		AudioBitrate: source.AudioBitrate,
-		SubtitleSize: bitrateBytes(source.SubtitleBitrate, source.DurationSeconds),
-		VideoFilters: configString(profile.WorkerConfig, "videoFilters"),
-		ColorPolicy:  configString(profile.WorkerConfig, "finalColorPolicy"),
+		AudioBitrate:         source.AudioBitrate,
+		SubtitleSize:         bitrateBytes(source.SubtitleBitrate, source.DurationSeconds),
+		VideoFilters:         configString(profile.WorkerConfig, "videoFilters"),
+		ColorPolicy:          configString(profile.WorkerConfig, "finalColorPolicy"),
+		VideoToolboxRealtime: configBool(profile.WorkerConfig, "videoToolboxRealtime"),
+		BFramePolicy:         configString(profile.WorkerConfig, "videoToolboxBFramePolicy"),
+		BFrameCount:          int(configNumber(profile.WorkerConfig, "videoToolboxBFrames")),
+		AutoAdjustBitrate:    configBool(profile.WorkerConfig, "videoToolboxAutoAdjustBitrate"),
 	})
-	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, quality.WorkerCapabilities{})
+	recommendation, err := (quality.VideoToolboxTranslator{}).Translate(intent, capability)
 	if err != nil || recommendation.TargetBitrate == nil {
-		return 0, false
+		return quality.EncoderRecommendation{}, false
 	}
-	return int(*recommendation.TargetBitrate / 1000), true
+	return recommendation, true
 }
 
 func bitrateBytes(bitrate int64, duration float64) int64 {
@@ -219,6 +240,20 @@ func configString(config models.JSONMap, key string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 func configBool(config models.JSONMap, key string) bool { value, _ := config[key].(bool); return value }
+func configNumber(config models.JSONMap, key string) float64 {
+	switch value := config[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	default:
+		return 0
+	}
+}
 func maxInt64(left, right int64) int64 {
 	if left > right {
 		return left

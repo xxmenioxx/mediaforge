@@ -32,6 +32,10 @@ type IntentInput struct {
 	HistoricalRatioMin   float64
 	HistoricalRatioMax   float64
 	HistoricalSamples    int
+	VideoToolboxRealtime bool
+	BFramePolicy         string
+	BFrameCount          int
+	AutoAdjustBitrate    bool
 }
 
 func NewIntent(input IntentInput) QualityIntent {
@@ -62,6 +66,21 @@ func NewIntent(input IntentInput) QualityIntent {
 		HistoricalRatioMin:   input.HistoricalRatioMin,
 		HistoricalRatioMax:   input.HistoricalRatioMax,
 		HistoricalSamples:    input.HistoricalSamples,
+		VideoToolboxRealtime: input.VideoToolboxRealtime,
+		BFramePolicy:         normalizeBFramePolicy(input.BFramePolicy),
+		BFrameCount:          input.BFrameCount,
+		AutoAdjustBitrate:    input.AutoAdjustBitrate,
+	}
+}
+
+func normalizeBFramePolicy(value string) BFramePolicy {
+	switch BFramePolicy(strings.ToLower(strings.TrimSpace(value))) {
+	case BFrameEnabled:
+		return BFrameEnabled
+	case BFrameDisabled:
+		return BFrameDisabled
+	default:
+		return BFrameAuto
 	}
 }
 

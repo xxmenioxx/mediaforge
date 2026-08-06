@@ -7,7 +7,7 @@ import (
 )
 
 func TestHardwareEncoderClassification(t *testing.T) {
-	for _, encoder := range []string{"hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_videotoolbox", "hevc_amf"} {
+	for _, encoder := range []string{"hevc_qsv", "hevc_vaapi", "hevc_nvenc", "hevc_videotoolbox", "h264_videotoolbox", "hevc_amf"} {
 		if !isHardwareEncoder(encoder) {
 			t.Fatalf("expected %s to require a smoke test", encoder)
 		}
@@ -58,5 +58,23 @@ func TestHardwareFeatureProbesUseRepresentativeFrameSize(t *testing.T) {
 	videoToolboxArgs := videoToolboxFeatureSmokeArgs("yuv420p")
 	if !strings.Contains(strings.Join(videoToolboxArgs, " "), "testsrc2=size=640x360:rate=30") {
 		t.Fatalf("VideoToolbox feature probe uses an unreliable tiny frame: %v", videoToolboxArgs)
+	}
+}
+
+func TestVideoToolboxBFrameProbeRequiresObservedFrames(t *testing.T) {
+	if observed, respected, reason := evaluateVideoToolboxBFrameProbe(3, "I\nP\nP\n"); observed != 0 || respected || !strings.Contains(reason, "produced no B-frames") {
+		t.Fatalf("accepted-but-ineffective probe was not rejected: observed=%d respected=%t reason=%q", observed, respected, reason)
+	}
+	if observed, respected, reason := evaluateVideoToolboxBFrameProbe(3, "I\nB\nB\nP\n"); observed != 2 || !respected || reason != "" {
+		t.Fatalf("effective B-frame probe was not accepted: observed=%d respected=%t reason=%q", observed, respected, reason)
+	}
+}
+
+func TestVideoToolboxDisabledProbeDetectsIgnoredBFZero(t *testing.T) {
+	if observed, respected, reason := evaluateVideoToolboxBFrameProbe(0, "I\nB\nP\n"); observed != 1 || respected || !strings.Contains(reason, "still produced B-frames") {
+		t.Fatalf("ignored -bf 0 was not detected: observed=%d respected=%t reason=%q", observed, respected, reason)
+	}
+	if observed, respected, reason := evaluateVideoToolboxBFrameProbe(0, "I\nP\nP\n"); observed != 0 || !respected || reason != "" {
+		t.Fatalf("effective -bf 0 was not accepted: observed=%d respected=%t reason=%q", observed, respected, reason)
 	}
 }

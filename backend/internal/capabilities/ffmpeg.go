@@ -3,7 +3,9 @@ package capabilities
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,33 +20,36 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		return EncoderCapability{}, false
 	}
 	var value struct {
-		Listed                     bool              `json:"listed"`
-		Usable                     bool              `json:"usable"`
-		Main10                     bool              `json:"main10"`
-		ICQ                        bool              `json:"icq"`
-		LowPower                   bool              `json:"lowPower"`
-		LookAhead                  bool              `json:"lookAhead"`
-		ExtendedBRC                bool              `json:"extendedBrc"`
-		AdaptiveI                  bool              `json:"adaptiveI"`
-		AdaptiveB                  bool              `json:"adaptiveB"`
-		QSVFullCombination         bool              `json:"qsvFullCombination"`
-		QSVICQMain8                bool              `json:"qsvIcqMain8"`
-		QSVICQMain10               bool              `json:"qsvIcqMain10"`
-		QSVLAICQMain10             bool              `json:"qsvLaIcqMain10"`
-		QSVCQPMain8                bool              `json:"qsvCqpMain8"`
-		QSVCQPMain10               bool              `json:"qsvCqpMain10"`
-		QSVVBRMain8                bool              `json:"qsvVbrMain8"`
-		QSVVBRMain10               bool              `json:"qsvVbrMain10"`
-		QSVCBRMain8                bool              `json:"qsvCbrMain8"`
-		QSVCBRMain10               bool              `json:"qsvCbrMain10"`
-		QSVLowPowerMain10          bool              `json:"qsvLowPowerMain10"`
-		VideoToolboxMain           bool              `json:"videoToolboxMain"`
-		VideoToolboxMain10         bool              `json:"videoToolboxMain10"`
-		VideoToolboxBFrames        bool              `json:"videoToolboxBFrames"`
-		VideoToolboxPowerEfficient bool              `json:"videoToolboxPowerEfficient"`
-		Reason                     string            `json:"reason"`
-		TestedModes                map[string]bool   `json:"testedModes"`
-		ModeReasons                map[string]string `json:"modeReasons"`
+		Listed                      bool              `json:"listed"`
+		Usable                      bool              `json:"usable"`
+		Main10                      bool              `json:"main10"`
+		ICQ                         bool              `json:"icq"`
+		LowPower                    bool              `json:"lowPower"`
+		LookAhead                   bool              `json:"lookAhead"`
+		ExtendedBRC                 bool              `json:"extendedBrc"`
+		AdaptiveI                   bool              `json:"adaptiveI"`
+		AdaptiveB                   bool              `json:"adaptiveB"`
+		QSVFullCombination          bool              `json:"qsvFullCombination"`
+		QSVICQMain8                 bool              `json:"qsvIcqMain8"`
+		QSVICQMain10                bool              `json:"qsvIcqMain10"`
+		QSVLAICQMain10              bool              `json:"qsvLaIcqMain10"`
+		QSVCQPMain8                 bool              `json:"qsvCqpMain8"`
+		QSVCQPMain10                bool              `json:"qsvCqpMain10"`
+		QSVVBRMain8                 bool              `json:"qsvVbrMain8"`
+		QSVVBRMain10                bool              `json:"qsvVbrMain10"`
+		QSVCBRMain8                 bool              `json:"qsvCbrMain8"`
+		QSVCBRMain10                bool              `json:"qsvCbrMain10"`
+		QSVLowPowerMain10           bool              `json:"qsvLowPowerMain10"`
+		VideoToolboxMain            bool              `json:"videoToolboxMain"`
+		VideoToolboxMain10          bool              `json:"videoToolboxMain10"`
+		VideoToolboxBFrames         bool              `json:"videoToolboxBFrames"`
+		VideoToolboxBFramesVerified bool              `json:"videoToolboxBFramesVerified"`
+		VideoToolboxBFramesDisabled bool              `json:"videoToolboxBFramesDisabled"`
+		VideoToolboxObservedBFrames int               `json:"videoToolboxObservedBFrames"`
+		VideoToolboxPowerEfficient  bool              `json:"videoToolboxPowerEfficient"`
+		Reason                      string            `json:"reason"`
+		TestedModes                 map[string]bool   `json:"testedModes"`
+		ModeReasons                 map[string]string `json:"modeReasons"`
 	}
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		return EncoderCapability{}, false
@@ -59,38 +64,43 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		QSVCBRMain8: value.QSVCBRMain8, QSVCBRMain10: value.QSVCBRMain10,
 		QSVLowPowerMain10: value.QSVLowPowerMain10,
 		VideoToolboxMain:  value.VideoToolboxMain, VideoToolboxMain10: value.VideoToolboxMain10,
-		VideoToolboxBFrames: value.VideoToolboxBFrames, VideoToolboxPowerEfficient: value.VideoToolboxPowerEfficient,
-		Reason: value.Reason, TestedModes: value.TestedModes, ModeReasons: value.ModeReasons,
+		VideoToolboxBFrames: value.VideoToolboxBFrames, VideoToolboxBFramesVerified: value.VideoToolboxBFramesVerified,
+		VideoToolboxBFramesDisabled: value.VideoToolboxBFramesDisabled, VideoToolboxObservedBFrames: value.VideoToolboxObservedBFrames,
+		VideoToolboxPowerEfficient: value.VideoToolboxPowerEfficient,
+		Reason:                     value.Reason, TestedModes: value.TestedModes, ModeReasons: value.ModeReasons,
 	}, true
 }
 
 type EncoderCapability struct {
-	Listed, Usable             bool
-	Reason                     string
-	Main10                     bool
-	ICQ                        bool
-	LowPower                   bool
-	LookAhead                  bool
-	ExtendedBRC                bool
-	AdaptiveI                  bool
-	AdaptiveB                  bool
-	QSVFullCombination         bool
-	QSVICQMain8                bool
-	QSVICQMain10               bool
-	QSVLAICQMain10             bool
-	QSVCQPMain8                bool
-	QSVCQPMain10               bool
-	QSVVBRMain8                bool
-	QSVVBRMain10               bool
-	QSVCBRMain8                bool
-	QSVCBRMain10               bool
-	QSVLowPowerMain10          bool
-	VideoToolboxMain           bool
-	VideoToolboxMain10         bool
-	VideoToolboxBFrames        bool
-	VideoToolboxPowerEfficient bool
-	TestedModes                map[string]bool
-	ModeReasons                map[string]string
+	Listed, Usable              bool
+	Reason                      string
+	Main10                      bool
+	ICQ                         bool
+	LowPower                    bool
+	LookAhead                   bool
+	ExtendedBRC                 bool
+	AdaptiveI                   bool
+	AdaptiveB                   bool
+	QSVFullCombination          bool
+	QSVICQMain8                 bool
+	QSVICQMain10                bool
+	QSVLAICQMain10              bool
+	QSVCQPMain8                 bool
+	QSVCQPMain10                bool
+	QSVVBRMain8                 bool
+	QSVVBRMain10                bool
+	QSVCBRMain8                 bool
+	QSVCBRMain10                bool
+	QSVLowPowerMain10           bool
+	VideoToolboxMain            bool
+	VideoToolboxMain10          bool
+	VideoToolboxBFrames         bool
+	VideoToolboxBFramesVerified bool
+	VideoToolboxBFramesDisabled bool
+	VideoToolboxObservedBFrames int
+	VideoToolboxPowerEfficient  bool
+	TestedModes                 map[string]bool
+	ModeReasons                 map[string]string
 }
 
 var encoderCandidates = []string{
@@ -101,6 +111,7 @@ var encoderCandidates = []string{
 	"hevc_vaapi",
 	"hevc_nvenc",
 	"hevc_videotoolbox",
+	"h264_videotoolbox",
 	"hevc_amf",
 }
 
@@ -238,7 +249,12 @@ func CheckEncoder(encoder string) EncoderCapability {
 				result.QSVFullCombination = skip("qsvFullCombination", "skipped because QSV LA-ICQ Main10 is unavailable")
 			}
 		}
-		if encoder == "hevc_videotoolbox" {
+		if encoder == "hevc_videotoolbox" || encoder == "h264_videotoolbox" {
+			baseProfile := "main"
+			if encoder == "h264_videotoolbox" {
+				baseProfile = "high"
+				result.Main10 = false
+			}
 			result.VideoToolboxMain = result.Usable
 			result.VideoToolboxMain10 = result.Main10
 			result.TestedModes["videoToolboxMain"] = result.Usable
@@ -250,17 +266,55 @@ func CheckEncoder(encoder string) EncoderCapability {
 				result.ModeReasons["videoToolboxMain10"] = main10Reason
 			}
 			vtProbe := func(name, format string, args ...string) bool {
-				passed, reason := videoToolboxFeatureSmokeProbe(format, args...)
+				passed, reason := videoToolboxEncoderFeatureSmokeProbe(encoder, format, args...)
 				result.TestedModes[name] = passed
 				if !passed {
 					result.ModeReasons[name] = reason
 				}
 				return passed
 			}
-			result.VideoToolboxBFrames = result.Usable && vtProbe("videoToolboxBFramesMain", "yuv420p", "-profile:v", "main", "-bf", "3")
-			result.VideoToolboxPowerEfficient = result.Usable && vtProbe("videoToolboxPowerEfficientMain", "yuv420p", "-profile:v", "main", "-power_efficient", "1")
-			if result.Main10 {
-				result.TestedModes["videoToolboxBFramesMain10"] = vtProbe("videoToolboxBFramesMain10", "p010le", "-profile:v", "main10", "-bf", "3")
+			if result.Usable {
+				autoAccepted, autoObserved, autoReason := videoToolboxBFrameProbe(encoder, "yuv420p", baseProfile, -1)
+				result.TestedModes["videoToolboxAutoBFramesMain"] = autoAccepted && autoObserved > 0
+				if !result.TestedModes["videoToolboxAutoBFramesMain"] {
+					result.ModeReasons["videoToolboxAutoBFramesMain"] = autoReason
+				}
+				accepted, observed, reason := videoToolboxBFrameProbe(encoder, "yuv420p", baseProfile, 3)
+				result.VideoToolboxBFramesVerified = accepted
+				result.VideoToolboxBFrames = accepted && observed > 0
+				result.VideoToolboxObservedBFrames = observed
+				result.TestedModes["videoToolboxBFramesMain"] = result.VideoToolboxBFrames
+				if !result.VideoToolboxBFrames {
+					result.ModeReasons["videoToolboxBFramesMain"] = reason
+				}
+				disabledAccepted, disabledObserved, disabledReason := videoToolboxBFrameProbe(encoder, "yuv420p", baseProfile, 0)
+				result.VideoToolboxBFramesDisabled = disabledAccepted && disabledObserved == 0
+				result.TestedModes["videoToolboxBFramesDisabledMain"] = result.VideoToolboxBFramesDisabled
+				if !result.VideoToolboxBFramesDisabled {
+					result.ModeReasons["videoToolboxBFramesDisabledMain"] = disabledReason
+				}
+			}
+			result.VideoToolboxPowerEfficient = result.Usable && vtProbe("videoToolboxPowerEfficientMain", "yuv420p", "-profile:v", baseProfile, "-power_efficient", "1")
+			if result.Main10 && encoder == "hevc_videotoolbox" {
+				autoAccepted, autoObserved, autoReason := videoToolboxBFrameProbe("hevc_videotoolbox", "p010le", "main10", -1)
+				result.TestedModes["videoToolboxAutoBFramesMain10"] = autoAccepted && autoObserved > 0
+				if !result.TestedModes["videoToolboxAutoBFramesMain10"] {
+					result.ModeReasons["videoToolboxAutoBFramesMain10"] = autoReason
+				}
+				accepted, observed, reason := videoToolboxBFrameProbe("hevc_videotoolbox", "p010le", "main10", 3)
+				result.VideoToolboxBFramesVerified = result.VideoToolboxBFramesVerified || accepted
+				if observed > result.VideoToolboxObservedBFrames {
+					result.VideoToolboxObservedBFrames = observed
+				}
+				result.TestedModes["videoToolboxBFramesMain10"] = accepted && observed > 0
+				if !result.TestedModes["videoToolboxBFramesMain10"] {
+					result.ModeReasons["videoToolboxBFramesMain10"] = reason
+				}
+				disabledAccepted, disabledObserved, disabledReason := videoToolboxBFrameProbe("hevc_videotoolbox", "p010le", "main10", 0)
+				result.TestedModes["videoToolboxBFramesDisabledMain10"] = disabledAccepted && disabledObserved == 0
+				if !result.TestedModes["videoToolboxBFramesDisabledMain10"] {
+					result.ModeReasons["videoToolboxBFramesDisabledMain10"] = disabledReason
+				}
 				result.TestedModes["videoToolboxPowerEfficientMain10"] = vtProbe("videoToolboxPowerEfficientMain10", "p010le", "-profile:v", "main10", "-power_efficient", "1")
 			} else {
 				result.TestedModes["videoToolboxBFramesMain10"] = false
@@ -351,18 +405,76 @@ func qsvFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
 }
 
 func videoToolboxFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	return videoToolboxEncoderFeatureSmokeProbe("hevc_videotoolbox", pixelFormat, featureArgs...)
+}
+
+func videoToolboxEncoderFeatureSmokeProbe(encoder, pixelFormat string, featureArgs ...string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	args := videoToolboxFeatureSmokeArgs(pixelFormat, featureArgs...)
+	args := videoToolboxEncoderFeatureSmokeArgs(encoder, pixelFormat, featureArgs...)
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 	return err == nil, summarizedProbeReason(output, err)
 }
 
 func videoToolboxFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-frames:v", "30", "-an", "-c:v", "hevc_videotoolbox", "-b:v", "1M", "-pix_fmt", pixelFormat}
+	return videoToolboxEncoderFeatureSmokeArgs("hevc_videotoolbox", pixelFormat, featureArgs...)
+}
+
+func videoToolboxEncoderFeatureSmokeArgs(encoder, pixelFormat string, featureArgs ...string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-frames:v", "30", "-an", "-c:v", encoder, "-b:v", "1M", "-pix_fmt", pixelFormat}
 	args = append(args, featureArgs...)
 	args = append(args, "-f", "null", "-")
 	return args
+}
+
+func videoToolboxBFrameProbe(encoder, pixelFormat, profile string, requested int) (bool, int, string) {
+	file, err := os.CreateTemp("", "mvforge-videotoolbox-bframes-*.mp4")
+	if err != nil {
+		return false, 0, err.Error()
+	}
+	path := file.Name()
+	_ = file.Close()
+	_ = os.Remove(path)
+	defer os.Remove(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-frames:v", "90", "-an", "-c:v", encoder, "-b:v", "3M", "-realtime", "0", "-profile:v", profile, "-pix_fmt", pixelFormat}
+	if requested >= 0 {
+		args = append(args, "-bf", strconv.Itoa(requested))
+	}
+	args = append(args, path)
+	output, runErr := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	if runErr != nil {
+		return false, 0, summarizedProbeReason(output, runErr)
+	}
+	probeOutput, probeErr := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pict_type", "-of", "csv=p=0", path).CombinedOutput()
+	if probeErr != nil {
+		return false, 0, "VideoToolbox accepted the option but frame-type validation failed: " + summarizedProbeReason(probeOutput, probeErr)
+	}
+	observed, _, reason := evaluateVideoToolboxBFrameProbe(requested, string(probeOutput))
+	return true, observed, reason
+}
+
+func evaluateVideoToolboxBFrameProbe(requested int, frameTypes string) (int, bool, string) {
+	observed := 0
+	for _, frameType := range strings.Fields(frameTypes) {
+		if strings.TrimSpace(frameType) == "B" {
+			observed++
+		}
+	}
+	if requested < 0 {
+		if observed == 0 {
+			return 0, true, "VideoToolbox Auto produced no observed B-frames"
+		}
+		return observed, true, ""
+	}
+	if requested > 0 && observed == 0 {
+		return 0, false, "VideoToolbox accepted -bf but produced no B-frames"
+	}
+	if requested == 0 && observed > 0 {
+		return observed, false, "VideoToolbox accepted -bf 0 but still produced B-frames"
+	}
+	return observed, true, ""
 }
 
 func summarizedProbeReason(output []byte, err error) string {

@@ -9,9 +9,30 @@ var ErrCustomQuality = errors.New("custom quality requires explicit encoder sett
 
 type VideoToolboxTranslator struct{}
 
-func (VideoToolboxTranslator) Translate(intent QualityIntent, _ WorkerCapabilities) (EncoderRecommendation, error) {
-	if intent.Preset == PresetCustom || intent.Preset == "" {
+const (
+	videoToolboxBFramesEffectiveMultiplier = 1.00
+	videoToolboxBFramesAutoMultiplier      = 1.03
+	videoToolboxBFramesDisabledMultiplier  = 1.08
+)
+
+func (VideoToolboxTranslator) Translate(intent QualityIntent, capabilities WorkerCapabilities) (EncoderRecommendation, error) {
+	if intent.Preset == "" {
 		return EncoderRecommendation{}, ErrCustomQuality
+	}
+	if intent.Preset == PresetCustom {
+		profile, pixelFormat := "main", "yuv420p"
+		if intent.RequestedBitDepth >= 10 || intent.RequestedPixelFormat == "p010le" {
+			profile, pixelFormat = "main10", "p010le"
+		}
+		recommendation := EncoderRecommendation{
+			Encoder: "hevc_videotoolbox", RequestedRateControl: "vbr", EffectiveRateControl: "vbr",
+			Profile: profile, PixelFormat: pixelFormat, ColorPolicy: intent.ColorPolicy,
+			RequestedRealtime: intent.VideoToolboxRealtime, EffectiveRealtime: intent.VideoToolboxRealtime,
+			PowerEfficiency: true, EstimateConfidence: "low",
+		}
+		resolveVideoToolboxBFrames(intent, capabilities, &recommendation)
+		recommendation.Warnings = append(recommendation.Warnings, "Custom VideoToolbox bitrate controls remain manual")
+		return recommendation, nil
 	}
 	settings, known := videoToolboxPresetSettings(intent.Preset)
 	if !known {
@@ -23,21 +44,25 @@ func (VideoToolboxTranslator) Translate(intent QualityIntent, _ WorkerCapabiliti
 		ColorPolicy: intent.ColorPolicy, Realtime: false,
 		AllowFrameReordering: false, PowerEfficiency: true,
 		EstimateConfidence: "low",
+		RequestedRealtime:  intent.VideoToolboxRealtime, EffectiveRealtime: intent.VideoToolboxRealtime,
 	}
+	resolveVideoToolboxBFrames(intent, capabilities, &recommendation)
 	if intent.SourceVideoBitrate <= 0 {
 		recommendation.Warnings = append(recommendation.Warnings, "Source video bitrate is unavailable; explicit VideoToolbox bitrate controls are required")
 		return recommendation, nil
 	}
-	target := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(intent.SourceVideoBitrate) * settings.multiplier * videoToolboxResolutionAdjustment(intent.OutputHeight))))
-	if floor := videoToolboxBitrateFloor(intent.Preset, intent.OutputHeight); target < floor {
-		target = floor
+	baseTarget := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(intent.SourceVideoBitrate) * settings.multiplier * videoToolboxResolutionAdjustment(intent.OutputHeight))))
+	if floor := videoToolboxBitrateFloor(intent.Preset, intent.OutputHeight); baseTarget < floor {
+		baseTarget = floor
 	}
-	if ceiling := videoToolboxBitrateCeiling(intent.Preset, intent.OutputHeight); ceiling > 0 && target > ceiling {
-		target = ceiling
+	if ceiling := videoToolboxBitrateCeiling(intent.Preset, intent.OutputHeight); ceiling > 0 && baseTarget > ceiling {
+		baseTarget = ceiling
 	}
+	target := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(baseTarget) * recommendation.BFrameEfficiencyMultiplier)))
 	maxrate := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(target) * 1.5)))
 	buffer := roundBitrateToTwoDecimalMbps(int64(math.Round(float64(target) * 2.5)))
 	recommendation.TargetBitrate = &target
+	recommendation.BaseTargetBitrate = &baseTarget
 	recommendation.Maxrate = &maxrate
 	recommendation.Buffer = &buffer
 	recommendation.EstimatedVideoBitrate = &target
@@ -47,6 +72,60 @@ func (VideoToolboxTranslator) Translate(intent QualityIntent, _ WorkerCapabiliti
 		recommendation.EstimatedOutputSize = &size
 	}
 	return recommendation, nil
+}
+
+func resolveVideoToolboxBFrames(intent QualityIntent, capabilities WorkerCapabilities, recommendation *EncoderRecommendation) {
+	requested := intent.BFramePolicy
+	if requested == "" {
+		requested = BFrameAuto
+	}
+	count := intent.BFrameCount
+	if count < 1 || count > 4 {
+		count = 3
+	}
+	recommendation.RequestedBFramePolicy = string(requested)
+	recommendation.RequestedBFrames = count
+	recommendation.ObservedBFrameCount = capabilities.ObservedBFrameCount
+	switch requested {
+	case BFrameEnabled:
+		if capabilities.BFramesVerified && capabilities.BFramesEffective {
+			recommendation.EffectiveBFramePolicy = string(BFrameEnabled)
+			recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesEffectiveMultiplier
+			return
+		}
+		recommendation.EffectiveBFramePolicy = string(BFrameAuto)
+		recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesAutoMultiplier
+		recommendation.BFrameDowngradeReason = "VideoToolbox B-frames were requested but the worker did not verify effective B-frame output"
+		recommendation.Warnings = append(recommendation.Warnings, recommendation.BFrameDowngradeReason)
+	case BFrameDisabled:
+		if !capabilities.BFramesDisabledVerified {
+			recommendation.EffectiveBFramePolicy = string(BFrameAuto)
+			recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesAutoMultiplier
+			recommendation.BFrameDowngradeReason = "VideoToolbox did not verify that -bf 0 disables B-frames"
+			recommendation.Warnings = append(recommendation.Warnings, recommendation.BFrameDowngradeReason)
+			return
+		}
+		recommendation.EffectiveBFramePolicy = string(BFrameDisabled)
+		recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesDisabledMultiplier
+	default:
+		if intent.VideoToolboxRealtime {
+			if capabilities.BFramesDisabledVerified {
+				recommendation.EffectiveBFramePolicy = string(BFrameDisabled)
+				recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesDisabledMultiplier
+			} else {
+				recommendation.EffectiveBFramePolicy = string(BFrameAuto)
+				recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesAutoMultiplier
+				recommendation.BFrameDowngradeReason = "Realtime requested Auto B-frames, but the worker did not verify that -bf 0 is respected"
+				recommendation.Warnings = append(recommendation.Warnings, recommendation.BFrameDowngradeReason)
+			}
+		} else if capabilities.AutoBFramesEffective {
+			recommendation.EffectiveBFramePolicy = string(BFrameAuto)
+			recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesEffectiveMultiplier
+		} else {
+			recommendation.EffectiveBFramePolicy = string(BFrameAuto)
+			recommendation.BFrameEfficiencyMultiplier = videoToolboxBFramesAutoMultiplier
+		}
+	}
 }
 
 func roundBitrateToTwoDecimalMbps(bitsPerSecond int64) int64 {
