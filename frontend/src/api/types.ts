@@ -166,6 +166,9 @@ export type AssetConversionOverrideState = {
   videoToolboxProfile?: string;
   videoToolboxGop?: number;
   videoToolboxRealtime?: boolean;
+  videoToolboxBFramePolicy?: 'auto' | 'enabled' | 'disabled';
+  videoToolboxBFrames?: number;
+  videoToolboxAutoAdjustBitrate?: boolean;
   videoToolboxAllowFrameReordering?: boolean;
   videoToolboxPowerEfficiency?: boolean;
   hardwareQualityPreset?: string;
@@ -406,7 +409,7 @@ export type RuntimeSnapshot = {
   powerSource: string;
   onBattery: boolean;
   disks: Record<string, unknown>;
-  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxBFramesVerified?: boolean; videoToolboxBFramesDisabled?: boolean; videoToolboxObservedBFrames?: number; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;
@@ -807,6 +810,8 @@ export type PreviewFrameMetrics = {
 export type CompatiblePreviewOptions = {
   path: string;
   profileId?: number;
+  profile?: ProfileInput;
+
   start?: string;
   seconds?: number;
   videoCodec?: string;
@@ -817,6 +822,19 @@ export type CompatiblePreviewOptions = {
   x265Params?: string;
   videoEncoder?: string;
   useHardwareIfAvailable?: boolean;
+  hardwareQualityPreset?: string;
+  videoToolboxBitrateMbps?: number;
+  videoToolboxMaxrateMbps?: number;
+  videoToolboxBufferMbps?: number;
+  videoToolboxQualityProfile?: number;
+  videoToolboxProfile?: string;
+  videoToolboxGop?: number;
+  videoToolboxRealtime?: boolean;
+  videoToolboxBFramePolicy?: 'auto' | 'enabled' | 'disabled';
+  videoToolboxBFrames?: number;
+  videoToolboxAutoAdjustBitrate?: boolean;
+  videoToolboxAllowFrameReordering?: boolean;
+  videoToolboxPowerEfficiency?: boolean;
   globalQuality?: number;
   qsvRateControl?: string;
   qsvLookAheadDepth?: number;
@@ -867,6 +885,15 @@ export type EncoderRecommendation = {
   estimatedOutputSize?: number;
   estimateConfidence: 'high' | 'medium' | 'low';
   warnings: string[];
+  requestedRealtime: boolean;
+  effectiveRealtime: boolean;
+  requestedBFramePolicy?: string;
+  effectiveBFramePolicy?: string;
+  requestedBFrames?: number;
+  observedBFrameCount?: number;
+  bFrameEfficiencyMultiplier?: number;
+  bFrameDowngradeReason?: string;
+  baseTargetBitrate?: number;
 };
 
 export type QualityRecommendationResponse = {

@@ -1395,7 +1395,10 @@ export function ProfileLabPage() {
     const options = videoPreviewOptions(videoDraft);
     setProcessedVideoCodec(videoDraft.videoCodec);
     setProcessedVideoQualityValue(videoDraft.qualityValue);
-    setProcessedVideoOptions(options);
+    setProcessedVideoOptions({
+      ...options,
+      profile: videoDraft,
+    });
     setVideoPreviewStatus('loading');
     setVideoPreviewNonce((current) => current + 1);
     if (assetPath) {
@@ -1418,11 +1421,9 @@ export function ProfileLabPage() {
           path: assetPath,
           start,
           seconds,
-          videoCodec: videoDraft.videoCodec,
-          qualityValue: videoDraft.qualityValue,
           mode: 'quality',
           previewNormalization,
-          ...options,
+          profile: videoDraft,
         },
       });
     }
@@ -2314,12 +2315,14 @@ export function ProfileLabPage() {
                                 </Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={videoWorkerValue(videoDraft, 'videoToolboxProfile', '')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxGop', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
-                                <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 B-frame probe succeeds." control={<Checkbox disabled={!videoToolboxBFramesAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxAllowFrameReordering')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAllowFrameReordering', event.target.checked)} />} label="Allow frame reordering" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="B-frames" select value={videoWorkerValue(videoDraft, 'videoToolboxBFramePolicy', 'auto')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBFramePolicy', event.target.value)} helperText="Auto emits no -bf option" size="small" fullWidth><MenuItem value="auto">Auto</MenuItem><MenuItem value="enabled" disabled={!videoToolboxBFramesAvailable}>Enabled</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Maximum B-frames" type="number" disabled={videoWorkerValue(videoDraft, 'videoToolboxBFramePolicy', 'auto') !== 'enabled'} value={numberWorkerValue(videoDraft, 'videoToolboxBFrames', 3)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBFrames', Math.max(1, Math.min(4, Number(event.target.value))))} inputProps={{ min: 1, max: 4, step: 1 }} size="small" fullWidth /></Grid>
+                                <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxRealtime')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxAutoAdjustBitrate')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                               </>
                           ) : null}
                           {encoderQualityRecommendation.isPending ? <Grid size={{ xs: 12 }}><Alert severity="info">Calculating effective encoder settings from the active worker probe…</Alert></Grid> : null}
                           {encoderQualityRecommendation.isError ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
-                          {currentEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${currentEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${currentEncoderRecommendation.recommendation.estimateConfidence}`} />{currentEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(currentEncoderRecommendation.estimatedOutputMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedOutputMaxBytes)}`} /> : null}{currentEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(currentEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {currentEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
+                          {currentEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${currentEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${currentEncoderRecommendation.recommendation.estimateConfidence}`} />{currentEncoderRecommendation.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${currentEncoderRecommendation.recommendation.requestedBFramePolicy} → ${currentEncoderRecommendation.recommendation.effectiveBFramePolicy}`} /> : null}{currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}{currentEncoderRecommendation.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(currentEncoderRecommendation.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(currentEncoderRecommendation.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(currentEncoderRecommendation.estimatedOutputMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedOutputMaxBytes)}`} /> : null}{currentEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(currentEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack>{currentEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{currentEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}<Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {currentEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         </Grid>
                       </Box>
                     </Grid>
@@ -3788,27 +3791,132 @@ function drawWaveformError(canvas: HTMLCanvasElement, context: CanvasRenderingCo
   context.fillText(message.slice(0, 88), 16, height / 2);
 }
 
-function videoPreviewOptions(draft: ProfileInput) {
+function videoPreviewOptions(
+  draft: ProfileInput,
+): Omit<
+  CompatiblePreviewOptions,
+  'path' | 'profileId' | 'start' | 'seconds' | 'mode' | 'previewNormalization'
+> {
   return {
-    videoEncoder: videoWorkerValue(draft, 'videoEncoder', 'auto'),
-    useHardwareIfAvailable: videoWorkerBool(draft, 'useHardwareIfAvailable'),
-    globalQuality: numberWorkerValue(draft, 'globalQuality', qsvQualityRangeForCrf(draft.qualityValue || 20).recommended),
-    qsvRateControl: videoWorkerValue(draft, 'qsvRateControl', 'icq'),
-    qsvLookAheadDepth: numberWorkerValue(draft, 'qsvLookAheadDepth', 40),
-    qsvExtendedBRC: videoWorkerBool(draft, 'qsvExtendedBRC'),
-    qsvAdaptiveI: videoWorkerBool(draft, 'qsvAdaptiveI'),
-    qsvAdaptiveB: videoWorkerBool(draft, 'qsvAdaptiveB'),
-    videoPreset: videoWorkerValue(draft, 'videoPreset', 'medium'),
-    pixFmt: videoWorkerValue(draft, 'pixFmt', isTenBitDraft(draft) ? 'yuv420p10le' : 'yuv420p'),
-    videoFilters: videoWorkerValue(draft, 'videoFilters'),
-    x265Params: videoWorkerValue(draft, 'x265Params'),
-    addAacStereoTrack: videoAACTrackEnabled(draft),
-    aacStereoBitrateKbps: numberWorkerValue(draft, 'aacStereoBitrateKbps', 192),
-    aacStereoDefault: videoAACTrackDefault(draft),
-    preserveOriginalAudio: videoWorkerBool(draft, 'preserveOriginalAudio', true),
-    subtitleOutputFormat: videoSubtitleOutputFormat(draft),
-    preferSrtSubtitles: videoWorkerBool(draft, 'preferSrtSubtitles'),
-    warnSubtitleFormats: videoWorkerBool(draft, 'warnSubtitleFormats', true),
+    videoEncoder: videoWorkerValue(
+      draft,
+      'videoEncoder',
+      'auto',
+    ),
+    useHardwareIfAvailable: videoWorkerBool(
+      draft,
+      'useHardwareIfAvailable',
+    ),
+    hardwareQualityPreset: videoWorkerValue(
+      draft,
+      'hardwareQualityPreset',
+      'recommended',
+    ),
+
+    globalQuality: numberWorkerValue(
+      draft,
+      'globalQuality',
+      qsvQualityRangeForCrf(
+        draft.qualityValue || 20,
+      ).recommended,
+    ),
+
+    // QSV
+    qsvRateControl: videoWorkerValue(
+      draft,
+      'qsvRateControl',
+      'icq',
+    ),
+    qsvLookAheadDepth: numberWorkerValue(
+      draft,
+      'qsvLookAheadDepth',
+      40,
+    ),
+    qsvExtendedBRC: videoWorkerBool(
+      draft,
+      'qsvExtendedBRC',
+    ),
+    qsvAdaptiveI: videoWorkerBool(
+      draft,
+      'qsvAdaptiveI',
+    ),
+    qsvAdaptiveB: videoWorkerBool(
+      draft,
+      'qsvAdaptiveB',
+    ),
+
+    // VideoToolbox
+    videoToolboxBitrateMbps: numberWorkerValue(
+      draft,
+      'videoToolboxBitrateMbps',
+      2,
+    ),
+    videoToolboxMaxrateMbps: numberWorkerValue(
+      draft,
+      'videoToolboxMaxrateMbps',
+      3,
+    ),
+    videoToolboxBufferMbps: numberWorkerValue(
+      draft,
+      'videoToolboxBufferMbps',
+      5,
+    ),
+    videoToolboxProfile: videoWorkerValue(
+      draft,
+      'videoToolboxProfile',
+      '',
+    ),
+    videoToolboxGop: numberWorkerValue(
+      draft,
+      'videoToolboxGop',
+      0,
+    ),
+    videoToolboxRealtime: videoWorkerBool(
+      draft,
+      'videoToolboxRealtime',
+      false,
+    ),
+    videoToolboxBFramePolicy: videoWorkerValue(
+      draft,
+      'videoToolboxBFramePolicy',
+      'auto',
+    ) as 'auto' | 'enabled' | 'disabled',
+    videoToolboxBFrames: numberWorkerValue(
+      draft,
+      'videoToolboxBFrames',
+      3,
+    ),
+    videoToolboxAutoAdjustBitrate: videoWorkerBool(
+      draft,
+      'videoToolboxAutoAdjustBitrate',
+      false,
+    ),
+    videoToolboxPowerEfficiency: videoWorkerBool(
+      draft,
+      'videoToolboxPowerEfficiency',
+      false,
+    ),
+
+    videoPreset: videoWorkerValue(
+      draft,
+      'videoPreset',
+      'medium',
+    ),
+    pixFmt: videoWorkerValue(
+      draft,
+      'pixFmt',
+      isTenBitDraft(draft)
+        ? 'yuv420p10le'
+        : 'yuv420p',
+    ),
+    videoFilters: videoWorkerValue(
+      draft,
+      'videoFilters',
+    ),
+    x265Params: videoWorkerValue(
+      draft,
+      'x265Params',
+    ),
   };
 }
 
@@ -3895,26 +4003,77 @@ function updateVideoWorkerConfig(
   value: unknown,
 ) {
   setVideoDraft((current) => {
-    const pixelFormat = key === 'pixFmt' && typeof value === 'string' ? value.toLowerCase() : '';
-    const explicitBitDepth = pixelFormat === 'nv12' || pixelFormat === 'yuv420p'
-      ? 8
-      : pixelFormat.includes('10') || pixelFormat.includes('p010')
-        ? 10
-        : undefined;
+    const pixelFormat =
+      key === 'pixFmt' && typeof value === 'string'
+        ? value.toLowerCase()
+        : '';
+
+    const explicitBitDepth =
+      pixelFormat === 'nv12' || pixelFormat === 'yuv420p'
+        ? 8
+        : pixelFormat.includes('10') || pixelFormat.includes('p010')
+          ? 10
+          : undefined;
+
+    const videoToolboxRateKeys = [
+      'videoToolboxBitrateMbps',
+      'videoToolboxMaxrateMbps',
+      'videoToolboxBufferMbps',
+    ];
+
+    const switchesToCustom = [
+      'globalQuality',
+      'qsvRateControl',
+      'qsvLookAheadDepth',
+      'qsvExtendedBRC',
+      'qsvAdaptiveI',
+      'qsvAdaptiveB',
+      ...videoToolboxRateKeys,
+      'videoToolboxProfile',
+      'videoToolboxGop',
+      'videoToolboxRealtime',
+      'videoToolboxBFramePolicy',
+      'videoToolboxBFrames',
+      'videoToolboxAutoAdjustBitrate',
+      'videoToolboxPowerEfficiency',
+      'pixFmt',
+    ].includes(key);
+
+    const manualVideoToolboxRate = videoToolboxRateKeys.includes(key);
+
     const next = {
       ...current,
-      ...(key === 'pixFmt' ? {
-        videoCodec: displayVideoCodec(current.videoCodec),
-        bitDepth: explicitBitDepth ?? 0,
-        pixelFormat: typeof value === 'string' ? value : current.pixelFormat,
-      } : {}),
+      ...(key === 'pixFmt'
+        ? {
+            videoCodec: displayVideoCodec(current.videoCodec),
+            bitDepth: explicitBitDepth ?? 0,
+            pixelFormat:
+              typeof value === 'string'
+                ? value
+                : current.pixelFormat,
+          }
+        : {}),
       workerConfig: {
         ...current.workerConfig,
         [key]: value,
-        ...(['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBRC', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxAllowFrameReordering', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(key) ? { hardwareQualityPreset: 'custom' } : {}),
+
+        ...(switchesToCustom
+          ? { hardwareQualityPreset: 'custom' }
+          : {}),
+
+        ...(manualVideoToolboxRate
+          ? {
+              videoToolboxRecommendedTargetKbps: undefined,
+              videoToolboxRecommendedMaxrateKbps: undefined,
+              videoToolboxRecommendedBufferKbps: undefined,
+            }
+          : {}),
       },
     };
-    return key === 'videoEncoder' || key === 'pixFmt' || key === 'videoToolboxProfile'
+
+    return key === 'videoEncoder' ||
+      key === 'pixFmt' ||
+      key === 'videoToolboxProfile'
       ? synchronizeLabAuthoritativeContract(next)
       : next;
   });
@@ -5171,6 +5330,11 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
     args.push('-b:v', rates.target, '-maxrate', rates.maxrate, '-bufsize', rates.buffer);
     const tenBit = isTenBitDraft(profile);
     args.push('-profile:v', tenBit ? 'main10' : 'main', '-pix_fmt', tenBit ? 'p010le' : 'yuv420p');
+    const realtime = videoWorkerBool(profile, 'videoToolboxRealtime');
+    args.push('-realtime', realtime ? '1' : '0');
+    const bFramePolicy = videoWorkerValue(profile, 'videoToolboxBFramePolicy', 'auto');
+    if (bFramePolicy === 'enabled') args.push('-bf', String(Math.max(1, Math.min(4, numberWorkerValue(profile, 'videoToolboxBFrames', 3)))));
+    if (bFramePolicy === 'disabled' || (bFramePolicy === 'auto' && realtime)) args.push('-bf', '0');
     const color = combinedVideoToolboxColorConversion(scan);
     if (color.filter) {
       filters = [filters, color.filter].filter(Boolean).join(',');
@@ -5199,14 +5363,63 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
   return args;
 }
 
-function adaptiveVideoToolboxPreviewRates(profile: ProfileInput, scan: ScanResult) {
-	void scan;
-  const target = numberWorkerValue(profile, 'videoToolboxRecommendedTargetKbps', 0);
-  const maxrate = numberWorkerValue(profile, 'videoToolboxRecommendedMaxrateKbps', 0);
-  const buffer = numberWorkerValue(profile, 'videoToolboxRecommendedBufferKbps', 0);
-  if (target > 0 && maxrate > 0 && buffer > 0) return { target: `${target}k`, maxrate: `${maxrate}k`, buffer: `${buffer}k` };
-  const bitrate = numberWorkerValue(profile, 'videoToolboxBitrateMbps', 2);
-  return { target: `${bitrate}M`, maxrate: `${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', bitrate * 1.5)}M`, buffer: `${numberWorkerValue(profile, 'videoToolboxBufferMbps', bitrate * 2.5)}M` };
+function adaptiveVideoToolboxPreviewRates(
+  profile: ProfileInput,
+  scan: ScanResult,
+) {
+  void scan;
+
+  const qualityPreset = videoWorkerValue(
+    profile,
+    'hardwareQualityPreset',
+    'recommended',
+  );
+
+  if (qualityPreset !== 'custom') {
+    const target = numberWorkerValue(
+      profile,
+      'videoToolboxRecommendedTargetKbps',
+      0,
+    );
+    const maxrate = numberWorkerValue(
+      profile,
+      'videoToolboxRecommendedMaxrateKbps',
+      0,
+    );
+    const buffer = numberWorkerValue(
+      profile,
+      'videoToolboxRecommendedBufferKbps',
+      0,
+    );
+
+    if (target > 0 && maxrate > 0 && buffer > 0) {
+      return {
+        target: `${target}k`,
+        maxrate: `${maxrate}k`,
+        buffer: `${buffer}k`,
+      };
+    }
+  }
+
+  const bitrate = numberWorkerValue(
+    profile,
+    'videoToolboxBitrateMbps',
+    2,
+  );
+
+  return {
+    target: `${bitrate}M`,
+    maxrate: `${numberWorkerValue(
+      profile,
+      'videoToolboxMaxrateMbps',
+      bitrate * 1.5,
+    )}M`,
+    buffer: `${numberWorkerValue(
+      profile,
+      'videoToolboxBufferMbps',
+      bitrate * 2.5,
+    )}M`,
+  };
 }
 
 function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
