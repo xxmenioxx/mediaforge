@@ -83,8 +83,18 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 			"qsvCqpMain8": capability.QSVCQPMain8, "qsvCqpMain10": capability.QSVCQPMain10,
 			"qsvVbrMain8": capability.QSVVBRMain8, "qsvVbrMain10": capability.QSVVBRMain10,
 			"qsvCbrMain8": capability.QSVCBRMain8, "qsvCbrMain10": capability.QSVCBRMain10,
-			"qsvLowPowerMain10": capability.QSVLowPowerMain10,
-			"videoToolboxMain":  capability.VideoToolboxMain, "videoToolboxMain10": capability.VideoToolboxMain10,
+			"qsvLowPowerMain10":     capability.QSVLowPowerMain10,
+			"qsvVbrExtBrcMain10":    capability.QSVVBRExtBRCMain10,
+			"qsvVbrLookAheadMain10": capability.QSVVBRLookAheadMain10,
+
+			"qsvCbrExtBrcMain10":    capability.QSVCBRExtBRCMain10,
+			"qsvCbrLookAheadMain10": capability.QSVCBRLookAheadMain10,
+
+			"qsvAdaptiveIMain10": capability.QSVAdaptiveIMain10,
+			"qsvAdaptiveBMain10": capability.QSVAdaptiveBMain10,
+
+			"qsvVbrAdvancedMain10": capability.QSVVBRAdvancedMain10,
+			"videoToolboxMain":     capability.VideoToolboxMain, "videoToolboxMain10": capability.VideoToolboxMain10,
 			"videoToolboxBFrames":         capability.VideoToolboxBFrames,
 			"videoToolboxBFramesVerified": capability.VideoToolboxBFramesVerified,
 			"videoToolboxBFramesDisabled": capability.VideoToolboxBFramesDisabled,
