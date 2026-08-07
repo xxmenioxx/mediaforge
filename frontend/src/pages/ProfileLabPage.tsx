@@ -56,6 +56,7 @@ import type {
   PreviewFrameMetrics,
   ScanResult,
   StreamMetadataOverride,
+  QSVFrameStructureAnalysis,
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -84,6 +85,9 @@ type LabFidelityInspection = {
   source: PreviewVideoCharacteristics;
   reference: PreviewVideoCharacteristics;
   conversion: PreviewVideoCharacteristics;
+  sourceFrameStructure: QSVFrameStructureAnalysis;
+  outputFrameStructure: QSVFrameStructureAnalysis;
+  qsvFrameWarnings: string[];
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -814,6 +818,9 @@ export function ProfileLabPage() {
         source: referenceInspection.source,
         reference: referenceInspection.output,
         conversion: conversionInspection.output,
+        sourceFrameStructure: conversionInspection.sourceFrameStructure,
+        outputFrameStructure: conversionInspection.outputFrameStructure,
+        qsvFrameWarnings: conversionInspection.qsvFrameWarnings,
         requestedEncoder: conversionInspection.requestedEncoder,
         effectiveEncoder: conversionInspection.effectiveEncoder,
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
@@ -1717,8 +1724,84 @@ export function ProfileLabPage() {
                       </div>
 
                       <pre>
-                        <code>{effectivePreviewCommand}</code>
+                        <code>
+                          <TextField
+                            value={effectivePreviewCommand || 'Select an asset to generate the command.'}
+                            multiline
+                            minRows={8}
+                            maxRows={18}
+                            inputProps={{ readOnly: true, spellCheck: false }}
+                            fullWidth
+                            sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.78rem', lineHeight: 1.45 } }}
+                          />
+                        </code>
                       </pre>
+                      {currentFidelityInspection?.effectiveEncoder === 'hevc_qsv' && (
+                        <div className="profile-lab-qsv-frame-analysis">
+                          <strong>QSV frame structure</strong>
+                          <div>
+                            Source:{' '}
+                            I {currentFidelityInspection.sourceFrameStructure.iFrames}
+                            {' · '}
+                            P {currentFidelityInspection.sourceFrameStructure.pFrames}
+                            {' · '}
+                            B {currentFidelityInspection.sourceFrameStructure.bFrames}
+                            {' · '}
+                            B ratio{' '}
+                            {(
+                              currentFidelityInspection.sourceFrameStructure.bFrameRatio * 100
+                            ).toFixed(1)}
+                            %
+                          </div>
+                          <div>
+                            Source B-run max:{' '}
+                            {currentFidelityInspection.sourceFrameStructure.maxConsecutiveBFrames}
+                            {' · '}
+                            Average GOP:{' '}
+                            {currentFidelityInspection.sourceFrameStructure.averageGopLength.toFixed(1)}
+                          </div>
+                          <div>
+                            Source assessment:{' '}
+                            {currentFidelityInspection.sourceFrameStructure.assessment}
+                          </div>
+                          <div>
+                            Output:{' '}
+                            I {currentFidelityInspection.outputFrameStructure.iFrames}
+                            {' · '}
+                            P {currentFidelityInspection.outputFrameStructure.pFrames}
+                            {' · '}
+                            B {currentFidelityInspection.outputFrameStructure.bFrames}
+                            {' · '}
+                            B ratio{' '}
+                            {(
+                              currentFidelityInspection.outputFrameStructure.bFrameRatio * 100
+                            ).toFixed(1)}
+                            %
+                          </div>
+                          <div>
+                            Output B-run max:{' '}
+                            {currentFidelityInspection.outputFrameStructure.maxConsecutiveBFrames}
+                            {' · '}
+                            Average GOP:{' '}
+                            {currentFidelityInspection.outputFrameStructure.averageGopLength.toFixed(1)}
+                          </div>
+                          <div>
+                            Output assessment:{' '}
+                            {currentFidelityInspection.outputFrameStructure.assessment}
+                          </div>
+                          {currentFidelityInspection.qsvFrameWarnings.length > 0 && (
+                            <div>
+                              <strong>QSV warnings</strong>
+
+                              <ul>
+                                {currentFidelityInspection.qsvFrameWarnings.map((warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </section>
                   )}
                   <Alert severity="info">

@@ -776,9 +776,26 @@ export type PreviewVideoCharacteristics = {
   chromaLocation?: string;
 };
 
+export type QSVFrameStructureAnalysis = {
+  framesAnalyzed: number;
+  iFrames: number;
+  pFrames: number;
+  bFrames: number;
+  keyFrames: number;
+  bFrameRatio: number;
+  hasBFrames: boolean;
+  maxConsecutiveBFrames: number;
+  averageGopLength: number;
+  assessment: string;
+  source: string;
+};
+
 export type PreviewInspection = {
   source: PreviewVideoCharacteristics;
   output: PreviewVideoCharacteristics;
+  sourceFrameStructure: QSVFrameStructureAnalysis;
+  outputFrameStructure: QSVFrameStructureAnalysis;
+  qsvFrameWarnings: string[];
   cacheHit: boolean;
   previewMode: 'quick' | 'quality';
   start: string;
