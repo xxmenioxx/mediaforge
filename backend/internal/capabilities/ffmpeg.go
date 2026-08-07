@@ -665,7 +665,7 @@ func qsvVBRLookAheadSmokeProbe(pixelFormat string, expectedDepth int, featureArg
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 
 	if err != nil {
-		return false, summarizedProbeReason(output, err)
+		return false, summarizedQSVProbeReason(output, err)
 	}
 
 	if qsvRateControlMethod(output) != "VBR" {
@@ -912,5 +912,54 @@ func summarizedProbeReason(output []byte, err error) string {
 	if len(reason) > 500 {
 		reason = reason[:500] + "…"
 	}
+	return reason
+}
+
+func summarizedQSVProbeReason(output []byte, err error) string {
+	if err == nil {
+		return ""
+	}
+
+	interesting := []string{
+		"RateControlMethod:",
+		"ExtBRC:",
+		"LookAheadDepth:",
+		"AdaptiveI:",
+		"AdaptiveB:",
+		"invalid video parameters",
+		"unsupported",
+		"not been used",
+		"warning",
+		"error",
+	}
+
+	var matches []string
+
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+
+		for _, marker := range interesting {
+			if strings.Contains(lower, strings.ToLower(marker)) {
+				matches = append(matches, line)
+				break
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return summarizedProbeReason(output, err)
+	}
+
+	reason := strings.Join(matches, " | ")
+
+	if len(reason) > 500 {
+		reason = reason[:500] + "…"
+	}
+
 	return reason
 }
