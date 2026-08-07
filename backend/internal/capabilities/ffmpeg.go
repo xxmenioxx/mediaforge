@@ -306,14 +306,14 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.QSVCBRMain8 = probe("qsvCbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
 			if result.Main10 {
 				result.QSVICQMain10 = rateControlProbe("qsvIcqMain10", "ICQ", "p010le", "-profile:v", "main10", "-global_quality", "25")
-				result.QSVVBRExtBRCMain10 = vbrExtBRCProbe("qsvVbrExtBrcLookAheadMain10",
+				result.QSVVBRExtBRCMain10 = vbrExtBRCProbe(
+					"qsvVbrExtBrcMain10",
 					"p010le",
 					"-profile:v", "main10",
 					"-b:v", "2M",
 					"-maxrate", "3M",
 					"-bufsize", "4M",
 					"-extbrc", "1",
-					"-look_ahead_depth", "40",
 				)
 				result.QSVVBRLookAheadMain10 = vbrLookAheadProbe(
 					"qsvVbrLookAheadMain10",
@@ -384,8 +384,24 @@ func CheckEncoder(encoder string) EncoderCapability {
 				result.ExtendedBRC = skip("qsvExtendedBrcMain10", "skipped because QSV LA-ICQ Main10 is unavailable")
 			}
 			if result.QSVICQMain10 {
-				result.AdaptiveI = adaptiveIProbe("qsvAdaptiveIMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_i", "1")
-				result.AdaptiveB = adaptiveBProbe("qsvAdaptiveBMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_b", "1")
+				result.QSVAdaptiveIMain10 = adaptiveIProbe(
+					"qsvAdaptiveIMain10",
+					"p010le",
+					"-profile:v", "main10",
+					"-global_quality", "25",
+					"-adaptive_i", "1",
+				)
+
+				result.QSVAdaptiveBMain10 = adaptiveBProbe(
+					"qsvAdaptiveBMain10",
+					"p010le",
+					"-profile:v", "main10",
+					"-global_quality", "25",
+					"-adaptive_b", "1",
+				)
+
+				result.AdaptiveI = result.QSVAdaptiveIMain10
+				result.AdaptiveB = result.QSVAdaptiveBMain10
 			} else {
 				result.AdaptiveI = skip("qsvAdaptiveIMain10", "skipped because QSV ICQ Main10 is unavailable")
 				result.AdaptiveB = skip("qsvAdaptiveBMain10", "skipped because QSV ICQ Main10 is unavailable")
