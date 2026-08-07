@@ -799,15 +799,17 @@ export function SettingsPage() {
                                       {encoder.reason ? (
                                         <Typography variant="body2">{encoder.reason}</Typography>
                                       ) : failedModes.length ? (
-                                        failedModes.map((mode) => (
-                                          <Typography
-                                            key={mode.key}
-                                            variant="caption"
-                                            color="text.secondary"
-                                            sx={{ display: 'block' }}
-                                          >
-                                            <strong>{mode.label}:</strong> {mode.reason}
-                                          </Typography>
+                                          failedModes.map((mode) => (
+                                          <Tooltip key={mode.key} title={mode.reason || ''} arrow>
+                                            <Typography
+                                              variant="caption"
+                                              color="text.secondary"
+                                              sx={{ display: 'block', cursor: mode.reason ? 'help' : 'default' }}
+                                            >
+                                              <strong>{mode.label}:</strong>{' '}
+                                              {summarizeModeReason(mode.reason)}
+                                            </Typography>
+                                          </Tooltip>
                                         ))
                                       ) : (
                                         <Typography variant="body2">Passed capability check</Typography>
@@ -1928,6 +1930,32 @@ function runtimeEncoder(value: unknown) {
     usable: encoder.usable === true,
     reason: typeof encoder.reason === 'string' ? encoder.reason : '',
   };
+}
+
+function summarizeModeReason(reason: string) {
+  const lower = reason.toLowerCase();
+
+  if (lower.includes('invalid video parameters')) {
+    return 'Unsupported parameter combination';
+  }
+
+  if (lower.includes('requested qsv rate control la_icq but encoder used icq')) {
+    return 'LA-ICQ is not supported by this runtime';
+  }
+
+  if (lower.includes('encoder is not listed')) {
+    return 'Encoder is not available';
+  }
+
+  if (lower.includes('unsupported')) {
+    return 'Unsupported by this encoder/runtime';
+  }
+
+  if (lower.includes('skipped because')) {
+    return reason;
+  }
+
+  return 'Capability probe failed';
 }
 
 function runtimeEncoderCapabilities(name: string, value: unknown) {

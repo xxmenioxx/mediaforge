@@ -572,7 +572,7 @@ func qsvFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, stri
 	defer cancel()
 	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
-	return err == nil, summarizedProbeReason(output, err)
+	return err == nil, summarizedQSVProbeReason(output, err)
 }
 
 func qsvAdaptiveIEnabled(output []byte) bool {
@@ -735,7 +735,7 @@ func qsvCBRLookAheadSmokeProbe(pixelFormat string, expectedDepth int, featureArg
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 
 	if err != nil {
-		return false, summarizedProbeReason(output, err)
+		return false, summarizedQSVProbeReason(output, err)
 	}
 
 	if qsvRateControlMethod(output) != "CBR" {
@@ -783,7 +783,7 @@ func qsvVBRAdvancedSmokeProbe(pixelFormat string, expectedDepth int, featureArgs
 	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 
 	if err != nil {
-		return false, summarizedProbeReason(output, err)
+		return false, summarizedQSVProbeReason(output, err)
 	}
 
 	if qsvRateControlMethod(output) != "VBR" {
