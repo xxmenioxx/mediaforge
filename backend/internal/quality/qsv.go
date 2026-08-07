@@ -153,7 +153,13 @@ func normalizeQSVRateControl(value string) string {
 }
 
 func selectQSVRateControl(requested string, capability WorkerCapabilities) (string, string) {
-	available := map[string]bool{"la_icq": capability.LAICQ, "icq": capability.ICQ, "cqp": capability.CQP, "vbr": capability.VBR, "cbr": capability.CBR}
+	available := map[string]bool{
+		"la_icq": capability.LAICQ,
+		"icq":    capability.ICQ,
+		"cqp":    capability.CQP,
+		"vbr":    capability.VBR,
+		"cbr":    capability.CBR,
+	}
 	order := []string{"la_icq", "icq", "cqp", "vbr", "cbr"}
 	start := 0
 	for index, candidate := range order {

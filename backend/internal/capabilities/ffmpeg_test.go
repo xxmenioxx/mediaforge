@@ -28,6 +28,39 @@ func TestVAAPISmokeTestInitializesRenderDeviceAndUploadsFrames(t *testing.T) {
 	}
 }
 
+func TestQSVRateControlMethod(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "icq",
+			output: "[hevc_qsv @ 0x123] TargetUsage: 4; RateControlMethod: ICQ\n",
+			want:   "ICQ",
+		},
+		{
+			name:   "vbr",
+			output: "[hevc_qsv @ 0x123] TargetUsage: 4; RateControlMethod: VBR\n",
+			want:   "VBR",
+		},
+		{
+			name:   "missing",
+			output: "[hevc_qsv @ 0x123] ExtBRC: OFF\n",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := qsvRateControlMethod([]byte(tt.output))
+			if got != tt.want {
+				t.Fatalf("qsvRateControlMethod() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestQSVSmokeTestUsesRepresentativeVideo(t *testing.T) {
 	args := hardwareEncoderSmokeArgs("hevc_qsv", "p010le")
 	for _, expected := range []string{"qsv=hw,child_device=/dev/dri/renderD128", "testsrc2=size=640x360:rate=30", "30", "hevc_qsv", "p010le", "main10"} {

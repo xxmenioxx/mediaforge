@@ -3,6 +3,7 @@ package capabilities
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -20,26 +21,36 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		return EncoderCapability{}, false
 	}
 	var value struct {
-		Listed                      bool              `json:"listed"`
-		Usable                      bool              `json:"usable"`
-		Main10                      bool              `json:"main10"`
-		ICQ                         bool              `json:"icq"`
-		LowPower                    bool              `json:"lowPower"`
-		LookAhead                   bool              `json:"lookAhead"`
-		ExtendedBRC                 bool              `json:"extendedBrc"`
-		AdaptiveI                   bool              `json:"adaptiveI"`
-		AdaptiveB                   bool              `json:"adaptiveB"`
-		QSVFullCombination          bool              `json:"qsvFullCombination"`
-		QSVICQMain8                 bool              `json:"qsvIcqMain8"`
-		QSVICQMain10                bool              `json:"qsvIcqMain10"`
-		QSVLAICQMain10              bool              `json:"qsvLaIcqMain10"`
-		QSVCQPMain8                 bool              `json:"qsvCqpMain8"`
-		QSVCQPMain10                bool              `json:"qsvCqpMain10"`
-		QSVVBRMain8                 bool              `json:"qsvVbrMain8"`
-		QSVVBRMain10                bool              `json:"qsvVbrMain10"`
-		QSVCBRMain8                 bool              `json:"qsvCbrMain8"`
-		QSVCBRMain10                bool              `json:"qsvCbrMain10"`
-		QSVLowPowerMain10           bool              `json:"qsvLowPowerMain10"`
+		Listed                bool `json:"listed"`
+		Usable                bool `json:"usable"`
+		Main10                bool `json:"main10"`
+		ICQ                   bool `json:"icq"`
+		LowPower              bool `json:"lowPower"`
+		LookAhead             bool `json:"lookAhead"`
+		ExtendedBRC           bool `json:"extendedBrc"`
+		AdaptiveI             bool `json:"adaptiveI"`
+		AdaptiveB             bool `json:"adaptiveB"`
+		QSVFullCombination    bool `json:"qsvFullCombination"`
+		QSVICQMain8           bool `json:"qsvIcqMain8"`
+		QSVICQMain10          bool `json:"qsvIcqMain10"`
+		QSVLAICQMain10        bool `json:"qsvLaIcqMain10"`
+		QSVCQPMain8           bool `json:"qsvCqpMain8"`
+		QSVCQPMain10          bool `json:"qsvCqpMain10"`
+		QSVVBRMain8           bool `json:"qsvVbrMain8"`
+		QSVVBRMain10          bool `json:"qsvVbrMain10"`
+		QSVCBRMain8           bool `json:"qsvCbrMain8"`
+		QSVCBRMain10          bool `json:"qsvCbrMain10"`
+		QSVLowPowerMain10     bool `json:"qsvLowPowerMain10"`
+		QSVVBRExtBRCMain10    bool `json:"qsvVbrExtBrcMain10"`
+		QSVVBRLookAheadMain10 bool `json:"qsvVbrLookAheadMain10"`
+
+		QSVCBRExtBRCMain10    bool `json:"qsvCbrExtBrcMain10"`
+		QSVCBRLookAheadMain10 bool `json:"qsvCbrLookAheadMain10"`
+
+		QSVAdaptiveIMain10 bool `json:"qsvAdaptiveIMain10"`
+		QSVAdaptiveBMain10 bool `json:"qsvAdaptiveBMain10"`
+
+		QSVVBRAdvancedMain10        bool              `json:"qsvVbrAdvancedMain10"`
 		VideoToolboxMain            bool              `json:"videoToolboxMain"`
 		VideoToolboxMain10          bool              `json:"videoToolboxMain10"`
 		VideoToolboxBFrames         bool              `json:"videoToolboxBFrames"`
@@ -58,16 +69,27 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		Listed: value.Listed, Usable: value.Usable, Main10: value.Main10, ICQ: value.ICQ,
 		LowPower: value.LowPower, LookAhead: value.LookAhead, ExtendedBRC: value.ExtendedBRC,
 		AdaptiveI: value.AdaptiveI, AdaptiveB: value.AdaptiveB, QSVFullCombination: value.QSVFullCombination,
+
 		QSVICQMain8: value.QSVICQMain8, QSVICQMain10: value.QSVICQMain10, QSVLAICQMain10: value.QSVLAICQMain10,
 		QSVCQPMain8: value.QSVCQPMain8, QSVCQPMain10: value.QSVCQPMain10,
 		QSVVBRMain8: value.QSVVBRMain8, QSVVBRMain10: value.QSVVBRMain10,
-		QSVCBRMain8: value.QSVCBRMain8, QSVCBRMain10: value.QSVCBRMain10,
+		QSVVBRExtBRCMain10:    value.QSVVBRExtBRCMain10,
+		QSVVBRLookAheadMain10: value.QSVVBRLookAheadMain10,
+		QSVCBRMain8:           value.QSVCBRMain8, QSVCBRMain10: value.QSVCBRMain10,
+		QSVCBRExtBRCMain10:    value.QSVCBRExtBRCMain10,
+		QSVCBRLookAheadMain10: value.QSVCBRLookAheadMain10,
+		QSVAdaptiveIMain10:    value.QSVAdaptiveIMain10,
+		QSVAdaptiveBMain10:    value.QSVAdaptiveBMain10,
+		QSVVBRAdvancedMain10:  value.QSVVBRAdvancedMain10,
+
 		QSVLowPowerMain10: value.QSVLowPowerMain10,
-		VideoToolboxMain:  value.VideoToolboxMain, VideoToolboxMain10: value.VideoToolboxMain10,
+
+		VideoToolboxMain: value.VideoToolboxMain, VideoToolboxMain10: value.VideoToolboxMain10,
 		VideoToolboxBFrames: value.VideoToolboxBFrames, VideoToolboxBFramesVerified: value.VideoToolboxBFramesVerified,
 		VideoToolboxBFramesDisabled: value.VideoToolboxBFramesDisabled, VideoToolboxObservedBFrames: value.VideoToolboxObservedBFrames,
 		VideoToolboxPowerEfficient: value.VideoToolboxPowerEfficient,
-		Reason:                     value.Reason, TestedModes: value.TestedModes, ModeReasons: value.ModeReasons,
+
+		Reason: value.Reason, TestedModes: value.TestedModes, ModeReasons: value.ModeReasons,
 	}, true
 }
 
@@ -92,6 +114,13 @@ type EncoderCapability struct {
 	QSVCBRMain8                 bool
 	QSVCBRMain10                bool
 	QSVLowPowerMain10           bool
+	QSVVBRExtBRCMain10          bool
+	QSVVBRLookAheadMain10       bool
+	QSVCBRExtBRCMain10          bool
+	QSVCBRLookAheadMain10       bool
+	QSVVBRAdvancedMain10        bool
+	QSVAdaptiveIMain10          bool
+	QSVAdaptiveBMain10          bool
 	VideoToolboxMain            bool
 	VideoToolboxMain10          bool
 	VideoToolboxBFrames         bool
@@ -201,6 +230,71 @@ func CheckEncoder(encoder string) EncoderCapability {
 				}
 				return passed
 			}
+			rateControlProbe := func(name, expected, format string, args ...string) bool {
+				passed, reason := qsvRateControlSmokeProbe(expected, format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			vbrLookAheadProbe := func(name, format string, expectedDepth int, args ...string) bool {
+				passed, reason := qsvVBRLookAheadSmokeProbe(format, expectedDepth, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			vbrExtBRCProbe := func(name, format string, args ...string) bool {
+				passed, reason := qsvVBRExtBRCSmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			cbrExtBRCProbe := func(name, format string, args ...string) bool {
+				passed, reason := qsvCBRExtBRCSmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+
+			cbrLookAheadProbe := func(name, format string, expectedDepth int, args ...string) bool {
+				passed, reason := qsvCBRLookAheadSmokeProbe(format, expectedDepth, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			adaptiveIProbe := func(name, format string, args ...string) bool {
+				passed, reason := qsvAdaptiveISmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			adaptiveBProbe := func(name, format string, args ...string) bool {
+				passed, reason := qsvAdaptiveBSmokeProbe(format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
+			vbrAdvancedProbe := func(name, format string, expectedDepth int, args ...string) bool {
+				passed, reason := qsvVBRAdvancedSmokeProbe(format, expectedDepth, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
 			skip := func(name, reason string) bool {
 				result.TestedModes[name] = false
 				result.ModeReasons[name] = reason
@@ -211,10 +305,63 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.QSVVBRMain8 = probe("qsvVbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
 			result.QSVCBRMain8 = probe("qsvCbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
 			if result.Main10 {
-				result.QSVICQMain10 = probe("qsvIcqMain10", "p010le", "-profile:v", "main10", "-global_quality", "25")
+				result.QSVICQMain10 = rateControlProbe("qsvIcqMain10", "ICQ", "p010le", "-profile:v", "main10", "-global_quality", "25")
+				result.QSVVBRExtBRCMain10 = vbrExtBRCProbe("qsvVbrExtBrcLookAheadMain10",
+					"p010le",
+					"-profile:v", "main10",
+					"-b:v", "2M",
+					"-maxrate", "3M",
+					"-bufsize", "4M",
+					"-extbrc", "1",
+					"-look_ahead_depth", "40",
+				)
+				result.QSVVBRLookAheadMain10 = vbrLookAheadProbe(
+					"qsvVbrLookAheadMain10",
+					"p010le",
+					40,
+					"-profile:v", "main10",
+					"-b:v", "2M",
+					"-maxrate", "3M",
+					"-bufsize", "4M",
+					"-extbrc", "1",
+					"-look_ahead_depth", "40",
+				)
+				result.QSVCBRExtBRCMain10 = cbrExtBRCProbe(
+					"qsvCbrExtBrcMain10",
+					"p010le",
+					"-profile:v", "main10",
+					"-b:v", "2M",
+					"-maxrate", "2M",
+					"-bufsize", "4M",
+					"-extbrc", "1",
+				)
+				result.QSVCBRLookAheadMain10 = cbrLookAheadProbe(
+					"qsvCbrLookAheadMain10",
+					"p010le",
+					40,
+					"-profile:v", "main10",
+					"-b:v", "2M",
+					"-maxrate", "2M",
+					"-bufsize", "4M",
+					"-extbrc", "1",
+					"-look_ahead_depth", "40",
+				)
+				result.QSVVBRAdvancedMain10 = vbrAdvancedProbe(
+					"qsvVbrAdvancedMain10",
+					"p010le",
+					40,
+					"-profile:v", "main10",
+					"-b:v", "2M",
+					"-maxrate", "3M",
+					"-bufsize", "4M",
+					"-extbrc", "1",
+					"-look_ahead_depth", "40",
+					"-adaptive_i", "1",
+					"-adaptive_b", "1",
+				)
 				result.QSVCQPMain10 = probe("qsvCqpMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-flags", "+qscale")
-				result.QSVVBRMain10 = probe("qsvVbrMain10", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
-				result.QSVCBRMain10 = probe("qsvCbrMain10", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
+				result.QSVVBRMain10 = rateControlProbe("qsvVbrMain10", "VBR", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
+				result.QSVCBRMain10 = rateControlProbe("qsvCbrMain10", "CBR", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
 			} else {
 				result.QSVICQMain10 = skip("qsvIcqMain10", "skipped because the QSV Main10 base probe failed")
 				result.QSVCQPMain10 = skip("qsvCqpMain10", "skipped because the QSV Main10 base probe failed")
@@ -225,7 +372,7 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.LowPower = probe("qsvLowPowerMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-low_power", "1")
 			if result.QSVICQMain10 {
 				result.QSVLowPowerMain10 = probe("qsvLowPowerMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-low_power", "1")
-				result.QSVLAICQMain10 = probe("qsvLaIcqMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40")
+				result.QSVLAICQMain10 = rateControlProbe("qsvLaIcqMain10", "LA_ICQ", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40")
 			} else {
 				result.QSVLowPowerMain10 = skip("qsvLowPowerMain10", "skipped because QSV ICQ Main10 is unavailable")
 				result.QSVLAICQMain10 = skip("qsvLaIcqMain10", "skipped because QSV ICQ Main10 is unavailable")
@@ -237,8 +384,8 @@ func CheckEncoder(encoder string) EncoderCapability {
 				result.ExtendedBRC = skip("qsvExtendedBrcMain10", "skipped because QSV LA-ICQ Main10 is unavailable")
 			}
 			if result.QSVICQMain10 {
-				result.AdaptiveI = probe("qsvAdaptiveIMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_i", "1")
-				result.AdaptiveB = probe("qsvAdaptiveBMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_b", "1")
+				result.AdaptiveI = adaptiveIProbe("qsvAdaptiveIMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_i", "1")
+				result.AdaptiveB = adaptiveBProbe("qsvAdaptiveBMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-adaptive_b", "1")
 			} else {
 				result.AdaptiveI = skip("qsvAdaptiveIMain10", "skipped because QSV ICQ Main10 is unavailable")
 				result.AdaptiveB = skip("qsvAdaptiveBMain10", "skipped because QSV ICQ Main10 is unavailable")
@@ -376,6 +523,29 @@ func hardwareEncoderSmokeArgs(encoder, pixelFormat string) []string {
 	return args
 }
 
+func qsvRateControlMethod(output []byte) string {
+	text := string(output)
+
+	const marker = "RateControlMethod:"
+	index := strings.Index(text, marker)
+	if index == -1 {
+		return ""
+	}
+
+	value := text[index+len(marker):]
+	value = strings.TrimSpace(value)
+
+	if end := strings.IndexByte(value, '\n'); end >= 0 {
+		value = value[:end]
+	}
+
+	if separator := strings.IndexByte(value, ';'); separator >= 0 {
+		value = value[:separator]
+	}
+
+	return strings.TrimSpace(value)
+}
+
 func qsvFeatureSmokeTest(pixelFormat string, featureArgs ...string) bool {
 	passed, _ := qsvFeatureSmokeProbe(pixelFormat, featureArgs...)
 	return passed
@@ -389,9 +559,247 @@ func qsvFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, stri
 	return err == nil, summarizedProbeReason(output, err)
 }
 
+func qsvAdaptiveIEnabled(output []byte) bool {
+	return strings.Contains(string(output), "AdaptiveI: ON")
+}
+
+func qsvExtBRCEnabled(output []byte) bool {
+	text := string(output)
+	return strings.Contains(text, "ExtBRC: ON")
+}
+
+func qsvAdaptiveBEnabled(output []byte) bool {
+	return strings.Contains(string(output), "AdaptiveB: ON")
+}
+
+func qsvLookAheadDepth(output []byte) int {
+	text := string(output)
+
+	const marker = "LookAheadDepth:"
+	index := strings.Index(text, marker)
+	if index == -1 {
+		return 0
+	}
+
+	value := strings.TrimSpace(text[index+len(marker):])
+
+	if end := strings.IndexByte(value, '\n'); end >= 0 {
+		value = value[:end]
+	}
+
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return 0
+	}
+
+	depth, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0
+	}
+
+	return depth
+}
+
+func qsvAdaptiveISmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if !qsvAdaptiveIEnabled(output) {
+		return false, "QSV encoder did not enable Adaptive I"
+	}
+
+	return true, ""
+}
+
+func qsvRateControlSmokeProbe(expected, pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	effective := qsvRateControlMethod(output)
+	if effective == "" {
+		return false, "QSV encoding succeeded but RateControlMethod was not reported"
+	}
+
+	if effective != expected {
+		return false, "requested QSV rate control " + expected + " but encoder used " + effective
+	}
+
+	return true, ""
+}
+
+func qsvVBRLookAheadSmokeProbe(pixelFormat string, expectedDepth int, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if qsvRateControlMethod(output) != "VBR" {
+		return false, "QSV encoder did not use VBR"
+	}
+
+	if !qsvExtBRCEnabled(output) {
+		return false, "QSV encoder did not enable ExtBRC"
+	}
+
+	if depth := qsvLookAheadDepth(output); depth != expectedDepth {
+		return false, fmt.Sprintf("QSV encoder used LookAheadDepth %d; expected %d", depth, expectedDepth)
+	}
+
+	return true, ""
+}
+
+func qsvVBRExtBRCSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if qsvRateControlMethod(output) != "VBR" {
+		return false, "QSV encoder did not use VBR"
+	}
+
+	if !qsvExtBRCEnabled(output) {
+		return false, "QSV encoder did not enable ExtBRC"
+	}
+
+	return true, ""
+}
+
+func qsvCBRExtBRCSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if qsvRateControlMethod(output) != "CBR" {
+		return false, "QSV encoder did not use CBR"
+	}
+
+	if !qsvExtBRCEnabled(output) {
+		return false, "QSV encoder did not enable ExtBRC"
+	}
+
+	return true, ""
+}
+
+func qsvCBRLookAheadSmokeProbe(pixelFormat string, expectedDepth int, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if qsvRateControlMethod(output) != "CBR" {
+		return false, "QSV encoder did not use CBR"
+	}
+
+	if !qsvExtBRCEnabled(output) {
+		return false, "QSV encoder did not enable ExtBRC"
+	}
+
+	if depth := qsvLookAheadDepth(output); depth != expectedDepth {
+		return false, fmt.Sprintf(
+			"QSV encoder used LookAheadDepth %d; expected %d",
+			depth,
+			expectedDepth,
+		)
+	}
+
+	return true, ""
+}
+
+func qsvAdaptiveBSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if !qsvAdaptiveBEnabled(output) {
+		return false, "QSV encoder did not enable Adaptive B"
+	}
+
+	return true, ""
+}
+
+func qsvVBRAdvancedSmokeProbe(pixelFormat string, expectedDepth int, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+
+	if err != nil {
+		return false, summarizedProbeReason(output, err)
+	}
+
+	if qsvRateControlMethod(output) != "VBR" {
+		return false, "QSV encoder did not use VBR"
+	}
+
+	if !qsvExtBRCEnabled(output) {
+		return false, "QSV encoder did not enable ExtBRC"
+	}
+
+	if depth := qsvLookAheadDepth(output); depth != expectedDepth {
+		return false, fmt.Sprintf(
+			"QSV encoder used LookAheadDepth %d; expected %d",
+			depth,
+			expectedDepth,
+		)
+	}
+
+	if !qsvAdaptiveIEnabled(output) {
+		return false, "QSV encoder did not enable Adaptive I"
+	}
+
+	if !qsvAdaptiveBEnabled(output) {
+		return false, "QSV encoder did not enable Adaptive B"
+	}
+
+	return true, ""
+}
+
 func qsvFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
 	args := []string{
-		"-hide_banner", "-loglevel", "error",
+		"-hide_banner", "-loglevel", "verbose",
 		"-init_hw_device", "qsv=hw,child_device=/dev/dri/renderD128",
 		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
 		"-frames:v", "30", "-an",
