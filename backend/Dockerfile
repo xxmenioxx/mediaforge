@@ -220,7 +220,8 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl libaom3 libass9 libbluray2 libdav1d7 libdrm2 \
+       ca-certificates curl openssh-client \ 
+       libaom3 libass9 libbluray2 libdav1d7 libdrm2 \
        libfontconfig1 libfreetype6 libfribidi0 libmp3lame0 libopenjp2-7 \
        libopus0 libsoxr0 libsqlite3-0 \
        libvorbis0a libvorbisenc2 libvpx9 libwebp7 libx264-164 libx265-215 \
