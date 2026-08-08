@@ -167,18 +167,95 @@ func normalizedOCRMode(value string) string {
 	}
 }
 
+func extractPGSSubtitleForOCR(
+	ctx context.Context,
+	mediaPath string,
+	stream FFProbeStream,
+	outputPath string,
+) (string, error) {
+	args := []string{
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", mediaPath,
+		"-map", fmt.Sprintf("0:%d", stream.Index),
+		"-c:s", "copy",
+		outputPath,
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(output)), fmt.Errorf(
+			"cannot extract PGS subtitle stream %d: %w",
+			stream.Index,
+			err,
+		)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
 func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, format, language, mode, outputPath, rawOutputPath string) (string, error) {
 	mode = normalizedOCRMode(mode)
 	dir := filepath.Dir(outputPath)
+
+	ocrInputPath := mediaPath
+	useTrackNumber := true
+	extractionMessage := ""
+
+	switch strings.ToLower(strings.TrimSpace(stream.CodecName)) {
+	case "hdmv_pgs_subtitle", "pgssub":
+		pgsPath := filepath.Join(
+			dir,
+			fmt.Sprintf("ocr-stream-%d.sup", stream.Index),
+		)
+
+		message, err := extractPGSSubtitleForOCR(
+			ctx,
+			mediaPath,
+			stream,
+			pgsPath,
+		)
+		if err != nil {
+			return message, err
+		}
+
+		extractionMessage = message
+		ocrInputPath = pgsPath
+		useTrackNumber = false
+	}
+
 	first := filepath.Join(dir, "ocr-isolated."+format)
-	message, err := runSeConvOCRPass(ctx, mediaPath, stream, format, language, first, false)
+	message, err := runSeConvOCRPass(
+		ctx,
+		ocrInputPath,
+		stream,
+		format,
+		language,
+		first,
+		false,
+		useTrackNumber,
+	)
+
+	message = strings.TrimSpace(extractionMessage + "\n" + message)
+
 	if err != nil {
 		return message, err
 	}
 	chosen := first
 	if mode == "accurate" {
 		second := filepath.Join(dir, "ocr-colors."+format)
-		secondMessage, secondErr := runSeConvOCRPass(ctx, mediaPath, stream, format, language, second, true)
+		secondMessage, secondErr := runSeConvOCRPass(
+			ctx,
+			ocrInputPath,
+			stream,
+			format,
+			language,
+			second,
+			true,
+			useTrackNumber,
+		)
 		message = strings.TrimSpace(message + "\n" + secondMessage)
 		if secondErr == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
 			chosen = second
@@ -194,11 +271,44 @@ func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, f
 	return strings.TrimSpace(message + "\n" + cleanMessage), cleanErr
 }
 
-func runSeConvOCRPass(ctx context.Context, mediaPath string, stream FFProbeStream, format, language, outputPath string, preserveColors bool) (string, error) {
-	args := []string{mediaPath, seconvFormat(format), "--track-number:" + strconv.Itoa(matroskaTrackNumber(stream)), "--ocr-engine:tesseract", "--ocr-language:" + language, "--output-filename:" + outputPath, "--overwrite"}
-	if preserveColors {
-		args = append(args, "--no-vobsub-isolate-colors", "--no-pgs-isolate-colors")
+func runSeConvOCRPass(
+	ctx context.Context,
+	inputPath string,
+	stream FFProbeStream,
+	format string,
+	language string,
+	outputPath string,
+	preserveColors bool,
+	useTrackNumber bool,
+) (string, error) {
+	args := []string{
+		inputPath,
+		seconvFormat(format),
 	}
+
+	if useTrackNumber {
+		args = append(
+			args,
+			"--track-number:"+strconv.Itoa(matroskaTrackNumber(stream)),
+		)
+	}
+
+	args = append(
+		args,
+		"--ocr-engine:tesseract",
+		"--ocr-language:"+language,
+		"--output-filename:"+outputPath,
+		"--overwrite",
+	)
+
+	if preserveColors {
+		args = append(
+			args,
+			"--no-vobsub-isolate-colors",
+			"--no-pgs-isolate-colors",
+		)
+	}
+
 	return runSeConv(ctx, args)
 }
 

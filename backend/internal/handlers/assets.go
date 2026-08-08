@@ -83,10 +83,49 @@ type previewGeneration struct {
 	err  error
 }
 
+type subtitleExtractionOperation struct {
+	ID          string                    `json:"id"`
+	Status      string                    `json:"status"`
+	Phase       string                    `json:"phase"`
+	Progress    float64                   `json:"progress"`
+	Processed   int                       `json:"processed"`
+	Total       int                       `json:"total"`
+	StreamIndex int                       `json:"streamIndex"`
+	Format      string                    `json:"format"`
+	Message     string                    `json:"message,omitempty"`
+	Result      *SubtitleExtractionResult `json:"result,omitempty"`
+	Error       string                    `json:"error,omitempty"`
+	CreatedAt   time.Time                 `json:"createdAt"`
+	UpdatedAt   time.Time                 `json:"updatedAt"`
+}
+
 var previewCacheState = struct {
 	sync.Mutex
 	inFlight map[string]*previewGeneration
 }{inFlight: map[string]*previewGeneration{}}
+
+var subtitleExtractionOperations = struct {
+	sync.RWMutex
+	items map[string]*subtitleExtractionOperation
+}{
+	items: map[string]*subtitleExtractionOperation{},
+}
+
+func updateSubtitleExtractionOperation(
+	id string,
+	update func(*subtitleExtractionOperation),
+) {
+	subtitleExtractionOperations.Lock()
+	defer subtitleExtractionOperations.Unlock()
+
+	operation, exists := subtitleExtractionOperations.items[id]
+	if !exists {
+		return
+	}
+
+	update(operation)
+	operation.UpdatedAt = time.Now()
+}
 
 var previewFilterCapabilityCache sync.Map
 var profileSampleEstimateSlot = make(chan struct{}, 1)
@@ -577,6 +616,33 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+}
+
+func (h *AssetHandler) GetSubtitleExtractionOperation(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "operation id is required",
+		})
+		return
+	}
+
+	subtitleExtractionOperations.RLock()
+	operation, exists := subtitleExtractionOperations.items[id]
+
+	if !exists {
+		subtitleExtractionOperations.RUnlock()
+
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "subtitle extraction operation not found",
+		})
+		return
+	}
+
+	snapshot := *operation
+	subtitleExtractionOperations.RUnlock()
+
+	c.JSON(http.StatusOK, snapshot)
 }
 
 func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
