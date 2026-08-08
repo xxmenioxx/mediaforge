@@ -902,12 +902,24 @@ func TestVideoToolboxLegacyColorIsConvertedToBT709(t *testing.T) {
 
 func TestVideoToolboxQualityPresetOptionsReachFFmpeg(t *testing.T) {
 	profile := models.Profile{
-		VideoCodec: "x265", QualityMode: "crf", QualityValue: 20,
+		VideoCodec:   "x265",
+		QualityMode:  "crf",
+		QualityValue: 20,
+		BitDepth:     10,
 		WorkerConfig: models.JSONMap{
-			"videoEncoder": "hevc_videotoolbox", "preferredEncoder": "hardware", "useHardwareIfAvailable": true, "videoToolboxQualityProfile": 80,
-			"videoToolboxBitrateMbps": 12, "videoToolboxMaxrateMbps": 16, "videoToolboxBufferMbps": 32,
-			"videoToolboxProfile": "main10", "videoToolboxGop": 90,
-			"videoToolboxRealtime": false, "videoToolboxAllowFrameReordering": true, "videoToolboxPowerEfficiency": false,
+			"videoEncoder":                     "hevc_videotoolbox",
+			"preferredEncoder":                 "hardware",
+			"useHardwareIfAvailable":           true,
+			"videoToolboxQualityProfile":       80,
+			"videoToolboxBitrateMbps":          12,
+			"videoToolboxMaxrateMbps":          16,
+			"videoToolboxBufferMbps":           32,
+			"videoToolboxProfile":              "main10",
+			"pixFmt":                           "p010le",
+			"videoToolboxGop":                  90,
+			"videoToolboxRealtime":             false,
+			"videoToolboxAllowFrameReordering": true,
+			"videoToolboxPowerEfficiency":      false,
 		},
 	}
 	if resolvedVideoEncoder(profile) != "hevc_videotoolbox" {

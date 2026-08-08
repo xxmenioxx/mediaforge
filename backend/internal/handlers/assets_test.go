@@ -570,17 +570,44 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
 	run := func() SubtitleExtractionResult {
 		t.Helper()
+
 		response := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader("{}"))
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/assets/extract-subtitles?path="+url.QueryEscape(mediaPath),
+			strings.NewReader("{}"),
+		)
+
 		router.ServeHTTP(response, request)
-		if response.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+
+		switch response.Code {
+		case http.StatusOK:
+			var result SubtitleExtractionResult
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			return result
+
+		case http.StatusAccepted:
+			var started subtitleExtractionStartedResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+				t.Fatal(err)
+			}
+
+			if started.OperationID == "" {
+				t.Fatalf("missing operationId: %s", response.Body.String())
+			}
+
+			return waitForSubtitleExtractionOperation(t, started.OperationID)
+
+		default:
+			t.Fatalf(
+				"status=%d body=%s",
+				response.Code,
+				response.Body.String(),
+			)
+			return SubtitleExtractionResult{}
 		}
-		var result SubtitleExtractionResult
-		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-			t.Fatal(err)
-		}
-		return result
 	}
 
 	first := run()
@@ -603,6 +630,61 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	if len(second.Created) != 0 || len(second.Existing) != 3 {
 		t.Fatalf("repeat extraction should preserve existing sidecars: %#v", second)
 	}
+}
+
+type subtitleExtractionStartedResponse struct {
+	OperationID string `json:"operationId"`
+	Status      string `json:"status"`
+}
+
+func waitForSubtitleExtractionOperation(
+	t *testing.T,
+	operationID string,
+) SubtitleExtractionResult {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		subtitleExtractionOperations.RLock()
+		operation, exists := subtitleExtractionOperations.items[operationID]
+
+		var snapshot subtitleExtractionOperation
+		if exists {
+			snapshot = *operation
+		}
+
+		subtitleExtractionOperations.RUnlock()
+
+		if !exists {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		switch snapshot.Status {
+		case "completed":
+			if snapshot.Result == nil {
+				t.Fatal("completed subtitle extraction operation has no result")
+			}
+			return *snapshot.Result
+
+		case "error":
+			t.Fatalf(
+				"subtitle extraction failed: phase=%q error=%q",
+				snapshot.Phase,
+				snapshot.Error,
+			)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf(
+		"timed out waiting for subtitle extraction operation %q",
+		operationID,
+	)
+
+	return SubtitleExtractionResult{}
 }
 
 func TestExtractSubtitlesRunsOCRForExplicitBitmapTrackOnly(t *testing.T) {
@@ -663,17 +745,36 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_filename"
 	response := httptest.NewRecorder()
 	body := `{"streamIndex":4,"format":"srt","ocrLanguage":"spa"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(mediaPath), strings.NewReader(body))
+
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	var started subtitleExtractionStartedResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+
+	if started.OperationID == "" {
+		t.Fatalf("missing operationId: %s", response.Body.String())
+	}
+
+	result := waitForSubtitleExtractionOperation(t, started.OperationID)
+
 	outputPath := filepath.Join(root, "DVD.spa.4.srt")
 	content, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !strings.Contains(string(content), "Hola") {
 		t.Fatalf("unexpected OCR output: %q", content)
+	}
+
+	if len(result.Created) == 0 {
+		t.Fatalf("expected OCR result to report a created subtitle: %#v", result)
 	}
 }
 
