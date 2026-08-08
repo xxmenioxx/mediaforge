@@ -1188,7 +1188,7 @@ function AssetRow({
       return;
     }
 
-    void restoreSubtitleOperations();
+  void restoreSubtitleOperations();
   }, [showSnapshotDialog, asset.path]);
   useEffect(() => {
     if (!firstCategory(assetMetadata.categories)) {
@@ -1328,87 +1328,56 @@ function AssetRow({
     });
   }
 
-  const restoreSubtitleOperations = async (assetPath: string) => {
-    try {
-      const response = await subtitleExtractionOperations(assetPath);
+ async function waitForSubtitleOperation(
+  operationId: string,
+  key: string,
+  streamIndex: number,
+  format: 'srt' | 'ass',
+) {
+  if (subtitleOperationPollers.current.has(operationId)) {
+    return;
+  }
 
-      const runningOperations = response.operations.filter(
-        (operation) => operation.status === 'running',
-      );
+  subtitleOperationPollers.current.add(operationId);
 
-      for (const operation of runningOperations) {
-        const key = `${operation.streamIndex}:${operation.format}`;
+  try {
+    while (true) {
+      const operation =
+        await api.subtitleExtractionOperation(operationId);
 
-        setSubtitleGenerationState((current) => ({
-          ...current,
-          [key]: {
-            status: 'generating',
-            phase: operation.phase,
-            progress: operation.progress,
-            processed: operation.processed,
-            total: operation.total,
-            message: operation.message,
-          },
-        }));
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: {
+          status: 'running',
+          streamIndex,
+          format,
+          progress: operation.progress,
+          phase: operation.phase,
+          processed: operation.processed,
+          total: operation.total,
+          message: operation.message,
+        },
+      }));
 
-        void waitForSubtitleOperation(
-          operation.id,
-          key,
-          operation.streamIndex,
-          operation.format,
+      if (operation.status === 'completed') {
+        return operation.result;
+      }
+
+      if (operation.status === 'error') {
+        throw new Error(
+          operation.error ||
+            operation.message ||
+            'Subtitle OCR failed.',
         );
       }
-    } catch (error) {
-      console.error('Failed to restore subtitle OCR operations', error);
+
+      await delay(500);
     }
-  };
-
-  async function waitForSubtitleOperation(
-    operationId: string,
-    key: string,
-    streamIndex: number,
-    format: 'srt' | 'ass',
-  ) {
-    if (subtitleOperationPollers.current.has(operationId)) {
-      return;
-    }
-    subtitleOperationPollers.current.add(operationId);
-    try {
-      while (true) {
-        const operation = await api.subtitleExtractionOperation(operationId);
-
-        setSubtitleGenerations((current) => ({
-          ...current,
-          [key]: {
-            status: 'running',
-            streamIndex,
-            format,
-            progress: operation.progress,
-            phase: operation.phase,
-            processed: operation.processed,
-            total: operation.total,
-            message: operation.message,
-          },
-        }));
-
-        if (operation.status === 'completed') {
-          return operation.result;
-        }
-
-        if (operation.status === 'error') {
-          throw new Error(
-            operation.error ||
-              operation.message ||
-              'Subtitle OCR failed.',
-          );
-        }
-
-        await delay(500);
-      }
-    } finally {
-      subtitleOperationPollers.current.delete(operationId);
+  } finally {
+    subtitleOperationPollers.current.delete(operationId);
   }
 }
+
 async function restoreSubtitleOperations() {
   try {
     const response = await api.subtitleExtractionOperations(asset.path);
@@ -1418,7 +1387,7 @@ async function restoreSubtitleOperations() {
     );
 
     for (const operation of runningOperations) {
-      const format = operation.format as 'srt' | 'ass';
+      const format = operation.format;
       const key = subtitleGenerationKey(operation.streamIndex, format);
 
       setSubtitleGenerations((current) => ({
@@ -2300,7 +2269,7 @@ function EmbeddedSubtitleActions({
                             ? 'Extracting bitmap subtitle…'
                             : generation.phase === 'ocr'
                               ? generation.total
-                                ? `OCR ${generation.processed ?? 0} / ${generation.total} images`
+                                ? `Running OCR on ${generation.total} images…`
                                 : 'Running OCR…'
                               : generation.phase === 'cleanup'
                                 ? 'Cleaning OCR text…'
@@ -2308,7 +2277,6 @@ function EmbeddedSubtitleActions({
                                   ? 'Publishing subtitle…'
                                   : `Preparing ${generation.format.toUpperCase()}…`}
                         </Typography>
-
                         {typeof generation.progress === 'number' ? (
                           <Typography variant="caption" color="text.secondary">
                             {Math.round(generation.progress)}%

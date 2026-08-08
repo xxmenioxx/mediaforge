@@ -57,12 +57,6 @@ export class ApiRequestError extends Error {
   }
 }
 
-export async function subtitleExtractionOperations(path: string) {
-  return apiGet<{ operations: SubtitleExtractionOperation[] }>(
-    `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
-  );
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
