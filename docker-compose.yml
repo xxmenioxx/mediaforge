@@ -9,6 +9,7 @@ services:
       - "8080:8080"
     volumes:
       - backend-data:/app/data
+      - /volume1/docker/nas-media-stack/config/mediaforge/ssh:/etc/mvforge/ssh:ro
       - ./media/raw:/media/raw
       - ./media/library:/media/library
       - ./media/staging:/media/staging
