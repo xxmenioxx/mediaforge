@@ -64,6 +64,7 @@ import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
+import { resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -636,7 +637,18 @@ export function ProfileLabPage() {
     ? undefined
     : runtimeSnapshot.data?.encoders?.[selectedHardwareEncoder];
   const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
-  const qsvLookAheadAvailable = qsvMain10Selected && selectedHardwareCapability?.qsvLaIcqMain10 === true;
+  
+  const qsvRateControl = videoWorkerValue(
+    videoDraft,
+    'qsvRateControl',
+    'icq',
+  );
+
+  const qsvFeatures = resolveQSVFeatures(selectedHardwareCapability, {
+    main10: qsvMain10Selected,
+    rateControl: qsvRateControl,
+  });
+  
   const qsvAdvancedAvailable = qsvMain10Selected && selectedHardwareCapability?.qsvFullCombination === true;
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
@@ -2390,7 +2402,7 @@ export function ProfileLabPage() {
                                   fullWidth
                                 >
                                   <MenuItem value="icq">ICQ · safe default</MenuItem>
-                                <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 capability required</MenuItem>
                                 </TextField>
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2399,7 +2411,7 @@ export function ProfileLabPage() {
                                   type="number"
                                   value={numberWorkerValue(videoDraft, 'qsvLookAheadDepth', 40)}
                                   onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvLookAheadDepth', Number(event.target.value))}
-                                  inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable}
+                                  inputProps={{ min: 10, max: 100 }} disabled={!qsvFeatures.lookAhead}
                                   size="small"
                                   fullWidth
                                 />
@@ -2407,18 +2419,41 @@ export function ProfileLabPage() {
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvFeatures.extBrc} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
                                   label="Extended BRC"
                                 />
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <Stack>
                                   <FormControlLabel
-                                    control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveI', event.target.checked)} />}
+                                    control={
+                                      <Checkbox
+                                        disabled={!qsvFeatures.adaptiveI}
+                                        checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')}
+                                        onChange={(event) =>
+                                          updateVideoWorkerConfig(
+                                            setVideoDraft,
+                                            'qsvAdaptiveI',
+                                            event.target.checked,
+                                          )
+                                        }
+                                      />
+                                    }
                                     label="Adaptive I"
                                   />
                                   <FormControlLabel
-                                    control={<Checkbox disabled={!qsvAdvancedAvailable} checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvAdaptiveB', event.target.checked)} />}
+                                    control={<Checkbox
+                                        disabled={!qsvFeatures.adaptiveB}
+                                      checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
+                                      onChange={(event) =>
+                                        updateVideoWorkerConfig(
+                                          setVideoDraft,
+                                          'qsvAdaptiveB',
+                                          event.target.checked,
+                                        )
+                                      }
+                                    />
+                                    }
                                     label="Adaptive B"
                                   />
                                 </Stack>

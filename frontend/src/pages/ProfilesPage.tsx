@@ -40,6 +40,7 @@ import { PageHeader } from '../components/PageHeader';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
+import { resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -140,7 +141,17 @@ export function ProfilesPage() {
   )?.value ?? '';
   const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
   const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
-  const qsvLookAheadAvailable = qsvMain10Selected && qsvCapability?.qsvLaIcqMain10 === true;
+ 
+  const qsvRateControl = workerConfigString(
+    form,
+    'qsvRateControl',
+    'icq',
+  );
+  const qsvFeatures = resolveQSVFeatures(qsvCapability, {
+    main10: qsvMain10Selected,
+    rateControl: qsvRateControl,
+  });
+ 
   const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const videoToolboxMain10Selected = workerConfigString(form, 'videoToolboxProfile', '').toLowerCase() === 'main10'
@@ -798,7 +809,7 @@ export function ProfilesPage() {
                                 fullWidth
                               >
                                 <MenuItem value="icq">ICQ · safest default</MenuItem>
-                                <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 capability required</MenuItem>
                               </TextField>
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
@@ -807,7 +818,7 @@ export function ProfilesPage() {
                                 type="number"
                                 value={workerConfigNumber(form, 'qsvLookAheadDepth', 40)}
                                 onChange={(event) => updateWorkerConfig('qsvLookAheadDepth', Number(event.target.value))}
-                                inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable}
+                                inputProps={{ min: 10, max: 100 }} disabled={!qsvFeatures.lookAhead}
                                 helperText="Used with supported extended BRC; 40 is a conservative starting point."
                                 fullWidth
                               />
@@ -816,15 +827,37 @@ export function ProfilesPage() {
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvFeatures.extBrc} checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
                                   label="QSV Extended BRC"
                                 />
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvAdaptiveI')} onChange={(event) => updateWorkerConfig('qsvAdaptiveI', event.target.checked)} />}
+                                  control={
+                                    <Checkbox
+                                      disabled={!qsvFeatures.adaptiveI}
+                                      checked={workerConfigBool(form, 'qsvAdaptiveI')}
+                                      onChange={(event) =>
+                                        updateWorkerConfig(
+                                          'qsvAdaptiveI',
+                                          event.target.checked,
+                                        )
+                                      }
+                                    />
+                                  }
                                   label="QSV Adaptive I"
                                 />
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvAdvancedAvailable} checked={workerConfigBool(form, 'qsvAdaptiveB')} onChange={(event) => updateWorkerConfig('qsvAdaptiveB', event.target.checked)} />}
+                                  control={
+                                    <Checkbox
+                                      disabled={!qsvFeatures.adaptiveB}
+                                      checked={workerConfigBool(form, 'qsvAdaptiveB')}
+                                      onChange={(event) =>
+                                        updateWorkerConfig(
+                                          'qsvAdaptiveB',
+                                          event.target.checked,
+                                        )
+                                      }
+                                    />
+                                  }
                                   label="QSV Adaptive B"
                                 />
                               </Stack>

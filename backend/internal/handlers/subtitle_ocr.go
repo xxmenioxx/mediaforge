@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -11,13 +13,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
 var (
-	ocrBitmapCountPattern  = regexp.MustCompile(`(?i)Running tesseract OCR on\s+(\d+)\s+MKV VobSub image`)
+	ocrBitmapCountPattern = regexp.MustCompile(
+		`(?i)Running tesseract OCR on\s+(\d+)\s+.*image(?:s|\(s\))?`,
+	)
 	ocrDroppedCountPattern = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
 )
+
+type OCRProgressFunc func(processed, total int)
 
 func isBitmapSubtitleCodecName(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
@@ -28,7 +35,30 @@ func isBitmapSubtitleCodecName(codec string) bool {
 	}
 }
 
-func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream FFProbeStream, input SubtitleExtractionInput) (SubtitleExtractionResult, error) {
+func scanLinesAndCarriageReturns(
+	data []byte,
+	atEOF bool,
+) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+
+	return 0, nil, nil
+}
+
+func generateBitmapSubtitleSidecar(
+	ctx context.Context,
+	mediaPath string,
+	stream FFProbeStream,
+	input SubtitleExtractionInput,
+	onProgress OCRProgressFunc,
+) (SubtitleExtractionResult, error) {
 	format := strings.ToLower(strings.TrimSpace(input.Format))
 	if format == "" {
 		format = "srt"
@@ -73,7 +103,18 @@ func generateBitmapSubtitleSidecar(ctx context.Context, mediaPath string, stream
 	tempName := "ocr." + format
 	tempPath := filepath.Join(tempDir, tempName)
 	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
-	message, err := runBitmapOCR(ctx, mediaPath, stream, format, language, input.OCRMode, tempPath, rawTempPath)
+
+	message, err := runBitmapOCR(
+		ctx,
+		mediaPath,
+		stream,
+		format,
+		language,
+		input.OCRMode,
+		tempPath,
+		rawTempPath,
+		onProgress,
+	)
 	if err != nil {
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
 	}
@@ -135,7 +176,19 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	defer os.RemoveAll(tempDir)
 	tempPath := filepath.Join(tempDir, "ocr."+format)
 	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
-	message, runErr := runBitmapOCR(ctx, mediaPath, stream, format, language, ocrMode, tempPath, rawTempPath)
+
+	message, runErr := runBitmapOCR(
+		ctx,
+		mediaPath,
+		stream,
+		format,
+		language,
+		ocrMode,
+		tempPath,
+		rawTempPath,
+		nil,
+	)
+
 	if runErr != nil {
 		return fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, runErr.Error()))
 	}
@@ -196,7 +249,13 @@ func extractPGSSubtitleForOCR(
 	return strings.TrimSpace(string(output)), nil
 }
 
-func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, format, language, mode, outputPath, rawOutputPath string) (string, error) {
+func runBitmapOCR(
+	ctx context.Context,
+	mediaPath string,
+	stream FFProbeStream,
+	format, language, mode, outputPath, rawOutputPath string,
+	onProgress OCRProgressFunc,
+) (string, error) {
 	mode = normalizedOCRMode(mode)
 	dir := filepath.Dir(outputPath)
 
@@ -236,6 +295,7 @@ func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, f
 		first,
 		false,
 		useTrackNumber,
+		onProgress,
 	)
 
 	message = strings.TrimSpace(extractionMessage + "\n" + message)
@@ -255,6 +315,7 @@ func runBitmapOCR(ctx context.Context, mediaPath string, stream FFProbeStream, f
 			second,
 			true,
 			useTrackNumber,
+			onProgress,
 		)
 		message = strings.TrimSpace(message + "\n" + secondMessage)
 		if secondErr == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
@@ -280,6 +341,7 @@ func runSeConvOCRPass(
 	outputPath string,
 	preserveColors bool,
 	useTrackNumber bool,
+	onProgress OCRProgressFunc,
 ) (string, error) {
 	args := []string{
 		inputPath,
@@ -309,7 +371,7 @@ func runSeConvOCRPass(
 		)
 	}
 
-	return runSeConv(ctx, args)
+	return runSeConvWithProgress(ctx, args, onProgress)
 }
 
 func runSeConvCleanup(ctx context.Context, inputPath, format, language, outputPath string) (string, error) {
@@ -329,6 +391,100 @@ func runSeConv(ctx context.Context, args []string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	return strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n")), err
+}
+
+func runSeConvWithProgress(
+	ctx context.Context,
+	args []string,
+	onProgress OCRProgressFunc,
+) (string, error) {
+	cmd := exec.CommandContext(ctx, "seconv", args...)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	var output bytes.Buffer
+	var wg sync.WaitGroup
+
+	process := func(r io.Reader) {
+		defer wg.Done()
+
+		scanner := bufio.NewScanner(r)
+		scanner.Split(scanLinesAndCarriageReturns)
+
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+
+			if line == "" {
+				continue
+			}
+
+			output.WriteString(line)
+			output.WriteByte('\n')
+
+			fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
+
+			if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
+				if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
+					fmt.Fprintf(
+						os.Stderr,
+						"\n[SECONV-PROGRESS] total=%d\n",
+						total,
+					)
+
+					if onProgress != nil {
+						onProgress(0, total)
+					}
+				}
+			}
+		}
+
+		// for scanner.Scan() {
+		// 	line := scanner.Text()
+
+		// 	output.WriteString(line)
+		// 	output.WriteByte('\n')
+
+		// 	lower := strings.ToLower(line)
+
+		// 	if strings.Contains(lower, "ocr") ||
+		// 		strings.Contains(lower, "tesseract") ||
+		// 		strings.Contains(lower, "image") ||
+		// 		strings.Contains(lower, "%") {
+		// 		fmt.Printf("[seconv-ocr] %s\n", line)
+		// 	}
+
+		// 	// Primero detectamos el total reportado por SeConv.
+		// 	if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
+		// 		if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
+		// 			if onProgress != nil {
+		// 				onProgress(0, total)
+		// 			}
+		// 		}
+		// 	}
+		// }
+	}
+
+	wg.Add(2)
+
+	go process(stdoutPipe)
+	go process(stderrPipe)
+
+	waitErr := cmd.Wait()
+	wg.Wait()
+
+	return strings.TrimSpace(output.String()), waitErr
 }
 
 func ocrDictionaryFolder() string {

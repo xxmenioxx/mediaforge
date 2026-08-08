@@ -927,3 +927,37 @@ export type QualityRecommendationResponse = {
   estimatedSavingsMinBytes: number;
   estimatedSavingsMaxBytes: number;
 };
+
+export type SubtitleExtractionResult = {
+  created: string[];
+  existing: string[];
+  unsupported: string[];
+};
+
+export type SubtitleExtractionOperation = {
+  id: string;
+  assetPath: string;
+  status: 'running' | 'completed' | 'error';
+  phase:
+    | 'preparing'
+    | 'extracting'
+    | 'ocr'
+    | 'cleanup'
+    | 'publishing'
+    | 'completed'
+    | 'error';
+  progress: number;
+  processed: number;
+  total: number;
+  streamIndex: number;
+  format: 'srt' | 'ass';
+  message?: string;
+  result?: SubtitleExtractionResult;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SubtitleExtractionOperationList = {
+  operations: SubtitleExtractionOperation[];
+};

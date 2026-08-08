@@ -46,7 +46,7 @@ import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Component, useEffect, useState } from 'react';
+import { Component, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
@@ -57,6 +57,7 @@ import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, 
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
+import { resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -73,6 +74,7 @@ export function AssetsPage() {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+  //const operations = await api.subtitleExtractionOperations(asset.path);
   const audioProfiles = getAudioProfiles(settings.data);
   const trackProfiles = getTrackProfiles(settings.data);
   const assetCategories = getAssetCategories(settings.data);
@@ -1037,6 +1039,7 @@ function AssetRow({
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleContent, setSubtitleContent] = useState('');
   const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
+  const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
@@ -1180,7 +1183,13 @@ function AssetRow({
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile) || hasTrackSelectionOverride(conversionDraft);
+  useEffect(() => {
+    if (!showSnapshotDialog || asset.status === 'archive' || asset.missing) {
+      return;
+    }
 
+    void restoreSubtitleOperations();
+  }, [showSnapshotDialog, asset.path]);
   useEffect(() => {
     if (!firstCategory(assetMetadata.categories)) {
       setCategory(groupCategory);
@@ -1313,26 +1322,195 @@ function AssetRow({
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
   }
 
-  async function generateExternalSubtitle(streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string, ocrMode?: 'raw' | 'clean' | 'accurate') {
-    const key = subtitleGenerationKey(streamIndex, format);
-    setSubtitleGenerations((current) => ({
-      ...current,
-      [key]: { status: 'running', streamIndex, format },
-    }));
+  function delay(ms: number) {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  const restoreSubtitleOperations = async (assetPath: string) => {
     try {
-      const result = await api.extractAssetSubtitles({ path: asset.path, streamIndex, format, ocrLanguage, ocrMode });
+      const response = await subtitleExtractionOperations(assetPath);
+
+      const runningOperations = response.operations.filter(
+        (operation) => operation.status === 'running',
+      );
+
+      for (const operation of runningOperations) {
+        const key = `${operation.streamIndex}:${operation.format}`;
+
+        setSubtitleGenerationState((current) => ({
+          ...current,
+          [key]: {
+            status: 'generating',
+            phase: operation.phase,
+            progress: operation.progress,
+            processed: operation.processed,
+            total: operation.total,
+            message: operation.message,
+          },
+        }));
+
+        void waitForSubtitleOperation(
+          operation.id,
+          key,
+          operation.streamIndex,
+          operation.format,
+        );
+      }
+    } catch (error) {
+      console.error('Failed to restore subtitle OCR operations', error);
+    }
+  };
+
+  async function waitForSubtitleOperation(
+    operationId: string,
+    key: string,
+    streamIndex: number,
+    format: 'srt' | 'ass',
+  ) {
+    if (subtitleOperationPollers.current.has(operationId)) {
+      return;
+    }
+    subtitleOperationPollers.current.add(operationId);
+    try {
+      while (true) {
+        const operation = await api.subtitleExtractionOperation(operationId);
+
+        setSubtitleGenerations((current) => ({
+          ...current,
+          [key]: {
+            status: 'running',
+            streamIndex,
+            format,
+            progress: operation.progress,
+            phase: operation.phase,
+            processed: operation.processed,
+            total: operation.total,
+            message: operation.message,
+          },
+        }));
+
+        if (operation.status === 'completed') {
+          return operation.result;
+        }
+
+        if (operation.status === 'error') {
+          throw new Error(
+            operation.error ||
+              operation.message ||
+              'Subtitle OCR failed.',
+          );
+        }
+
+        await delay(500);
+      }
+    } finally {
+      subtitleOperationPollers.current.delete(operationId);
+  }
+}
+async function restoreSubtitleOperations() {
+  try {
+    const response = await api.subtitleExtractionOperations(asset.path);
+
+    const runningOperations = response.operations.filter(
+      (operation) => operation.status === 'running',
+    );
+
+    for (const operation of runningOperations) {
+      const format = operation.format as 'srt' | 'ass';
+      const key = subtitleGenerationKey(operation.streamIndex, format);
+
       setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: {
+          status: 'running',
+          streamIndex: operation.streamIndex,
+          format,
+          phase: operation.phase,
+          progress: operation.progress,
+          processed: operation.processed,
+          total: operation.total,
+          message: operation.message,
+        },
+      }));
+
+      void waitForSubtitleOperation(
+        operation.id,
+        key,
+        operation.streamIndex,
+        format,
+      );
+    }
+  } catch (error) {
+    console.error(
+      'Failed to restore subtitle extraction operations',
+      error,
+    );
+  }
+}
+
+async function generateExternalSubtitle(
+  streamIndex: number,
+  format: 'srt' | 'ass',
+  ocrLanguage?: string,
+  ocrMode?: 'raw' | 'clean' | 'accurate',
+) {
+  const key = subtitleGenerationKey(streamIndex, format);
+
+  setSubtitleGenerations((current) => ({
+    ...current,
+    [key]: {
+      status: 'running',
+      streamIndex,
+      format,
+      progress: 0,
+      phase: 'preparing',
+      processed: 0,
+      total: 0,
+      message: 'Preparing subtitle generation',
+    },
+  }));
+
+  try {
+    const response = await api.extractAssetSubtitles({
+      path: asset.path,
+      streamIndex,
+      format,
+      ocrLanguage,
+      ocrMode,
+    });
+
+    let result;
+
+    if ('operationId' in response) {
+      result = await waitForSubtitleOperation(
+        response.operationId,
+        key,
+        streamIndex,
+        format,
+      );
+    } else {
+      result = response;
+    }
+
+    setSubtitleGenerations((current) => ({
         ...current,
         [key]: {
           status: 'success',
           streamIndex,
           format,
-          message: result.created.length
+          progress: 100,
+          phase: 'completed',
+          message: result?.created.length
             ? `Generated ${result.created.length} ${format.toUpperCase()} file(s).`
-            : `${result.existing.length} ${format.toUpperCase()} file(s) already existed.`,
+            : `${result?.existing.length ?? 0} ${format.toUpperCase()} file(s) already existed.`,
         },
       }));
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+
+      await queryClient.invalidateQueries({
+        queryKey: ['externalSubtitles', asset.path],
+      });
     } catch (error) {
       setSubtitleGenerations((current) => ({
         ...current,
@@ -1340,12 +1518,14 @@ function AssetRow({
           status: 'error',
           streamIndex,
           format,
-          message: error instanceof Error ? error.message : 'Subtitle generation failed.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Subtitle generation failed.',
         },
       }));
     }
   }
-
 
   function resetConversionOverrides() {
     const empty: AssetConversionOverrideState = {};
@@ -2114,10 +2294,37 @@ function EmbeddedSubtitleActions({
                 <Box key={subtitleGenerationKey(stream.index, generation.format)}>
                   {generation.status === 'running' ? (
                     <Stack spacing={0.5}>
-                      <Typography variant="caption" color="text.secondary">
-                        Generating {generation.format.toUpperCase()} for stream #{stream.index}…
-                      </Typography>
-                      <LinearProgress aria-label={`Generating ${generation.format.toUpperCase()} subtitle for stream ${stream.index}`} />
+                      <Stack direction="row" justifyContent="space-between">
+                        <Typography variant="caption" color="text.secondary">
+                          {generation.phase === 'extracting'
+                            ? 'Extracting bitmap subtitle…'
+                            : generation.phase === 'ocr'
+                              ? generation.total
+                                ? `OCR ${generation.processed ?? 0} / ${generation.total} images`
+                                : 'Running OCR…'
+                              : generation.phase === 'cleanup'
+                                ? 'Cleaning OCR text…'
+                                : generation.phase === 'publishing'
+                                  ? 'Publishing subtitle…'
+                                  : `Preparing ${generation.format.toUpperCase()}…`}
+                        </Typography>
+
+                        {typeof generation.progress === 'number' ? (
+                          <Typography variant="caption" color="text.secondary">
+                            {Math.round(generation.progress)}%
+                          </Typography>
+                        ) : null}
+                      </Stack>
+
+                      <LinearProgress
+                        variant={
+                          typeof generation.progress === 'number'
+                            ? 'determinate'
+                            : 'indeterminate'
+                        }
+                        value={generation.progress}
+                        aria-label={`Generating ${generation.format.toUpperCase()} subtitle for stream ${stream.index}`}
+                      />
                     </Stack>
                   ) : (
                     <Alert severity={generation.status === 'success' ? 'success' : 'warning'} sx={{ py: 0 }}>
@@ -2139,6 +2346,18 @@ type SubtitleGenerationState = {
   streamIndex: number;
   format: 'srt' | 'ass';
   message?: string;
+
+  progress?: number;
+  phase?:
+    | 'preparing'
+    | 'extracting'
+    | 'ocr'
+    | 'cleanup'
+    | 'publishing'
+    | 'completed'
+    | 'error';
+  processed?: number;
+  total?: number;
 };
 
 function subtitleGenerationKey(streamIndex: number, format: 'srt' | 'ass') {
@@ -2311,8 +2530,16 @@ function AssetConversionOverridePanel({
   const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
   const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
   const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes((draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase());
-  const qsvLookAheadAvailable = qsvMain10Selected && qsvCapability?.qsvLaIcqMain10 === true;
-  const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
+  const qsvRateControl =
+    draft.qsvRateControl ||
+    stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') ||
+    'icq';
+
+  const qsvFeatures = resolveQSVFeatures(qsvCapability, {
+    main10: qsvMain10Selected,
+    rateControl: qsvRateControl,
+  });
+
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const selectedHardwareQualityPreset = String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended');
   const effectiveHardwarePresetConfig = selectedHardwareQualityPreset !== 'custom'
@@ -2613,17 +2840,31 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
-                      <MenuItem value="la_icq" disabled={!qsvLookAheadAvailable}>LA-ICQ · Main10 required</MenuItem>
+                      <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 required</MenuItem>
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                    <TextField label="Look-ahead depth" type="number" value={draft.qsvLookAheadDepth ?? Number(profile?.workerConfig?.qsvLookAheadDepth ?? 40)} onChange={(event) => onChange('qsvLookAheadDepth', Number(event.target.value))} inputProps={{ min: 10, max: 100 }} disabled={!qsvLookAheadAvailable} size="small" fullWidth />
+                    <TextField label="Look-ahead depth" type="number" value={draft.qsvLookAheadDepth ?? Number(profile?.workerConfig?.qsvLookAheadDepth ?? 40)} onChange={(event) => onChange('qsvLookAheadDepth', Number(event.target.value))} inputProps={{ min: 10, max: 100 }} disabled={!qsvFeatures.lookAhead} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, md: 6 }}>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
-                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)} />} label="Adaptive I" />
-                      <FormControlLabel control={<Checkbox disabled={!qsvAdvancedAvailable} checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)} />} label="Adaptive B" />
+                      <FormControlLabel control={<Checkbox disabled={!qsvFeatures.extBrc} checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
+                      <FormControlLabel control={
+                        <Checkbox
+                          disabled={!qsvFeatures.adaptiveI}
+                          checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} 
+                          onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)
+                        } 
+                        />
+                      } label="Adaptive I" />
+                      <FormControlLabel control={
+                        <Checkbox
+                          disabled={!qsvFeatures.adaptiveB}
+                          checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} 
+                          onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)
+                        }
+                        />
+                      } label="Adaptive B" />
                     </Stack>
                   </Grid>
                   <Grid size={{ xs: 12 }}>

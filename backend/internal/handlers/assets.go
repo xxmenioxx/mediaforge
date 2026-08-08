@@ -92,6 +92,7 @@ type subtitleExtractionOperation struct {
 	Total       int                       `json:"total"`
 	StreamIndex int                       `json:"streamIndex"`
 	Format      string                    `json:"format"`
+	AssetPath   string                    `json:"assetPath"`
 	Message     string                    `json:"message,omitempty"`
 	Result      *SubtitleExtractionResult `json:"result,omitempty"`
 	Error       string                    `json:"error,omitempty"`
@@ -618,6 +619,28 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
 }
 
+func (h *AssetHandler) ListSubtitleExtractionOperations(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+
+	subtitleExtractionOperations.RLock()
+	defer subtitleExtractionOperations.RUnlock()
+
+	operations := make([]subtitleExtractionOperation, 0)
+
+	for _, operation := range subtitleExtractionOperations.items {
+		if path != "" && operation.AssetPath != path {
+			continue
+		}
+
+		snapshot := *operation
+		operations = append(operations, snapshot)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"operations": operations,
+	})
+}
+
 func (h *AssetHandler) GetSubtitleExtractionOperation(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
@@ -887,19 +910,159 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		_ = os.Remove(tempPath)
 		result.Created = append(result.Created, plan.OutputPath)
 	}
-	for _, stream := range bitmapStreams {
-		ocrResult, ocrErr := generateBitmapSubtitleSidecar(c.Request.Context(), path, stream, input)
-		if ocrErr != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"error":       ocrErr.Error(),
-				"created":     result.Created,
-				"existing":    result.Existing,
-				"unsupported": result.Unsupported,
-			})
-			return
+
+	if len(bitmapStreams) > 0 {
+		stream := bitmapStreams[0]
+
+		operationID := fmt.Sprintf(
+			"ocr-%d-%d",
+			stream.Index,
+			time.Now().UnixNano(),
+		)
+
+		now := time.Now()
+
+		operation := &subtitleExtractionOperation{
+			ID:          operationID,
+			AssetPath:   path,
+			Status:      "running",
+			Phase:       "preparing",
+			Progress:    1,
+			Processed:   0,
+			Total:       0,
+			StreamIndex: stream.Index,
+			Format:      input.Format,
+			Message:     "Preparing subtitle OCR",
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		}
-		result.Created = append(result.Created, ocrResult.Created...)
-		result.Existing = append(result.Existing, ocrResult.Existing...)
+
+		subtitleExtractionOperations.Lock()
+		subtitleExtractionOperations.items[operationID] = operation
+		subtitleExtractionOperations.Unlock()
+
+		// Important:
+		// Do not use c.Request.Context() here.
+		// That context is cancelled as soon as this HTTP request finishes.
+		go func(
+			operationID string,
+			mediaPath string,
+			stream FFProbeStream,
+			input SubtitleExtractionInput,
+			initialResult SubtitleExtractionResult,
+		) {
+			ctx, cancel := context.WithTimeout(
+				context.Background(),
+				2*time.Hour,
+			)
+			defer cancel()
+
+			updateSubtitleExtractionOperation(
+				operationID,
+				func(op *subtitleExtractionOperation) {
+					op.Phase = "ocr"
+					op.Progress = 10
+					op.Message = "Running subtitle OCR"
+				},
+			)
+
+			ocrResult, ocrErr := generateBitmapSubtitleSidecar(
+				ctx,
+				mediaPath,
+				stream,
+				input,
+				func(processed, total int) {
+					if total <= 0 {
+						return
+					}
+
+					progress := 15.0
+
+					if processed > 0 {
+						progress = 15 + (float64(processed)/float64(total))*70
+					}
+
+					updateSubtitleExtractionOperation(
+						operationID,
+						func(op *subtitleExtractionOperation) {
+							op.Status = "running"
+							op.Phase = "ocr"
+							op.Progress = progress
+							op.Processed = processed
+							op.Total = total
+
+							if processed > 0 {
+								op.Message = fmt.Sprintf(
+									"OCR %d / %d images",
+									processed,
+									total,
+								)
+							} else {
+								op.Message = fmt.Sprintf(
+									"OCR preparing %d images",
+									total,
+								)
+							}
+						},
+					)
+				},
+			)
+
+			if ocrErr != nil {
+				updateSubtitleExtractionOperation(
+					operationID,
+					func(op *subtitleExtractionOperation) {
+						op.Status = "error"
+						op.Phase = "error"
+						op.Error = ocrErr.Error()
+						op.Message = "Subtitle OCR failed"
+					},
+				)
+				return
+			}
+
+			finalResult := initialResult
+			finalResult.Created = append(
+				finalResult.Created,
+				ocrResult.Created...,
+			)
+			finalResult.Existing = append(
+				finalResult.Existing,
+				ocrResult.Existing...,
+			)
+			finalResult.Unsupported = append(
+				finalResult.Unsupported,
+				ocrResult.Unsupported...,
+			)
+
+			updateSubtitleExtractionOperation(
+				operationID,
+				func(op *subtitleExtractionOperation) {
+					op.Status = "completed"
+					op.Phase = "completed"
+					op.Progress = 100
+					op.Message = "Subtitle OCR completed"
+					op.Result = &finalResult
+				},
+			)
+		}(
+			operationID,
+			path,
+			stream,
+			input,
+			result,
+		)
+
+		c.JSON(http.StatusAccepted, gin.H{
+			"operationId": operationID,
+			"status":      "running",
+			"phase":       "preparing",
+			"progress":    1,
+			"streamIndex": stream.Index,
+			"format":      input.Format,
+		})
+
+		return
 	}
 
 	c.JSON(http.StatusOK, result)

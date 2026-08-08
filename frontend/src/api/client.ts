@@ -43,6 +43,9 @@ import type {
   WorkerNode,
   SchedulerRecoveryReport,
   HousekeepingReport,
+  SubtitleExtractionOperation,
+  SubtitleExtractionOperationList,
+  SubtitleExtractionResult,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -52,6 +55,12 @@ export class ApiRequestError extends Error {
     super(message);
     this.name = 'ApiRequestError';
   }
+}
+
+export async function subtitleExtractionOperations(path: string) {
+  return apiGet<{ operations: SubtitleExtractionOperation[] }>(
+    `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
+  );
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -142,15 +151,53 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  extractAssetSubtitles: (input: string | { path: string; streamIndex?: number; format?: 'srt' | 'ass'; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }) => {
+  extractAssetSubtitles: (
+    input:
+      | string
+      | {
+          path: string;
+          streamIndex?: number;
+          format?: 'srt' | 'ass';
+          ocrLanguage?: string;
+          ocrMode?: 'raw' | 'clean' | 'accurate';
+        },
+  ) => {
     const value = typeof input === 'string' ? { path: input } : input;
-    return request<{ created: string[]; existing: string[]; unsupported: string[] }>(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {
+
+    return request<
+      | SubtitleExtractionResult
+      | {
+          operationId: string;
+          status: string;
+          phase: string;
+          progress: number;
+          streamIndex: number;
+          format: 'srt' | 'ass';
+        }
+    >(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {
       method: 'POST',
-      body: JSON.stringify({ streamIndex: value.streamIndex, format: value.format, ocrLanguage: value.ocrLanguage, ocrMode: value.ocrMode }),
+      body: JSON.stringify({
+        streamIndex: value.streamIndex,
+        format: value.format,
+        ocrLanguage: value.ocrLanguage,
+        ocrMode: value.ocrMode,
+      }),
     });
   },
+  subtitleExtractionOperation: (operationId: string) =>
+    request<SubtitleExtractionOperation>(
+      `/api/assets/extract-subtitles/${encodeURIComponent(operationId)}`,
+    ),
+
+  subtitleExtractionOperations: (path: string) =>
+    request<SubtitleExtractionOperationList>(
+      `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
+    ),
+
   externalAssetSubtitles: (path: string) =>
-    request<ExternalSubtitle[]>(`/api/assets/external-subtitles?path=${encodeURIComponent(path)}`),
+    request<ExternalSubtitle[]>(
+      `/api/assets/external-subtitles?path=${encodeURIComponent(path)}`,
+    ),
   externalAssetSubtitleContent: (input: { path: string; subtitlePath: string }) =>
     request<{ path: string; content: string }>(`/api/assets/external-subtitles/content?path=${encodeURIComponent(input.path)}&subtitlePath=${encodeURIComponent(input.subtitlePath)}`),
   updateExternalAssetSubtitle: (input: { path: string; subtitlePath: string; content: string }) =>
