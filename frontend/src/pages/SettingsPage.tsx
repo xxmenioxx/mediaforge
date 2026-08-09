@@ -43,7 +43,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport } from '../api/types';
+import type { HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe } from '../api/types';
 
 type LibraryType = {
   key: string;
@@ -133,6 +133,22 @@ type SettingsForm = {
   };
 };
 
+type RemoteExecutorConfig = {
+  name: string;
+  enabled: boolean;
+  host: string;
+  user: string;
+  sshKeyPath: string;
+  knownHostsPath: string;
+  ffmpegPath: string;
+  ffprobePath: string;
+  storageRoot: string;
+};
+
+type RemoteExecutorsValue = {
+  executors: RemoteExecutorConfig[];
+};
+
 const defaultLibraryTypes: LibraryType[] = [
   { key: 'movies', label: 'Movies', description: 'Feature films and movie collections.', extensions: ['.mkv', '.mp4', '.avi', '.mov'] },
   { key: 'tv', label: 'TV Shows', description: 'Episode-based libraries.', extensions: ['.mkv', '.mp4'] },
@@ -201,6 +217,51 @@ const emptyDraft: LibraryTypeDraft = {
   extensions: [],
   extensionInput: '',
 };
+
+function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
+  const record =
+    value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {};
+
+  const executors = Array.isArray(record.executors)
+    ? record.executors
+    : [];
+
+  return {
+    executors: executors
+      .filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === 'object',
+      )
+      .map((item) => ({
+        name: typeof item.name === 'string' ? item.name : '',
+        enabled: item.enabled !== false,
+        host: typeof item.host === 'string' ? item.host : '',
+        user: typeof item.user === 'string' ? item.user : '',
+        sshKeyPath:
+          typeof item.sshKeyPath === 'string'
+            ? item.sshKeyPath
+            : '/etc/mvforge/ssh/id_ed25519',
+        knownHostsPath:
+          typeof item.knownHostsPath === 'string'
+            ? item.knownHostsPath
+            : '/etc/mvforge/ssh/known_hosts',
+        ffmpegPath:
+          typeof item.ffmpegPath === 'string'
+            ? item.ffmpegPath
+            : '/usr/local/bin/ffmpeg',
+        ffprobePath:
+          typeof item.ffprobePath === 'string'
+            ? item.ffprobePath
+            : '/usr/local/bin/ffprobe',
+        storageRoot:
+          typeof item.storageRoot === 'string'
+            ? item.storageRoot
+            : '',
+      })),
+  };
+}
 
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -692,6 +753,23 @@ export function SettingsPage() {
               />
             ) : null}
 
+            {section === 'runtime' ? (
+              <RemoteExecutorsCard
+                value={remoteExecutorsValue(
+                  settings.data?.find(
+                    (item) => item.key === 'remoteExecutors',
+                  )?.value,
+                )}
+                saving={updateSetting.isPending}
+                onSave={(value) =>
+                  updateSetting.mutate({
+                    key: 'remoteExecutors',
+                    value: value as unknown as Record<string, unknown>,
+                  })
+                }
+              />
+            ) : null}
+            
             {section === 'pipeline' ? (
               <DirectPlayCard
                 value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
@@ -1850,6 +1928,240 @@ function OriginalRetentionCard({ form, setForm }: SettingsCardProps) {
           <Alert severity="info">
             Cleanup will only apply to originals tracked by MVForge after a successful conversion.
           </Alert>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RemoteExecutorsCard({
+  value,
+  saving,
+  onSave,
+}: {
+  value: RemoteExecutorsValue;
+  saving: boolean;
+  onSave: (value: RemoteExecutorsValue) => void;
+}) {
+  const [draft, setDraft] = useState<RemoteExecutorsValue>(value);
+  const [probeResult, setProbeResult] = useState<RemoteExecutorProbe | null>(
+    null,
+  );
+  const [probing, setProbing] = useState(false);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const executor = draft.executors[0] ?? {
+    name: 'macbook',
+    enabled: true,
+    host: '',
+    user: 'anuelvs',
+    sshKeyPath: '/etc/mvforge/ssh/id_ed25519',
+    knownHostsPath: '/etc/mvforge/ssh/known_hosts',
+    ffmpegPath: '/usr/local/bin/ffmpeg',
+    ffprobePath: '/usr/local/bin/ffprobe',
+    storageRoot:
+      '/Volumes/docker/nas-media-stack/work/mediaforge',
+  };
+
+  function updateExecutor(
+    key: keyof RemoteExecutorConfig,
+    nextValue: string | boolean,
+  ) {
+    setDraft({
+      executors: [
+        {
+          ...executor,
+          [key]: nextValue,
+        },
+      ],
+    });
+  }
+
+  async function probe() {
+    setProbing(true);
+    setProbeResult(null);
+
+    try {
+      const result = await api.probeRemoteExecutor(executor);
+      setProbeResult(result);
+    } catch (error) {
+      setProbeResult({
+        name: executor.name,
+        reachable: false,
+        ffmpegAvailable: false,
+        ffprobeAvailable: false,
+        videoToolbox: false,
+        storageAccessible: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Remote executor probe failed.',
+      });
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack>
+            <Typography variant="h3">Remote Executors</Typography>
+            <Typography color="text.secondary" variant="body2">
+              Optional machines that can provide additional media processing
+              capacity.
+            </Typography>
+          </Stack>
+
+          <FormControlLabel
+            control={
+              <Switch
+                checked={executor.enabled}
+                onChange={(event) =>
+                  updateExecutor('enabled', event.target.checked)
+                }
+              />
+            }
+            label="Enabled"
+          />
+
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, md: 4 }}>
+              <TextField
+                label="Name"
+                value={executor.name}
+                onChange={(event) =>
+                  updateExecutor('name', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 4 }}>
+              <TextField
+                label="Host"
+                value={executor.host}
+                onChange={(event) =>
+                  updateExecutor('host', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 4 }}>
+              <TextField
+                label="User"
+                value={executor.user}
+                onChange={(event) =>
+                  updateExecutor('user', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="FFmpeg path"
+                value={executor.ffmpegPath}
+                onChange={(event) =>
+                  updateExecutor('ffmpegPath', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="FFprobe path"
+                value={executor.ffprobePath}
+                onChange={(event) =>
+                  updateExecutor('ffprobePath', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12 }}>
+              <TextField
+                label="Storage root"
+                value={executor.storageRoot}
+                onChange={(event) =>
+                  updateExecutor('storageRoot', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="SSH key path"
+                value={executor.sshKeyPath}
+                onChange={(event) =>
+                  updateExecutor('sshKeyPath', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="Known hosts path"
+                value={executor.knownHostsPath}
+                onChange={(event) =>
+                  updateExecutor('knownHostsPath', event.target.value)
+                }
+                fullWidth
+              />
+            </Grid>
+          </Grid>
+
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="contained"
+              startIcon={<SaveIcon />}
+              disabled={saving}
+              onClick={() => onSave(draft)}
+            >
+              Save Executor
+            </Button>
+
+            <Button
+              variant="outlined"
+              disabled={probing || !executor.host}
+              onClick={() => void probe()}
+            >
+              {probing ? 'Probing…' : 'Probe'}
+            </Button>
+          </Stack>
+
+          {probeResult ? (
+            <Alert
+              severity={
+                probeResult.reachable &&
+                probeResult.ffmpegAvailable &&
+                probeResult.ffprobeAvailable &&
+                probeResult.storageAccessible
+                  ? 'success'
+                  : 'warning'
+              }
+            >
+              {probeResult.reachable
+                ? `${probeResult.hostname ?? executor.name} · FFmpeg ${
+                    probeResult.ffmpegAvailable ? 'OK' : 'missing'
+                  } · FFprobe ${
+                    probeResult.ffprobeAvailable ? 'OK' : 'missing'
+                  } · VideoToolbox ${
+                    probeResult.videoToolbox ? 'available' : 'unavailable'
+                  } · Storage ${
+                    probeResult.storageAccessible ? 'OK' : 'unavailable'
+                  }`
+                : probeResult.error ?? 'Executor is unreachable.'}
+            </Alert>
+          ) : null}
         </Stack>
       </CardContent>
     </Card>

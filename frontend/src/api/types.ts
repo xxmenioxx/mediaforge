@@ -961,3 +961,32 @@ export type SubtitleExtractionOperation = {
 export type SubtitleExtractionOperationList = {
   operations: SubtitleExtractionOperation[];
 };
+
+export type RemoteExecutorConfig = {
+  name: string;
+  enabled: boolean;
+  host: string;
+  user: string;
+  sshKeyPath: string;
+  knownHostsPath: string;
+  ffmpegPath: string;
+  ffprobePath: string;
+  storageRoot: string;
+};
+
+export type RemoteExecutorsSetting = {
+  executors: RemoteExecutorConfig[];
+};
+
+export type RemoteExecutorProbe = {
+  name: string;
+  reachable: boolean;
+  hostname?: string;
+  ffmpegAvailable: boolean;
+  ffmpegVersion?: string;
+  ffprobeAvailable: boolean;
+  ffprobeVersion?: string;
+  videoToolbox: boolean;
+  storageAccessible: boolean;
+  error?: string;
+};

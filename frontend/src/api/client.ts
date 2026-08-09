@@ -46,6 +46,8 @@ import type {
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
   SubtitleExtractionResult,
+  RemoteExecutorConfig,
+  RemoteExecutorProbe,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -187,6 +189,12 @@ export const api = {
     request<SubtitleExtractionOperationList>(
       `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
     ),
+
+  probeRemoteExecutor: (executor: RemoteExecutorConfig) =>
+    request<RemoteExecutorProbe>('/api/remote-executors/probe', {
+      method: 'POST',
+      body: JSON.stringify(executor),
+    }),
 
   externalAssetSubtitles: (path: string) =>
     request<ExternalSubtitle[]>(
