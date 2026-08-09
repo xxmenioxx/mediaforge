@@ -90,6 +90,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets/preview/metrics", assets.CompatiblePreviewMetrics)
 		api.GET("/assets/preview/audio", assets.AudioPreview)
 		api.POST("/remote-executors/probe", assets.ProbeRemoteExecutor)
+		api.POST("/remote-executors/test-conversion", assets.TestRemoteExecutorConversion)
 		api.POST("/analysis/backfill-as-is", handlers.BackfillAnalysisFromAsIsReports(db))
 		api.GET("/paths/browse", paths.Browse)
 		api.POST("/advisor/evaluate", advisor.Evaluate)
