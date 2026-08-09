@@ -133,6 +133,11 @@ type SettingsForm = {
   };
 };
 
+type RemoteStorageMapping = {
+  localRoot: string;
+  remoteRoot: string;
+};
+
 type RemoteExecutorConfig = {
   name: string;
   enabled: boolean;
@@ -142,7 +147,7 @@ type RemoteExecutorConfig = {
   knownHostsPath: string;
   ffmpegPath: string;
   ffprobePath: string;
-  storageRoot: string;
+  storageMappings: RemoteStorageMapping[];
 };
 
 type RemoteExecutorsValue = {
@@ -255,10 +260,37 @@ function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
           typeof item.ffprobePath === 'string'
             ? item.ffprobePath
             : '/usr/local/bin/ffprobe',
-        storageRoot:
-          typeof item.storageRoot === 'string'
-            ? item.storageRoot
-            : '',
+        storageMappings:
+          Array.isArray(item.storageMappings)
+            ? item.storageMappings
+                .filter(
+                  (
+                    mapping,
+                  ): mapping is {
+                    localRoot: string;
+                    remoteRoot: string;
+                  } =>
+                    typeof mapping === 'object' &&
+                    mapping !== null &&
+                    typeof mapping.localRoot === 'string' &&
+                    typeof mapping.remoteRoot === 'string',
+                )
+                .map((mapping) => ({
+                  localRoot: mapping.localRoot,
+                  remoteRoot: mapping.remoteRoot,
+                }))
+            : typeof item.storageRoot === 'string'
+              ? [
+                  {
+                    localRoot: '/media/raw',
+                    remoteRoot: `${item.storageRoot}/raw`,
+                  },
+                  {
+                    localRoot: '/media/staging',
+                    remoteRoot: `${item.storageRoot}/staging`,
+                  },
+                ]
+              : [],
       })),
   };
 }
@@ -1962,8 +1994,16 @@ function RemoteExecutorsCard({
     knownHostsPath: '/etc/mvforge/ssh/known_hosts',
     ffmpegPath: '/usr/local/bin/ffmpeg',
     ffprobePath: '/usr/local/bin/ffprobe',
-    storageRoot:
-      '/Volumes/docker/nas-media-stack/work/mediaforge',
+    storageMappings: [
+      {
+        localRoot: '/media/raw',
+        remoteRoot: '/Volumes/docker/nas-media-stack/work/mediaforge/raw',
+      },
+      {
+        localRoot: '/media/staging',
+        remoteRoot: '/Volumes/docker/nas-media-stack/work/mediaforge/staging',
+      },
+    ],
   };
 
   function updateExecutor(
@@ -1980,6 +2020,28 @@ function RemoteExecutorsCard({
     });
   }
 
+  function updateStorageMapping(
+    index: number,
+    key: keyof RemoteStorageMapping,
+    nextValue: string,
+  ) {
+    setDraft({
+      executors: [
+        {
+          ...executor,
+          storageMappings: executor.storageMappings.map(
+            (mapping, mappingIndex) =>
+              mappingIndex === index
+                ? {
+                    ...mapping,
+                    [key]: nextValue,
+                  }
+                : mapping,
+          ),
+        },
+      ],
+    });
+  }
   async function probe() {
     setProbing(true);
     setProbeResult(null);
@@ -2085,16 +2147,57 @@ function RemoteExecutorsCard({
               />
             </Grid>
 
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                label="Storage root"
-                value={executor.storageRoot}
-                onChange={(event) =>
-                  updateExecutor('storageRoot', event.target.value)
-                }
-                fullWidth
-              />
-            </Grid>
+           <Grid size={{ xs: 12 }}>
+            <Typography variant="h4">Storage mappings</Typography>
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              label="NAS Raw path"
+              value={executor.storageMappings[0]?.localRoot ?? ''}
+              onChange={(event) =>
+                updateStorageMapping(0, 'localRoot', event.target.value)
+              }
+              helperText="Path visible to the MVForge backend."
+              fullWidth
+            />
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              label="Mac Raw path"
+              value={executor.storageMappings[0]?.remoteRoot ?? ''}
+              onChange={(event) =>
+                updateStorageMapping(0, 'remoteRoot', event.target.value)
+              }
+              helperText="Equivalent path visible to the remote executor."
+              fullWidth
+            />
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              label="NAS Staging path"
+              value={executor.storageMappings[1]?.localRoot ?? ''}
+              onChange={(event) =>
+                updateStorageMapping(1, 'localRoot', event.target.value)
+              }
+              helperText="Staging path visible to MVForge."
+              fullWidth
+            />
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              label="Mac Staging path"
+              value={executor.storageMappings[1]?.remoteRoot ?? ''}
+              onChange={(event) =>
+                updateStorageMapping(1, 'remoteRoot', event.target.value)
+              }
+              helperText="Equivalent staging path visible to the remote executor."
+              fullWidth
+            />
+          </Grid>
 
             <Grid size={{ xs: 12, md: 6 }}>
               <TextField

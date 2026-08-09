@@ -962,6 +962,11 @@ export type SubtitleExtractionOperationList = {
   operations: SubtitleExtractionOperation[];
 };
 
+export type RemoteStorageMapping = {
+  localRoot: string;
+  remoteRoot: string;
+};
+
 export type RemoteExecutorConfig = {
   name: string;
   enabled: boolean;
@@ -971,7 +976,7 @@ export type RemoteExecutorConfig = {
   knownHostsPath: string;
   ffmpegPath: string;
   ffprobePath: string;
-  storageRoot: string;
+  storageMappings: RemoteStorageMapping[];
 };
 
 export type RemoteExecutorsSetting = {
