@@ -53,11 +53,11 @@ import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, ProfileSuggestion, QueueJob, ScanResult, StreamMetadataOverride } from '../api/types';
+import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -67,6 +67,11 @@ export function AssetsPage() {
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
+  const snapshotOperations = useQuery({
+    queryKey: ['snapshotOperations'],
+    queryFn: () => api.snapshotOperations(''),
+    refetchInterval: 1500,
+  });
   const queryClient = useQueryClient();
   const syncAssets = useMutation({
     mutationFn: api.syncAssets,
@@ -86,6 +91,11 @@ export function AssetsPage() {
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
   const filteredGroups = filterAssetGroups(currentGroups, assetQuery);
+  const runningSnapshotPaths = new Set(
+    (snapshotOperations.data?.operations ?? [])
+      .filter((operation) => operation.status === 'running')
+      .map((operation) => operation.assetPath),
+  );
 
   return (
     <>
@@ -187,6 +197,7 @@ export function AssetsPage() {
                 settings={settings.data ?? []}
                 assetCategories={assetCategories}
                 queueJobs={jobs.data ?? []}
+                runningSnapshotPaths={runningSnapshotPaths}
                 mode={tab}
                 query={assetQuery}
                 emptyLabel={
@@ -348,6 +359,7 @@ function AssetTable({
   settings,
   assetCategories,
   queueJobs,
+  runningSnapshotPaths,
   mode,
   query,
   emptyLabel,
@@ -360,6 +372,7 @@ function AssetTable({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
+  runningSnapshotPaths: Set<string>;
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
   query: string;
   emptyLabel: string;
@@ -385,18 +398,18 @@ function AssetTable({
 
   return (
     <>
-      <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
-        <Table size="small" sx={{ minWidth: 980, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
+      <Box sx={{ overflowX: { xs: 'hidden', sm: 'auto' }, borderTop: 1, borderColor: 'divider' }}>
+        <Table size="small" sx={{ minWidth: { xs: 0, sm: 980 }, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 390 }}>Asset group</TableCell>
-              <TableCell sx={{ width: 130 }}>Library</TableCell>
-              <TableCell sx={{ width: 140 }}>Status</TableCell>
-              {showConfidence ? <TableCell sx={{ width: 130 }}>Confidence</TableCell> : null}
-              <TableCell sx={{ width: 70 }}>Files</TableCell>
-              <TableCell sx={{ width: 120 }}>Size</TableCell>
-              <TableCell sx={{ width: 165 }}>Modified</TableCell>
-              <TableCell padding="checkbox" sx={{ width: 52 }} />
+              <TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Asset group</TableCell>
+              <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Library</TableCell>
+              <TableCell sx={{ width: { xs: '32%', sm: 140 } }}>Status</TableCell>
+              {showConfidence ? <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Confidence</TableCell> : null}
+              <TableCell sx={{ width: 70, display: { xs: 'none', md: 'table-cell' } }}>Files</TableCell>
+              <TableCell sx={{ width: 120, display: { xs: 'none', md: 'table-cell' } }}>Size</TableCell>
+              <TableCell sx={{ width: 165, display: { xs: 'none', md: 'table-cell' } }}>Modified</TableCell>
+              <TableCell padding="checkbox" sx={{ width: { xs: '10%', sm: 52 } }} />
             </TableRow>
           </TableHead>
           <TableBody>
@@ -412,6 +425,7 @@ function AssetTable({
                   settings={settings}
                   assetCategories={assetCategories}
                   queueJobs={queueJobs}
+                  runningSnapshotPaths={runningSnapshotPaths}
                   mode={mode}
                 />
               ))
@@ -436,6 +450,10 @@ function AssetTable({
           setRowsPerPage(Number(event.target.value));
           setPage(0);
         }}
+        sx={{
+          '& .MuiTablePagination-toolbar': { px: { xs: 1, sm: 2 } },
+          '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } },
+        }}
       />
     </>
   );
@@ -450,6 +468,7 @@ function AssetGroupRow({
   settings,
   assetCategories,
   queueJobs,
+  runningSnapshotPaths,
   mode,
 }: {
   group: AssetGroup;
@@ -460,6 +479,7 @@ function AssetGroupRow({
   settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
+  runningSnapshotPaths: Set<string>;
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
@@ -709,7 +729,7 @@ function AssetGroupRow({
             </Typography>
           </Stack>
         </TableCell>
-        <TableCell>{group.libraryName}</TableCell>
+        <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>{group.libraryName}</TableCell>
         <TableCell>
           <Stack spacing={0.75} alignItems="flex-start">
             <Chip
@@ -721,7 +741,7 @@ function AssetGroupRow({
           </Stack>
         </TableCell>
         {showConfidenceColumn ? (
-          <TableCell>
+          <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>
             {!isReadOnlyGroup ? (
               <Stack direction="row" spacing={1} alignItems="center" onClick={(event) => event.stopPropagation()}>
                 <Switch
@@ -739,9 +759,9 @@ function AssetGroupRow({
             ) : null}
           </TableCell>
         ) : null}
-        <TableCell>{group.fileCount}</TableCell>
-        <TableCell>{formatBytes(group.sizeBytes)}</TableCell>
-        <TableCell>{formatDate(group.modifiedAt)}</TableCell>
+        <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{group.fileCount}</TableCell>
+        <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{formatBytes(group.sizeBytes)}</TableCell>
+        <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{formatDate(group.modifiedAt)}</TableCell>
         <TableCell padding="checkbox" align="center">
           <ExpandMoreIcon
             aria-hidden
@@ -970,6 +990,7 @@ function AssetGroupRow({
                           groupLibraryId={selectedLibraryId}
                           hasOpenJob={queueGroup.isPending || assetHasOpenJob(asset, queueJobs)}
                           queueJobs={queueJobs}
+                          snapshotRunning={runningSnapshotPaths.has(asset.path)}
                           mode={mode}
                           bulkSelected={selectedAssetPaths.includes(asset.path)}
                           bulkSelectionEnabled={isReadOnlyGroup && hasMultipleSelectableAssets}
@@ -1004,6 +1025,7 @@ function AssetRow({
   groupLibraryId,
   hasOpenJob,
   queueJobs,
+  snapshotRunning,
   mode,
   bulkSelected,
   bulkSelectionEnabled,
@@ -1024,6 +1046,7 @@ function AssetRow({
   groupLibraryId: number;
   hasOpenJob: boolean;
   queueJobs: QueueJob[];
+  snapshotRunning: boolean;
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
   bulkSelected: boolean;
   bulkSelectionEnabled: boolean;
@@ -1036,6 +1059,7 @@ function AssetRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [snapshotTab, setSnapshotTab] = useState(0);
+  const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleContent, setSubtitleContent] = useState('');
   const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
@@ -1052,12 +1076,25 @@ function AssetRow({
   const [conversionDraft, setConversionDraft] = useState<AssetConversionOverrideState>(() => normalizeAssetConversionOverride(asset.conversion));
   const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
   const snapshot = useMutation({
-    mutationFn: api.scan,
+    mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
+      let operation = await api.startSnapshotOperation(input);
+      setSnapshotOperation(operation);
+      while (operation.status === 'running') {
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+        operation = await api.snapshotOperation(operation.id);
+        setSnapshotOperation(operation);
+      }
+      if (operation.status === 'error' || !operation.result) {
+        throw new Error(operation.error || 'Asset snapshot did not return a result');
+      }
+      return operation.result;
+    },
     onSuccess: async (scan) => {
       if (asset.status !== 'converted' && asset.status !== 'archive') {
         profileSuggestion.mutate(scan.path);
       }
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
+      await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
     },
   });
   const externalSubtitles = useQuery({
@@ -1688,10 +1725,12 @@ async function generateExternalSubtitle(
                 <PlayCircleIcon />
               </IconButton>
             </Tooltip>
-            <Tooltip title="Scan snapshot">
-              <IconButton color="primary" onClick={openSnapshotDialog} aria-label={`Scan ${asset.fileName}`} sx={actionIconSx}>
-                <ManageSearchIcon />
-              </IconButton>
+            <Tooltip title={snapshotRunning || snapshot.isPending ? 'Snapshot analysis is already running for this asset' : 'Scan snapshot'}>
+              <span>
+                <IconButton color="primary" onClick={openSnapshotDialog} disabled={snapshotRunning || snapshot.isPending} aria-label={`Scan ${asset.fileName}`} sx={actionIconSx}>
+                  <ManageSearchIcon />
+                </IconButton>
+              </span>
             </Tooltip>
             {isArchive ? (
               <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
@@ -1941,7 +1980,18 @@ async function generateExternalSubtitle(
               </Stack>
             </Stack>
             {asset.missing ? <Alert severity="warning">This indexed asset is marked as missing. Synchronize Assets and verify that the backend media mount contains the file before scanning it.</Alert> : null}
-            {snapshot.isPending ? <Alert severity="info">Reading asset snapshot...</Alert> : null}
+            {snapshot.isPending ? (
+              <Alert severity="info">
+                <Stack spacing={1}>
+                  <Typography variant="body2">{snapshotOperation?.message || 'Preparing this asset snapshot…'}</Typography>
+                  <LinearProgress
+                    variant={snapshotOperation && snapshotOperation.progress > 0 ? 'determinate' : 'indeterminate'}
+                    value={snapshotOperation?.progress ?? 0}
+                  />
+                  <Typography variant="caption">Only {asset.fileName} is being analyzed.</Typography>
+                </Stack>
+              </Alert>
+            ) : null}
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
@@ -2507,6 +2557,11 @@ function AssetConversionOverridePanel({
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
+    extendedBRC: draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true,
+    adaptiveI: draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true,
+    adaptiveB: draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true,
+  });
 
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const selectedHardwareQualityPreset = String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended');
@@ -2808,7 +2863,7 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
-                      <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 required</MenuItem>
+                      <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · Main10 required</MenuItem>
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2816,10 +2871,10 @@ function AssetConversionOverridePanel({
                   </Grid>
                   <Grid size={{ xs: 12, md: 6 }}>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      <FormControlLabel control={<Checkbox disabled={!qsvFeatures.extBrc} checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
+                      <FormControlLabel control={<Checkbox disabled={!qsvFeatures.extBrc && !(draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true)} checked={draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true} onChange={(event) => onChange('qsvExtendedBrc', event.target.checked)} />} label="Extended BRC" />
                       <FormControlLabel control={
                         <Checkbox
-                          disabled={!qsvFeatures.adaptiveI}
+                          disabled={!qsvFeatures.adaptiveI && !(draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true)}
                           checked={draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true} 
                           onChange={(event) => onChange('qsvAdaptiveI', event.target.checked)
                         } 
@@ -2827,7 +2882,7 @@ function AssetConversionOverridePanel({
                       } label="Adaptive I" />
                       <FormControlLabel control={
                         <Checkbox
-                          disabled={!qsvFeatures.adaptiveB}
+                          disabled={!qsvFeatures.adaptiveB && !(draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true)}
                           checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} 
                           onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)
                         }
@@ -2840,6 +2895,7 @@ function AssetConversionOverridePanel({
                       QSV low-power mode remains disabled for NAS compatibility. Unsupported features are omitted after the runtime smoke test.
                     </Typography>
                   </Grid>
+                  {qsvWarnings.map((warning) => <Grid key={warning} size={{ xs: 12 }}><Alert severity="warning">{warning}</Alert></Grid>)}
                 </Grid>
               ) : null}
               {videoToolboxSelected ? (

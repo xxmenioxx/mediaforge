@@ -2658,15 +2658,19 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		}
 
 		qsvFrameWarnings := []string{}
+		qsvFeatureStatus := QSVFeatureStatus{}
 
 		if effectiveVideoEncoder == "hevc_qsv" && effectivePreviewProfile != nil {
-			adaptiveBRequested := boolSetting(
-				effectivePreviewProfile.WorkerConfig["qsvAdaptiveB"],
-				false,
-			)
+			qsvFeatureStatus = QSVFeatureStatus{
+				AdaptiveIRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveI"], false),
+				AdaptiveIEffective: argumentValue(videoCodecArguments, "-adaptive_i") == "1",
+				AdaptiveBRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveB"], false),
+				AdaptiveBEffective: argumentValue(videoCodecArguments, "-adaptive_b") == "1",
+			}
 
 			qsvFrameWarnings = qsvFrameStructureWarnings(
-				adaptiveBRequested,
+				qsvFeatureStatus,
+				sourceFrameStructure,
 				outputFrameStructure,
 			)
 		}
@@ -2677,6 +2681,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			"sourceFrameStructure":    sourceFrameStructure,
 			"outputFrameStructure":    outputFrameStructure,
 			"qsvFrameWarnings":        qsvFrameWarnings,
+			"qsvFeatureStatus":        qsvFeatureStatus,
 			"cacheHit":                cacheHit,
 			"previewMode":             previewMode,
 			"start":                   start,

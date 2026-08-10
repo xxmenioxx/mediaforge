@@ -187,6 +187,16 @@ func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
 			recommendations = append(recommendations, "Black borders vary across sampled scenes. Do not crop automatically; inspect multiple LAB previews.")
 		}
 	}
+	if frames := scan.FrameStructureAnalysis; len(frames) > 0 {
+		bRatio, _ := frames["bFrameRatio"].(float64)
+		bRun := jsonMapInt(frames, "maxConsecutiveBFrames")
+		pFrames := jsonMapInt(frames, "pFrames")
+		if bRatio >= 0.9 || bRun >= 12 || pFrames == 0 {
+			recommendations = append(recommendations, fmt.Sprintf("The source has an unusual frame structure (%.1f%% B-frames, longest B run %d, P-frames %d). Validate GOP behavior in LAB and avoid assuming Adaptive B caused it.", bRatio*100, bRun, pFrames))
+		} else if bRatio >= 0.5 {
+			recommendations = append(recommendations, fmt.Sprintf("The source uses B-frames heavily (%.1f%% of the sampled frames). Compare the encoded preview before accepting the profile.", bRatio*100))
+		}
+	}
 	if high <= 0 {
 		recommendations = append(recommendations, "The estimated output is not smaller than the source, so conversion is not recommended for storage savings alone.")
 	}

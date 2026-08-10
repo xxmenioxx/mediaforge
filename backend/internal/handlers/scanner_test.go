@@ -1,15 +1,83 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:snapshot-operation-single-asset?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	selectedPath := filepath.Join(t.TempDir(), "selected.mkv")
+	if err := os.WriteFile(selectedPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(selectedPath)
+	selected := models.ScanResult{
+		Path: selectedPath, FileName: filepath.Base(selectedPath), SizeBytes: info.Size(), CreatedAt: time.Now(),
+		RawProbe: models.JSONMap{}, FrameStructureAnalysis: models.JSONMap{"version": 1, "framesAnalyzed": 500},
+	}
+	other := models.ScanResult{Path: filepath.Join(t.TempDir(), "other.mkv"), FileName: "other.mkv", SizeBytes: 99, CreatedAt: time.Now()}
+	if err := db.Create(&selected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{}
+	snapshotOperations.Unlock()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/scan/operations", NewScannerHandler(db).StartSnapshotOperation)
+	body, _ := json.Marshal(ScanRequest{Path: selectedPath})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/scan/operations", bytes.NewReader(body)))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", response.Code, response.Body.String())
+	}
+	var operation SnapshotOperation
+	if err := json.Unmarshal(response.Body.Bytes(), &operation); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshotOperations.RLock()
+		current := snapshotOperations.items[operation.ID]
+		if current != nil {
+			operation = *current
+		}
+		snapshotOperations.RUnlock()
+		if operation.Status != "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if operation.Status != "completed" || operation.Result == nil || operation.Result.Path != selectedPath {
+		t.Fatalf("unexpected operation: %#v", operation)
+	}
+	var untouched models.ScanResult
+	if err := db.Where("path = ?", other.Path).First(&untouched).Error; err != nil || untouched.SizeBytes != 99 {
+		t.Fatalf("unselected asset changed: %#v err=%v", untouched, err)
+	}
+}
 
 func TestIsHDRDoesNotTreatTenBitSDRAsHDR(t *testing.T) {
 	stream := FFProbeStream{

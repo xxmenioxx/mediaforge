@@ -69,13 +69,22 @@ func (QSVTranslator) Translate(intent QualityIntent, capability WorkerCapabiliti
 		recommendation.Profile, recommendation.PixelFormat = "main", "nv12"
 		recommendation.Warnings = append(recommendation.Warnings, "QSV Main10 is unavailable; effective output was downgraded to Main 8-bit")
 	}
-	if effectiveRateControl == "la_icq" {
-		recommendation.LookAhead, recommendation.LookAheadDepth = true, 40
-	}
-	if recommendation.Profile == "main10" && capability.FullCombination {
-		recommendation.ExtendedBRC = capability.ExtendedBRC
+	if recommendation.Profile == "main10" && qsvPresetAllowsAdvanced(intent.Preset) {
 		recommendation.AdaptiveI = capability.AdaptiveI
 		recommendation.AdaptiveB = capability.AdaptiveB
+		switch effectiveRateControl {
+		case "la_icq":
+			recommendation.LookAhead = capability.LAICQ
+		case "vbr":
+			recommendation.LookAhead = capability.VBRLookAhead
+			recommendation.ExtendedBRC = capability.VBRExtendedBRC
+		case "cbr":
+			recommendation.LookAhead = capability.CBRLookAhead
+			recommendation.ExtendedBRC = capability.CBRExtendedBRC
+		}
+		if recommendation.LookAhead {
+			recommendation.LookAheadDepth = 40
+		}
 	}
 	applyQSVEstimate(&recommendation, intent)
 	if effectiveRateControl == "vbr" || effectiveRateControl == "cbr" {
@@ -96,6 +105,10 @@ func (QSVTranslator) Translate(intent QualityIntent, capability WorkerCapabiliti
 		}
 	}
 	return recommendation, nil
+}
+
+func qsvPresetAllowsAdvanced(preset Preset) bool {
+	return preset == PresetHighQuality || preset == PresetArchive || preset == PresetMaster
 }
 
 func qsvComplexityAdjustment(intent QualityIntent) (int, []string) {

@@ -1657,9 +1657,42 @@ func qsvWorkerArgs(profile models.Profile) []string {
 	return qsvWorkerArgsForCapability(profile, capabilities.CheckEncoder("hevc_qsv"))
 }
 
+type qsvEffectiveFeatures struct {
+	LookAhead   bool
+	ExtendedBRC bool
+	AdaptiveI   bool
+	AdaptiveB   bool
+}
+
+func resolveQSVEffectiveFeatures(profile models.Profile, capability capabilities.EncoderCapability) qsvEffectiveFeatures {
+	if !profileUsesTenBit(profile) {
+		return qsvEffectiveFeatures{}
+	}
+	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvEffectiveRateControl"])))
+	if rateControl == "" {
+		rateControl = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
+	}
+	features := qsvEffectiveFeatures{
+		AdaptiveI: capability.QSVAdaptiveIMain10,
+		AdaptiveB: capability.QSVAdaptiveBMain10,
+	}
+	switch rateControl {
+	case "la_icq":
+		features.LookAhead = capability.QSVLAICQMain10
+	case "vbr":
+		features.LookAhead = capability.QSVVBRLookAheadMain10
+		features.ExtendedBRC = capability.QSVVBRExtBRCMain10
+	case "cbr":
+		features.LookAhead = capability.QSVCBRLookAheadMain10
+		features.ExtendedBRC = capability.QSVCBRExtBRCMain10
+	}
+	return features
+}
+
 func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.EncoderCapability) []string {
 	args := []string{}
 	main10 := profileUsesTenBit(profile)
+	features := resolveQSVEffectiveFeatures(profile, capability)
 	lowPowerSupported := capability.TestedModes["qsvLowPowerMain8"]
 	if main10 {
 		lowPowerSupported = capability.QSVLowPowerMain10
@@ -1671,25 +1704,23 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if rateControl == "" {
 		rateControl = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
 	}
-	lookAheadEnabled := main10 && rateControl == "la_icq" && capability.QSVLAICQMain10
+	lookAheadEnabled := main10 && features.LookAhead
 	if lookAheadEnabled {
-		args = append(args, "-look_ahead", "1")
+		if rateControl == "la_icq" {
+			args = append(args, "-look_ahead", "1")
+		}
 	}
 	lookAheadDepth := workerIntValue(profile.WorkerConfig["qsvLookAheadDepth"], 0)
 	if lookAheadEnabled && lookAheadDepth > 0 {
 		args = append(args, "-look_ahead_depth", fmt.Sprintf("%d", min(100, max(10, lookAheadDepth))))
 	}
-	advancedCombination := main10 && capability.QSVFullCombination
-	if profileWorkerBool(profile, "qsvExtendedBRC", false) && capability.ExtendedBRC && advancedCombination {
+	if profileWorkerBool(profile, "qsvExtendedBRC", false) && features.ExtendedBRC {
 		args = append(args, "-extbrc", "1")
-		if !lookAheadEnabled && lookAheadDepth > 0 {
-			args = append(args, "-look_ahead_depth", fmt.Sprintf("%d", min(100, max(10, lookAheadDepth))))
-		}
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveI", false) && capability.AdaptiveI && advancedCombination {
+	if profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
 		args = append(args, "-adaptive_i", "1")
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveB", false) && capability.AdaptiveB && advancedCombination {
+	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
 		args = append(args, "-adaptive_b", "1")
 	}
 	return args

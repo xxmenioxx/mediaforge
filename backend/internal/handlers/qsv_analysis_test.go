@@ -46,7 +46,19 @@ func TestQSVFrameStructureAssessment(t *testing.T) {
 				HasBFrames:            true,
 				MaxConsecutiveBFrames: 3,
 			},
-			assessment: "The stream uses a strong B-frame structure.",
+			assessment: "The stream uses B-frames with a balanced I/P/B structure.",
+		},
+		{
+			name: "extreme b frame structure",
+			analysis: QSVFrameStructureAnalysis{
+				FramesAnalyzed:        500,
+				IFrames:               2,
+				BFrames:               498,
+				HasBFrames:            true,
+				BFrameRatio:           0.996,
+				MaxConsecutiveBFrames: 247,
+			},
+			assessment: "Unusual frame structure: the sample is B-frame-dominant, has no detected P-frames, and contains very long B-frame runs.",
 		},
 	}
 
@@ -68,59 +80,55 @@ func TestQSVFrameStructureAssessment(t *testing.T) {
 
 func TestQSVFrameStructureWarnings(t *testing.T) {
 	tests := []struct {
-		name               string
-		adaptiveBRequested bool
-		output             QSVFrameStructureAnalysis
-		expected           []string
+		name     string
+		features QSVFeatureStatus
+		source   QSVFrameStructureAnalysis
+		output   QSVFrameStructureAnalysis
+		expected []string
 	}{
 		{
-			name:               "adaptive b without b frames",
-			adaptiveBRequested: true,
-			output: QSVFrameStructureAnalysis{
-				FramesAnalyzed: 100,
-				KeyFrames:      2,
-			},
+			name:     "unsupported requested features",
+			features: QSVFeatureStatus{AdaptiveIRequested: true, AdaptiveBRequested: true},
+			output:   QSVFrameStructureAnalysis{FramesAnalyzed: 100, PFrames: 99, KeyFrames: 2},
 			expected: []string{
-				"Adaptive B was requested, but no B-frames were detected in the encoded preview.",
+				"Adaptive I was requested but the active worker did not validate it for this QSV combination, so MVForge left it out of the command.",
+				"Adaptive B was requested but the active worker did not validate it for this QSV combination, so MVForge left it out of the command.",
 			},
 		},
 		{
-			name:               "adaptive b with limited structure",
-			adaptiveBRequested: true,
-			output: QSVFrameStructureAnalysis{
-				FramesAnalyzed:        100,
-				BFrames:               30,
-				HasBFrames:            true,
-				MaxConsecutiveBFrames: 1,
-				KeyFrames:             2,
-			},
-			expected: []string{
-				"Adaptive B produced only a limited B-frame structure in this preview sample.",
-			},
-		},
-		{
-			name:               "strong b frame structure",
-			adaptiveBRequested: true,
-			output: QSVFrameStructureAnalysis{
-				FramesAnalyzed:        100,
-				BFrames:               70,
-				HasBFrames:            true,
+			name: "extreme b frame structure is independent from switches",
+			source: QSVFrameStructureAnalysis{
+				FramesAnalyzed:        500,
+				PFrames:               203,
+				BFrameRatio:           0.58,
 				MaxConsecutiveBFrames: 3,
+			},
+			output: QSVFrameStructureAnalysis{
+				FramesAnalyzed:        500,
+				BFrames:               477,
+				HasBFrames:            true,
+				BFrameRatio:           0.954,
+				MaxConsecutiveBFrames: 247,
 				KeyFrames:             2,
+				AverageGOPLength:      248,
 			},
 			expected: []string{
-				"The encoded preview produced a strong B-frame structure.",
+				"B-frames make up 95.4% of the sample. This is unusually high and may indicate an unstable or unsuitable GOP structure.",
+				"No P-frames were detected in the output sample. Review the GOP and B-frame behavior before using this profile for production.",
+				"The output contains a run of 247 consecutive B-frames. Long B-frame runs can reduce compatibility and make seeking less predictable.",
+				"The output frame structure changed substantially from the source: B-frame share 58.0% to 95.4%, longest B-frame run 3 to 247, and detected P-frames 203 to 0. Review compatibility and visual quality before adopting this configuration as a standard profile.",
+				"The average GOP is 248 frames, which is long for many playback and seeking workflows.",
 			},
 		},
 		{
-			name:               "sample too short for gop",
-			adaptiveBRequested: false,
+			name: "sample too short for gop",
 			output: QSVFrameStructureAnalysis{
 				FramesAnalyzed: 100,
+				PFrames:        99,
 				KeyFrames:      1,
 			},
 			expected: []string{
-				"The preview sample is too short to calculate a representative GOP average.",
+				"Only one keyframe was found, so the average GOP length is not representative for this sample.",
 			},
 		},
 	}
@@ -128,7 +136,8 @@ func TestQSVFrameStructureWarnings(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			warnings := qsvFrameStructureWarnings(
-				test.adaptiveBRequested,
+				test.features,
+				test.source,
 				test.output,
 			)
 

@@ -67,21 +67,28 @@ export function QueuePage() {
   const [editingJob, setEditingJob] = useState<QueueJob | null>(null);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState('');
   const [jobSearch, setJobSearch] = useState('');
-  const [jobSortDirection, setJobSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [jobSortDirection, setJobSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [jobGroupMode, setJobGroupMode] = useState<'worker' | 'asset'>('worker');
   const [jobsPerPage, setJobsPerPage] = useState(10);
   const [jobPage, setJobPage] = useState(1);
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
   const batchFilter = searchParams.get('batch') ?? '';
   const pathFilter = searchParams.get('path') ?? '';
+  const workerFilter = searchParams.get('worker') ?? 'all';
   const selectedJobId = Number(searchParams.get('job'));
   const jobHistory = useMemo(() => jobs.data ?? [], [jobs.data]);
   const allJobs = useMemo(() => latestJobsByAsset(jobHistory), [jobHistory]);
+  const workerOptions = useMemo(
+    () => [...new Set(allJobs.map((job) => job.workerName || 'unassigned'))].sort((left, right) => left.localeCompare(right)),
+    [allJobs],
+  );
   const filteredJobs = useMemo(
     () =>
       allJobs.filter((job) => {
         const matchesStatus = statusFilter === 'all' || job.status === statusFilter;
         const matchesBatch = !batchFilter || job.batchId === batchFilter;
         const matchesPath = !pathFilter || normalizePath(queueGroupPathFromMediaPath(job.mediaPath)) === normalizePath(pathFilter);
+        const matchesWorker = workerFilter === 'all' || (job.workerName || 'unassigned') === workerFilter;
         const query = jobSearch.trim().toLowerCase();
         const matchesSearch =
           !query ||
@@ -94,11 +101,11 @@ export function QueuePage() {
             job.errorMessage,
             job.audioProfileKey,
           ].some((value) => value.toLowerCase().includes(query));
-        return matchesStatus && matchesBatch && matchesPath && matchesSearch;
+        return matchesStatus && matchesBatch && matchesPath && matchesWorker && matchesSearch;
       }),
-    [allJobs, batchFilter, jobSearch, pathFilter, statusFilter],
+    [allJobs, batchFilter, jobSearch, pathFilter, statusFilter, workerFilter],
   );
-  const jobGroups = useMemo(() => buildJobGroups(filteredJobs, jobSortDirection), [filteredJobs, jobSortDirection]);
+  const jobGroups = useMemo(() => buildJobGroups(filteredJobs, jobSortDirection, jobGroupMode), [filteredJobs, jobGroupMode, jobSortDirection]);
   const totalJobPages = Math.max(1, Math.ceil(jobGroups.length / jobsPerPage));
   const pagedJobGroups = jobGroups.slice((jobPage - 1) * jobsPerPage, jobPage * jobsPerPage);
   const statusCounts = useMemo(() => summarizeStatusCounts(allJobs), [allJobs]);
@@ -106,7 +113,7 @@ export function QueuePage() {
 
   useEffect(() => {
     setJobPage(1);
-  }, [batchFilter, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter]);
+  }, [batchFilter, jobGroupMode, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter, workerFilter]);
 
   async function applyQueueSelections(input: QueueJobInput) {
     const asset = findQueueAsset(assets.data, input.mediaPath);
@@ -236,9 +243,9 @@ export function QueuePage() {
             Open Settings
           </Button>
         </Alert>
-        <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="space-between" useFlexGap sx={{ mb: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" justifyContent="space-between" useFlexGap sx={{ mb: 2 }}>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {(['queued', 'running', 'completed', 'failed', 'canceled', 'all'] as const).map((status) => (
+            {(['all', 'running', 'queued', 'completed', 'failed', 'canceled'] as const).map((status) => (
               <Button
                 key={status}
                 variant={statusFilter === status ? 'contained' : 'outlined'}
@@ -250,26 +257,29 @@ export function QueuePage() {
                   if (batchFilter) {
                     nextParams.set('batch', batchFilter);
                   }
+                  if (workerFilter !== 'all') {
+                    nextParams.set('worker', workerFilter);
+                  }
                   setSearchParams(nextParams);
                 }}
               >
                 {statusLabel(status)} {statusCounts[status]}
               </Button>
             ))}
-            {batchFilter || pathFilter ? (
+            {batchFilter || pathFilter || workerFilter !== 'all' ? (
               <Button color="warning" size="small" variant="outlined" onClick={() => setSearchParams(statusFilter === 'all' ? {} : { status: statusFilter })}>
                 Clear focus
               </Button>
             ) : null}
           </Stack>
-          <Button startIcon={<PlaylistAddIcon />} variant="contained" onClick={openCreateJobDialog}>
+          <Button startIcon={<PlaylistAddIcon />} variant="contained" onClick={openCreateJobDialog} sx={{ width: { xs: '100%', sm: 'auto' } }}>
             Queue Job
           </Button>
         </Stack>
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Grid container spacing={1.5} alignItems="center">
-              <Grid size={{ xs: 12, md: 6 }}>
+              <Grid size={{ xs: 12, md: 4 }}>
                 <TextField
                   label="Search jobs"
                   value={jobSearch}
@@ -277,6 +287,38 @@ export function QueuePage() {
                   placeholder="Job number, asset, status, worker, notes..."
                   fullWidth
                 />
+              </Grid>
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  label="View"
+                  value={jobGroupMode}
+                  onChange={(event) => setJobGroupMode(event.target.value as 'worker' | 'asset')}
+                  select
+                  fullWidth
+                >
+                  <MenuItem value="worker">By worker</MenuItem>
+                  <MenuItem value="asset">By asset</MenuItem>
+                </TextField>
+              </Grid>
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  label="Worker"
+                  value={workerFilter}
+                  onChange={(event) => {
+                    const nextParams = new URLSearchParams(searchParams);
+                    const value = event.target.value;
+                    if (value === 'all') nextParams.delete('worker');
+                    else nextParams.set('worker', value);
+                    setSearchParams(nextParams);
+                  }}
+                  select
+                  fullWidth
+                >
+                  <MenuItem value="all">All workers</MenuItem>
+                  {workerOptions.map((worker) => (
+                    <MenuItem key={worker} value={worker}>{worker === 'unassigned' ? 'Unassigned' : worker}</MenuItem>
+                  ))}
+                </TextField>
               </Grid>
               <Grid size={{ xs: 6, md: 2 }}>
                 <TextField
@@ -305,8 +347,8 @@ export function QueuePage() {
                   ))}
                 </TextField>
               </Grid>
-              <Grid size={{ xs: 12, md: 2 }}>
-                <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
+              <Grid size={{ xs: 12 }}>
+                <Stack direction="row" spacing={1} justifyContent={{ xs: 'stretch', md: 'flex-end' }} sx={{ '& > button': { flex: { xs: 1, md: 'initial' } } }}>
                   <Button variant="outlined" disabled={jobPage <= 1} onClick={() => setJobPage((current) => Math.max(1, current - 1))}>
                     Prev
                   </Button>
@@ -441,6 +483,7 @@ type QueueJobGroup = {
   failed: number;
   running: number;
   queued: number;
+  isWorkerGroup: boolean;
 };
 
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
@@ -721,19 +764,24 @@ function QueueGroupCard({
         <Stack spacing={1}>
           {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
           {batchAction.isError ? <Alert severity="warning">Could not complete the batch action. Refresh Queue to review the remaining jobs.</Alert> : null}
-          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
+          <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
               <Typography variant="h3" sx={{ wordBreak: 'break-word' }}>
                 {group.name}
               </Typography>
-              <Chip label={group.isBatch ? 'Folder batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} color={group.isBatch ? 'primary' : 'default'} size="small" />
+              <Chip label={group.isWorkerGroup ? 'Worker' : group.isBatch ? 'Folder batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} color={group.isBatch || group.isWorkerGroup ? 'primary' : 'default'} size="small" />
               <Chip label={`${group.completed}/${group.jobs.length} completed`} color="success" size="small" />
               <Chip label={`${group.queued} queued`} color="warning" size="small" />
               <Chip label={`${group.running} running`} color="primary" size="small" />
               <Chip label={`${group.progress}%`} color="primary" size="small" variant="outlined" />
               {group.failed ? <Chip label={`${group.failed} failed`} color="error" size="small" /> : null}
             </Stack>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1}
+              alignItems="stretch"
+              sx={{ flexShrink: 0, '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' } } }}
+            >
               {group.isBatch && (group.queued > 0 || group.running > 0) ? (
                 <Button
                   startIcon={<CancelIcon />}
@@ -855,7 +903,13 @@ function JobRow({
               {compactPath(job.mediaPath)}
             </Typography>
           </Stack>
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={0.75}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ '& .MuiButton-root': { flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' } } }}
+          >
             {nextPipelineAction(job) ? (
               <Button component={RouterLink} to={nextPipelineAction(job)?.to ?? '#'} variant="contained" size="small">
                 {nextPipelineAction(job)?.label}
@@ -984,29 +1038,31 @@ function JobRow({
   );
 }
 
-function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
+function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc', groupMode: 'worker' | 'asset') {
   const groups = new Map<string, QueueJobGroup>();
 
   [...jobs].sort((left, right) => sortJobIds(left, right, sortDirection)).forEach((job) => {
-    const groupId = queueGroupPathFromMediaPath(job.mediaPath);
+    const workerName = job.workerName || 'Unassigned';
+    const groupId = groupMode === 'worker' ? `worker:${workerName}` : queueGroupPathFromMediaPath(job.mediaPath);
     const existing = groups.get(groupId);
     const group =
       existing ??
       ({
         id: groupId,
-        name: job.batchName || groupId,
+        name: groupMode === 'worker' ? workerName : job.batchName || groupId,
         jobs: [],
-        isBatch: Boolean(job.batchId) || false,
-        batchId: job.batchId || '',
+        isBatch: groupMode === 'asset' && Boolean(job.batchId),
+        batchId: groupMode === 'asset' ? job.batchId || '' : '',
         progress: 0,
         completed: 0,
         failed: 0,
         running: 0,
         queued: 0,
+        isWorkerGroup: groupMode === 'worker',
       } satisfies QueueJobGroup);
 
     group.jobs.push(job);
-    if (job.batchId && !group.batchId) {
+    if (groupMode === 'asset' && job.batchId && !group.batchId) {
       group.batchId = job.batchId;
       group.isBatch = true;
     }
@@ -1036,9 +1092,10 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
     if (left.running !== right.running) {
       return right.running - left.running;
     }
-    const leftID = Math.max(...left.jobs.map((job) => job.id));
-    const rightID = Math.max(...right.jobs.map((job) => job.id));
-    return sortDirection === 'desc' ? rightID - leftID : leftID - rightID;
+    const leftID = sortDirection === 'desc' ? Math.max(...left.jobs.map((job) => job.id)) : Math.min(...left.jobs.map((job) => job.id));
+    const rightID = sortDirection === 'desc' ? Math.max(...right.jobs.map((job) => job.id)) : Math.min(...right.jobs.map((job) => job.id));
+    const order = sortDirection === 'desc' ? rightID - leftID : leftID - rightID;
+    return order || left.name.localeCompare(right.name);
   });
 }
 
@@ -1229,7 +1286,7 @@ function summarizeStatusCounts(jobs: QueueJob[]): QueueStatusCounts {
 function normalizeStatusFilter(value: string | null): QueueJob['status'] | 'all' {
   return value === 'all' || value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled'
     ? value
-    : 'queued';
+    : 'all';
 }
 
 function statusLabel(status: QueueJob['status'] | 'all') {

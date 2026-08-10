@@ -53,6 +53,15 @@ export function MediaSnapshotDetails({ scan, streamControls, metadataControls, s
         {scan.interlaceAnalysis?.recommendedMode ? <SnapshotChip label="Motion correction" value={scan.interlaceAnalysis.recommendedMode.toUpperCase()} /> : null}
         <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
         <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
+        {scan.frameStructureAnalysis?.framesAnalyzed ? (
+          <>
+            <SnapshotChip label="Frame sample" value={`${scan.frameStructureAnalysis.framesAnalyzed} frames`} />
+            <SnapshotChip label="Frame mix" value={`I ${scan.frameStructureAnalysis.iFrames} · P ${scan.frameStructureAnalysis.pFrames} · B ${scan.frameStructureAnalysis.bFrames}`} />
+            <SnapshotChip label="B-frame share" value={`${(scan.frameStructureAnalysis.bFrameRatio * 100).toFixed(1)}%`} />
+            <SnapshotChip label="Longest B run" value={`${scan.frameStructureAnalysis.maxConsecutiveBFrames}`} />
+            <SnapshotChip label="Average GOP" value={scan.frameStructureAnalysis.averageGopLength > 0 ? scan.frameStructureAnalysis.averageGopLength.toFixed(1) : 'Not enough keyframes'} />
+          </>
+        ) : null}
         {streamControls ? <SnapshotChip label="Selection savings" value={selectionSavingsLabel(scan, streamControls)} /> : null}
       </Stack> : null}
 

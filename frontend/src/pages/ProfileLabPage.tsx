@@ -57,6 +57,7 @@ import type {
   ScanResult,
   StreamMetadataOverride,
   QSVFrameStructureAnalysis,
+  QSVFeatureStatus,
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -64,7 +65,7 @@ import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
-import { resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -83,12 +84,14 @@ type RecommendationSectionState = Record<LabSection, boolean>;
 
 type LabFidelityInspection = {
   assetPath: string;
+  draftSignature: string;
   source: PreviewVideoCharacteristics;
   reference: PreviewVideoCharacteristics;
   conversion: PreviewVideoCharacteristics;
   sourceFrameStructure: QSVFrameStructureAnalysis;
   outputFrameStructure: QSVFrameStructureAnalysis;
   qsvFrameWarnings: string[];
+  qsvFeatureStatus: QSVFeatureStatus;
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -648,8 +651,12 @@ export function ProfileLabPage() {
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
+    extendedBRC: videoWorkerBool(videoDraft, 'qsvExtendedBRC'),
+    adaptiveI: videoWorkerBool(videoDraft, 'qsvAdaptiveI'),
+    adaptiveB: videoWorkerBool(videoDraft, 'qsvAdaptiveB'),
+  });
   
-  const qsvAdvancedAvailable = qsvMain10Selected && selectedHardwareCapability?.qsvFullCombination === true;
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
   const videoToolboxBFramesAvailable = selectedHardwareCapability?.videoToolboxBFrames === true
@@ -827,12 +834,14 @@ export function ProfileLabPage() {
       ]);
       return {
         assetPath: conversion.path,
+        draftSignature: JSON.stringify(conversion.profile ?? null),
         source: referenceInspection.source,
         reference: referenceInspection.output,
         conversion: conversionInspection.output,
         sourceFrameStructure: conversionInspection.sourceFrameStructure,
         outputFrameStructure: conversionInspection.outputFrameStructure,
         qsvFrameWarnings: conversionInspection.qsvFrameWarnings,
+        qsvFeatureStatus: conversionInspection.qsvFeatureStatus,
         requestedEncoder: conversionInspection.requestedEncoder,
         effectiveEncoder: conversionInspection.effectiveEncoder,
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
@@ -857,6 +866,7 @@ export function ProfileLabPage() {
     : undefined;
   const currentFidelityInspection =
     fidelityInspection.data?.assetPath === assetPath &&
+    fidelityInspection.data?.draftSignature === JSON.stringify(videoDraft) &&
     !fidelityInspection.isPending
     ? fidelityInspection.data
     : undefined;
@@ -1749,70 +1759,51 @@ export function ProfileLabPage() {
                         </code>
                       </pre>
                       {currentFidelityInspection?.effectiveEncoder === 'hevc_qsv' && (
-                        <div className="profile-lab-qsv-frame-analysis">
-                          <strong>QSV frame structure</strong>
-                          <div>
-                            Source:{' '}
-                            I {currentFidelityInspection.sourceFrameStructure.iFrames}
-                            {' · '}
-                            P {currentFidelityInspection.sourceFrameStructure.pFrames}
-                            {' · '}
-                            B {currentFidelityInspection.sourceFrameStructure.bFrames}
-                            {' · '}
-                            B ratio{' '}
-                            {(
-                              currentFidelityInspection.sourceFrameStructure.bFrameRatio * 100
-                            ).toFixed(1)}
-                            %
-                          </div>
-                          <div>
-                            Source B-run max:{' '}
-                            {currentFidelityInspection.sourceFrameStructure.maxConsecutiveBFrames}
-                            {' · '}
-                            Average GOP:{' '}
-                            {currentFidelityInspection.sourceFrameStructure.averageGopLength.toFixed(1)}
-                          </div>
-                          <div>
-                            Source assessment:{' '}
-                            {currentFidelityInspection.sourceFrameStructure.assessment}
-                          </div>
-                          <div>
-                            Output:{' '}
-                            I {currentFidelityInspection.outputFrameStructure.iFrames}
-                            {' · '}
-                            P {currentFidelityInspection.outputFrameStructure.pFrames}
-                            {' · '}
-                            B {currentFidelityInspection.outputFrameStructure.bFrames}
-                            {' · '}
-                            B ratio{' '}
-                            {(
-                              currentFidelityInspection.outputFrameStructure.bFrameRatio * 100
-                            ).toFixed(1)}
-                            %
-                          </div>
-                          <div>
-                            Output B-run max:{' '}
-                            {currentFidelityInspection.outputFrameStructure.maxConsecutiveBFrames}
-                            {' · '}
-                            Average GOP:{' '}
-                            {currentFidelityInspection.outputFrameStructure.averageGopLength.toFixed(1)}
-                          </div>
-                          <div>
-                            Output assessment:{' '}
-                            {currentFidelityInspection.outputFrameStructure.assessment}
-                          </div>
-                          {currentFidelityInspection.qsvFrameWarnings.length > 0 && (
-                            <div>
-                              <strong>QSV warnings</strong>
+                        <Card variant="outlined" className="profile-lab-qsv-frame-analysis">
+                          <CardContent>
+                            <Stack spacing={2}>
+                              <Stack spacing={0.5}>
+                                <Typography variant="h3">QSV frame structure</Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  How the sampled frames are organized. I-frames are reference points, P-frames predict forward, and B-frames predict from surrounding frames. These measurements describe the output; they do not prove that Adaptive I or Adaptive B was enabled.
+                                </Typography>
+                              </Stack>
 
-                              <ul>
-                                {currentFidelityInspection.qsvFrameWarnings.map((warning) => (
-                                  <li key={warning}>{warning}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
+                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                <Chip
+                                  size="small"
+                                  color={currentFidelityInspection.qsvFeatureStatus.adaptiveIEffective ? 'success' : currentFidelityInspection.qsvFeatureStatus.adaptiveIRequested ? 'warning' : 'default'}
+                                  label={`Adaptive I: ${qsvFeatureStateLabel(currentFidelityInspection.qsvFeatureStatus.adaptiveIRequested, currentFidelityInspection.qsvFeatureStatus.adaptiveIEffective)}`}
+                                />
+                                <Chip
+                                  size="small"
+                                  color={currentFidelityInspection.qsvFeatureStatus.adaptiveBEffective ? 'success' : currentFidelityInspection.qsvFeatureStatus.adaptiveBRequested ? 'warning' : 'default'}
+                                  label={`Adaptive B: ${qsvFeatureStateLabel(currentFidelityInspection.qsvFeatureStatus.adaptiveBRequested, currentFidelityInspection.qsvFeatureStatus.adaptiveBEffective)}`}
+                                />
+                              </Stack>
+
+                              <Grid container spacing={2}>
+                                <Grid size={{ xs: 12, md: 6 }}>
+                                  <QSVFrameStructureCard title="Source sample" analysis={currentFidelityInspection.sourceFrameStructure} />
+                                </Grid>
+                                <Grid size={{ xs: 12, md: 6 }}>
+                                  <QSVFrameStructureCard title="Encoded output" analysis={currentFidelityInspection.outputFrameStructure} emphasizeAnomalies />
+                                </Grid>
+                              </Grid>
+
+                              <Stack spacing={1}>
+                                <Typography variant="subtitle2">QSV warnings</Typography>
+                                {currentFidelityInspection.qsvFrameWarnings.length > 0 ? (
+                                  currentFidelityInspection.qsvFrameWarnings.map((warning) => (
+                                    <Alert key={warning} severity="warning">{warning}</Alert>
+                                  ))
+                                ) : (
+                                  <Alert severity="success">No unusual QSV frame-structure behavior was detected in this preview sample.</Alert>
+                                )}
+                              </Stack>
+                            </Stack>
+                          </CardContent>
+                        </Card>
                       )}
                     </section>
                   )}
@@ -2402,7 +2393,7 @@ export function ProfileLabPage() {
                                   fullWidth
                                 >
                                   <MenuItem value="icq">ICQ · safe default</MenuItem>
-                                <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · Main10 capability required</MenuItem>
                                 </TextField>
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2419,7 +2410,7 @@ export function ProfileLabPage() {
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvFeatures.extBrc} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvFeatures.extBrc && !videoWorkerBool(videoDraft, 'qsvExtendedBRC')} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
                                   label="Extended BRC"
                                 />
                               </Grid>
@@ -2428,7 +2419,7 @@ export function ProfileLabPage() {
                                   <FormControlLabel
                                     control={
                                       <Checkbox
-                                        disabled={!qsvFeatures.adaptiveI}
+                                        disabled={!qsvFeatures.adaptiveI && !videoWorkerBool(videoDraft, 'qsvAdaptiveI')}
                                         checked={videoWorkerBool(videoDraft, 'qsvAdaptiveI')}
                                         onChange={(event) =>
                                           updateVideoWorkerConfig(
@@ -2443,7 +2434,7 @@ export function ProfileLabPage() {
                                   />
                                   <FormControlLabel
                                     control={<Checkbox
-                                        disabled={!qsvFeatures.adaptiveB}
+                                        disabled={!qsvFeatures.adaptiveB && !videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
                                       checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
                                       onChange={(event) =>
                                         updateVideoWorkerConfig(
@@ -2458,6 +2449,7 @@ export function ProfileLabPage() {
                                   />
                                 </Stack>
                               </Grid>
+                              {qsvWarnings.map((warning) => <Grid key={warning} size={{ xs: 12 }}><Alert severity="warning">{warning}</Alert></Grid>)}
                             </>
                           ) : null}
                           {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
@@ -3357,6 +3349,61 @@ export function ProfileLabPage() {
         </Stack>
       </Box>
     </>
+  );
+}
+
+function qsvFeatureStateLabel(requested: boolean, effective: boolean) {
+  if (effective) return 'enabled';
+  if (requested) return 'requested, unavailable';
+  return 'off';
+}
+
+function QSVFrameStructureCard({
+  title,
+  analysis,
+  emphasizeAnomalies = false,
+}: {
+  title: string;
+  analysis: QSVFrameStructureAnalysis;
+  emphasizeAnomalies?: boolean;
+}) {
+  const bPercent = analysis.bFrameRatio * 100;
+  const extremeBFrames = emphasizeAnomalies && bPercent >= 90;
+  const longBRun = emphasizeAnomalies && analysis.maxConsecutiveBFrames >= 12;
+  return (
+    <Card variant="outlined" sx={{ height: '100%' }}>
+      <CardContent>
+        <Stack spacing={1.5}>
+          <Stack spacing={0.25}>
+            <Typography variant="subtitle1" fontWeight={700}>{title}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {analysis.framesAnalyzed} frames inspected
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Chip size="small" label={`I · ${analysis.iFrames}`} title="Intra/reference frames" />
+            <Chip size="small" label={`P · ${analysis.pFrames}`} title="Forward-predicted frames" />
+            <Chip size="small" label={`B · ${analysis.bFrames}`} title="Bidirectionally predicted frames" />
+            <Chip size="small" color={extremeBFrames ? 'warning' : 'default'} label={`B share · ${bPercent.toFixed(1)}%`} />
+          </Stack>
+          <Grid container spacing={1}>
+            <Grid size={{ xs: 6 }}>
+              <Typography variant="caption" color="text.secondary">Longest B-frame run</Typography>
+              <Typography fontWeight={700} color={longBRun ? 'warning.main' : 'text.primary'}>
+                {analysis.maxConsecutiveBFrames} frames
+              </Typography>
+            </Grid>
+            <Grid size={{ xs: 6 }}>
+              <Typography variant="caption" color="text.secondary">Average GOP</Typography>
+              <Typography fontWeight={700}>
+                {analysis.averageGopLength > 0 ? `${analysis.averageGopLength.toFixed(1)} frames` : 'Not enough keyframes'}
+              </Typography>
+            </Grid>
+          </Grid>
+          <Typography variant="body2" color="text.secondary">{analysis.assessment}</Typography>
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }
 

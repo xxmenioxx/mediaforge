@@ -282,7 +282,8 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 		"qsvAdaptiveB":      true,
 	}}
 	args := qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{
-		ICQ: true, LookAhead: true, QSVLAICQMain10: true, ExtendedBRC: false, AdaptiveI: true, AdaptiveB: false, QSVFullCombination: true,
+		ICQ: true, LookAhead: true, QSVLAICQMain10: true, ExtendedBRC: false,
+		QSVAdaptiveIMain10: true, QSVAdaptiveBMain10: false,
 	})
 	command := strings.Join(args, " ")
 	assertContains(t, command, "-look_ahead 1")
@@ -290,6 +291,50 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 	assertNotContains(t, command, "-extbrc")
 	assertNotContains(t, command, "-adaptive_b")
 	assertContains(t, command, "-look_ahead_depth 40")
+}
+
+func TestQSVWorkerArgsUseContextualAdvancedCapabilities(t *testing.T) {
+	base := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{
+		"pixFmt": "p010le", "qsvLookAheadDepth": 40,
+		"qsvExtendedBRC": true, "qsvAdaptiveI": true, "qsvAdaptiveB": true,
+	}}
+	tests := []struct {
+		name       string
+		rate       string
+		capability capabilities.EncoderCapability
+		contains   []string
+		absent     []string
+	}{
+		{
+			name: "ICQ keeps independent adaptive features and rejects ExtBRC", rate: "icq",
+			capability: capabilities.EncoderCapability{QSVAdaptiveIMain10: true, QSVAdaptiveBMain10: true, QSVFullCombination: false},
+			contains:   []string{"-adaptive_i 1", "-adaptive_b 1"}, absent: []string{"-extbrc", "-look_ahead"},
+		},
+		{
+			name: "VBR uses its validated ExtBRC combination", rate: "vbr",
+			capability: capabilities.EncoderCapability{QSVVBRExtBRCMain10: true, QSVVBRLookAheadMain10: false},
+			contains:   []string{"-extbrc 1"}, absent: []string{"-look_ahead", "-look_ahead_depth", "-adaptive_i", "-adaptive_b"},
+		},
+		{
+			name: "CBR uses its validated ExtBRC combination", rate: "cbr",
+			capability: capabilities.EncoderCapability{QSVCBRExtBRCMain10: true, QSVCBRLookAheadMain10: false},
+			contains:   []string{"-extbrc 1"}, absent: []string{"-look_ahead", "-look_ahead_depth", "-adaptive_i", "-adaptive_b"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := base
+			profile.WorkerConfig = cloneJSONMap(base.WorkerConfig)
+			profile.WorkerConfig["qsvRateControl"] = test.rate
+			command := strings.Join(qsvWorkerArgsForCapability(profile, test.capability), " ")
+			for _, expected := range test.contains {
+				assertContains(t, command, expected)
+			}
+			for _, unexpected := range test.absent {
+				assertNotContains(t, command, unexpected)
+			}
+		})
+	}
 }
 
 func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {

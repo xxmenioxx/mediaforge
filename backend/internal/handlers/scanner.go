@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -25,6 +27,33 @@ type ScanRequest struct {
 	Path            string `json:"path" binding:"required"`
 	Force           bool   `json:"force"`
 	AnalysisSeconds int    `json:"analysisSeconds"`
+}
+
+type SnapshotOperation struct {
+	ID        string             `json:"id"`
+	AssetPath string             `json:"assetPath"`
+	Status    string             `json:"status"`
+	Phase     string             `json:"phase"`
+	Progress  float64            `json:"progress"`
+	Message   string             `json:"message"`
+	Result    *models.ScanResult `json:"result,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	CreatedAt time.Time          `json:"createdAt"`
+	UpdatedAt time.Time          `json:"updatedAt"`
+}
+
+var snapshotOperations = struct {
+	sync.RWMutex
+	items map[string]*SnapshotOperation
+}{items: map[string]*SnapshotOperation{}}
+
+func updateSnapshotOperation(id string, update func(*SnapshotOperation)) {
+	snapshotOperations.Lock()
+	defer snapshotOperations.Unlock()
+	if operation := snapshotOperations.items[id]; operation != nil {
+		update(operation)
+		operation.UpdatedAt = time.Now()
+	}
 }
 
 type FFProbeResult struct {
@@ -101,37 +130,135 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "media path must point to a file"})
 		return
 	}
+	result, cached, scanErr := h.scanResolvedFile(path, info, request, nil)
+	if scanErr != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": scanErr.Error()})
+		return
+	}
+	if cached {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	c.JSON(http.StatusAccepted, result)
+}
+
+func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request ScanRequest, progress func(string, float64, string)) (models.ScanResult, bool, error) {
+	report := func(phase string, value float64, message string) {
+		if progress != nil {
+			progress(phase, value, message)
+		}
+	}
 
 	var existing models.ScanResult
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			if scanCacheMatchesFile(existing, info) {
+				if len(existing.FrameStructureAnalysis) == 0 || jsonMapInt(existing.FrameStructureAnalysis, "version") < 1 {
+					report("frame_structure", 80, "Adding the missing I, P, B and GOP analysis")
+				}
 				enrichCachedScan(&existing)
 				_ = h.db.Save(&existing).Error
-				c.JSON(http.StatusOK, existing)
-				return
+				report("completed", 100, "Using the current asset snapshot")
+				return existing, true, nil
 			}
-			_ = h.db.Where("path = ?", path).Delete(&models.ScanResult{}).Error
 		}
 	}
 
-	if request.Force {
-		_ = h.db.Where("path = ?", path).Delete(&models.ScanResult{}).Error
-	}
-
-	probe, raw, err := runFFProbe(path, normalizedAnalysisSeconds(request.AnalysisSeconds))
+	probe, raw, err := runFFProbeWithProgress(path, normalizedAnalysisSeconds(request.AnalysisSeconds), report)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
-		return
+		return models.ScanResult{}, false, err
 	}
 
 	result := buildScanResult(path, info.Size(), probe, raw)
-	if err := h.db.Create(&result).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := persistFinalAssetSnapshot(h.db, &result); err != nil {
+		return models.ScanResult{}, false, err
+	}
+	report("completed", 100, "Asset snapshot completed")
+	return result, false, nil
+}
+
+func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
+	var request ScanRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	path := resolveMediaPath(h.db, strings.TrimSpace(request.Path))
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": mediaPathReadError(err)})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "media path must point to a file"})
+		}
 		return
 	}
 
-	c.JSON(http.StatusAccepted, result)
+	snapshotOperations.RLock()
+	for _, operation := range snapshotOperations.items {
+		if operation.AssetPath == path && operation.Status == "running" {
+			copy := *operation
+			snapshotOperations.RUnlock()
+			c.JSON(http.StatusAccepted, copy)
+			return
+		}
+	}
+	snapshotOperations.RUnlock()
+
+	now := time.Now()
+	id := fmt.Sprintf("snapshot-%d", now.UnixNano())
+	operation := &SnapshotOperation{ID: id, AssetPath: path, Status: "running", Phase: "preparing", Progress: 1, Message: "Preparing this asset snapshot", CreatedAt: now, UpdatedAt: now}
+	snapshotOperations.Lock()
+	snapshotOperations.items[id] = operation
+	snapshotOperations.Unlock()
+	response := *operation
+
+	go func(fileInfo os.FileInfo) {
+		result, _, scanErr := h.scanResolvedFile(path, fileInfo, request, func(phase string, progress float64, message string) {
+			updateSnapshotOperation(id, func(item *SnapshotOperation) {
+				item.Phase, item.Progress, item.Message = phase, progress, message
+			})
+		})
+		if scanErr != nil {
+			updateSnapshotOperation(id, func(item *SnapshotOperation) {
+				item.Status, item.Phase, item.Error, item.Message = "error", "error", scanErr.Error(), "Asset snapshot failed"
+			})
+			return
+		}
+		updateSnapshotOperation(id, func(item *SnapshotOperation) {
+			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &result
+		})
+	}(info)
+	c.JSON(http.StatusAccepted, response)
+}
+
+func (h ScannerHandler) GetSnapshotOperation(c *gin.Context) {
+	snapshotOperations.RLock()
+	operation := snapshotOperations.items[c.Param("id")]
+	if operation == nil {
+		snapshotOperations.RUnlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": "snapshot operation not found"})
+		return
+	}
+	copy := *operation
+	snapshotOperations.RUnlock()
+	c.JSON(http.StatusOK, copy)
+}
+
+func (h ScannerHandler) ListSnapshotOperations(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+	if path != "" {
+		path = resolveMediaPath(h.db, path)
+	}
+	items := []SnapshotOperation{}
+	snapshotOperations.RLock()
+	for _, operation := range snapshotOperations.items {
+		if path == "" || operation.AssetPath == path {
+			items = append(items, *operation)
+		}
+	}
+	snapshotOperations.RUnlock()
+	c.JSON(http.StatusOK, gin.H{"operations": items})
 }
 
 func scanCacheMatchesFile(result models.ScanResult, info os.FileInfo) bool {
@@ -191,6 +318,16 @@ func resolveMediaPath(db *gorm.DB, path string) string {
 }
 
 func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap, error) {
+	return runFFProbeWithProgress(path, analysisSeconds, nil)
+}
+
+func runFFProbeWithProgress(path string, analysisSeconds int, progress func(string, float64, string)) (FFProbeResult, models.JSONMap, error) {
+	report := func(phase string, value float64, message string) {
+		if progress != nil {
+			progress(phase, value, message)
+		}
+	}
+	report("metadata", 10, "Reading media metadata")
 	ctxTimeout := 60 * time.Second
 	cmd := exec.Command(
 		"ffprobe",
@@ -232,8 +369,23 @@ func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap
 		raw = models.JSONMap{}
 	}
 	video := firstStream(probe.Streams, "video")
+	report("interlace", 30, "Analyzing motion and interlace samples")
 	raw["interlaceAnalysis"] = detectInterlace(path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	report("crop", 55, "Checking sampled scenes for crop boundaries")
 	raw["cropAnalysis"] = detectCrop(path, video.Width, video.Height, parseFloat(probe.Format.Duration))
+	report("frame_structure", 80, "Inspecting I, P, B and GOP frame structure")
+	frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 60*time.Second)
+	frameAnalysis, frameErr := analyzeVideoFrameStructure(frameContext, path, 500)
+	cancelFrameAnalysis()
+	if frameErr == nil {
+		encoded, _ := json.Marshal(frameAnalysis)
+		frameMap := models.JSONMap{}
+		_ = json.Unmarshal(encoded, &frameMap)
+		raw["frameStructureAnalysis"] = frameMap
+	} else {
+		raw["frameStructureAnalysis"] = models.JSONMap{"version": 1, "status": "unverified", "error": frameErr.Error()}
+	}
+	report("persisting", 95, "Saving the asset snapshot")
 
 	return probe, raw, nil
 }
@@ -247,25 +399,26 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	}
 
 	result := models.ScanResult{
-		Path:              path,
-		FileName:          filepath.Base(path),
-		Container:         probe.Format.FormatName,
-		SizeBytes:         size,
-		Duration:          duration,
-		Bitrate:           bitrate,
-		VideoCodec:        video.CodecName,
-		Width:             video.Width,
-		Height:            video.Height,
-		HDR:               isHDR(video),
-		AudioTracks:       countStreams(probe.Streams, "audio"),
-		SubtitleTracks:    countStreams(probe.Streams, "subtitle"),
-		Chapters:          len(probe.Chapters),
-		VideoStreams:      streamSummaries(probe.Streams, "video"),
-		AudioStreams:      streamSummaries(probe.Streams, "audio"),
-		SubtitleStreams:   streamSummaries(probe.Streams, "subtitle"),
-		RawProbe:          raw,
-		InterlaceAnalysis: interlaceAnalysisFromRaw(raw),
-		CropAnalysis:      analysisMapFromRaw(raw, "cropAnalysis"),
+		Path:                   path,
+		FileName:               filepath.Base(path),
+		Container:              probe.Format.FormatName,
+		SizeBytes:              size,
+		Duration:               duration,
+		Bitrate:                bitrate,
+		VideoCodec:             video.CodecName,
+		Width:                  video.Width,
+		Height:                 video.Height,
+		HDR:                    isHDR(video),
+		AudioTracks:            countStreams(probe.Streams, "audio"),
+		SubtitleTracks:         countStreams(probe.Streams, "subtitle"),
+		Chapters:               len(probe.Chapters),
+		VideoStreams:           streamSummaries(probe.Streams, "video"),
+		AudioStreams:           streamSummaries(probe.Streams, "audio"),
+		SubtitleStreams:        streamSummaries(probe.Streams, "subtitle"),
+		RawProbe:               raw,
+		InterlaceAnalysis:      interlaceAnalysisFromRaw(raw),
+		CropAnalysis:           analysisMapFromRaw(raw, "cropAnalysis"),
+		FrameStructureAnalysis: analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
 	return result
@@ -328,6 +481,19 @@ func enrichCachedScan(result *models.ScanResult) {
 			encoded, _ := json.Marshal(analysis)
 			_ = json.Unmarshal(encoded, &result.CropAnalysis)
 			result.RawProbe["cropAnalysis"] = analysis
+		}
+	}
+	if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 1 {
+		result.FrameStructureAnalysis = analysisMapFromRaw(result.RawProbe, "frameStructureAnalysis")
+		if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 1 {
+			frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 60*time.Second)
+			analysis, err := analyzeVideoFrameStructure(frameContext, result.Path, 500)
+			cancelFrameAnalysis()
+			if err == nil {
+				encoded, _ := json.Marshal(analysis)
+				_ = json.Unmarshal(encoded, &result.FrameStructureAnalysis)
+				result.RawProbe["frameStructureAnalysis"] = result.FrameStructureAnalysis
+			}
 		}
 	}
 	rawStreams, ok := result.RawProbe["streams"].([]any)

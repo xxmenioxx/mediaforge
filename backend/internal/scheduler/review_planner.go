@@ -361,8 +361,10 @@ func schedulerQualityCapabilities(encoder string, profile models.Profile, capabi
 	result := quality.WorkerCapabilities{
 		Encoder: encoder, Main: capability.Usable, Main10: capability.Main10,
 		ICQ: capability.QSVICQMain8, CQP: capability.QSVCQPMain8, VBR: capability.QSVVBRMain8, CBR: capability.QSVCBRMain8,
-		LowPower: capability.LowPower, ExtendedBRC: capability.ExtendedBRC, AdaptiveI: capability.AdaptiveI,
-		AdaptiveB: capability.AdaptiveB, FullCombination: capability.QSVFullCombination,
+		LowPower: capability.LowPower, ExtendedBRC: capability.ExtendedBRC,
+		VBRExtendedBRC: capability.QSVVBRExtBRCMain10, CBRExtendedBRC: capability.QSVCBRExtBRCMain10,
+		VBRLookAhead: capability.QSVVBRLookAheadMain10, CBRLookAhead: capability.QSVCBRLookAheadMain10,
+		AdaptiveI: capability.QSVAdaptiveIMain10, AdaptiveB: capability.QSVAdaptiveBMain10,
 	}
 	if main10 && capability.Main10 {
 		result.ICQ, result.LAICQ = capability.QSVICQMain10, capability.QSVLAICQMain10

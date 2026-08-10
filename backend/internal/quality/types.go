@@ -89,6 +89,10 @@ type WorkerCapabilities struct {
 	CBR                     bool
 	LowPower                bool
 	ExtendedBRC             bool
+	VBRExtendedBRC          bool
+	CBRExtendedBRC          bool
+	VBRLookAhead            bool
+	CBRLookAhead            bool
 	AdaptiveI               bool
 	AdaptiveB               bool
 	FullCombination         bool

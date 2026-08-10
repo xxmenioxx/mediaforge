@@ -104,8 +104,15 @@ export function WorkersPage() {
         <Card sx={{ mb: 2 }}><CardContent><Stack spacing={1.5}>
           <Typography variant="h3">Worker availability</Typography>
           {workerNodes.isError ? <Alert severity="warning">Unable to load registered workers.</Alert> : null}
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {(workerNodes.data ?? []).map((worker) => <Chip key={worker.id} color={worker.status === 'online' ? 'success' : 'default'} label={`${worker.name} · ${worker.status} · ${worker.runtimeProfile || 'unknown runtime'} · ${worker.maxConcurrentJobs} slots · ${worker.encoders.filter((item): item is string => typeof item === 'string').join(', ') || 'no encoders'}`} />)}
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+            {(workerNodes.data ?? []).map((worker) => (
+              <Chip
+                key={worker.id}
+                color={worker.status === 'online' ? 'success' : 'default'}
+                label={`${worker.name} · ${worker.status} · ${worker.runtimeProfile || 'unknown runtime'} · ${worker.maxConcurrentJobs} slots · ${worker.encoders.filter((item): item is string => typeof item === 'string').join(', ') || 'no encoders'}`}
+                sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+              />
+            ))}
             {!workerNodes.isLoading && !(workerNodes.data ?? []).length ? <Typography color="text.secondary">No workers have registered a heartbeat.</Typography> : null}
           </Stack>
         </Stack></CardContent></Card>
@@ -133,7 +140,7 @@ export function WorkersPage() {
                       variant="contained"
                       onClick={claimAndRunNextJob}
                       disabled={claimJob.isPending || !workerName}
-                      sx={{ minWidth: 148 }}
+                      sx={{ minWidth: { sm: 148 }, width: { xs: '100%', sm: 'auto' } }}
                     >
                       Claim &amp; run
                     </Button>
@@ -186,6 +193,7 @@ export function WorkersPage() {
                       setActivePage(0);
                     }}
                     rowsPerPageOptions={[5, 10, 25]}
+                    sx={mobilePaginationSx}
                   />
                 ) : null}
               </CardContent>
@@ -201,7 +209,7 @@ export function WorkersPage() {
                 <Stack spacing={1.5}>
                   {pagedFailedJobs.map((job) => (
                     <Stack key={job.id} spacing={0.75} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={1}>
                         <Stack sx={{ minWidth: 0 }}>
                           <Typography fontWeight={700} noWrap>
                             {job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'} · {fileNameFromPath(job.mediaPath)}
@@ -235,6 +243,7 @@ export function WorkersPage() {
                       setFailedPage(0);
                     }}
                     rowsPerPageOptions={[6, 12, 24]}
+                    sx={mobilePaginationSx}
                   />
                 ) : null}
               </CardContent>
@@ -247,8 +256,8 @@ export function WorkersPage() {
                 <Stack spacing={1.5}>
                   {recentJobs.map((job) => (
                     <Stack key={job.id} spacing={0.5}>
-                      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                        <Typography fontWeight={700} noWrap>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={1}>
+                        <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>
                           {fileNameFromPath(job.mediaPath)}
                         </Typography>
                         <JobStatusChip status={job.status} />
@@ -334,7 +343,7 @@ function WorkerJobCard({
                 {job.mediaPath}
               </Typography>
             </Stack>
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <JobStatusChip status={job.status} />
               <Chip label={`P${job.priority}`} size="small" />
             </Stack>
@@ -388,7 +397,7 @@ function WorkerJobCard({
             </Box>
           ) : null}
 
-          <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap sx={{ '& .MuiButton-root': { flex: { xs: 1, sm: '0 0 auto' } } }}>
             <Button variant="outlined" onClick={() => onDetails(job)}>
               Details
             </Button>
@@ -407,6 +416,16 @@ function WorkerJobCard({
     </Card>
   );
 }
+
+const mobilePaginationSx = {
+  '& .MuiTablePagination-toolbar': {
+    flexWrap: { xs: 'wrap', sm: 'nowrap' },
+    justifyContent: { xs: 'center', sm: 'flex-end' },
+    px: { xs: 0, sm: 2 },
+  },
+  '& .MuiTablePagination-spacer': { display: { xs: 'none', sm: 'block' } },
+  '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } },
+} as const;
 
 function JobStatusChip({ status }: { status: QueueJob['status'] }) {
   const color =

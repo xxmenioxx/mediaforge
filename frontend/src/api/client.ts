@@ -29,6 +29,7 @@ import type {
   RuntimeSnapshot,
   RuntimeProfilesResponse,
   ScanResult,
+  SnapshotOperation,
   CompatiblePreviewOptions,
   ProfileSampleEstimate,
   QualityRecommendationResponse,
@@ -370,6 +371,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path, force, analysisSeconds }),
   }),
+  startSnapshotOperation: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
+    request<SnapshotOperation>('/api/scan/operations', {
+      method: 'POST',
+      body: JSON.stringify({ path, force, analysisSeconds }),
+    }),
+  snapshotOperation: (operationId: string) =>
+    request<SnapshotOperation>(`/api/scan/operations/${encodeURIComponent(operationId)}`),
+  snapshotOperations: (path: string) =>
+    request<{ operations: SnapshotOperation[] }>(`/api/scan/operations?path=${encodeURIComponent(path)}`),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
   compatibleAssetPreviewUrl: (options: CompatiblePreviewOptions) =>
     `${API_BASE_URL}${compatiblePreviewPath(options)}`,

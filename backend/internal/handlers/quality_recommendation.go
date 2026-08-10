@@ -133,7 +133,9 @@ func qsvQualityCapabilities(capability capabilities.EncoderCapability, intent qu
 		Encoder: "hevc_qsv", Main: capability.Usable, Main10: capability.Main10,
 		ICQ: capability.QSVICQMain8, CQP: capability.QSVCQPMain8, VBR: capability.QSVVBRMain8, CBR: capability.QSVCBRMain8,
 		LowPower: capability.LowPower, ExtendedBRC: capability.ExtendedBRC,
-		AdaptiveI: capability.AdaptiveI, AdaptiveB: capability.AdaptiveB, FullCombination: capability.QSVFullCombination,
+		VBRExtendedBRC: capability.QSVVBRExtBRCMain10, CBRExtendedBRC: capability.QSVCBRExtBRCMain10,
+		VBRLookAhead: capability.QSVVBRLookAheadMain10, CBRLookAhead: capability.QSVCBRLookAheadMain10,
+		AdaptiveI: capability.QSVAdaptiveIMain10, AdaptiveB: capability.QSVAdaptiveBMain10,
 	}
 	if main10 && capability.Main10 {
 		result.ICQ, result.LAICQ = capability.QSVICQMain10, capability.QSVLAICQMain10

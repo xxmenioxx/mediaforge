@@ -10,6 +10,8 @@ import (
 )
 
 type QSVFrameStructureAnalysis struct {
+	Version               int     `json:"version"`
+	SampleLimit           int     `json:"sampleLimit"`
 	FramesAnalyzed        int     `json:"framesAnalyzed"`
 	IFrames               int     `json:"iFrames"`
 	PFrames               int     `json:"pFrames"`
@@ -23,6 +25,13 @@ type QSVFrameStructureAnalysis struct {
 	Source                string  `json:"source"`
 }
 
+type QSVFeatureStatus struct {
+	AdaptiveIRequested bool `json:"adaptiveIRequested"`
+	AdaptiveIEffective bool `json:"adaptiveIEffective"`
+	AdaptiveBRequested bool `json:"adaptiveBRequested"`
+	AdaptiveBEffective bool `json:"adaptiveBEffective"`
+}
+
 func applyQSVFrameStructureAssessment(
 	result *QSVFrameStructureAnalysis,
 ) {
@@ -33,8 +42,11 @@ func applyQSVFrameStructureAssessment(
 	case !result.HasBFrames:
 		result.Assessment = "No B-frames were detected."
 
+	case result.PFrames == 0 && result.BFrameRatio >= 0.9 && result.MaxConsecutiveBFrames >= 12:
+		result.Assessment = "Unusual frame structure: the sample is B-frame-dominant, has no detected P-frames, and contains very long B-frame runs."
+
 	case result.MaxConsecutiveBFrames >= 3:
-		result.Assessment = "The stream uses a strong B-frame structure."
+		result.Assessment = "The stream uses B-frames with a balanced I/P/B structure."
 
 	case result.MaxConsecutiveBFrames > 0:
 		result.Assessment = "The stream uses a limited B-frame structure."
@@ -45,39 +57,50 @@ func applyQSVFrameStructureAssessment(
 }
 
 func qsvFrameStructureWarnings(
-	adaptiveBRequested bool,
+	features QSVFeatureStatus,
+	source QSVFrameStructureAnalysis,
 	output QSVFrameStructureAnalysis,
 ) []string {
 	warnings := []string{}
 
-	if adaptiveBRequested {
-		switch {
-		case !output.HasBFrames:
-			warnings = append(
-				warnings,
-				"Adaptive B was requested, but no B-frames were detected in the encoded preview.",
-			)
-
-		case output.MaxConsecutiveBFrames <= 1:
-			warnings = append(
-				warnings,
-				"Adaptive B produced only a limited B-frame structure in this preview sample.",
-			)
-		}
+	if features.AdaptiveIRequested && !features.AdaptiveIEffective {
+		warnings = append(warnings, "Adaptive I was requested but the active worker did not validate it for this QSV combination, so MVForge left it out of the command.")
 	}
-
-	if output.HasBFrames && output.MaxConsecutiveBFrames >= 3 {
-		warnings = append(
-			warnings,
-			"The encoded preview produced a strong B-frame structure.",
-		)
+	if features.AdaptiveBRequested && !features.AdaptiveBEffective {
+		warnings = append(warnings, "Adaptive B was requested but the active worker did not validate it for this QSV combination, so MVForge left it out of the command.")
+	}
+	if output.FramesAnalyzed == 0 {
+		return append(warnings, "No output frames were available, so MVForge could not inspect the QSV frame structure.")
+	}
+	if output.BFrameRatio >= 0.9 {
+		warnings = append(warnings, fmt.Sprintf("B-frames make up %.1f%% of the sample. This is unusually high and may indicate an unstable or unsuitable GOP structure.", output.BFrameRatio*100))
+	}
+	if output.PFrames == 0 && output.FramesAnalyzed >= 30 {
+		warnings = append(warnings, "No P-frames were detected in the output sample. Review the GOP and B-frame behavior before using this profile for production.")
+	}
+	if output.MaxConsecutiveBFrames >= 12 {
+		warnings = append(warnings, fmt.Sprintf("The output contains a run of %d consecutive B-frames. Long B-frame runs can reduce compatibility and make seeking less predictable.", output.MaxConsecutiveBFrames))
+	}
+	if source.FramesAnalyzed > 0 && source.PFrames > 0 && output.PFrames == 0 &&
+		output.BFrameRatio >= 0.9 && output.BFrameRatio-source.BFrameRatio >= 0.25 &&
+		output.MaxConsecutiveBFrames >= 12 && output.MaxConsecutiveBFrames >= source.MaxConsecutiveBFrames*4 {
+		warnings = append(warnings, fmt.Sprintf(
+			"The output frame structure changed substantially from the source: B-frame share %.1f%% to %.1f%%, longest B-frame run %d to %d, and detected P-frames %d to 0. Review compatibility and visual quality before adopting this configuration as a standard profile.",
+			source.BFrameRatio*100,
+			output.BFrameRatio*100,
+			source.MaxConsecutiveBFrames,
+			output.MaxConsecutiveBFrames,
+			source.PFrames,
+		))
 	}
 
 	if output.KeyFrames <= 1 {
 		warnings = append(
 			warnings,
-			"The preview sample is too short to calculate a representative GOP average.",
+			"Only one keyframe was found, so the average GOP length is not representative for this sample.",
 		)
+	} else if output.AverageGOPLength >= 240 {
+		warnings = append(warnings, fmt.Sprintf("The average GOP is %.0f frames, which is long for many playback and seeking workflows.", output.AverageGOPLength))
 	}
 
 	return warnings
@@ -135,9 +158,7 @@ func analyzeVideoFrameStructure(
 		)
 	}
 
-	result := QSVFrameStructureAnalysis{
-		Source: "ffprobe_frames",
-	}
+	result := QSVFrameStructureAnalysis{Version: 1, SampleLimit: maxFrames, Source: "ffprobe_frames"}
 
 	consecutiveBFrames := 0
 	lastKeyFrameIndex := -1

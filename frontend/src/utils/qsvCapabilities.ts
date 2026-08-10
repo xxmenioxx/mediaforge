@@ -1,3 +1,11 @@
+export type QSVRateControl = 'icq' | 'la_icq' | 'cqp' | 'vbr' | 'cbr';
+
+export type QSVSelection = {
+  adaptiveI?: boolean;
+  adaptiveB?: boolean;
+  extendedBRC?: boolean;
+};
+
 export function resolveQSVFeatures(
   capability: Record<string, unknown> | undefined,
   options: {
@@ -5,9 +13,29 @@ export function resolveQSVFeatures(
     rateControl?: string;
   },
 ) {
-  const { main10, rateControl } = options;
+  const { main10 } = options;
+  const rateControl = (options.rateControl ?? 'icq').toLowerCase();
+  const rateControls = {
+    icq: main10
+      ? capability?.qsvIcqMain10 === true
+      : capability?.qsvIcqMain8 === true,
+    laIcq: main10 && capability?.qsvLaIcqMain10 === true,
+    cqp: main10
+      ? capability?.qsvCqpMain10 === true
+      : capability?.qsvCqpMain8 === true,
+    vbr: main10
+      ? capability?.qsvVbrMain10 === true
+      : capability?.qsvVbrMain8 === true,
+    cbr: main10
+      ? capability?.qsvCbrMain10 === true
+      : capability?.qsvCbrMain8 === true,
+  };
 
   return {
+    probed: capability !== undefined,
+    main10,
+    rateControl,
+    rateControls,
     adaptiveI:
       main10 &&
       capability?.qsvAdaptiveIMain10 === true,
@@ -36,4 +64,33 @@ export function resolveQSVFeatures(
           capability?.qsvLaIcqMain10 === true)
       ),
   };
+}
+
+export function qsvSelectionWarnings(
+  features: ReturnType<typeof resolveQSVFeatures>,
+  selection: QSVSelection,
+) {
+  const warnings: string[] = [];
+  if (!features.probed) return warnings;
+  const selectedRateControlAvailable = {
+    icq: features.rateControls.icq,
+    la_icq: features.rateControls.laIcq,
+    cqp: features.rateControls.cqp,
+    vbr: features.rateControls.vbr,
+    cbr: features.rateControls.cbr,
+  }[features.rateControl as QSVRateControl];
+
+  if (selectedRateControlAvailable === false) {
+    warnings.push(`${features.rateControl.toUpperCase().replace('_', '-')} is not validated for the selected bit depth on the active worker; the backend may apply a tested fallback.`);
+  }
+  if (selection.extendedBRC && !features.extBrc) {
+    warnings.push('Extended BRC is only effective for a validated Main10 VBR/CBR combination. It is not used as a GOP or B-frame correction.');
+  }
+  if (selection.adaptiveI && !features.adaptiveI) {
+    warnings.push('Adaptive I is requested but not validated for this worker/bit-depth combination, so it will be omitted from the effective command.');
+  }
+  if (selection.adaptiveB && !features.adaptiveB) {
+    warnings.push('Adaptive B is requested but not validated for this worker/bit-depth combination, so it will be omitted from the effective command.');
+  }
+  return warnings;
 }

@@ -753,6 +753,7 @@ export type ScanResult = {
     sampledAt?: number[];
     reason?: string;
   };
+  frameStructureAnalysis?: QSVFrameStructureAnalysis;
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -777,6 +778,8 @@ export type PreviewVideoCharacteristics = {
 };
 
 export type QSVFrameStructureAnalysis = {
+  version?: number;
+  sampleLimit?: number;
   framesAnalyzed: number;
   iFrames: number;
   pFrames: number;
@@ -790,12 +793,33 @@ export type QSVFrameStructureAnalysis = {
   source: string;
 };
 
+export type SnapshotOperation = {
+  id: string;
+  assetPath: string;
+  status: 'running' | 'completed' | 'error';
+  phase: string;
+  progress: number;
+  message: string;
+  result?: ScanResult;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type QSVFeatureStatus = {
+  adaptiveIRequested: boolean;
+  adaptiveIEffective: boolean;
+  adaptiveBRequested: boolean;
+  adaptiveBEffective: boolean;
+};
+
 export type PreviewInspection = {
   source: PreviewVideoCharacteristics;
   output: PreviewVideoCharacteristics;
   sourceFrameStructure: QSVFrameStructureAnalysis;
   outputFrameStructure: QSVFrameStructureAnalysis;
   qsvFrameWarnings: string[];
+  qsvFeatureStatus: QSVFeatureStatus;
   cacheHit: boolean;
   previewMode: 'quick' | 'quality';
   start: string;

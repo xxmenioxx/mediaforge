@@ -40,7 +40,7 @@ import { PageHeader } from '../components/PageHeader';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
-import { resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -151,8 +151,12 @@ export function ProfilesPage() {
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
+    extendedBRC: workerConfigBool(form, 'qsvExtendedBRC'),
+    adaptiveI: workerConfigBool(form, 'qsvAdaptiveI'),
+    adaptiveB: workerConfigBool(form, 'qsvAdaptiveB'),
+  });
  
-  const qsvAdvancedAvailable = qsvMain10Selected && qsvCapability?.qsvFullCombination === true;
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const videoToolboxMain10Selected = workerConfigString(form, 'videoToolboxProfile', '').toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
@@ -809,7 +813,7 @@ export function ProfilesPage() {
                                 fullWidth
                               >
                                 <MenuItem value="icq">ICQ · safest default</MenuItem>
-                                <MenuItem value="la_icq" disabled={!qsvFeatures.lookAhead}>LA-ICQ · Main10 capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · Main10 capability required</MenuItem>
                               </TextField>
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
@@ -827,13 +831,13 @@ export function ProfilesPage() {
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
-                                  control={<Checkbox disabled={!qsvFeatures.extBrc} checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
+                                  control={<Checkbox disabled={!qsvFeatures.extBrc && !workerConfigBool(form, 'qsvExtendedBRC')} checked={workerConfigBool(form, 'qsvExtendedBRC')} onChange={(event) => updateWorkerConfig('qsvExtendedBRC', event.target.checked)} />}
                                   label="QSV Extended BRC"
                                 />
                                 <FormControlLabel
                                   control={
                                     <Checkbox
-                                      disabled={!qsvFeatures.adaptiveI}
+                                      disabled={!qsvFeatures.adaptiveI && !workerConfigBool(form, 'qsvAdaptiveI')}
                                       checked={workerConfigBool(form, 'qsvAdaptiveI')}
                                       onChange={(event) =>
                                         updateWorkerConfig(
@@ -848,7 +852,7 @@ export function ProfilesPage() {
                                 <FormControlLabel
                                   control={
                                     <Checkbox
-                                      disabled={!qsvFeatures.adaptiveB}
+                                      disabled={!qsvFeatures.adaptiveB && !workerConfigBool(form, 'qsvAdaptiveB')}
                                       checked={workerConfigBool(form, 'qsvAdaptiveB')}
                                       onChange={(event) =>
                                         updateWorkerConfig(
@@ -862,6 +866,7 @@ export function ProfilesPage() {
                                 />
                               </Stack>
                             </Grid>
+                            {qsvWarnings.map((warning) => <Grid key={warning} size={{ xs: 12 }}><Alert severity="warning">{warning}</Alert></Grid>)}
                           </>
                         ) : null}
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
