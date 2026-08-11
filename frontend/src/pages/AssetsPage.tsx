@@ -964,10 +964,11 @@ function AssetGroupRow({
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 95 }}>Score</TableCell> : null}
                         {isConvertedGroup ? <TableCell sx={{ width: 360 }}>Media</TableCell> : null}
                         <TableCell sx={{ width: 100 }}>Size</TableCell>
-                        <TableCell sx={{ width: 128 }}>Modified</TableCell>
-                        {!isConvertedGroup ? <TableCell sx={{ width: 145 }}>Category</TableCell> : null}
+                        {mode !== 'unprocessed' ? <TableCell sx={{ width: 128 }}>Modified</TableCell> : null}
+                        {mode === 'unprocessed' ? <TableCell sx={{ width: 145 }}>Category</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Video profile</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 165 }}>Audio profile</TableCell> : null}
+                        {mode === 'unprocessed' ? <TableCell sx={{ width: 165 }}>Tracks profile</TableCell> : null}
                         {!isReadOnlyGroup ? <TableCell sx={{ width: 160 }}>Destination</TableCell> : null}
                         <TableCell align="center" sx={{ width: 180 }}>Actions</TableCell>
                       </TableRow>
@@ -980,6 +981,7 @@ function AssetGroupRow({
                           libraries={libraries}
                           profiles={profiles}
                           audioProfiles={audioProfiles}
+                          trackProfiles={trackProfiles}
                           pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
                           groupRelativePath={group.relativePath}
@@ -1015,6 +1017,7 @@ function AssetRow({
   libraries,
   profiles,
   audioProfiles,
+  trackProfiles,
   pathTrackProfile,
   assetCategories,
   groupRelativePath,
@@ -1036,6 +1039,7 @@ function AssetRow({
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
   pathTrackProfile?: TrackProfile;
   assetCategories: string[];
   groupRelativePath: string;
@@ -1054,11 +1058,14 @@ function AssetRow({
   onBulkSelectionChange: (path: string, selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [selectedProfileId, setSelectedProfileId] = useState<number>(groupProfileId);
-  const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>(groupAudioProfileKey);
+  const [selectedProfileId, setSelectedProfileId] = useState<number>(() => relatedVideoProfile(profiles, asset)?.id ?? groupProfileId);
+  const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>(() => relatedAudioProfile(audioProfiles, asset)?.key ?? groupAudioProfileKey);
+  const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(() => relatedTrackProfile(trackProfiles, asset)?.key ?? pathTrackProfile?.key ?? '');
+  const selectedTrackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [snapshotTab, setSnapshotTab] = useState(0);
+  const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleContent, setSubtitleContent] = useState('');
@@ -1109,18 +1116,18 @@ function AssetRow({
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
-      if (pathTrackProfile) {
-        const result = validateTrackProfile(pathTrackProfile, await api.scan({ path: asset.path, force: false }));
-        if (!result.applies && pathTrackProfile.validationMode === 'review' && !assetReviewApproved(asset)) {
+      if (selectedTrackProfile) {
+        const result = validateTrackProfile(selectedTrackProfile, await api.scan({ path: asset.path, force: false }));
+        if (!result.applies && selectedTrackProfile.validationMode === 'review' && !assetReviewApproved(asset)) {
           await api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] });
           throw new Error(`Track profile does not apply; asset marked for review: ${result.reasons.join('; ')}`);
         }
-        if (!result.applies && pathTrackProfile.validationMode === 'block') {
+        if (!result.applies && selectedTrackProfile.validationMode === 'block') {
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
-        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(pathTrackProfile), trackProfileKey: pathTrackProfile.key });
+        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(selectedTrackProfile), trackProfileKey: selectedTrackProfile.key });
         if (!result.applies) {
-          input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${pathTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
+          input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${selectedTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
       } else if (hasTrackSelectionOverride(conversionDraft)) {
         await api.updateAssetConversion({
@@ -1155,6 +1162,13 @@ function AssetRow({
   const updateMetadata = useMutation({
     mutationFn: api.updateAssetMetadata,
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+  const renameAsset = useMutation({
+    mutationFn: api.renameAsset,
+    onSuccess: async () => {
+      setShowSnapshotDialog(false);
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
@@ -1212,14 +1226,14 @@ function AssetRow({
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const rowColumnCount = isConverted
-    ? bulkSelectionEnabled ? 7 : 6
+    ? bulkSelectionEnabled ? 8 : 7
     : isArchive
       ? bulkSelectionEnabled ? 7 : 6
       : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
-  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(pathTrackProfile) || hasTrackSelectionOverride(conversionDraft);
+  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(selectedTrackProfile) || hasTrackSelectionOverride(conversionDraft);
   useEffect(() => {
     if (!showSnapshotDialog || asset.status === 'archive' || asset.missing) {
       return;
@@ -1308,7 +1322,7 @@ function AssetRow({
     });
     await updateConversion.mutateAsync({ path: asset.path, ...next });
     setConversionDraft(next);
-    setSnapshotTab(2);
+    setSnapshotTab(5);
     return 'Recommendations were saved to Asset Overrides.';
   }
 
@@ -1555,7 +1569,7 @@ async function generateExternalSubtitle(
       libraryId: isLibraryReplacement ? asset.libraryId : selectedLibraryId,
       profileId: queueProfileId,
       audioProfileKey: selectedAudioProfileKey,
-      trackProfileKey: pathTrackProfile?.key ?? '',
+      trackProfileKey: selectedTrackProfile?.key ?? '',
       processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode',
       priority: priorityForSize(asset.sizeBytes),
       notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, selectedAudioProfileKey),
@@ -1699,10 +1713,10 @@ async function generateExternalSubtitle(
           </TableCell>
         ) : null}
         <TableCell>{formatBytes(asset.sizeBytes)}</TableCell>
-        <TableCell>{formatDate(asset.modifiedAt)}</TableCell>
-        {!isConverted ? (
+        {mode !== 'unprocessed' ? <TableCell>{formatDate(asset.modifiedAt)}</TableCell> : null}
+        {mode === 'unprocessed' ? (
           <TableCell sx={{ minWidth: 180 }}>
-            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked} />
+            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={asset.missing || updateMetadata.isPending} />
           </TableCell>
         ) : null}
         {!isArchive && !isConverted && !isPublishedAsIs ? (
@@ -1713,6 +1727,11 @@ async function generateExternalSubtitle(
             <TableCell sx={{ minWidth: 220 }}>
               <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
             </TableCell>
+            {mode === 'unprocessed' ? (
+              <TableCell sx={{ minWidth: 220 }}>
+                <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={setSelectedTrackProfileKey} disabled={rowLocked} label="Tracks" />
+              </TableCell>
+            ) : null}
             <TableCell sx={{ minWidth: 220 }}>
               <LibraryAutocomplete libraries={libraries} value={isLibraryReplacement ? asset.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination" size="small" disabled={rowLocked || isLibraryReplacement} />
             </TableCell>
@@ -1725,9 +1744,9 @@ async function generateExternalSubtitle(
                 <PlayCircleIcon />
               </IconButton>
             </Tooltip>
-            <Tooltip title={snapshotRunning || snapshot.isPending ? 'Snapshot analysis is already running for this asset' : 'Scan snapshot'}>
+            <Tooltip title={snapshotRunning || snapshot.isPending ? 'Snapshot analysis is already running for this asset' : 'Asset Info'}>
               <span>
-                <IconButton color="primary" onClick={openSnapshotDialog} disabled={snapshotRunning || snapshot.isPending} aria-label={`Scan ${asset.fileName}`} sx={actionIconSx}>
+                <IconButton color="primary" onClick={openSnapshotDialog} disabled={snapshotRunning || snapshot.isPending} aria-label={`Asset Info ${asset.fileName}`} sx={actionIconSx}>
                   <ManageSearchIcon />
                 </IconButton>
               </span>
@@ -1998,14 +2017,21 @@ async function generateExternalSubtitle(
             {snapshot.data ? (
               <>
                 <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
-                  <Tab label="General & Tracks" />
+                  <Tab label="Asset Information" />
+                  <Tab label="Technical Snapshot" />
+                  <Tab label="Tracks" />
+                  <Tab label="Job Information" />
                   <Tab label="MVForge Suggestions" />
                   <Tab label="Quick Asset Overrides" />
                 </Tabs>
-                <Box hidden={snapshotTab !== 0}>
-                  <Stack spacing={2} sx={{ pt: 1.5 }}>
+                <Box hidden={snapshotTab !== 1}>
+                  <Box sx={{ pt: 1.5 }}>
                     <MediaSnapshotDetails scan={snapshot.data} section="general" />
-                    <Divider />
+                    <DirectPlaySnapshotComparison scan={snapshot.data} job={associatedJob} />
+                  </Box>
+                </Box>
+                <Box hidden={snapshotTab !== 2}>
+                  <Stack spacing={2} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Embedded tracks</Typography>
                     <MediaSnapshotDetails
                       scan={snapshot.data}
@@ -2083,7 +2109,40 @@ async function generateExternalSubtitle(
                     {deleteExternalSubtitle.isError ? <Alert severity="warning">{deleteExternalSubtitle.error instanceof Error ? deleteExternalSubtitle.error.message : 'Subtitle deletion failed.'}</Alert> : null}
                   </Stack>
                 </Box>
-                <Box hidden={snapshotTab !== 1}>
+                <Box hidden={snapshotTab !== 0}>
+                  <Stack spacing={2} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Asset information</Typography>
+                    <Grid container spacing={1.5} alignItems="flex-start">
+                      <Grid size={{ xs: 12, md: 6 }}>
+                        <Stack direction="row" spacing={1} alignItems="flex-start">
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={asset.missing || isArchive || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={asset.missing || isArchive || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName}>Rename</Button>
+                        </Stack>
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 6 }}>
+                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={asset.missing || updateMetadata.isPending} />
+                      </Grid>
+                    </Grid>
+                    {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}
+                    <Grid container spacing={1.5}>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Video profile applied</Typography><Typography>{associatedJob ? profiles.find((profile) => profile.id === associatedJob.profileId)?.name || `Profile #${associatedJob.profileId}` : profiles.find((profile) => profile.id === selectedProfileId)?.name || 'None'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Audio profile applied</Typography><Typography>{associatedJob?.audioProfileKey || selectedAudioProfileKey || 'None'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Tracks profile applied</Typography><Typography>{conversionDraft.trackProfileKey || pathTrackProfile?.name || pathTrackProfile?.key || 'None'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Advisor score</Typography><Typography>{advisor.data ? `${advisor.data.score}/100` : 'Not evaluated'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Direct Play score</Typography><Typography>{associatedJob ? directPlayScoreLabel(associatedJob) : 'Not evaluated'}</Typography></Grid>
+                    </Grid>
+                  </Stack>
+                </Box>
+                <Box hidden={snapshotTab !== 3}>
+                  <Box sx={{ pt: 1.5 }}>
+                    {associatedJob ? (
+                      <FinalDetailsSummary asset={asset} job={associatedJob} />
+                    ) : (
+                      <Alert severity="info">No job is currently associated with this asset.</Alert>
+                    )}
+                  </Box>
+                </Box>
+                <Box hidden={snapshotTab !== 4}>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
                     {!isConverted && !isArchive && profileSuggestion.isError ? (
@@ -2101,7 +2160,7 @@ async function generateExternalSubtitle(
                     {isArchive ? <Alert severity="info">Recover the archived original before applying a suggested profile.</Alert> : null}
                   </Stack>
                 </Box>
-                <Box hidden={snapshotTab !== 2}>
+                <Box hidden={snapshotTab !== 5}>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isArchive ? (
                       <AssetConversionOverridePanel
@@ -2123,9 +2182,6 @@ async function generateExternalSubtitle(
             {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}
             {updateConversion.isError ? (
               <Alert severity="warning">Could not save conversion overrides: {updateConversion.error.message}</Alert>
-            ) : null}
-            {isConverted ? (
-              <FinalDetailsSummary asset={asset} job={associatedJob} compact />
             ) : null}
           </Stack>
         </DialogContent>
@@ -3050,6 +3106,44 @@ function OverrideSwitch({
   );
 }
 
+function DirectPlaySnapshotComparison({ scan, job }: { scan: ScanResult; job?: QueueJob }) {
+  const persistedSource = job ? recordFromRecord(job.validationReport ?? {}, 'directPlaySource') : {};
+  const source = job ? persistedSource : scan.directPlayAnalysis;
+  const output = job ? recordFromRecord(job.validationReport ?? {}, 'directPlay') : {};
+  const scoreCard = (title: string, value: Record<string, unknown> | ScanResult['directPlayAnalysis'], missingText: string) => {
+    const enabled = value?.enabled === true;
+    const score = Number(value?.lowestScore);
+    const available = enabled && Number.isFinite(score);
+    return (
+      <Card variant="outlined" sx={{ height: '100%' }}>
+        <CardContent>
+          <Stack spacing={1}>
+            <Typography fontWeight={700}>{title}</Typography>
+            <Typography variant="h2">{available ? `${score}/100` : 'Not evaluated'}</Typography>
+            {available ? (
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                <Chip size="small" label={`Risk: ${String(value?.risk || 'unknown')}`} color={score >= Number(value?.minimumScore || 0) ? 'success' : 'warning'} />
+                <Chip size="small" label={`Minimum: ${Number(value?.minimumScore || 0)}`} />
+                <Chip size="small" label={String(value?.strategy || 'policy')} />
+              </Stack>
+            ) : <Typography variant="body2" color="text.secondary">{String(value?.error || missingText)}</Typography>}
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  };
+  return (
+    <Stack spacing={1.25} sx={{ mt: 2 }}>
+      <Typography variant="h3">Direct Play policy</Typography>
+      <Typography variant="body2" color="text.secondary">Source and converted output are evaluated with the configured client targets, strategy, and minimum score.</Typography>
+      <Grid container spacing={1.5}>
+        <Grid size={{ xs: 12, md: 6 }}>{scoreCard('Original asset', source, job ? 'This older job did not preserve a Direct Play evaluation of its original.' : 'Process Asset to evaluate the original source.')}</Grid>
+        <Grid size={{ xs: 12, md: 6 }}>{scoreCard('Converted output', output, job ? 'The job has no Direct Play result for its output.' : 'Available after conversion and job validation.')}</Grid>
+      </Grid>
+    </Stack>
+  );
+}
+
 function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; job?: QueueJob; compact?: boolean }) {
   const report = job?.validationReport ?? {};
   const mode = stringFromRecord(report, 'processingMode') || modeFromNotes(job?.notes ?? '');
@@ -3269,7 +3363,7 @@ function ProfileAutocomplete({
   allowNone?: boolean;
 }) {
   const options = [
-    ...(allowNone ? [{ id: -1, name: 'None', videoCodec: 'No video profile', search: 'none no profile' }] : []),
+    ...(allowNone ? [{ id: -1, name: 'Disabled', videoCodec: 'No video profile', search: 'disabled none no profile' }] : []),
     ...profiles.map((profile) => ({ id: profile.id, name: profile.name, videoCodec: profile.videoCodec, search: `${profile.name} ${profile.description} ${profile.container} ${profile.videoCodec} ${profile.audioCodec}` })),
   ];
   return (
@@ -3277,7 +3371,7 @@ function ProfileAutocomplete({
       options={options}
       value={options.find((profile) => profile.id === value) ?? null}
       onChange={(_, profile) => onChange(profile?.id ?? 0)}
-      getOptionLabel={(profile) => profile.id === -1 ? 'None' : `${profile.name} · ${profile.videoCodec}`}
+      getOptionLabel={(profile) => profile.id === -1 ? 'Disabled' : `${profile.name} · ${profile.videoCodec}`}
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [profile.search])
@@ -3305,7 +3399,7 @@ function AudioProfileAutocomplete({
   disabled?: boolean;
 }) {
   const none: AudioEnhancementProfile = {
-    key: '', name: 'None', description: '', intent: '', filters: '', rnnoiseModelPath: '', channelMode: 'preserve',
+    key: '', name: 'Disabled', description: '', intent: '', filters: '', rnnoiseModelPath: '', channelMode: 'preserve',
     forceStereoMode: 'auto', stereoDelayMs: 0, stereoWidth: 0, eqBands: {}, preserveOriginalTrack: true,
     outputCodec: 'copy', targetLoudness: 0, truePeak: 0, notes: '',
   };
@@ -3315,7 +3409,7 @@ function AudioProfileAutocomplete({
       options={options}
       value={options.find((profile) => profile.key === value) ?? none}
       onChange={(_, profile) => onChange(profile?.key ?? '')}
-      getOptionLabel={(profile) => profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'None'}
+      getOptionLabel={(profile) => profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'Disabled'}
       isOptionEqualToValue={(option, selected) => option.key === selected.key}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [
@@ -3333,14 +3427,14 @@ function AudioProfileAutocomplete({
   );
 }
 
-function TrackProfileAutocomplete({ profiles, value, onChange, disabled }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean }) {
+function TrackProfileAutocomplete({ profiles, value, onChange, disabled, label = 'Tracks for path' }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean; label?: string }) {
   const none: TrackProfile = {
-    key: '', name: 'None', description: '', videoMode: 'first', audioMode: 'all', audioLanguages: [], audioRequired: false,
+    key: '', name: 'Disabled', description: '', videoMode: 'first', audioMode: 'all', audioLanguages: [], audioRequired: false,
     dropCommentary: false, defaultAudioLanguage: '', subtitleMode: 'all', subtitleLanguages: [], subtitlesRequired: false,
     defaultSubtitleLanguage: '', validationMode: 'warn', notes: '',
   };
   const options = [none, ...profiles];
-  return <Autocomplete options={options} value={options.find((profile) => profile.key === value) ?? none} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label="Tracks for path" size="small" />} fullWidth />;
+  return <Autocomplete options={options} value={options.find((profile) => profile.key === value) ?? none} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label={label} size="small" />} fullWidth />;
 }
 
 function getTrackProfilePathAssignments(settings: AppSetting[]) {
@@ -3612,6 +3706,34 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
       return candidates.includes(normalizedAssetPath);
     });
+}
+
+function relatedVideoProfile(profiles: Profile[], asset: Asset) {
+  const assetPath = normalizePath(asset.path);
+  return [...profiles].reverse().find((profile) =>
+    normalizePath(stringFromRecord(profile.workerConfig, 'derivedFromAsset')) === assetPath,
+  );
+}
+
+function relatedAudioProfile(profiles: AudioEnhancementProfile[], asset: Asset) {
+  const marker = `Lab asset: ${asset.path}`;
+  return [...profiles].reverse().find((profile) => profile.notes.split('\n').some((line) => line.trim() === marker));
+}
+
+function relatedTrackProfile(profiles: TrackProfile[], asset: Asset) {
+  const assetPath = normalizePath(asset.path);
+  return [...profiles].reverse().find((profile) =>
+    normalizePath(profile.sourceAssetPath ?? '') === assetPath ||
+    (!profile.sourceAssetPath && Boolean(profile.sourceAssetName) && profile.sourceAssetName === asset.fileName),
+  );
+}
+
+function directPlayScoreLabel(job: QueueJob) {
+  const directPlay = recordFromRecord(job.validationReport ?? {}, 'directPlay');
+  const enabled = directPlay.enabled === true;
+  const score = Number(directPlay.lowestScore);
+  if (!enabled || !Number.isFinite(score)) return 'Not evaluated';
+  return `${score}/100`;
 }
 
 function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueue: boolean): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {

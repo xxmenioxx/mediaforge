@@ -36,6 +36,24 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestDestinationLibraryForMediaPathPrefersSpecificOrMatchingLibrary(t *testing.T) {
+	libraries := []models.Library{
+		{ID: 1, Name: "Cartoons", DestinationPath: "/media/library"},
+		{ID: 2, Name: "Cartoon Movies", DestinationPath: "/media/library"},
+		{ID: 3, Name: "Anime", DestinationPath: "/media/library"},
+	}
+	owner, ok := destinationLibraryForMediaPath("/media/library/anime/ARBEGAS/ARBEGAS - S01E01.mkv", libraries)
+	if !ok || owner.ID != 3 {
+		t.Fatalf("shared-root owner = %#v, want Anime", owner)
+	}
+
+	libraries = append(libraries, models.Library{ID: 4, Name: "Anime Dedicated", DestinationPath: "/media/library/anime"})
+	owner, ok = destinationLibraryForMediaPath("/media/library/anime/ARBEGAS/ARBEGAS - S01E01.mkv", libraries)
+	if !ok || owner.ID != 4 {
+		t.Fatalf("nested-root owner = %#v, want most specific library", owner)
+	}
+}
+
 func TestUpsertAssetRecordUpdatesExistingPathAtomically(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:asset-upsert?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

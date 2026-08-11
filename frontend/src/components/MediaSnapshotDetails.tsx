@@ -1,4 +1,4 @@
-import { Box, Checkbox, Chip, Stack, Switch, TextField, Typography } from '@mui/material';
+import { Box, Card, CardContent, Checkbox, Chip, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 
 type MediaSnapshotDetailsProps = {
@@ -26,6 +26,80 @@ export type StreamMetadataControls = {
   subtitle: StreamMetadataControlState;
 };
 
+export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
+  const video = scan.videoStreams?.[0];
+  const frames = scan.frameStructureAnalysis;
+  const crop = scan.cropAnalysis;
+  const interlace = scan.interlaceAnalysis;
+
+  return (
+    <Grid container spacing={1.5}>
+      <Grid size={{ xs: 12, md: 6 }}>
+        <TechnicalFactGroup title="Video format" facts={[
+          ['Codec', scan.videoCodec || video?.codec || 'Unknown'],
+          ['Resolution', scan.width && scan.height ? `${scan.width}×${scan.height}` : 'Unknown'],
+          ['Pixel format', video?.pixFmt || 'Unknown'],
+          ['Bit depth', video?.bitDepth ? `${video.bitDepth}-bit` : video?.bitsPerRawSample || 'Unknown'],
+          ['Frame rate', video?.avgFrameRate || video?.realFrameRate || 'Unknown'],
+          ['Dynamic range', scan.hdr ? 'HDR' : 'SDR'],
+          ['Video bitrate', formatBitrate(video?.bitrate || scan.bitrate)],
+        ]} />
+      </Grid>
+      <Grid size={{ xs: 12, md: 6 }}>
+        <TechnicalFactGroup title="Frame structure" facts={frames ? [
+          ['Sample', `${frames.framesAnalyzed} frames`],
+          ['Frame mix', `I ${frames.iFrames} · P ${frames.pFrames} · B ${frames.bFrames}`],
+          ['B-frame share', `${(frames.bFrameRatio * 100).toFixed(1)}%`],
+          ['Longest B run', String(frames.maxConsecutiveBFrames)],
+          ['Keyframes', String(frames.keyFrames)],
+          ['Average GOP', frames.averageGopLength > 0 ? frames.averageGopLength.toFixed(1) : 'Not enough keyframes'],
+        ] : [['Status', 'Run Process Asset to refresh frame analysis']]} />
+      </Grid>
+      <Grid size={{ xs: 12, md: 6 }}>
+        <TechnicalFactGroup title="Motion & geometry" facts={[
+          ['Scan type', interlaceLabel(scan)],
+          ['Field order', interlace?.detectedFieldOrder || interlace?.fieldOrder || 'Unknown'],
+          ['Field-order match', interlace?.fieldOrderMismatch ? 'Mismatch · review' : 'No mismatch detected'],
+          ['Crop status', crop?.status || 'Unknown'],
+          ['Recommended crop', crop?.recommendedCrop || 'None'],
+          ['Display aspect ratio', video?.displayAspectRatio || 'Unknown'],
+          ['Sample aspect ratio', video?.sampleAspectRatio || 'Unknown'],
+        ]} />
+      </Grid>
+      <Grid size={{ xs: 12, md: 6 }}>
+        <TechnicalFactGroup title="Container & tracks" facts={[
+          ['Container', friendlyContainer(scan.container)],
+          ['Duration', formatDuration(scan.duration)],
+          ['File size', formatBytes(scan.sizeBytes)],
+          ['Audio tracks', String(scan.audioTracks)],
+          ['Subtitle tracks', String(scan.subtitleTracks)],
+          ['Chapters', String(scan.chapters)],
+        ]} />
+      </Grid>
+    </Grid>
+  );
+}
+
+function TechnicalFactGroup({ title, facts }: { title: string; facts: string[][] }) {
+  return (
+    <Card variant="outlined" sx={{ height: '100%' }}>
+      <CardContent>
+        <Stack spacing={1.25}>
+          <Typography fontWeight={700}>{title}</Typography>
+          <Grid container spacing={1}>
+            {facts.map(([label, value]) => (
+              <Grid key={label} size={{ xs: 12, sm: 6 }}>
+                <Typography variant="caption" color="text.secondary">{label}</Typography>
+                <Typography variant="body2" fontWeight={600}>{value}</Typography>
+              </Grid>
+            ))}
+          </Grid>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
 type StreamMetadataControlState = {
   values: Record<string, StreamMetadataOverride>;
   disabled?: boolean;
@@ -35,35 +109,10 @@ type StreamMetadataControlState = {
 export function MediaSnapshotDetails({ scan, streamControls, metadataControls, section = 'all' }: MediaSnapshotDetailsProps) {
   return (
     <Stack spacing={1.25}>
-      {section !== 'tracks' ? <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-        <SnapshotChip label="Video" value={`${scan.videoCodec || 'unknown'}${scan.width && scan.height ? ` ${scan.width}x${scan.height}` : ''}`} />
-        <SnapshotChip label="Duration" value={formatDuration(scan.duration)} />
-        <SnapshotChip label="Bitrate" value={formatBitrate(scan.bitrate)} />
-        <SnapshotChip label="Size" value={formatBytes(scan.sizeBytes)} />
-        <SnapshotChip label="Range" value={scan.hdr ? 'HDR' : 'SDR'} />
-        <SnapshotChip label="Scan type" value={interlaceLabel(scan)} />
-        <SnapshotChip label="Motion sample" value={interlaceWindowLabel(scan)} />
-        {scan.interlaceAnalysis?.detectedFieldOrder ? <SnapshotChip label="Detected order" value={scan.interlaceAnalysis.detectedFieldOrder.toUpperCase()} /> : null}
-        {scan.interlaceAnalysis?.fieldOrderMismatch ? (
-          <SnapshotChip
-            label="Field-order mismatch"
-            value={`${(scan.interlaceAnalysis.containerFieldOrder || 'unknown').toUpperCase()} metadata → ${(scan.interlaceAnalysis.detectedFieldOrder || 'unknown').toUpperCase()} content`}
-          />
-        ) : null}
-        {scan.interlaceAnalysis?.recommendedMode ? <SnapshotChip label="Motion correction" value={scan.interlaceAnalysis.recommendedMode.toUpperCase()} /> : null}
-        <SnapshotChip label="Chapters" value={`${scan.chapters}`} />
-        <SnapshotChip label="Container" value={friendlyContainer(scan.container)} />
-        {scan.frameStructureAnalysis?.framesAnalyzed ? (
-          <>
-            <SnapshotChip label="Frame sample" value={`${scan.frameStructureAnalysis.framesAnalyzed} frames`} />
-            <SnapshotChip label="Frame mix" value={`I ${scan.frameStructureAnalysis.iFrames} · P ${scan.frameStructureAnalysis.pFrames} · B ${scan.frameStructureAnalysis.bFrames}`} />
-            <SnapshotChip label="B-frame share" value={`${(scan.frameStructureAnalysis.bFrameRatio * 100).toFixed(1)}%`} />
-            <SnapshotChip label="Longest B run" value={`${scan.frameStructureAnalysis.maxConsecutiveBFrames}`} />
-            <SnapshotChip label="Average GOP" value={scan.frameStructureAnalysis.averageGopLength > 0 ? scan.frameStructureAnalysis.averageGopLength.toFixed(1) : 'Not enough keyframes'} />
-          </>
-        ) : null}
-        {streamControls ? <SnapshotChip label="Selection savings" value={selectionSavingsLabel(scan, streamControls)} /> : null}
-      </Stack> : null}
+      {section !== 'tracks' ? <MediaTechnicalSnapshotSummary scan={scan} /> : null}
+      {section !== 'tracks' && streamControls ? (
+        <Stack direction="row"><SnapshotChip label="Selection savings" value={selectionSavingsLabel(scan, streamControls)} /></Stack>
+      ) : null}
 
       {section !== 'general' ? <><StreamSection
         title={`Video (${scan.videoStreams?.length ?? 0})`}
@@ -101,23 +150,6 @@ function interlaceLabel(scan: ScanResult) {
     case 'progressive': return 'Progressive';
     default: return 'Unknown';
   }
-}
-
-function interlaceWindowLabel(scan: ScanResult) {
-  const seconds = scan.interlaceAnalysis?.windowSeconds;
-  const start = scan.interlaceAnalysis?.windowStart;
-  const samples = scan.interlaceAnalysis?.sampleCount;
-  if (!seconds) return 'Legacy sample';
-  if (samples && samples > 1) return `${samples} × ${seconds}s distributed`;
-  return `${seconds}s from ${formatClock(start ?? 0)}`;
-}
-
-function formatClock(seconds: number) {
-  const whole = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(whole / 3600);
-  const minutes = Math.floor((whole % 3600) / 60);
-  const remaining = whole % 60;
-  return [hours, minutes, remaining].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
 function StreamSection({

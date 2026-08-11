@@ -238,6 +238,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(metadata),
     }),
+  renameAsset: (input: { path: string; fileName: string }) =>
+    request<{ oldPath: string; path: string; fileName: string }>('/api/assets/rename', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   updateAssetConversion: ({ path, ...conversion }: AssetConversionUpdateInput) =>
     request<{ path: string; conversion: unknown }>(`/api/assets/conversion?path=${encodeURIComponent(path)}`, {
       method: 'POST',

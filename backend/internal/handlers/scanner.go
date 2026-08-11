@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -157,6 +158,7 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 					report("frame_structure", 80, "Adding the missing I, P, B and GOP analysis")
 				}
 				enrichCachedScan(&existing)
+				applySnapshotDirectPlay(h.db, &existing)
 				_ = h.db.Save(&existing).Error
 				report("completed", 100, "Using the current asset snapshot")
 				return existing, true, nil
@@ -170,6 +172,7 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 	}
 
 	result := buildScanResult(path, info.Size(), probe, raw)
+	applySnapshotDirectPlay(h.db, &result)
 	if err := persistFinalAssetSnapshot(h.db, &result); err != nil {
 		return models.ScanResult{}, false, err
 	}
@@ -441,10 +444,27 @@ func captureFinalAssetSnapshot(db *gorm.DB, path string) (models.ScanResult, err
 		return models.ScanResult{}, err
 	}
 	result := buildScanResult(path, info.Size(), probe, raw)
+	applySnapshotDirectPlay(db, &result)
 	if err := persistFinalAssetSnapshot(db, &result); err != nil {
 		return models.ScanResult{}, err
 	}
 	return result, nil
+}
+
+func applySnapshotDirectPlay(db *gorm.DB, result *models.ScanResult) {
+	if db == nil || result == nil || len(result.RawProbe) == 0 {
+		return
+	}
+	report, err := scheduler.EvaluateActualDirectPlay(db, result.RawProbe)
+	if err != nil {
+		result.DirectPlayAnalysis = models.JSONMap{"status": "unverified", "error": err.Error()}
+		return
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(encoded, &result.DirectPlayAnalysis)
 }
 
 func persistFinalAssetSnapshot(db *gorm.DB, result *models.ScanResult) error {

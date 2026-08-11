@@ -2257,6 +2257,90 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "metadata": metadataForPath(cleanPath, entries)})
 }
 
+func (h AssetHandler) Rename(c *gin.Context) {
+	var input struct {
+		Path     string `json:"path"`
+		FileName string `json:"fileName"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resolvedPath, err := h.resolveMediaPath(strings.TrimSpace(input.Path))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	allowed, err := h.pathBelongsToLibrary(resolvedPath)
+	if err != nil || !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
+		return
+	}
+	fileName := strings.TrimSpace(input.FileName)
+	if fileName == "" || fileName != filepath.Base(fileName) || fileName == "." || fileName == ".." {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fileName must be a plain file name"})
+		return
+	}
+	target := filepath.Join(filepath.Dir(resolvedPath), fileName)
+	if filepath.Clean(target) == filepath.Clean(resolvedPath) {
+		c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
+		return
+	}
+	if _, err := os.Stat(target); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "a file with that name already exists"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.Rename(resolvedPath, target); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "rename asset: " + err.Error()})
+		return
+	}
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.AssetRecord{}).Where("path = ?", resolvedPath).Updates(map[string]interface{}{
+			"path": target, "file_name": fileName, "relative_path": gorm.Expr("REPLACE(relative_path, ?, ?)", filepath.Base(resolvedPath), fileName),
+		}).Error; err != nil {
+			return err
+		}
+		metadata := assetMetadataOverrides(tx)
+		if value, ok := metadata[filepath.Clean(resolvedPath)]; ok {
+			delete(metadata, filepath.Clean(resolvedPath))
+			metadata[filepath.Clean(target)] = value
+			if err := saveAssetMetadataOverrides(tx, metadata); err != nil {
+				return err
+			}
+		}
+		reviews := assetReviewOverrides(tx)
+		if value, ok := reviews[filepath.Clean(resolvedPath)]; ok {
+			delete(reviews, filepath.Clean(resolvedPath))
+			reviews[filepath.Clean(target)] = value
+			if err := saveAssetReviewOverrides(tx, reviews); err != nil {
+				return err
+			}
+		}
+		conversions := assetConversionOverrides(tx)
+		if value, ok := conversions[filepath.Clean(resolvedPath)]; ok {
+			delete(conversions, filepath.Clean(resolvedPath))
+			conversions[filepath.Clean(target)] = value
+			if err := saveAssetConversionOverrides(tx, conversions); err != nil {
+				return err
+			}
+		}
+		for column, value := range map[string]string{"media_path": resolvedPath, "output_path": resolvedPath, "published_path": resolvedPath} {
+			if err := tx.Model(&models.QueueJob{}).Where(column+" = ?", value).Update(column, target).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		_ = os.Rename(target, resolvedPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "update renamed asset: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
+}
+
 func (h AssetHandler) UpdateReview(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	if path == "" {
@@ -4082,18 +4166,17 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		result.UnprocessedFiles++
 	}
 
-	seenDestinations := map[string]struct{}{}
 	libraryRecords := []models.AssetRecord{}
 	for _, library := range libraries {
 		destinationPath := strings.TrimSpace(library.DestinationPath)
 		if destinationPath == "" {
 			continue
 		}
-		if _, seen := seenDestinations[destinationPath]; seen {
-			continue
-		}
-		seenDestinations[destinationPath] = struct{}{}
 		for _, record := range collectAssetRecords(library, destinationPath, "converted", now, keepDays) {
+			owner, owned := destinationLibraryForMediaPath(record.Path, libraries)
+			if !owned || owner.ID != library.ID {
+				continue
+			}
 			foundPaths[record.Path] = struct{}{}
 			libraryRecords = append(libraryRecords, record)
 		}
@@ -4146,6 +4229,33 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func destinationLibraryForMediaPath(mediaPath string, libraries []models.Library) (models.Library, bool) {
+	best := models.Library{}
+	bestDepth := -1
+	bestCategoryMatch := false
+	for _, library := range libraries {
+		destination := filepath.Clean(strings.TrimSpace(library.DestinationPath))
+		if destination == "." || !pathIsInside(mediaPath, destination) {
+			continue
+		}
+		relative, err := filepath.Rel(destination, mediaPath)
+		if err != nil {
+			continue
+		}
+		parts := strings.FieldsFunc(filepath.ToSlash(relative), func(value rune) bool { return value == '/' })
+		categoryMatch := len(parts) > 1 && normalizedLibrarySegment(parts[0]) == normalizedLibrarySegment(library.Name)
+		depth := len(strings.FieldsFunc(filepath.ToSlash(destination), func(value rune) bool { return value == '/' }))
+		if depth > bestDepth ||
+			(depth == bestDepth && categoryMatch && !bestCategoryMatch) ||
+			(depth == bestDepth && categoryMatch == bestCategoryMatch && (best.ID == 0 || library.ID < best.ID)) {
+			best = library
+			bestDepth = depth
+			bestCategoryMatch = categoryMatch
+		}
+	}
+	return best, best.ID != 0
 }
 
 func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord) (int, int, error) {

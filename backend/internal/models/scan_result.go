@@ -24,6 +24,7 @@ type ScanResult struct {
 	CropAnalysis           JSONMap   `json:"cropAnalysis" gorm:"type:json"`
 	FrameStructureAnalysis JSONMap   `json:"frameStructureAnalysis" gorm:"type:json"`
 	CompatibilityAnalysis  JSONMap   `json:"compatibilityAnalysis" gorm:"type:json"`
+	DirectPlayAnalysis     JSONMap   `json:"directPlayAnalysis" gorm:"type:json"`
 	RawProbe               JSONMap   `json:"rawProbe" gorm:"type:json"`
 	CreatedAt              time.Time `json:"createdAt"`
 	UpdatedAt              time.Time `json:"updatedAt"`

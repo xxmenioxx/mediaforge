@@ -704,6 +704,18 @@ export type ScanResult = {
     warnings?: string[];
     recommendations?: string[];
   };
+  directPlayAnalysis?: {
+    enabled?: boolean;
+    estimated?: boolean;
+    strategy?: string;
+    minimumScore?: number;
+    lowestScore?: number;
+    risk?: string;
+    blocked?: boolean;
+    status?: string;
+    error?: string;
+    clients?: Array<{ client: string; score: number; risk: string; warnings: string[] }>;
+  };
   interlaceAnalysis: {
     version?: number;
     status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';

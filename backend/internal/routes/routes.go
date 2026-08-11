@@ -81,6 +81,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/assets/reconcile-publication", assets.ConfirmPublicationReconciliation)
 		api.POST("/assets/review", assets.UpdateReview)
 		api.POST("/assets/metadata", assets.UpdateMetadata)
+		api.POST("/assets/rename", assets.Rename)
 		api.POST("/assets/conversion", assets.UpdateConversion)
 		api.GET("/assets/preview", assets.Preview)
 		api.GET("/assets/preview/compatible", assets.CompatiblePreview)

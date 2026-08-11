@@ -60,7 +60,7 @@ import type {
   QSVFeatureStatus,
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
-import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { MediaSnapshotDetails, MediaTechnicalSnapshotSummary } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -558,7 +558,7 @@ export function ProfileLabPage() {
       ...(assets.data?.library ?? []),
       ...(assets.data?.converted ?? []),
       ...(assets.data?.unverified ?? []),
-    ]),
+    ].filter((asset) => !asset.missing)),
     [assets.data],
   );
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
@@ -597,7 +597,7 @@ export function ProfileLabPage() {
   const [terminalCommandOpen, setTerminalCommandOpen] = useState(false);
   const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
   const [fidelityOpen, setFidelityOpen] = useState(true);
-  const [fidelityTab, setFidelityTab] = useState<'previews' | 'frames' | 'characteristics'>('previews');
+  const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
@@ -1430,6 +1430,7 @@ export function ProfileLabPage() {
 
   function processVideoPreview() {
     fidelityInspection.reset();
+    setFidelityTab('previews');
     const options = videoPreviewOptions(videoDraft);
     setProcessedVideoCodec(videoDraft.videoCodec);
     setProcessedVideoQualityValue(videoDraft.qualityValue);
@@ -1758,53 +1759,6 @@ export function ProfileLabPage() {
                           />
                         </code>
                       </pre>
-                      {currentFidelityInspection?.effectiveEncoder === 'hevc_qsv' && (
-                        <Card variant="outlined" className="profile-lab-qsv-frame-analysis">
-                          <CardContent>
-                            <Stack spacing={2}>
-                              <Stack spacing={0.5}>
-                                <Typography variant="h3">QSV frame structure</Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  How the sampled frames are organized. I-frames are reference points, P-frames predict forward, and B-frames predict from surrounding frames. These measurements describe the output; they do not prove that Adaptive I or Adaptive B was enabled.
-                                </Typography>
-                              </Stack>
-
-                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                <Chip
-                                  size="small"
-                                  color={currentFidelityInspection.qsvFeatureStatus.adaptiveIEffective ? 'success' : currentFidelityInspection.qsvFeatureStatus.adaptiveIRequested ? 'warning' : 'default'}
-                                  label={`Adaptive I: ${qsvFeatureStateLabel(currentFidelityInspection.qsvFeatureStatus.adaptiveIRequested, currentFidelityInspection.qsvFeatureStatus.adaptiveIEffective)}`}
-                                />
-                                <Chip
-                                  size="small"
-                                  color={currentFidelityInspection.qsvFeatureStatus.adaptiveBEffective ? 'success' : currentFidelityInspection.qsvFeatureStatus.adaptiveBRequested ? 'warning' : 'default'}
-                                  label={`Adaptive B: ${qsvFeatureStateLabel(currentFidelityInspection.qsvFeatureStatus.adaptiveBRequested, currentFidelityInspection.qsvFeatureStatus.adaptiveBEffective)}`}
-                                />
-                              </Stack>
-
-                              <Grid container spacing={2}>
-                                <Grid size={{ xs: 12, md: 6 }}>
-                                  <QSVFrameStructureCard title="Source sample" analysis={currentFidelityInspection.sourceFrameStructure} />
-                                </Grid>
-                                <Grid size={{ xs: 12, md: 6 }}>
-                                  <QSVFrameStructureCard title="Encoded output" analysis={currentFidelityInspection.outputFrameStructure} emphasizeAnomalies />
-                                </Grid>
-                              </Grid>
-
-                              <Stack spacing={1}>
-                                <Typography variant="subtitle2">QSV warnings</Typography>
-                                {currentFidelityInspection.qsvFrameWarnings.length > 0 ? (
-                                  currentFidelityInspection.qsvFrameWarnings.map((warning) => (
-                                    <Alert key={warning} severity="warning">{warning}</Alert>
-                                  ))
-                                ) : (
-                                  <Alert severity="success">No unusual QSV frame-structure behavior was detected in this preview sample.</Alert>
-                                )}
-                              </Stack>
-                            </Stack>
-                          </CardContent>
-                        </Card>
-                      )}
                     </section>
                   )}
                   <Alert severity="info">
@@ -1902,8 +1856,10 @@ export function ProfileLabPage() {
                   <CardContent sx={{ py: 0, '&:last-child': { pb: 0 } }}>
                     <Tabs value={fidelityTab} onChange={(_, value) => setFidelityTab(value)} variant="scrollable" scrollButtons="auto">
                       <Tab value="previews" label="A/B Previews" />
+                      <Tab value="technical" label="Technical Snapshot" />
                       <Tab value="frames" label="Frame Fidelity" />
                       <Tab value="characteristics" label="Characteristics" />
+                      <Tab value="warnings" label="Warnings & Guidance" />
                     </Tabs>
                   </CardContent>
                 </Card>
@@ -1976,7 +1932,7 @@ export function ProfileLabPage() {
                     </SampleCard>
                   </Grid>
                 </Grid>
-              ) : (
+              ) : fidelityTab === 'previews' ? (
                 <Card>
                   <CardContent>
                     <Stack spacing={1}>
@@ -1987,11 +1943,22 @@ export function ProfileLabPage() {
                     </Stack>
                   </CardContent>
                 </Card>
-              )}
+              ) : null}
               {assetPath && previewNonce > 0 && fidelityTab !== 'previews' ? (
                 <Card variant="outlined">
                   <CardContent>
-                    <Stack spacing={1.5}>
+                    {fidelityTab === 'technical' ? (
+                      <LabTechnicalSnapshot
+                        scan={recommendationSuggestion?.scan ?? trackSnapshot.data}
+                      />
+                    ) : fidelityTab === 'warnings' ? (
+                      <LabWarningsAndGuidance
+                        scan={recommendationSuggestion?.scan ?? trackSnapshot.data}
+                        report={recommendationReport}
+                        inspection={currentFidelityInspection}
+                        assetProcessed={Boolean(recommendationSuggestion)}
+                      />
+                    ) : <Stack spacing={1.5}>
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
                         <Box>
                           <Typography variant="h3">Fidelity validation</Typography>
@@ -2028,7 +1995,7 @@ export function ProfileLabPage() {
                             : null
                         )}
                       </Collapse>
-                    </Stack>
+                    </Stack>}
                   </CardContent>
                 </Card>
               ) : null}
@@ -3352,6 +3319,106 @@ export function ProfileLabPage() {
   );
 }
 
+function LabTechnicalSnapshot({ scan }: { scan?: ScanResult }) {
+  if (!scan) {
+    return <Alert severity="info">Select an asset and wait for its technical snapshot.</Alert>;
+  }
+  return (
+    <Stack spacing={2}>
+      <Stack spacing={0.4}>
+        <Typography variant="h3">Technical snapshot</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Source facts relevant to profile decisions. Frame counts describe the bitstream and do not prove that Adaptive I or Adaptive B was enabled.
+        </Typography>
+      </Stack>
+      <MediaTechnicalSnapshotSummary scan={scan} />
+    </Stack>
+  );
+}
+
+function LabWarningsAndGuidance({
+  scan,
+  report,
+  inspection,
+  assetProcessed,
+}: {
+  scan?: ScanResult;
+  report: LabRecommendationReport | null;
+  inspection?: LabFidelityInspection;
+  assetProcessed: boolean;
+}) {
+  const sourceWarnings = scan ? [
+    ...(scan.compatibilityAnalysis?.warnings ?? []),
+    ...(scan.interlaceAnalysis?.fieldOrderMismatch ? ['Container field-order metadata does not match the sampled video content.'] : []),
+    ...(scan.cropAnalysis?.status === 'variable' ? [scan.cropAnalysis.reason || 'Crop varies across the sampled windows; review before applying a fixed crop.'] : []),
+    ...(scan.frameStructureAnalysis && (scan.frameStructureAnalysis.pFrames === 0 || scan.frameStructureAnalysis.bFrameRatio >= 0.9 || scan.frameStructureAnalysis.maxConsecutiveBFrames >= 12)
+      ? [scan.frameStructureAnalysis.assessment]
+      : []),
+  ].filter(Boolean) : [];
+  const guidance = report ? [...report.general, ...report.video, ...report.audio, ...report.tracks] : [];
+  return (
+    <Stack spacing={2}>
+      <Stack spacing={0.4}>
+        <Typography variant="h3">Warnings & guidance</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Source findings appear after Process Asset. Process Video adds effective-command and output-structure results without replacing the source warnings.
+        </Typography>
+      </Stack>
+      {!assetProcessed ? <Alert severity="info">Run Process Asset to generate asset-specific warnings and suggestions.</Alert> : null}
+      {assetProcessed && sourceWarnings.length === 0 ? <Alert severity="success">No source-level technical warnings were detected.</Alert> : null}
+      {sourceWarnings.map((warning) => <Alert key={warning} severity="warning">{warning}</Alert>)}
+      {guidance.length ? (
+        <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+          <Typography fontWeight={700} sx={{ mb: 1 }}>Asset suggestions</Typography>
+          <Stack spacing={0.6}>{guidance.map((item) => <Typography key={item} variant="body2">• {item}</Typography>)}</Stack>
+        </Box>
+      ) : null}
+      {!inspection ? <Alert severity="info">Run Process Video to compare I/P/B distribution, B-frame runs, GOP length, and encoder warnings against the source.</Alert> : (
+        <Stack spacing={1.5}>
+          <Typography fontWeight={700}>Processed video result</Typography>
+          {inspection.qsvFrameWarnings.length ? inspection.qsvFrameWarnings.map((warning) => <Alert key={warning} severity="warning">{warning}</Alert>) : (
+            <Alert severity="success">No unusual processed-video frame-structure behavior was detected.</Alert>
+          )}
+          {frameStructureGuidance(inspection.sourceFrameStructure, inspection.outputFrameStructure).map((item) => (
+            <Alert key={item.text} severity={item.severity}>{item.text}</Alert>
+          ))}
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
+function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis) {
+  const guidance: Array<{ severity: 'success' | 'info' | 'warning'; text: string }> = [];
+  const extremeOutput = output.pFrames === 0 && output.bFrameRatio >= 0.9 && output.maxConsecutiveBFrames >= 12;
+  const largeRatioChange = output.bFrameRatio >= 0.9 && output.bFrameRatio-source.bFrameRatio >= 0.25;
+  const largeRunChange = output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4;
+  if (extremeOutput) {
+    guidance.push({
+      severity: 'warning',
+      text: 'Do not adopt this GOP structure as a standard profile yet. Inspect the effective -bf and -g behavior, then test seeking, decoder compatibility, and representative motion scenes. Adaptive B alone is not a sufficient explanation or fix.',
+    });
+  } else if (largeRatioChange || largeRunChange) {
+    guidance.push({
+      severity: 'warning',
+      text: 'The output changed its B-frame structure substantially. Review GOP/B-frame policy and compatibility before standardizing it; exact source GOP replication is not required.',
+    });
+  }
+  if (output.averageGopLength >= 240 && (source.averageGopLength <= 0 || output.averageGopLength > source.averageGopLength*1.5)) {
+    guidance.push({
+      severity: 'warning',
+      text: 'The output GOP is much longer than the source baseline. Consider a shorter GOP if seeking, editing, or device compatibility matters, and validate the resulting quality/size tradeoff.',
+    });
+  }
+  if (!guidance.length) {
+    guidance.push({
+      severity: 'success',
+      text: 'This sample does not justify changing GOP or B-frame controls. Keep the current policy unless playback, seeking, or a broader sample reveals a problem.',
+    });
+  }
+  return guidance;
+}
+
 function qsvFeatureStateLabel(requested: boolean, effective: boolean) {
   if (effective) return 'enabled';
   if (requested) return 'requested, unavailable';
@@ -3650,10 +3717,37 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
           </TableBody>
         </Table>
       </Box>
+      <FrameStructureCharacteristicsTable source={inspection.sourceFrameStructure} output={inspection.outputFrameStructure} />
       <Typography variant="caption" color="text.secondary">
         The browser reference is a temporary H.264 representation. Its differences describe preview normalization only and do not change the final-output policy saved in the video profile.
       </Typography>
     </Stack>
+  );
+}
+
+function FrameStructureCharacteristicsTable({ source, output }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis }) {
+  const ratioDelta = output.bFrameRatio - source.bFrameRatio;
+  const rows = [
+    ['Frames sampled', String(source.framesAnalyzed), String(output.framesAnalyzed), 'Measurement scope'],
+    ['I-frames', String(source.iFrames), String(output.iFrames), 'Expected to vary after re-encoding'],
+    ['P-frames', String(source.pFrames), String(output.pFrames), source.pFrames > 0 && output.pFrames === 0 ? 'Review · P-frames disappeared' : 'Expected to vary'],
+    ['B-frames', String(source.bFrames), String(output.bFrames), 'Expected to vary'],
+    ['B-frame share', `${(source.bFrameRatio * 100).toFixed(1)}%`, `${(output.bFrameRatio * 100).toFixed(1)}%`, Math.abs(ratioDelta) >= 0.25 ? 'Review · large change' : 'Within review tolerance'],
+    ['Longest B-frame run', String(source.maxConsecutiveBFrames), String(output.maxConsecutiveBFrames), output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4 ? 'Review · large increase' : 'Within review tolerance'],
+    ['Keyframes', String(source.keyFrames), String(output.keyFrames), 'Expected to vary with sample/GOP'],
+    ['Average GOP', source.averageGopLength > 0 ? source.averageGopLength.toFixed(1) : 'Not enough keyframes', output.averageGopLength > 0 ? output.averageGopLength.toFixed(1) : 'Not enough keyframes', output.averageGopLength >= 240 ? 'Review · long output GOP' : 'Within review tolerance'],
+  ];
+  return (
+    <Box sx={{ overflowX: 'auto' }}>
+      <Typography fontWeight={700} sx={{ mb: 1 }}>Frame structure</Typography>
+      <Table size="small" aria-label="Frame structure characteristics comparison">
+        <TableHead><TableRow><TableCell>Characteristic</TableCell><TableCell>Source</TableCell><TableCell>Profile result</TableCell><TableCell>Interpretation</TableCell></TableRow></TableHead>
+        <TableBody>{rows.map(([label, sourceValue, outputValue, result]) => {
+          const review = result.startsWith('Review');
+          return <TableRow key={label}><TableCell>{label}</TableCell><TableCell>{sourceValue}</TableCell><TableCell>{outputValue}</TableCell><TableCell><Chip size="small" color={review ? 'warning' : 'default'} label={result} /></TableCell></TableRow>;
+        })}</TableBody>
+      </Table>
+    </Box>
   );
 }
 
@@ -5107,6 +5201,9 @@ function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value
             </Typography>
             <Typography color="text.secondary" variant="body2" noWrap>
               {labAssetLocationLabel(asset)} · {asset.relativePath || asset.path}
+            </Typography>
+            <Typography color="text.disabled" variant="caption" noWrap title={asset.path}>
+              {asset.path}
             </Typography>
           </Stack>
         </Box>

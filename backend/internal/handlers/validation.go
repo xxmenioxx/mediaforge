@@ -157,7 +157,17 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 
 	var directPlayReport scheduler.DirectPlayReport
 	directPlayEvaluated := false
+	var sourceDirectPlayReport scheduler.DirectPlayReport
+	sourceDirectPlayAvailable := false
 	colorReport := models.JSONMap{}
+	if strings.TrimSpace(job.MediaPath) != "" {
+		sourceProbe := ffprobeJSON(job.MediaPath)
+		if _, failed := sourceProbe["error"].(string); !failed {
+			if report, directPlayErr := scheduler.EvaluateActualDirectPlay(db, models.JSONMap(sourceProbe)); directPlayErr == nil {
+				sourceDirectPlayReport, sourceDirectPlayAvailable = report, true
+			}
+		}
+	}
 	if outputExists {
 		probe := ffprobeJSON(job.OutputPath)
 		if probeError, failed := probe["error"].(string); failed {
@@ -202,6 +212,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 	if directPlayEvaluated {
 		report["directPlay"] = directPlayReport
+	}
+	if sourceDirectPlayAvailable {
+		report["directPlaySource"] = sourceDirectPlayReport
 	}
 	if len(colorReport) > 0 {
 		report["colorPolicy"] = colorReport
