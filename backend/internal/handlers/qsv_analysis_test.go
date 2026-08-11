@@ -162,3 +162,28 @@ func TestQSVFrameStructureWarnings(t *testing.T) {
 		})
 	}
 }
+
+func TestFrameStructureRecommendationAndValidation(t *testing.T) {
+	source := QSVFrameStructureAnalysis{AverageGOPLength: 82.7, MaxConsecutiveBFrames: 3, BFrameRatio: .58, Confidence: "high"}
+	recommendation := recommendFrameStructure(source, 29.97, "anime", "balanced", true, true, false)
+	if recommendation.TargetGOPFrames != 90 || recommendation.MaxBFrames != 3 || !recommendation.AdaptiveI || recommendation.AdaptiveB {
+		t.Fatalf("unexpected recommendation: %#v", recommendation)
+	}
+	safe := QSVFrameStructureAnalysis{AverageGOPLength: 110, MaxConsecutiveBFrames: 3, PFrames: 200, BFrameRatio: .6, WindowCount: 5, Confidence: "high"}
+	if got := validateFrameStructureRecommendation(recommendation, source, safe); got.Verdict != "safe" {
+		t.Fatalf("safe verdict=%#v", got)
+	}
+	extreme := QSVFrameStructureAnalysis{AverageGOPLength: 248, MaxConsecutiveBFrames: 247, PFrames: 0, BFrameRatio: .996, WindowCount: 5, Confidence: "high"}
+	if got := validateFrameStructureRecommendation(recommendation, source, extreme); got.Verdict != "reject" || got.Confidence != "high" {
+		t.Fatalf("reject verdict=%#v", got)
+	}
+}
+
+func TestFrameStructureWindowAggregationHelpers(t *testing.T) {
+	if got := mergedIntervalSeconds([][2]float64{{0, 20}, {10, 30}, {50, 70}}); got != 50 {
+		t.Fatalf("coverage=%v", got)
+	}
+	if got := frameStructureVariability([]float64{90, 92, 88, 240, 91}); got != "high" {
+		t.Fatalf("variability=%q", got)
+	}
+}

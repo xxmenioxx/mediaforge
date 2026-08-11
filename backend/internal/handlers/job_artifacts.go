@@ -463,6 +463,18 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if strings.TrimSpace(override.X265Params) != "" {
 		values["x265Params"] = override.X265Params
 	}
+	if override.FrameStructureGOPMode != "" {
+		values["frameStructureGopMode"] = override.FrameStructureGOPMode
+	}
+	if override.FrameStructureGOPFrames > 0 {
+		values["frameStructureGopFrames"] = override.FrameStructureGOPFrames
+	}
+	if override.FrameStructureBFrameMode != "" {
+		values["frameStructureBFrameMode"] = override.FrameStructureBFrameMode
+	}
+	if override.FrameStructureMaxBFrames > 0 {
+		values["frameStructureMaxBFrames"] = override.FrameStructureMaxBFrames
+	}
 	if strings.TrimSpace(override.ProcessingMode) != "" {
 		values["processingMode"] = override.ProcessingMode
 	}
@@ -498,6 +510,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	}
 	if strings.TrimSpace(override.PreferredEncoder) != "" {
 		values["preferredEncoder"] = override.PreferredEncoder
+	}
+	if strings.TrimSpace(override.TargetWorkerName) != "" {
+		values["targetWorkerName"] = override.TargetWorkerName
 	}
 	if override.GlobalQuality > 0 {
 		values["globalQuality"] = override.GlobalQuality

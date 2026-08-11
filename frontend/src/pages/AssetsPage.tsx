@@ -51,6 +51,7 @@ import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
@@ -58,6 +59,8 @@ import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../tr
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
+import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -1351,7 +1354,15 @@ function AssetRow({
 
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
     const customHardwareControl = ['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBrc', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(String(key));
-    setConversionDraft((current) => ({ ...current, [key]: value, ...(customHardwareControl ? { hardwareQualityPreset: 'custom' } : {}) }));
+    setConversionDraft((current) => {
+      const rates = key === 'videoToolboxBitrateMbps' ? videoToolboxRatesFromTargetMbps(value) : null;
+      return {
+        ...current,
+        [key]: value,
+        ...(rates ? { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer } : {}),
+        ...(customHardwareControl ? { hardwareQualityPreset: 'custom' } : {}),
+      };
+    });
   }
 
   function updateStreamMetadata(type: 'video' | 'audio' | 'subtitle', index: number, patch: StreamMetadataOverride) {
@@ -2585,6 +2596,7 @@ function AssetConversionOverridePanel({
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
   const recommendedCrop = ['detected', 'variable'].includes(scan?.cropAnalysis?.status ?? '') ? (scan?.cropAnalysis?.recommendedCrop ?? '').trim() : '';
   const manualCropCandidate = scan?.cropAnalysis?.status === 'variable' && Boolean(recommendedCrop);
@@ -2593,10 +2605,14 @@ function AssetConversionOverridePanel({
   const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
   const bitmapSubtitleCount = scan?.subtitleStreams.filter((stream) => isBitmapSubtitleCodec(stream.codec)).length ?? 0;
   const processingPreference = draft.preferredEncoder ?? '';
+  const assetWorker = resolveSelectedWorker(workerNodes.data, draft.targetWorkerName ?? String(profile?.workerConfig?.targetWorkerName ?? ''));
+  const assetWorkerEncoders = encoderNamesForWorker(assetWorker);
+  const availableAssetEncoderOptions = assetEncoderOptions.filter((option) => option.value === 'auto' || assetWorkerEncoders.has(option.value));
+  const assetFrameRecommendation = recommendedFrameStructureForAsset(scan);
   const effectiveVideoCodec = draft.videoCodec || profile?.videoCodec || 'copy';
   const hardwareCodecSupported = hardwareEncodingSupportedForAssetCodec(effectiveVideoCodec);
   const hardwareSelected = processingPreference === 'hardware';
-  const defaultHardwareEncoder = assetEncoderOptions.find(
+  const defaultHardwareEncoder = availableAssetEncoderOptions.find(
     (option) => isHardwareAssetEncoder(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
   const effectiveVideoEncoder = draft.videoEncoder || defaultHardwareEncoder;
@@ -2627,10 +2643,15 @@ function AssetConversionOverridePanel({
   const effectivePixFmt = (draft.pixFmt || stringFromRecord(profile?.workerConfig ?? {}, 'pixFmt')).toLowerCase();
   const videoToolboxMain10Selected = (draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')).toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(effectivePixFmt);
-  const videoToolboxBFramesAvailable = videoToolboxCapability?.videoToolboxBFrames === true
-    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxBFramesMain10 === true);
   const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
+  const effectiveEvaluationProfile = assetQualityProfile(profile, draft, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
+  const effectiveEvaluationSignature = JSON.stringify(effectiveEvaluationProfile);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => encoderQualityRecommendation.mutate({ path: assetPath, profile: effectiveEvaluationProfile }), 250);
+    return () => window.clearTimeout(timer);
+  }, [assetPath, effectiveEvaluationSignature]);
 
   function selectHardwareQualityPreset(preset: string, encoder: string) {
     onChange('hardwareQualityPreset', preset);
@@ -2639,6 +2660,26 @@ function AssetConversionOverridePanel({
     encoderQualityRecommendation.mutate({ path: assetPath, profile: requested }, {
       onSuccess: (result) => applyEffectiveProfileToAssetOverrides(onChange, result.effectiveProfile),
     });
+  }
+
+  function updateVideoToolboxCustomRate(key: 'videoToolboxBitrateMbps' | 'videoToolboxMaxrateMbps' | 'videoToolboxBufferMbps', value: number) {
+    const rates = key === 'videoToolboxBitrateMbps' ? videoToolboxRatesFromTargetMbps(value) : null;
+    const patch: Partial<AssetConversionOverrideState> = {
+      [key]: value,
+      ...(rates ? { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer } : {}),
+      hardwareQualityPreset: 'custom',
+    };
+    Object.entries(patch).forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
+    const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, 'custom');
+    encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
+  }
+
+  function updateFrameStructurePolicy(patch: Record<string, unknown>) {
+    Object.entries(patch).forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
+    if (effectiveVideoEncoder === 'hevc_qsv' || effectiveVideoEncoder === 'hevc_videotoolbox') {
+      const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
+      encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
+    }
   }
 
   function changeProcessingPreference(value: '' | 'software' | 'hardware') {
@@ -2824,6 +2865,7 @@ function AssetConversionOverridePanel({
           <Grid size={{ xs: 12 }}>
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
               <Grid container spacing={2} alignItems="flex-start">
+                <Grid size={{ xs: 12, md: 4 }}><TextField select label="Execution worker" value={assetWorker?.name ?? ''} onChange={(event) => onChange('targetWorkerName', event.target.value)} helperText={assetWorker ? `${assetWorkerEncoders.size} usable encoder(s) reported` : 'No online worker is reporting encoders'} size="small" fullWidth>{(workerNodes.data ?? []).filter((worker) => worker.status === 'online').map((worker) => <MenuItem key={worker.id} value={worker.name}>{worker.name} · {encoderNamesForWorker(worker).size} encoders</MenuItem>)}</TextField></Grid>
                 <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     select
@@ -2835,7 +2877,7 @@ function AssetConversionOverridePanel({
                     fullWidth
                   >
                     <MenuItem value="">Profile default</MenuItem>
-                    <MenuItem value="software">Software · match Video Codec</MenuItem>
+                    <MenuItem value="software" disabled={!assetWorkerEncoders.has(softwareEncoderForAssetCodec(effectiveVideoCodec))}>Software · match Video Codec</MenuItem>
                     <MenuItem value="hardware" disabled={!hardwareCodecSupported || runtimeSnapshot.isLoading || !defaultHardwareEncoder}>Hardware</MenuItem>
                   </TextField>
                 </Grid>
@@ -2867,7 +2909,7 @@ function AssetConversionOverridePanel({
                     size="small"
                     fullWidth
                   >
-                    {assetEncoderOptions.filter((option) => isHardwareAssetEncoder(option.value)).map((option) => (
+                    {availableAssetEncoderOptions.filter((option) => isHardwareAssetEncoder(option.value)).map((option) => (
                       <MenuItem key={option.value} value={option.value} disabled={runtimeSnapshot.data?.encoders?.[option.value]?.usable === false}>
                         {option.label}
                       </MenuItem>
@@ -2898,6 +2940,18 @@ function AssetConversionOverridePanel({
                     helperText={hardwareSelected ? 'Used only if hardware falls back to software.' : 'Lower preserves more detail.'}
                     size="small"
                     fullWidth
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <FrameStructureControls
+                    config={{ ...(profile?.workerConfig ?? {}), ...draft }}
+                    recommendedGop={assetFrameRecommendation?.gop}
+                    recommendedBFrames={assetFrameRecommendation?.bFrames}
+                    onChange={(key, value) => onChange(key as keyof AssetConversionOverrideState, value as never)}
+                    onChangeMany={updateFrameStructurePolicy}
+                    encoder={hardwareSelected ? effectiveVideoEncoder : softwareEncoderForAssetCodec(draft.videoCodec ?? profile?.videoCodec ?? 'x265')}
+                    disabled={readOnly || (draft.videoCodec ?? profile?.videoCodec) === 'copy'}
+                    compact
                   />
                 </Grid>
                 {hardwareSelected && effectiveVideoEncoder !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
@@ -2957,23 +3011,19 @@ function AssetConversionOverridePanel({
               {videoToolboxSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBitrateMbps ?? 2)} onChange={(event) => onChange('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} size="small" fullWidth />
+                    <TextField title="Average target bitrate. Higher values preserve more detail and create larger files." label="VideoToolbox bitrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBitrateMbps ?? 2)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBitrateMbps', Number(event.target.value))} helperText="Updates maxrate ×1.5, buffer ×2.5, and the effective estimate." inputProps={{ min: 0.01, max: 200, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxMaxrateMbps ?? 3)} onChange={(event) => onChange('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} size="small" fullWidth />
+                    <TextField title="Maximum short-term bitrate allowed during complex scenes." label="VideoToolbox maxrate (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxMaxrateMbps ?? 3)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 5)} onChange={(event) => onChange('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
+                    <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 5)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase file size." label="GOP" type="number" value={draft.videoToolboxGop ?? Number(profile?.workerConfig?.videoToolboxGop ?? 0)} onChange={(event) => onChange('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="B-frames" select value={draft.videoToolboxBFramePolicy ?? String(profile?.workerConfig?.videoToolboxBFramePolicy ?? 'auto')} onChange={(event) => onChange('videoToolboxBFramePolicy', event.target.value as 'auto' | 'enabled' | 'disabled')} helperText="Auto emits no -bf option" size="small" fullWidth><MenuItem value="auto">Auto</MenuItem><MenuItem value="enabled" disabled={!videoToolboxBFramesAvailable}>Enabled</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Maximum B-frames" type="number" disabled={(draft.videoToolboxBFramePolicy ?? String(profile?.workerConfig?.videoToolboxBFramePolicy ?? 'auto')) !== 'enabled'} value={draft.videoToolboxBFrames ?? Number(profile?.workerConfig?.videoToolboxBFrames ?? 3)} onChange={(event) => onChange('videoToolboxBFrames', Math.max(1, Math.min(4, Number(event.target.value))))} inputProps={{ min: 1, max: 4, step: 1 }} size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={draft.videoToolboxRealtime ?? profile?.workerConfig?.videoToolboxRealtime === true} onChange={(event) => onChange('videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={draft.videoToolboxAutoAdjustBitrate ?? profile?.workerConfig?.videoToolboxAutoAdjustBitrate === true} onChange={(event) => onChange('videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
-              {encoderQualityRecommendation.isPending ? <Alert severity="info">Resolving this asset against the active worker probe…</Alert> : null}
               {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
               {encoderQualityRecommendation.data ? <Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />{encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack> : null}
               {encoderQualityRecommendation.data?.recommendation.effectiveBFramePolicy ? <Alert severity={encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? 'warning' : 'info'}>VideoToolbox B-frames: {encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy} · efficiency ×{encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier?.toFixed(2)} · target {((encoderQualityRecommendation.data.recommendation.targetBitrate ?? 0) / 1_000_000).toFixed(2)} Mbps{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? ` · ${encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}` : ''}</Alert> : null}
@@ -3852,6 +3902,28 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === 'string' ? value : '';
 }
+
+function recommendedFrameStructureForAsset(scan?: ScanResult) {
+  const analysis = scan?.frameStructureAnalysis;
+  if (!analysis || analysis.framesAnalyzed <= 0) return undefined;
+  const fpsParts = (scan?.videoStreams?.[0]?.avgFrameRate || scan?.videoStreams?.[0]?.realFrameRate || '30/1').split('/').map(Number);
+  const fps = fpsParts.length === 2 && fpsParts[1] > 0 ? fpsParts[0] / fpsParts[1] : 30;
+  const seconds = Math.max(2, Math.min(4, analysis.averageGopLength > 0 ? analysis.averageGopLength / fps : 3));
+  const requested = Math.round(fps * seconds);
+  const candidates = [24, 30, 48, 50, 60, 72, 75, 90, 96, 100, 120, 150, 180, 240];
+  const gop = candidates.reduce((best, value) => Math.abs(value - requested) < Math.abs(best - requested) ? value : best, candidates[0]);
+  const bFrames = analysis.maxConsecutiveBFrames >= 1 && analysis.maxConsecutiveBFrames <= 4 ? analysis.maxConsecutiveBFrames : 3;
+  return { gop, bFrames };
+}
+
+function softwareEncoderForAssetCodec(codec: string) {
+  const value = codec.toLowerCase();
+  if (value.includes('264') || value === 'h264') return 'libx264';
+  if (value.includes('av1')) return 'libsvtav1';
+  if (value === 'copy') return 'copy';
+  return 'libx265';
+}
+
 
 function recordFromRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = record[key];

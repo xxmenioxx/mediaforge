@@ -29,6 +29,7 @@ type ExecutionConstraints struct {
 	QualityStrategy      string   `json:"qualityStrategy"`
 	QualityMode          string   `json:"qualityMode"`
 	QualityValue         int      `json:"qualityValue"`
+	TargetWorkerName     string   `json:"targetWorkerName,omitempty"`
 }
 
 // ResolveExecutionConstraints turns both legacy and authoritative profiles into
@@ -71,6 +72,7 @@ func ResolveExecutionConstraints(profile models.Profile) (ExecutionConstraints, 
 		QualityStrategy:      strings.ToLower(strings.TrimSpace(profile.QualityStrategy)),
 		QualityMode:          strings.ToLower(strings.TrimSpace(profile.QualityMode)),
 		QualityValue:         profile.QualityValue,
+		TargetWorkerName:     strings.TrimSpace(configString(profile.WorkerConfig, "targetWorkerName")),
 	}
 	if constraints.QualityStrategy == "" {
 		constraints.QualityStrategy = legacyQualityStrategy(profile.QualityValue)

@@ -33,14 +33,17 @@ import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
+import { FrameStructureControls } from '../components/FrameStructureControls';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
+import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -117,6 +120,7 @@ export function ProfilesPage() {
     queryFn: api.profilesAdmin,
   });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const [form, setForm] = useState<ProfileInput>(initialProfile);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
@@ -136,7 +140,10 @@ export function ProfilesPage() {
       profile.qualityMode,
       String(profile.qualityValue),
     ].some((value) => String(value ?? '').toLowerCase().includes(normalizedProfileSearch)));
-  const defaultHardwareEncoder = videoEncoderOptions.find(
+  const profileWorker = resolveSelectedWorker(workerNodes.data, workerConfigString(form, 'targetWorkerName'));
+  const profileWorkerEncoders = encoderNamesForWorker(profileWorker);
+  const availableProfileEncoderOptions = videoEncoderOptions.filter((option) => option.value === 'auto' || profileWorkerEncoders.has(option.value));
+  const defaultHardwareEncoder = availableProfileEncoderOptions.find(
     (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
   const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
@@ -160,8 +167,6 @@ export function ProfilesPage() {
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
   const videoToolboxMain10Selected = workerConfigString(form, 'videoToolboxProfile', '').toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
-  const videoToolboxBFramesAvailable = videoToolboxCapability?.videoToolboxBFrames === true
-    && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxBFramesMain10 === true);
   const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
 
@@ -192,6 +197,12 @@ export function ProfilesPage() {
     },
   });
   const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
+  const profileEvaluationSignature = JSON.stringify(form);
+  useEffect(() => {
+    if (!showForm) return;
+    const timer = window.setTimeout(() => encoderQualityRecommendation.mutate({ profile: form }), 250);
+    return () => window.clearTimeout(timer);
+  }, [profileEvaluationSignature, showForm]);
 
   function updateField<K extends keyof ProfileInput>(field: K, value: ProfileInput[K]) {
     let next = { ...form, [field]: value };
@@ -219,6 +230,10 @@ export function ProfilesPage() {
       workerConfig: {
         ...form.workerConfig,
         [key]: value,
+        ...(key === 'videoToolboxBitrateMbps' ? (() => {
+          const rates = videoToolboxRatesFromTargetMbps(value);
+          return { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer };
+        })() : {}),
         ...(['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBRC', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(key) ? { hardwareQualityPreset: 'custom' } : {}),
         ...(disablingHardware ? { videoEncoder: 'libx265', preferredEncoder: 'software' } : {}),
       },
@@ -281,6 +296,28 @@ export function ProfilesPage() {
     encoderQualityRecommendation.mutate({ profile: requested }, {
       onSuccess: (result) => setProfileForm(synchronizeAuthoritativeContract(result.effectiveProfile)),
     });
+  }
+
+  function updateVideoToolboxCustomRate(key: 'videoToolboxBitrateMbps' | 'videoToolboxMaxrateMbps' | 'videoToolboxBufferMbps', value: number) {
+    const rates = key === 'videoToolboxBitrateMbps' ? videoToolboxRatesFromTargetMbps(value) : null;
+    const requested = synchronizeAuthoritativeContract({
+      ...form,
+      workerConfig: {
+        ...form.workerConfig,
+        [key]: value,
+        ...(rates ? { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer } : {}),
+        hardwareQualityPreset: 'custom',
+      },
+    });
+    setProfileForm(requested);
+    encoderQualityRecommendation.mutate({ profile: requested });
+  }
+
+  function updateFrameStructurePolicy(patch: Record<string, unknown>) {
+    const requested = synchronizeAuthoritativeContract({ ...form, workerConfig: { ...form.workerConfig, ...patch } });
+    setProfileForm(requested);
+    const encoder = workerConfigString(requested, 'videoEncoder', 'auto');
+    if (encoder === 'hevc_qsv' || encoder === 'hevc_videotoolbox') encoderQualityRecommendation.mutate({ profile: requested });
   }
 
   function updateExternalSubtitleFormat(value: string) {
@@ -530,9 +567,7 @@ export function ProfilesPage() {
   }
 
   function addProfile() {
-    setForm(initialProfile);
-    setProfileJson(JSON.stringify(initialProfile, null, 2));
-    setShowForm(true);
+    navigate('/profile-lab?section=video');
   }
 
   function editProfile(profile: Profile) {
@@ -722,6 +757,7 @@ export function ProfilesPage() {
                   <Grid size={{ xs: 12 }}>
                     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
                       <Grid container spacing={2} alignItems="flex-start">
+                        <Grid size={{ xs: 12, md: 4 }}><TextField select label="Execution worker" value={profileWorker?.name ?? ''} onChange={(event) => updateWorkerConfig('targetWorkerName', event.target.value)} helperText={profileWorker ? `${profileWorkerEncoders.size} usable encoder(s) reported` : 'No online worker is reporting encoders'} fullWidth>{(workerNodes.data ?? []).filter((worker) => worker.status === 'online').map((worker) => <MenuItem key={worker.id} value={worker.name}>{worker.name} · {encoderNamesForWorker(worker).size} encoders</MenuItem>)}</TextField></Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label="Processing preference"
@@ -732,7 +768,7 @@ export function ProfilesPage() {
                             select
                             fullWidth
                           >
-                            <MenuItem value="software">Software · match Video Codec</MenuItem>
+                            <MenuItem value="software" disabled={!profileWorkerEncoders.has(softwareEncoderForVideoCodec(form.videoCodec))}>Software · match Video Codec</MenuItem>
                             <MenuItem value="hardware" disabled={hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length === 0 || runtimeSnapshot.isLoading || !defaultHardwareEncoder}>Hardware</MenuItem>
                           </TextField>
                         </Grid>
@@ -745,7 +781,7 @@ export function ProfilesPage() {
                             select
                             fullWidth
                           >
-                            {videoEncoderOptions.filter((option) => isHardwareEncoderOption(option.value)).map((option) => (
+                            {availableProfileEncoderOptions.filter((option) => isHardwareEncoderOption(option.value)).map((option) => (
                               <MenuItem key={option.value} value={option.value} disabled={runtimeSnapshot.data?.encoders?.[option.value]?.usable === false}>{option.label}</MenuItem>
                             ))}
                           </TextField>
@@ -788,6 +824,17 @@ export function ProfilesPage() {
                             inputProps={{ min: 14, max: 30, step: 1 }}
                             disabled={form.videoCodec === 'copy'}
                             fullWidth
+                          />
+                        </Grid>
+                        <Grid size={{ xs: 12 }}>
+                          <FrameStructureControls
+                            config={form.workerConfig ?? {}}
+                            recommendedGop={frameStructureRecommendationNumber(form.workerConfig, 'targetGopFrames')}
+                            recommendedBFrames={frameStructureRecommendationNumber(form.workerConfig, 'maxBFrames')}
+                            onChange={updateWorkerConfig}
+                            onChangeMany={updateFrameStructurePolicy}
+                            encoder={workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) : softwareEncoderForVideoCodec(form.videoCodec)}
+                            disabled={form.videoCodec === 'copy'}
                           />
                         </Grid>
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
@@ -873,22 +920,18 @@ export function ProfilesPage() {
                           <>
                             <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateWorkerConfig('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} fullWidth />
+                              <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBitrateMbps', Number(event.target.value))} helperText="Updates maxrate ×1.5, buffer ×2.5, and the effective estimate." inputProps={{ min: 0.01, max: 200, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxMaxrateMbps', 3)} onChange={(event) => updateWorkerConfig('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} fullWidth />
+                              <TextField label="VideoToolbox maxrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxMaxrateMbps', 3)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
-                              <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 5)} onChange={(event) => updateWorkerConfig('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} fullWidth />
+                              <TextField label="VideoToolbox buffer (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBufferMbps', 5)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={workerConfigString(form, 'videoToolboxProfile', '')} onChange={(event) => updateWorkerConfig('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" fullWidth /></Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={workerConfigNumber(form, 'videoToolboxGop', 0)} onChange={(event) => updateWorkerConfig('videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" fullWidth /></Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="B-frames" select value={workerConfigString(form, 'videoToolboxBFramePolicy', 'auto')} onChange={(event) => updateWorkerConfig('videoToolboxBFramePolicy', event.target.value)} helperText="Auto emits no -bf option" fullWidth><MenuItem value="auto">Auto</MenuItem><MenuItem value="enabled" disabled={!videoToolboxBFramesAvailable}>Enabled</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Maximum B-frames" type="number" disabled={workerConfigString(form, 'videoToolboxBFramePolicy', 'auto') !== 'enabled'} value={workerConfigNumber(form, 'videoToolboxBFrames', 3)} onChange={(event) => updateWorkerConfig('videoToolboxBFrames', Math.max(1, Math.min(4, Number(event.target.value))))} inputProps={{ min: 1, max: 4, step: 1 }} fullWidth /></Grid>
                             <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxRealtime')} onChange={(event) => updateWorkerConfig('videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={workerConfigBool(form, 'videoToolboxAutoAdjustBitrate')} onChange={(event) => updateWorkerConfig('videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={workerConfigBool(form, 'videoToolboxPowerEfficiency')} onChange={(event) => updateWorkerConfig('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                           </>
                         ) : null}
-                        {encoderQualityRecommendation.isPending ? <Grid size={{ xs: 12 }}><Alert severity="info">Resolving effective values from the active worker capabilities…</Alert></Grid> : null}
                         {encoderQualityRecommendation.isError ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
                         {encoderQualityRecommendation.data ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Alert severity={encoderQualityRecommendation.data.recommendation.warnings.length ? 'warning' : 'success'}>Effective {encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'} · confidence {encoderQualityRecommendation.data.recommendation.estimateConfidence}{encoderQualityRecommendation.data.recommendation.rateControlFallback ? ` · ${encoderQualityRecommendation.data.recommendation.rateControlFallback}` : ''}</Alert><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         {encoderQualityRecommendation.data?.recommendation.effectiveBFramePolicy ? <Grid size={{ xs: 12 }}><Alert severity={encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? 'warning' : 'info'}>VideoToolbox B-frames: {encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy} · efficiency ×{encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier?.toFixed(2)} · target {((encoderQualityRecommendation.data.recommendation.targetBitrate ?? 0) / 1_000_000).toFixed(2)} Mbps{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? ` · ${encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}` : ''}</Alert></Grid> : null}
@@ -1206,6 +1249,8 @@ export function ProfilesPage() {
                           <Chip label={profile.videoCodec === 'copy' ? 'Original quality' : `CRF ${profile.qualityValue}`} size="small" />
                           {profile.disabled ? <Chip label="Disabled" size="small" color="warning" /> : null}
                           {profile.deletedAt ? <Chip label="Deleted" size="small" color="default" /> : null}
+                          {profileFrameRecommendation(profile) ? <Chip label={`GOP ${profileFrameRecommendation(profile)?.targetGopFrames} · B max ${profileFrameRecommendation(profile)?.maxBFrames}`} size="small" color="info" variant="outlined" /> : null}
+                          {profileFrameValidation(profile) ? <Chip label={`Frame validation: ${profileFrameValidation(profile)?.verdict}`} size="small" color={profileFrameValidation(profile)?.verdict === 'safe' ? 'success' : profileFrameValidation(profile)?.verdict === 'reject' ? 'error' : 'warning'} /> : null}
                         </Stack>
                       </Stack>
                     </TableCell>
@@ -1299,6 +1344,29 @@ function preservationSummary(profile: Profile) {
   ].filter(Boolean);
 
   return preserved.length ? preserved.join(', ') : 'None';
+}
+
+function profileFrameRecommendation(profile: Profile) {
+  const value = profile.workerConfig?.frameStructureRecommendation;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const recommendation = value as Record<string, unknown>;
+  const targetGopFrames = Number(recommendation.targetGopFrames);
+  const maxBFrames = Number(recommendation.maxBFrames);
+  return Number.isFinite(targetGopFrames) && Number.isFinite(maxBFrames) ? { targetGopFrames, maxBFrames } : undefined;
+}
+
+function frameStructureRecommendationNumber(config: Record<string, unknown> | undefined, key: 'targetGopFrames' | 'maxBFrames') {
+  const recommendation = config?.frameStructureRecommendation;
+  if (!recommendation || typeof recommendation !== 'object' || Array.isArray(recommendation)) return undefined;
+  const value = Number((recommendation as Record<string, unknown>)[key]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function profileFrameValidation(profile: Profile) {
+  const value = profile.workerConfig?.frameStructureValidation;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const verdict = String((value as Record<string, unknown>).verdict || '');
+  return verdict === 'safe' || verdict === 'review' || verdict === 'reject' ? { verdict } : undefined;
 }
 
 function workerConfigString(profile: ProfileInput, key: string, fallback = '') {

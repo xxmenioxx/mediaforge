@@ -66,6 +66,7 @@ type WorkingHoursValue = {
 };
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
+type FrameStructureSamplingValue = { adaptive: boolean; windows: number; windowSeconds: number; positions: number[] };
 type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
@@ -811,6 +812,10 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'pipeline' ? (
+              <FrameStructureSamplingCard value={frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'frameStructureSampling', value: value as unknown as Record<string, unknown> })} />
+            ) : null}
+
+            {section === 'pipeline' ? (
               <WorkingHoursCard
                 value={workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value)}
                 saving={updateSetting.isPending}
@@ -1271,6 +1276,18 @@ function directPlayValue(value: Record<string, unknown> | undefined): DirectPlay
     targetClients: arrayValue(value?.targetClients, directPlayClients).filter((client): client is string => typeof client === 'string'),
     minimumScore: numberValue(value?.minimumScore, 70), enforcement: value?.enforcement === 'block' ? 'block' : 'warn',
   };
+}
+
+function frameStructureSamplingValue(value: Record<string, unknown> | undefined): FrameStructureSamplingValue {
+  const positions = Array.isArray(value?.positions) ? value.positions.map(Number).filter((item) => Number.isFinite(item) && item > 0 && item < 1) : [];
+  return { adaptive: value?.adaptive !== false, windows: Math.max(1, Math.min(9, Number(value?.windows) || 5)), windowSeconds: Math.max(5, Math.min(60, Number(value?.windowSeconds) || 20)), positions: positions.length ? positions : [0.08, 0.27, 0.5, 0.73, 0.92] };
+}
+
+function FrameStructureSamplingCard({ value, saving, onSave }: { value: FrameStructureSamplingValue; saving: boolean; onSave: (value: FrameStructureSamplingValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const total = draft.windows * draft.windowSeconds;
+  return <Card><CardContent><Stack spacing={2}><Box><Typography variant="h3">Frame Structure Sampling</Typography><Typography color="text.secondary" variant="body2">Distributed I/P/B and GOP analysis policy. Windows are analyzed independently.</Typography></Box><FormControlLabel control={<Switch checked={draft.adaptive} onChange={(event) => setDraft({ ...draft, adaptive: event.target.checked })} />} label="Adaptive sampling for short assets" /><Grid container spacing={1.5}><Grid size={{ xs: 12, sm: 4 }}><TextField label="Windows" type="number" size="small" value={draft.windows} onChange={(event) => setDraft({ ...draft, windows: Math.max(1, Math.min(9, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Window length (seconds)" type="number" size="small" value={draft.windowSeconds} onChange={(event) => setDraft({ ...draft, windowSeconds: Math.max(5, Math.min(60, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Total sampled" value={`${total} seconds maximum`} size="small" disabled fullWidth /></Grid><Grid size={{ xs: 12 }}><TextField label="Positions (%)" size="small" value={draft.positions.map((position) => Math.round(position * 100)).join(', ')} onChange={(event) => setDraft({ ...draft, positions: event.target.value.split(',').map((item) => Number(item.trim()) / 100).filter((item) => Number.isFinite(item) && item > 0 && item < 1) })} helperText="Window centers, for example: 8, 27, 50, 73, 92" fullWidth /></Grid></Grid><Box><Button variant="contained" startIcon={<SaveIcon />} disabled={saving || draft.positions.length < draft.windows} onClick={() => onSave(draft)}>Save sampling policy</Button></Box></Stack></CardContent></Card>;
 }
 
 function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {

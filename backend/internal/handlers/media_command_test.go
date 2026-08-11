@@ -7,6 +7,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 )
 
 func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
@@ -1009,6 +1010,46 @@ func TestVideoToolboxRealtimeAndBFramePoliciesAreDistinct(t *testing.T) {
 	}
 }
 
+func TestFrameStructureBFrameModesFeedVideoToolboxQualityIntent(t *testing.T) {
+	tests := []struct {
+		mode  string
+		count int
+		want  string
+	}{
+		{mode: "auto", want: "auto"},
+		{mode: "recommended", count: 3, want: "enabled"},
+		{mode: "custom", count: 2, want: "enabled"},
+		{mode: "off", want: "disabled"},
+	}
+	for _, test := range tests {
+		t.Run(test.mode, func(t *testing.T) {
+			profile := models.Profile{WorkerConfig: models.JSONMap{"frameStructureBFrameMode": test.mode, "frameStructureMaxBFrames": test.count}}
+			policy, count := frameStructureBFrameIntent(profile)
+			if policy != test.want {
+				t.Fatalf("policy = %q, want %q", policy, test.want)
+			}
+			if (test.mode == "recommended" || test.mode == "custom") && count != test.count {
+				t.Fatalf("count = %d, want %d", count, test.count)
+			}
+		})
+	}
+}
+
+func TestGenericEncoderRecommendationKeepsCRFAndBitrateDistinct(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, PixelFormat: "yuv420p10le", WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 2}}
+	intent := quality.NewIntent(quality.IntentInput{SourceVideoBitrate: 4_000_000, DurationSeconds: 120, AudioBitrate: 192_000})
+	recommendation := genericEncoderRecommendation(profile, intent, "libx265")
+	if recommendation.EffectiveRateControl != "crf" || recommendation.BaseTargetBitrate != nil || recommendation.TargetBitrate != nil {
+		t.Fatalf("generic CRF recommendation was presented as bitrate: %+v", recommendation)
+	}
+	if recommendation.EffectiveBFramePolicy != "enabled" || recommendation.RequestedBFrames != 2 {
+		t.Fatalf("frame structure was not preserved: %+v", recommendation)
+	}
+	if recommendation.EstimatedOutputSizeMin == nil || recommendation.EstimatedOutputSizeMax == nil || *recommendation.EstimatedOutputSizeMin >= *recommendation.EstimatedOutputSizeMax {
+		t.Fatalf("expected a low-confidence output range: %+v", recommendation)
+	}
+}
+
 func TestVideoToolboxEnabledFallsBackToAutoWithoutEffectiveProbe(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"videoToolboxBFramePolicy": "enabled", "videoToolboxBFrames": 3}}
 	command := shellJoin(videoToolboxRealtimeAndBFrameArgs(profile, capabilities.EncoderCapability{VideoToolboxBFramesVerified: true}, false))
@@ -1319,6 +1360,34 @@ func TestFFmpegCommandBuilderPreservesSubtitleFormatWhenRequested(t *testing.T) 
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-c:s copy")
+}
+
+func TestCommonFrameStructurePolicyMapsRequestedModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		encoder    string
+		config     models.JSONMap
+		contains   []string
+		notContain []string
+	}{
+		{name: "x265 auto leaves encoder defaults", encoder: "libx265", config: models.JSONMap{"frameStructureGopMode": "auto", "frameStructureBFrameMode": "auto"}, notContain: []string{"-g", "-bf"}},
+		{name: "x265 recommended emits common values", encoder: "libx265", config: models.JSONMap{"frameStructureGopMode": "recommended", "frameStructureGopFrames": 120, "frameStructureBFrameMode": "recommended", "frameStructureMaxBFrames": 3}, contains: []string{"-g 120", "-bf 3"}},
+		{name: "qsv custom emits common values", encoder: "hevc_qsv", config: models.JSONMap{"frameStructureGopMode": "custom", "frameStructureGopFrames": 90, "frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 2}, contains: []string{"-g 90", "-bf 2"}},
+		{name: "qsv off explicitly disables b frames", encoder: "hevc_qsv", config: models.JSONMap{"frameStructureBFrameMode": "off", "frameStructureMaxBFrames": 3}, contains: []string{"-bf 0"}},
+		{name: "videotoolbox custom GOP reaches encoder command", encoder: "hevc_videotoolbox", config: models.JSONMap{"frameStructureGopMode": "custom", "frameStructureGopFrames": 96, "frameStructureBFrameMode": "auto"}, contains: []string{"-g 96"}, notContain: []string{"-bf"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: test.config}
+			args := shellJoin(videoCodecArgsForResolvedEncoder(profile, nil, test.encoder))
+			for _, expected := range test.contains {
+				assertContains(t, args, expected)
+			}
+			for _, unexpected := range test.notContain {
+				assertNotContains(t, args, unexpected)
+			}
+		})
+	}
 }
 
 func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {

@@ -136,8 +136,7 @@ export function AudioProfilesPage() {
   }
 
   function addProfile() {
-    setForm(emptyProfile);
-    setShowForm(true);
+    navigate('/profile-lab?section=audio');
   }
 
   function editProfile(profile: AudioEnhancementProfile) {

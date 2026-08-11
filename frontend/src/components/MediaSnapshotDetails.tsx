@@ -33,7 +33,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
   const interlace = scan.interlaceAnalysis;
 
   return (
-    <Grid container spacing={1.5}>
+    <Stack spacing={1.5}>
+      <Grid container spacing={1.5}>
       <Grid size={{ xs: 12, md: 6 }}>
         <TechnicalFactGroup title="Video format" facts={[
           ['Codec', scan.videoCodec || video?.codec || 'Unknown'],
@@ -53,6 +54,10 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Longest B run', String(frames.maxConsecutiveBFrames)],
           ['Keyframes', String(frames.keyFrames)],
           ['Average GOP', frames.averageGopLength > 0 ? frames.averageGopLength.toFixed(1) : 'Not enough keyframes'],
+          ['Complete GOPs', String(frames.completeGops ?? 0)],
+          ['Sampling', frames.windowCount ? `${frames.sampledSeconds?.toFixed(0) ?? 0}s across ${frames.windowCount} regions` : `${frames.framesAnalyzed} frames`],
+          ['Coverage', frames.coverageRatio !== undefined ? `${(frames.coverageRatio * 100).toFixed(1)}% · ${frames.confidence || 'unknown'} confidence` : 'Legacy sample'],
+          ['Variability', frames.variability || 'Unknown'],
         ] : [['Status', 'Run Process Asset to refresh frame analysis']]} />
       </Grid>
       <Grid size={{ xs: 12, md: 6 }}>
@@ -76,7 +81,22 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Chapters', String(scan.chapters)],
         ]} />
       </Grid>
-    </Grid>
+      </Grid>
+      {frames?.windows?.length ? (
+        <Card variant="outlined">
+          <CardContent>
+            <Stack spacing={1.25}>
+              <Typography fontWeight={700}>Frame structure regions</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {frames.windows.map((window, index) => (
+                  <Chip key={`${window.position}-${window.startSeconds}`} size="small" variant="outlined" label={`Region ${index + 1} · ${Math.round(window.position * 100)}% · I ${window.analysis.iFrames} / P ${window.analysis.pFrames} / B ${window.analysis.bFrames} · GOP ${window.analysis.averageGopLength > 0 ? window.analysis.averageGopLength.toFixed(1) : 'n/a'} · B-run ${window.analysis.maxConsecutiveBFrames}`} />
+                ))}
+              </Stack>
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : null}
+    </Stack>
   );
 }
 

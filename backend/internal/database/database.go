@@ -604,6 +604,7 @@ func seedSettings(db *gorm.DB) error {
 				"minimumScore": 70, "enforcement": "warn",
 			},
 		},
+		{Key: "frameStructureSampling", Value: models.JSONMap{"adaptive": true, "windows": 5, "windowSeconds": 20, "positions": []float64{0.08, 0.27, 0.50, 0.73, 0.92}}},
 		{
 			Key:   "housekeeping",
 			Value: models.JSONMap{"autoEnabled": true, "intervalHours": 24, "failedRetentionDays": 7, "canceledRetentionDays": 3, "orphanRetentionDays": 7},

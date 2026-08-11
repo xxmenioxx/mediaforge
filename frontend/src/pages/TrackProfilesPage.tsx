@@ -8,7 +8,7 @@ import { api } from '../api/client';
 import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
-import { emptyTrackProfile, getTrackProfiles, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
 
 export function TrackProfilesPage() {
   const client = useQueryClient();
@@ -86,7 +86,7 @@ export function TrackProfilesPage() {
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
         <FormControlLabel control={<Switch checked={showDisabled} onChange={(_, value) => setShowDisabled(value)} />} label="Show disabled" />
         <TextField label="Search track profiles" value={profileSearch} onChange={(event) => setProfileSearch(event.target.value)} placeholder="Name, rule, language…" size="small" sx={{ width: { xs: '100%', md: 360 } }} />
-        <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDraft({ ...emptyTrackProfile })}>Add Track Profile</Button>
+        <Button startIcon={<AddIcon />} variant="contained" onClick={() => navigate('/profile-lab?section=tracks')}>Add Track Profile</Button>
       </Stack>
       <Card><CardContent sx={{ p: 0 }}><Table><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Streams</TableCell><TableCell>Rules</TableCell><TableCell>Status</TableCell><TableCell /></TableRow></TableHead><TableBody>
         {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}

@@ -142,6 +142,10 @@ export type AssetConversionOverrideState = {
   videoFilters?: string;
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
+  frameStructureGopMode?: 'auto' | 'recommended' | 'custom';
+  frameStructureGopFrames?: number;
+  frameStructureBFrameMode?: 'auto' | 'recommended' | 'custom' | 'off';
+  frameStructureMaxBFrames?: number;
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;
@@ -153,6 +157,7 @@ export type AssetConversionOverrideState = {
   useHardwareIfAvailable?: boolean;
   videoEncoder?: string;
   preferredEncoder?: 'software' | 'hardware' | 'auto';
+  targetWorkerName?: string;
   globalQuality?: number;
   qsvRateControl?: 'icq' | 'la_icq';
   qsvLookAheadDepth?: number;
@@ -609,6 +614,8 @@ export type QueueJobInput = {
 
 export type ClaimJobInput = {
   workerName: string;
+  encoders?: string[];
+  runtimeProfile?: string;
 };
 
 export type UpdateJobStatusInput = {
@@ -801,6 +808,18 @@ export type QSVFrameStructureAnalysis = {
   hasBFrames: boolean;
   maxConsecutiveBFrames: number;
   averageGopLength: number;
+  minimumGopLength?: number;
+  maximumGopLength?: number;
+  completeGops?: number;
+  sampledSeconds?: number;
+  assetDurationSeconds?: number;
+  coverageRatio?: number;
+  windowCount?: number;
+  windowLengthSeconds?: number;
+  positions?: number[];
+  variability?: 'low' | 'medium' | 'high' | 'unknown' | string;
+  confidence?: 'high' | 'medium' | 'low' | string;
+  windows?: Array<{ position: number; startSeconds: number; durationSeconds: number; analysis: QSVFrameStructureAnalysis }>;
   assessment: string;
   source: string;
 };
@@ -900,6 +919,7 @@ export type CompatiblePreviewOptions = {
   mode?: 'quick' | 'quality';
   previewNormalization?: 'preserve' | 'normalize_bt709';
   subtitleStreamIndex?: number;
+  ephemeral?: boolean;
 };
 
 export type ProfileSampleEstimate = {

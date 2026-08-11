@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -66,7 +67,10 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		}
 	}
 	intent := qualityIntentForMedia(profile, resolvedPath, streams)
-	encoder := strings.ToLower(workerStringValue(profile.WorkerConfig["videoEncoder"]))
+	encoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
+	if encoder == "" || encoder == "auto" {
+		encoder = strings.ToLower(resolvedVideoEncoder(profile))
+	}
 	capability, capabilitySource := h.activeEncoderCapability(encoder)
 	var recommendation quality.EncoderRecommendation
 	var err error
@@ -90,8 +94,7 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		}
 		profile = applyVideoToolboxQualityRecommendation(profile, intent, capability)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "quality recommendations currently support hevc_qsv and hevc_videotoolbox"})
-		return
+		recommendation = genericEncoderRecommendation(profile, intent, encoder)
 	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -114,6 +117,46 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		EstimatedOutputMin: minimum, EstimatedOutputMax: maximum,
 		EstimatedSavingsMin: max(int64(0), sourceSize-maximum), EstimatedSavingsMax: max(int64(0), sourceSize-minimum),
 	})
+}
+
+func genericEncoderRecommendation(profile models.Profile, intent quality.QualityIntent, encoder string) quality.EncoderRecommendation {
+	mode := strings.ToLower(strings.TrimSpace(profile.QualityMode))
+	if mode == "" {
+		mode = "encoder default"
+	}
+	policy, count := frameStructureBFrameIntent(profile)
+	recommendation := quality.EncoderRecommendation{
+		Encoder: encoder, EffectiveRateControl: mode, Profile: workerStringValue(profile.WorkerConfig["profile"]),
+		PixelFormat: workerStringValue(profile.WorkerConfig["pixFmt"]), EstimateConfidence: "low",
+		RequestedBFramePolicy: policy, EffectiveBFramePolicy: policy, RequestedBFrames: count,
+		Warnings: []string{"Software and non-QSV bitrate estimates are planning ranges, not equivalents of hardware quality values."},
+	}
+	if recommendation.Profile == "" {
+		recommendation.Profile = "encoder default"
+	}
+	if recommendation.PixelFormat == "" {
+		recommendation.PixelFormat = profile.PixelFormat
+	}
+	if intent.SourceVideoBitrate <= 0 || intent.Duration <= 0 {
+		return recommendation
+	}
+	ratio := 0.60
+	if strings.EqualFold(profile.VideoCodec, "copy") {
+		ratio = 1
+	} else if mode == "crf" {
+		ratio = math.Max(0.25, math.Min(0.85, 1.05-float64(profile.QualityValue)*0.0225))
+	}
+	if strings.Contains(strings.ToLower(workerStringValue(profile.WorkerConfig["videoFilters"])), "denoise") {
+		ratio *= 0.95
+	}
+	videoBitrate := int64(float64(intent.SourceVideoBitrate) * ratio)
+	minimumBitrate, maximumBitrate := int64(float64(videoBitrate)*0.80), int64(float64(videoBitrate)*1.20)
+	minimum := int64(float64(minimumBitrate) * intent.Duration.Seconds() / 8)
+	maximum := int64(float64(maximumBitrate) * intent.Duration.Seconds() / 8)
+	recommendation.EstimatedVideoBitrate = &videoBitrate
+	recommendation.EstimatedVideoBitrateMin, recommendation.EstimatedVideoBitrateMax = &minimumBitrate, &maximumBitrate
+	recommendation.EstimatedOutputSizeMin, recommendation.EstimatedOutputSizeMax = &minimum, &maximum
+	return recommendation
 }
 
 func (h AssetHandler) activeEncoderCapability(encoder string) (capabilities.EncoderCapability, string) {

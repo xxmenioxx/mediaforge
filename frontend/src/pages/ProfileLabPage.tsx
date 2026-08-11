@@ -52,7 +52,9 @@ import type {
   Profile,
   ProfileInput,
   ProfileSuggestion,
+  QualityRecommendationResponse,
   PreviewVideoCharacteristics,
+  PreviewInspection,
   PreviewFrameMetrics,
   ScanResult,
   StreamMetadataOverride,
@@ -62,10 +64,13 @@ import type {
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails, MediaTechnicalSnapshotSummary } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
+import { FrameStructureControls } from '../components/FrameStructureControls';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
+import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -92,6 +97,8 @@ type LabFidelityInspection = {
   outputFrameStructure: QSVFrameStructureAnalysis;
   qsvFrameWarnings: string[];
   qsvFeatureStatus: QSVFeatureStatus;
+  frameRecommendation: { targetGopFrames: number; targetGopSeconds: number; maxBFrames: number; confidence: string; reasons: string[] };
+  frameValidation: { verdict: 'safe' | 'review' | 'reject'; confidence: string; reasons: string[] };
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -552,6 +559,7 @@ export function ProfileLabPage() {
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const labAssets = useMemo(
     () => uniqueAssets([
       ...(assets.data?.unprocessed ?? []),
@@ -636,6 +644,11 @@ export function ProfileLabPage() {
     }
   }, [assetPath, labAssets, searchParams]);
   const selectedHardwareEncoder = videoWorkerValue(videoDraft, 'videoEncoder', 'auto');
+  const configuredDefaultWorker = String(settings.data?.find((setting) => setting.key === 'workers')?.value?.defaultWorkerName ?? '');
+  const requestedWorkerName = videoWorkerValue(videoDraft, 'targetWorkerName', configuredDefaultWorker);
+  const selectedExecutionWorker = resolveSelectedWorker(workerNodes.data, requestedWorkerName);
+  const selectedWorkerEncoders = useMemo(() => encoderNamesForWorker(selectedExecutionWorker), [selectedExecutionWorker]);
+  const availableVideoEncoderOptions = videoEncoderOptions.filter((option) => option.value === 'auto' || selectedWorkerEncoders.has(option.value));
   const selectedHardwareCapability = selectedHardwareEncoder === 'auto'
     ? undefined
     : runtimeSnapshot.data?.encoders?.[selectedHardwareEncoder];
@@ -659,14 +672,12 @@ export function ProfileLabPage() {
   
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
     || ['p010le', 'yuv420p10le'].includes(videoWorkerValue(videoDraft, 'pixFmt', '').toLowerCase());
-  const videoToolboxBFramesAvailable = selectedHardwareCapability?.videoToolboxBFrames === true
-    && (!videoToolboxMain10Selected || selectedHardwareCapability.testedModes?.videoToolboxBFramesMain10 === true);
   const videoToolboxPowerAvailable = selectedHardwareCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || selectedHardwareCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
-  const hasUsableHardwareEncoder = videoEncoderOptions.some(
+  const hasUsableHardwareEncoder = availableVideoEncoderOptions.some(
     (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
   );
-  const defaultHardwareEncoder = videoEncoderOptions.find(
+  const defaultHardwareEncoder = availableVideoEncoderOptions.find(
     (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
   )?.value ?? '';
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
@@ -681,24 +692,27 @@ export function ProfileLabPage() {
   useEffect(() => {
     if (
       videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' &&
-      !isHardwareEncoderOption(selectedHardwareEncoder) &&
+      (!isHardwareEncoderOption(selectedHardwareEncoder) || !selectedWorkerEncoders.has(selectedHardwareEncoder)) &&
       defaultHardwareEncoder
     ) {
       updateVideoHardwareEncoder(setVideoDraft, defaultHardwareEncoder);
     }
-  }, [defaultHardwareEncoder, selectedHardwareEncoder, videoDraft]);
+  }, [defaultHardwareEncoder, selectedHardwareEncoder, selectedWorkerEncoders, videoDraft]);
 
   useEffect(() => {
     const videoProfileId = Number(searchParams.get('videoProfileId') || 0);
     const audioProfileKey = searchParams.get('audioProfileKey') || '';
     const trackProfileKey = searchParams.get('trackProfileKey') || '';
+    const requestedSection = searchParams.get('section');
     const requestKey = videoProfileId > 0
       ? `video:${videoProfileId}`
       : audioProfileKey
         ? `audio:${audioProfileKey}`
         : trackProfileKey
           ? `tracks:${trackProfileKey}`
-          : '';
+          : requestedSection === 'video' || requestedSection === 'audio' || requestedSection === 'tracks'
+            ? `new:${requestedSection}`
+            : '';
     if (!requestKey || loadedEditRequestRef.current === requestKey) {
       return;
     }
@@ -713,6 +727,12 @@ export function ProfileLabPage() {
       setSavedVideoProfileId(profile.id);
       setVideoProfileSaveMessage('');
       setSelectedVideoStarterPreset('');
+      const relatedPath = typeof profile.workerConfig?.derivedFromAsset === 'string'
+        ? profile.workerConfig.derivedFromAsset
+        : '';
+      const sourceAsset = labAssets.find((asset) => asset.path === relatedPath)
+        ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
+      if (sourceAsset) setAssetPath(sourceAsset.path);
     } else if (audioProfileKey) {
       const profile = audioProfiles.find((candidate) => candidate.key === audioProfileKey);
       if (!profile) {
@@ -723,7 +743,11 @@ export function ProfileLabPage() {
       setSavedAudioProfileKey(profile.key);
       setAudioFilterChainEdited(false);
       setSelectedAudioStarterPreset('');
-    } else {
+      const relatedPath = profile.notes.split('\n').map((line) => line.trim()).find((line) => line.startsWith('Lab asset: '))?.slice('Lab asset: '.length) ?? '';
+      const sourceAsset = labAssets.find((asset) => asset.path === relatedPath)
+        ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
+      if (sourceAsset) setAssetPath(sourceAsset.path);
+    } else if (trackProfileKey) {
       const profile = allTrackProfiles.find((candidate) => candidate.key === trackProfileKey);
       if (!profile) {
         return;
@@ -737,6 +761,11 @@ export function ProfileLabPage() {
       if (sourceAsset) {
         setAssetPath(sourceAsset.path);
       }
+    } else if (requestedSection === 'video' || requestedSection === 'audio' || requestedSection === 'tracks') {
+      setLabSection(requestedSection);
+      if (requestedSection === 'video') setSavedVideoProfileId(null);
+      if (requestedSection === 'audio') setSavedAudioProfileKey(null);
+      if (requestedSection === 'tracks') setSavedTrackProfileKey(null);
     }
     loadedEditRequestRef.current = requestKey;
   }, [adminProfiles.data, allTrackProfiles, audioProfiles, labAssets, profiles.data, searchParams]);
@@ -817,7 +846,11 @@ export function ProfileLabPage() {
     },
   });
 
-  const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
+  const [lastEncoderRecommendation, setLastEncoderRecommendation] = useState<{ path?: string; data: QualityRecommendationResponse }>();
+  const encoderQualityRecommendation = useMutation({
+    mutationFn: api.recommendEncoderQuality,
+    onSuccess: (data, variables) => setLastEncoderRecommendation({ path: variables.path, data }),
+  });
   const trackSnapshot = useMutation({ mutationFn: api.scan });
   const fidelityInspection = useMutation({
     mutationFn: async ({
@@ -827,21 +860,35 @@ export function ProfileLabPage() {
       reference: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
       conversion: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
     }): Promise<LabFidelityInspection> => {
-      const [referenceInspection, conversionInspection, metrics] = await Promise.all([
+      const [referenceInspection, metrics] = await Promise.all([
         api.inspectCompatibleAssetPreview(reference),
-        api.inspectCompatibleAssetPreview(conversion),
         api.compatibleAssetFrameMetrics(conversion),
       ]);
+      const duration = trackSnapshot.data?.duration ?? 0;
+      const sampling = labFrameSamplingPolicy(settings.data, duration);
+      const { windowSeconds, positions } = sampling;
+      const conversionInspections: Array<{ inspection: PreviewInspection; position: number; startSeconds: number }> = [];
+      for (const position of positions) {
+        const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
+        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(startSeconds), seconds: Math.round(windowSeconds), ephemeral: true }), position, startSeconds });
+      }
+      const conversionInspection = conversionInspections[Math.floor(conversionInspections.length / 2)].inspection;
+      const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
+      const sourceFrameStructure = trackSnapshot.data?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
+      const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, trackSnapshot.data, conversion.profile);
+      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure);
       return {
         assetPath: conversion.path,
         draftSignature: JSON.stringify(conversion.profile ?? null),
         source: referenceInspection.source,
         reference: referenceInspection.output,
         conversion: conversionInspection.output,
-        sourceFrameStructure: conversionInspection.sourceFrameStructure,
-        outputFrameStructure: conversionInspection.outputFrameStructure,
-        qsvFrameWarnings: conversionInspection.qsvFrameWarnings,
+        sourceFrameStructure,
+        outputFrameStructure,
+        qsvFrameWarnings: [...new Set(conversionInspections.flatMap(({ inspection }) => inspection.qsvFrameWarnings))],
         qsvFeatureStatus: conversionInspection.qsvFeatureStatus,
+        frameRecommendation,
+        frameValidation,
         requestedEncoder: conversionInspection.requestedEncoder,
         effectiveEncoder: conversionInspection.effectiveEncoder,
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
@@ -861,8 +908,8 @@ export function ProfileLabPage() {
     && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
     ? profileSampleEstimate.data
     : undefined;
-  const currentEncoderRecommendation = encoderQualityRecommendation.variables?.path === (assetPath || undefined)
-    ? encoderQualityRecommendation.data
+  const currentEncoderRecommendation = lastEncoderRecommendation && lastEncoderRecommendation.path === (assetPath || undefined)
+    ? lastEncoderRecommendation.data
     : undefined;
   const currentFidelityInspection =
     fidelityInspection.data?.assetPath === assetPath &&
@@ -882,11 +929,20 @@ export function ProfileLabPage() {
     setPreviewNonce((current) => assetPath ? current + 1 : 0);
     resetProcessedPreviews();
     fidelityInspection.reset();
+    encoderQualityRecommendation.reset();
+    setLastEncoderRecommendation(undefined);
     if (assetPath) {
       trackSnapshot.reset();
       trackSnapshot.mutate({ path: assetPath });
     }
   }, [assetPath]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: videoDraft });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [assetPath, videoDraft]);
 
   function selectVideoProfile(profileId: number) {
     const profile = (profiles.data ?? []).find((candidate) => candidate.id === profileId);
@@ -955,6 +1011,49 @@ export function ProfileLabPage() {
     encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: requested }, {
       onSuccess: (result) => setVideoDraft(synchronizeLabAuthoritativeContract(result.effectiveProfile)),
     });
+  }
+
+  function updateVideoToolboxCustomRate(key: 'videoToolboxBitrateMbps' | 'videoToolboxMaxrateMbps' | 'videoToolboxBufferMbps', value: number) {
+    const rates = key === 'videoToolboxBitrateMbps' ? videoToolboxRatesFromTargetMbps(value) : null;
+    const requested = {
+      ...videoDraft,
+      workerConfig: {
+        ...videoDraft.workerConfig,
+        [key]: value,
+        ...(rates ? { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer } : {}),
+        hardwareQualityPreset: 'custom',
+        videoToolboxRecommendedTargetKbps: undefined,
+        videoToolboxRecommendedMaxrateKbps: undefined,
+        videoToolboxRecommendedBufferKbps: undefined,
+      },
+    };
+    setVideoDraft(requested);
+    encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: requested });
+  }
+
+  function selectExecutionWorker(workerName: string) {
+    const encoders = encoderNamesForWorker((workerNodes.data ?? []).find((worker) => worker.name === workerName));
+    setVideoDraft((current) => {
+      const currentEncoder = videoWorkerValue(current, 'videoEncoder', 'auto');
+      const fallbackHardware = videoEncoderOptions.find((option) => isHardwareEncoderOption(option.value) && encoders.has(option.value))?.value;
+      const preference = videoWorkerValue(current, 'preferredEncoder', 'software');
+      const software = softwareEncoderForLabCodec(current.videoCodec);
+      return { ...current, workerConfig: {
+        ...current.workerConfig,
+        targetWorkerName: workerName,
+        ...(preference === 'hardware' && !encoders.has(currentEncoder) && fallbackHardware ? { videoEncoder: fallbackHardware } : {}),
+        ...(preference === 'software' && !encoders.has(software) && fallbackHardware ? { preferredEncoder: 'hardware', useHardwareIfAvailable: true, videoEncoder: fallbackHardware } : {}),
+      } };
+    });
+  }
+
+  function updateFrameStructurePolicy(patch: Record<string, unknown>) {
+    const requested = { ...videoDraft, workerConfig: { ...videoDraft.workerConfig, ...patch } };
+    setVideoDraft(requested);
+    const encoder = videoWorkerValue(requested, 'videoEncoder', 'auto');
+    if (encoder === 'hevc_qsv' || encoder === 'hevc_videotoolbox') {
+      encoderQualityRecommendation.mutate({ path: assetPath || undefined, profile: requested });
+    }
   }
 
   function applyAutoRecommendation(suggestion: ProfileSuggestion, section: LabSection) {
@@ -1050,6 +1149,7 @@ export function ProfileLabPage() {
       blackPoint: 0,
       whitePoint: 100,
     };
+    videoReasons.push(...frameStructureSuggestionLines(scan, proposed));
     videoReasons.push('Image adjustment controls remain neutral because snapshot metadata alone cannot justify exposure, levels, color, or detail corrections.');
     const recommendedVideoDraft: ProfileInput = synchronizeLabAuthoritativeContract({
       ...proposed,
@@ -1264,6 +1364,9 @@ export function ProfileLabPage() {
 
   function confirmSaveVideoProfile() {
     if (videoNameConflict) return;
+    const sourceRecommendation = trackSnapshot.data?.frameStructureAnalysis
+      ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft)
+      : undefined;
     saveVideoProfileMutation.mutate({
       ...videoDraft,
       audioCodec: 'copy',
@@ -1271,6 +1374,8 @@ export function ProfileLabPage() {
         ...videoDraft.workerConfig,
         source: 'profile-lab',
         derivedFromAsset: selectedAsset?.path ?? '',
+        frameStructureRecommendation: currentFidelityInspection?.frameRecommendation ?? sourceRecommendation,
+        frameStructureValidation: currentFidelityInspection?.frameValidation,
       },
     });
   }
@@ -1777,7 +1882,7 @@ export function ProfileLabPage() {
         <Dialog open={videoSaveReviewOpen} onClose={() => setVideoSaveReviewOpen(false)} fullWidth maxWidth="lg">
           <DialogTitle>Review Video Profile</DialogTitle>
           <DialogContent dividers>
-            <VideoProfileSaveReview profile={videoDraft} source={trackSnapshot.data} asset={selectedAsset} previewNormalization={previewNormalization} />
+            <VideoProfileSaveReview profile={videoDraft} source={trackSnapshot.data} asset={selectedAsset} previewNormalization={previewNormalization} recommendation={currentEncoderRecommendation} />
             {videoNameConflict ? <Alert severity="error" sx={{ mt: 2 }}>A video profile named “{videoDraft.name.trim()}” already exists. Choose a different name.</Alert> : null}
             {saveVideoProfileMutation.isError ? <Alert severity="error" sx={{ mt: 2 }}>{saveVideoProfileMutation.error instanceof Error ? saveVideoProfileMutation.error.message : 'Video profile could not be saved.'}</Alert> : null}
           </DialogContent>
@@ -2226,6 +2331,11 @@ export function ProfileLabPage() {
                       <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.018)' }}>
                         <Grid container spacing={2} alignItems="flex-start">
                           <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                            <TextField label="Execution worker" value={selectedExecutionWorker?.name ?? ''} onChange={(event) => selectExecutionWorker(event.target.value)} helperText={selectedExecutionWorker ? `${selectedWorkerEncoders.size} usable encoder(s) reported` : 'No online worker is reporting encoders'} select size="small" fullWidth>
+                              {(workerNodes.data ?? []).filter((worker) => worker.status === 'online').map((worker) => <MenuItem key={worker.id} value={worker.name}>{worker.name} · {encoderNamesForWorker(worker).size} encoders</MenuItem>)}
+                            </TextField>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                             <TextField
                               label="Processing preference"
                               value={videoWorkerValue(videoDraft, 'preferredEncoder', 'software')}
@@ -2236,7 +2346,7 @@ export function ProfileLabPage() {
                               disabled={videoDraft.videoCodec === 'copy'}
                               fullWidth
                             >
-                              <MenuItem value="software">Software · match Video Codec</MenuItem>
+                              <MenuItem value="software" disabled={!selectedWorkerEncoders.has(softwareEncoderForLabCodec(videoDraft.videoCodec))}>Software · match Video Codec</MenuItem>
                               <MenuItem
                                 value="hardware"
                                 disabled={!hardwareEncodingSupportedForCodec(videoDraft.videoCodec) || runtimeSnapshot.isLoading || !hasUsableHardwareEncoder}
@@ -2257,7 +2367,7 @@ export function ProfileLabPage() {
                               size="small"
                               fullWidth
                             >
-                              {videoEncoderOptions.filter((encoder) => isHardwareEncoderOption(encoder.value)).map((encoder) => (
+                              {availableVideoEncoderOptions.filter((encoder) => isHardwareEncoderOption(encoder.value)).map((encoder) => (
                                 <MenuItem
                                   key={encoder.value}
                                   value={encoder.value}
@@ -2335,6 +2445,18 @@ export function ProfileLabPage() {
                               ) : null}
                             </Grid>
                           ) : null}
+                          <Grid size={{ xs: 12 }}>
+                            <FrameStructureControls
+                              config={videoDraft.workerConfig ?? {}}
+                              recommendedGop={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).targetGopFrames : undefined}
+                              recommendedBFrames={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).maxBFrames : undefined}
+                              onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
+                              onChangeMany={updateFrameStructurePolicy}
+                              encoder={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)}
+                              disabled={videoDraft.videoCodec === 'copy'}
+                              compact
+                            />
+                          </Grid>
                           {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && hardwareUsesGlobalQuality(selectedHardwareEncoder) ? <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                             <TextField
                               label={selectedHardwareEncoder === 'hevc_qsv' ? 'QSV quality (ICQ)' : 'Hardware quality'}
@@ -2423,22 +2545,18 @@ export function ProfileLabPage() {
                             <>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                                <TextField label="Custom target bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} helperText="Named presets adapt to the selected asset. Editing uses Custom." size="small" fullWidth />
+                                <TextField label="Custom target bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} helperText="Updates maxrate ×1.5, buffer ×2.5, and the effective estimate." size="small" fullWidth />
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                                <TextField label="Custom maxrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxMaxrateMbps', 3)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} size="small" fullWidth />
+                                <TextField label="Custom maxrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxMaxrateMbps', 3)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxMaxrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 250, step: 0.01 }} size="small" fullWidth />
                               </Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                                  <TextField label="Custom buffer (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBufferMbps', 5)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
+                                  <TextField label="Custom buffer (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBufferMbps', 5)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
                                 </Grid>
                                 <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="HEVC Main is 8-bit; Main10 is 10-bit and requires a compatible pixel format." label="Profile" value={videoWorkerValue(videoDraft, 'videoToolboxProfile', '')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="Maximum distance between keyframes. Smaller values improve seeking but increase size." label="GOP" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxGop', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxGop', Number(event.target.value))} inputProps={{ min: 0, max: 1000 }} helperText="0 = automatic" size="small" fullWidth /></Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="B-frames" select value={videoWorkerValue(videoDraft, 'videoToolboxBFramePolicy', 'auto')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBFramePolicy', event.target.value)} helperText="Auto emits no -bf option" size="small" fullWidth><MenuItem value="auto">Auto</MenuItem><MenuItem value="enabled" disabled={!videoToolboxBFramesAvailable}>Enabled</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid>
-                                <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Maximum B-frames" type="number" disabled={videoWorkerValue(videoDraft, 'videoToolboxBFramePolicy', 'auto') !== 'enabled'} value={numberWorkerValue(videoDraft, 'videoToolboxBFrames', 3)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxBFrames', Math.max(1, Math.min(4, Number(event.target.value))))} inputProps={{ min: 1, max: 4, step: 1 }} size="small" fullWidth /></Grid>
                                 <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxRealtime')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={videoWorkerBool(videoDraft, 'videoToolboxAutoAdjustBitrate')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={videoWorkerBool(videoDraft, 'videoToolboxPowerEfficiency')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                               </>
                           ) : null}
-                          {encoderQualityRecommendation.isPending ? <Grid size={{ xs: 12 }}><Alert severity="info">Calculating effective encoder settings from the active worker probe…</Alert></Grid> : null}
                           {encoderQualityRecommendation.isError ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
                           {currentEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${currentEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${currentEncoderRecommendation.recommendation.estimateConfidence}`} />{currentEncoderRecommendation.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${currentEncoderRecommendation.recommendation.requestedBFramePolicy} → ${currentEncoderRecommendation.recommendation.effectiveBFramePolicy}`} /> : null}{currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}{currentEncoderRecommendation.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(currentEncoderRecommendation.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(currentEncoderRecommendation.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(currentEncoderRecommendation.estimatedOutputMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedOutputMaxBytes)}`} /> : null}{currentEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(currentEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack>{currentEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{currentEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}<Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {currentEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         </Grid>
@@ -3376,6 +3494,11 @@ function LabWarningsAndGuidance({
       {!inspection ? <Alert severity="info">Run Process Video to compare I/P/B distribution, B-frame runs, GOP length, and encoder warnings against the source.</Alert> : (
         <Stack spacing={1.5}>
           <Typography fontWeight={700}>Processed video result</Typography>
+          <Alert severity={inspection.frameValidation.verdict === 'safe' ? 'success' : inspection.frameValidation.verdict === 'review' ? 'warning' : 'error'}>
+            <Typography fontWeight={700}>{inspection.frameValidation.verdict === 'safe' ? 'Recommended configuration validated' : inspection.frameValidation.verdict === 'review' ? 'Recommendation requires review' : 'Recommendation not validated'}</Typography>
+            <Typography variant="body2">Recommended GOP {inspection.frameRecommendation.targetGopFrames} (~{inspection.frameRecommendation.targetGopSeconds.toFixed(1)}s) · recommended B max {inspection.frameRecommendation.maxBFrames} · validation confidence {inspection.frameValidation.confidence}.</Typography>
+            {inspection.frameValidation.reasons.map((reason) => <Typography key={reason} variant="body2">• {reason}</Typography>)}
+          </Alert>
           {inspection.qsvFrameWarnings.length ? inspection.qsvFrameWarnings.map((warning) => <Alert key={warning} severity="warning">{warning}</Alert>) : (
             <Alert severity="success">No unusual processed-video frame-structure behavior was detected.</Alert>
           )}
@@ -3386,6 +3509,109 @@ function LabWarningsAndGuidance({
       )}
     </Stack>
   );
+}
+
+function labFrameSamplingPolicy(settings: AppSetting[] | undefined, duration: number) {
+  const raw = settings?.find((setting) => setting.key === 'frameStructureSampling')?.value;
+  const configuredPositions = Array.isArray(raw?.positions) ? raw.positions.map(Number).filter((value) => Number.isFinite(value) && value > 0 && value < 1) : [];
+  const requestedWindows = Math.max(1, Math.min(9, Number(raw?.windows) || 5));
+  let positions = (configuredPositions.length >= requestedWindows ? configuredPositions : [0.08, 0.27, 0.5, 0.73, 0.92]).slice(0, requestedWindows);
+  let windowSeconds = Math.max(5, Math.min(60, Number(raw?.windowSeconds) || 20));
+  if (raw?.adaptive !== false) {
+    if (duration <= 60) { positions = [0.5]; windowSeconds = Math.max(1, duration); }
+    else if (duration < 120) windowSeconds = Math.min(windowSeconds, 10);
+    else if (duration < 600) windowSeconds = Math.min(windowSeconds, 15);
+  }
+  return { positions, windowSeconds };
+}
+
+function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStructureAnalysis; position: number; startSeconds: number; durationSeconds: number }>): QSVFrameStructureAnalysis {
+  const total = windows.reduce((result, window) => ({
+    frames: result.frames + window.analysis.framesAnalyzed,
+    i: result.i + window.analysis.iFrames,
+    p: result.p + window.analysis.pFrames,
+    b: result.b + window.analysis.bFrames,
+    key: result.key + window.analysis.keyFrames,
+    complete: result.complete + (window.analysis.completeGops ?? Math.max(0, window.analysis.keyFrames - 1)),
+    weightedGop: result.weightedGop + window.analysis.averageGopLength * (window.analysis.completeGops ?? Math.max(0, window.analysis.keyFrames - 1)),
+  }), { frames: 0, i: 0, p: 0, b: 0, key: 0, complete: 0, weightedGop: 0 });
+  const gops = windows.map((window) => window.analysis.averageGopLength).filter((value) => value > 0);
+  const mean = gops.length ? gops.reduce((sum, value) => sum + value, 0) / gops.length : 0;
+  const coefficient = mean > 0 ? Math.sqrt(gops.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, gops.length)) / mean : 0;
+  const minimumGops = windows.map((window) => window.analysis.minimumGopLength ?? 0).filter((value) => value > 0);
+  const variability = gops.length < 2 ? 'unknown' : coefficient > 0.35 ? 'high' : coefficient > 0.15 ? 'medium' : 'low';
+  const confidence = windows.length >= 4 && total.complete >= 5 && variability === 'low' ? 'high' : windows.length >= 3 && total.complete >= 2 ? 'medium' : 'low';
+  return {
+    version: 2,
+    framesAnalyzed: total.frames,
+    iFrames: total.i,
+    pFrames: total.p,
+    bFrames: total.b,
+    keyFrames: total.key,
+    bFrameRatio: total.frames ? total.b / total.frames : 0,
+    hasBFrames: total.b > 0,
+    maxConsecutiveBFrames: Math.max(0, ...windows.map((window) => window.analysis.maxConsecutiveBFrames)),
+    averageGopLength: total.complete ? total.weightedGop / total.complete : 0,
+    minimumGopLength: minimumGops.length ? Math.min(...minimumGops) : 0,
+    maximumGopLength: Math.max(0, ...windows.map((window) => window.analysis.maximumGopLength ?? 0)),
+    completeGops: total.complete,
+    sampledSeconds: windows.reduce((sum, window) => sum + window.durationSeconds, 0),
+    windowCount: windows.length,
+    windowLengthSeconds: windows[0]?.durationSeconds ?? 0,
+    positions: windows.map((window) => window.position),
+    variability,
+    confidence,
+    assessment: variability === 'high' ? 'High frame-structure variance was detected between output regions.' : 'Distributed output frame structure analyzed.',
+    source: 'five_distributed_preview_outputs',
+    windows: windows.map((window) => ({ position: window.position, startSeconds: window.startSeconds, durationSeconds: window.durationSeconds, analysis: window.analysis })),
+  };
+}
+
+function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
+  const rate = (scan?.videoStreams?.[0]?.avgFrameRate || scan?.videoStreams?.[0]?.realFrameRate || '').split('/').map(Number);
+  const fps = rate.length === 2 && rate[1] > 0 ? rate[0] / rate[1] : 30;
+  let seconds = source.averageGopLength > 0 ? source.averageGopLength / fps : 3;
+  seconds = Math.max(2, Math.min(4, seconds));
+  if ((profile?.name || '').toLowerCase().includes('anime')) seconds = Math.min(4, seconds + 0.25);
+  const candidates = [24, 30, 48, 50, 60, 72, 75, 90, 96, 100, 120, 150, 180, 240];
+  const raw = Math.round(fps * seconds);
+  const targetGopFrames = candidates.reduce((best, value) => Math.abs(value - raw) < Math.abs(best - raw) ? value : best, candidates[0]);
+  const maxBFrames = source.maxConsecutiveBFrames >= 1 && source.maxConsecutiveBFrames <= 4 ? source.maxConsecutiveBFrames : 3;
+  const encoder = String(profile?.workerConfig?.videoEncoder || 'generic');
+  const encoderReason = encoder === 'hevc_videotoolbox'
+    ? 'VideoToolbox maps GOP to -g and may map B depth to -bf only when the active worker capability validates frame reordering.'
+    : encoder === 'hevc_qsv'
+      ? 'QSV Adaptive I/B remain capability-gated and are not inferred from observed I/B counts.'
+      : encoder === 'libx265'
+        ? 'x265 maps common GOP/B intent through keyint and bframes; b-adapt, b-pyramid, and scenecut remain encoder-specific decisions.'
+        : 'The selected encoder translates the generic GOP/B targets through its own supported controls.';
+  return { encoder, targetGopFrames, targetGopSeconds: targetGopFrames / fps, maxBFrames, confidence: source.confidence || 'low', reasons: [`Source GOP ${source.averageGopLength.toFixed(1)} was normalized to ${targetGopFrames} frames.`, `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.`, encoderReason] };
+}
+
+function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput): string[] {
+  if (!scan.frameStructureAnalysis || scan.frameStructureAnalysis.framesAnalyzed <= 0) return [];
+  const recommendation = frameStructureRecommendationForLab(scan.frameStructureAnalysis, scan, profile);
+  const encoder = recommendation.encoder === 'libx265'
+    ? 'x265'
+    : recommendation.encoder === 'hevc_qsv'
+      ? 'QSV'
+      : recommendation.encoder === 'hevc_videotoolbox'
+        ? 'VideoToolbox'
+        : recommendation.encoder;
+  return [
+    `Frame Structure — common: recommend GOP ${recommendation.targetGopFrames} (~${recommendation.targetGopSeconds.toFixed(1)}s) and maximum B depth ${recommendation.maxBFrames}; confidence ${recommendation.confidence}.`,
+    `Source analysis: average GOP ${scan.frameStructureAnalysis.averageGopLength.toFixed(1)}, longest B-run ${scan.frameStructureAnalysis.maxConsecutiveBFrames}, B share ${(scan.frameStructureAnalysis.bFrameRatio * 100).toFixed(1)}%.`,
+    `${encoder}: ${recommendation.reasons[2]}`,
+    'Effective values and actual validation are reported after the preview encode; they are not inferred from requested values.',
+  ];
+}
+
+function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis) {
+  const extreme = output.pFrames === 0 && output.bFrameRatio >= 0.95 && output.maxConsecutiveBFrames > Math.max(20, recommendation.maxBFrames * 5);
+  if (extreme || ((output.windowCount ?? 0) >= 2 && output.averageGopLength > recommendation.targetGopFrames * 2)) return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: ['Encoder output differs substantially from the requested frame structure.', 'P/B/GOP behavior is unsafe to mark as Recommended.'] };
+  const gopReviewMultiplier = recommendation.encoder === 'hevc_videotoolbox' ? 1.5 : 1.35;
+  if (output.averageGopLength > recommendation.targetGopFrames * gopReviewMultiplier || output.maxConsecutiveBFrames > recommendation.maxBFrames + 1 || output.variability === 'high' || output.maxConsecutiveBFrames > Math.max(1, source.maxConsecutiveBFrames) * 2) return { verdict: 'review' as const, confidence: output.confidence || 'low', reasons: ['Moderate GOP/B-run deviation or high variance was detected between output regions.'] };
+  return { verdict: 'safe' as const, confidence: output.confidence || 'low', reasons: ['P frames are present and no major structural anomaly was detected.', 'Distributed output is reasonably close to the recommended structure.'] };
 }
 
 function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis) {
@@ -4356,6 +4582,10 @@ function updateVideoWorkerConfig(
       workerConfig: {
         ...current.workerConfig,
         [key]: value,
+        ...(key === 'videoToolboxBitrateMbps' ? (() => {
+          const rates = videoToolboxRatesFromTargetMbps(value);
+          return { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer };
+        })() : {}),
 
         ...(switchesToCustom
           ? { hardwareQualityPreset: 'custom' }
@@ -4843,7 +5073,7 @@ function AudioProfileAutocomplete({
   );
 }
 
-function VideoProfileSaveReview({ profile, source, asset, previewNormalization }: { profile: ProfileInput; source?: ScanResult; asset: Asset | null; previewNormalization: 'preserve' | 'normalize_bt709' }) {
+function VideoProfileSaveReview({ profile, source, asset, previewNormalization, recommendation }: { profile: ProfileInput; source?: ScanResult; asset: Asset | null; previewNormalization: 'preserve' | 'normalize_bt709'; recommendation?: QualityRecommendationResponse }) {
   const video = source?.videoStreams?.[0];
   const encoder = videoWorkerValue(profile, 'videoEncoder', videoWorkerValue(profile, 'preferredEncoder', 'software') === 'hardware' ? 'auto hardware' : softwareEncoderForCodec(profile.videoCodec));
   const pixFmt = videoWorkerValue(profile, 'pixFmt', profile.pixelFormat || 'source default');
@@ -4852,11 +5082,52 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
   const crop = filters.match(/(?:^|,)crop=(\d+):(\d+):/);
   const cropAspectPolicy = videoWorkerValue(profile, 'cropAspectPolicy', 'preserve_dar');
   const qualityPreset = videoWorkerValue(profile, 'hardwareQualityPreset', 'custom');
+  const sourceAudioTracks = source?.audioStreams?.length ?? 0;
+  const sourceSubtitleTracks = source?.subtitleStreams?.length ?? 0;
+  const addCompatibilityAudio = videoAACTrackEnabled(profile);
+  const preserveOriginalAudio = videoWorkerBool(profile, 'preserveOriginalAudio') || profile.audioCodec === 'copy';
+  const subtitleMode = videoExternalSubtitleFormat(profile);
+  const subtitleEffect = subtitleMode === 'remove'
+    ? `Remove ${sourceSubtitleTracks} embedded subtitle track(s)`
+    : subtitleMode === 'srt' || subtitleMode === 'ass'
+      ? `Convert/externalize compatible subtitles as ${subtitleMode.toUpperCase()}`
+      : profile.preserveSubtitles
+        ? `Preserve ${sourceSubtitleTracks} embedded subtitle track(s)`
+        : `Do not preserve ${sourceSubtitleTracks} embedded subtitle track(s)`;
+  const trackEffects = [
+    preserveOriginalAudio ? `Preserve ${sourceAudioTracks} original audio track(s).` : `Original audio is not guaranteed to be preserved by this Video Profile.`,
+    addCompatibilityAudio ? 'Add one AAC stereo compatibility track while retaining the selected source audio.' : 'Do not add an extra AAC compatibility track.',
+    `${subtitleEffect}.`,
+    profile.preserveChapters ? `Preserve ${source?.chapters ?? 0} chapter(s).` : `Remove ${source?.chapters ?? 0} chapter(s).`,
+  ];
   const quality = encoder === 'hevc_videotoolbox'
     ? `${numberWorkerValue(profile, 'videoToolboxBitrateMbps', 2)} Mbps target · ${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', 3)} Mbps max · ${numberWorkerValue(profile, 'videoToolboxBufferMbps', 5)} Mbps buffer`
     : encoder.includes('qsv') || encoder.includes('vaapi') || encoder.includes('nvenc')
       ? `Global quality ${numberWorkerValue(profile, 'globalQuality', 20)} · ${qualityPreset}`
       : `${profile.qualityMode.toUpperCase()} ${profile.qualityValue}`;
+  const sourceFrameStructure = source?.frameStructureAnalysis;
+  const frameRecommendation = sourceFrameStructure ? frameStructureRecommendationForLab(sourceFrameStructure, source, profile) : undefined;
+  const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
+  const requestedGop = gopMode === 'auto'
+    ? 'Auto · encoder decides'
+    : `${gopMode === 'recommended' ? 'MVForge Recommended' : 'Custom'} · ${numberWorkerValue(profile, 'frameStructureGopFrames', frameRecommendation?.targetGopFrames ?? 120)} frames`;
+  const effectiveGopArgument = recommendation ? ffmpegArgumentValue(recommendation.ffmpegVideoArguments, '-g') : '';
+  const effectiveGop = effectiveGopArgument ? `-g ${effectiveGopArgument}` : 'Encoder default · no -g override';
+  const bFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
+  const requestedBFrames = bFrameMode === 'auto'
+    ? 'Auto · encoder decides'
+    : bFrameMode === 'off'
+      ? 'Off · maximum 0'
+      : `${bFrameMode === 'recommended' ? 'MVForge Recommended' : 'Custom'} · maximum ${numberWorkerValue(profile, 'frameStructureMaxBFrames', frameRecommendation?.maxBFrames ?? 3)}`;
+  const effectiveBFrameArgument = recommendation ? ffmpegArgumentValue(recommendation.ffmpegVideoArguments, '-bf') : '';
+  const effectiveBFrames = effectiveBFrameArgument
+    ? `-bf ${effectiveBFrameArgument}`
+    : recommendation?.recommendation.effectiveBFramePolicy
+      ? `${recommendation.recommendation.effectiveBFramePolicy}${recommendation.recommendation.observedBFrameCount != null ? ` · maximum ${recommendation.recommendation.observedBFrameCount}` : ''}`
+      : 'Encoder default · no -bf override';
+  const sourceFrameStructureLabel = sourceFrameStructure
+    ? `GOP ${sourceFrameStructure.averageGopLength.toFixed(1)} avg · I ${sourceFrameStructure.iFrames} / P ${sourceFrameStructure.pFrames} / B ${sourceFrameStructure.bFrames} · B-run ${sourceFrameStructure.maxConsecutiveBFrames}`
+    : 'Not analyzed';
   const rows = [
     ['Container', source?.container || 'Unknown', profile.container.toUpperCase(), source?.container === profile.container ? 'Preserved' : 'Changed intentionally'],
     ['Video codec', source?.videoCodec || 'Unknown', profile.videoCodec, profile.videoCodec === 'copy' ? 'Preserved' : 'Changed intentionally'],
@@ -4870,6 +5141,13 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
     ['Preview color domain', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', previewNormalization === 'normalize_bt709' ? 'Normalize preview to BT.709' : 'Preserve source domain', 'LAB/Fidelity only · not saved in the profile'],
     ['Final output color policy', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', finalColorPolicyReviewLabel(videoWorkerValue(profile, 'finalColorPolicy', 'preserve')), videoWorkerValue(profile, 'finalColorPolicy', 'preserve') === 'normalize_bt709' ? 'Pixel conversion and BT.709 metadata applied by pipeline' : 'No forced BT.709 output conversion'],
     ['Quality / rate control', source?.bitrate ? `${(source.bitrate / 1_000_000).toFixed(2)} Mbps source` : 'Unknown', quality, 'Configured output target'],
+    ['Frame structure source', sourceFrameStructureLabel, frameRecommendation ? `MVForge: GOP ${frameRecommendation.targetGopFrames} · B max ${frameRecommendation.maxBFrames}` : 'No recommendation available', sourceFrameStructure?.confidence ? `Analysis confidence: ${sourceFrameStructure.confidence}` : 'Run Asset Info analysis for evidence'],
+    ['GOP', sourceFrameStructure ? `${sourceFrameStructure.averageGopLength.toFixed(1)} average` : 'Unknown', requestedGop, `${effectiveGop}${gopMode === 'auto' ? '' : ' · explicit profile override'}`],
+    ['Maximum B-frames', sourceFrameStructure ? `${sourceFrameStructure.maxConsecutiveBFrames} longest source B-run` : 'Unknown', requestedBFrames, `${effectiveBFrames}${recommendation?.recommendation.bFrameDowngradeReason ? ` · ${recommendation.recommendation.bFrameDowngradeReason}` : ''}`],
+    ...(encoder === 'hevc_videotoolbox' ? [
+      ['VideoToolbox realtime', 'Not applicable to source', videoWorkerBool(profile, 'videoToolboxRealtime') ? 'Enabled' : 'Disabled', recommendation ? (recommendation.recommendation.effectiveRealtime ? 'Effective: enabled' : 'Effective: disabled') : 'Pending worker resolution'],
+      ['VideoToolbox frame reordering', 'Source structure shown above', bFrameMode === 'off' ? 'Disabled by B-frames Off' : bFrameMode === 'auto' ? 'Encoder controlled' : 'Requested for B-frame output', recommendation?.recommendation.effectiveBFramePolicy ? `Effective: ${recommendation.recommendation.effectiveBFramePolicy}` : 'Pending worker resolution'],
+    ] : []),
     ...(encoder === 'hevc_qsv' ? [
       ['QSV requested mode', 'Worker capability dependent', videoWorkerValue(profile, 'qsvRequestedRateControl', videoWorkerValue(profile, 'qsvRateControl', 'la_icq')), 'Preserved as requested evidence'],
       ['QSV effective mode', 'Active worker probe', videoWorkerValue(profile, 'qsvEffectiveRateControl', 'Pending worker resolution'), videoWorkerValue(profile, 'qsvRateControlFallbackReason') || 'No fallback'],
@@ -4895,6 +5173,21 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
         <Chip label={videoWorkerValue(profile, 'preferredEncoder', 'software') === 'hardware' ? 'Hardware' : 'Software'} />
         {qualityPreset !== 'custom' ? <Chip label={`Preset: ${qualityPreset.replaceAll('_', ' ')}`} color="success" /> : null}
       </Stack>
+      {recommendation ? (
+        <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+          <Typography fontWeight={700} sx={{ mb: 1 }}>Effective configuration and estimate</Typography>
+          <EncoderRecommendationChips result={recommendation} />
+        </Box>
+      ) : <Alert severity="info">Effective configuration is still being calculated.</Alert>}
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+        <Typography fontWeight={700} sx={{ mb: 1 }}>Video Profile track impact</Typography>
+        <Stack spacing={0.5}>
+          {trackEffects.map((effect) => <Typography key={effect} variant="body2">• {effect}</Typography>)}
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+          This summarizes only the Video Profile. A selected Tracks Profile or asset-specific track override can supersede these choices when the job is created.
+        </Typography>
+      </Box>
       <Table size="small" aria-label="Video profile technical review">
         <TableHead><TableRow><TableCell>Characteristic</TableCell><TableCell>Source</TableCell><TableCell>Profile result</TableCell><TableCell>Effect</TableCell></TableRow></TableHead>
         <TableBody>{rows.map(([label, sourceValue, targetValue, effect]) => <TableRow key={label}><TableCell sx={{ fontWeight: 700 }}>{label}</TableCell><TableCell>{sourceValue}</TableCell><TableCell>{targetValue}</TableCell><TableCell>{effect}</TableCell></TableRow>)}</TableBody>
@@ -4902,6 +5195,27 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization }
       {profile.description ? <Alert severity="info">{profile.description}</Alert> : null}
     </Stack>
   );
+}
+
+function EncoderRecommendationChips({ result }: { result: QualityRecommendationResponse }) {
+  const recommendation = result.recommendation;
+  return (
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+      <Chip size="small" label={`Effective · ${recommendation.effectiveRateControl || 'encoder default'}`} />
+      <Chip size="small" label={`Confidence · ${recommendation.estimateConfidence}`} />
+      {recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${recommendation.requestedBFramePolicy || 'auto'} → ${recommendation.effectiveBFramePolicy}`} /> : null}
+      {recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}
+      {recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+      {recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+      {result.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(result.estimatedOutputMinBytes)}–${formatBytes(result.estimatedOutputMaxBytes)}`} /> : <Chip size="small" label="Estimated output · unavailable without asset measurements" />}
+      {result.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(result.estimatedSavingsMinBytes)}–${formatBytes(result.estimatedSavingsMaxBytes)}`} /> : null}
+    </Stack>
+  );
+}
+
+function ffmpegArgumentValue(args: string[], option: string) {
+  const index = args.lastIndexOf(option);
+  return index >= 0 ? args[index + 1] ?? '' : '';
 }
 
 function AudioProfileSaveReview({ profile, source, asset }: { profile: AudioEnhancementProfile; source?: ScanResult; asset: Asset | null }) {
@@ -5146,7 +5460,8 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
         ? `Add conservative candidate crop ${scan.cropAnalysis.recommendedCrop}, disabled by default because the detected borders vary slightly between scenes.`
         : crop === 'variable'
           ? 'Keep crop disabled because the detected borders vary between scenes.'
-        : 'Keep crop disabled because no stable black bars were detected.',
+      : 'Keep crop disabled because no stable black bars were detected.',
+    ...frameStructureSuggestionLines(scan, suggestion.proposedProfile),
   ];
   const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase())).length;
   const audio = [
@@ -5785,9 +6100,11 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
     args.push('-profile:v', tenBit ? 'main10' : 'main', '-pix_fmt', tenBit ? 'p010le' : 'yuv420p');
     const realtime = videoWorkerBool(profile, 'videoToolboxRealtime');
     args.push('-realtime', realtime ? '1' : '0');
-    const bFramePolicy = videoWorkerValue(profile, 'videoToolboxBFramePolicy', 'auto');
-    if (bFramePolicy === 'enabled') args.push('-bf', String(Math.max(1, Math.min(4, numberWorkerValue(profile, 'videoToolboxBFrames', 3)))));
-    if (bFramePolicy === 'disabled' || (bFramePolicy === 'auto' && realtime)) args.push('-bf', '0');
+    if (!videoWorkerValue(profile, 'frameStructureBFrameMode')) {
+      const bFramePolicy = videoWorkerValue(profile, 'videoToolboxBFramePolicy', 'auto');
+      if (bFramePolicy === 'enabled') args.push('-bf', String(Math.max(1, Math.min(4, numberWorkerValue(profile, 'videoToolboxBFrames', 3)))));
+      if (bFramePolicy === 'disabled' || (bFramePolicy === 'auto' && realtime)) args.push('-bf', '0');
+    }
     const color = combinedVideoToolboxColorConversion(scan);
     if (color.filter) {
       filters = [filters, color.filter].filter(Boolean).join(',');
@@ -5812,6 +6129,11 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
       if (x265Params) args.push('-x265-params', shellQuote(x265Params));
     }
   }
+  const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
+  if (gopMode === 'recommended' || gopMode === 'custom') args.push('-g', String(Math.max(1, Math.min(1000, numberWorkerValue(profile, 'frameStructureGopFrames', 120)))));
+  const bFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
+  if (bFrameMode === 'recommended' || bFrameMode === 'custom') args.push('-bf', String(Math.max(1, Math.min(encoder === 'hevc_videotoolbox' ? 4 : 16, numberWorkerValue(profile, 'frameStructureMaxBFrames', 3)))));
+  if (bFrameMode === 'off') args.push('-bf', '0');
   if (filters) args.push('-vf', shellQuote(filters));
   return args;
 }

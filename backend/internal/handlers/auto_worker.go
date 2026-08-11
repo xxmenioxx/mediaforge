@@ -23,7 +23,7 @@ func StartAutoWorker(db *gorm.DB) *AutoWorker {
 		stop:    make(chan struct{}),
 	}
 	if limits, err := worker.handler.workerLimits(); err == nil {
-		_ = worker.handler.heartbeatWorker(limits.DefaultWorkerName, limits)
+		_ = worker.handler.heartbeatWorker(limits.DefaultWorkerName, limits, nil, "")
 	}
 	go worker.run()
 	return worker
@@ -59,7 +59,7 @@ func (w *AutoWorker) tick() {
 		appendSystemLog(w.handler.db, "auto_worker_settings_failed", nil, err)
 		return
 	}
-	if err := w.handler.heartbeatWorker(limits.DefaultWorkerName, limits); err != nil {
+	if err := w.handler.heartbeatWorker(limits.DefaultWorkerName, limits, nil, ""); err != nil {
 		log.Printf("auto worker heartbeat error: %v", err)
 		appendSystemLog(w.handler.db, "worker_heartbeat_failed", map[string]string{"worker": limits.DefaultWorkerName}, err)
 		return
@@ -72,7 +72,7 @@ func (w *AutoWorker) tick() {
 	}
 
 	for {
-		job, err := w.handler.claimNextJob(limits.DefaultWorkerName)
+		job, err := w.handler.claimNextJob(limits.DefaultWorkerName, nil, "")
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, errWorkerLimitReached) || errors.Is(err, errWorkerDelayActive) {
 				return

@@ -25,6 +25,9 @@ func EvaluateWorkerAvailability(db *gorm.DB, plan models.ExecutionPlan, now time
 		return WorkerAvailabilityDecision{Reasons: []string{"No online worker has a recent heartbeat"}}, nil
 	}
 	for _, worker := range workers {
+		if target := jsonString(plan.Constraints, "targetWorkerName"); target != "" && worker.Name != target {
+			continue
+		}
 		var active int64
 		if err := db.Model(&models.SchedulerReservation{}).Where("state = ? AND worker_name = ?", ReservationStateActive, worker.Name).Count(&active).Error; err != nil {
 			return WorkerAvailabilityDecision{}, err
@@ -35,6 +38,9 @@ func EvaluateWorkerAvailability(db *gorm.DB, plan models.ExecutionPlan, now time
 		if workerSupportsEncoder(worker, plan.SelectedEncoder) {
 			return WorkerAvailabilityDecision{Available: true, Worker: worker.Name, Reasons: []string{fmt.Sprintf("Worker %s is online and supports %s", worker.Name, plan.SelectedEncoder)}}, nil
 		}
+	}
+	if target := jsonString(plan.Constraints, "targetWorkerName"); target != "" {
+		return WorkerAvailabilityDecision{Reasons: []string{fmt.Sprintf("Worker %s is offline, at capacity, or does not support %s", target, plan.SelectedEncoder)}}, nil
 	}
 	return WorkerAvailabilityDecision{Reasons: []string{"Online workers are at capacity or do not support the selected encoder"}}, nil
 }

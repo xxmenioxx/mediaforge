@@ -154,10 +154,10 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			if scanCacheMatchesFile(existing, info) {
-				if len(existing.FrameStructureAnalysis) == 0 || jsonMapInt(existing.FrameStructureAnalysis, "version") < 1 {
+				if len(existing.FrameStructureAnalysis) == 0 || jsonMapInt(existing.FrameStructureAnalysis, "version") < 2 {
 					report("frame_structure", 80, "Adding the missing I, P, B and GOP analysis")
 				}
-				enrichCachedScan(&existing)
+				enrichCachedScan(h.db, &existing)
 				applySnapshotDirectPlay(h.db, &existing)
 				_ = h.db.Save(&existing).Error
 				report("completed", 100, "Using the current asset snapshot")
@@ -166,7 +166,7 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 		}
 	}
 
-	probe, raw, err := runFFProbeWithProgress(path, normalizedAnalysisSeconds(request.AnalysisSeconds), report)
+	probe, raw, err := runFFProbeWithProgress(path, normalizedAnalysisSeconds(request.AnalysisSeconds), report, frameStructureSamplingPolicy(h.db))
 	if err != nil {
 		return models.ScanResult{}, false, err
 	}
@@ -321,10 +321,10 @@ func resolveMediaPath(db *gorm.DB, path string) string {
 }
 
 func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap, error) {
-	return runFFProbeWithProgress(path, analysisSeconds, nil)
+	return runFFProbeWithProgress(path, analysisSeconds, nil, defaultFrameStructureSamplingPolicy())
 }
 
-func runFFProbeWithProgress(path string, analysisSeconds int, progress func(string, float64, string)) (FFProbeResult, models.JSONMap, error) {
+func runFFProbeWithProgress(path string, analysisSeconds int, progress func(string, float64, string), samplingPolicy FrameStructureSamplingPolicy) (FFProbeResult, models.JSONMap, error) {
 	report := func(phase string, value float64, message string) {
 		if progress != nil {
 			progress(phase, value, message)
@@ -377,8 +377,8 @@ func runFFProbeWithProgress(path string, analysisSeconds int, progress func(stri
 	report("crop", 55, "Checking sampled scenes for crop boundaries")
 	raw["cropAnalysis"] = detectCrop(path, video.Width, video.Height, parseFloat(probe.Format.Duration))
 	report("frame_structure", 80, "Inspecting I, P, B and GOP frame structure")
-	frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 60*time.Second)
-	frameAnalysis, frameErr := analyzeVideoFrameStructure(frameContext, path, 500)
+	frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 3*time.Minute)
+	frameAnalysis, frameErr := analyzeVideoFrameStructureDistributed(frameContext, path, parseFloat(probe.Format.Duration), samplingPolicy)
 	cancelFrameAnalysis()
 	if frameErr == nil {
 		encoded, _ := json.Marshal(frameAnalysis)
@@ -480,7 +480,7 @@ func persistFinalAssetSnapshot(db *gorm.DB, result *models.ScanResult) error {
 	})
 }
 
-func enrichCachedScan(result *models.ScanResult) {
+func enrichCachedScan(db *gorm.DB, result *models.ScanResult) {
 	if result.RawProbe == nil {
 		result.RawProbe = models.JSONMap{}
 	}
@@ -503,11 +503,11 @@ func enrichCachedScan(result *models.ScanResult) {
 			result.RawProbe["cropAnalysis"] = analysis
 		}
 	}
-	if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 1 {
+	if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 2 {
 		result.FrameStructureAnalysis = analysisMapFromRaw(result.RawProbe, "frameStructureAnalysis")
-		if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 1 {
-			frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 60*time.Second)
-			analysis, err := analyzeVideoFrameStructure(frameContext, result.Path, 500)
+		if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 2 {
+			frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 3*time.Minute)
+			analysis, err := analyzeVideoFrameStructureDistributed(frameContext, result.Path, result.Duration, frameStructureSamplingPolicy(db))
 			cancelFrameAnalysis()
 			if err == nil {
 				encoded, _ := json.Marshal(analysis)

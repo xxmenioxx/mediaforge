@@ -41,7 +41,9 @@ type WorkerHandler struct {
 }
 
 type ClaimJobInput struct {
-	WorkerName string `json:"workerName"`
+	WorkerName     string          `json:"workerName"`
+	Encoders       models.JSONList `json:"encoders,omitempty"`
+	RuntimeProfile string          `json:"runtimeProfile,omitempty"`
 }
 
 type UpdateJobStatusInput struct {
@@ -98,16 +100,24 @@ func (h WorkerHandler) ListNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, workers)
 }
 
-func (h WorkerHandler) heartbeatWorker(name string, limits workerLimits) error {
+func (h WorkerHandler) heartbeatWorker(name string, limits workerLimits, reportedEncoders models.JSONList, reportedRuntimeProfile string) error {
 	if strings.TrimSpace(name) == "" {
 		name = limits.DefaultWorkerName
 	}
 	if strings.TrimSpace(name) == "" {
 		name = "local-worker"
 	}
-	encoders := models.JSONList{"libx265", "libx264"}
+	encoders := models.JSONList{}
 	runtimeProfile := ""
-	if snapshot, err := runtimeinfo.Latest(h.db); err == nil {
+	if len(reportedEncoders) > 0 {
+		for _, raw := range reportedEncoders {
+			encoder, ok := raw.(string)
+			if ok && strings.TrimSpace(encoder) != "" && !jsonListContains(encoders, strings.TrimSpace(encoder)) {
+				encoders = append(encoders, strings.TrimSpace(encoder))
+			}
+		}
+		runtimeProfile = strings.TrimSpace(reportedRuntimeProfile)
+	} else if snapshot, err := runtimeinfo.Latest(h.db); err == nil {
 		runtimeProfile = snapshot.SelectedProfile
 		for encoder, raw := range snapshot.Encoders {
 			entry, ok := raw.(map[string]any)
@@ -277,7 +287,7 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 		return
 	}
 
-	claimed, err := h.claimNextJob(input.WorkerName)
+	claimed, err := h.claimNextJob(input.WorkerName, input.Encoders, input.RuntimeProfile)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			message := "no runnable queued jobs are available"
@@ -311,7 +321,7 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 	c.JSON(http.StatusOK, claimed)
 }
 
-func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) {
+func (h WorkerHandler) claimNextJob(workerName string, reportedEncoders models.JSONList, reportedRuntimeProfile string) (models.QueueJob, error) {
 	// SQLite only permits one writer at a time. More importantly, slot checks,
 	// reservation activation, and the job transition must be atomic from the
 	// perspective of every manual and automatic worker in this process.
@@ -325,7 +335,7 @@ func (h WorkerHandler) claimNextJob(workerName string) (models.QueueJob, error) 
 	if workerName == "" {
 		workerName = limits.DefaultWorkerName
 	}
-	if err := h.heartbeatWorker(workerName, limits); err != nil {
+	if err := h.heartbeatWorker(workerName, limits, reportedEncoders, reportedRuntimeProfile); err != nil {
 		return models.QueueJob{}, err
 	}
 	if workerName == "" {

@@ -289,7 +289,7 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 	path = resolveMediaPath(h.db, path)
 	var existing models.ScanResult
 	if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
-		enrichCachedScan(&existing)
+		enrichCachedScan(h.db, &existing)
 		_ = h.db.Save(&existing).Error
 		return existing, nil
 	}

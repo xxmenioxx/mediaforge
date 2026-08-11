@@ -57,7 +57,7 @@ func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, claimErr := NewWorkerHandler(db).claimNextJob("local")
+			_, claimErr := NewWorkerHandler(db).claimNextJob("local", nil, "")
 			results <- claimErr
 		}()
 	}

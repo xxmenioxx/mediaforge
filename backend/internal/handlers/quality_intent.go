@@ -29,6 +29,7 @@ func qualityIntentForMedia(profile models.Profile, sourcePath string, streams Me
 	grainScore, grainKnown := qualityScore(profile.WorkerConfig, "grainScore")
 	motionScore, motionKnown := qualityScore(profile.WorkerConfig, "motionScore")
 	complexityScore, complexityKnown := qualityScore(profile.WorkerConfig, "complexityScore")
+	bFramePolicy, bFrameCount := frameStructureBFrameIntent(profile)
 	return quality.NewIntent(quality.IntentInput{
 		Preset:     workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]),
 		SourcePath: sourcePath, SourceWidth: video.Width, SourceHeight: video.Height,
@@ -45,10 +46,23 @@ func qualityIntentForMedia(profile models.Profile, sourcePath string, streams Me
 		RequestedBitDepth:    profile.BitDepth,
 		RequestedPixelFormat: workerStringValue(profile.WorkerConfig["pixFmt"]),
 		VideoToolboxRealtime: profileWorkerBool(profile, "videoToolboxRealtime", false),
-		BFramePolicy:         workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]),
-		BFrameCount:          workerIntValue(profile.WorkerConfig["videoToolboxBFrames"], 3),
+		BFramePolicy:         bFramePolicy,
+		BFrameCount:          bFrameCount,
 		AutoAdjustBitrate:    profileWorkerBool(profile, "videoToolboxAutoAdjustBitrate", false),
 	})
+}
+
+func frameStructureBFrameIntent(profile models.Profile) (string, int) {
+	switch normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) {
+	case "recommended", "custom":
+		return "enabled", min(16, max(1, workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 3)))
+	case "off":
+		return "disabled", 0
+	case "auto":
+		return "auto", 0
+	default:
+		return workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]), workerIntValue(profile.WorkerConfig["videoToolboxBFrames"], 3)
+	}
 }
 
 func applyQSVQualityRecommendation(profile models.Profile, intent quality.QualityIntent, capability capabilities.EncoderCapability) models.Profile {

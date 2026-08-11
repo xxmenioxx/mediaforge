@@ -781,6 +781,18 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.X265Params); value != "" {
 		workerConfig["x265Params"] = value
 	}
+	if value := normalizedFrameStructureGOPMode(override.FrameStructureGOPMode); value != "" {
+		workerConfig["frameStructureGopMode"] = value
+	}
+	if override.FrameStructureGOPFrames > 0 {
+		workerConfig["frameStructureGopFrames"] = min(1000, override.FrameStructureGOPFrames)
+	}
+	if value := normalizedFrameStructureBFrameMode(override.FrameStructureBFrameMode); value != "" {
+		workerConfig["frameStructureBFrameMode"] = value
+	}
+	if override.FrameStructureMaxBFrames > 0 {
+		workerConfig["frameStructureMaxBFrames"] = min(16, override.FrameStructureMaxBFrames)
+	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
 	}
@@ -792,6 +804,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := strings.TrimSpace(override.PreferredEncoder); value != "" {
 		workerConfig["preferredEncoder"] = value
+	}
+	if value := strings.TrimSpace(override.TargetWorkerName); value != "" {
+		workerConfig["targetWorkerName"] = value
 	}
 	switch strings.ToLower(strings.TrimSpace(override.PreferredEncoder)) {
 	case "software":
@@ -1312,12 +1327,18 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 		if encoder == "h264_videotoolbox" {
 			videoToolboxProfile = "high"
 		}
-		if gop := workerIntValue(profile.WorkerConfig["videoToolboxGop"], 0); gop > 0 {
-			args = append(args, "-g", fmt.Sprintf("%d", gop))
+		if normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"])) == "" {
+			if gop := workerIntValue(profile.WorkerConfig["videoToolboxGop"], 0); gop > 0 {
+				args = append(args, "-g", fmt.Sprintf("%d", gop))
+			}
 		}
 		main10 := encoder == "hevc_videotoolbox" && videoToolboxProfile == "main10"
 		powerSupported := videoToolboxOptionalFeatureSupported(capability, "power_efficiency", main10)
-		args = append(args, videoToolboxRealtimeAndBFrameArgs(profile, capability, main10)...)
+		if normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "" {
+			args = append(args, videoToolboxRealtimeAndBFrameArgs(profile, capability, main10)...)
+		} else {
+			args = append(args, "-realtime", map[bool]string{true: "1", false: "0"}[profileWorkerBool(profile, "videoToolboxRealtime", false)])
+		}
 		if value, ok := profile.WorkerConfig["videoToolboxPowerEfficiency"].(bool); ok && powerSupported {
 			args = append(args, "-power_efficient", map[bool]string{true: "1", false: "0"}[value])
 		}
@@ -1332,7 +1353,55 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 	if isTenBitVideoCodec(profile.VideoCodec) && encoder == "libx265" {
 		args = append(args, "-pix_fmt", "yuv420p10le")
 	}
+	args = append(args, commonFrameStructureArgs(profile, encoder)...)
 	return args
+}
+
+func normalizedFrameStructureGOPMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "recommended", "custom":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func normalizedFrameStructureBFrameMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "recommended", "custom", "off":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func commonFrameStructureArgs(profile models.Profile, encoder string) []string {
+	args := []string{}
+	if mode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"])); mode == "recommended" || mode == "custom" {
+		if value := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0); value > 0 {
+			args = append(args, "-g", strconv.Itoa(min(1000, value)))
+		}
+	}
+	mode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"]))
+	if mode == "auto" || mode == "" {
+		return args
+	}
+	value := 0
+	if mode == "recommended" || mode == "custom" {
+		value = min(16, max(1, workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 3)))
+	}
+	if encoder == "hevc_videotoolbox" || encoder == "h264_videotoolbox" {
+		capability := capabilities.CheckEncoder(encoder)
+		main10 := encoder == "hevc_videotoolbox" && normalizedVideoToolboxProfile(profile) == "main10"
+		if value == 0 && !videoToolboxBFramesDisabledSupported(capability, main10) {
+			return args
+		}
+		if value > 0 && !videoToolboxOptionalFeatureSupported(capability, "bframes", main10) {
+			return args
+		}
+		value = min(4, value)
+	}
+	return append(args, "-bf", strconv.Itoa(value))
 }
 
 func explicitVideoToolboxRates(profile models.Profile, capability capabilities.EncoderCapability) (float64, float64, float64) {
@@ -1348,6 +1417,16 @@ func explicitVideoToolboxRates(profile models.Profile, capability capabilities.E
 }
 
 func requestedVideoToolboxBFramePolicy(profile models.Profile) string {
+	if mode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])); mode != "" {
+		switch mode {
+		case "recommended", "custom":
+			return "enabled"
+		case "off":
+			return "disabled"
+		default:
+			return "auto"
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoToolboxBFramePolicy"]))) {
 	case "enabled":
 		return "enabled"

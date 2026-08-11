@@ -214,6 +214,10 @@ type AssetConversionOverrideState struct {
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
 	X265Params                       string                         `json:"x265Params,omitempty"`
+	FrameStructureGOPMode            string                         `json:"frameStructureGopMode,omitempty"`
+	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames,omitempty"`
+	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode,omitempty"`
+	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames,omitempty"`
 	ProcessingMode                   string                         `json:"processingMode,omitempty"`
 	PreserveHDR                      *bool                          `json:"preserveHdr,omitempty"`
 	PreserveSubtitles                *bool                          `json:"preserveSubtitles,omitempty"`
@@ -226,6 +230,7 @@ type AssetConversionOverrideState struct {
 	UseHardwareIfAvailable           *bool                          `json:"useHardwareIfAvailable,omitempty"`
 	VideoEncoder                     string                         `json:"videoEncoder,omitempty"`
 	PreferredEncoder                 string                         `json:"preferredEncoder,omitempty"`
+	TargetWorkerName                 string                         `json:"targetWorkerName,omitempty"`
 	GlobalQuality                    int                            `json:"globalQuality,omitempty"`
 	QSVRateControl                   string                         `json:"qsvRateControl,omitempty"`
 	QSVLookAheadDepth                int                            `json:"qsvLookAheadDepth,omitempty"`
@@ -343,6 +348,10 @@ type AssetConversionUpdateInput struct {
 	VideoFilters                     string                         `json:"videoFilters"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
 	X265Params                       string                         `json:"x265Params"`
+	FrameStructureGOPMode            string                         `json:"frameStructureGopMode"`
+	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames"`
+	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode"`
+	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames"`
 	ProcessingMode                   string                         `json:"processingMode"`
 	PreserveHDR                      *bool                          `json:"preserveHdr"`
 	PreserveSubtitles                *bool                          `json:"preserveSubtitles"`
@@ -355,6 +364,7 @@ type AssetConversionUpdateInput struct {
 	UseHardwareIfAvailable           *bool                          `json:"useHardwareIfAvailable"`
 	VideoEncoder                     string                         `json:"videoEncoder"`
 	PreferredEncoder                 string                         `json:"preferredEncoder"`
+	TargetWorkerName                 string                         `json:"targetWorkerName"`
 	GlobalQuality                    int                            `json:"globalQuality"`
 	QSVRateControl                   string                         `json:"qsvRateControl"`
 	QSVLookAheadDepth                int                            `json:"qsvLookAheadDepth"`
@@ -2169,6 +2179,10 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
 		X265Params:                     strings.TrimSpace(input.X265Params),
+		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
+		FrameStructureGOPFrames:        min(1000, max(0, input.FrameStructureGOPFrames)),
+		FrameStructureBFrameMode:       normalizedFrameStructureBFrameMode(input.FrameStructureBFrameMode),
+		FrameStructureMaxBFrames:       min(16, max(0, input.FrameStructureMaxBFrames)),
 		PreserveHDR:                    input.PreserveHDR,
 		PreserveSubtitles:              input.PreserveSubtitles,
 		PreserveChapters:               input.PreserveChapters,
@@ -2180,6 +2194,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
 		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
 		PreferredEncoder:               strings.TrimSpace(input.PreferredEncoder),
+		TargetWorkerName:               strings.TrimSpace(input.TargetWorkerName),
 		GlobalQuality:                  input.GlobalQuality,
 		QSVRateControl:                 strings.TrimSpace(input.QSVRateControl),
 		QSVLookAheadDepth:              input.QSVLookAheadDepth,
@@ -2644,12 +2659,19 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 
 	info, _ := os.Stat(path)
 	cacheKey := previewCacheKey(path, info, args)
+	ephemeralPreview, _ := strconv.ParseBool(c.Query("ephemeral"))
+	if ephemeralPreview {
+		cacheKey = fmt.Sprintf("%s-ephemeral-%d", cacheKey, time.Now().UnixNano())
+	}
 	cachePath := filepath.Join(os.TempDir(), "mvforge-preview-cache", cacheKey+".mp4")
 	started := time.Now()
 	cacheHit, err := generateCachedPreview(c.Request.Context(), cacheKey, cachePath, args)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if ephemeralPreview {
+		defer os.Remove(cachePath)
 	}
 	frameKind := strings.ToLower(strings.TrimSpace(c.Query("frame")))
 	if frameKind == "source" || frameKind == "output" {
@@ -2717,11 +2739,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			return
 		}
 
-		sourceFrameStructure, sourceFrameErr := analyzeVideoFrameStructure(
-			c.Request.Context(),
-			path,
-			500,
-		)
+		sourceFrameStructure, sourceFrameErr := analyzeVideoFrameStructureInterval(c.Request.Context(), path, fmt.Sprintf("%d%%+%d", previewTimestampSeconds(start), seconds))
 		if sourceFrameErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "source frame structure analysis failed: " + sourceFrameErr.Error(),
@@ -2729,11 +2747,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			return
 		}
 
-		outputFrameStructure, outputFrameErr := analyzeVideoFrameStructure(
-			c.Request.Context(),
-			cachePath,
-			500,
-		)
+		outputFrameStructure, outputFrameErr := analyzeVideoFrameStructureInterval(c.Request.Context(), cachePath, fmt.Sprintf("%%+%d", seconds))
 		if outputFrameErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "output frame structure analysis failed: " + outputFrameErr.Error(),
@@ -5047,6 +5061,10 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.VideoFilters) == "" &&
 		strings.TrimSpace(override.DeinterlaceMode) == "" &&
 		strings.TrimSpace(override.X265Params) == "" &&
+		strings.TrimSpace(override.FrameStructureGOPMode) == "" &&
+		override.FrameStructureGOPFrames == 0 &&
+		strings.TrimSpace(override.FrameStructureBFrameMode) == "" &&
+		override.FrameStructureMaxBFrames == 0 &&
 		strings.TrimSpace(override.ProcessingMode) == "" &&
 		override.PreserveHDR == nil &&
 		override.PreserveSubtitles == nil &&
@@ -5059,6 +5077,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.UseHardwareIfAvailable == nil &&
 		strings.TrimSpace(override.VideoEncoder) == "" &&
 		strings.TrimSpace(override.PreferredEncoder) == "" &&
+		strings.TrimSpace(override.TargetWorkerName) == "" &&
 		override.GlobalQuality == 0 &&
 		strings.TrimSpace(override.QSVRateControl) == "" &&
 		override.QSVLookAheadDepth == 0 &&
