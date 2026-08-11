@@ -61,6 +61,17 @@ func TestQSVRateControlMethod(t *testing.T) {
 	}
 }
 
+func TestParseQSVGPBContext(t *testing.T) {
+	gpbOn, refDistOne, bRefOff := parseQSVGPBContext("GopPicSize: 75\nGopRefDist: 1\nBRefType: off\nGPB: ON\n")
+	if !gpbOn || !refDistOne || !bRefOff {
+		t.Fatalf("expected observed NAS GPB context, got gpb=%t refDistOne=%t bRefOff=%t", gpbOn, refDistOne, bRefOff)
+	}
+	gpbOn, refDistOne, bRefOff = parseQSVGPBContext("GopRefDist: 4\nBRefType: pyramid\nGPB: OFF\n")
+	if gpbOn || refDistOne || bRefOff {
+		t.Fatalf("must not infer GPB context from unrelated QSV settings")
+	}
+}
+
 func TestQSVSmokeTestUsesRepresentativeVideo(t *testing.T) {
 	args := hardwareEncoderSmokeArgs("hevc_qsv", "p010le")
 	for _, expected := range []string{"qsv=hw,child_device=/dev/dri/renderD128", "testsrc2=size=640x360:rate=30", "30", "hevc_qsv", "p010le", "main10"} {

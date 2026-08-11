@@ -304,6 +304,9 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.QSVCQPMain8 = probe("qsvCqpMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-flags", "+qscale")
 			result.QSVVBRMain8 = probe("qsvVbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
 			result.QSVCBRMain8 = probe("qsvCbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
+			probe("qsvPStrategySimpleMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-bf", "0", "-p_strategy", "1")
+			probe("qsvPStrategyPyramidMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-bf", "0", "-p_strategy", "2")
+			recordQSVGPBContext(&result, "Main8", "nv12", "main")
 			if result.Main10 {
 				result.QSVICQMain10 = rateControlProbe("qsvIcqMain10", "ICQ", "p010le", "-profile:v", "main10", "-global_quality", "25")
 				result.QSVVBRExtBRCMain10 = vbrExtBRCProbe(
@@ -362,11 +365,19 @@ func CheckEncoder(encoder string) EncoderCapability {
 				result.QSVCQPMain10 = probe("qsvCqpMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-flags", "+qscale")
 				result.QSVVBRMain10 = rateControlProbe("qsvVbrMain10", "VBR", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
 				result.QSVCBRMain10 = rateControlProbe("qsvCbrMain10", "CBR", "p010le", "-profile:v", "main10", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
+				probe("qsvPStrategySimpleMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-bf", "0", "-p_strategy", "1")
+				probe("qsvPStrategyPyramidMain10", "p010le", "-profile:v", "main10", "-global_quality", "25", "-bf", "0", "-p_strategy", "2")
+				recordQSVGPBContext(&result, "Main10", "p010le", "main10")
 			} else {
 				result.QSVICQMain10 = skip("qsvIcqMain10", "skipped because the QSV Main10 base probe failed")
 				result.QSVCQPMain10 = skip("qsvCqpMain10", "skipped because the QSV Main10 base probe failed")
 				result.QSVVBRMain10 = skip("qsvVbrMain10", "skipped because the QSV Main10 base probe failed")
 				result.QSVCBRMain10 = skip("qsvCbrMain10", "skipped because the QSV Main10 base probe failed")
+				skip("qsvPStrategySimpleMain10", "skipped because the QSV Main10 base probe failed")
+				skip("qsvPStrategyPyramidMain10", "skipped because the QSV Main10 base probe failed")
+				for _, mode := range []string{"qsvGpbEffective", "qsvGpbRefDistOne", "qsvGpbBRefOff", "qsvCanDisableGpb"} {
+					skip(mode+"Main10", "skipped because the QSV Main10 base probe failed")
+				}
 			}
 			result.ICQ = result.QSVICQMain8 || result.QSVICQMain10
 			result.LowPower = probe("qsvLowPowerMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-low_power", "1")
@@ -826,6 +837,35 @@ func qsvFeatureSmokeArgs(pixelFormat string, featureArgs ...string) []string {
 	args = append(args, featureArgs...)
 	args = append(args, "-f", "null", "-")
 	return args
+}
+
+func recordQSVGPBContext(result *EncoderCapability, suffix, pixelFormat, profile string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := qsvFeatureSmokeArgs(pixelFormat, "-profile:v", profile, "-global_quality", "25", "-g", "75", "-bf", "0", "-gpb", "0")
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	if err != nil {
+		reason := summarizedQSVProbeReason(output, err)
+		for _, mode := range []string{"qsvGpbEffective", "qsvGpbRefDistOne", "qsvGpbBRefOff", "qsvCanDisableGpb"} {
+			result.TestedModes[mode+suffix] = false
+			result.ModeReasons[mode+suffix] = reason
+		}
+		return
+	}
+	gpbOn, refDistOne, bRefOff := parseQSVGPBContext(string(output))
+	result.TestedModes["qsvGpbEffective"+suffix] = gpbOn
+	result.TestedModes["qsvGpbRefDistOne"+suffix] = refDistOne
+	result.TestedModes["qsvGpbBRefOff"+suffix] = bRefOff
+	result.TestedModes["qsvCanDisableGpb"+suffix] = !gpbOn
+	if gpbOn {
+		result.ModeReasons["qsvCanDisableGpb"+suffix] = "QSV accepted -gpb 0 but reported GPB: ON"
+	}
+}
+
+func parseQSVGPBContext(output string) (gpbOn, refDistOne, bRefOff bool) {
+	return strings.Contains(output, "GPB: ON"),
+		strings.Contains(output, "GopRefDist: 1"),
+		strings.Contains(output, "BRefType: off")
 }
 
 func videoToolboxFeatureSmokeProbe(pixelFormat string, featureArgs ...string) (bool, string) {

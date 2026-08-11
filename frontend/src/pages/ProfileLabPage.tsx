@@ -70,7 +70,7 @@ import { FrameStructureControls } from '../components/FrameStructureControls';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
-import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
@@ -892,7 +892,7 @@ export function ProfileLabPage() {
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
       const sourceFrameStructure = trackSnapshot.data?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
       const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, trackSnapshot.data, conversion.profile);
-      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, videoWorkerValue(conversion.profile ?? videoDraft, 'frameStructureBFrameMode', 'auto'));
+      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, videoWorkerValue(conversion.profile ?? videoDraft, 'frameStructureBFrameMode', 'auto'), conversionInspection.qsvFeatureStatus);
       return {
         assetPath: conversion.path,
         draftSignature: JSON.stringify(conversion.profile ?? null),
@@ -2562,6 +2562,7 @@ export function ProfileLabPage() {
                                 />
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={numberWorkerValue(videoDraft, 'qsvPStrategy', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvPStrategy', Number(event.target.value))} helperText="QSV P-frame structure; Pyramid requires B-frames Off." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={!qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 1)}>Simple</MenuItem><MenuItem value={2} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
                                   control={<Checkbox disabled={!qsvFeatures.extBrc && !videoWorkerBool(videoDraft, 'qsvExtendedBRC')} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
@@ -3559,6 +3560,7 @@ function LabWarningsAndGuidance({
       {!inspection ? <Alert severity="info">Run Process Video to compare I/P/B distribution, B-frame runs, GOP length, and encoder warnings against the source.</Alert> : (
         <Stack spacing={1.5}>
           <Typography fontWeight={700}>Processed video result</Typography>
+          {inspection.qsvFeatureStatus.interpretationMode === 'qsv_gpb' ? <Alert severity="info"><Typography fontWeight={700}>QSV GPB structure detected</Typography><Typography variant="body2">FFprobe reports generalized P/B pictures as B frames. With GopRefDist=1{inspection.qsvFeatureStatus.bRefType ? ` and BRefType=${inspection.qsvFeatureStatus.bRefType}` : ''}, they are not interpreted as a conventional long bidirectional B-frame chain.</Typography></Alert> : null}
           <Alert severity={inspection.frameValidation.verdict === 'safe' ? 'success' : inspection.frameValidation.verdict === 'review' ? 'warning' : 'error'}>
             <Typography fontWeight={700}>{inspection.frameValidation.verdict === 'safe' ? 'Recommended configuration validated' : inspection.frameValidation.verdict === 'review' ? 'Recommendation requires review' : 'Recommendation not validated'}</Typography>
             <Typography variant="body2">Recommended GOP {inspection.frameRecommendation.targetGopFrames} (~{inspection.frameRecommendation.targetGopSeconds.toFixed(1)}s) · recommended B max {inspection.frameRecommendation.maxBFrames} · validation confidence {inspection.frameValidation.confidence}.</Typography>
@@ -3567,7 +3569,7 @@ function LabWarningsAndGuidance({
           {inspection.qsvFrameWarnings.length ? inspection.qsvFrameWarnings.map((warning) => <Alert key={warning} severity="warning">{warning}</Alert>) : (
             <Alert severity="success">No unusual processed-video frame-structure behavior was detected.</Alert>
           )}
-          {frameStructureGuidance(inspection.sourceFrameStructure, inspection.outputFrameStructure).map((item) => (
+          {frameStructureGuidance(inspection.sourceFrameStructure, inspection.outputFrameStructure, inspection.qsvFeatureStatus).map((item) => (
             <Alert key={item.text} severity={item.severity}>{item.text}</Alert>
           ))}
         </Stack>
@@ -3671,20 +3673,22 @@ function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput):
   ];
 }
 
-function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, requestedBFrameMode = 'auto') {
-  if (requestedBFrameMode === 'off' && output.bFrames > 0) {
+function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, requestedBFrameMode = 'auto', qsv?: QSVFeatureStatus) {
+  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  if (!qsvGPB && requestedBFrameMode === 'off' && output.bFrames > 0) {
     return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: [`B-frames were disabled with -bf 0, but ${output.bFrames} B-frames were detected in the output.`, 'The active QSV path did not honor the requested frame structure.'] };
   }
-  const extreme = output.pFrames === 0 && output.bFrameRatio >= 0.95 && output.maxConsecutiveBFrames > Math.max(20, recommendation.maxBFrames * 5);
+  const extreme = !qsvGPB && output.pFrames === 0 && output.bFrameRatio >= 0.95 && output.maxConsecutiveBFrames > Math.max(20, recommendation.maxBFrames * 5);
   if (extreme || ((output.windowCount ?? 0) >= 2 && output.averageGopLength > recommendation.targetGopFrames * 2)) return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: ['Encoder output differs substantially from the requested frame structure.', 'P/B/GOP behavior is unsafe to mark as Recommended.'] };
   const gopReviewMultiplier = recommendation.encoder === 'hevc_videotoolbox' ? 1.5 : 1.35;
-  if (output.averageGopLength > recommendation.targetGopFrames * gopReviewMultiplier || output.maxConsecutiveBFrames > recommendation.maxBFrames + 1 || output.variability === 'high' || output.maxConsecutiveBFrames > Math.max(1, source.maxConsecutiveBFrames) * 2) return { verdict: 'review' as const, confidence: output.confidence || 'low', reasons: ['Moderate GOP/B-run deviation or high variance was detected between output regions.'] };
-  return { verdict: 'safe' as const, confidence: output.confidence || 'low', reasons: ['P frames are present and no major structural anomaly was detected.', 'Distributed output is reasonably close to the recommended structure.'] };
+  if (output.averageGopLength > recommendation.targetGopFrames * gopReviewMultiplier || (!qsvGPB && (output.maxConsecutiveBFrames > recommendation.maxBFrames + 1 || output.maxConsecutiveBFrames > Math.max(1, source.maxConsecutiveBFrames) * 2)) || output.variability === 'high') return { verdict: 'review' as const, confidence: output.confidence || 'low', reasons: ['Moderate GOP deviation or high variance was detected between output regions.'] };
+  return { verdict: 'safe' as const, confidence: output.confidence || 'low', reasons: qsvGPB ? ['Expected HEVC QSV GPB structure detected.', 'Output GOP is reasonably aligned with the requested structure.'] : ['P frames are present and no major structural anomaly was detected.', 'Distributed output is reasonably close to the recommended structure.'] };
 }
 
-function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis) {
+function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, qsv?: QSVFeatureStatus) {
   const guidance: Array<{ severity: 'success' | 'info' | 'warning'; text: string }> = [];
-  const extremeOutput = output.pFrames === 0 && output.bFrameRatio >= 0.9 && output.maxConsecutiveBFrames >= 12;
+  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  const extremeOutput = !qsvGPB && output.pFrames === 0 && output.bFrameRatio >= 0.9 && output.maxConsecutiveBFrames >= 12;
   const largeRatioChange = output.bFrameRatio >= 0.9 && output.bFrameRatio-source.bFrameRatio >= 0.25;
   const largeRunChange = output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4;
   if (extremeOutput) {
@@ -3692,7 +3696,7 @@ function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFr
       severity: 'warning',
       text: 'Do not adopt this GOP structure as a standard profile yet. Inspect the effective -bf and -g behavior, then test seeking, decoder compatibility, and representative motion scenes. Adaptive B alone is not a sufficient explanation or fix.',
     });
-  } else if (largeRatioChange || largeRunChange) {
+  } else if (!qsvGPB && (largeRatioChange || largeRunChange)) {
     guidance.push({
       severity: 'warning',
       text: 'The output changed its B-frame structure substantially. Review GOP/B-frame policy and compatibility before standardizing it; exact source GOP replication is not required.',
@@ -4011,7 +4015,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
           </TableBody>
         </Table>
       </Box>
-      <FrameStructureCharacteristicsTable source={inspection.sourceFrameStructure} output={inspection.outputFrameStructure} />
+      <FrameStructureCharacteristicsTable source={inspection.sourceFrameStructure} output={inspection.outputFrameStructure} qsv={inspection.qsvFeatureStatus} />
       <Typography variant="caption" color="text.secondary">
         The browser reference is a temporary H.264 representation. Its differences describe preview normalization only and do not change the final-output policy saved in the video profile.
       </Typography>
@@ -4019,15 +4023,17 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
   );
 }
 
-function FrameStructureCharacteristicsTable({ source, output }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis }) {
+function FrameStructureCharacteristicsTable({ source, output, qsv }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis; qsv?: QSVFeatureStatus }) {
   const ratioDelta = output.bFrameRatio - source.bFrameRatio;
+  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  const expectedGPB = 'Expected QSV GPB structure';
   const rows = [
     ['Frames sampled', String(source.framesAnalyzed), String(output.framesAnalyzed), 'Measurement scope'],
     ['I-frames', String(source.iFrames), String(output.iFrames), 'Expected to vary after re-encoding'],
-    ['P-frames', String(source.pFrames), String(output.pFrames), source.pFrames > 0 && output.pFrames === 0 ? 'Review · P-frames disappeared' : 'Expected to vary'],
-    ['B-frames', String(source.bFrames), String(output.bFrames), 'Expected to vary'],
-    ['B-frame share', `${(source.bFrameRatio * 100).toFixed(1)}%`, `${(output.bFrameRatio * 100).toFixed(1)}%`, Math.abs(ratioDelta) >= 0.25 ? 'Review · large change' : 'Within review tolerance'],
-    ['Longest B-frame run', String(source.maxConsecutiveBFrames), String(output.maxConsecutiveBFrames), output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4 ? 'Review · large increase' : 'Within review tolerance'],
+    ['P-frames', String(source.pFrames), String(output.pFrames), qsvGPB ? expectedGPB : source.pFrames > 0 && output.pFrames === 0 ? 'Review · P-frames disappeared' : 'Expected to vary'],
+    [qsvGPB ? 'Reported B / GPB frames' : 'B-frames', String(source.bFrames), String(output.bFrames), qsvGPB ? expectedGPB : 'Expected to vary'],
+    [qsvGPB ? 'Reported B / GPB share' : 'B-frame share', `${(source.bFrameRatio * 100).toFixed(1)}%`, `${(output.bFrameRatio * 100).toFixed(1)}%`, qsvGPB ? expectedGPB : Math.abs(ratioDelta) >= 0.25 ? 'Review · large change' : 'Within review tolerance'],
+    [qsvGPB ? 'Longest reported B / GPB run' : 'Longest B-frame run', String(source.maxConsecutiveBFrames), String(output.maxConsecutiveBFrames), qsvGPB ? expectedGPB : output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4 ? 'Review · large increase' : 'Within review tolerance'],
     ['Keyframes', String(source.keyFrames), String(output.keyFrames), 'Expected to vary with sample/GOP'],
     ['Average GOP', source.averageGopLength > 0 ? source.averageGopLength.toFixed(1) : 'Not enough keyframes', output.averageGopLength > 0 ? output.averageGopLength.toFixed(1) : 'Not enough keyframes', output.averageGopLength >= 240 ? 'Review · long output GOP' : 'Within review tolerance'],
   ];
@@ -4438,6 +4444,7 @@ function videoPreviewOptions(
       draft,
       'qsvAdaptiveB',
     ),
+    qsvPStrategy: Math.min(2, Math.max(0, numberWorkerValue(draft, 'qsvPStrategy', 0))) as 0 | 1 | 2,
 
     // VideoToolbox
     videoToolboxBitrateMbps: numberWorkerValue(
@@ -4622,6 +4629,7 @@ function updateVideoWorkerConfig(
       'qsvExtendedBRC',
       'qsvAdaptiveI',
       'qsvAdaptiveB',
+      'qsvPStrategy',
       ...videoToolboxRateKeys,
       'videoToolboxProfile',
       'videoToolboxGop',
@@ -6174,8 +6182,12 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
         args.push('-adaptive_i', '1');
       }
 
-      if (videoWorkerBool(profile, 'qsvAdaptiveB') && videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') !== 'off') {
+      if (videoWorkerBool(profile, 'qsvAdaptiveB')) {
         args.push('-adaptive_b', '1');
+      }
+      const pStrategy = numberWorkerValue(profile, 'qsvPStrategy', 0);
+      if (pStrategy > 0 && (pStrategy !== 2 || videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') === 'off')) {
+        args.push('-p_strategy', String(Math.min(2, pStrategy)));
       }
     }
 

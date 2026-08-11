@@ -6,6 +6,13 @@ export type QSVSelection = {
   extendedBRC?: boolean;
 };
 
+export function qsvPStrategySupported(capability: Record<string, unknown> | undefined, main10: boolean, value: 1 | 2) {
+  const testedModes = capability?.testedModes;
+  if (!testedModes || typeof testedModes !== 'object' || Array.isArray(testedModes)) return false;
+  const mode = value === 1 ? 'Simple' : 'Pyramid';
+  return (testedModes as Record<string, unknown>)[`qsvPStrategy${mode}${main10 ? 'Main10' : 'Main8'}`] === true;
+}
+
 export function resolveQSVFeatures(
   capability: Record<string, unknown> | undefined,
   options: {

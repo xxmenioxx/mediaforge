@@ -41,7 +41,7 @@ import { FrameStructureControls } from '../components/FrameStructureControls';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
-import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
@@ -234,7 +234,7 @@ export function ProfilesPage() {
           const rates = videoToolboxRatesFromTargetMbps(value);
           return { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer };
         })() : {}),
-        ...(['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBRC', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(key) ? { hardwareQualityPreset: 'custom' } : {}),
+        ...(['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBRC', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(key) ? { hardwareQualityPreset: 'custom' } : {}),
         ...(disablingHardware ? { videoEncoder: 'libx265', preferredEncoder: 'software' } : {}),
       },
     };
@@ -258,6 +258,7 @@ export function ProfilesPage() {
         qsvExtendedBRC: undefined,
         qsvAdaptiveI: undefined,
         qsvAdaptiveB: undefined,
+        qsvPStrategy: undefined,
       } : {}),
     };
     const next = {
@@ -875,6 +876,7 @@ export function ProfilesPage() {
                               />
                             </Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_qsv')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField label="P strategy" select value={workerConfigNumber(form, 'qsvPStrategy', 0)} onChange={(event) => updateWorkerConfig('qsvPStrategy', Number(event.target.value))} helperText="Pyramid requires B-frames Off and a successful worker probe." fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={!qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple</MenuItem><MenuItem value={2} disabled={workerConfigString(form, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
                                 <FormControlLabel
@@ -1602,7 +1604,8 @@ function buildDryRunCommand(profile: ProfileInput) {
         workerConfigString(profile, 'qsvRateControl', 'icq') === 'la_icq' ? `-look_ahead 1 -look_ahead_depth ${workerConfigNumber(profile, 'qsvLookAheadDepth', 40)}` : '',
         workerConfigBool(profile, 'qsvExtendedBRC') ? '-extbrc 1' : '',
         workerConfigBool(profile, 'qsvAdaptiveI') ? '-adaptive_i 1' : '',
-        workerConfigBool(profile, 'qsvAdaptiveB') && workerConfigString(profile, 'frameStructureBFrameMode', 'auto') !== 'off' ? '-adaptive_b 1' : '',
+        workerConfigBool(profile, 'qsvAdaptiveB') ? '-adaptive_b 1' : '',
+        workerConfigNumber(profile, 'qsvPStrategy', 0) > 0 && (workerConfigNumber(profile, 'qsvPStrategy', 0) !== 2 || workerConfigString(profile, 'frameStructureBFrameMode', 'auto') === 'off') ? `-p_strategy ${Math.min(2, workerConfigNumber(profile, 'qsvPStrategy', 0))}` : '',
       ].filter(Boolean).join(' ')
     : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;

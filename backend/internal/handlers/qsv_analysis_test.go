@@ -131,6 +131,13 @@ func TestQSVFrameStructureWarnings(t *testing.T) {
 				"Only one keyframe was found, so the average GOP length is not representative for this sample.",
 			},
 		},
+		{
+			name:     "qsv gpb does not trigger conventional b frame warnings",
+			features: QSVFeatureStatus{GPBKnown: true, GPBEffective: true, GopRefDist: 1, BRefType: "off", InterpretationMode: "qsv_gpb"},
+			source:   QSVFrameStructureAnalysis{FramesAnalyzed: 2400, PFrames: 2343, KeyFrames: 33, AverageGOPLength: 75.4},
+			output:   QSVFrameStructureAnalysis{FramesAnalyzed: 2399, BFrames: 2364, BFrameRatio: 0.985, MaxConsecutiveBFrames: 74, KeyFrames: 35, AverageGOPLength: 75},
+			expected: []string{},
+		},
 	}
 
 	for _, test := range tests {

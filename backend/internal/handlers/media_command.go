@@ -854,6 +854,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if override.QSVAdaptiveB != nil {
 		workerConfig["qsvAdaptiveB"] = *override.QSVAdaptiveB
 	}
+	if override.QSVPStrategy != nil {
+		workerConfig["qsvPStrategy"] = min(2, max(0, *override.QSVPStrategy))
+	}
 	if override.VideoToolboxBitrateMbps > 0 {
 		workerConfig["videoToolboxBitrateMbps"] = override.VideoToolboxBitrateMbps
 	}
@@ -893,9 +896,6 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if strings.TrimSpace(override.HardwareQualityPreset) != "" {
 		workerConfig["hardwareQualityPreset"] = override.HardwareQualityPreset
-	}
-	if normalizedFrameStructureBFrameMode(workerStringValue(workerConfig["frameStructureBFrameMode"])) == "off" {
-		workerConfig["qsvAdaptiveB"] = false
 	}
 	profile.WorkerConfig = workerConfig
 	return normalizeHardwareQualityPreset(profile)
@@ -1844,8 +1844,20 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
 		args = append(args, "-adaptive_i", "1")
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB && normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) != "off" {
+	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
 		args = append(args, "-adaptive_b", "1")
+	}
+	pStrategy := min(2, max(0, workerIntValue(profile.WorkerConfig["qsvPStrategy"], 0)))
+	if pStrategy > 0 {
+		format := "Main8"
+		if main10 {
+			format = "Main10"
+		}
+		mode := map[int]string{1: "Simple", 2: "Pyramid"}[pStrategy]
+		pyramidAllowed := pStrategy != 2 || normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "off"
+		if pyramidAllowed && capability.TestedModes["qsvPStrategy"+mode+format] {
+			args = append(args, "-p_strategy", strconv.Itoa(pStrategy))
+		}
 	}
 	return args
 }

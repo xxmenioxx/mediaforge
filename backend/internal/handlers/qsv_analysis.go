@@ -94,10 +94,15 @@ func frameStructureSamplingPolicy(db *gorm.DB) FrameStructureSamplingPolicy {
 }
 
 type QSVFeatureStatus struct {
-	AdaptiveIRequested bool `json:"adaptiveIRequested"`
-	AdaptiveIEffective bool `json:"adaptiveIEffective"`
-	AdaptiveBRequested bool `json:"adaptiveBRequested"`
-	AdaptiveBEffective bool `json:"adaptiveBEffective"`
+	AdaptiveIRequested bool   `json:"adaptiveIRequested"`
+	AdaptiveIEffective bool   `json:"adaptiveIEffective"`
+	AdaptiveBRequested bool   `json:"adaptiveBRequested"`
+	AdaptiveBEffective bool   `json:"adaptiveBEffective"`
+	GPBKnown           bool   `json:"gpbKnown"`
+	GPBEffective       bool   `json:"gpbEffective"`
+	GopRefDist         int    `json:"gopRefDist,omitempty"`
+	BRefType           string `json:"bRefType,omitempty"`
+	InterpretationMode string `json:"interpretationMode,omitempty"`
 }
 
 type FrameStructureRecommendation struct {
@@ -232,16 +237,17 @@ func qsvFrameStructureWarnings(
 	if output.FramesAnalyzed == 0 {
 		return append(warnings, "No output frames were available, so MVForge could not inspect the QSV frame structure.")
 	}
-	if output.BFrameRatio >= 0.9 {
+	qsvGPB := features.InterpretationMode == "qsv_gpb" && features.GPBKnown && features.GPBEffective && features.GopRefDist == 1
+	if !qsvGPB && output.BFrameRatio >= 0.9 {
 		warnings = append(warnings, fmt.Sprintf("B-frames make up %.1f%% of the sample. This is unusually high and may indicate an unstable or unsuitable GOP structure.", output.BFrameRatio*100))
 	}
-	if output.PFrames == 0 && output.FramesAnalyzed >= 30 {
+	if !qsvGPB && output.PFrames == 0 && output.FramesAnalyzed >= 30 {
 		warnings = append(warnings, "No P-frames were detected in the output sample. Review the GOP and B-frame behavior before using this profile for production.")
 	}
-	if output.MaxConsecutiveBFrames >= 12 {
+	if !qsvGPB && output.MaxConsecutiveBFrames >= 12 {
 		warnings = append(warnings, fmt.Sprintf("The output contains a run of %d consecutive B-frames. Long B-frame runs can reduce compatibility and make seeking less predictable.", output.MaxConsecutiveBFrames))
 	}
-	if source.FramesAnalyzed > 0 && source.PFrames > 0 && output.PFrames == 0 &&
+	if !qsvGPB && source.FramesAnalyzed > 0 && source.PFrames > 0 && output.PFrames == 0 &&
 		output.BFrameRatio >= 0.9 && output.BFrameRatio-source.BFrameRatio >= 0.25 &&
 		output.MaxConsecutiveBFrames >= 12 && output.MaxConsecutiveBFrames >= source.MaxConsecutiveBFrames*4 {
 		warnings = append(warnings, fmt.Sprintf(

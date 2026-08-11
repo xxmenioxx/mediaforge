@@ -164,6 +164,7 @@ export type AssetConversionOverrideState = {
   qsvExtendedBrc?: boolean;
   qsvAdaptiveI?: boolean;
   qsvAdaptiveB?: boolean;
+  qsvPStrategy?: 0 | 1 | 2;
   videoToolboxBitrateMbps?: number;
   videoToolboxMaxrateMbps?: number;
   videoToolboxBufferMbps?: number;
@@ -842,6 +843,11 @@ export type QSVFeatureStatus = {
   adaptiveIEffective: boolean;
   adaptiveBRequested: boolean;
   adaptiveBEffective: boolean;
+  gpbKnown: boolean;
+  gpbEffective: boolean;
+  gopRefDist?: number;
+  bRefType?: string;
+  interpretationMode?: 'qsv_gpb';
 };
 
 export type PreviewInspection = {
@@ -916,6 +922,7 @@ export type CompatiblePreviewOptions = {
   qsvExtendedBRC?: boolean;
   qsvAdaptiveI?: boolean;
   qsvAdaptiveB?: boolean;
+  qsvPStrategy?: 0 | 1 | 2;
   mode?: 'quick' | 'quality';
   previewNormalization?: 'preserve' | 'normalize_bt709';
   subtitleStreamIndex?: number;

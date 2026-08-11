@@ -532,6 +532,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if override.QSVAdaptiveB != nil {
 		values["qsvAdaptiveB"] = *override.QSVAdaptiveB
 	}
+	if override.QSVPStrategy != nil {
+		values["qsvPStrategy"] = *override.QSVPStrategy
+	}
 	if override.VideoToolboxBitrateMbps > 0 {
 		values["videoToolboxBitrateMbps"] = override.VideoToolboxBitrateMbps
 	}

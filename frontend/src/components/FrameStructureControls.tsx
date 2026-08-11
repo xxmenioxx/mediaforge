@@ -66,7 +66,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
               commit({
                 frameStructureBFrameMode: next,
                 ...(next === 'recommended' && recommendedBFrames ? { frameStructureMaxBFrames: recommendedBFrames } : {}),
-                ...(next === 'off' ? { frameStructureMaxBFrames: 0, qsvAdaptiveB: false } : {}),
+                ...(next === 'off' ? { frameStructureMaxBFrames: 0 } : {}),
                 ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}),
               });
             }} size={compact ? 'small' : 'medium'} fullWidth>

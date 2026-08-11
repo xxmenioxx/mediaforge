@@ -294,15 +294,22 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 	assertContains(t, command, "-look_ahead_depth 40")
 }
 
-func TestQSVBFramesOffSuppressesAdaptiveB(t *testing.T) {
+func TestQSVBFramesOffKeepsAdaptiveBAndSupportsPyramidPStrategy(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265", BitDepth: 10, WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "qsvRateControl": "icq",
-		"qsvAdaptiveB": true, "frameStructureBFrameMode": "off",
+		"qsvAdaptiveB": true, "qsvPStrategy": 2, "frameStructureBFrameMode": "off",
 	}}
-	capability := capabilities.EncoderCapability{QSVAdaptiveBMain10: true}
+	capability := capabilities.EncoderCapability{QSVAdaptiveBMain10: true, TestedModes: map[string]bool{"qsvPStrategyPyramidMain10": true}}
 	command := strings.Join(append(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"), qsvWorkerArgsForCapability(profile, capability)...), " ")
 	assertContains(t, command, "-bf 0")
-	assertNotContains(t, command, "-adaptive_b 1")
+	assertContains(t, command, "-adaptive_b 1")
+	assertContains(t, command, "-p_strategy 2")
+}
+
+func TestQSVPyramidPStrategyRequiresBFramesOff(t *testing.T) {
+	profile := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{"pixFmt": "p010le", "qsvPStrategy": 2, "frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 3}}
+	capability := capabilities.EncoderCapability{TestedModes: map[string]bool{"qsvPStrategyPyramidMain10": true}}
+	assertNotContains(t, strings.Join(qsvWorkerArgsForCapability(profile, capability), " "), "-p_strategy")
 }
 
 func TestQSVWorkerArgsUseContextualAdvancedCapabilities(t *testing.T) {
@@ -1428,7 +1435,7 @@ func TestAssetFrameStructureOverrideTakesPriorityOverProfile(t *testing.T) {
 	}{
 		{name: "explicit auto restores encoder defaults", override: AssetConversionOverrideState{FrameStructureGOPMode: "auto", FrameStructureBFrameMode: "auto"}, notContain: []string{"-g", "-bf"}},
 		{name: "custom replaces profile values", override: AssetConversionOverrideState{FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 90, FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 2}, contains: []string{"-g 90", "-bf 2"}, notContain: []string{"-g 120", "-bf 3"}},
-		{name: "off dominates adaptive B", override: AssetConversionOverrideState{FrameStructureBFrameMode: "off"}, contains: []string{"-bf 0"}, notContain: []string{"-adaptive_b 1"}},
+		{name: "off keeps adaptive B independent", override: AssetConversionOverrideState{FrameStructureBFrameMode: "off"}, contains: []string{"-bf 0", "-adaptive_b 1"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1441,6 +1448,15 @@ func TestAssetFrameStructureOverrideTakesPriorityOverProfile(t *testing.T) {
 				assertNotContains(t, command, value)
 			}
 		})
+	}
+}
+
+func TestAssetPStrategyDefaultExplicitlyOverridesProfile(t *testing.T) {
+	defaultStrategy := 0
+	base := models.Profile{WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "custom", "qsvPStrategy": 2}}
+	profile := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{QSVPStrategy: &defaultStrategy})
+	if actual, ok := profile.WorkerConfig["qsvPStrategy"].(int); !ok || actual != 0 {
+		t.Fatalf("expected explicit asset p_strategy default 0, got %#v", profile.WorkerConfig["qsvPStrategy"])
 	}
 }
 

@@ -58,7 +58,7 @@ import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, 
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
@@ -1321,6 +1321,7 @@ function AssetRow({
       qsvExtendedBrc: workerConfig.qsvExtendedBRC === true,
       qsvAdaptiveI: workerConfig.qsvAdaptiveI === true,
       qsvAdaptiveB: workerConfig.qsvAdaptiveB === true,
+      qsvPStrategy: Math.min(2, Math.max(0, Number(workerConfig.qsvPStrategy ?? 0))) as 0 | 1 | 2,
       ...motionPatch,
     });
     await updateConversion.mutateAsync({ path: asset.path, ...next });
@@ -1353,7 +1354,7 @@ function AssetRow({
   }
 
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
-    const customHardwareControl = ['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBrc', 'qsvAdaptiveI', 'qsvAdaptiveB', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(String(key));
+    const customHardwareControl = ['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBrc', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(String(key));
     setConversionDraft((current) => {
       const rates = key === 'videoToolboxBitrateMbps' ? videoToolboxRatesFromTargetMbps(value) : null;
       return {
@@ -2693,6 +2694,7 @@ function AssetConversionOverridePanel({
       onChange('qsvExtendedBrc', undefined);
       onChange('qsvAdaptiveI', undefined);
       onChange('qsvAdaptiveB', undefined);
+      onChange('qsvPStrategy', undefined);
       return;
     }
     onChange('preferredEncoder', value);
@@ -2705,6 +2707,7 @@ function AssetConversionOverridePanel({
       onChange('qsvExtendedBrc', undefined);
       onChange('qsvAdaptiveI', undefined);
       onChange('qsvAdaptiveB', undefined);
+      onChange('qsvPStrategy', undefined);
       onChange('pixFmt', 'yuv420p10le');
       return;
     }
@@ -2970,6 +2973,7 @@ function AssetConversionOverridePanel({
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="The backend translates this intent using the active worker probe." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={draft.qsvPStrategy ?? Number(profile?.workerConfig?.qsvPStrategy ?? 0)} onChange={(event) => onChange('qsvPStrategy', Number(event.target.value) as 0 | 1 | 2)} helperText="Pyramid requires B-frames Off and a successful worker probe." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={!qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple</MenuItem><MenuItem value={2} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
@@ -4079,6 +4083,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.qsvExtendedBrc === 'boolean') clean.qsvExtendedBrc = value.qsvExtendedBrc;
   if (typeof value.qsvAdaptiveI === 'boolean') clean.qsvAdaptiveI = value.qsvAdaptiveI;
   if (typeof value.qsvAdaptiveB === 'boolean') clean.qsvAdaptiveB = value.qsvAdaptiveB;
+  if (typeof value.qsvPStrategy === 'number' && Number.isInteger(value.qsvPStrategy) && value.qsvPStrategy >= 0 && value.qsvPStrategy <= 2) clean.qsvPStrategy = value.qsvPStrategy as 0 | 1 | 2;
   if (typeof value.videoToolboxBitrateMbps === 'number' && Number.isFinite(value.videoToolboxBitrateMbps) && value.videoToolboxBitrateMbps > 0) clean.videoToolboxBitrateMbps = Math.min(200, Math.round(value.videoToolboxBitrateMbps * 100) / 100);
   if (typeof value.videoToolboxMaxrateMbps === 'number' && Number.isFinite(value.videoToolboxMaxrateMbps) && value.videoToolboxMaxrateMbps > 0) clean.videoToolboxMaxrateMbps = Math.min(250, Math.round(value.videoToolboxMaxrateMbps * 100) / 100);
   if (typeof value.videoToolboxBufferMbps === 'number' && Number.isFinite(value.videoToolboxBufferMbps) && value.videoToolboxBufferMbps > 0) clean.videoToolboxBufferMbps = Math.min(500, Math.round(value.videoToolboxBufferMbps * 100) / 100);
