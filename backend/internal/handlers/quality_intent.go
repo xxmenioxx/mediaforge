@@ -143,7 +143,8 @@ func applyVideoToolboxQualityRecommendation(profile models.Profile, intent quali
 	if recommendation.BaseTargetBitrate != nil {
 		profile.WorkerConfig["videoToolboxBaseTargetKbps"] = *recommendation.BaseTargetBitrate / 1000
 	}
-	if strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") {
+	preset := strings.TrimSpace(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))
+	if preset == "" || strings.EqualFold(preset, "custom") {
 		baseMbps := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
 		targetMbps, maxrateMbps, bufferMbps := explicitVideoToolboxRates(profile, capability)
 		profile.WorkerConfig["videoToolboxBaseTargetKbps"] = int64(baseMbps * 1000)

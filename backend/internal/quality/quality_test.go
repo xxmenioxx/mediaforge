@@ -75,3 +75,16 @@ func TestVideoToolboxTranslatorLeavesMissingOrCustomBitrateExplicit(t *testing.T
 		t.Fatalf("missing bitrate must remain explicit: %#v err=%v", recommendation, err)
 	}
 }
+
+func TestVideoToolboxTranslatorTreatsMissingPresetAsLegacyCustom(t *testing.T) {
+	recommendation, err := (VideoToolboxTranslator{}).Translate(NewIntent(IntentInput{
+		SourceVideoBitrate: 4_000_000,
+		BFramePolicy:       "disabled",
+	}), WorkerCapabilities{BFramesDisabledVerified: true})
+	if err != nil {
+		t.Fatalf("missing preset should be evaluated as custom: %v", err)
+	}
+	if recommendation.EffectiveRateControl != "vbr" || recommendation.EffectiveBFramePolicy != "disabled" || recommendation.TargetBitrate != nil {
+		t.Fatalf("legacy custom controls were not preserved: %#v", recommendation)
+	}
+}

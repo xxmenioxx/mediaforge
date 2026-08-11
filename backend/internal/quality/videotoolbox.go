@@ -17,7 +17,11 @@ const (
 
 func (VideoToolboxTranslator) Translate(intent QualityIntent, capabilities WorkerCapabilities) (EncoderRecommendation, error) {
 	if intent.Preset == "" {
-		return EncoderRecommendation{}, ErrCustomQuality
+		// Profiles created before hardwareQualityPreset existed already carry
+		// explicit VideoToolbox bitrate/profile controls. Treat an omitted preset
+		// as Custom so the evaluator can describe those effective settings instead
+		// of rejecting an otherwise executable profile.
+		intent.Preset = PresetCustom
 	}
 	if intent.Preset == PresetCustom {
 		profile, pixelFormat := "main", "yuv420p"

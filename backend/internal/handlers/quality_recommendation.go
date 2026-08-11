@@ -76,11 +76,26 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 	var err error
 	switch encoder {
 	case "hevc_qsv":
-		recommendation, err = (quality.QSVTranslator{}).Translate(intent, qsvQualityCapabilities(capability, intent))
+		if preset := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))); preset == "" || preset == "custom" {
+			recommendation = genericEncoderRecommendation(profile, intent, encoder)
+			rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
+			if rateControl == "" {
+				rateControl = "encoder default"
+			}
+			recommendation.RequestedRateControl = rateControl
+			recommendation.EffectiveRateControl = rateControl
+			qualityValue := workerIntValue(profile.WorkerConfig["globalQuality"], profile.QualityValue)
+			recommendation.RequestedGlobalQuality = &qualityValue
+			recommendation.GlobalQuality = &qualityValue
+			recommendation.Warnings = append(recommendation.Warnings, "Custom QSV controls remain explicit")
+		} else {
+			recommendation, err = (quality.QSVTranslator{}).Translate(intent, qsvQualityCapabilities(capability, intent))
+		}
 		profile = applyQSVQualityRecommendation(profile, intent, capability)
 	case "hevc_videotoolbox":
 		recommendation, err = (quality.VideoToolboxTranslator{}).Translate(intent, videoToolboxQualityCapabilities(capability, profileUsesTenBit(profile)))
-		if err == nil && strings.EqualFold(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "custom") {
+		preset := strings.TrimSpace(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))
+		if err == nil && (preset == "" || strings.EqualFold(preset, "custom")) {
 			baseMbps := workerNumberValue(profile.WorkerConfig["videoToolboxBitrateMbps"], defaultVideoToolboxBitrateMbps(profile.QualityValue))
 			targetMbps, maxrateMbps, bufferMbps := explicitVideoToolboxRates(profile, capability)
 			base, target := int64(baseMbps*1_000_000), int64(targetMbps*1_000_000)
