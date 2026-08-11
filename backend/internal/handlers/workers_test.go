@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,37 @@ func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	}
 	if secondPath != "/media/anime/Ranma 1-2 (1989)/Season 01/Ranma 1-2 (1989) - S01E02.mkv" {
 		t.Fatalf("unexpected second output path: %s", secondPath)
+	}
+}
+
+func TestPlannedOutputPathForSingleJobUsesFullAssetGroupEpisodePosition(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{SourcePath: "/media/raw", DestinationPath: "/media/anime", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	profile := models.Profile{Container: "mkv"}
+	paths := []string{
+		"/media/raw/Ranma 1-2 (1989)/Season 01/title01.mkv",
+		"/media/raw/Ranma 1-2 (1989)/Season 01/title02.mkv",
+		"/media/raw/Ranma 1-2 (1989)/Season 01/title03.mkv",
+	}
+	for _, mediaPath := range paths {
+		record := models.AssetRecord{Path: mediaPath, RootPath: "/media/raw", RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"), GroupPath: "Ranma 1-2 (1989)/Season 01", FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := models.QueueJob{MediaPath: paths[1], BatchID: "single-title02", BatchName: "Ranma 1-2 (1989)/Season 01", LibraryID: 1, ProfileID: 1}
+	retiredAt := time.Now()
+	previous := models.QueueJob{MediaPath: paths[1], LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: "/media/anime/Ranma 1-2 (1989)/Season 01/title02.mkv", PublicationRetiredAt: &retiredAt}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	got := plannedOutputPathForJob(db, job, library, profile)
+	want := "/media/anime/Ranma 1-2 (1989)/Season 01/Ranma 1-2 (1989) - S01E02.mkv"
+	if got != want {
+		t.Fatalf("single-job output=%q want=%q", got, want)
 	}
 }
 
@@ -365,7 +398,7 @@ func queueJobTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}, &models.AssetRecord{}); err != nil {
 		t.Fatalf("migrate test models: %v", err)
 	}
 	return db

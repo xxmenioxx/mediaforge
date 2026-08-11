@@ -3702,6 +3702,7 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
   return [...safeArray(jobs)]
     .sort((left, right) => right.id - left.id)
     .filter((job) => !job.publicationRetiredAt)
+    .filter((job) => asset.status !== 'unprocessed' || job.status === 'queued' || job.status === 'running')
     .find((job) => {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
       return candidates.includes(normalizedAssetPath);

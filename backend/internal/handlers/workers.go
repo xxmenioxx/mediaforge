@@ -919,7 +919,9 @@ func outputFileRelativePath(relative string, profile models.Profile) string {
 
 func libraryOutputRelativePathForJob(db *gorm.DB, job models.QueueJob, library models.Library, fallbackRelative string) string {
 	if previousRelative := retiredPublishedRelativePath(db, job, library); previousRelative != "" {
-		return previousRelative
+		if !libraryEpisodeNamingEnabled(library) || episodeIdentifierFromName(path.Base(previousRelative)) != "" || nonEpisodeCreditName(path.Base(previousRelative)) != "" {
+			return previousRelative
+		}
 	}
 	relative := fallbackRelative
 	if libraryExtrasPathEnabled(library) && assetIsExtra(job.MediaPath, assetMetadataOverrides(db)) {
@@ -1419,21 +1421,22 @@ func episodeIdentifierFromName(fileName string) string {
 
 func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeNameSpec, bool) {
 	batchID := strings.TrimSpace(job.BatchID)
-	if batchID == "" {
-		return multiEpisodeNameSpec{}, false
-	}
-
 	var batchJobs []models.QueueJob
-	if err := db.Where("batch_id = ?", batchID).Order("media_path asc, id asc").Find(&batchJobs).Error; err != nil || len(batchJobs) <= 1 {
-		return multiEpisodeNameSpec{}, false
+	if batchID != "" {
+		_ = db.Where("batch_id = ?", batchID).Order("media_path asc, id asc").Find(&batchJobs).Error
 	}
 
 	episode := 0
-	for index, candidate := range batchJobs {
-		if candidate.ID == job.ID || candidate.MediaPath == job.MediaPath {
-			episode = index + 1
-			break
+	if len(batchJobs) > 1 {
+		for index, candidate := range batchJobs {
+			if candidate.ID == job.ID || candidate.MediaPath == job.MediaPath {
+				episode = index + 1
+				break
+			}
 		}
+	}
+	if episode == 0 {
+		episode = episodeNumberFromAssetGroup(db, job.MediaPath)
 	}
 	if episode == 0 {
 		return multiEpisodeNameSpec{}, false
@@ -1451,6 +1454,28 @@ func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeN
 	)
 
 	return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+}
+
+func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
+	if db == nil || strings.TrimSpace(mediaPath) == "" {
+		return 0
+	}
+	cleanPath := filepath.Clean(mediaPath)
+	var asset models.AssetRecord
+	if err := db.Where("path = ? AND missing = ?", cleanPath, false).First(&asset).Error; err != nil || strings.TrimSpace(asset.GroupPath) == "" {
+		return 0
+	}
+	var siblings []models.AssetRecord
+	if err := db.Where("root_path = ? AND group_path = ? AND missing = ?", asset.RootPath, asset.GroupPath, false).
+		Order("relative_path asc, path asc").Find(&siblings).Error; err != nil || len(siblings) <= 1 {
+		return 0
+	}
+	for index := range siblings {
+		if filepath.Clean(siblings[index].Path) == cleanPath {
+			return index + 1
+		}
+	}
+	return 0
 }
 
 func episodeSeriesTitle(batchName string, mediaPath string) string {
