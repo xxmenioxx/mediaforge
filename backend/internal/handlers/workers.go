@@ -829,8 +829,26 @@ func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error
 	return profile, nil
 }
 
-func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+const assetConversionOverrideSnapshotKey = "assetConversionOverride"
+
+func currentConversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
 	override := conversionOverrideForPath(job.MediaPath, entries)
+	return applyJobSelectionsToConversionOverride(job, override)
+}
+
+func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+	if frozen, ok := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; ok {
+		if encoded, err := json.Marshal(frozen); err == nil {
+			var override AssetConversionOverrideState
+			if json.Unmarshal(encoded, &override) == nil {
+				return applyJobSelectionsToConversionOverride(job, override)
+			}
+		}
+	}
+	return currentConversionOverrideForJob(job, entries)
+}
+
+func applyJobSelectionsToConversionOverride(job models.QueueJob, override AssetConversionOverrideState) AssetConversionOverrideState {
 	if value := strings.TrimSpace(job.TrackProfileKey); value != "" {
 		override.TrackProfileKey = value
 	}

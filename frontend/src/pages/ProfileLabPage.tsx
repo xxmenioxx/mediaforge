@@ -1,6 +1,7 @@
 import {
   Alert,
   Autocomplete,
+  Backdrop,
   Box,
   Button,
   Card,
@@ -15,6 +16,7 @@ import {
   DialogTitle,
   FormControlLabel,
   Grid,
+  LinearProgress,
   MenuItem,
   Slider,
   Stack,
@@ -553,7 +555,7 @@ const emptyTrackDraft: TrackProfile = {
 
 export function ProfileLabPage() {
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
@@ -615,6 +617,7 @@ export function ProfileLabPage() {
   const [audioSaveReviewOpen, setAudioSaveReviewOpen] = useState(false);
   const [trackSaveReviewOpen, setTrackSaveReviewOpen] = useState(false);
   const [pendingTrackProfileSave, setPendingTrackProfileSave] = useState<TrackProfile | null>(null);
+  const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const loadedEditRequestRef = useRef('');
   const recommendationDefaultsRef = useRef<{
@@ -730,9 +733,14 @@ export function ProfileLabPage() {
       const relatedPath = typeof profile.workerConfig?.derivedFromAsset === 'string'
         ? profile.workerConfig.derivedFromAsset
         : '';
-      const sourceAsset = labAssets.find((asset) => asset.path === relatedPath)
+      const requestedAssetPath = searchParams.get('assetPath') || '';
+      const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
+        ?? labAssets.find((asset) => asset.path === relatedPath)
         ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
-      if (sourceAsset) setAssetPath(sourceAsset.path);
+      if (sourceAsset) {
+        setAssetPath(sourceAsset.path);
+        persistLabAssetPath(sourceAsset.path);
+      }
     } else if (audioProfileKey) {
       const profile = audioProfiles.find((candidate) => candidate.key === audioProfileKey);
       if (!profile) {
@@ -744,9 +752,14 @@ export function ProfileLabPage() {
       setAudioFilterChainEdited(false);
       setSelectedAudioStarterPreset('');
       const relatedPath = profile.notes.split('\n').map((line) => line.trim()).find((line) => line.startsWith('Lab asset: '))?.slice('Lab asset: '.length) ?? '';
-      const sourceAsset = labAssets.find((asset) => asset.path === relatedPath)
+      const requestedAssetPath = searchParams.get('assetPath') || '';
+      const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
+        ?? labAssets.find((asset) => asset.path === relatedPath)
         ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
-      if (sourceAsset) setAssetPath(sourceAsset.path);
+      if (sourceAsset) {
+        setAssetPath(sourceAsset.path);
+        persistLabAssetPath(sourceAsset.path);
+      }
     } else if (trackProfileKey) {
       const profile = allTrackProfiles.find((candidate) => candidate.key === trackProfileKey);
       if (!profile) {
@@ -756,10 +769,13 @@ export function ProfileLabPage() {
       setTrackDraft({ ...profile });
       setSavedTrackProfileKey(profile.key);
       setTrackConversionDraft(trackProfileOverride(profile));
-      const sourceAsset = labAssets.find((asset) => asset.path === profile.sourceAssetPath)
+      const requestedAssetPath = searchParams.get('assetPath') || '';
+      const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
+        ?? labAssets.find((asset) => asset.path === profile.sourceAssetPath)
         ?? labAssets.find((asset) => Boolean(profile.sourceAssetName) && asset.fileName === profile.sourceAssetName);
       if (sourceAsset) {
         setAssetPath(sourceAsset.path);
+        persistLabAssetPath(sourceAsset.path);
       }
     } else if (requestedSection === 'video' || requestedSection === 'audio' || requestedSection === 'tracks') {
       setLabSection(requestedSection);
@@ -876,7 +892,7 @@ export function ProfileLabPage() {
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
       const sourceFrameStructure = trackSnapshot.data?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
       const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, trackSnapshot.data, conversion.profile);
-      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure);
+      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, videoWorkerValue(conversion.profile ?? videoDraft, 'frameStructureBFrameMode', 'auto'));
       return {
         assetPath: conversion.path,
         draftSignature: JSON.stringify(conversion.profile ?? null),
@@ -921,6 +937,33 @@ export function ProfileLabPage() {
   const selectedAudioStreamIndex = availableAudioStreams.some((stream) => stream.index === audioPreviewStreamIndex)
     ? audioPreviewStreamIndex ?? undefined
     : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
+  const labAnalysisPending = trackSnapshot.isPending || autoRecommendation.isPending || fidelityInspection.isPending || profileSampleEstimate.isPending;
+  const labAnalysisPhase = fidelityInspection.isPending
+    ? 'Encoding preview windows and validating output structure'
+    : autoRecommendation.isPending
+      ? 'Analyzing the asset and preparing MVForge Suggestions'
+      : profileSampleEstimate.isPending
+        ? 'Measuring five distributed output samples'
+        : 'Reading tracks and technical snapshot';
+
+  useEffect(() => {
+    if (!labAnalysisPending) {
+      setAnalysisElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => setAnalysisElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [labAnalysisPending]);
+
+  function persistLabAssetPath(path: string) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (path) next.set('assetPath', path);
+      else next.delete('assetPath');
+      return next;
+    }, { replace: true });
+  }
 
   useEffect(() => {
     // Sample A is generated automatically when an asset is selected. The old
@@ -1698,6 +1741,27 @@ export function ProfileLabPage() {
           Compare original samples against video and audio profile drafts, then save asset-specific profiles for repeatable series, anime, or source families.
         </Typography>
       </PageHeader>
+      <Backdrop
+        open={labAnalysisPending}
+        sx={{ zIndex: (theme) => theme.zIndex.modal + 1, bgcolor: 'rgba(7, 10, 16, 0.76)', backdropFilter: 'blur(2px)' }}
+      >
+        <Card sx={{ width: { xs: 'calc(100% - 32px)', sm: 520 }, boxShadow: 12 }} role="status" aria-live="polite">
+          <CardContent>
+            <Stack spacing={1.5}>
+              <Stack spacing={0.35}>
+                <Typography variant="h6">Processing asset</Typography>
+                <Typography variant="body2" color="text.secondary">{labAnalysisPhase}</Typography>
+              </Stack>
+              <LinearProgress />
+              <Stack direction="row" justifyContent="space-between" spacing={2}>
+                <Typography variant="caption" color="text.secondary">The analysis may take several minutes on a slower NAS.</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
+              </Stack>
+              <Typography variant="caption">Keep this page open. Controls will return automatically when the current analysis finishes.</Typography>
+            </Stack>
+          </CardContent>
+        </Card>
+      </Backdrop>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -1711,6 +1775,7 @@ export function ProfileLabPage() {
                       setTrackConversionDraft({});
                     }
                     setAssetPath(asset?.path ?? '');
+                    persistLabAssetPath(asset?.path ?? '');
                     setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
                     resetProcessedPreviews();
                     setRecommendationReport(null);
@@ -3606,7 +3671,10 @@ function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput):
   ];
 }
 
-function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis) {
+function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, requestedBFrameMode = 'auto') {
+  if (requestedBFrameMode === 'off' && output.bFrames > 0) {
+    return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: [`B-frames were disabled with -bf 0, but ${output.bFrames} B-frames were detected in the output.`, 'The active QSV path did not honor the requested frame structure.'] };
+  }
   const extreme = output.pFrames === 0 && output.bFrameRatio >= 0.95 && output.maxConsecutiveBFrames > Math.max(20, recommendation.maxBFrames * 5);
   if (extreme || ((output.windowCount ?? 0) >= 2 && output.averageGopLength > recommendation.targetGopFrames * 2)) return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: ['Encoder output differs substantially from the requested frame structure.', 'P/B/GOP behavior is unsafe to mark as Recommended.'] };
   const gopReviewMultiplier = recommendation.encoder === 'hevc_videotoolbox' ? 1.5 : 1.35;
@@ -4989,6 +5057,23 @@ function serializeX265Params(params: Record<string, string>) {
     .join(':');
 }
 
+function effectiveLabX265Params(profile: ProfileInput) {
+  const params = parseX265Params(videoWorkerValue(profile, 'x265Params'));
+  const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
+  const bFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
+  if (gopMode === 'recommended' || gopMode === 'custom') {
+    delete params.keyint;
+    delete params['min-keyint'];
+  }
+  if (gopMode !== 'custom') delete params.scenecut;
+  if (bFrameMode !== 'auto') delete params.bframes;
+  if (bFrameMode !== 'custom') {
+    delete params['b-adapt'];
+    delete params['b-pyramid'];
+  }
+  return serializeX265Params(params);
+}
+
 function VideoProfileAutocomplete({ profiles, onChange }: { profiles: Profile[]; onChange: (profile: Profile | null) => void }) {
   return (
     <Autocomplete
@@ -5216,6 +5301,12 @@ function EncoderRecommendationChips({ result }: { result: QualityRecommendationR
 function ffmpegArgumentValue(args: string[], option: string) {
   const index = args.lastIndexOf(option);
   return index >= 0 ? args[index + 1] ?? '' : '';
+}
+
+function formatElapsedTime(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')} elapsed`;
 }
 
 function AudioProfileSaveReview({ profile, source, asset }: { profile: AudioEnhancementProfile; source?: ScanResult; asset: Asset | null }) {
@@ -6083,7 +6174,7 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
         args.push('-adaptive_i', '1');
       }
 
-      if (videoWorkerBool(profile, 'qsvAdaptiveB')) {
+      if (videoWorkerBool(profile, 'qsvAdaptiveB') && videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') !== 'off') {
         args.push('-adaptive_b', '1');
       }
     }
@@ -6125,7 +6216,7 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
     const pixFmt = videoWorkerValue(profile, 'pixFmt', 'auto');
     if (pixFmt !== 'auto') args.push('-pix_fmt', pixFmt);
     if (encoder === 'libx265') {
-      const x265Params = videoWorkerValue(profile, 'x265Params');
+      const x265Params = effectiveLabX265Params(profile);
       if (x265Params) args.push('-x265-params', shellQuote(x265Params));
     }
   }

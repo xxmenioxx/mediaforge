@@ -294,6 +294,17 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 	assertContains(t, command, "-look_ahead_depth 40")
 }
 
+func TestQSVBFramesOffSuppressesAdaptiveB(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", BitDepth: 10, WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "qsvRateControl": "icq",
+		"qsvAdaptiveB": true, "frameStructureBFrameMode": "off",
+	}}
+	capability := capabilities.EncoderCapability{QSVAdaptiveBMain10: true}
+	command := strings.Join(append(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"), qsvWorkerArgsForCapability(profile, capability)...), " ")
+	assertContains(t, command, "-bf 0")
+	assertNotContains(t, command, "-adaptive_b 1")
+}
+
 func TestQSVWorkerArgsUseContextualAdvancedCapabilities(t *testing.T) {
 	base := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{
 		"pixFmt": "p010le", "qsvLookAheadDepth": 40,
@@ -1385,6 +1396,49 @@ func TestCommonFrameStructurePolicyMapsRequestedModes(t *testing.T) {
 			}
 			for _, unexpected := range test.notContain {
 				assertNotContains(t, args, unexpected)
+			}
+		})
+	}
+}
+
+func TestCommonFrameStructurePolicyDominatesConflictingX265Params(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "frameStructureGopMode": "recommended", "frameStructureGopFrames": 120,
+		"frameStructureBFrameMode": "off", "x265Params": "keyint=300:min-keyint=30:scenecut=40:bframes=8:b-adapt=2:b-pyramid=1:aq-mode=3",
+	}}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(MediaJobPlan{InputPath: "/media/raw/movie.mkv", OutputPath: "/media/out/movie.mkv", Overwrite: true, ProcessingMode: ProcessingModeFullEncode, Profile: profile, Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}}}))
+	assertContains(t, command, "-g 120")
+	assertContains(t, command, "-bf 0")
+	assertContains(t, command, "-x265-params aq-mode=3")
+	for _, conflict := range []string{"keyint=300", "min-keyint=30", "scenecut=40", "bframes=8", "b-adapt=2", "b-pyramid=1"} {
+		assertNotContains(t, command, conflict)
+	}
+}
+
+func TestAssetFrameStructureOverrideTakesPriorityOverProfile(t *testing.T) {
+	base := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, BitDepth: 10, WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "frameStructureGopMode": "recommended", "frameStructureGopFrames": 120,
+		"frameStructureBFrameMode": "recommended", "frameStructureMaxBFrames": 3, "qsvAdaptiveB": true,
+	}}
+	tests := []struct {
+		name       string
+		override   AssetConversionOverrideState
+		contains   []string
+		notContain []string
+	}{
+		{name: "explicit auto restores encoder defaults", override: AssetConversionOverrideState{FrameStructureGOPMode: "auto", FrameStructureBFrameMode: "auto"}, notContain: []string{"-g", "-bf"}},
+		{name: "custom replaces profile values", override: AssetConversionOverrideState{FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 90, FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 2}, contains: []string{"-g 90", "-bf 2"}, notContain: []string{"-g 120", "-bf 3"}},
+		{name: "off dominates adaptive B", override: AssetConversionOverrideState{FrameStructureBFrameMode: "off"}, contains: []string{"-bf 0"}, notContain: []string{"-adaptive_b 1"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := applyAssetConversionOverrideToProfile(base, test.override)
+			command := strings.Join(append(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"), qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{QSVAdaptiveBMain10: true})...), " ")
+			for _, value := range test.contains {
+				assertContains(t, command, value)
+			}
+			for _, value := range test.notContain {
+				assertNotContains(t, command, value)
 			}
 		})
 	}

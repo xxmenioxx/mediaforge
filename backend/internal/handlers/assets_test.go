@@ -404,6 +404,23 @@ func TestPreviewTimestampSeconds(t *testing.T) {
 	}
 }
 
+func TestVideoToolboxOnlyOverrideIsNotDiscardedAsEmpty(t *testing.T) {
+	disabled := false
+	for name, override := range map[string]AssetConversionOverrideState{
+		"profile":       {VideoToolboxProfile: "main10"},
+		"gop":           {VideoToolboxGOP: 90},
+		"b-frame mode":  {VideoToolboxBFramePolicy: "disabled"},
+		"realtime flag": {VideoToolboxRealtime: &disabled},
+		"preset":        {HardwareQualityPreset: "custom"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if assetConversionOverrideEmpty(override) {
+				t.Fatalf("VideoToolbox override was incorrectly treated as empty: %#v", override)
+			}
+		})
+	}
+}
+
 func TestBoundedPreviewStartAcceptsFractionalSecondsFromDistributedSampling(t *testing.T) {
 	start, ok := boundedPreviewStart("317.625")
 	if !ok || start != "00:05:17" {

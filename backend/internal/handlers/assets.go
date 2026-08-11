@@ -2771,6 +2771,9 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				sourceFrameStructure,
 				outputFrameStructure,
 			)
+			if normalizedFrameStructureBFrameMode(workerStringValue(effectivePreviewProfile.WorkerConfig["frameStructureBFrameMode"])) == "off" && outputFrameStructure.BFrames > 0 {
+				qsvFrameWarnings = append(qsvFrameWarnings, fmt.Sprintf("B-frames were explicitly disabled with -bf 0, but %d B-frames were still detected in the QSV preview output. The worker did not honor the requested frame structure; do not treat this configuration as validated.", outputFrameStructure.BFrames))
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -5097,7 +5100,16 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.QSVAdaptiveB == nil &&
 		override.VideoToolboxBitrateMbps == 0 &&
 		override.VideoToolboxMaxrateMbps == 0 &&
-		override.VideoToolboxBufferMbps == 0
+		override.VideoToolboxBufferMbps == 0 &&
+		strings.TrimSpace(override.VideoToolboxProfile) == "" &&
+		override.VideoToolboxGOP == 0 &&
+		override.VideoToolboxRealtime == nil &&
+		strings.TrimSpace(override.VideoToolboxBFramePolicy) == "" &&
+		override.VideoToolboxBFrames == 0 &&
+		override.VideoToolboxAutoAdjustBitrate == nil &&
+		override.VideoToolboxAllowFrameReordering == nil &&
+		override.VideoToolboxPowerEfficiency == nil &&
+		strings.TrimSpace(override.HardwareQualityPreset) == ""
 }
 
 func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransform {

@@ -86,7 +86,7 @@ func applyQSVQualityRecommendation(profile models.Profile, intent quality.Qualit
 	profile.WorkerConfig["qsvLookAheadDepth"] = recommendation.LookAheadDepth
 	profile.WorkerConfig["qsvExtendedBRC"] = recommendation.ExtendedBRC
 	profile.WorkerConfig["qsvAdaptiveI"] = recommendation.AdaptiveI
-	profile.WorkerConfig["qsvAdaptiveB"] = recommendation.AdaptiveB
+	profile.WorkerConfig["qsvAdaptiveB"] = recommendation.AdaptiveB && normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) != "off"
 	profile.WorkerConfig["pixFmt"] = recommendation.PixelFormat
 	profile.PixelFormat = recommendation.PixelFormat
 	if recommendation.Profile == "main10" {

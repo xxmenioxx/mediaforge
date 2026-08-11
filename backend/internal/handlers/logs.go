@@ -362,7 +362,7 @@ func allJobsLog(db *gorm.DB, jobs []models.QueueJob) string {
 		if job.Notes != "" {
 			builder.WriteString("  notes: " + strings.ReplaceAll(job.Notes, "\n", "\n  ") + "\n")
 		}
-		if conversion := assetConversionReport(conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))); conversion.HasOverrides {
+		if conversion := assetConversionReport(conversionOverrideForJob(job, assetConversionOverrides(db))); conversion.HasOverrides {
 			builder.WriteString("  asset_conversion: " + strings.Join(conversion.HumanSummary, "; ") + "\n")
 		}
 	}
@@ -371,7 +371,7 @@ func allJobsLog(db *gorm.DB, jobs []models.QueueJob) string {
 }
 
 func jobLog(db *gorm.DB, job models.QueueJob) string {
-	conversion := assetConversionReport(conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db)))
+	conversion := assetConversionReport(conversionOverrideForJob(job, assetConversionOverrides(db)))
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("MVForge job #%d\n", job.ID))
 	builder.WriteString("Generated: " + time.Now().Format(time.RFC3339) + "\n\n")

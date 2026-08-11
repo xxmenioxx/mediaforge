@@ -42,7 +42,9 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="GOP" value={gopMode} disabled={disabled} onChange={(event) => {
               const next = event.target.value as GOPMode;
-              commit({ frameStructureGopMode: next, ...(next === 'recommended' && recommendedGop ? { frameStructureGopFrames: recommendedGop } : {}) });
+              const params = { ...x265Params };
+              if (next !== 'custom') delete params.scenecut;
+              commit({ frameStructureGopMode: next, ...(next === 'recommended' && recommendedGop ? { frameStructureGopFrames: recommendedGop } : {}), ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}) });
             }} size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="auto">Auto</MenuItem>
               <MenuItem value="recommended" disabled={!recommendedGop}>Recommended</MenuItem>
@@ -55,7 +57,18 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="B-frames" value={bFrameMode} disabled={disabled} onChange={(event) => {
               const next = event.target.value as BFrameMode;
-              commit({ frameStructureBFrameMode: next, ...(next === 'recommended' && recommendedBFrames ? { frameStructureMaxBFrames: recommendedBFrames } : {}) });
+              const params = { ...x265Params };
+              delete params.bframes;
+              if (next !== 'custom') {
+                delete params['b-adapt'];
+                delete params['b-pyramid'];
+              }
+              commit({
+                frameStructureBFrameMode: next,
+                ...(next === 'recommended' && recommendedBFrames ? { frameStructureMaxBFrames: recommendedBFrames } : {}),
+                ...(next === 'off' ? { frameStructureMaxBFrames: 0, qsvAdaptiveB: false } : {}),
+                ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}),
+              });
             }} size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="auto">Auto</MenuItem>
               <MenuItem value="recommended" disabled={!recommendedBFrames}>Recommended</MenuItem>
@@ -89,6 +102,10 @@ function parseX265Params(value: string) {
     result[separator < 0 ? part : part.slice(0, separator)] = separator < 0 ? '1' : part.slice(separator + 1);
     return result;
   }, {});
+}
+
+function serializeX265Params(params: Record<string, string>) {
+  return Object.entries(params).filter(([, value]) => value.trim() !== '').map(([key, value]) => `${key}=${value}`).join(':');
 }
 
 function mode<T extends string>(value: unknown, allowed: T[], fallback: T): T {

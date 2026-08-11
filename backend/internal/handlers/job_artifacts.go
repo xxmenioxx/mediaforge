@@ -114,7 +114,7 @@ func BackfillAnalysisFromAsIsReports(db *gorm.DB) gin.HandlerFunc {
 
 func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profile, audioProfile *audioEnhancementProfile, command string, processingMode string, streamPlan ResolvedStreamPlan) error {
 	sourceProbe := ffprobeJSON(job.MediaPath)
-	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
+	override := conversionOverrideForJob(job, assetConversionOverrides(db))
 	artifact := jobArtifact{
 		GeneratedAt:     time.Now(),
 		Kind:            "as-is",
@@ -642,7 +642,7 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 			break
 		}
 	}
-	override := conversionOverrideForPath(job.MediaPath, assetConversionOverrides(db))
+	override := conversionOverrideForJob(job, assetConversionOverrides(db))
 	artifact := jobArtifact{
 		GeneratedAt:     time.Now(),
 		Kind:            "result",

@@ -783,15 +783,26 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := normalizedFrameStructureGOPMode(override.FrameStructureGOPMode); value != "" {
 		workerConfig["frameStructureGopMode"] = value
-	}
-	if override.FrameStructureGOPFrames > 0 {
-		workerConfig["frameStructureGopFrames"] = min(1000, override.FrameStructureGOPFrames)
+		if value == "recommended" || value == "custom" {
+			frames := override.FrameStructureGOPFrames
+			if frames <= 0 {
+				frames = 120
+			}
+			workerConfig["frameStructureGopFrames"] = min(1000, frames)
+		}
 	}
 	if value := normalizedFrameStructureBFrameMode(override.FrameStructureBFrameMode); value != "" {
 		workerConfig["frameStructureBFrameMode"] = value
-	}
-	if override.FrameStructureMaxBFrames > 0 {
-		workerConfig["frameStructureMaxBFrames"] = min(16, override.FrameStructureMaxBFrames)
+		switch value {
+		case "recommended", "custom":
+			frames := override.FrameStructureMaxBFrames
+			if frames <= 0 {
+				frames = 3
+			}
+			workerConfig["frameStructureMaxBFrames"] = min(16, frames)
+		case "off":
+			workerConfig["frameStructureMaxBFrames"] = 0
+		}
 	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
@@ -882,6 +893,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if strings.TrimSpace(override.HardwareQualityPreset) != "" {
 		workerConfig["hardwareQualityPreset"] = override.HardwareQualityPreset
+	}
+	if normalizedFrameStructureBFrameMode(workerStringValue(workerConfig["frameStructureBFrameMode"])) == "off" {
+		workerConfig["qsvAdaptiveB"] = false
 	}
 	profile.WorkerConfig = workerConfig
 	return normalizeHardwareQualityPreset(profile)
@@ -1375,12 +1389,43 @@ func normalizedFrameStructureBFrameMode(value string) string {
 	}
 }
 
+func effectiveX265Params(profile models.Profile) string {
+	raw := strings.TrimSpace(workerStringValue(profile.WorkerConfig["x265Params"]))
+	if raw == "" {
+		return ""
+	}
+	gopMode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"]))
+	bFrameMode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"]))
+	parts := strings.Split(raw, ":")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(strings.SplitN(part, "=", 2)[0]))
+		if (gopMode == "recommended" || gopMode == "custom") && (name == "keyint" || name == "min-keyint") {
+			continue
+		}
+		if gopMode != "custom" && name == "scenecut" {
+			continue
+		}
+		if bFrameMode != "" && bFrameMode != "auto" && name == "bframes" {
+			continue
+		}
+		if bFrameMode != "custom" && (name == "b-adapt" || name == "b-pyramid") {
+			continue
+		}
+		result = append(result, part)
+	}
+	return strings.Join(result, ":")
+}
+
 func commonFrameStructureArgs(profile models.Profile, encoder string) []string {
 	args := []string{}
 	if mode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"])); mode == "recommended" || mode == "custom" {
-		if value := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0); value > 0 {
-			args = append(args, "-g", strconv.Itoa(min(1000, value)))
-		}
+		value := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 120)
+		args = append(args, "-g", strconv.Itoa(min(1000, max(1, value))))
 	}
 	mode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"]))
 	if mode == "auto" || mode == "" {
@@ -1662,7 +1707,7 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 		}
 		args = append(args, "-pix_fmt", pixFmt)
 	}
-	if params := workerStringValue(profile.WorkerConfig["x265Params"]); params != "" && resolvedVideoEncoder(profile) == "libx265" {
+	if params := effectiveX265Params(profile); params != "" && resolvedVideoEncoder(profile) == "libx265" {
 		args = append(args, "-x265-params", params)
 	}
 	if encoder == "hevc_qsv" {
@@ -1799,7 +1844,7 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
 		args = append(args, "-adaptive_i", "1")
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
+	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB && normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) != "off" {
 		args = append(args, "-adaptive_b", "1")
 	}
 	return args

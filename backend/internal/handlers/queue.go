@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -447,12 +448,14 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	if profile.Disabled {
 		return errQueueProfileDisabled
 	}
-	override := conversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	if !assetConversionOverrideEmpty(override) {
+		profile = applyAssetConversionOverrideToProfile(profile, override)
+	}
 	if strings.TrimSpace(override.PreferredEncoder) != "" ||
 		strings.TrimSpace(override.VideoEncoder) != "" ||
 		strings.TrimSpace(override.VideoCodec) != "" ||
 		override.UseHardwareIfAvailable != nil {
-		profile = applyAssetConversionOverrideToProfile(profile, override)
 		// Asset processing preference must participate in immutable scheduler
 		// planning. Clear the profile's authoritative encoder contract so the
 		// effective worker configuration is resolved into the job snapshot.
@@ -469,6 +472,17 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, source)
 	if err != nil {
 		return err
+	}
+	if !assetConversionOverrideEmpty(override) {
+		encoded, encodeErr := json.Marshal(override)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		var frozen map[string]any
+		if decodeErr := json.Unmarshal(encoded, &frozen); decodeErr != nil {
+			return decodeErr
+		}
+		snapshot[assetConversionOverrideSnapshotKey] = frozen
 	}
 	job.ProfileID = profile.ID
 	job.ProfileVersion = max(profile.ProfileVersion, 1)

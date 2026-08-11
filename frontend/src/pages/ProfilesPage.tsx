@@ -1592,7 +1592,8 @@ function buildDryRunCommand(profile: ProfileInput) {
   const configuredPixFmt = workerConfigString(profile, 'pixFmt', 'yuv420p10le');
   const pixFmtArgs = profile.videoCodec === 'copy' || configuredPixFmt === 'auto' ? '' : isVideoToolbox ? `-profile:v ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'main10' : 'main'} -pix_fmt ${profile.bitDepth === 10 || profile.videoCodec.includes('10bit') ? 'p010le' : 'yuv420p'}` : `-pix_fmt ${configuredPixFmt}`;
   const tuneArgs = profile.videoCodec === 'copy' || !workerConfigString(profile, 'tune') ? '' : `-tune ${workerConfigString(profile, 'tune')}`;
-  const x265Args = profile.videoCodec === 'copy' || isHardware || !workerConfigString(profile, 'x265Params') ? '' : `-x265-params ${workerConfigString(profile, 'x265Params')}`;
+  const effectiveX265 = effectiveDryRunX265Params(profile);
+  const x265Args = profile.videoCodec === 'copy' || isHardware || !effectiveX265 ? '' : `-x265-params ${effectiveX265}`;
   const hardwareQualityArgs = isVideoToolbox
     ? `-b:v ${workerConfigNumber(profile, 'videoToolboxBitrateMbps', 2)}M -maxrate ${workerConfigNumber(profile, 'videoToolboxMaxrateMbps', 3)}M -bufsize ${workerConfigNumber(profile, 'videoToolboxBufferMbps', 5)}M`
     : isHardware ? `-global_quality ${workerConfigNumber(profile, 'globalQuality', qsvQualityRangeForCrf(profile.qualityValue || 20).recommended)}` : '';
@@ -1601,7 +1602,7 @@ function buildDryRunCommand(profile: ProfileInput) {
         workerConfigString(profile, 'qsvRateControl', 'icq') === 'la_icq' ? `-look_ahead 1 -look_ahead_depth ${workerConfigNumber(profile, 'qsvLookAheadDepth', 40)}` : '',
         workerConfigBool(profile, 'qsvExtendedBRC') ? '-extbrc 1' : '',
         workerConfigBool(profile, 'qsvAdaptiveI') ? '-adaptive_i 1' : '',
-        workerConfigBool(profile, 'qsvAdaptiveB') ? '-adaptive_b 1' : '',
+        workerConfigBool(profile, 'qsvAdaptiveB') && workerConfigString(profile, 'frameStructureBFrameMode', 'auto') !== 'off' ? '-adaptive_b 1' : '',
       ].filter(Boolean).join(' ')
     : '';
   const audioArgs = profile.audioCodec === 'copy' ? '-c:a copy' : `-c:a ${profile.audioCodec}`;
@@ -1612,10 +1613,33 @@ function buildDryRunCommand(profile: ProfileInput) {
   const chapterArgs = profile.preserveChapters ? '-map_chapters 0' : '-map_chapters -1';
   const hdrArgs = profile.preserveHdr ? '-map_metadata 0' : '-map_metadata -1';
   const qualityArgs = profile.qualityMode === 'crf' && profile.videoCodec !== 'copy' && !isHardware ? `-crf ${profile.qualityValue}` : '';
+  const gopMode = workerConfigString(profile, 'frameStructureGopMode', 'auto');
+  const bFrameMode = workerConfigString(profile, 'frameStructureBFrameMode', 'auto');
+  const frameArgs = profile.videoCodec === 'copy' ? '' : [
+    gopMode === 'recommended' || gopMode === 'custom' ? `-g ${Math.max(1, Math.min(1000, workerConfigNumber(profile, 'frameStructureGopFrames', 120)))}` : '',
+    bFrameMode === 'recommended' || bFrameMode === 'custom' ? `-bf ${Math.max(1, Math.min(isVideoToolbox ? 4 : 16, workerConfigNumber(profile, 'frameStructureMaxBFrames', 3)))}` : bFrameMode === 'off' ? '-bf 0' : '',
+  ].filter(Boolean).join(' ');
 
-  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, qsvArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
+  return ['ffmpeg', '-i', input, videoArgs, presetArgs, pixFmtArgs, tuneArgs, x265Args, hardwareQualityArgs, qsvArgs, frameArgs, audioArgs, aacArgs, subtitleArgs, chapterArgs, hdrArgs, qualityArgs, output]
     .filter(Boolean)
     .join(' ');
+}
+
+function effectiveDryRunX265Params(profile: ProfileInput) {
+  const params = parseX265Params(workerConfigString(profile, 'x265Params'));
+  const gopMode = workerConfigString(profile, 'frameStructureGopMode', 'auto');
+  const bFrameMode = workerConfigString(profile, 'frameStructureBFrameMode', 'auto');
+  if (gopMode === 'recommended' || gopMode === 'custom') {
+    params.delete('keyint');
+    params.delete('min-keyint');
+  }
+  if (gopMode !== 'custom') params.delete('scenecut');
+  if (bFrameMode !== 'auto') params.delete('bframes');
+  if (bFrameMode !== 'custom') {
+    params.delete('b-adapt');
+    params.delete('b-pyramid');
+  }
+  return formatX265Params(params);
 }
 
 function softwareEncoderForVideoCodec(videoCodec: string) {
