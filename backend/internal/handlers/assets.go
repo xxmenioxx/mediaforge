@@ -3840,6 +3840,17 @@ func boundedPreviewStart(value string) (string, bool) {
 		}
 		return secondsToTimestamp(seconds), true
 	}
+	// Distributed LAB sampling can calculate a fractional position when the
+	// asset duration is not an exact number of seconds. FFmpeg accepts that
+	// input, but normalize it here so every downstream preview/analyzer receives
+	// the same canonical timestamp format.
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(seconds) && !math.IsInf(seconds, 0) {
+		if seconds < 0 {
+			return "", false
+		}
+		seconds = math.Min(seconds, 24*60*60)
+		return secondsToTimestamp(int(math.Floor(seconds))), true
+	}
 
 	parts := strings.Split(value, ":")
 	if len(parts) != 3 {

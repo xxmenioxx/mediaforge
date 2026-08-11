@@ -870,7 +870,7 @@ export function ProfileLabPage() {
       const conversionInspections: Array<{ inspection: PreviewInspection; position: number; startSeconds: number }> = [];
       for (const position of positions) {
         const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
-        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(startSeconds), seconds: Math.round(windowSeconds), ephemeral: true }), position, startSeconds });
+        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: true }), position, startSeconds });
       }
       const conversionInspection = conversionInspections[Math.floor(conversionInspections.length / 2)].inspection;
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));

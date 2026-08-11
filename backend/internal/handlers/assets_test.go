@@ -404,6 +404,16 @@ func TestPreviewTimestampSeconds(t *testing.T) {
 	}
 }
 
+func TestBoundedPreviewStartAcceptsFractionalSecondsFromDistributedSampling(t *testing.T) {
+	start, ok := boundedPreviewStart("317.625")
+	if !ok || start != "00:05:17" {
+		t.Fatalf("fractional preview start=%q ok=%t", start, ok)
+	}
+	if _, ok := boundedPreviewStart("-0.5"); ok {
+		t.Fatal("negative fractional preview start must be rejected")
+	}
+}
+
 func TestSubtitleExtractionPlansPreserveASSAndConvertOtherTextTracksToSRT(t *testing.T) {
 	plans, unsupported := subtitleExtractionPlans("/media/library/Movie.mkv", []FFProbeStream{
 		{Index: 0, CodecType: "video", CodecName: "hevc"},
