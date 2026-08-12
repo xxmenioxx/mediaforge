@@ -38,6 +38,37 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestAssetGroupsIgnoreStalePersistedSeasonSubpath(t *testing.T) {
+	records := []models.AssetRecord{
+		{
+			Path:         "/media/library/anime/Baccano/Baccano - S01E01.mkv",
+			RootPath:     "/media/library/anime",
+			RelativePath: "Baccano/Baccano - S01E01.mkv",
+			GroupPath:    "Baccano",
+			LibraryID:    1,
+			LibraryName:  "Anime",
+			Status:       "converted",
+		},
+		{
+			Path:         "/media/library/anime/Baccano/Season0/NCED Calling.mkv",
+			RootPath:     "/media/library/anime",
+			RelativePath: "Baccano/Season0/NCED Calling.mkv",
+			GroupPath:    "Baccano/Season0",
+			LibraryID:    1,
+			LibraryName:  "Anime",
+			Status:       "converted",
+		},
+	}
+	assets := make([]Asset, 0, len(records))
+	for _, record := range records {
+		assets = append(assets, assetFromRecord(record))
+	}
+	groups := groupAssets(assets, nil, nil)
+	if len(groups) != 1 || groups[0].RelativePath != "Baccano" || groups[0].FileCount != 2 {
+		t.Fatalf("converted season subpath was not collapsed into its parent group: %#v", groups)
+	}
+}
+
 func TestRemoveMissingDeletesOnlyAbsentInventoryRecord(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:remove-missing-asset?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

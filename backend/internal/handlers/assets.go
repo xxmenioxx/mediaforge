@@ -4820,12 +4820,13 @@ func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
 }
 
 func assetFromRecord(record models.AssetRecord) Asset {
+	groupPath := filepath.ToSlash(logicalAssetGroupPath(filepath.FromSlash(record.RelativePath)))
 	return Asset{
 		LibraryID:    record.LibraryID,
 		LibraryName:  record.LibraryName,
 		Path:         record.Path,
 		RelativePath: record.RelativePath,
-		GroupPath:    record.GroupPath,
+		GroupPath:    groupPath,
 		FileName:     record.FileName,
 		Extension:    record.Extension,
 		SizeBytes:    record.SizeBytes,
