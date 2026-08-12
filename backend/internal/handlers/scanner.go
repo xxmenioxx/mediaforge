@@ -48,6 +48,8 @@ var snapshotOperations = struct {
 	items map[string]*SnapshotOperation
 }{items: map[string]*SnapshotOperation{}}
 
+const snapshotOperationTimeout = 15 * time.Minute
+
 func updateSnapshotOperation(id string, update func(*SnapshotOperation)) {
 	snapshotOperations.Lock()
 	defer snapshotOperations.Unlock()
@@ -197,6 +199,8 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		return
 	}
 
+	markStaleSnapshotOperations(time.Now())
+
 	snapshotOperations.RLock()
 	for _, operation := range snapshotOperations.items {
 		if operation.AssetPath == path && operation.Status == "running" {
@@ -217,25 +221,47 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 	response := *operation
 
 	go func(fileInfo os.FileInfo) {
-		result, _, scanErr := h.scanResolvedFile(path, fileInfo, request, func(phase string, progress float64, message string) {
-			updateSnapshotOperation(id, func(item *SnapshotOperation) {
-				item.Phase, item.Progress, item.Message = phase, progress, message
+		type scanOutcome struct {
+			result models.ScanResult
+			err    error
+		}
+		outcomes := make(chan scanOutcome, 1)
+		go func() {
+			result, _, scanErr := h.scanResolvedFile(path, fileInfo, request, func(phase string, progress float64, message string) {
+				updateSnapshotOperation(id, func(item *SnapshotOperation) {
+					if item.Status != "running" {
+						return
+					}
+					item.Phase, item.Progress, item.Message = phase, progress, message
+				})
 			})
-		})
-		if scanErr != nil {
+			outcomes <- scanOutcome{result: result, err: scanErr}
+		}()
+
+		var outcome scanOutcome
+		select {
+		case outcome = <-outcomes:
+		case <-time.After(snapshotOperationTimeout):
 			updateSnapshotOperation(id, func(item *SnapshotOperation) {
-				item.Status, item.Phase, item.Error, item.Message = "error", "error", scanErr.Error(), "Asset snapshot failed"
+				item.Status, item.Phase, item.Error, item.Message = "error", "timeout", "snapshot analysis exceeded 15 minutes", "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
+			})
+			return
+		}
+		if outcome.err != nil {
+			updateSnapshotOperation(id, func(item *SnapshotOperation) {
+				item.Status, item.Phase, item.Error, item.Message = "error", "error", outcome.err.Error(), "Asset snapshot failed"
 			})
 			return
 		}
 		updateSnapshotOperation(id, func(item *SnapshotOperation) {
-			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &result
+			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &outcome.result
 		})
 	}(info)
 	c.JSON(http.StatusAccepted, response)
 }
 
 func (h ScannerHandler) GetSnapshotOperation(c *gin.Context) {
+	markStaleSnapshotOperations(time.Now())
 	snapshotOperations.RLock()
 	operation := snapshotOperations.items[c.Param("id")]
 	if operation == nil {
@@ -253,6 +279,7 @@ func (h ScannerHandler) ListSnapshotOperations(c *gin.Context) {
 	if path != "" {
 		path = resolveMediaPath(h.db, path)
 	}
+	markStaleSnapshotOperations(time.Now())
 	items := []SnapshotOperation{}
 	snapshotOperations.RLock()
 	for _, operation := range snapshotOperations.items {
@@ -262,6 +289,21 @@ func (h ScannerHandler) ListSnapshotOperations(c *gin.Context) {
 	}
 	snapshotOperations.RUnlock()
 	c.JSON(http.StatusOK, gin.H{"operations": items})
+}
+
+func markStaleSnapshotOperations(now time.Time) {
+	snapshotOperations.Lock()
+	defer snapshotOperations.Unlock()
+	for _, operation := range snapshotOperations.items {
+		if operation.Status != "running" || now.Sub(operation.CreatedAt) <= snapshotOperationTimeout {
+			continue
+		}
+		operation.Status = "error"
+		operation.Phase = "timeout"
+		operation.Error = "snapshot operation stopped reporting before completion"
+		operation.Message = "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
+		operation.UpdatedAt = now
+	}
 }
 
 func scanCacheMatchesFile(result models.ScanResult, info os.FileInfo) bool {

@@ -79,6 +79,24 @@ func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
 	}
 }
 
+func TestMarkStaleSnapshotOperationAllowsRetry(t *testing.T) {
+	path := "/media/raw/anime/DBZ/episode14.mkv"
+	createdAt := time.Now().Add(-snapshotOperationTimeout - time.Minute)
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"dbz-stuck": {ID: "dbz-stuck", AssetPath: path, Status: "running", Phase: "frame_structure", Progress: 80, CreatedAt: createdAt, UpdatedAt: createdAt},
+	}
+	snapshotOperations.Unlock()
+
+	markStaleSnapshotOperations(time.Now())
+	snapshotOperations.RLock()
+	operation := *snapshotOperations.items["dbz-stuck"]
+	snapshotOperations.RUnlock()
+	if operation.Status != "error" || operation.Phase != "timeout" || operation.Error == "" {
+		t.Fatalf("stale operation was not released: %#v", operation)
+	}
+}
+
 func TestIsHDRDoesNotTreatTenBitSDRAsHDR(t *testing.T) {
 	stream := FFProbeStream{
 		Profile: "Main 10", PixFmt: "yuv420p10le",
