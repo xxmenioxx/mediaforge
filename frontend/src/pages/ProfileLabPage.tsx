@@ -2515,9 +2515,9 @@ export function ProfileLabPage() {
                           <Grid size={{ xs: 12 }}>
                             <FrameStructureControls
                               config={videoDraft.workerConfig ?? {}}
-                              recommendedGop={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).targetGopFrames : undefined}
-                              recommendedBFrames={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).maxBFrames : undefined}
-                              recommendedGopByMode={trackSnapshot.data?.frameStructureAnalysis ? frameStructureGopFramesByMode(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data) : undefined}
+                              recommendedGop={trackSnapshot.data ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).targetGopFrames : undefined}
+                              recommendedBFrames={trackSnapshot.data ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).maxBFrames : undefined}
+                              recommendedGopByMode={trackSnapshot.data ? frameStructureGopFramesByMode(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data) : undefined}
                               frameRate={reliableFrameRateForScan(trackSnapshot.data)}
                               onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
                               onChangeMany={updateFrameStructurePolicy}
@@ -3639,14 +3639,16 @@ function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStruc
   };
 }
 
-function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
+function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | undefined, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
   const fps = reliableFrameRateForScan(scan);
   const mode = (profile ? videoWorkerValue(profile, 'frameStructureMode', 'balanced') : 'balanced') as 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
-  const derived = assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode });
+  const hasSourceAnalysis = Boolean(source && source.framesAnalyzed > 0);
+  const sourceAverageGop = hasSourceAnalysis ? source?.averageGopLength : undefined;
+  const derived = assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence: hasSourceAnalysis ? source?.confidence : 'low', mode });
   const customFrames = profile ? numberWorkerValue(profile, 'frameStructureGopFrames', 0) : 0;
   const targetGopFrames = mode === 'custom' && customFrames > 0 ? customFrames : derived.targetFrames ?? 0;
   const targetGopSeconds = fps && targetGopFrames > 0 ? targetGopFrames / fps : derived.targetSeconds ?? 0;
-  const maxBFrames = source.maxConsecutiveBFrames >= 1 && source.maxConsecutiveBFrames <= 4 ? source.maxConsecutiveBFrames : 3;
+  const maxBFrames = source && source.maxConsecutiveBFrames >= 1 && source.maxConsecutiveBFrames <= 4 ? source.maxConsecutiveBFrames : 3;
   const encoder = String(profile?.workerConfig?.videoEncoder || 'generic');
   const encoderReason = encoder === 'hevc_videotoolbox'
     ? 'VideoToolbox maps GOP to -g and may map B depth to -bf only when the active worker capability validates frame reordering.'
@@ -3655,15 +3657,18 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, s
       : encoder === 'libx265'
         ? 'x265 maps common GOP/B intent through keyint and bframes; b-adapt, b-pyramid, and scenecut remain encoder-specific decisions.'
         : 'The selected encoder translates the generic GOP/B targets through its own supported controls.';
-  return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || 'A reliable GOP recommendation is not available.', `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.`, encoderReason] };
+  return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined && source ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || `No source frame-structure sample is stored; using a conservative ${mode} time baseline of ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).`, source ? `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.` : `No source B-run is stored; using conservative maximum B depth ${maxBFrames}.`, encoderReason] };
 }
 
-function frameStructureGopFramesByMode(source: QSVFrameStructureAnalysis, scan?: ScanResult) {
+function frameStructureGopFramesByMode(source: QSVFrameStructureAnalysis | undefined, scan?: ScanResult) {
   const fps = reliableFrameRateForScan(scan);
+  const hasSourceAnalysis = Boolean(source && source.framesAnalyzed > 0);
+  const sourceAverageGop = hasSourceAnalysis ? source?.averageGopLength : undefined;
+  const confidence = hasSourceAnalysis ? source?.confidence : 'low';
   return {
-    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'compatible' }).targetFrames,
-    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'balanced' }).targetFrames,
-    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'maximum_compression' }).targetFrames,
+    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'compatible' }).targetFrames,
+    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'balanced' }).targetFrames,
+    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'maximum_compression' }).targetFrames,
   };
 }
 

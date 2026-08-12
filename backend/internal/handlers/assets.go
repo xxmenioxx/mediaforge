@@ -591,6 +591,9 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := inheritRecoveredAssetSnapshot(h.db, record.Path, destination); err != nil {
+		appendSystemLog(h.db, "archive_asset_recovered_snapshot_inheritance_failed", map[string]string{"archivePath": record.Path, "recoveredPath": destination}, err)
+	}
 	if err := resetRecoveredAssetOverrides(h.db, record.Path, destination); err != nil {
 		appendSystemLog(h.db, "archive_asset_recovered_override_reset_failed", map[string]string{"archivePath": record.Path, "recoveredPath": destination}, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was recovered, but its overrides could not be reset: " + err.Error()})
@@ -719,6 +722,9 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 			return
 		}
 	}
+	if err := inheritRecoveredAssetSnapshot(h.db, archivePath, restorePath); err != nil {
+		appendSystemLog(h.db, "converted_asset_recovered_snapshot_inheritance_failed", map[string]string{"archivePath": archivePath, "restoredPath": restorePath}, err)
+	}
 	libraryRoot := filepath.Clean(strings.TrimSpace(record.RootPath))
 	if libraryRoot != "." && libraryRoot != "" && pathIsInside(filepath.Dir(path), libraryRoot) {
 		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), libraryRoot); err != nil {
@@ -741,6 +747,45 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+}
+
+func inheritRecoveredAssetSnapshot(db *gorm.DB, archivePath, rawPath string) error {
+	if db == nil || !db.Migrator().HasTable(&models.ScanResult{}) {
+		return nil
+	}
+	archivePath = filepath.Clean(strings.TrimSpace(archivePath))
+	rawPath = filepath.Clean(strings.TrimSpace(rawPath))
+	if archivePath == "." || rawPath == "." || archivePath == rawPath {
+		return nil
+	}
+	var current models.ScanResult
+	if err := db.Where("path = ?", rawPath).Order("created_at desc, id desc").First(&current).Error; err == nil {
+		return nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("read recovered Raw snapshot: %w", err)
+	}
+	var archived models.ScanResult
+	if err := db.Where("path = ?", archivePath).Order("created_at desc, id desc").First(&archived).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read archived snapshot: %w", err)
+	}
+	archived.ID = 0
+	archived.Path = rawPath
+	archived.FileName = filepath.Base(rawPath)
+	archived.CreatedAt = time.Time{}
+	archived.UpdatedAt = time.Time{}
+	if archived.RawProbe == nil {
+		archived.RawProbe = models.JSONMap{}
+	}
+	archived.RawProbe["snapshotProvenance"] = models.JSONMap{
+		"source": "recovered_original", "archivePath": archivePath, "recoveredPath": rawPath,
+	}
+	if err := persistFinalAssetSnapshot(db, &archived); err != nil {
+		return fmt.Errorf("persist recovered Raw snapshot: %w", err)
+	}
+	return nil
 }
 
 func (h *AssetHandler) ListSubtitleExtractionOperations(c *gin.Context) {

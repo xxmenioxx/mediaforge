@@ -1489,6 +1489,9 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 
 func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "recover-archive")
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
 	relative := filepath.Join("anime", "Baccano", "episode.mkv")
 	archivePath := filepath.Join(archiveRoot, "processed-originals", relative)
 	rawPath := filepath.Join(rawRoot, relative)
@@ -1497,6 +1500,10 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	writeTestFile(t, librarySidecar, "keep this subtitle")
 	record := models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: filepath.ToSlash(relative), FileName: "episode.mkv", Status: "archive", LibraryName: "Original Archive"}
 	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	archivedSnapshot := models.ScanResult{Path: archivePath, FileName: filepath.Base(archivePath), VideoCodec: "h264", VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}}, FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 1200, "averageGopLength": 72.0}}
+	if err := db.Create(&archivedSnapshot).Error; err != nil {
 		t.Fatal(err)
 	}
 	unrelatedPath := filepath.Join(rawRoot, "anime", "Baccano", "other.mkv")
@@ -1520,6 +1527,17 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	}
 	if content, err := os.ReadFile(librarySidecar); err != nil || string(content) != "keep this subtitle" {
 		t.Fatalf("Library sidecar was removed during Archive recovery: content=%q err=%v", content, err)
+	}
+	var recoveredSnapshot models.ScanResult
+	if err := db.Where("path = ?", rawPath).First(&recoveredSnapshot).Error; err != nil {
+		t.Fatalf("recovered Raw snapshot missing: %v", err)
+	}
+	if recoveredSnapshot.VideoCodec != "h264" || jsonMapInt(recoveredSnapshot.FrameStructureAnalysis, "framesAnalyzed") != 1200 {
+		t.Fatalf("recovered Raw snapshot lost archived analysis: %#v", recoveredSnapshot)
+	}
+	var archivedSnapshotCount int64
+	if err := db.Model(&models.ScanResult{}).Where("path = ?", archivePath).Count(&archivedSnapshotCount).Error; err != nil || archivedSnapshotCount != 1 {
+		t.Fatalf("archived snapshot history was not preserved: count=%d err=%v", archivedSnapshotCount, err)
 	}
 	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, archivePath, rawPath)
 }

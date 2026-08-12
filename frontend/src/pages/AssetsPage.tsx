@@ -4052,14 +4052,17 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
   const analysis = scan?.frameStructureAnalysis;
-  if (!analysis || analysis.framesAnalyzed <= 0) return undefined;
+  if (!scan) return undefined;
   const fps = reliableFrameRateForScan(scan);
+  if (!fps) return undefined;
+  const sourceAverageGop = analysis && analysis.framesAnalyzed > 0 ? analysis.averageGopLength : undefined;
+  const confidence = analysis && analysis.framesAnalyzed > 0 ? analysis.confidence : 'low';
   const recommendations = {
-    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'compatible' }),
-    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'balanced' }),
-    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'maximum_compression' }),
+    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'compatible' }),
+    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'balanced' }),
+    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'maximum_compression' }),
   };
-  const bFrames = analysis.maxConsecutiveBFrames >= 1 && analysis.maxConsecutiveBFrames <= 4 ? analysis.maxConsecutiveBFrames : 3;
+  const bFrames = analysis && analysis.maxConsecutiveBFrames >= 1 && analysis.maxConsecutiveBFrames <= 4 ? analysis.maxConsecutiveBFrames : 3;
   return { fps, gop: recommendations.balanced.targetFrames, gopSeconds: recommendations.balanced.targetSeconds, bFrames, gopByMode: { compatible: recommendations.compatible.targetFrames, balanced: recommendations.balanced.targetFrames, maximum_compression: recommendations.maximum_compression.targetFrames } };
 }
 
