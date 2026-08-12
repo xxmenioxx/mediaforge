@@ -214,6 +214,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ subtitlePath: input.subtitlePath, content: input.content }),
     }),
+  renameExternalAssetSubtitle: (input: { path: string; subtitlePath: string; fileName: string }) =>
+    request<{ path: string; message: string }>(`/api/assets/external-subtitles/rename?path=${encodeURIComponent(input.path)}`, {
+      method: 'POST',
+      body: JSON.stringify({ subtitlePath: input.subtitlePath, fileName: input.fileName }),
+    }),
   deleteExternalAssetSubtitle: (input: { path: string; subtitlePath: string }) =>
     request<{ path: string; message: string }>(`/api/assets/external-subtitles?path=${encodeURIComponent(input.path)}`, {
       method: 'DELETE',

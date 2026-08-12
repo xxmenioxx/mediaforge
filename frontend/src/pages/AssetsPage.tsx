@@ -44,6 +44,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
+import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useRef, useState } from 'react';
@@ -1119,6 +1120,8 @@ function AssetRow({
   const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
+  const [renamingSubtitle, setRenamingSubtitle] = useState<ExternalSubtitle | null>(null);
+  const [subtitleFileName, setSubtitleFileName] = useState('');
   const [subtitleContent, setSubtitleContent] = useState('');
   const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
@@ -1262,6 +1265,14 @@ function AssetRow({
     onSuccess: async () => {
       setEditingSubtitle(null);
       setSubtitleContent('');
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    },
+  });
+  const renameExternalSubtitle = useMutation({
+    mutationFn: api.renameExternalAssetSubtitle,
+    onSuccess: async () => {
+      setRenamingSubtitle(null);
+      setSubtitleFileName('');
       await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
     },
   });
@@ -2157,6 +2168,11 @@ async function generateExternalSubtitle(
                         values={externalSubtitles.data ?? []}
                         loading={externalSubtitles.isLoading}
                         deleting={deleteExternalSubtitle.isPending}
+                        renaming={renameExternalSubtitle.isPending}
+                        onRename={(subtitle) => {
+                          setRenamingSubtitle(subtitle);
+                          setSubtitleFileName(subtitle.fileName);
+                        }}
                         onEdit={(subtitle) => {
                           setEditingSubtitle(subtitle);
                           setSubtitleContent('');
@@ -2279,6 +2295,32 @@ async function generateExternalSubtitle(
               </Button>
             </Stack>
             {saveSubtitleContent.isError ? <Alert severity="warning">{saveSubtitleContent.error instanceof Error ? saveSubtitleContent.error.message : 'Could not save subtitle.'}</Alert> : null}
+          </Stack>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(renamingSubtitle)} onClose={() => setRenamingSubtitle(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Rename external subtitle</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <TextField
+              label="File name"
+              value={subtitleFileName}
+              onChange={(event) => setSubtitleFileName(event.target.value)}
+              helperText="Keep the asset name prefix and use an .srt or .ass extension."
+              fullWidth
+              autoFocus
+            />
+            {renameExternalSubtitle.isError ? <Alert severity="warning">{renameExternalSubtitle.error instanceof Error ? renameExternalSubtitle.error.message : 'Subtitle rename failed.'}</Alert> : null}
+            <Stack direction="row" spacing={1} justifyContent="flex-end">
+              <Button onClick={() => setRenamingSubtitle(null)}>Cancel</Button>
+              <Button
+                variant="contained"
+                disabled={!renamingSubtitle || renameExternalSubtitle.isPending || !subtitleFileName.trim() || subtitleFileName.trim() === renamingSubtitle.fileName}
+                onClick={() => renamingSubtitle && renameExternalSubtitle.mutate({ path: asset.path, subtitlePath: renamingSubtitle.path, fileName: subtitleFileName.trim() })}
+              >
+                Rename
+              </Button>
+            </Stack>
           </Stack>
         </DialogContent>
       </Dialog>
@@ -2515,12 +2557,16 @@ function ExternalSubtitleList({
   values,
   loading,
   deleting,
+  renaming,
+  onRename,
   onEdit,
   onDelete,
 }: {
   values: ExternalSubtitle[];
   loading: boolean;
   deleting: boolean;
+  renaming: boolean;
+  onRename: (subtitle: ExternalSubtitle) => void;
   onEdit: (subtitle: ExternalSubtitle) => void;
   onDelete: (subtitle: ExternalSubtitle) => void;
 }) {
@@ -2550,6 +2596,9 @@ function ExternalSubtitleList({
               </Stack>
             </Stack>
             <Stack direction="row" spacing={0.5}>
+              <Tooltip title="Rename subtitle file">
+                <IconButton size="small" color="primary" disabled={renaming} onClick={() => onRename(subtitle)}><DriveFileRenameOutlineIcon /></IconButton>
+              </Tooltip>
               <Tooltip title="Edit subtitle text">
                 <IconButton size="small" color="primary" onClick={() => onEdit(subtitle)}><EditIcon /></IconButton>
               </Tooltip>

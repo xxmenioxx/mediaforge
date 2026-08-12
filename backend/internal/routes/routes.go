@@ -76,6 +76,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets/external-subtitles", assets.ExternalSubtitles)
 		api.GET("/assets/external-subtitles/content", assets.ExternalSubtitleContent)
 		api.PUT("/assets/external-subtitles", assets.UpdateExternalSubtitle)
+		api.POST("/assets/external-subtitles/rename", assets.RenameExternalSubtitle)
 		api.DELETE("/assets/external-subtitles", assets.DeleteExternalSubtitle)
 		api.POST("/assets/migrate-path", assets.MigratePath)
 		api.POST("/assets/publish-as-is", assets.PublishAsIs)

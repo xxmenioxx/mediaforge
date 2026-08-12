@@ -603,6 +603,7 @@ func TestExternalSubtitleManagementIsScopedToAssetSidecars(t *testing.T) {
 	router.GET("/api/assets/external-subtitles", handler.ExternalSubtitles)
 	router.GET("/api/assets/external-subtitles/content", handler.ExternalSubtitleContent)
 	router.PUT("/api/assets/external-subtitles", handler.UpdateExternalSubtitle)
+	router.POST("/api/assets/external-subtitles/rename", handler.RenameExternalSubtitle)
 	router.DELETE("/api/assets/external-subtitles", handler.DeleteExternalSubtitle)
 
 	listResponse := httptest.NewRecorder()
@@ -626,6 +627,25 @@ func TestExternalSubtitleManagementIsScopedToAssetSidecars(t *testing.T) {
 	}
 	if content, err := os.ReadFile(sidecar); err != nil || string(content) != "updated subtitle" {
 		t.Fatalf("sidecar was not updated: %q %v", content, err)
+	}
+	renamedSidecar := filepath.Join(root, "Movie.spa.forced.srt")
+	renameBody := `{"subtitlePath":` + strconv.Quote(sidecar) + `,"fileName":"Movie.spa.forced.srt"}`
+	renameResponse := httptest.NewRecorder()
+	router.ServeHTTP(renameResponse, httptest.NewRequest(http.MethodPost, "/api/assets/external-subtitles/rename?path="+url.QueryEscape(mediaPath), strings.NewReader(renameBody)))
+	if renameResponse.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameResponse.Code, renameResponse.Body.String())
+	}
+	if content, err := os.ReadFile(renamedSidecar); err != nil || string(content) != "updated subtitle" {
+		t.Fatalf("renamed sidecar missing: %q %v", content, err)
+	}
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("old sidecar name still exists: %v", err)
+	}
+	invalidRenameBody := `{"subtitlePath":` + strconv.Quote(renamedSidecar) + `,"fileName":"Other.srt"}`
+	invalidRenameResponse := httptest.NewRecorder()
+	router.ServeHTTP(invalidRenameResponse, httptest.NewRequest(http.MethodPost, "/api/assets/external-subtitles/rename?path="+url.QueryEscape(mediaPath), strings.NewReader(invalidRenameBody)))
+	if invalidRenameResponse.Code != http.StatusBadRequest {
+		t.Fatalf("foreign rename status=%d body=%s", invalidRenameResponse.Code, invalidRenameResponse.Body.String())
 	}
 
 	foreignBody := `{"subtitlePath":` + strconv.Quote(other) + `}`

@@ -61,6 +61,7 @@ type ExternalSubtitle struct {
 type ExternalSubtitleUpdateInput struct {
 	SubtitlePath string `json:"subtitlePath" binding:"required"`
 	Content      string `json:"content"`
+	FileName     string `json:"fileName,omitempty"`
 }
 
 type AssetPathMigrationInput struct {
@@ -1258,6 +1259,50 @@ func (h AssetHandler) DeleteExternalSubtitle(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"path": subtitlePath, "message": "External subtitle deleted."})
+}
+
+func (h AssetHandler) RenameExternalSubtitle(c *gin.Context) {
+	mediaPath, _, ok := h.externalSubtitleAsset(c)
+	if !ok {
+		return
+	}
+	var input ExternalSubtitleUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	subtitlePath, err := validatedExternalSubtitlePath(mediaPath, input.SubtitlePath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	fileName := strings.TrimSpace(input.FileName)
+	if fileName == "" || filepath.Base(fileName) != fileName {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fileName must be a file name without directories"})
+		return
+	}
+	mediaStem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	if !externalSubtitleNameForStem(fileName, mediaStem) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fileName must remain an SRT or ASS sidecar belonging to this asset"})
+		return
+	}
+	target := filepath.Join(filepath.Dir(mediaPath), fileName)
+	if target == subtitlePath {
+		c.JSON(http.StatusOK, gin.H{"path": target, "message": "External subtitle name unchanged."})
+		return
+	}
+	if _, err := os.Stat(target); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "a subtitle with that name already exists"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := os.Rename(subtitlePath, target); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": target, "message": "External subtitle renamed."})
 }
 
 func (h AssetHandler) externalSubtitleAsset(c *gin.Context) (string, models.AssetRecord, bool) {
