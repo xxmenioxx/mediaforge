@@ -668,8 +668,17 @@ function QueueGroupCard({
     },
   });
   const batchAction = useMutation({
-    mutationFn: async (action: 'cancel' | 'remove') => {
+    mutationFn: async (action: 'cancel' | 'remove' | 'requeue') => {
       const jobs = group.jobs.filter((job) => job.status !== 'completed');
+      if (action === 'requeue') {
+        const recoverable = jobs
+          .filter((job) => job.status === 'failed' || job.status === 'canceled')
+          .sort((left, right) => (left.batchPosition || Number.MAX_SAFE_INTEGER) - (right.batchPosition || Number.MAX_SAFE_INTEGER) || left.id - right.id);
+        for (const job of recoverable) {
+          await api.updateQueueJob({ jobId: job.id, status: 'queued' });
+        }
+        return;
+      }
       if (action === 'cancel') {
         await Promise.all(
           jobs
@@ -703,12 +712,6 @@ function QueueGroupCard({
     updateJob.mutate({ jobId: job.id, status: 'queued' });
   }
 
-  function requeueFailedJobs() {
-    group.jobs
-      .filter((job) => job.status === 'failed')
-      .forEach((job) => updateJob.mutate({ jobId: job.id, status: 'queued' }));
-  }
-
   function removeJob(job: QueueJob) {
     if (job.executionNumber && !window.confirm(`Remove Job #${job.executionNumber} from Queue? Its database record, logs, and reports will be preserved.`)) return;
     dismissJob.mutate(job.id);
@@ -727,6 +730,12 @@ function QueueGroupCard({
     if (!count) return;
     if (!onlyPlaceholders && !window.confirm(`Remove ${count} non-completed job${count === 1 ? '' : 's'} from “${group.name}”? Running jobs will be canceled first. Logs and reports will be preserved.`)) return;
     batchAction.mutate('remove');
+  }
+
+  function requeueBatch() {
+    const count = group.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
+    if (!count || !window.confirm(`Requeue ${count} failed/canceled job${count === 1 ? '' : 's'} in “${group.name}” using their saved batch order and configuration?`)) return;
+    batchAction.mutate('requeue');
   }
 
   useEffect(() => {
@@ -791,16 +800,16 @@ function QueueGroupCard({
                   Remove Batch
                 </Button>
               ) : null}
-              {group.failed ? (
+              {group.jobs.some((job) => job.status === 'failed' || job.status === 'canceled') ? (
                 <Button
                   startIcon={<ReplayIcon />}
-                  color="error"
+                  color="primary"
                   variant="outlined"
                   size="small"
-                  disabled={updateJob.isPending}
-                  onClick={requeueFailedJobs}
+                  disabled={batchAction.isPending}
+                  onClick={requeueBatch}
                 >
-                  Retry Failed
+                  Requeue Batch
                 </Button>
               ) : null}
               <IconButton
