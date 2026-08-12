@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestQSVFrameStructureAssessment(t *testing.T) {
 	tests := []struct {
@@ -192,7 +195,7 @@ func TestParseQSVEffectiveFrameContext(t *testing.T) {
 func TestFrameStructureRecommendationAndValidation(t *testing.T) {
 	source := QSVFrameStructureAnalysis{AverageGOPLength: 82.7, MaxConsecutiveBFrames: 3, BFrameRatio: .58, Confidence: "high"}
 	recommendation := recommendFrameStructure(source, 29.97, "anime", "balanced", true, true, false)
-	if recommendation.TargetGOPFrames != 90 || recommendation.MaxBFrames != 3 || !recommendation.AdaptiveI || recommendation.AdaptiveB {
+	if recommendation.TargetGOPFrames != 105 || math.Abs(recommendation.TargetGOPSeconds-3.51) > .02 || recommendation.MaxBFrames != 3 || !recommendation.AdaptiveI || recommendation.AdaptiveB {
 		t.Fatalf("unexpected recommendation: %#v", recommendation)
 	}
 	safe := QSVFrameStructureAnalysis{AverageGOPLength: 110, MaxConsecutiveBFrames: 3, PFrames: 200, BFrameRatio: .6, WindowCount: 5, Confidence: "high"}
@@ -202,6 +205,28 @@ func TestFrameStructureRecommendationAndValidation(t *testing.T) {
 	extreme := QSVFrameStructureAnalysis{AverageGOPLength: 248, MaxConsecutiveBFrames: 247, PFrames: 0, BFrameRatio: .996, WindowCount: 5, Confidence: "high"}
 	if got := validateFrameStructureRecommendation(recommendation, source, extreme); got.Verdict != "reject" || got.Confidence != "high" {
 		t.Fatalf("reject verdict=%#v", got)
+	}
+}
+
+func TestAssetDerivedGOPRecommendationUsesTimeAndFPS(t *testing.T) {
+	rayearth := QSVFrameStructureAnalysis{AverageGOPLength: 71.7, Confidence: "high"}
+	compatible := recommendFrameStructure(rayearth, 23.976, "anime", "compatible", false, false, false)
+	balanced := recommendFrameStructure(rayearth, 23.976, "anime", "balanced", false, false, false)
+	maximum := recommendFrameStructure(rayearth, 23.976, "anime", "maximum_compression", false, false, false)
+	if compatible.TargetGOPFrames != 72 || balanced.TargetGOPFrames != 90 || maximum.TargetGOPFrames != 120 {
+		t.Fatalf("unexpected Rayearth GOP sequence: compatible=%d balanced=%d maximum=%d", compatible.TargetGOPFrames, balanced.TargetGOPFrames, maximum.TargetGOPFrames)
+	}
+	arbegas := recommendFrameStructure(QSVFrameStructureAnalysis{AverageGOPLength: 75.4, Confidence: "high"}, 29.97, "anime", "balanced", false, false, false)
+	if arbegas.TargetGOPFrames != 98 {
+		t.Fatalf("Arbegas must derive frames from its own FPS/time baseline, got %d", arbegas.TargetGOPFrames)
+	}
+	sixty := recommendFrameStructure(QSVFrameStructureAnalysis{AverageGOPLength: 179.82, Confidence: "high"}, 59.94, "sports", "compatible", false, false, false)
+	if sixty.TargetGOPFrames != 180 || math.Abs(sixty.TargetGOPSeconds-3) > .01 {
+		t.Fatalf("59.94 fps three-second GOP must be about 180 frames: %#v", sixty)
+	}
+	unknown := recommendFrameStructure(rayearth, 0, "anime", "balanced", false, false, false)
+	if unknown.TargetGOPFrames != 0 || unknown.Confidence != "low" || len(unknown.Warnings) == 0 {
+		t.Fatalf("missing FPS must not create a falsely precise recommendation: %#v", unknown)
 	}
 }
 

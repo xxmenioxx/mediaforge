@@ -8,6 +8,8 @@ type Props = {
   config: Record<string, unknown>;
   recommendedGop?: number;
   recommendedBFrames?: number;
+  recommendedGopByMode?: Partial<Record<Exclude<FrameStructureMode, 'custom'>, number>>;
+  frameRate?: number;
   onChange: (key: string, value: unknown) => void;
   onChangeMany?: (patch: Record<string, unknown>) => void;
   encoder?: string;
@@ -15,7 +17,7 @@ type Props = {
   compact?: boolean;
 };
 
-export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
+export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
   const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
   const gopMode = mode<GOPMode>(config.frameStructureGopMode, ['auto', 'recommended', 'custom'], 'auto');
   const bFrameMode = mode<BFrameMode>(config.frameStructureBFrameMode, ['auto', 'recommended', 'custom', 'off'], 'auto');
@@ -42,7 +44,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
         </Stack>
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => commit(frameStructureModePatch(event.target.value as FrameStructureMode, recommendedGop, recommendedBFrames))} helperText="Sets the visible advanced values; editing one changes the mode to Custom." size={compact ? 'small' : 'medium'} fullWidth>
+            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => { const next = event.target.value as FrameStructureMode; commit(frameStructureModePatch(next, next === 'custom' ? recommendedGop : recommendedGopByMode?.[next] ?? recommendedGop, recommendedBFrames)); }} helperText="Sets the visible advanced values; editing one changes the mode to Custom." size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="compatible">Compatible</MenuItem>
               <MenuItem value="balanced">Balanced</MenuItem>
               <MenuItem value="maximum_compression">Maximum Compression</MenuItem>
@@ -62,7 +64,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={disabled || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={gopMode === 'auto' ? 'Encoder decides' : gopMode === 'recommended' ? `MVForge analysis: ${recommendedGop}` : 'Frames between keyframes'} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
+            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={disabled || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={gopMode === 'auto' ? 'Encoder decides' : `${gop} frames${frameRate && frameRate > 0 ? ` · ~${(gop / frameRate).toFixed(2)} s` : ''}`} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="B-frames" value={bFrameMode} disabled={disabled} onChange={(event) => {

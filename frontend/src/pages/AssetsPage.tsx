@@ -61,6 +61,7 @@ import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwar
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
+import { assetDerivedGopRecommendation, parseReliableFrameRate } from '../utils/frameStructureRecommendation';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -2958,6 +2959,8 @@ function AssetConversionOverridePanel({
                     config={{ ...(profile?.workerConfig ?? {}), ...draft }}
                     recommendedGop={assetFrameRecommendation?.gop}
                     recommendedBFrames={assetFrameRecommendation?.bFrames}
+                    recommendedGopByMode={assetFrameRecommendation?.gopByMode}
+                    frameRate={assetFrameRecommendation?.fps}
                     onChange={(key, value) => onChange(key as keyof AssetConversionOverrideState, value as never)}
                     onChangeMany={updateFrameStructurePolicy}
                     encoder={hardwareSelected ? effectiveVideoEncoder : softwareEncoderForAssetCodec(draft.videoCodec ?? profile?.videoCodec ?? 'x265')}
@@ -3918,14 +3921,14 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
   const analysis = scan?.frameStructureAnalysis;
   if (!analysis || analysis.framesAnalyzed <= 0) return undefined;
-  const fpsParts = (scan?.videoStreams?.[0]?.avgFrameRate || scan?.videoStreams?.[0]?.realFrameRate || '30/1').split('/').map(Number);
-  const fps = fpsParts.length === 2 && fpsParts[1] > 0 ? fpsParts[0] / fpsParts[1] : 30;
-  const seconds = Math.max(2, Math.min(4, analysis.averageGopLength > 0 ? analysis.averageGopLength / fps : 3));
-  const requested = Math.round(fps * seconds);
-  const candidates = [24, 30, 48, 50, 60, 72, 75, 90, 96, 100, 120, 150, 180, 240];
-  const gop = candidates.reduce((best, value) => Math.abs(value - requested) < Math.abs(best - requested) ? value : best, candidates[0]);
+  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  const recommendations = {
+    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'compatible' }),
+    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'balanced' }),
+    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'maximum_compression' }),
+  };
   const bFrames = analysis.maxConsecutiveBFrames >= 1 && analysis.maxConsecutiveBFrames <= 4 ? analysis.maxConsecutiveBFrames : 3;
-  return { gop, bFrames };
+  return { fps, gop: recommendations.balanced.targetFrames, gopSeconds: recommendations.balanced.targetSeconds, bFrames, gopByMode: { compatible: recommendations.compatible.targetFrames, balanced: recommendations.balanced.targetFrames, maximum_compression: recommendations.maximum_compression.targetFrames } };
 }
 
 function softwareEncoderForAssetCodec(codec: string) {

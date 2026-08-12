@@ -133,21 +133,36 @@ type FrameStructureValidation struct {
 
 func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, contentType, policy string, advancedAllowed, adaptiveISupported, adaptiveBSupported bool) FrameStructureRecommendation {
 	if fps <= 0 {
-		fps = 30
+		return FrameStructureRecommendation{MaxBFrames: 3, Confidence: "low", Warnings: []string{"A reliable asset frame rate is required before MVForge can calculate an automatic GOP recommendation."}}
 	}
-	seconds := 3.0
+	mode := strings.ToLower(strings.TrimSpace(policy))
+	seconds := 0.0
 	if source.AverageGOPLength > 0 {
 		seconds = source.AverageGOPLength / fps
 	}
-	seconds = math.Max(2, math.Min(4, seconds))
-	if strings.Contains(strings.ToLower(contentType), "anime") || strings.Contains(strings.ToLower(contentType), "animation") {
-		seconds += 0.25
+	if seconds <= 0 {
+		switch mode {
+		case "compatible", "compatibility":
+			seconds = 2.5
+		case "maximum_compression":
+			seconds = 3
+		default:
+			seconds = 2.75
+		}
+	} else {
+		seconds = math.Max(2, math.Min(4, seconds))
+		switch mode {
+		case "maximum_compression":
+			seconds = math.Min(seconds+2, 5.5)
+		case "balanced":
+			seconds = math.Min(seconds+0.75, 4)
+		}
 	}
-	if strings.EqualFold(policy, "compatibility") {
-		seconds = math.Min(seconds, 2)
+	if strings.EqualFold(source.Confidence, "low") {
+		seconds = math.Min(seconds, 3.5)
 	}
-	seconds = math.Max(2, math.Min(4, seconds))
-	target := nearestFriendlyGOP(int(math.Round(fps * seconds)))
+	seconds = math.Max(2, math.Min(8, seconds))
+	target := int(math.Round(fps * seconds))
 	maxB := 3
 	if source.MaxConsecutiveBFrames >= 1 && source.MaxConsecutiveBFrames <= 4 {
 		maxB = source.MaxConsecutiveBFrames
@@ -156,7 +171,11 @@ func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, cont
 	if result.Confidence == "" {
 		result.Confidence = "low"
 	}
-	result.Reasons = []string{fmt.Sprintf("Source GOP %.1f frames was normalized to an encoder-friendly target of %d frames.", source.AverageGOPLength, target), fmt.Sprintf("Source longest B-run is %d; recommended maximum B depth is %d.", source.MaxConsecutiveBFrames, maxB)}
+	sourceSeconds := 0.0
+	if source.AverageGOPLength > 0 {
+		sourceSeconds = source.AverageGOPLength / fps
+	}
+	result.Reasons = []string{fmt.Sprintf("Source GOP %.1f frames is %.2f seconds; %s targets %.2f seconds (%d frames at %.3f fps).", source.AverageGOPLength, sourceSeconds, mode, seconds, target, fps), fmt.Sprintf("Source longest B-run is %d; recommended maximum B depth is %d.", source.MaxConsecutiveBFrames, maxB)}
 	if advancedAllowed && !adaptiveISupported {
 		result.Warnings = append(result.Warnings, "Adaptive I is desirable but unavailable for the active worker combination.")
 	}

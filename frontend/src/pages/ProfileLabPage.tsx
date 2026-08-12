@@ -73,6 +73,7 @@ import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../tr
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
+import { assetDerivedGopRecommendation, parseReliableFrameRate } from '../utils/frameStructureRecommendation';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -2516,6 +2517,8 @@ export function ProfileLabPage() {
                               config={videoDraft.workerConfig ?? {}}
                               recommendedGop={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).targetGopFrames : undefined}
                               recommendedBFrames={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).maxBFrames : undefined}
+                              recommendedGopByMode={trackSnapshot.data?.frameStructureAnalysis ? frameStructureGopFramesByMode(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data) : undefined}
+                              frameRate={parseReliableFrameRate(trackSnapshot.data?.videoStreams?.[0]?.avgFrameRate, trackSnapshot.data?.videoStreams?.[0]?.realFrameRate)}
                               onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
                               onChangeMany={updateFrameStructurePolicy}
                               encoder={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)}
@@ -3637,14 +3640,12 @@ function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStruc
 }
 
 function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
-  const rate = (scan?.videoStreams?.[0]?.avgFrameRate || scan?.videoStreams?.[0]?.realFrameRate || '').split('/').map(Number);
-  const fps = rate.length === 2 && rate[1] > 0 ? rate[0] / rate[1] : 30;
-  let seconds = source.averageGopLength > 0 ? source.averageGopLength / fps : 3;
-  seconds = Math.max(2, Math.min(4, seconds));
-  if ((profile?.name || '').toLowerCase().includes('anime')) seconds = Math.min(4, seconds + 0.25);
-  const candidates = [24, 30, 48, 50, 60, 72, 75, 90, 96, 100, 120, 150, 180, 240];
-  const raw = Math.round(fps * seconds);
-  const targetGopFrames = candidates.reduce((best, value) => Math.abs(value - raw) < Math.abs(best - raw) ? value : best, candidates[0]);
+  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  const mode = (profile ? videoWorkerValue(profile, 'frameStructureMode', 'balanced') : 'balanced') as 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
+  const derived = assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode });
+  const customFrames = profile ? numberWorkerValue(profile, 'frameStructureGopFrames', 0) : 0;
+  const targetGopFrames = mode === 'custom' && customFrames > 0 ? customFrames : derived.targetFrames ?? 0;
+  const targetGopSeconds = fps && targetGopFrames > 0 ? targetGopFrames / fps : derived.targetSeconds ?? 0;
   const maxBFrames = source.maxConsecutiveBFrames >= 1 && source.maxConsecutiveBFrames <= 4 ? source.maxConsecutiveBFrames : 3;
   const encoder = String(profile?.workerConfig?.videoEncoder || 'generic');
   const encoderReason = encoder === 'hevc_videotoolbox'
@@ -3654,7 +3655,16 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, s
       : encoder === 'libx265'
         ? 'x265 maps common GOP/B intent through keyint and bframes; b-adapt, b-pyramid, and scenecut remain encoder-specific decisions.'
         : 'The selected encoder translates the generic GOP/B targets through its own supported controls.';
-  return { encoder, targetGopFrames, targetGopSeconds: targetGopFrames / fps, maxBFrames, confidence: source.confidence || 'low', reasons: [`Source GOP ${source.averageGopLength.toFixed(1)} was normalized to ${targetGopFrames} frames.`, `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.`, encoderReason] };
+  return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || 'A reliable GOP recommendation is not available.', `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.`, encoderReason] };
+}
+
+function frameStructureGopFramesByMode(source: QSVFrameStructureAnalysis, scan?: ScanResult) {
+  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  return {
+    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'compatible' }).targetFrames,
+    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'balanced' }).targetFrames,
+    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'maximum_compression' }).targetFrames,
+  };
 }
 
 function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput): string[] {
@@ -3677,6 +3687,9 @@ function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput):
 
 function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, requestedBFrameMode = 'auto', qsv?: QSVFeatureStatus) {
   const qsvGPB = isQSVGpbInterpretation(qsv);
+  if (recommendation.targetGopFrames > 0 && qsv?.gopPicSize && Math.abs(qsv.gopPicSize-recommendation.targetGopFrames) / recommendation.targetGopFrames > 0.1) {
+    return { verdict: 'review' as const, confidence: output.confidence || 'low', reasons: [`Requested GOP ${recommendation.targetGopFrames} frames, but the QSV runtime reported an effective GopPicSize of ${qsv.gopPicSize}.`, 'Review the worker capability resolution before adopting this configuration.'] };
+  }
   if (!qsvGPB && requestedBFrameMode === 'off' && output.bFrames > 0) {
     return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: [`B-frames were disabled with -bf 0, but ${output.bFrames} B-frames were detected in the output.`, 'The active QSV path did not honor the requested frame structure.'] };
   }
@@ -4022,7 +4035,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
           </TableBody>
         </Table>
       </Box>
-      <FrameStructureCharacteristicsTable source={inspection.sourceFrameStructure} output={inspection.outputFrameStructure} qsv={inspection.qsvFeatureStatus} />
+      <FrameStructureCharacteristicsTable source={inspection.sourceFrameStructure} output={inspection.outputFrameStructure} qsv={inspection.qsvFeatureStatus} recommendation={inspection.frameRecommendation} />
       <Typography variant="caption" color="text.secondary">
         The browser reference is a temporary H.264 representation. Its differences describe preview normalization only and do not change the final-output policy saved in the video profile.
       </Typography>
@@ -4030,7 +4043,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
   );
 }
 
-function FrameStructureCharacteristicsTable({ source, output, qsv }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis; qsv?: QSVFeatureStatus }) {
+function FrameStructureCharacteristicsTable({ source, output, qsv, recommendation }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis; qsv?: QSVFeatureStatus; recommendation: LabFidelityInspection['frameRecommendation'] }) {
   const ratioDelta = output.bFrameRatio - source.bFrameRatio;
   const qsvGPB = isQSVGpbInterpretation(qsv);
   const expectedGPB = 'Expected QSV GPB structure';
@@ -4047,6 +4060,9 @@ function FrameStructureCharacteristicsTable({ source, output, qsv }: { source: Q
   return (
     <Box sx={{ overflowX: 'auto' }}>
       <Typography fontWeight={700} sx={{ mb: 1 }}>Frame structure</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Source GOP {source.averageGopLength > 0 ? `${source.averageGopLength.toFixed(1)} frames${recommendation.targetGopFrames > 0 && recommendation.targetGopSeconds > 0 ? ` · ~${(source.averageGopLength * recommendation.targetGopSeconds / recommendation.targetGopFrames).toFixed(2)} s` : ''}` : 'not measured'} · Requested {recommendation.targetGopFrames || 'not available'}{recommendation.targetGopSeconds > 0 ? ` frames · ~${recommendation.targetGopSeconds.toFixed(2)} s` : ''} · Effective {qsv?.gopPicSize || 'not reported'} · Measured {output.averageGopLength > 0 ? `${output.averageGopLength.toFixed(1)} frames${recommendation.targetGopFrames > 0 && recommendation.targetGopSeconds > 0 ? ` · ~${(output.averageGopLength * recommendation.targetGopSeconds / recommendation.targetGopFrames).toFixed(2)} s` : ''}` : 'not enough keyframes'}
+      </Typography>
       <Table size="small" aria-label="Frame structure characteristics comparison">
         <TableHead><TableRow><TableCell>Characteristic</TableCell><TableCell>Source</TableCell><TableCell>Profile result</TableCell><TableCell>Interpretation</TableCell></TableRow></TableHead>
         <TableBody>{rows.map(([label, sourceValue, outputValue, result]) => {

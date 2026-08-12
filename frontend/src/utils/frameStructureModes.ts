@@ -5,11 +5,11 @@ export const frameStructureManagedKeys = new Set([
   'frameStructureMaxBFrames', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy',
 ]);
 
-export function frameStructureModePatch(selected: FrameStructureMode, recommendedGop = 120, recommendedBFrames = 3) {
+export function frameStructureModePatch(selected: FrameStructureMode, recommendedGop?: number, recommendedBFrames = 3) {
   if (selected === 'custom') return { frameStructureMode: selected };
-  const baseGop = Math.max(1, Math.min(1000, Math.round(recommendedGop || 120)));
+  const baseGop = recommendedGop && recommendedGop > 0 ? Math.max(1, Math.min(1000, Math.round(recommendedGop))) : undefined;
   if (selected === 'compatible') return {
-    frameStructureMode: selected, frameStructureGopMode: 'recommended', frameStructureGopFrames: baseGop,
+    frameStructureMode: selected, frameStructureGopMode: baseGop ? 'recommended' : 'auto', ...(baseGop ? { frameStructureGopFrames: baseGop } : {}),
     frameStructureBFrameMode: 'off', frameStructureMaxBFrames: 0,
     qsvAdaptiveI: true, qsvAdaptiveB: false, qsvPStrategy: 1,
   };
@@ -18,8 +18,8 @@ export function frameStructureModePatch(selected: FrameStructureMode, recommende
     : Math.max(1, Math.min(3, Math.round(recommendedBFrames || 3)));
   return {
     frameStructureMode: selected,
-    frameStructureGopMode: selected === 'maximum_compression' ? 'custom' : 'recommended',
-    frameStructureGopFrames: selected === 'maximum_compression' ? Math.min(1000, Math.max(baseGop, Math.round(baseGop * 1.25))) : baseGop,
+    frameStructureGopMode: baseGop ? 'recommended' : 'auto',
+    ...(baseGop ? { frameStructureGopFrames: baseGop } : {}),
     frameStructureBFrameMode: 'custom', frameStructureMaxBFrames: bFrames,
     qsvAdaptiveI: true, qsvAdaptiveB: true, qsvPStrategy: 0,
   };
