@@ -428,23 +428,26 @@ func TestLeadingEpisodeNumberFromNameRequiresAnExplicitSeparator(t *testing.T) {
 	}
 }
 
-func TestBatchPredecessorBlocksWorkerUntilListedAssetFinishes(t *testing.T) {
+func TestWorkerClaimsBatchInListedOrderWithoutWaitingForCompletion(t *testing.T) {
 	db := queueJobTestDB(t)
+	base := time.Now()
 	jobs := []models.QueueJob{
-		{BatchID: "ordered-batch", BatchPosition: 1, MediaPath: "/raw/02.mkv", LibraryID: 1, Status: JobStatusRunning},
-		{BatchID: "ordered-batch", BatchPosition: 2, MediaPath: "/raw/01.mkv", LibraryID: 1, Status: JobStatusQueued},
+		{BatchID: "ordered-concurrent-batch", BatchPosition: 1, MediaPath: "/raw/02.mkv", LibraryID: 1, Priority: 5, Status: JobStatusQueued, CreatedAt: base},
+		{BatchID: "ordered-concurrent-batch", BatchPosition: 2, MediaPath: "/raw/01.mkv", LibraryID: 1, Priority: 5, Status: JobStatusQueued, CreatedAt: base.Add(time.Millisecond)},
 	}
 	if err := db.Create(&jobs).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !batchPredecessorPending(db, jobs[1]) {
-		t.Fatal("worker was allowed to skip the first listed asset")
+	first, err := nextClaimableJob(db, workerLimits{})
+	if err != nil || first.BatchPosition != 1 {
+		t.Fatalf("first claim=(%d,%v), want batch position 1", first.BatchPosition, err)
 	}
-	if err := db.Model(&jobs[0]).Update("status", JobStatusCompleted).Error; err != nil {
+	if err := db.Model(&models.QueueJob{}).Where("id = ?", first.ID).Update("status", JobStatusRunning).Error; err != nil {
 		t.Fatal(err)
 	}
-	if batchPredecessorPending(db, jobs[1]) {
-		t.Fatal("completed predecessor still blocked the next listed asset")
+	second, err := nextClaimableJob(db, workerLimits{})
+	if err != nil || second.BatchPosition != 2 {
+		t.Fatalf("concurrent second claim=(%d,%v), want batch position 2", second.BatchPosition, err)
 	}
 }
 

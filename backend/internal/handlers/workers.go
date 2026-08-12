@@ -229,9 +229,6 @@ func nextClaimableJob(tx *gorm.DB, limits workerLimits) (models.QueueJob, error)
 	}
 
 	for _, job := range jobs {
-		if batchPredecessorPending(tx, job) {
-			continue
-		}
 		if job.ActiveExecutionPlanID == nil {
 			return job, nil
 		}
@@ -283,18 +280,6 @@ func nextClaimableJob(tx *gorm.DB, limits workerLimits) (models.QueueJob, error)
 		}
 	}
 	return models.QueueJob{}, gorm.ErrRecordNotFound
-}
-
-func batchPredecessorPending(db *gorm.DB, job models.QueueJob) bool {
-	if db == nil || strings.TrimSpace(job.BatchID) == "" || job.BatchPosition <= 1 {
-		return false
-	}
-	var count int64
-	err := db.Model(&models.QueueJob{}).
-		Where("batch_id = ? AND batch_position > 0 AND batch_position < ? AND dismissed_at IS NULL", job.BatchID, job.BatchPosition).
-		Where("status NOT IN ?", []string{JobStatusCompleted, JobStatusCanceled}).
-		Count(&count).Error
-	return err != nil || count > 0
 }
 
 func (h WorkerHandler) ClaimNext(c *gin.Context) {
