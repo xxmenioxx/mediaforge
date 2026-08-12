@@ -2402,23 +2402,31 @@ function runtimeEncoderCapabilities(name: string, value: unknown) {
     ['qsvCqpMain10', 'QSV CQP Main10'],
 
     ['qsvVbrMain8', 'QSV VBR Main'],
+	['qsvVbrExtBrcMain8', 'QSV VBR + ExtBRC Main'],
+	['qsvVbrLookAheadMain8', 'QSV VBR + LookAhead Main'],
+	['qsvVbrAdvancedMain8', 'QSV VBR Advanced Main'],
     ['qsvVbrMain10', 'QSV VBR Main10'],
     ['qsvVbrExtBrcMain10', 'QSV VBR + ExtBRC Main10'],
     ['qsvVbrLookAheadMain10', 'QSV VBR + LookAhead Main10'],
     ['qsvVbrAdvancedMain10', 'QSV VBR Advanced Main10'],
 
     ['qsvCbrMain8', 'QSV CBR Main'],
+	['qsvCbrExtBrcMain8', 'QSV CBR + ExtBRC Main'],
+	['qsvCbrLookAheadMain8', 'QSV CBR + LookAhead Main'],
     ['qsvCbrMain10', 'QSV CBR Main10'],
     ['qsvCbrExtBrcMain10', 'QSV CBR + ExtBRC Main10'],
     ['qsvCbrLookAheadMain10', 'QSV CBR + LookAhead Main10'],
 
     ['qsvAdaptiveIMain10', 'QSV Adaptive I Main10'],
     ['qsvAdaptiveBMain10', 'QSV Adaptive B Main10'],
+    ['qsvAdaptiveIMain8', 'QSV Adaptive I Main8'],
+    ['qsvAdaptiveBMain8', 'QSV Adaptive B Main8'],
 
     ['qsvLowPowerMain8', 'QSV Low Power Main'],
     ['qsvLowPowerMain10', 'QSV Low Power Main10'],
 
     ['qsvLaIcqMain10', 'QSV LA-ICQ Main10'],
+	['qsvLaIcqMain8', 'QSV LA-ICQ Main'],
 
     ['videoToolboxMain', 'VT Main'],
     ['videoToolboxMain10', 'VT Main10'],

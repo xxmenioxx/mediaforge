@@ -21,6 +21,7 @@ export function applyHardwareQualityPreset(config: HardwareConfig, encoder: stri
     videoEncoder: encoder,
     hardwareQualityPreset: preset,
     hardwareQualityPresetScale: 2,
+    ...(encoder === 'hevc_qsv' && preset !== 'custom' ? { qsvRateControl: 'icq' } : {}),
   };
 }
 

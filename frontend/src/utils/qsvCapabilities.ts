@@ -26,7 +26,7 @@ export function resolveQSVFeatures(
     icq: main10
       ? capability?.qsvIcqMain10 === true
       : capability?.qsvIcqMain8 === true,
-    laIcq: main10 && capability?.qsvLaIcqMain10 === true,
+    laIcq: main10 ? capability?.qsvLaIcqMain10 === true : capability?.qsvLaIcqMain8 === true,
     cqp: main10
       ? capability?.qsvCqpMain10 === true
       : capability?.qsvCqpMain8 === true,
@@ -44,31 +44,31 @@ export function resolveQSVFeatures(
     rateControl,
     rateControls,
     adaptiveI:
-      main10 &&
-      capability?.qsvAdaptiveIMain10 === true,
+      main10
+        ? capability?.qsvAdaptiveIMain10 === true
+        : capability?.qsvAdaptiveIMain8 === true,
 
     adaptiveB:
-      main10 &&
-      capability?.qsvAdaptiveBMain10 === true,
+      main10
+        ? capability?.qsvAdaptiveBMain10 === true
+        : capability?.qsvAdaptiveBMain8 === true,
 
     extBrc:
-      main10 &&
       (
         (rateControl === 'vbr' &&
-          capability?.qsvVbrExtBrcMain10 === true) ||
+          (main10 ? capability?.qsvVbrExtBrcMain10 === true : capability?.qsvVbrExtBrcMain8 === true)) ||
         (rateControl === 'cbr' &&
-          capability?.qsvCbrExtBrcMain10 === true)
+          (main10 ? capability?.qsvCbrExtBrcMain10 === true : capability?.qsvCbrExtBrcMain8 === true))
       ),
 
     lookAhead:
-      main10 &&
       (
         (rateControl === 'vbr' &&
-          capability?.qsvVbrLookAheadMain10 === true) ||
+          (main10 ? capability?.qsvVbrLookAheadMain10 === true : capability?.qsvVbrLookAheadMain8 === true)) ||
         (rateControl === 'cbr' &&
-          capability?.qsvCbrLookAheadMain10 === true) ||
+          (main10 ? capability?.qsvCbrLookAheadMain10 === true : capability?.qsvCbrLookAheadMain8 === true)) ||
         (rateControl === 'la_icq' &&
-          capability?.qsvLaIcqMain10 === true)
+          (main10 ? capability?.qsvLaIcqMain10 === true : capability?.qsvLaIcqMain8 === true))
       ),
   };
 }
@@ -91,7 +91,7 @@ export function qsvSelectionWarnings(
     warnings.push(`${features.rateControl.toUpperCase().replace('_', '-')} is not validated for the selected bit depth on the active worker; the backend may apply a tested fallback.`);
   }
   if (selection.extendedBRC && !features.extBrc) {
-    warnings.push('Extended BRC is only effective for a validated Main10 VBR/CBR combination. It is not used as a GOP or B-frame correction.');
+    warnings.push('Extended BRC is only effective for a validated VBR/CBR combination at the selected bit depth. It is not used as a GOP or B-frame correction.');
   }
   if (selection.adaptiveI && !features.adaptiveI) {
     warnings.push('Adaptive I is requested but not validated for this worker/bit-depth combination, so it will be omitted from the effective command.');

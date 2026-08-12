@@ -57,3 +57,16 @@ func TestNormalizeAnalysisRecordHDRCorrectsTenBitSDR(t *testing.T) {
 		t.Fatal("10-bit SDR historical snapshot still marked HDR")
 	}
 }
+
+func TestAssetConversionReportPreservesFrameStructurePresetAndAdvancedValues(t *testing.T) {
+	pStrategy := 1
+	adaptiveI, adaptiveB := true, false
+	report := assetConversionReport(AssetConversionOverrideState{
+		FrameStructureMode: "compatible", FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 75,
+		FrameStructureBFrameMode: "off", FrameStructureMaxBFrames: 0,
+		QSVAdaptiveI: &adaptiveI, QSVAdaptiveB: &adaptiveB, QSVPStrategy: &pStrategy,
+	})
+	if !report.HasOverrides || report.ProfileOverrides["frameStructureMode"] != "compatible" || report.ProfileOverrides["frameStructureGopFrames"] != 75 || report.ProfileOverrides["frameStructureBFrameMode"] != "off" || report.ProfileOverrides["qsvPStrategy"] != 1 {
+		t.Fatalf("frame structure override was not preserved in job artifacts: %#v", report.ProfileOverrides)
+	}
+}

@@ -6,6 +6,7 @@ func TestDecodeEncoderCapabilityPreservesQSVModeEvidence(t *testing.T) {
 	raw := map[string]any{
 		"listed": true, "usable": true, "main10": true,
 		"qsvIcqMain8": true, "qsvLaIcqMain10": false, "qsvCqpMain10": true,
+		"qsvAdaptiveIMain8": true, "qsvAdaptiveBMain8": true, "qsvVbrExtBrcMain8": true,
 		"qsvFullCombination": false, "reason": "look ahead rejected",
 		"testedModes": map[string]bool{"qsvCqpMain10": true},
 		"modeReasons": map[string]string{"qsvLaIcqMain10": "unsupported"},
@@ -16,6 +17,9 @@ func TestDecodeEncoderCapabilityPreservesQSVModeEvidence(t *testing.T) {
 	}
 	if !capability.QSVICQMain8 || !capability.QSVCQPMain10 || capability.QSVLAICQMain10 {
 		t.Fatalf("QSV evidence was not preserved: %#v", capability)
+	}
+	if !capability.QSVAdaptiveIMain8 || !capability.QSVAdaptiveBMain8 || !capability.QSVVBRExtBRCMain8 {
+		t.Fatalf("QSV Main8 advanced evidence was not preserved: %#v", capability)
 	}
 	if capability.ModeReasons["qsvLaIcqMain10"] != "unsupported" {
 		t.Fatalf("mode reason missing: %#v", capability.ModeReasons)

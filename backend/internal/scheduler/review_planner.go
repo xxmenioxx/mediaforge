@@ -360,15 +360,18 @@ func schedulerQualityCapabilities(encoder string, profile models.Profile, capabi
 	main10 := profile.BitDepth >= 10 || configString(profile.WorkerConfig, "pixFmt") == "p010le"
 	result := quality.WorkerCapabilities{
 		Encoder: encoder, Main: capability.Usable, Main10: capability.Main10,
-		ICQ: capability.QSVICQMain8, CQP: capability.QSVCQPMain8, VBR: capability.QSVVBRMain8, CBR: capability.QSVCBRMain8,
+		ICQ: capability.QSVICQMain8, LAICQ: capability.QSVLAICQMain8, CQP: capability.QSVCQPMain8, VBR: capability.QSVVBRMain8, CBR: capability.QSVCBRMain8,
 		LowPower: capability.LowPower, ExtendedBRC: capability.ExtendedBRC,
-		VBRExtendedBRC: capability.QSVVBRExtBRCMain10, CBRExtendedBRC: capability.QSVCBRExtBRCMain10,
-		VBRLookAhead: capability.QSVVBRLookAheadMain10, CBRLookAhead: capability.QSVCBRLookAheadMain10,
-		AdaptiveI: capability.QSVAdaptiveIMain10, AdaptiveB: capability.QSVAdaptiveBMain10,
+		VBRExtendedBRC: capability.QSVVBRExtBRCMain8, CBRExtendedBRC: capability.QSVCBRExtBRCMain8,
+		VBRLookAhead: capability.QSVVBRLookAheadMain8, CBRLookAhead: capability.QSVCBRLookAheadMain8,
+		AdaptiveI: capability.QSVAdaptiveIMain8, AdaptiveB: capability.QSVAdaptiveBMain8,
 	}
 	if main10 && capability.Main10 {
 		result.ICQ, result.LAICQ = capability.QSVICQMain10, capability.QSVLAICQMain10
 		result.CQP, result.VBR, result.CBR = capability.QSVCQPMain10, capability.QSVVBRMain10, capability.QSVCBRMain10
+		result.AdaptiveI, result.AdaptiveB = capability.QSVAdaptiveIMain10, capability.QSVAdaptiveBMain10
+		result.VBRExtendedBRC, result.CBRExtendedBRC = capability.QSVVBRExtBRCMain10, capability.QSVCBRExtBRCMain10
+		result.VBRLookAhead, result.CBRLookAhead = capability.QSVVBRLookAheadMain10, capability.QSVCBRLookAheadMain10
 	}
 	return result
 }

@@ -463,6 +463,9 @@ func assetProfileOverrideMap(override AssetConversionOverrideState) map[string]a
 	if strings.TrimSpace(override.X265Params) != "" {
 		values["x265Params"] = override.X265Params
 	}
+	if strings.TrimSpace(override.FrameStructureMode) != "" {
+		values["frameStructureMode"] = override.FrameStructureMode
+	}
 	if override.FrameStructureGOPMode != "" {
 		values["frameStructureGopMode"] = override.FrameStructureGOPMode
 	}

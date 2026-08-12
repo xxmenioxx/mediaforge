@@ -101,8 +101,13 @@ type QSVFeatureStatus struct {
 	GPBKnown           bool   `json:"gpbKnown"`
 	GPBEffective       bool   `json:"gpbEffective"`
 	GopRefDist         int    `json:"gopRefDist,omitempty"`
+	GopPicSize         int    `json:"gopPicSize,omitempty"`
 	BRefType           string `json:"bRefType,omitempty"`
+	PRefType           string `json:"pRefType,omitempty"`
+	RateControlMethod  string `json:"rateControlMethod,omitempty"`
+	TargetUsage        int    `json:"targetUsage,omitempty"`
 	InterpretationMode string `json:"interpretationMode,omitempty"`
+	ContextSource      string `json:"contextSource,omitempty"`
 }
 
 type FrameStructureRecommendation struct {
@@ -237,7 +242,7 @@ func qsvFrameStructureWarnings(
 	if output.FramesAnalyzed == 0 {
 		return append(warnings, "No output frames were available, so MVForge could not inspect the QSV frame structure.")
 	}
-	qsvGPB := features.InterpretationMode == "qsv_gpb" && features.GPBKnown && features.GPBEffective && features.GopRefDist == 1
+	qsvGPB := (features.InterpretationMode == "qsv_gpb" || features.InterpretationMode == "qsv_mixed_b_gpb") && features.GPBKnown && features.GPBEffective && features.GopRefDist >= 1
 	if !qsvGPB && output.BFrameRatio >= 0.9 {
 		warnings = append(warnings, fmt.Sprintf("B-frames make up %.1f%% of the sample. This is unusually high and may indicate an unstable or unsuitable GOP structure.", output.BFrameRatio*100))
 	}

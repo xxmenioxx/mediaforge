@@ -274,7 +274,7 @@ func TestDefaultQSVQualityUsesConservativeStartingPoint(t *testing.T) {
 }
 
 func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
-	profile := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{
+	profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, BitDepth: 10, WorkerConfig: models.JSONMap{
 		"pixFmt":            "p010le",
 		"qsvRateControl":    "la_icq",
 		"qsvExtendedBRC":    true,
@@ -310,6 +310,37 @@ func TestQSVPyramidPStrategyRequiresBFramesOff(t *testing.T) {
 	profile := models.Profile{BitDepth: 10, WorkerConfig: models.JSONMap{"pixFmt": "p010le", "qsvPStrategy": 2, "frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 3}}
 	capability := capabilities.EncoderCapability{TestedModes: map[string]bool{"qsvPStrategyPyramidMain10": true}}
 	assertNotContains(t, strings.Join(qsvWorkerArgsForCapability(profile, capability), " "), "-p_strategy")
+}
+
+func TestQSVCompatibleFrameStructureReachesEffectiveCommand(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, BitDepth: 10, WorkerConfig: models.JSONMap{
+		"pixFmt": "p010le", "frameStructureMode": "compatible", "frameStructureGopMode": "recommended", "frameStructureGopFrames": 75,
+		"frameStructureBFrameMode": "off", "frameStructureMaxBFrames": 0, "qsvAdaptiveI": true, "qsvAdaptiveB": false, "qsvPStrategy": 1,
+	}}
+	capability := capabilities.EncoderCapability{QSVAdaptiveIMain10: true, TestedModes: map[string]bool{"qsvPStrategySimpleMain10": true}}
+	command := strings.Join(append(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"), qsvWorkerArgsForCapability(profile, capability)...), " ")
+	assertContains(t, command, "-g 75")
+	assertContains(t, command, "-bf 0")
+	assertContains(t, command, "-adaptive_i 1")
+	assertContains(t, command, "-p_strategy 1")
+	assertNotContains(t, command, "-adaptive_b")
+}
+
+func TestQSVMain8EmitsValidatedAdaptiveFeatures(t *testing.T) {
+	profile := models.Profile{BitDepth: 8, WorkerConfig: models.JSONMap{"pixFmt": "nv12", "qsvAdaptiveI": true, "qsvAdaptiveB": true}}
+	capability := capabilities.EncoderCapability{QSVAdaptiveIMain8: true, QSVAdaptiveBMain8: true}
+	command := strings.Join(qsvWorkerArgsForCapability(profile, capability), " ")
+	assertContains(t, command, "-adaptive_i 1")
+	assertContains(t, command, "-adaptive_b 1")
+}
+
+func TestQSVMain8UsesOnlyValidatedRateControlFeatures(t *testing.T) {
+	profile := models.Profile{BitDepth: 8, WorkerConfig: models.JSONMap{"pixFmt": "nv12", "qsvRateControl": "vbr", "qsvExtendedBRC": true, "qsvLookAheadDepth": 40}}
+	capability := capabilities.EncoderCapability{QSVVBRExtBRCMain8: true, QSVVBRLookAheadMain8: false}
+	command := strings.Join(qsvWorkerArgsForCapability(profile, capability), " ")
+	assertContains(t, command, "-extbrc 1")
+	assertNotContains(t, command, "-look_ahead")
+	assertNotContains(t, command, "-look_ahead_depth")
 }
 
 func TestQSVWorkerArgsUseContextualAdvancedCapabilities(t *testing.T) {
@@ -360,7 +391,7 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2,
 	}})
-	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "la_icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
+	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
 		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
 	}
 	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
@@ -418,8 +449,10 @@ func TestQSVHardwareQualityPresetScale(t *testing.T) {
 func TestQSVRecommendationStoresRequestedEffectiveAndFallback(t *testing.T) {
 	profile := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
-		"qsvRateControl": "la_icq",
 	}})
+	// Simulate an explicit LA-ICQ request after the named preset established its
+	// safe ICQ baseline; the recommendation layer must still record a fallback.
+	profile.WorkerConfig["qsvRateControl"] = "la_icq"
 	intent := qualityIntentForMedia(profile, "/media/raw/anime/Rayearth/episode.mkv", MediaStreamInventory{
 		Duration: 100, Video: []MediaStream{{Width: 1440, Height: 1080, Bitrate: 6_000_000}},
 	})

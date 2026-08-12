@@ -72,6 +72,7 @@ import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwar
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
+import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -2547,7 +2548,7 @@ export function ProfileLabPage() {
                                   fullWidth
                                 >
                                   <MenuItem value="icq">ICQ · safe default</MenuItem>
-                                <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · Main10 capability required</MenuItem>
+                                <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · worker validation required</MenuItem>
                                 </TextField>
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -2562,7 +2563,7 @@ export function ProfileLabPage() {
                                 />
                               </Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
-                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={numberWorkerValue(videoDraft, 'qsvPStrategy', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvPStrategy', Number(event.target.value))} helperText="QSV P-frame structure; Pyramid requires B-frames Off." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={!qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 1)}>Simple</MenuItem><MenuItem value={2} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={numberWorkerValue(videoDraft, 'qsvPStrategy', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvPStrategy', Number(event.target.value))} helperText="Available only when B-frames are Off and validated by the worker." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 1)}>Simple · requires Off</MenuItem><MenuItem value={2} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
                                   control={<Checkbox disabled={!qsvFeatures.extBrc && !videoWorkerBool(videoDraft, 'qsvExtendedBRC')} checked={videoWorkerBool(videoDraft, 'qsvExtendedBRC')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvExtendedBRC', event.target.checked)} />}
@@ -3560,7 +3561,8 @@ function LabWarningsAndGuidance({
       {!inspection ? <Alert severity="info">Run Process Video to compare I/P/B distribution, B-frame runs, GOP length, and encoder warnings against the source.</Alert> : (
         <Stack spacing={1.5}>
           <Typography fontWeight={700}>Processed video result</Typography>
-          {inspection.qsvFeatureStatus.interpretationMode === 'qsv_gpb' ? <Alert severity="info"><Typography fontWeight={700}>QSV GPB structure detected</Typography><Typography variant="body2">FFprobe reports generalized P/B pictures as B frames. With GopRefDist=1{inspection.qsvFeatureStatus.bRefType ? ` and BRefType=${inspection.qsvFeatureStatus.bRefType}` : ''}, they are not interpreted as a conventional long bidirectional B-frame chain.</Typography></Alert> : null}
+          {isQSVGpbInterpretation(inspection.qsvFeatureStatus) ? <Alert severity="info"><Typography fontWeight={700}>{inspection.qsvFeatureStatus.interpretationMode === 'qsv_mixed_b_gpb' ? 'QSV mixed B / GPB structure detected' : 'QSV GPB structure detected'}</Typography><Typography variant="body2">FFprobe reports generalized P/B pictures as B frames. Effective GopRefDist={inspection.qsvFeatureStatus.gopRefDist}{inspection.qsvFeatureStatus.bRefType ? ` and BRefType=${inspection.qsvFeatureStatus.bRefType}` : ''}; this is interpreted using the QSV runtime context, not as a conventional continuous B-frame chain.</Typography><Typography variant="caption">Evidence: {inspection.qsvFeatureStatus.contextSource === 'preview_encode' ? 'effective preview encoder log' : 'matching worker capability probe'}.</Typography></Alert> : null}
+          {inspection.qsvFeatureStatus.contextSource ? <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700} sx={{ mb: 0.75 }}>Effective QSV Structure</Typography><Typography variant="body2">GOP size: {inspection.qsvFeatureStatus.gopPicSize ?? 'not reported'} · Reference distance: {inspection.qsvFeatureStatus.gopRefDist ?? 'not reported'} · Adaptive I: {inspection.qsvFeatureStatus.adaptiveIEffective ? 'ON' : 'OFF'} · Adaptive B: {inspection.qsvFeatureStatus.adaptiveBEffective ? 'ON' : 'OFF'}</Typography><Typography variant="body2">B reference type: {inspection.qsvFeatureStatus.bRefType || 'not reported'} · P reference type: {inspection.qsvFeatureStatus.pRefType || 'not reported'} · GPB: {inspection.qsvFeatureStatus.gpbKnown ? inspection.qsvFeatureStatus.gpbEffective ? 'ON' : 'OFF' : 'not reported'} · Rate control: {inspection.qsvFeatureStatus.rateControlMethod || inspection.effectiveQSVRateControl || 'not reported'} · Target usage: {inspection.qsvFeatureStatus.targetUsage ?? 'not reported'}</Typography></Box> : null}
           <Alert severity={inspection.frameValidation.verdict === 'safe' ? 'success' : inspection.frameValidation.verdict === 'review' ? 'warning' : 'error'}>
             <Typography fontWeight={700}>{inspection.frameValidation.verdict === 'safe' ? 'Recommended configuration validated' : inspection.frameValidation.verdict === 'review' ? 'Recommendation requires review' : 'Recommendation not validated'}</Typography>
             <Typography variant="body2">Recommended GOP {inspection.frameRecommendation.targetGopFrames} (~{inspection.frameRecommendation.targetGopSeconds.toFixed(1)}s) · recommended B max {inspection.frameRecommendation.maxBFrames} · validation confidence {inspection.frameValidation.confidence}.</Typography>
@@ -3674,7 +3676,7 @@ function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput):
 }
 
 function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, requestedBFrameMode = 'auto', qsv?: QSVFeatureStatus) {
-  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  const qsvGPB = isQSVGpbInterpretation(qsv);
   if (!qsvGPB && requestedBFrameMode === 'off' && output.bFrames > 0) {
     return { verdict: 'reject' as const, confidence: output.confidence || 'low', reasons: [`B-frames were disabled with -bf 0, but ${output.bFrames} B-frames were detected in the output.`, 'The active QSV path did not honor the requested frame structure.'] };
   }
@@ -3685,9 +3687,14 @@ function frameStructureValidationForLab(recommendation: ReturnType<typeof frameS
   return { verdict: 'safe' as const, confidence: output.confidence || 'low', reasons: qsvGPB ? ['Expected HEVC QSV GPB structure detected.', 'Output GOP is reasonably aligned with the requested structure.'] : ['P frames are present and no major structural anomaly was detected.', 'Distributed output is reasonably close to the recommended structure.'] };
 }
 
+function isQSVGpbInterpretation(qsv?: QSVFeatureStatus) {
+  return qsv?.gpbEffective === true && qsv.gopRefDist !== undefined && qsv.gopRefDist >= 1 &&
+    (qsv.interpretationMode === 'qsv_gpb' || qsv.interpretationMode === 'qsv_mixed_b_gpb');
+}
+
 function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, qsv?: QSVFeatureStatus) {
   const guidance: Array<{ severity: 'success' | 'info' | 'warning'; text: string }> = [];
-  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  const qsvGPB = isQSVGpbInterpretation(qsv);
   const extremeOutput = !qsvGPB && output.pFrames === 0 && output.bFrameRatio >= 0.9 && output.maxConsecutiveBFrames >= 12;
   const largeRatioChange = output.bFrameRatio >= 0.9 && output.bFrameRatio-source.bFrameRatio >= 0.25;
   const largeRunChange = output.maxConsecutiveBFrames >= 12 && output.maxConsecutiveBFrames >= Math.max(1, source.maxConsecutiveBFrames) * 4;
@@ -4025,7 +4032,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
 
 function FrameStructureCharacteristicsTable({ source, output, qsv }: { source: QSVFrameStructureAnalysis; output: QSVFrameStructureAnalysis; qsv?: QSVFeatureStatus }) {
   const ratioDelta = output.bFrameRatio - source.bFrameRatio;
-  const qsvGPB = qsv?.interpretationMode === 'qsv_gpb' && qsv.gpbEffective && qsv.gopRefDist === 1;
+  const qsvGPB = isQSVGpbInterpretation(qsv);
   const expectedGPB = 'Expected QSV GPB structure';
   const rows = [
     ['Frames sampled', String(source.framesAnalyzed), String(output.framesAnalyzed), 'Measurement scope'],
@@ -4658,6 +4665,7 @@ function updateVideoWorkerConfig(
       workerConfig: {
         ...current.workerConfig,
         [key]: value,
+        ...(frameStructureManagedKeys.has(key) ? { frameStructureMode: 'custom' } : {}),
         ...(key === 'videoToolboxBitrateMbps' ? (() => {
           const rates = videoToolboxRatesFromTargetMbps(value);
           return { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer };
@@ -5242,7 +5250,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
       ['VideoToolbox frame reordering', 'Source structure shown above', bFrameMode === 'off' ? 'Disabled by B-frames Off' : bFrameMode === 'auto' ? 'Encoder controlled' : 'Requested for B-frame output', recommendation?.recommendation.effectiveBFramePolicy ? `Effective: ${recommendation.recommendation.effectiveBFramePolicy}` : 'Pending worker resolution'],
     ] : []),
     ...(encoder === 'hevc_qsv' ? [
-      ['QSV requested mode', 'Worker capability dependent', videoWorkerValue(profile, 'qsvRequestedRateControl', videoWorkerValue(profile, 'qsvRateControl', 'la_icq')), 'Preserved as requested evidence'],
+      ['QSV requested mode', 'Worker capability dependent', videoWorkerValue(profile, 'qsvRequestedRateControl', videoWorkerValue(profile, 'qsvRateControl', 'icq')), 'Preserved as requested evidence'],
       ['QSV effective mode', 'Active worker probe', videoWorkerValue(profile, 'qsvEffectiveRateControl', 'Pending worker resolution'), videoWorkerValue(profile, 'qsvRateControlFallbackReason') || 'No fallback'],
     ] : []),
     ['Video filters', 'Source image', filters || 'None', filters ? 'Image processing enabled' : 'No image cleanup'],
@@ -6186,7 +6194,7 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
         args.push('-adaptive_b', '1');
       }
       const pStrategy = numberWorkerValue(profile, 'qsvPStrategy', 0);
-      if (pStrategy > 0 && (pStrategy !== 2 || videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') === 'off')) {
+      if (pStrategy > 0 && videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') === 'off') {
         args.push('-p_strategy', String(Math.min(2, pStrategy)));
       }
     }

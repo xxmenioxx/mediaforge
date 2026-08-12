@@ -781,6 +781,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.X265Params); value != "" {
 		workerConfig["x265Params"] = value
 	}
+	if value := normalizedFrameStructureMode(override.FrameStructureMode); value != "" {
+		workerConfig["frameStructureMode"] = value
+	}
 	if value := normalizedFrameStructureGOPMode(override.FrameStructureGOPMode); value != "" {
 		workerConfig["frameStructureGopMode"] = value
 		if value == "recommended" || value == "custom" {
@@ -1380,6 +1383,15 @@ func normalizedFrameStructureGOPMode(value string) string {
 	}
 }
 
+func normalizedFrameStructureMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "compatible", "balanced", "maximum_compression", "custom":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
 func normalizedFrameStructureBFrameMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "auto", "recommended", "custom", "off":
@@ -1789,26 +1801,24 @@ type qsvEffectiveFeatures struct {
 }
 
 func resolveQSVEffectiveFeatures(profile models.Profile, capability capabilities.EncoderCapability) qsvEffectiveFeatures {
-	if !profileUsesTenBit(profile) {
-		return qsvEffectiveFeatures{}
-	}
+	main10 := profileUsesTenBit(profile)
 	rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvEffectiveRateControl"])))
 	if rateControl == "" {
 		rateControl = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
 	}
 	features := qsvEffectiveFeatures{
-		AdaptiveI: capability.QSVAdaptiveIMain10,
-		AdaptiveB: capability.QSVAdaptiveBMain10,
+		AdaptiveI: map[bool]bool{false: capability.QSVAdaptiveIMain8, true: capability.QSVAdaptiveIMain10}[main10],
+		AdaptiveB: map[bool]bool{false: capability.QSVAdaptiveBMain8, true: capability.QSVAdaptiveBMain10}[main10],
 	}
 	switch rateControl {
 	case "la_icq":
-		features.LookAhead = capability.QSVLAICQMain10
+		features.LookAhead = map[bool]bool{false: capability.QSVLAICQMain8, true: capability.QSVLAICQMain10}[main10]
 	case "vbr":
-		features.LookAhead = capability.QSVVBRLookAheadMain10
-		features.ExtendedBRC = capability.QSVVBRExtBRCMain10
+		features.LookAhead = map[bool]bool{false: capability.QSVVBRLookAheadMain8, true: capability.QSVVBRLookAheadMain10}[main10]
+		features.ExtendedBRC = map[bool]bool{false: capability.QSVVBRExtBRCMain8, true: capability.QSVVBRExtBRCMain10}[main10]
 	case "cbr":
-		features.LookAhead = capability.QSVCBRLookAheadMain10
-		features.ExtendedBRC = capability.QSVCBRExtBRCMain10
+		features.LookAhead = map[bool]bool{false: capability.QSVCBRLookAheadMain8, true: capability.QSVCBRLookAheadMain10}[main10]
+		features.ExtendedBRC = map[bool]bool{false: capability.QSVCBRExtBRCMain8, true: capability.QSVCBRExtBRCMain10}[main10]
 	}
 	return features
 }
@@ -1828,7 +1838,7 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if rateControl == "" {
 		rateControl = strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))
 	}
-	lookAheadEnabled := main10 && features.LookAhead
+	lookAheadEnabled := features.LookAhead
 	if lookAheadEnabled {
 		if rateControl == "la_icq" {
 			args = append(args, "-look_ahead", "1")
@@ -1854,8 +1864,8 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 			format = "Main10"
 		}
 		mode := map[int]string{1: "Simple", 2: "Pyramid"}[pStrategy]
-		pyramidAllowed := pStrategy != 2 || normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "off"
-		if pyramidAllowed && capability.TestedModes["qsvPStrategy"+mode+format] {
+		pStrategyAllowed := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "off"
+		if pStrategyAllowed && capability.TestedModes["qsvPStrategy"+mode+format] {
 			args = append(args, "-p_strategy", strconv.Itoa(pStrategy))
 		}
 	}

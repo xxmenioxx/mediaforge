@@ -214,6 +214,7 @@ type AssetConversionOverrideState struct {
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
 	X265Params                       string                         `json:"x265Params,omitempty"`
+	FrameStructureMode               string                         `json:"frameStructureMode,omitempty"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode,omitempty"`
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames,omitempty"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode,omitempty"`
@@ -349,6 +350,7 @@ type AssetConversionUpdateInput struct {
 	VideoFilters                     string                         `json:"videoFilters"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
 	X265Params                       string                         `json:"x265Params"`
+	FrameStructureMode               string                         `json:"frameStructureMode"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode"`
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode"`
@@ -2181,6 +2183,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
 		X265Params:                     strings.TrimSpace(input.X265Params),
+		FrameStructureMode:             normalizedFrameStructureMode(input.FrameStructureMode),
 		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
 		FrameStructureGOPFrames:        min(1000, max(0, input.FrameStructureGOPFrames)),
 		FrameStructureBFrameMode:       normalizedFrameStructureBFrameMode(input.FrameStructureBFrameMode),
@@ -2642,6 +2645,15 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	}
 
 	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
+	inspectPreview := strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true")
+	if inspectPreview && effectiveVideoEncoder == "hevc_qsv" {
+		for index := 0; index+1 < len(args); index++ {
+			if args[index] == "-loglevel" {
+				args[index+1] = "verbose"
+				break
+			}
+		}
+	}
 	args = append(args, videoCodecArguments...)
 	if normalization.Applied && normalization.Mode == "normalize_bt709" {
 		args = append(args,
@@ -2677,6 +2689,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	}
 	if ephemeralPreview {
 		defer os.Remove(cachePath)
+		defer os.Remove(cachePath + ".encoder.log")
 	}
 	frameKind := strings.ToLower(strings.TrimSpace(c.Query("frame")))
 	if frameKind == "source" || frameKind == "output" {
@@ -2732,7 +2745,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		}
 	}
 
-	if strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true") {
+	if inspectPreview {
 		source, sourceErr := probePreviewCharacteristics(path)
 		if sourceErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "source preview validation failed: " + sourceErr.Error()})
@@ -2772,16 +2785,43 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			gpbEffective, gpbKnown := capability.TestedModes["qsvGpbEffective"+format]
 			gopRefDistOne := capability.TestedModes["qsvGpbRefDistOne"+format]
 			bRefOff := capability.TestedModes["qsvGpbBRefOff"+format]
+			actualContext := qsvEffectiveFrameContext{}
+			contextSource := "worker_capability"
+			if logBytes, logErr := os.ReadFile(cachePath + ".encoder.log"); logErr == nil {
+				actual := parseQSVEffectiveFrameContext(string(logBytes))
+				actualContext = actual
+				if actual.GPBKnown || actual.GopRefDist > 0 || actual.BRefType != "" {
+					contextSource = "preview_encode"
+				}
+				if actual.GPBKnown {
+					gpbKnown, gpbEffective = true, actual.GPBEffective
+				}
+				if actual.GopRefDist > 0 {
+					gopRefDistOne = actual.GopRefDist == 1
+				}
+				if actual.BRefType != "" {
+					bRefOff = actual.BRefType == "off"
+				}
+			}
 			qsvFeatureStatus = QSVFeatureStatus{
 				AdaptiveIRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveI"], false),
-				AdaptiveIEffective: argumentValue(videoCodecArguments, "-adaptive_i") == "1",
+				AdaptiveIEffective: map[bool]bool{true: actualContext.AdaptiveI}[actualContext.AdaptiveIKnown] || (!actualContext.AdaptiveIKnown && argumentValue(videoCodecArguments, "-adaptive_i") == "1"),
 				AdaptiveBRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveB"], false),
-				AdaptiveBEffective: argumentValue(videoCodecArguments, "-adaptive_b") == "1",
+				AdaptiveBEffective: map[bool]bool{true: actualContext.AdaptiveB}[actualContext.AdaptiveBKnown] || (!actualContext.AdaptiveBKnown && argumentValue(videoCodecArguments, "-adaptive_b") == "1"),
 				GPBKnown:           gpbKnown,
 				GPBEffective:       gpbEffective,
-				GopRefDist:         map[bool]int{true: 1}[gopRefDistOne],
-				BRefType:           map[bool]string{true: "off"}[bRefOff],
-				InterpretationMode: map[bool]string{true: "qsv_gpb"}[gpbEffective && gopRefDistOne],
+				GopRefDist:         firstPositiveInt(actualContext.GopRefDist, map[bool]int{true: 1}[gopRefDistOne]),
+				GopPicSize:         actualContext.GopPicSize,
+				BRefType:           firstNonEmpty(actualContext.BRefType, map[bool]string{true: "off"}[bRefOff]),
+				PRefType:           actualContext.PRefType,
+				RateControlMethod:  actualContext.RateControlMethod,
+				TargetUsage:        actualContext.TargetUsage,
+				ContextSource:      contextSource,
+			}
+			if qsvFeatureStatus.GPBEffective && qsvFeatureStatus.GopRefDist == 1 {
+				qsvFeatureStatus.InterpretationMode = "qsv_gpb"
+			} else if qsvFeatureStatus.GPBEffective && qsvFeatureStatus.GopRefDist > 1 {
+				qsvFeatureStatus.InterpretationMode = "qsv_mixed_b_gpb"
 			}
 
 			qsvFrameWarnings = qsvFrameStructureWarnings(
@@ -2789,7 +2829,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				sourceFrameStructure,
 				outputFrameStructure,
 			)
-			if qsvFeatureStatus.InterpretationMode != "qsv_gpb" && normalizedFrameStructureBFrameMode(workerStringValue(effectivePreviewProfile.WorkerConfig["frameStructureBFrameMode"])) == "off" && outputFrameStructure.BFrames > 0 {
+			if qsvFeatureStatus.InterpretationMode == "" && normalizedFrameStructureBFrameMode(workerStringValue(effectivePreviewProfile.WorkerConfig["frameStructureBFrameMode"])) == "off" && outputFrameStructure.BFrames > 0 {
 				qsvFrameWarnings = append(qsvFrameWarnings, fmt.Sprintf("B-frames were explicitly disabled with -bf 0, but %d B-frames were still detected in the QSV preview output. The worker did not honor the requested frame structure; do not treat this configuration as validated.", outputFrameStructure.BFrames))
 			}
 		}
@@ -3460,7 +3500,78 @@ func generateCachedPreview(ctx context.Context, key string, destination string, 
 		active.err = err
 		return false, err
 	}
+	logTemporary := destination + ".encoder.log.partial"
+	if err := os.WriteFile(logTemporary, stderr.Bytes(), 0o600); err == nil {
+		if renameErr := os.Rename(logTemporary, destination+".encoder.log"); renameErr != nil {
+			_ = os.Remove(logTemporary)
+		}
+	}
 	return false, nil
+}
+
+type qsvEffectiveFrameContext struct {
+	AdaptiveIKnown    bool
+	AdaptiveI         bool
+	AdaptiveBKnown    bool
+	AdaptiveB         bool
+	GPBKnown          bool
+	GPBEffective      bool
+	GopRefDist        int
+	GopPicSize        int
+	BRefType          string
+	PRefType          string
+	RateControlMethod string
+	TargetUsage       int
+}
+
+func parseQSVEffectiveFrameContext(output string) qsvEffectiveFrameContext {
+	context := qsvEffectiveFrameContext{}
+	for _, line := range strings.Split(output, "\n") {
+		for _, field := range strings.Split(line, ";") {
+			field = strings.TrimSpace(field)
+			switch {
+			case strings.Contains(field, "AdaptiveI:"):
+				context.AdaptiveIKnown = true
+				context.AdaptiveI = strings.EqualFold(valueAfterMarker(field, "AdaptiveI:"), "ON")
+			case strings.Contains(field, "AdaptiveB:"):
+				context.AdaptiveBKnown = true
+				context.AdaptiveB = strings.EqualFold(valueAfterMarker(field, "AdaptiveB:"), "ON")
+			case strings.Contains(field, "GPB:"):
+				context.GPBKnown = true
+				context.GPBEffective = strings.EqualFold(valueAfterMarker(field, "GPB:"), "ON")
+			case strings.Contains(field, "GopRefDist:"):
+				context.GopRefDist, _ = strconv.Atoi(valueAfterMarker(field, "GopRefDist:"))
+			case strings.Contains(field, "GopPicSize:"):
+				context.GopPicSize, _ = strconv.Atoi(valueAfterMarker(field, "GopPicSize:"))
+			case strings.Contains(field, "BRefType:"):
+				context.BRefType = strings.ToLower(valueAfterMarker(field, "BRefType:"))
+			case strings.Contains(field, "PRefType:"):
+				context.PRefType = strings.ToLower(valueAfterMarker(field, "PRefType:"))
+			case strings.Contains(field, "RateControlMethod:"):
+				context.RateControlMethod = strings.ToLower(valueAfterMarker(field, "RateControlMethod:"))
+			case strings.Contains(field, "TargetUsage:"):
+				context.TargetUsage, _ = strconv.Atoi(valueAfterMarker(field, "TargetUsage:"))
+			}
+		}
+	}
+	return context
+}
+
+func valueAfterMarker(value, marker string) string {
+	index := strings.Index(value, marker)
+	if index < 0 {
+		return ""
+	}
+	return strings.TrimSpace(value[index+len(marker):])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func cleanupPreviewCache(directory string, maxAge time.Duration) {
@@ -5097,6 +5208,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.DeinterlaceMode) == "" &&
 		strings.TrimSpace(override.X265Params) == "" &&
 		strings.TrimSpace(override.FrameStructureGOPMode) == "" &&
+		strings.TrimSpace(override.FrameStructureMode) == "" &&
 		override.FrameStructureGOPFrames == 0 &&
 		strings.TrimSpace(override.FrameStructureBFrameMode) == "" &&
 		override.FrameStructureMaxBFrames == 0 &&

@@ -19,6 +19,7 @@ func TestCaptureProfileSnapshotIsDeepAndVersioned(t *testing.T) {
 			"videoPreset": "slow", "videoEncoder": "hevc_videotoolbox",
 			"frameStructureGopMode": "custom", "frameStructureGopFrames": 96,
 			"frameStructureBFrameMode": "off", "frameStructureMaxBFrames": 3,
+			"frameStructureMode": "compatible", "qsvAdaptiveI": true, "qsvAdaptiveB": false, "qsvPStrategy": 1,
 		},
 	}
 	capturedAt := time.Date(2026, 7, 13, 23, 0, 0, 0, time.UTC)
@@ -36,7 +37,7 @@ func TestCaptureProfileSnapshotIsDeepAndVersioned(t *testing.T) {
 	if !ok || workerConfig["videoPreset"] != "slow" {
 		t.Fatalf("snapshot changed with source profile: %#v", snapshot["workerConfig"])
 	}
-	if workerConfig["frameStructureGopMode"] != "custom" || workerConfig["frameStructureGopFrames"] != float64(96) || workerConfig["frameStructureBFrameMode"] != "off" {
+	if workerConfig["frameStructureMode"] != "compatible" || workerConfig["frameStructureGopMode"] != "custom" || workerConfig["frameStructureGopFrames"] != float64(96) || workerConfig["frameStructureBFrameMode"] != "off" || workerConfig["qsvPStrategy"] != float64(1) {
 		t.Fatalf("snapshot lost frame-structure policy: %#v", workerConfig)
 	}
 	constraints, ok := snapshot["constraints"].(map[string]any)
@@ -50,7 +51,7 @@ func TestCaptureProfileSnapshotIsDeepAndVersioned(t *testing.T) {
 	if restored.ProfileVersion != 3 || restored.VideoCodec != "x265_10bit" || restored.QualityValue != 18 {
 		t.Fatalf("snapshot did not restore captured profile: %#v", restored)
 	}
-	if restored.WorkerConfig["frameStructureGopMode"] != "custom" || restored.WorkerConfig["frameStructureGopFrames"] != float64(96) || restored.WorkerConfig["frameStructureBFrameMode"] != "off" {
+	if restored.WorkerConfig["frameStructureMode"] != "compatible" || restored.WorkerConfig["frameStructureGopMode"] != "custom" || restored.WorkerConfig["frameStructureGopFrames"] != float64(96) || restored.WorkerConfig["frameStructureBFrameMode"] != "off" || restored.WorkerConfig["qsvPStrategy"] != float64(1) {
 		t.Fatalf("restored profile lost frame-structure policy: %#v", restored.WorkerConfig)
 	}
 }

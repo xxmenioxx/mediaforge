@@ -1322,6 +1322,11 @@ function AssetRow({
       qsvAdaptiveI: workerConfig.qsvAdaptiveI === true,
       qsvAdaptiveB: workerConfig.qsvAdaptiveB === true,
       qsvPStrategy: Math.min(2, Math.max(0, Number(workerConfig.qsvPStrategy ?? 0))) as 0 | 1 | 2,
+      frameStructureMode: (['compatible', 'balanced', 'maximum_compression', 'custom'].includes(String(workerConfig.frameStructureMode)) ? workerConfig.frameStructureMode : 'custom') as AssetConversionOverrideState['frameStructureMode'],
+      frameStructureGopMode: (['auto', 'recommended', 'custom'].includes(String(workerConfig.frameStructureGopMode)) ? workerConfig.frameStructureGopMode : 'auto') as AssetConversionOverrideState['frameStructureGopMode'],
+      frameStructureGopFrames: Math.max(1, Math.min(1000, Number(workerConfig.frameStructureGopFrames ?? 120))),
+      frameStructureBFrameMode: (['auto', 'recommended', 'custom', 'off'].includes(String(workerConfig.frameStructureBFrameMode)) ? workerConfig.frameStructureBFrameMode : 'auto') as AssetConversionOverrideState['frameStructureBFrameMode'],
+      frameStructureMaxBFrames: Math.max(0, Math.min(16, Number(workerConfig.frameStructureMaxBFrames ?? 3))),
       ...motionPatch,
     });
     await updateConversion.mutateAsync({ path: asset.path, ...next });
@@ -1362,6 +1367,7 @@ function AssetRow({
         [key]: value,
         ...(rates ? { videoToolboxBitrateMbps: rates.target, videoToolboxMaxrateMbps: rates.maxrate, videoToolboxBufferMbps: rates.buffer } : {}),
         ...(customHardwareControl ? { hardwareQualityPreset: 'custom' } : {}),
+        ...(['frameStructureGopMode', 'frameStructureGopFrames', 'frameStructureBFrameMode', 'frameStructureMaxBFrames', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy'].includes(String(key)) ? { frameStructureMode: 'custom' as const } : {}),
       };
     });
   }
@@ -2657,6 +2663,7 @@ function AssetConversionOverridePanel({
   function selectHardwareQualityPreset(preset: string, encoder: string) {
     onChange('hardwareQualityPreset', preset);
     if (preset === 'custom') return;
+    if (encoder === 'hevc_qsv') onChange('qsvRateControl', 'icq');
     const requested = assetQualityProfile(profile, draft, encoder, preset);
     encoderQualityRecommendation.mutate({ path: assetPath, profile: requested }, {
       onSuccess: (result) => applyEffectiveProfileToAssetOverrides(onChange, result.effectiveProfile),
@@ -2676,7 +2683,8 @@ function AssetConversionOverridePanel({
   }
 
   function updateFrameStructurePolicy(patch: Record<string, unknown>) {
-    Object.entries(patch).forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
+    Object.entries(patch).filter(([name]) => name !== 'frameStructureMode').forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
+    if ('frameStructureMode' in patch) onChange('frameStructureMode', patch.frameStructureMode as AssetConversionOverrideState['frameStructureMode']);
     if (effectiveVideoEncoder === 'hevc_qsv' || effectiveVideoEncoder === 'hevc_videotoolbox') {
       const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
       encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
@@ -2973,11 +2981,11 @@ function AssetConversionOverridePanel({
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="The backend translates this intent using the active worker probe." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={draft.qsvPStrategy ?? Number(profile?.workerConfig?.qsvPStrategy ?? 0)} onChange={(event) => onChange('qsvPStrategy', Number(event.target.value) as 0 | 1 | 2)} helperText="Pyramid requires B-frames Off and a successful worker probe." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={!qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple</MenuItem><MenuItem value={2} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
+                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={draft.qsvPStrategy ?? Number(profile?.workerConfig?.qsvPStrategy ?? 0)} onChange={(event) => onChange('qsvPStrategy', Number(event.target.value) as 0 | 1 | 2)} helperText="Available only when B-frames are Off and validated by the worker." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple · requires Off</MenuItem><MenuItem value={2} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
                       <MenuItem value="icq">ICQ</MenuItem>
-                      <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · Main10 required</MenuItem>
+                      <MenuItem value="la_icq" disabled={!qsvFeatures.rateControls.laIcq}>LA-ICQ · worker validation required</MenuItem>
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -4044,6 +4052,11 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
+  if (value.frameStructureMode === 'compatible' || value.frameStructureMode === 'balanced' || value.frameStructureMode === 'maximum_compression' || value.frameStructureMode === 'custom') clean.frameStructureMode = value.frameStructureMode;
+  if (value.frameStructureGopMode === 'auto' || value.frameStructureGopMode === 'recommended' || value.frameStructureGopMode === 'custom') clean.frameStructureGopMode = value.frameStructureGopMode;
+  if (typeof value.frameStructureGopFrames === 'number' && Number.isFinite(value.frameStructureGopFrames) && value.frameStructureGopFrames > 0) clean.frameStructureGopFrames = Math.min(1000, Math.round(value.frameStructureGopFrames));
+  if (value.frameStructureBFrameMode === 'auto' || value.frameStructureBFrameMode === 'recommended' || value.frameStructureBFrameMode === 'custom' || value.frameStructureBFrameMode === 'off') clean.frameStructureBFrameMode = value.frameStructureBFrameMode;
+  if (typeof value.frameStructureMaxBFrames === 'number' && Number.isFinite(value.frameStructureMaxBFrames) && value.frameStructureMaxBFrames >= 0) clean.frameStructureMaxBFrames = Math.min(16, Math.round(value.frameStructureMaxBFrames));
   if (value.qsvRateControl === 'icq' || value.qsvRateControl === 'la_icq') {
     clean.qsvRateControl = value.qsvRateControl;
   }

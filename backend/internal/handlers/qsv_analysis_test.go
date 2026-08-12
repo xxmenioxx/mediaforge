@@ -138,6 +138,13 @@ func TestQSVFrameStructureWarnings(t *testing.T) {
 			output:   QSVFrameStructureAnalysis{FramesAnalyzed: 2399, BFrames: 2364, BFrameRatio: 0.985, MaxConsecutiveBFrames: 74, KeyFrames: 35, AverageGOPLength: 75},
 			expected: []string{},
 		},
+		{
+			name:     "qsv mixed b gpb does not trigger conventional b frame warnings",
+			features: QSVFeatureStatus{GPBKnown: true, GPBEffective: true, GopRefDist: 4, BRefType: "pyramid", InterpretationMode: "qsv_mixed_b_gpb"},
+			source:   QSVFrameStructureAnalysis{FramesAnalyzed: 2400, PFrames: 2343, KeyFrames: 33, AverageGOPLength: 75.4},
+			output:   QSVFrameStructureAnalysis{FramesAnalyzed: 2399, BFrames: 2364, BFrameRatio: 0.985, MaxConsecutiveBFrames: 74, KeyFrames: 35, AverageGOPLength: 75},
+			expected: []string{},
+		},
 	}
 
 	for _, test := range tests {
@@ -167,6 +174,18 @@ func TestQSVFrameStructureWarnings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseQSVEffectiveFrameContext(t *testing.T) {
+	log := "[hevc_qsv @ 0x123] GopPicSize: 75; GopRefDist: 4; BRefType: pyramid; PRefType: simple; GPB: ON; RateControlMethod: ICQ; TargetUsage: 4; AdaptiveI: ON\n"
+	context := parseQSVEffectiveFrameContext(log)
+	if !context.GPBKnown || !context.GPBEffective || context.GopPicSize != 75 || context.GopRefDist != 4 || context.BRefType != "pyramid" || context.PRefType != "simple" || context.RateControlMethod != "icq" || context.TargetUsage != 4 {
+		t.Fatalf("unexpected effective QSV context: %#v", context)
+	}
+	unknown := parseQSVEffectiveFrameContext("ordinary ffmpeg output\n")
+	if unknown.GPBKnown || unknown.GPBEffective || unknown.GopRefDist != 0 || unknown.BRefType != "" {
+		t.Fatalf("must not invent QSV context: %#v", unknown)
 	}
 }
 

@@ -68,7 +68,10 @@ func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
 		profile.WorkerConfig["qsvEffectiveGlobalQuality"] = baseQuality
 		profile.WorkerConfig["qsvAssetQualityAdjustment"] = 0
 		profile.WorkerConfig["qsvAssetQualityReasons"] = []string{}
-		profile.WorkerConfig["qsvRateControl"] = "la_icq"
+		// Named presets use the broadly validated ICQ baseline. LA-ICQ is an
+		// explicit, capability-gated choice and must never be reintroduced by a
+		// preset when the selected worker reports it unavailable.
+		profile.WorkerConfig["qsvRateControl"] = "icq"
 		profile.WorkerConfig["qsvLookAheadDepth"] = 40
 		profile.WorkerConfig["qsvExtendedBRC"] = false
 		profile.WorkerConfig["qsvAdaptiveI"] = false

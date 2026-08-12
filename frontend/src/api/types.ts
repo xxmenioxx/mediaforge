@@ -142,6 +142,7 @@ export type AssetConversionOverrideState = {
   videoFilters?: string;
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
+  frameStructureMode?: 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   frameStructureGopMode?: 'auto' | 'recommended' | 'custom';
   frameStructureGopFrames?: number;
   frameStructureBFrameMode?: 'auto' | 'recommended' | 'custom' | 'off';
@@ -415,7 +416,7 @@ export type RuntimeSnapshot = {
   powerSource: string;
   onBattery: boolean;
   disks: Record<string, unknown>;
-  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxBFramesVerified?: boolean; videoToolboxBFramesDisabled?: boolean; videoToolboxObservedBFrames?: number; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
+  encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain8?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; qsvAdaptiveIMain8?: boolean; qsvAdaptiveBMain8?: boolean; qsvAdaptiveIMain10?: boolean; qsvAdaptiveBMain10?: boolean; qsvVbrExtBrcMain8?: boolean; qsvVbrExtBrcMain10?: boolean; qsvVbrLookAheadMain8?: boolean; qsvVbrLookAheadMain10?: boolean; qsvCbrExtBrcMain8?: boolean; qsvCbrExtBrcMain10?: boolean; qsvCbrLookAheadMain8?: boolean; qsvCbrLookAheadMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxBFramesVerified?: boolean; videoToolboxBFramesDisabled?: boolean; videoToolboxObservedBFrames?: number; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;
@@ -846,8 +847,13 @@ export type QSVFeatureStatus = {
   gpbKnown: boolean;
   gpbEffective: boolean;
   gopRefDist?: number;
+  gopPicSize?: number;
   bRefType?: string;
-  interpretationMode?: 'qsv_gpb';
+  pRefType?: string;
+  rateControlMethod?: string;
+  targetUsage?: number;
+  interpretationMode?: 'qsv_gpb' | 'qsv_mixed_b_gpb';
+  contextSource?: 'preview_encode' | 'worker_capability';
 };
 
 export type PreviewInspection = {

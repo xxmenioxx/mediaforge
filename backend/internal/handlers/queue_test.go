@@ -266,12 +266,13 @@ func TestQueueProfileSnapshotFreezesFrameStructureOverride(t *testing.T) {
 	profile.WorkerConfig["frameStructureGopFrames"] = 120
 	profile.WorkerConfig["frameStructureBFrameMode"] = "recommended"
 	profile.WorkerConfig["frameStructureMaxBFrames"] = 3
+	profile.WorkerConfig["frameStructureMode"] = "balanced"
 	if err := db.Create(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
 	path := "/media/raw/frame-override.mkv"
 	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
-		path: {FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 90, FrameStructureBFrameMode: "off"},
+		path: {FrameStructureMode: "compatible", FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 90, FrameStructureBFrameMode: "off"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -283,16 +284,16 @@ func TestQueueProfileSnapshotFreezesFrameStructureOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workerStringValue(restored.WorkerConfig["frameStructureGopMode"]) != "custom" || workerIntValue(restored.WorkerConfig["frameStructureGopFrames"], 0) != 90 || workerStringValue(restored.WorkerConfig["frameStructureBFrameMode"]) != "off" {
+	if workerStringValue(restored.WorkerConfig["frameStructureMode"]) != "compatible" || workerStringValue(restored.WorkerConfig["frameStructureGopMode"]) != "custom" || workerIntValue(restored.WorkerConfig["frameStructureGopFrames"], 0) != 90 || workerStringValue(restored.WorkerConfig["frameStructureBFrameMode"]) != "off" {
 		t.Fatalf("frame override was not captured in effective profile: %#v", restored.WorkerConfig)
 	}
 	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
-		path: {FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 240, FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 8},
+		path: {FrameStructureMode: "maximum_compression", FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 240, FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 8},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	frozen := conversionOverrideForJob(job, assetConversionOverrides(db))
-	if frozen.FrameStructureGOPFrames != 90 || frozen.FrameStructureBFrameMode != "off" {
+	if frozen.FrameStructureMode != "compatible" || frozen.FrameStructureGOPFrames != 90 || frozen.FrameStructureBFrameMode != "off" {
 		t.Fatalf("queued job used mutable asset override instead of frozen snapshot: %#v", frozen)
 	}
 }

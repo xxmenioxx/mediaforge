@@ -34,6 +34,7 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		QSVICQMain8           bool `json:"qsvIcqMain8"`
 		QSVICQMain10          bool `json:"qsvIcqMain10"`
 		QSVLAICQMain10        bool `json:"qsvLaIcqMain10"`
+		QSVLAICQMain8         bool `json:"qsvLaIcqMain8"`
 		QSVCQPMain8           bool `json:"qsvCqpMain8"`
 		QSVCQPMain10          bool `json:"qsvCqpMain10"`
 		QSVVBRMain8           bool `json:"qsvVbrMain8"`
@@ -43,14 +44,21 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		QSVLowPowerMain10     bool `json:"qsvLowPowerMain10"`
 		QSVVBRExtBRCMain10    bool `json:"qsvVbrExtBrcMain10"`
 		QSVVBRLookAheadMain10 bool `json:"qsvVbrLookAheadMain10"`
+		QSVVBRExtBRCMain8     bool `json:"qsvVbrExtBrcMain8"`
+		QSVVBRLookAheadMain8  bool `json:"qsvVbrLookAheadMain8"`
 
 		QSVCBRExtBRCMain10    bool `json:"qsvCbrExtBrcMain10"`
 		QSVCBRLookAheadMain10 bool `json:"qsvCbrLookAheadMain10"`
+		QSVCBRExtBRCMain8     bool `json:"qsvCbrExtBrcMain8"`
+		QSVCBRLookAheadMain8  bool `json:"qsvCbrLookAheadMain8"`
 
 		QSVAdaptiveIMain10 bool `json:"qsvAdaptiveIMain10"`
 		QSVAdaptiveBMain10 bool `json:"qsvAdaptiveBMain10"`
+		QSVAdaptiveIMain8  bool `json:"qsvAdaptiveIMain8"`
+		QSVAdaptiveBMain8  bool `json:"qsvAdaptiveBMain8"`
 
 		QSVVBRAdvancedMain10        bool              `json:"qsvVbrAdvancedMain10"`
+		QSVVBRAdvancedMain8         bool              `json:"qsvVbrAdvancedMain8"`
 		VideoToolboxMain            bool              `json:"videoToolboxMain"`
 		VideoToolboxMain10          bool              `json:"videoToolboxMain10"`
 		VideoToolboxBFrames         bool              `json:"videoToolboxBFrames"`
@@ -70,17 +78,24 @@ func DecodeEncoderCapability(raw any) (EncoderCapability, bool) {
 		LowPower: value.LowPower, LookAhead: value.LookAhead, ExtendedBRC: value.ExtendedBRC,
 		AdaptiveI: value.AdaptiveI, AdaptiveB: value.AdaptiveB, QSVFullCombination: value.QSVFullCombination,
 
-		QSVICQMain8: value.QSVICQMain8, QSVICQMain10: value.QSVICQMain10, QSVLAICQMain10: value.QSVLAICQMain10,
+		QSVICQMain8: value.QSVICQMain8, QSVICQMain10: value.QSVICQMain10, QSVLAICQMain8: value.QSVLAICQMain8, QSVLAICQMain10: value.QSVLAICQMain10,
 		QSVCQPMain8: value.QSVCQPMain8, QSVCQPMain10: value.QSVCQPMain10,
 		QSVVBRMain8: value.QSVVBRMain8, QSVVBRMain10: value.QSVVBRMain10,
 		QSVVBRExtBRCMain10:    value.QSVVBRExtBRCMain10,
 		QSVVBRLookAheadMain10: value.QSVVBRLookAheadMain10,
+		QSVVBRExtBRCMain8:     value.QSVVBRExtBRCMain8,
+		QSVVBRLookAheadMain8:  value.QSVVBRLookAheadMain8,
 		QSVCBRMain8:           value.QSVCBRMain8, QSVCBRMain10: value.QSVCBRMain10,
 		QSVCBRExtBRCMain10:    value.QSVCBRExtBRCMain10,
 		QSVCBRLookAheadMain10: value.QSVCBRLookAheadMain10,
+		QSVCBRExtBRCMain8:     value.QSVCBRExtBRCMain8,
+		QSVCBRLookAheadMain8:  value.QSVCBRLookAheadMain8,
 		QSVAdaptiveIMain10:    value.QSVAdaptiveIMain10,
 		QSVAdaptiveBMain10:    value.QSVAdaptiveBMain10,
+		QSVAdaptiveIMain8:     value.QSVAdaptiveIMain8,
+		QSVAdaptiveBMain8:     value.QSVAdaptiveBMain8,
 		QSVVBRAdvancedMain10:  value.QSVVBRAdvancedMain10,
+		QSVVBRAdvancedMain8:   value.QSVVBRAdvancedMain8,
 
 		QSVLowPowerMain10: value.QSVLowPowerMain10,
 
@@ -107,6 +122,7 @@ type EncoderCapability struct {
 	QSVICQMain8                 bool
 	QSVICQMain10                bool
 	QSVLAICQMain10              bool
+	QSVLAICQMain8               bool
 	QSVCQPMain8                 bool
 	QSVCQPMain10                bool
 	QSVVBRMain8                 bool
@@ -116,11 +132,18 @@ type EncoderCapability struct {
 	QSVLowPowerMain10           bool
 	QSVVBRExtBRCMain10          bool
 	QSVVBRLookAheadMain10       bool
+	QSVVBRExtBRCMain8           bool
+	QSVVBRLookAheadMain8        bool
 	QSVCBRExtBRCMain10          bool
 	QSVCBRLookAheadMain10       bool
+	QSVCBRExtBRCMain8           bool
+	QSVCBRLookAheadMain8        bool
 	QSVVBRAdvancedMain10        bool
+	QSVVBRAdvancedMain8         bool
 	QSVAdaptiveIMain10          bool
 	QSVAdaptiveBMain10          bool
+	QSVAdaptiveIMain8           bool
+	QSVAdaptiveBMain8           bool
 	VideoToolboxMain            bool
 	VideoToolboxMain10          bool
 	VideoToolboxBFrames         bool
@@ -304,6 +327,19 @@ func CheckEncoder(encoder string) EncoderCapability {
 			result.QSVCQPMain8 = probe("qsvCqpMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-flags", "+qscale")
 			result.QSVVBRMain8 = probe("qsvVbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M")
 			result.QSVCBRMain8 = probe("qsvCbrMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M")
+			result.QSVLAICQMain8 = rateControlProbe("qsvLaIcqMain8", "LA_ICQ", "nv12", "-profile:v", "main", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40")
+			result.QSVVBRExtBRCMain8 = vbrExtBRCProbe("qsvVbrExtBrcMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M", "-extbrc", "1")
+			result.QSVVBRLookAheadMain8 = vbrLookAheadProbe("qsvVbrLookAheadMain8", "nv12", 40, "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M", "-extbrc", "1", "-look_ahead_depth", "40")
+			result.QSVCBRExtBRCMain8 = cbrExtBRCProbe("qsvCbrExtBrcMain8", "nv12", "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M", "-extbrc", "1")
+			result.QSVCBRLookAheadMain8 = cbrLookAheadProbe("qsvCbrLookAheadMain8", "nv12", 40, "-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M", "-extbrc", "1", "-look_ahead_depth", "40")
+			result.QSVVBRAdvancedMain8 = vbrAdvancedProbe("qsvVbrAdvancedMain8", "nv12", 40, "-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M", "-extbrc", "1", "-look_ahead_depth", "40", "-adaptive_i", "1", "-adaptive_b", "1")
+			if result.QSVICQMain8 {
+				result.QSVAdaptiveIMain8 = adaptiveIProbe("qsvAdaptiveIMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-adaptive_i", "1")
+				result.QSVAdaptiveBMain8 = adaptiveBProbe("qsvAdaptiveBMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-adaptive_b", "1")
+			} else {
+				result.QSVAdaptiveIMain8 = skip("qsvAdaptiveIMain8", "skipped because QSV ICQ Main8 is unavailable")
+				result.QSVAdaptiveBMain8 = skip("qsvAdaptiveBMain8", "skipped because QSV ICQ Main8 is unavailable")
+			}
 			probe("qsvPStrategySimpleMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-bf", "0", "-p_strategy", "1")
 			probe("qsvPStrategyPyramidMain8", "nv12", "-profile:v", "main", "-global_quality", "25", "-bf", "0", "-p_strategy", "2")
 			recordQSVGPBContext(&result, "Main8", "nv12", "main")
@@ -411,17 +447,19 @@ func CheckEncoder(encoder string) EncoderCapability {
 					"-adaptive_b", "1",
 				)
 
-				result.AdaptiveI = result.QSVAdaptiveIMain10
-				result.AdaptiveB = result.QSVAdaptiveBMain10
 			} else {
-				result.AdaptiveI = skip("qsvAdaptiveIMain10", "skipped because QSV ICQ Main10 is unavailable")
-				result.AdaptiveB = skip("qsvAdaptiveBMain10", "skipped because QSV ICQ Main10 is unavailable")
+				result.QSVAdaptiveIMain10 = skip("qsvAdaptiveIMain10", "skipped because QSV ICQ Main10 is unavailable")
+				result.QSVAdaptiveBMain10 = skip("qsvAdaptiveBMain10", "skipped because QSV ICQ Main10 is unavailable")
 			}
+			result.AdaptiveI = result.QSVAdaptiveIMain8 || result.QSVAdaptiveIMain10
+			result.AdaptiveB = result.QSVAdaptiveBMain8 || result.QSVAdaptiveBMain10
 			if result.QSVLAICQMain10 {
 				result.QSVFullCombination = probe("qsvFullCombination", "p010le", "-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
 			} else {
 				result.QSVFullCombination = skip("qsvFullCombination", "skipped because QSV LA-ICQ Main10 is unavailable")
 			}
+			result.LookAhead = result.QSVLAICQMain8 || result.QSVLAICQMain10 || result.QSVVBRLookAheadMain8 || result.QSVVBRLookAheadMain10 || result.QSVCBRLookAheadMain8 || result.QSVCBRLookAheadMain10
+			result.ExtendedBRC = result.QSVVBRExtBRCMain8 || result.QSVVBRExtBRCMain10 || result.QSVCBRExtBRCMain8 || result.QSVCBRExtBRCMain10
 		}
 		if encoder == "hevc_videotoolbox" || encoder == "h264_videotoolbox" {
 			baseProfile := "main"

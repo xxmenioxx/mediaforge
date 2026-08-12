@@ -1,4 +1,5 @@
 import { Alert, Box, Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { frameStructureModePatch, type FrameStructureMode } from '../utils/frameStructureModes';
 
 export type GOPMode = 'auto' | 'recommended' | 'custom';
 export type BFrameMode = 'auto' | 'recommended' | 'custom' | 'off';
@@ -15,6 +16,7 @@ type Props = {
 };
 
 export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
+  const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
   const gopMode = mode<GOPMode>(config.frameStructureGopMode, ['auto', 'recommended', 'custom'], 'auto');
   const bFrameMode = mode<BFrameMode>(config.frameStructureBFrameMode, ['auto', 'recommended', 'custom', 'off'], 'auto');
   const gop = positiveInt(config.frameStructureGopFrames, recommendedGop || 120);
@@ -40,11 +42,19 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
         </Stack>
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => commit(frameStructureModePatch(event.target.value as FrameStructureMode, recommendedGop, recommendedBFrames))} helperText="Sets the visible advanced values; editing one changes the mode to Custom." size={compact ? 'small' : 'medium'} fullWidth>
+              <MenuItem value="compatible">Compatible</MenuItem>
+              <MenuItem value="balanced">Balanced</MenuItem>
+              <MenuItem value="maximum_compression">Maximum Compression</MenuItem>
+              <MenuItem value="custom">Custom</MenuItem>
+            </TextField>
+          </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="GOP" value={gopMode} disabled={disabled} onChange={(event) => {
               const next = event.target.value as GOPMode;
               const params = { ...x265Params };
               if (next !== 'custom') delete params.scenecut;
-              commit({ frameStructureGopMode: next, ...(next === 'recommended' && recommendedGop ? { frameStructureGopFrames: recommendedGop } : {}), ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}) });
+              commit({ frameStructureMode: 'custom', frameStructureGopMode: next, ...(next === 'recommended' && recommendedGop ? { frameStructureGopFrames: recommendedGop } : {}), ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}) });
             }} size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="auto">Auto</MenuItem>
               <MenuItem value="recommended" disabled={!recommendedGop}>Recommended</MenuItem>
@@ -52,7 +62,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={disabled || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={gopMode === 'auto' ? 'Encoder decides' : gopMode === 'recommended' ? `MVForge analysis: ${recommendedGop}` : 'Frames between keyframes'} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
+            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={disabled || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={gopMode === 'auto' ? 'Encoder decides' : gopMode === 'recommended' ? `MVForge analysis: ${recommendedGop}` : 'Frames between keyframes'} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="B-frames" value={bFrameMode} disabled={disabled} onChange={(event) => {
@@ -64,6 +74,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
                 delete params['b-pyramid'];
               }
               commit({
+                frameStructureMode: 'custom',
                 frameStructureBFrameMode: next,
                 ...(next === 'recommended' && recommendedBFrames ? { frameStructureMaxBFrames: recommendedBFrames } : {}),
                 ...(next === 'off' ? { frameStructureMaxBFrames: 0 } : {}),
@@ -77,7 +88,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={bFrameMode === 'recommended' ? 'Recommended maximum' : 'Maximum B-frames'} type="number" value={bFrames} disabled={disabled || bFrameMode === 'auto' || bFrameMode === 'recommended' || bFrameMode === 'off'} onChange={(event) => commit({ frameStructureMaxBFrames: Math.max(1, Math.min(16, Number(event.target.value))) })} helperText={bFrameMode === 'auto' ? 'Encoder decides' : bFrameMode === 'off' ? 'Effective request: -bf 0' : bFrameMode === 'recommended' ? `MVForge analysis: ${recommendedBFrames}` : 'User-selected maximum'} inputProps={{ min: 1, max: 16 }} size={compact ? 'small' : 'medium'} fullWidth />
+            <TextField label={bFrameMode === 'recommended' ? 'Recommended maximum' : 'Maximum B-frames'} type="number" value={bFrames} disabled={disabled || bFrameMode === 'auto' || bFrameMode === 'recommended' || bFrameMode === 'off'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureMaxBFrames: Math.max(1, Math.min(16, Number(event.target.value))) })} helperText={bFrameMode === 'auto' ? 'Encoder decides' : bFrameMode === 'off' ? encoder === 'hevc_qsv' ? 'Requests regular B-frame distance 0; GPB may remain active' : 'Effective request: -bf 0' : bFrameMode === 'recommended' ? `MVForge analysis: ${recommendedBFrames}` : 'User-selected maximum'} inputProps={{ min: 1, max: 16 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
         </Grid>
         {encoder === 'libx265' && (gopMode === 'custom' || bFrameMode === 'custom') ? (
@@ -90,7 +101,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </Grid>
           </Box>
         ) : null}
-        {bFrameMode === 'off' ? <Alert severity="warning"><strong>B-frames disabled.</strong> The encoder will use I/P frame structures only. This may improve compatibility or help diagnose unusual frame structures, but may reduce compression efficiency and increase bitrate or file size at equivalent quality.</Alert> : null}
+        {bFrameMode === 'off' ? encoder === 'hevc_qsv' ? <Alert severity="info"><strong>Regular B-frame distance disabled.</strong> MVForge requests <code>-bf 0</code>, but QSV GPB may remain active and FFprobe may still report generalized P/B pictures as B. Process Video verifies the effective GPB state and GOP behavior.</Alert> : <Alert severity="warning"><strong>B-frames disabled.</strong> The encoder will use I/P frame structures only. This may improve compatibility or help diagnose unusual frame structures, but may reduce compression efficiency and increase bitrate or file size at equivalent quality.</Alert> : null}
       </Stack>
     </Box>
   );
