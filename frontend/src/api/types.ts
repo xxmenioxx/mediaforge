@@ -452,6 +452,7 @@ export type QueueJob = {
   executionNumber?: number;
   batchId: string;
   batchName: string;
+  batchPosition: number;
   mediaPath: string;
   publishMode: 'standard' | 'replace_library_asset';
   libraryId: number;
@@ -609,6 +610,7 @@ export type QueueJobInput = {
   publishMode?: 'standard' | 'replace_library_asset';
   batchId?: string;
   batchName?: string;
+  batchPosition?: number;
   libraryId: number;
   profileId: number;
   audioProfileKey?: string;

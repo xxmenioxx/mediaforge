@@ -24,6 +24,7 @@ type QueueJobInput struct {
 	PublishMode     string `json:"publishMode"`
 	BatchID         string `json:"batchId"`
 	BatchName       string `json:"batchName"`
+	BatchPosition   int    `json:"batchPosition"`
 	LibraryID       uint   `json:"libraryId" binding:"required"`
 	ProfileID       uint   `json:"profileId" binding:"required"`
 	AudioProfileKey string `json:"audioProfileKey"`
@@ -247,6 +248,7 @@ func (h QueueHandler) Create(c *gin.Context) {
 		PublishMode:     publishMode,
 		BatchID:         input.BatchID,
 		BatchName:       input.BatchName,
+		BatchPosition:   max(0, input.BatchPosition),
 		LibraryID:       input.LibraryID,
 		ProfileID:       input.ProfileID,
 		AudioProfileKey: input.AudioProfileKey,

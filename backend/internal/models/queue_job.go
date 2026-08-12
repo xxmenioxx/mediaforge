@@ -7,6 +7,7 @@ type QueueJob struct {
 	ExecutionNumber       *uint      `json:"executionNumber,omitempty" gorm:"uniqueIndex"`
 	BatchID               string     `json:"batchId" gorm:"index"`
 	BatchName             string     `json:"batchName"`
+	BatchPosition         int        `json:"batchPosition" gorm:"not null;default:0;index"`
 	MediaPath             string     `json:"mediaPath" gorm:"not null"`
 	PublishMode           string     `json:"publishMode" gorm:"not null;default:standard"`
 	LibraryID             uint       `json:"libraryId" gorm:"not null"`

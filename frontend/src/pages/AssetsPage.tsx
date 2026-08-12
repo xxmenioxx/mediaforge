@@ -655,24 +655,28 @@ function AssetGroupRow({
 	    await Promise.all(incompatible.filter(({ asset }) => !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
 	  }
 	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
-	  return Promise.all(queueable.map(async ({ asset, result }) => {
+	  const queued = [];
+	  for (let index = 0; index < queueable.length; index += 1) {
+	    const { asset, result } = queueable[index];
 	    if (trackProfile) {
 	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), trackProfileKey: trackProfile.key });
 	    }
-	    return api.createQueueJob({
+	    queued.push(await api.createQueueJob({
             mediaPath: asset.path,
             publishMode: isLibraryGroup ? 'replace_library_asset' : 'standard',
             batchId,
             batchName,
+			batchPosition: index + 1,
             libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
             profileId: queueProfileId,
             audioProfileKey: selectedAudioProfileKey,
             trackProfileKey: trackProfile?.key ?? '',
             processingMode: copyVideo ? 'audio_only' : 'full_encode',
-            priority: priorityForSize(asset.sizeBytes),
+			priority: 5,
             notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${trackProfile?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
-          });
-	  }));
+		  }));
+	  }
+	  return queued;
     },
     onSuccess: async () => {
       await Promise.all([
