@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,46 @@ func TestValidSubtitleSidecar(t *testing.T) {
 	}
 	if validSubtitleSidecar("srt", []byte("not a subtitle")) {
 		t.Fatal("invalid SRT was accepted")
+	}
+}
+
+func TestGenerateSubtitleArtifactsSkipsExistingIdentifiedSidecar(t *testing.T) {
+	temp := t.TempDir()
+	mediaPath := filepath.Join(temp, "Episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(temp, "Episode.spa.default.srt"), []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := MediaJobPlan{
+		SourceAssetPath: mediaPath,
+		OutputPath:      filepath.Join(temp, "staging", "Episode.mkv"),
+		Streams:         MediaStreamInventory{Subtitle: []MediaStream{{Index: 2, Codec: "subrip", Language: "spa", Default: true}}},
+		Override:        AssetConversionOverrideState{SubtitleTransforms: []SubtitleTransform{{StreamIndex: 2, Format: "srt", Language: "spa", MakeDefault: true, RemoveEmbedded: true}}},
+	}
+	artifacts, err := generateSubtitleArtifacts(context.Background(), plan)
+	if err != nil || len(artifacts) != 0 {
+		t.Fatalf("existing identified sidecar should skip conversion: artifacts=%#v err=%v", artifacts, err)
+	}
+}
+
+func TestExistingSubtitleSidecarCanOnlySatisfyOneTransform(t *testing.T) {
+	temp := t.TempDir()
+	mediaPath := filepath.Join(temp, "Episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(temp, "Episode.spa.srt"), []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	used := map[string]struct{}{}
+	transform := SubtitleTransform{Format: "srt", Language: "spa"}
+	if !existingSubtitleTransformSidecar(mediaPath, transform, "spa", used) {
+		t.Fatal("the first identified transform should reuse the existing sidecar")
+	}
+	if existingSubtitleTransformSidecar(mediaPath, transform, "spa", used) {
+		t.Fatal("one sidecar must not satisfy two distinct subtitle transforms")
 	}
 }
 

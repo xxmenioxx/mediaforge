@@ -167,28 +167,56 @@ func TestStreamStatisticsIgnoreInheritedMakeMKVValuesAfterEncode(t *testing.T) {
 	}
 }
 
-func TestScanCacheInvalidatesWhenMediaWasReplaced(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "episode.mkv")
-	if err := os.WriteFile(path, []byte("new converted asset"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	modifiedAt := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(path, modifiedAt, modifiedAt); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
+func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:snapshot-reuse-until-forced?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("replacement with different size"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing := models.ScanResult{Path: mediaPath, FileName: "episode.mkv", SizeBytes: 3, VideoCodec: "cached-codec", CreatedAt: time.Now().Add(-time.Hour)}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{Force: false}, nil)
+	if err != nil || !cached || result.VideoCodec != "cached-codec" {
+		t.Fatalf("snapshot was regenerated without Re-scan: cached=%t result=%#v err=%v", cached, result, err)
+	}
+}
 
-	current := models.ScanResult{SizeBytes: info.Size(), CreatedAt: modifiedAt.Add(time.Second)}
-	if !scanCacheMatchesFile(current, info) {
-		t.Fatal("matching size and older media mtime should reuse the scan")
+func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-inherits-raw-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if scanCacheMatchesFile(models.ScanResult{SizeBytes: info.Size() + 1, CreatedAt: time.Now()}, info) {
-		t.Fatal("changed media size must invalidate the scan")
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.QueueJob{}); err != nil {
+		t.Fatal(err)
 	}
-	if scanCacheMatchesFile(models.ScanResult{SizeBytes: info.Size(), CreatedAt: modifiedAt.Add(-time.Second)}, info) {
-		t.Fatal("media modified after the scan must invalidate the scan")
+	root := t.TempDir()
+	rawPath := filepath.Join(root, "raw", "episode.mkv")
+	archivePath := filepath.Join(root, "archive", "episode.mkv")
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source := models.ScanResult{Path: rawPath, FileName: "episode.mkv", SizeBytes: 14, VideoCodec: "h264", FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 900}}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.QueueJob{MediaPath: rawPath, OriginalArchivedPath: archivePath, Status: JobStatusCompleted}).Error; err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(archivePath)
+	result, ok := inheritedOriginalSnapshot(db, archivePath, info)
+	if !ok || result.Path != archivePath || result.VideoCodec != "h264" || jsonMapInt(result.FrameStructureAnalysis, "framesAnalyzed") != 900 {
+		t.Fatalf("archive did not inherit Raw snapshot: ok=%t result=%#v", ok, result)
 	}
 }

@@ -22,6 +22,7 @@ const (
 
 type MediaJobPlan struct {
 	InputPath                string
+	SourceAssetPath          string
 	OutputPath               string
 	Profile                  models.Profile
 	AudioProfile             *audioEnhancementProfile
@@ -557,14 +558,15 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	profile = applyVideoToolboxQualityRecommendation(profile, intent)
 	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
 	return MediaJobPlan{
-		InputPath:      inputPath,
-		OutputPath:     outputPath,
-		Profile:        profile,
-		AudioProfile:   audioProfile,
-		Overwrite:      overwrite,
-		ProcessingMode: processingMode,
-		Streams:        streams,
-		Interlace:      analysis,
+		InputPath:       inputPath,
+		SourceAssetPath: inputPath,
+		OutputPath:      outputPath,
+		Profile:         profile,
+		AudioProfile:    audioProfile,
+		Overwrite:       overwrite,
+		ProcessingMode:  processingMode,
+		Streams:         streams,
+		Interlace:       analysis,
 	}, nil
 }
 

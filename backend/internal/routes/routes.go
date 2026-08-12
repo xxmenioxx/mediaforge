@@ -67,6 +67,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets", assets.List)
 		api.POST("/assets/sync", assets.Sync)
 		api.DELETE("/assets/missing", assets.RemoveMissing)
+		api.DELETE("/assets/missing/all", assets.RemoveAllMissing)
 		api.POST("/assets/recover", assets.Recover)
 		api.POST("/assets/delete-converted", assets.DeleteConverted)
 		api.POST("/assets/return-published-as-is", assets.ReturnPublishedAsIs)

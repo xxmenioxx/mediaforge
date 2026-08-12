@@ -139,6 +139,10 @@ export const api = {
     request<{ status: string; path: string; message: string }>(`/api/assets/missing?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
+  removeAllMissingAssets: () =>
+    request<{ status: string; removed: number; preserved: number; message: string }>('/api/assets/missing/all', {
+      method: 'DELETE',
+    }),
   recoverAsset: (path: string) =>
     request<{ status: string; sourcePath: string; recoveredPath: string; message: string }>(`/api/assets/recover?path=${encodeURIComponent(path)}`, {
       method: 'POST',

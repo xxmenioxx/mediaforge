@@ -483,6 +483,52 @@ func (h AssetHandler) RemoveMissing(c *gin.Context) {
 	})
 }
 
+func (h AssetHandler) RemoveAllMissing(c *gin.Context) {
+	records := []models.AssetRecord{}
+	if err := h.db.Where("missing = ?", true).Find(&records).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	allRecords := []models.AssetRecord{}
+	if err := h.db.Find(&allRecords).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	classification := classifyMissingRecords(allRecords)
+	applyRetiredPublicationPaths(h.db, allRecords, &classification)
+
+	removableIDs := []uint{}
+	preserved := 0
+	for _, record := range records {
+		mediaPath := filepath.Clean(record.Path)
+		if classification.HistoricalPaths[mediaPath] {
+			preserved++
+			continue
+		}
+		if _, err := os.Stat(mediaPath); err == nil || !os.IsNotExist(err) {
+			preserved++
+			continue
+		}
+		removableIDs = append(removableIDs, record.ID)
+	}
+	if len(removableIDs) > 0 {
+		if err := h.db.Where("id IN ? AND missing = ?", removableIDs, true).Delete(&models.AssetRecord{}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	appendSystemLog(h.db, "missing_asset_inventory_records_removed", map[string]string{
+		"removed":   strconv.Itoa(len(removableIDs)),
+		"preserved": strconv.Itoa(preserved),
+	}, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "removed",
+		"removed":   len(removableIDs),
+		"preserved": preserved,
+		"message":   "Missing asset records removed. Reappeared files, historical paths, jobs, logs, reports and snapshots were preserved.",
+	})
+}
+
 func (h AssetHandler) Recover(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	if path == "" {

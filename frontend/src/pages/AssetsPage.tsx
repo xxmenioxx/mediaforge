@@ -83,7 +83,7 @@ export function AssetsPage() {
   const snapshotOperations = useQuery({
     queryKey: ['snapshotOperations'],
     queryFn: () => api.snapshotOperations(''),
-    refetchInterval: 1500,
+    refetchInterval: (query) => query.state.data?.operations.some((operation) => operation.status === 'running') ? 1500 : false,
   });
   const queryClient = useQueryClient();
   const syncAssets = useMutation({
@@ -246,6 +246,12 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+  const removeAllMissingAssets = useMutation({
+    mutationFn: api.removeAllMissingAssets,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
   const reports = inventory?.reports;
   if (!reports) {
     return (
@@ -290,14 +296,42 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
       {safeArray(inventory?.missing).length ? (
         <Box sx={{ mt: 2, border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
           <Box sx={{ px: 2, py: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
-            <Typography fontWeight={700}>Missing assets requiring attention</Typography>
-            <Typography color="text.secondary" variant="body2">
-              These paths have no verified file of the same size and are not classified as renamed or archived history.
-            </Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
+              <Stack>
+                <Typography fontWeight={700}>Missing assets requiring attention</Typography>
+                <Typography color="text.secondary" variant="body2">
+                  These paths have no verified file of the same size and are not classified as renamed or archived history.
+                </Typography>
+              </Stack>
+              <Button
+                color="error"
+                variant="outlined"
+                size="small"
+                startIcon={<DeleteForeverIcon />}
+                disabled={removeAllMissingAssets.isPending || safeArray(inventory?.missing).length === 0}
+                onClick={() => {
+                  const count = safeArray(inventory?.missing).length;
+                  if (!window.confirm(`Remove all ${count} missing asset records?\n\nFiles that reappeared and historical publication paths will be preserved. Jobs, logs, reports and snapshots will not be deleted.`)) return;
+                  removeAllMissingAssets.mutate();
+                }}
+              >
+                {removeAllMissingAssets.isPending ? 'Removing…' : 'Remove all missing'}
+              </Button>
+            </Stack>
           </Box>
           {removeMissingAsset.isError ? (
             <Alert severity="warning" sx={{ m: 1.5 }}>
               {removeMissingAsset.error instanceof Error ? removeMissingAsset.error.message : 'The missing asset could not be removed.'}
+            </Alert>
+          ) : null}
+          {removeAllMissingAssets.isSuccess ? (
+            <Alert severity="success" sx={{ m: 1.5 }}>
+              {removeAllMissingAssets.data.removed} missing record(s) removed. {removeAllMissingAssets.data.preserved} preserved after validation.
+            </Alert>
+          ) : null}
+          {removeAllMissingAssets.isError ? (
+            <Alert severity="warning" sx={{ m: 1.5 }}>
+              {removeAllMissingAssets.error instanceof Error ? removeAllMissingAssets.error.message : 'Missing records could not be removed.'}
             </Alert>
           ) : null}
           <Box sx={{ overflowX: 'auto' }}>

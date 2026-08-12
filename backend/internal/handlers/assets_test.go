@@ -93,6 +93,64 @@ func TestRemoveMissingRejectsRecordWhenFileExists(t *testing.T) {
 	}
 }
 
+func TestRemoveAllMissingPreservesReappearedAndHistoricalRecords(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:remove-all-missing-assets?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.QueueJob{}, &models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	removablePath := filepath.Join(root, "gone.mkv")
+	reappearedPath := filepath.Join(root, "back.mkv")
+	historicalPath := filepath.Join(root, "retired.mkv")
+	writeTestFile(t, reappearedPath, "media")
+	records := []models.AssetRecord{
+		{Path: removablePath, RootPath: root, RelativePath: "gone.mkv", FileName: "gone.mkv", Status: "unprocessed", Missing: true},
+		{Path: reappearedPath, RootPath: root, RelativePath: "back.mkv", FileName: "back.mkv", Status: "unprocessed", Missing: true},
+		{Path: historicalPath, RootPath: root, RelativePath: "retired.mkv", FileName: "retired.mkv", Status: "converted", Missing: true},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	retiredAt := time.Now()
+	if err := db.Create(&models.QueueJob{MediaPath: "/raw/retired.mkv", Status: JobStatusCompleted, PublishedPath: historicalPath, PublicationRetiredAt: &retiredAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/missing/all", NewAssetHandler(db).RemoveAllMissing)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/assets/missing/all", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Removed   int `json:"removed"`
+		Preserved int `json:"preserved"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Removed != 1 || payload.Preserved != 2 {
+		t.Fatalf("unexpected response: %#v", payload)
+	}
+	var remaining []models.AssetRecord
+	if err := db.Order("path asc").Find(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("remaining records=%#v", remaining)
+	}
+	for _, record := range remaining {
+		if record.Path == removablePath {
+			t.Fatal("actionable missing record was preserved")
+		}
+	}
+}
+
 func TestAssetReportsSavingsUsesOnlyActiveConvertedPublications(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:active-converted-savings?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -33,6 +33,7 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 	}
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
 	usedPaths := map[string]struct{}{}
+	usedExistingSidecars := map[string]struct{}{}
 	artifacts := make([]SubtitleArtifact, 0, len(plan.Override.SubtitleTransforms))
 	var bitmapStreams map[int]FFProbeStream
 	for _, transform := range plan.Override.SubtitleTransforms {
@@ -46,6 +47,9 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 		}
 		if language == "" {
 			language = "und"
+		}
+		if existingSubtitleTransformSidecar(plan.SourceAssetPath, transform, language, usedExistingSidecars) {
+			continue
 		}
 		suffix := "." + language
 		if transform.MakeDefault {
@@ -115,6 +119,31 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 		})
 	}
 	return artifacts, nil
+}
+
+func existingSubtitleTransformSidecar(mediaPath string, transform SubtitleTransform, language string, used map[string]struct{}) bool {
+	mediaPath = strings.TrimSpace(mediaPath)
+	if mediaPath == "" {
+		return false
+	}
+	values, err := externalSubtitlesForMedia(mediaPath)
+	if err != nil {
+		return false
+	}
+	for _, sidecar := range values {
+		if !strings.EqualFold(sidecar.Format, transform.Format) || !strings.EqualFold(sidecar.Language, language) || sidecar.Default != transform.MakeDefault {
+			continue
+		}
+		if _, alreadyUsed := used[sidecar.Path]; alreadyUsed {
+			continue
+		}
+		content, err := os.ReadFile(sidecar.Path)
+		if err == nil && validSubtitleSidecar(transform.Format, content) {
+			used[sidecar.Path] = struct{}{}
+			return true
+		}
+	}
+	return false
 }
 
 func validSubtitleSidecar(format string, content []byte) bool {

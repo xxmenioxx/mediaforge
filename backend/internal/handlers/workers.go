@@ -729,6 +729,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	plan.SourceAssetPath = job.MediaPath
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
 	if len(plan.Override.SubtitleTransforms) > 0 {
 		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {

@@ -155,16 +155,12 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 	var existing models.ScanResult
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
-			if scanCacheMatchesFile(existing, info) {
-				if len(existing.FrameStructureAnalysis) == 0 || jsonMapInt(existing.FrameStructureAnalysis, "version") < 2 {
-					report("frame_structure", 80, "Adding the missing I, P, B and GOP analysis")
-				}
-				enrichCachedScan(h.db, &existing)
-				applySnapshotDirectPlay(h.db, &existing)
-				_ = h.db.Save(&existing).Error
-				report("completed", 100, "Using the current asset snapshot")
-				return existing, true, nil
-			}
+			report("completed", 100, "Using the existing asset snapshot")
+			return existing, true, nil
+		}
+		if inherited, ok := inheritedOriginalSnapshot(h.db, path, info); ok {
+			report("completed", 100, "Using the Raw snapshot for this archived original")
+			return inherited, true, nil
 		}
 	}
 
@@ -180,6 +176,38 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 	}
 	report("completed", 100, "Asset snapshot completed")
 	return result, false, nil
+}
+
+func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo) (models.ScanResult, bool) {
+	if db == nil || !db.Migrator().HasTable(&models.QueueJob{}) || !db.Migrator().HasTable(&models.ScanResult{}) {
+		return models.ScanResult{}, false
+	}
+	var job models.QueueJob
+	if err := db.Where("original_archived_path = ?", filepath.Clean(archivePath)).Order("published_at desc, id desc").First(&job).Error; err != nil {
+		return models.ScanResult{}, false
+	}
+	var source models.ScanResult
+	if err := db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("created_at desc, id desc").First(&source).Error; err != nil {
+		return models.ScanResult{}, false
+	}
+	source.ID = 0
+	source.Path = filepath.Clean(archivePath)
+	source.FileName = filepath.Base(archivePath)
+	if info != nil {
+		source.SizeBytes = info.Size()
+	}
+	source.CreatedAt = time.Time{}
+	source.UpdatedAt = time.Time{}
+	if source.RawProbe == nil {
+		source.RawProbe = models.JSONMap{}
+	}
+	source.RawProbe["snapshotProvenance"] = models.JSONMap{
+		"source": "raw_asset", "sourcePath": filepath.Clean(job.MediaPath), "archivePath": filepath.Clean(archivePath), "jobId": job.ID,
+	}
+	if err := persistFinalAssetSnapshot(db, &source); err != nil {
+		return models.ScanResult{}, false
+	}
+	return source, true
 }
 
 func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
@@ -304,13 +332,6 @@ func markStaleSnapshotOperations(now time.Time) {
 		operation.Message = "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
 		operation.UpdatedAt = now
 	}
-}
-
-func scanCacheMatchesFile(result models.ScanResult, info os.FileInfo) bool {
-	if info == nil || result.CreatedAt.IsZero() || result.SizeBytes != info.Size() {
-		return false
-	}
-	return !info.ModTime().After(result.CreatedAt)
 }
 
 func mediaPathReadError(err error) string {
@@ -520,62 +541,6 @@ func persistFinalAssetSnapshot(db *gorm.DB, result *models.ScanResult) error {
 		}
 		return tx.Create(result).Error
 	})
-}
-
-func enrichCachedScan(db *gorm.DB, result *models.ScanResult) {
-	if result.RawProbe == nil {
-		result.RawProbe = models.JSONMap{}
-	}
-	if len(result.InterlaceAnalysis) == 0 || jsonMapInt(result.InterlaceAnalysis, "version") < interlaceAnalysisVersion {
-		result.InterlaceAnalysis = interlaceAnalysisFromRaw(result.RawProbe)
-		if len(result.InterlaceAnalysis) == 0 || jsonMapInt(result.InterlaceAnalysis, "version") < interlaceAnalysisVersion {
-			fieldOrder := fieldOrderFromRawProbe(result.RawProbe)
-			analysis := detectInterlace(result.Path, fieldOrder, result.Duration, 20)
-			encoded, _ := json.Marshal(analysis)
-			_ = json.Unmarshal(encoded, &result.InterlaceAnalysis)
-			result.RawProbe["interlaceAnalysis"] = analysis
-		}
-	}
-	if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 3 {
-		result.CropAnalysis = analysisMapFromRaw(result.RawProbe, "cropAnalysis")
-		if len(result.CropAnalysis) == 0 || jsonMapInt(result.CropAnalysis, "version") < 3 {
-			analysis := detectCrop(result.Path, result.Width, result.Height, result.Duration)
-			encoded, _ := json.Marshal(analysis)
-			_ = json.Unmarshal(encoded, &result.CropAnalysis)
-			result.RawProbe["cropAnalysis"] = analysis
-		}
-	}
-	if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 2 {
-		result.FrameStructureAnalysis = analysisMapFromRaw(result.RawProbe, "frameStructureAnalysis")
-		if len(result.FrameStructureAnalysis) == 0 || jsonMapInt(result.FrameStructureAnalysis, "version") < 2 {
-			frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 3*time.Minute)
-			analysis, err := analyzeVideoFrameStructureDistributed(frameContext, result.Path, result.Duration, frameStructureSamplingPolicy(db))
-			cancelFrameAnalysis()
-			if err == nil {
-				encoded, _ := json.Marshal(analysis)
-				_ = json.Unmarshal(encoded, &result.FrameStructureAnalysis)
-				result.RawProbe["frameStructureAnalysis"] = result.FrameStructureAnalysis
-			}
-		}
-	}
-	rawStreams, ok := result.RawProbe["streams"].([]any)
-	if !ok {
-		return
-	}
-
-	var streams []FFProbeStream
-	bytes, err := json.Marshal(rawStreams)
-	if err != nil {
-		return
-	}
-	if err := json.Unmarshal(bytes, &streams); err != nil {
-		return
-	}
-	result.HDR = isHDR(firstStream(streams, "video"))
-	result.VideoStreams = streamSummaries(streams, "video")
-	result.AudioStreams = streamSummaries(streams, "audio")
-	result.SubtitleStreams = streamSummaries(streams, "subtitle")
-	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(*result)
 }
 
 func normalizedAnalysisSeconds(value int) int {
