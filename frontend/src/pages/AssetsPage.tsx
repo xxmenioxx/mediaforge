@@ -62,7 +62,7 @@ import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwar
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
-import { assetDerivedGopRecommendation, parseReliableFrameRate } from '../utils/frameStructureRecommendation';
+import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
@@ -4053,7 +4053,7 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
   const analysis = scan?.frameStructureAnalysis;
   if (!analysis || analysis.framesAnalyzed <= 0) return undefined;
-  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  const fps = reliableFrameRateForScan(scan);
   const recommendations = {
     compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'compatible' }),
     balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: analysis.averageGopLength, confidence: analysis.confidence, mode: 'balanced' }),

@@ -73,7 +73,7 @@ import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../tr
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
-import { assetDerivedGopRecommendation, parseReliableFrameRate } from '../utils/frameStructureRecommendation';
+import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -2518,7 +2518,7 @@ export function ProfileLabPage() {
                               recommendedGop={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).targetGopFrames : undefined}
                               recommendedBFrames={trackSnapshot.data?.frameStructureAnalysis ? frameStructureRecommendationForLab(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data, videoDraft).maxBFrames : undefined}
                               recommendedGopByMode={trackSnapshot.data?.frameStructureAnalysis ? frameStructureGopFramesByMode(trackSnapshot.data.frameStructureAnalysis, trackSnapshot.data) : undefined}
-                              frameRate={parseReliableFrameRate(trackSnapshot.data?.videoStreams?.[0]?.avgFrameRate, trackSnapshot.data?.videoStreams?.[0]?.realFrameRate)}
+                              frameRate={reliableFrameRateForScan(trackSnapshot.data)}
                               onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
                               onChangeMany={updateFrameStructurePolicy}
                               encoder={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)}
@@ -3640,7 +3640,7 @@ function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStruc
 }
 
 function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
-  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  const fps = reliableFrameRateForScan(scan);
   const mode = (profile ? videoWorkerValue(profile, 'frameStructureMode', 'balanced') : 'balanced') as 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   const derived = assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode });
   const customFrames = profile ? numberWorkerValue(profile, 'frameStructureGopFrames', 0) : 0;
@@ -3659,7 +3659,7 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis, s
 }
 
 function frameStructureGopFramesByMode(source: QSVFrameStructureAnalysis, scan?: ScanResult) {
-  const fps = parseReliableFrameRate(scan?.videoStreams?.[0]?.avgFrameRate, scan?.videoStreams?.[0]?.realFrameRate);
+  const fps = reliableFrameRateForScan(scan);
   return {
     compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'compatible' }).targetFrames,
     balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop: source.averageGopLength, confidence: source.confidence, mode: 'balanced' }).targetFrames,

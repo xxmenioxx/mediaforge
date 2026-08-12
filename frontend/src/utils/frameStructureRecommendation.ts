@@ -21,6 +21,23 @@ export function parseReliableFrameRate(avg?: string, real?: string) {
   return undefined;
 }
 
+export function reliableFrameRateForScan(scan?: {
+  videoStreams?: Array<{ avgFrameRate?: string; realFrameRate?: string }>;
+  rawProbe?: Record<string, unknown>;
+}) {
+  const video = scan?.videoStreams?.[0];
+  const summarized = parseReliableFrameRate(video?.avgFrameRate, video?.realFrameRate);
+  if (summarized) return summarized;
+
+  const streams = Array.isArray(scan?.rawProbe?.streams) ? scan.rawProbe.streams : [];
+  const rawVideo = streams.find((stream): stream is Record<string, unknown> => Boolean(stream) && typeof stream === 'object' && !Array.isArray(stream) && (stream as Record<string, unknown>).codec_type === 'video');
+  if (!rawVideo) return undefined;
+  return parseReliableFrameRate(
+    typeof rawVideo.avg_frame_rate === 'string' ? rawVideo.avg_frame_rate : undefined,
+    typeof rawVideo.r_frame_rate === 'string' ? rawVideo.r_frame_rate : undefined,
+  );
+}
+
 export function assetDerivedGopRecommendation(input: {
   fps?: number;
   sourceAverageGop?: number;
