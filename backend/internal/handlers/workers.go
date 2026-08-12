@@ -952,7 +952,17 @@ func outputFileRelativePath(relative string, profile models.Profile) string {
 
 func libraryOutputRelativePathForJob(db *gorm.DB, job models.QueueJob, library models.Library, fallbackRelative string) string {
 	if previousRelative := retiredPublishedRelativePath(db, job, library); previousRelative != "" {
-		if !libraryEpisodeNamingEnabled(library) || episodeIdentifierFromName(path.Base(previousRelative)) != "" || nonEpisodeCreditName(path.Base(previousRelative)) != "" {
+		previousRelative = libraryOutputBaseRelativePath(previousRelative, library)
+		previousEpisodeID := episodeIdentifierFromName(path.Base(previousRelative))
+		sourceEpisodeID := episodeIdentifierFromName(path.Base(job.MediaPath))
+		if sourceEpisodeID == "" {
+			if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
+				season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+				sourceEpisodeID = fmt.Sprintf("S%02dE%02d", season, episode)
+			}
+		}
+		historicalEpisodeMatches := sourceEpisodeID == "" || previousEpisodeID == "" || sourceEpisodeID == previousEpisodeID
+		if historicalEpisodeMatches && (!libraryEpisodeNamingEnabled(library) || previousEpisodeID != "" || nonEpisodeCreditName(path.Base(previousRelative)) != "") {
 			return previousRelative
 		}
 	}
@@ -1470,6 +1480,14 @@ func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeN
 		}
 		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
 	}
+	if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
+		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+		season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+	}
 
 	// The complete asset inventory is the stable source of episode position.
 	// A partial batch must not renumber episode 3 as episode 1 merely because
@@ -1571,6 +1589,24 @@ func seasonEpisodeFromName(fileName string) (int, int, bool) {
 	season, seasonErr := strconv.Atoi(strings.TrimPrefix(identifier[:separator], "S"))
 	episode, episodeErr := strconv.Atoi(identifier[separator+1:])
 	return season, episode, seasonErr == nil && episodeErr == nil && episode > 0
+}
+
+func leadingEpisodeNumberFromName(fileName string) (int, bool) {
+	stem := strings.TrimSpace(strings.TrimSuffix(path.Base(fileName), path.Ext(fileName)))
+	end := 0
+	for end < len(stem) && stem[end] >= '0' && stem[end] <= '9' {
+		end++
+	}
+	if end == 0 || end >= len(stem) {
+		return 0, false
+	}
+	switch stem[end] {
+	case '-', '_', '.', ' ':
+	default:
+		return 0, false
+	}
+	episode, err := strconv.Atoi(stem[:end])
+	return episode, err == nil && episode > 0 && episode <= 999
 }
 
 func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {

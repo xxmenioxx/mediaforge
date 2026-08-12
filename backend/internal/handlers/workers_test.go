@@ -328,6 +328,106 @@ func TestPlannedOutputPathPrefersOlderNormalizedNameOverLatestSourceName(t *test
 	}
 }
 
+func TestPlannedOutputPathNormalizesSourceBucketFromRecoveredHistory(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{ID: 1, Name: "Anime", SourcePath: "/media/raw", DestinationPath: "/media/library/anime"}
+	profile := models.Profile{Container: "mkv"}
+	retiredAt := time.Now()
+	mediaPath := "/media/raw/anime/Conan el niño del futuro/Conan, el niño del futuro - 01_(Ladyarmaroid).mp4"
+	previous := models.QueueJob{
+		MediaPath: mediaPath, LibraryID: library.ID, ProfileID: 1, Status: JobStatusCompleted,
+		PublishedPath:        "/media/library/anime/anime/Conan el niño del futuro/Conan, el niño del futuro - 01_(Ladyarmaroid).mkv",
+		PublicationRetiredAt: &retiredAt,
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	recovered := models.QueueJob{MediaPath: mediaPath, LibraryID: library.ID, ProfileID: 1}
+	if err := db.Create(&recovered).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got := plannedOutputPathForJob(db, recovered, library, profile)
+	want := "/media/library/anime/Conan el niño del futuro/Conan, el niño del futuro - 01_(Ladyarmaroid).mkv"
+	if got != want {
+		t.Fatalf("recovered output=%q want=%q", got, want)
+	}
+}
+
+func TestPartialRecoveredBatchUsesLeadingEpisodeNumberInsteadOfRemainingRawOrder(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		ID: 1, Name: "Anime", SourcePath: "/media/raw", DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
+	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		MediaPath: "/media/raw/anime/Rayearth/02-La llegada de Presea.mkv",
+		BatchID:   "partial-recovered-rayearth", BatchName: "anime/Rayearth", LibraryID: library.ID,
+	}
+	if err := db.Create(&models.AssetRecord{
+		Path: job.MediaPath, RootPath: "/media/raw", RelativePath: "anime/Rayearth/02-La llegada de Presea.mkv",
+		GroupPath: "anime/Rayearth", FileName: "02-La llegada de Presea.mkv", Status: "unprocessed",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got := plannedOutputPathForJob(db, job, library, profile)
+	want := "/media/library/anime/Rayearth/Rayearth - S01E02.mkv"
+	if got != want {
+		t.Fatalf("partial recovered batch output=%q want=%q", got, want)
+	}
+}
+
+func TestRecoveredAssetRejectsHistoricalEpisodeNameThatContradictsSourceNumber(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		ID: 1, Name: "Anime", SourcePath: "/media/raw", DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
+	}
+	profile := models.Profile{Container: "mkv"}
+	mediaPath := "/media/raw/anime/Rayearth/02-La llegada de Presea.mkv"
+	retiredAt := time.Now()
+	previous := models.QueueJob{
+		MediaPath: mediaPath, LibraryID: library.ID, Status: JobStatusCompleted,
+		PublishedPath: "/media/library/anime/Rayearth/Rayearth - S01E01.mkv", PublicationRetiredAt: &retiredAt,
+	}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	recovered := models.QueueJob{MediaPath: mediaPath, BatchID: "retry-rayearth", BatchName: "anime/Rayearth", LibraryID: library.ID}
+	if err := db.Create(&recovered).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got := plannedOutputPathForJob(db, recovered, library, profile)
+	want := "/media/library/anime/Rayearth/Rayearth - S01E02.mkv"
+	if got != want {
+		t.Fatalf("recovered retry output=%q want=%q", got, want)
+	}
+}
+
+func TestLeadingEpisodeNumberFromNameRequiresAnExplicitSeparator(t *testing.T) {
+	tests := []struct {
+		name string
+		want int
+		ok   bool
+	}{
+		{name: "02-La llegada de Presea.mkv", want: 2, ok: true},
+		{name: "003 Episode.mkv", want: 3, ok: true},
+		{name: "12_Episode.mkv", want: 12, ok: true},
+		{name: "1984.mkv", ok: false},
+		{name: "1080p encode.mkv", ok: false},
+		{name: "Episode 02.mkv", ok: false},
+	}
+	for _, test := range tests {
+		got, ok := leadingEpisodeNumberFromName(test.name)
+		if got != test.want || ok != test.ok {
+			t.Errorf("leadingEpisodeNumberFromName(%q)=(%d,%t), want (%d,%t)", test.name, got, ok, test.want, test.ok)
+		}
+	}
+}
+
 func TestPlannedOutputPathDropsRawSourceBucketForSelectedLibrary(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{
