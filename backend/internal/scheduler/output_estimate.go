@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"sort"
@@ -288,7 +289,11 @@ func persistedProfileSampleEstimate(db *gorm.DB, path string, profile models.Pro
 	return 0, "", false
 }
 
-func historicalQSVSampleRatios(db *gorm.DB, preset string) (float64, float64, int) {
+func historicalQSVSampleRatios(db *gorm.DB, preset string, fingerprints ...string) (float64, float64, int) {
+	fingerprint := ""
+	if len(fingerprints) > 0 {
+		fingerprint = strings.TrimSpace(fingerprints[0])
+	}
 	ratios := []float64{}
 	var sampleSetting models.AppSetting
 	if db.First(&sampleSetting, "key = ?", "profileSampleEstimates").Error == nil {
@@ -299,7 +304,7 @@ func historicalQSVSampleRatios(db *gorm.DB, preset string) (float64, float64, in
 				continue
 			}
 			estimate, ok := record["estimate"].(map[string]interface{})
-			if !ok || recordString(estimate["effectiveEncoder"]) != "hevc_qsv" || recordString(estimate["hardwareQualityPreset"]) != preset {
+			if !ok || recordString(estimate["effectiveEncoder"]) != "hevc_qsv" || recordString(estimate["hardwareQualityPreset"]) != preset || (fingerprint != "" && recordString(record["profileFingerprint"]) != fingerprint) {
 				continue
 			}
 			duration := recordNumber(estimate["durationSeconds"])
@@ -315,7 +320,7 @@ func historicalQSVSampleRatios(db *gorm.DB, preset string) (float64, float64, in
 		records, _ := resultSetting.Value["records"].([]interface{})
 		for _, raw := range records {
 			record, ok := raw.(map[string]interface{})
-			if !ok || recordString(record["effectiveEncoder"]) != "hevc_qsv" || recordString(record["hardwareQualityPreset"]) != preset {
+			if !ok || recordString(record["effectiveEncoder"]) != "hevc_qsv" || recordString(record["hardwareQualityPreset"]) != preset || (fingerprint != "" && recordString(record["profileFingerprint"]) != fingerprint) {
 				continue
 			}
 			sourceBitrate := recordNumber(record["sourceVideoBitrate"])
@@ -325,11 +330,26 @@ func historicalQSVSampleRatios(db *gorm.DB, preset string) (float64, float64, in
 			}
 		}
 	}
-	if len(ratios) < 2 {
-		return 0, 0, len(ratios)
+	if len(ratios) == 1 {
+		return ratios[0], ratios[0], 1
+	}
+	if len(ratios) == 0 {
+		return 0, 0, 0
 	}
 	sort.Float64s(ratios)
+	if len(ratios) >= 5 {
+		// Avoid allowing one unrelated outlier to double the displayed range.
+		lower := int(math.Floor(float64(len(ratios)-1) * .20))
+		upper := int(math.Ceil(float64(len(ratios)-1) * .80))
+		return ratios[lower], ratios[upper], len(ratios)
+	}
 	return ratios[0], ratios[len(ratios)-1], len(ratios)
+}
+
+// HistoricalQSVSampleRatios exposes calibrated, compatible QSV evidence to
+// API estimators so LAB and Queue use the same estimate source.
+func HistoricalQSVSampleRatios(db *gorm.DB, preset string, fingerprints ...string) (float64, float64, int) {
+	return historicalQSVSampleRatios(db, preset, fingerprints...)
 }
 
 // ProfileEstimateFingerprint identifies every profile value that can affect a

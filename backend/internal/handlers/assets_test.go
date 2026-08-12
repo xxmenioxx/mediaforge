@@ -27,12 +27,103 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 		"movies/movie1/extras/extra1.mkv":   "movies/movie1",
 		"series/show/season1/episode01.mkv": "series/show",
 		"series/show/season2/episode01.mkv": "series/show",
+		"Baccano/Season0/episode01.mkv":     "Baccano",
+		"Baccano/episode02.mkv":             "Baccano",
 	}
 
 	for input, expected := range tests {
 		if actual := logicalAssetGroupPath(input); actual != expected {
 			t.Fatalf("logicalAssetGroupPath(%q) = %q, expected %q", input, actual, expected)
 		}
+	}
+}
+
+func TestRemoveMissingDeletesOnlyAbsentInventoryRecord(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:remove-missing-asset?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.QueueJob{}, &models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(t.TempDir(), "missing.mkv")
+	record := models.AssetRecord{Path: missingPath, RootPath: filepath.Dir(missingPath), RelativePath: "missing.mkv", FileName: "missing.mkv", Status: "unprocessed", Missing: true}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/missing", NewAssetHandler(db).RemoveMissing)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/assets/missing?path="+url.QueryEscape(missingPath), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := db.First(&models.AssetRecord{}, record.ID).Error; err != gorm.ErrRecordNotFound {
+		t.Fatalf("missing inventory record still exists: %v", err)
+	}
+}
+
+func TestRemoveMissingRejectsRecordWhenFileExists(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:remove-present-missing-asset?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "present.mkv")
+	writeTestFile(t, mediaPath, "media")
+	record := models.AssetRecord{Path: mediaPath, RootPath: filepath.Dir(mediaPath), RelativePath: "present.mkv", FileName: "present.mkv", Status: "unprocessed", Missing: true}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/missing", NewAssetHandler(db).RemoveMissing)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/assets/missing?path="+url.QueryEscape(mediaPath), nil))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := db.First(&models.AssetRecord{}, record.ID).Error; err != nil {
+		t.Fatalf("present asset record was removed: %v", err)
+	}
+}
+
+func TestAssetReportsSavingsUsesOnlyActiveConvertedPublications(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:active-converted-savings?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	retiredAt := now
+	jobs := []models.QueueJob{
+		{MediaPath: "/raw/show/episode01.mkv", Status: JobStatusCompleted, PublishedPath: "/library/show/episode01.mkv", OriginalArchivedPath: "/archive/show/episode01.mkv", PublishedAt: &now},
+		{MediaPath: "/raw/show/episode02.mkv", Status: JobStatusCompleted, PublishedPath: "/library/show/episode02.mkv", OriginalArchivedPath: "/archive/show/episode02.mkv", PublishedAt: &now, PublicationRetiredAt: &retiredAt},
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	originals := []models.AssetRecord{
+		{Path: "/archive/show/episode01.mkv", SizeBytes: 1_000, Status: "archive"},
+		{Path: "/archive/show/episode02.mkv", SizeBytes: 2_000, Status: "archive"},
+	}
+	if err := db.Create(&originals).Error; err != nil {
+		t.Fatal(err)
+	}
+	inventory := AssetInventory{Converted: []Asset{
+		{Path: "/library/show/episode01.mkv", SizeBytes: 400, Status: "converted"},
+		{Path: "/library/show/episode02.mkv", SizeBytes: 500, Status: "converted"},
+	}}
+	report := assetReports(db, inventory, MissingClassification{})
+	if report.ConvertedComparedFiles != 1 || report.ConvertedOriginalBytes != 1_000 || report.ConvertedOutputBytes != 400 || report.ConvertedSpaceSavedBytes != 600 {
+		t.Fatalf("unexpected active conversion savings: %#v", report)
 	}
 }
 

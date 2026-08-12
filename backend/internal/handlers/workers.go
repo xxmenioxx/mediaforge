@@ -9,10 +9,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
@@ -553,6 +555,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := dryRunCommandFromArgs(args)
 
@@ -726,6 +729,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
 	if len(plan.Override.SubtitleTransforms) > 0 {
 		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {
 			return job, http.StatusInternalServerError, err
@@ -1448,6 +1452,36 @@ func episodeIdentifierFromName(fileName string) string {
 }
 
 func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeNameSpec, bool) {
+	if season, episode, ok := episodeIdentityFromScan(db, job.MediaPath); ok {
+		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+		if season <= 0 {
+			season = firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+		}
+		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+	}
+	if season, episode, ok := seasonEpisodeFromName(path.Base(job.MediaPath)); ok {
+		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+	}
+
+	// The complete asset inventory is the stable source of episode position.
+	// A partial batch must not renumber episode 3 as episode 1 merely because
+	// episodes 1 and 2 were not selected for this run.
+	if episode := episodeNumberFromAssetGroup(db, job.MediaPath); episode > 0 {
+		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+		season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+	}
+
 	batchID := strings.TrimSpace(job.BatchID)
 	var batchJobs []models.QueueJob
 	if batchID != "" {
@@ -1462,9 +1496,6 @@ func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeN
 				break
 			}
 		}
-	}
-	if episode == 0 {
-		episode = episodeNumberFromAssetGroup(db, job.MediaPath)
 	}
 	if episode == 0 {
 		return multiEpisodeNameSpec{}, false
@@ -1484,6 +1515,63 @@ func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeN
 	return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
 }
 
+func episodeIdentityFromScan(db *gorm.DB, mediaPath string) (int, int, bool) {
+	if db == nil || !db.Migrator().HasTable(&models.ScanResult{}) {
+		return 0, 0, false
+	}
+	var scan models.ScanResult
+	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+		return 0, 0, false
+	}
+	format := unknownRecord(scan.RawProbe["format"])
+	if format == nil {
+		return 0, 0, false
+	}
+	tags := unknownRecord(format["tags"])
+	if tags == nil {
+		return 0, 0, false
+	}
+	episode := firstMetadataNumber(tags, "episode_id", "episode", "episode_sort", "track")
+	if episode <= 0 {
+		return 0, 0, false
+	}
+	season := firstMetadataNumber(tags, "season_number", "season", "season_sort")
+	return season, episode, true
+}
+
+func firstMetadataNumber(tags map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		for storedKey, raw := range tags {
+			if !strings.EqualFold(storedKey, key) {
+				continue
+			}
+			value := strings.TrimSpace(fmt.Sprint(raw))
+			end := 0
+			for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+				end++
+			}
+			if end > 0 {
+				parsed, _ := strconv.Atoi(value[:end])
+				if parsed > 0 {
+					return parsed
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func seasonEpisodeFromName(fileName string) (int, int, bool) {
+	identifier := episodeIdentifierFromName(fileName)
+	if identifier == "" {
+		return 0, 0, false
+	}
+	separator := strings.Index(identifier, "E")
+	season, seasonErr := strconv.Atoi(strings.TrimPrefix(identifier[:separator], "S"))
+	episode, episodeErr := strconv.Atoi(identifier[separator+1:])
+	return season, episode, seasonErr == nil && episodeErr == nil && episode > 0
+}
+
 func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
 	if db == nil || strings.TrimSpace(mediaPath) == "" {
 		return 0
@@ -1495,15 +1583,68 @@ func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
 	}
 	var siblings []models.AssetRecord
 	if err := db.Where("root_path = ? AND group_path = ? AND missing = ?", asset.RootPath, asset.GroupPath, false).
-		Order("relative_path asc, path asc").Find(&siblings).Error; err != nil || len(siblings) <= 1 {
+		Find(&siblings).Error; err != nil || len(siblings) <= 1 {
 		return 0
 	}
+	sort.SliceStable(siblings, func(i, j int) bool {
+		return naturalLess(siblings[i].RelativePath, siblings[j].RelativePath)
+	})
 	for index := range siblings {
 		if filepath.Clean(siblings[index].Path) == cleanPath {
 			return index + 1
 		}
 	}
 	return 0
+}
+
+func naturalLess(left, right string) bool {
+	leftRunes, rightRunes := []rune(strings.ToLower(left)), []rune(strings.ToLower(right))
+	for li, ri := 0, 0; li < len(leftRunes) && ri < len(rightRunes); {
+		if unicode.IsDigit(leftRunes[li]) && unicode.IsDigit(rightRunes[ri]) {
+			ln, rn := li, ri
+			for ln < len(leftRunes) && unicode.IsDigit(leftRunes[ln]) {
+				ln++
+			}
+			for rn < len(rightRunes) && unicode.IsDigit(rightRunes[rn]) {
+				rn++
+			}
+			lv, _ := strconv.ParseUint(string(leftRunes[li:ln]), 10, 64)
+			rv, _ := strconv.ParseUint(string(rightRunes[ri:rn]), 10, 64)
+			if lv != rv {
+				return lv < rv
+			}
+			if ln-li != rn-ri {
+				return ln-li < rn-ri
+			}
+			li, ri = ln, rn
+			continue
+		}
+		if leftRunes[li] != rightRunes[ri] {
+			return leftRunes[li] < rightRunes[ri]
+		}
+		li++
+		ri++
+	}
+	return len(leftRunes) < len(rightRunes)
+}
+
+func applyEpisodeVideoTrackTitle(db *gorm.DB, plan *MediaJobPlan, job models.QueueJob, library models.Library) {
+	if plan == nil || !libraryEpisodeNamingEnabled(library) || len(plan.Streams.Video) == 0 {
+		return
+	}
+	if _, ok := multiEpisodeNameSpecForJob(db, job); !ok {
+		return
+	}
+	if plan.Override.VideoMetadata == nil {
+		plan.Override.VideoMetadata = map[int]StreamMetadataOverride{}
+	}
+	streamIndex := plan.Streams.Video[0].Index
+	metadata := plan.Override.VideoMetadata[streamIndex]
+	if strings.TrimSpace(metadata.Title) != "" {
+		return
+	}
+	metadata.Title = strings.TrimSuffix(filepath.Base(job.MediaPath), filepath.Ext(job.MediaPath))
+	plan.Override.VideoMetadata[streamIndex] = metadata
 }
 
 func episodeSeriesTitle(batchName string, mediaPath string) string {

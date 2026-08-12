@@ -245,6 +245,10 @@ export type AssetReports = {
   missingFiles: number;
   missingActionable: number;
   missingHistorical: number;
+  convertedComparedFiles: number;
+  convertedOriginalBytes: number;
+  convertedOutputBytes: number;
+  convertedSpaceSavedBytes: number;
 };
 
 export type AssetSyncInfo = {

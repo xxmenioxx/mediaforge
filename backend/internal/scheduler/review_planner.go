@@ -234,7 +234,14 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		if sampledVideoBytes, sampleEncoder, found := persistedProfileSampleEstimate(db, job.MediaPath, profile); found && sampleEncoder == plan.SelectedEncoder {
 			source.MeasuredVideoBitrate = int64(float64(sampledVideoBytes) * 8 / source.DurationSeconds)
 		} else if plan.SelectedEncoder == "hevc_qsv" {
-			source.HistoricalRatioMin, source.HistoricalRatioMax, source.HistoricalSamples = historicalQSVSampleRatios(db, configString(profile.WorkerConfig, "hardwareQualityPreset"))
+			source.HistoricalRatioMin, source.HistoricalRatioMax, source.HistoricalSamples = historicalQSVSampleRatios(db, configString(profile.WorkerConfig, "hardwareQualityPreset"), ProfileEstimateFingerprint(profile))
+			if source.HistoricalSamples == 1 {
+				// One completed output from the exact same immutable profile is
+				// stronger evidence than unrelated assets sharing a preset label.
+				source.HistoricalSamples = 2
+			} else if source.HistoricalSamples == 0 {
+				source.HistoricalRatioMin, source.HistoricalRatioMax, source.HistoricalSamples = historicalQSVSampleRatios(db, configString(profile.WorkerConfig, "hardwareQualityPreset"))
+			}
 		}
 		if estimate, estimated := estimatePlannedOutput(profile, plan.SelectedEncoder, source, inputSize, schedulerQualityCapabilities(plan.SelectedEncoder, profile, selectedCapability)); estimated {
 			minOutput, maxOutput = estimate.MinBytes, estimate.MaxBytes

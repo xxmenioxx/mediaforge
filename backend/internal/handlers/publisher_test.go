@@ -182,7 +182,7 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.AppSetting{}, &models.SchedulerReservation{}); err != nil {
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.AssetRecord{}); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -240,6 +240,20 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	}
 	if got, err := os.ReadFile(originalSidecar); err != nil || string(got) != "library subtitle" {
 		t.Fatalf("library sidecar was moved or removed: content=%q err=%v", got, err)
+	}
+	var convertedRecord models.AssetRecord
+	if err := db.First(&convertedRecord, "path = ?", original).Error; err != nil {
+		t.Fatalf("converted asset was not incrementally indexed: %v", err)
+	}
+	if convertedRecord.Status != "converted" || convertedRecord.LibraryID != library.ID || convertedRecord.SizeBytes != int64(len("converted")) {
+		t.Fatalf("unexpected converted inventory record: %#v", convertedRecord)
+	}
+	var archiveRecord models.AssetRecord
+	if err := db.First(&archiveRecord, "path = ?", archived).Error; err != nil {
+		t.Fatalf("archived original was not incrementally indexed: %v", err)
+	}
+	if archiveRecord.Status != "archive" || archiveRecord.SizeBytes != int64(len("original")) {
+		t.Fatalf("unexpected archive inventory record: %#v", archiveRecord)
 	}
 }
 

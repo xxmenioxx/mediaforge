@@ -158,16 +158,20 @@ type AssetSyncInfo struct {
 }
 
 type AssetReports struct {
-	UnprocessedFiles  int   `json:"unprocessedFiles"`
-	LibraryFiles      int   `json:"libraryFiles"`
-	ConvertedFiles    int   `json:"convertedFiles"`
-	UnverifiedFiles   int   `json:"unverifiedFiles"`
-	ArchiveFiles      int   `json:"archiveFiles"`
-	ArchiveBytes      int64 `json:"archiveBytes"`
-	ExpiredArchive    int   `json:"expiredArchive"`
-	MissingFiles      int   `json:"missingFiles"`
-	MissingActionable int   `json:"missingActionable"`
-	MissingHistorical int   `json:"missingHistorical"`
+	UnprocessedFiles         int   `json:"unprocessedFiles"`
+	LibraryFiles             int   `json:"libraryFiles"`
+	ConvertedFiles           int   `json:"convertedFiles"`
+	UnverifiedFiles          int   `json:"unverifiedFiles"`
+	ArchiveFiles             int   `json:"archiveFiles"`
+	ArchiveBytes             int64 `json:"archiveBytes"`
+	ExpiredArchive           int   `json:"expiredArchive"`
+	MissingFiles             int   `json:"missingFiles"`
+	MissingActionable        int   `json:"missingActionable"`
+	MissingHistorical        int   `json:"missingHistorical"`
+	ConvertedComparedFiles   int   `json:"convertedComparedFiles"`
+	ConvertedOriginalBytes   int64 `json:"convertedOriginalBytes"`
+	ConvertedOutputBytes     int64 `json:"convertedOutputBytes"`
+	ConvertedSpaceSavedBytes int64 `json:"convertedSpaceSavedBytes"`
 }
 
 type AssetSyncResult struct {
@@ -417,6 +421,65 @@ func (h AssetHandler) Sync(c *gin.Context) {
 		"archive":     strconv.Itoa(result.ArchiveFiles),
 	}, nil)
 	c.JSON(http.StatusOK, result)
+}
+
+// RemoveMissing dismisses a stale inventory entry after verifying that its
+// media path is still absent. It intentionally preserves scan snapshots, job
+// history, logs, reports and publication provenance.
+func (h AssetHandler) RemoveMissing(c *gin.Context) {
+	mediaPath := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if mediaPath == "." || mediaPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", mediaPath).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "missing asset record not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !record.Missing {
+		c.JSON(http.StatusConflict, gin.H{"error": "only assets already marked missing can be removed from inventory"})
+		return
+	}
+	if _, err := os.Stat(mediaPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "the media file exists; sync Assets instead of removing its inventory record"})
+		return
+	} else if !os.IsNotExist(err) {
+		c.JSON(http.StatusConflict, gin.H{"error": "the media path could not be verified as absent: " + err.Error()})
+		return
+	}
+
+	records := []models.AssetRecord{}
+	if err := h.db.Find(&records).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	classification := classifyMissingRecords(records)
+	applyRetiredPublicationPaths(h.db, records, &classification)
+	if classification.HistoricalPaths[mediaPath] {
+		c.JSON(http.StatusConflict, gin.H{"error": "historical publication paths are retained as provenance and cannot be removed here"})
+		return
+	}
+
+	if err := h.db.Delete(&record).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	appendSystemLog(h.db, "missing_asset_inventory_record_removed", map[string]string{
+		"path":          mediaPath,
+		"previousState": record.Status,
+		"library":       record.LibraryName,
+	}, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "removed",
+		"path":    mediaPath,
+		"message": "Missing asset removed from inventory. Job history, logs, reports and snapshots were preserved.",
+	})
 }
 
 func (h AssetHandler) Recover(c *gin.Context) {
@@ -4248,7 +4311,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		}
 	}
 	sortAssets(inventory.Missing)
-	inventory.Reports = assetReports(inventory, missing)
+	inventory.Reports = assetReports(h.db, inventory, missing)
 
 	var last models.AssetRecord
 	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
@@ -4788,7 +4851,7 @@ func missingMediaIdentity(fileName string) string {
 	return strings.Join(strings.Fields(normalized.String()), " ")
 }
 
-func assetReports(inventory AssetInventory, missing MissingClassification) AssetReports {
+func assetReports(db *gorm.DB, inventory AssetInventory, missing MissingClassification) AssetReports {
 	report := AssetReports{
 		UnprocessedFiles:  len(inventory.Unprocessed),
 		LibraryFiles:      len(inventory.Library),
@@ -4806,7 +4869,62 @@ func assetReports(inventory AssetInventory, missing MissingClassification) Asset
 			report.ExpiredArchive++
 		}
 	}
+	populateConvertedSavings(db, inventory.Converted, &report)
 	return report
+}
+
+func populateConvertedSavings(db *gorm.DB, converted []Asset, report *AssetReports) {
+	if db == nil || report == nil || len(converted) == 0 || !db.Migrator().HasTable(&models.QueueJob{}) {
+		return
+	}
+	outputs := make(map[string]Asset, len(converted))
+	for _, asset := range converted {
+		if !asset.Missing {
+			outputs[filepath.Clean(asset.Path)] = asset
+		}
+	}
+	if len(outputs) == 0 {
+		return
+	}
+
+	jobs := []models.QueueJob{}
+	if err := db.Where("status = ? AND publication_retired_at IS NULL AND published_path <> ''", JobStatusCompleted).
+		Order("published_at desc, id desc").Find(&jobs).Error; err != nil {
+		return
+	}
+	seenOutputs := map[string]bool{}
+	for _, job := range jobs {
+		outputPath := filepath.Clean(job.PublishedPath)
+		output, ok := outputs[outputPath]
+		if !ok || seenOutputs[outputPath] {
+			continue
+		}
+		seenOutputs[outputPath] = true
+		sourceBytes := activeConversionOriginalBytes(db, job)
+		if sourceBytes <= 0 || output.SizeBytes <= 0 {
+			continue
+		}
+		report.ConvertedComparedFiles++
+		report.ConvertedOriginalBytes += sourceBytes
+		report.ConvertedOutputBytes += output.SizeBytes
+	}
+	report.ConvertedSpaceSavedBytes = report.ConvertedOriginalBytes - report.ConvertedOutputBytes
+}
+
+func activeConversionOriginalBytes(db *gorm.DB, job models.QueueJob) int64 {
+	if archivedPath := strings.TrimSpace(job.OriginalArchivedPath); archivedPath != "" && db.Migrator().HasTable(&models.AssetRecord{}) {
+		var record models.AssetRecord
+		if err := db.Where("path = ?", filepath.Clean(archivedPath)).First(&record).Error; err == nil && record.SizeBytes > 0 {
+			return record.SizeBytes
+		}
+	}
+	if db.Migrator().HasTable(&models.ScanResult{}) {
+		var scan models.ScanResult
+		if err := db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err == nil && scan.SizeBytes > 0 {
+			return scan.SizeBytes
+		}
+	}
+	return 0
 }
 
 func originalRetentionDays(db *gorm.DB) int {
@@ -5485,10 +5603,31 @@ func logicalAssetGroupPath(relativePath string) string {
 	if len(parts) <= 1 {
 		return ""
 	}
-	if len(parts) == 2 {
-		return parts[0]
+	directories := append([]string(nil), parts[:len(parts)-1]...)
+	if len(directories) > 1 && isSeasonDirectory(directories[len(directories)-1]) {
+		directories = directories[:len(directories)-1]
 	}
-	return filepath.Join(parts[0], parts[1])
+	if len(directories) > 2 {
+		directories = directories[:2]
+	}
+	return filepath.Join(directories...)
+}
+
+func isSeasonDirectory(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{"season", "temporada"} {
+		if !strings.HasPrefix(normalized, prefix) {
+			continue
+		}
+		remainder := strings.TrimSpace(strings.TrimPrefix(normalized, prefix))
+		if remainder == "" {
+			return true
+		}
+		if _, err := strconv.Atoi(remainder); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func absoluteAssetGroupPath(asset Asset) string {

@@ -10,10 +10,24 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestGOPEditDoesNotChangeUnmeasuredSizeEstimate(t *testing.T) {
+	intent := quality.NewIntent(quality.IntentInput{SourceVideoBitrate: 4_000_000, DurationSeconds: 1440})
+	base := models.Profile{VideoCodec: "x265", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{"frameStructureGopMode": "recommended", "frameStructureGopFrames": 72}}
+	long := base
+	long.WorkerConfig = cloneJSONMap(base.WorkerConfig)
+	long.WorkerConfig["frameStructureGopFrames"] = 180
+	shortEstimate := genericEncoderRecommendation(base, intent, "libx265")
+	longEstimate := genericEncoderRecommendation(long, intent, "libx265")
+	if shortEstimate.EstimatedOutputSizeMin == nil || longEstimate.EstimatedOutputSizeMin == nil || *shortEstimate.EstimatedOutputSizeMin != *longEstimate.EstimatedOutputSizeMin || *shortEstimate.EstimatedOutputSizeMax != *longEstimate.EstimatedOutputSizeMax {
+		t.Fatalf("GOP duration must not invent an unmeasured storage-saving multiplier: short=%#v long=%#v", shortEstimate, longEstimate)
+	}
+}
 
 func TestQualityRecommendationUsesActiveRuntimeQSVFallback(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:quality-recommendation?mode=memory&cache=shared"), &gorm.Config{})

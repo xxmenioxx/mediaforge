@@ -105,6 +105,93 @@ func TestPlannedOutputPathForSingleJobUsesFullAssetGroupEpisodePosition(t *testi
 	}
 }
 
+func TestPlannedOutputPathUsesNaturalInventoryOrderForPartialBatch(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{SourcePath: "/media/raw", DestinationPath: "/media/anime", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	profile := models.Profile{Container: "mkv"}
+	paths := []string{
+		"/media/raw/My Show/Season 01/episode1.mkv",
+		"/media/raw/My Show/Season 01/episode2.mkv",
+		"/media/raw/My Show/Season 01/episode3.mkv",
+		"/media/raw/My Show/Season 01/episode10.mkv",
+	}
+	for _, mediaPath := range paths {
+		record := models.AssetRecord{Path: mediaPath, RootPath: "/media/raw", RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"), GroupPath: "My Show/Season 01", FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs := []models.QueueJob{
+		{MediaPath: paths[0], BatchID: "partial", BatchName: "My Show/Season 01", LibraryID: 1, ProfileID: 1},
+		{MediaPath: paths[2], BatchID: "partial", BatchName: "My Show/Season 01", LibraryID: 1, ProfileID: 1},
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if got := plannedOutputPathForJob(db, jobs[1], library, profile); got != "/media/anime/My Show/Season 01/My Show - S01E03.mkv" {
+		t.Fatalf("partial-batch episode output=%q", got)
+	}
+	if episode := episodeNumberFromAssetGroup(db, paths[3]); episode != 4 {
+		t.Fatalf("natural episode position=%d want=4", episode)
+	}
+}
+
+func TestExplicitEpisodeIdentifierWinsOverInventoryPosition(t *testing.T) {
+	db := queueJobTestDB(t)
+	mediaPath := "/media/raw/Series/Season 02/Series S02E07.mkv"
+	record := models.AssetRecord{Path: mediaPath, RootPath: "/media/raw", RelativePath: "Series/Season 02/Series S02E07.mkv", GroupPath: "Series/Season 02", FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: mediaPath, BatchName: "Series/Season 02"}
+	spec, ok := multiEpisodeNameSpecForJob(db, job)
+	if !ok || spec.Season != 2 || spec.Episode != 7 {
+		t.Fatalf("explicit episode spec=%#v ok=%t", spec, ok)
+	}
+}
+
+func TestEmbeddedEpisodeMetadataWinsOverBatchPosition(t *testing.T) {
+	db := queueJobTestDB(t)
+	mediaPath := "/media/raw/My Show/source.mkv"
+	scan := models.ScanResult{Path: mediaPath, RawProbe: models.JSONMap{"format": map[string]interface{}{"tags": map[string]interface{}{"season_number": "3", "episode_id": "12/24"}}}}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := multiEpisodeNameSpecForJob(db, models.QueueJob{MediaPath: mediaPath, BatchName: "My Show"})
+	if !ok || spec.Season != 3 || spec.Episode != 12 {
+		t.Fatalf("metadata episode spec=%#v ok=%t", spec, ok)
+	}
+}
+
+func TestEpisodeVideoTrackTitleUsesOriginalAssetName(t *testing.T) {
+	db := queueJobTestDB(t)
+	mediaPath := "/media/raw/Series/Season 01/original_episode_03.mkv"
+	record := models.AssetRecord{Path: mediaPath, RootPath: "/media/raw", RelativePath: "Series/Season 01/original_episode_03.mkv", GroupPath: "Series/Season 01", FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A sibling makes episode naming applicable even when only this asset is queued.
+	sibling := models.AssetRecord{Path: "/media/raw/Series/Season 01/original_episode_01.mkv", RootPath: "/media/raw", RelativePath: "Series/Season 01/original_episode_01.mkv", GroupPath: "Series/Season 01", FileName: "original_episode_01.mkv", Status: "unprocessed"}
+	if err := db.Create(&sibling).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan := MediaJobPlan{
+		InputPath: "/tmp/input.mkv", OutputPath: "/tmp/output.mkv",
+		Profile: models.Profile{VideoCodec: "copy", AudioCodec: "copy", Container: "mkv"},
+		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
+	}
+	job := models.QueueJob{MediaPath: mediaPath, BatchName: "Series/Season 01"}
+	applyEpisodeVideoTrackTitle(db, &plan, job, models.Library{ValidationRules: models.JSONMap{"episodeNamingEnabled": true}})
+	if got := plan.Override.VideoMetadata[0].Title; got != "original_episode_03" {
+		t.Fatalf("video title=%q", got)
+	}
+	command := strings.Join(FFmpegCommandBuilder{}.Build(plan), " ")
+	if !strings.Contains(command, "-metadata:s:v:0 title=original_episode_03") {
+		t.Fatalf("episode video title missing from command: %s", command)
+	}
+}
+
 func TestPlannedOutputPathUsesNestedSeasonAndExistingEpisodeIdentity(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{SourcePath: "/media/raw", DestinationPath: "/media/library/anime", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
@@ -398,7 +485,7 @@ func queueJobTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}, &models.AssetRecord{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}, &models.AssetRecord{}, &models.ScanResult{}); err != nil {
 		t.Fatalf("migrate test models: %v", err)
 	}
 	return db

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,12 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	} else {
 		job.Notes = appendNote(job.Notes, "Final asset snapshot captured: "+destinationPath)
 	}
+	if syncErr := syncPublishedAssetRecords(h.db, job, library); syncErr != nil {
+		job.Notes = appendNote(job.Notes, "Incremental asset inventory sync warning: "+syncErr.Error())
+		appendSystemLog(h.db, "published_asset_incremental_sync_failed", map[string]string{"jobId": strconv.FormatUint(uint64(job.ID), 10), "publishedPath": destinationPath}, syncErr)
+	} else {
+		job.Notes = appendNote(job.Notes, "Asset inventory synchronized incrementally")
+	}
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
 		if err := transitionJobStage(h.db, &job, JobStageCleaningWorkspace); err != nil {
 			return PublishResult{}, err
@@ -318,6 +325,12 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 	} else {
 		job.Notes = appendNote(job.Notes, "Final asset snapshot captured: "+target)
 	}
+	if syncErr := syncPublishedAssetRecords(h.db, job, library); syncErr != nil {
+		job.Notes = appendNote(job.Notes, "Incremental asset inventory sync warning: "+syncErr.Error())
+		appendSystemLog(h.db, "published_asset_incremental_sync_failed", map[string]string{"jobId": strconv.FormatUint(uint64(job.ID), 10), "publishedPath": target}, syncErr)
+	} else {
+		job.Notes = appendNote(job.Notes, "Asset inventory synchronized incrementally")
+	}
 	if err := h.db.Save(&job).Error; err != nil {
 		return PublishResult{}, err
 	}
@@ -330,6 +343,75 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 	_ = transitionJobStage(h.db, &job, JobStageCompleted)
 	_ = scheduler.ReleaseReservation(h.db, job.ID)
 	return PublishResult{JobID: job.ID, Status: "published", SourcePath: job.OutputPath, PublishedPath: target, Message: "Library asset safely replaced; original archived."}, nil
+}
+
+func syncPublishedAssetRecords(db *gorm.DB, job models.QueueJob, library models.Library) error {
+	if db == nil {
+		return fmt.Errorf("database is required")
+	}
+	now := time.Now()
+	published, err := assetRecordForPublishedPath(job.PublishedPath, library.DestinationPath, "converted", library, now, 0)
+	if err != nil {
+		return fmt.Errorf("index published asset: %w", err)
+	}
+
+	var archived *models.AssetRecord
+	if strings.TrimSpace(job.OriginalArchivedPath) != "" {
+		archiveRoot, rootErr := originalsArchivePath(db)
+		if rootErr != nil {
+			return fmt.Errorf("resolve archive root: %w", rootErr)
+		}
+		archiveLibrary := models.Library{Name: "Originals"}
+		record, recordErr := assetRecordForPublishedPath(job.OriginalArchivedPath, archiveRoot, "archive", archiveLibrary, now, originalRetentionDays(db))
+		if recordErr != nil {
+			return fmt.Errorf("index archived original: %w", recordErr)
+		}
+		archived = &record
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		if sourcePath := filepath.Clean(strings.TrimSpace(job.MediaPath)); sourcePath != "." && sourcePath != filepath.Clean(job.PublishedPath) {
+			if err := tx.Model(&models.AssetRecord{}).Where("path = ?", sourcePath).Updates(map[string]interface{}{"missing": true, "synced_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		if err := upsertAssetRecord(tx, published); err != nil {
+			return err
+		}
+		if archived != nil {
+			if err := upsertAssetRecord(tx, *archived); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func assetRecordForPublishedPath(mediaPath, root, status string, library models.Library, syncedAt time.Time, keepDays int) (models.AssetRecord, error) {
+	mediaPath = filepath.Clean(strings.TrimSpace(mediaPath))
+	root = filepath.Clean(strings.TrimSpace(root))
+	if mediaPath == "." || root == "." || !pathIsInside(mediaPath, root) {
+		return models.AssetRecord{}, fmt.Errorf("path %s is outside root %s", mediaPath, root)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		return models.AssetRecord{}, err
+	}
+	if info.IsDir() {
+		return models.AssetRecord{}, fmt.Errorf("media path is a directory")
+	}
+	relativePath := filepath.ToSlash(relativeAssetPath(root, mediaPath))
+	record := models.AssetRecord{
+		Path: mediaPath, RootPath: root, RelativePath: relativePath,
+		GroupPath: filepath.ToSlash(logicalAssetGroupPath(relativePath)), FileName: filepath.Base(mediaPath),
+		Extension: strings.ToLower(filepath.Ext(mediaPath)), SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
+		Status: status, LibraryID: library.ID, LibraryName: library.Name, Missing: false, SyncedAt: syncedAt,
+	}
+	if status == "archive" && keepDays > 0 {
+		expiresAt := info.ModTime().Add(time.Duration(keepDays) * 24 * time.Hour)
+		record.ExpiresAt = &expiresAt
+	}
+	return record, nil
 }
 
 func (h PublisherHandler) libraryOriginalArchivePath(job models.QueueJob, library models.Library) (string, error) {

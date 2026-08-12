@@ -151,6 +151,27 @@ func TestHistoricalQSVRatiosIncludeCompletedEncoderResults(t *testing.T) {
 	}
 }
 
+func TestHistoricalQSVRatiosPreferMatchingProfileFingerprint(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:qsv-profile-history?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []interface{}{
+		models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "profileFingerprint": "target", "sourceVideoBitrate": 4_000_000.0, "outputVideoBitrate": 1_200_000.0},
+		models.JSONMap{"effectiveEncoder": "hevc_qsv", "hardwareQualityPreset": "recommended", "profileFingerprint": "other", "sourceVideoBitrate": 4_000_000.0, "outputVideoBitrate": 3_600_000.0},
+	}
+	if err := db.Create(&models.AppSetting{Key: "encoderResultHistory", Value: models.JSONMap{"records": records}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum, count := historicalQSVSampleRatios(db, "recommended", "target")
+	if count != 1 || minimum != .3 || maximum != .3 {
+		t.Fatalf("single exact-profile result should remain identifiable without mixing unrelated output: %.2f..%.2f (%d)", minimum, maximum, count)
+	}
+}
+
 func TestVideoToolboxEstimateUsesCroppedOutputHeight(t *testing.T) {
 	profile := models.Profile{WorkerConfig: models.JSONMap{"hardwareQualityPreset": "recommended", "videoFilters": "crop=720:460:0:10"}}
 	target, ok := videoToolboxTargetKbps(profile, mediaEstimate{VideoBitrate: 1_000_000, VideoWidth: 1920, VideoHeight: 1080})

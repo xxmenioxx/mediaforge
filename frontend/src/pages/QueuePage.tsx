@@ -68,7 +68,6 @@ export function QueuePage() {
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState('');
   const [jobSearch, setJobSearch] = useState('');
   const [jobSortDirection, setJobSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [jobGroupMode, setJobGroupMode] = useState<'worker' | 'asset'>('worker');
   const [jobsPerPage, setJobsPerPage] = useState(10);
   const [jobPage, setJobPage] = useState(1);
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
@@ -105,7 +104,7 @@ export function QueuePage() {
       }),
     [allJobs, batchFilter, jobSearch, pathFilter, statusFilter, workerFilter],
   );
-  const jobGroups = useMemo(() => buildJobGroups(filteredJobs, jobSortDirection, jobGroupMode), [filteredJobs, jobGroupMode, jobSortDirection]);
+  const jobGroups = useMemo(() => buildJobGroups(filteredJobs, jobSortDirection), [filteredJobs, jobSortDirection]);
   const totalJobPages = Math.max(1, Math.ceil(jobGroups.length / jobsPerPage));
   const pagedJobGroups = jobGroups.slice((jobPage - 1) * jobsPerPage, jobPage * jobsPerPage);
   const statusCounts = useMemo(() => summarizeStatusCounts(allJobs), [allJobs]);
@@ -113,7 +112,7 @@ export function QueuePage() {
 
   useEffect(() => {
     setJobPage(1);
-  }, [batchFilter, jobGroupMode, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter, workerFilter]);
+  }, [batchFilter, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter, workerFilter]);
 
   async function applyQueueSelections(input: QueueJobInput) {
     const asset = findQueueAsset(assets.data, input.mediaPath);
@@ -288,37 +287,24 @@ export function QueuePage() {
                   fullWidth
                 />
               </Grid>
-              <Grid size={{ xs: 6, md: 2 }}>
-                <TextField
-                  label="View"
-                  value={jobGroupMode}
-                  onChange={(event) => setJobGroupMode(event.target.value as 'worker' | 'asset')}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="worker">By worker</MenuItem>
-                  <MenuItem value="asset">By asset</MenuItem>
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 6, md: 2 }}>
-                <TextField
-                  label="Worker"
-                  value={workerFilter}
-                  onChange={(event) => {
-                    const nextParams = new URLSearchParams(searchParams);
-                    const value = event.target.value;
-                    if (value === 'all') nextParams.delete('worker');
-                    else nextParams.set('worker', value);
-                    setSearchParams(nextParams);
-                  }}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="all">All workers</MenuItem>
-                  {workerOptions.map((worker) => (
-                    <MenuItem key={worker} value={worker}>{worker === 'unassigned' ? 'Unassigned' : worker}</MenuItem>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {['all', ...workerOptions].map((worker) => (
+                    <Chip
+                      key={worker}
+                      clickable
+                      color={workerFilter === worker ? 'primary' : 'default'}
+                      variant={workerFilter === worker ? 'filled' : 'outlined'}
+                      label={worker === 'all' ? 'All workers' : worker === 'unassigned' ? 'Unassigned' : worker}
+                      onClick={() => {
+                        const nextParams = new URLSearchParams(searchParams);
+                        if (worker === 'all') nextParams.delete('worker');
+                        else nextParams.set('worker', worker);
+                        setSearchParams(nextParams);
+                      }}
+                    />
                   ))}
-                </TextField>
+                </Stack>
               </Grid>
               <Grid size={{ xs: 6, md: 2 }}>
                 <TextField
@@ -483,7 +469,6 @@ type QueueJobGroup = {
   failed: number;
   running: number;
   queued: number;
-  isWorkerGroup: boolean;
 };
 
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
@@ -769,7 +754,7 @@ function QueueGroupCard({
               <Typography variant="h3" sx={{ wordBreak: 'break-word' }}>
                 {group.name}
               </Typography>
-              <Chip label={group.isWorkerGroup ? 'Worker' : group.isBatch ? 'Folder batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} color={group.isBatch || group.isWorkerGroup ? 'primary' : 'default'} size="small" />
+              <Chip label={group.isBatch ? 'Batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} color={group.isBatch ? 'primary' : 'default'} size="small" />
               <Chip label={`${group.completed}/${group.jobs.length} completed`} color="success" size="small" />
               <Chip label={`${group.queued} queued`} color="warning" size="small" />
               <Chip label={`${group.running} running`} color="primary" size="small" />
@@ -1038,31 +1023,29 @@ function JobRow({
   );
 }
 
-function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc', groupMode: 'worker' | 'asset') {
+function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
   const groups = new Map<string, QueueJobGroup>();
 
   [...jobs].sort((left, right) => sortJobIds(left, right, sortDirection)).forEach((job) => {
-    const workerName = job.workerName || 'Unassigned';
-    const groupId = groupMode === 'worker' ? `worker:${workerName}` : queueGroupPathFromMediaPath(job.mediaPath);
+    const groupId = job.batchId ? `batch:${job.batchId}` : queueGroupPathFromMediaPath(job.mediaPath);
     const existing = groups.get(groupId);
     const group =
       existing ??
       ({
         id: groupId,
-        name: groupMode === 'worker' ? workerName : job.batchName || groupId,
+        name: job.batchName || queueGroupPathFromMediaPath(job.mediaPath),
         jobs: [],
-        isBatch: groupMode === 'asset' && Boolean(job.batchId),
-        batchId: groupMode === 'asset' ? job.batchId || '' : '',
+        isBatch: Boolean(job.batchId),
+        batchId: job.batchId || '',
         progress: 0,
         completed: 0,
         failed: 0,
         running: 0,
         queued: 0,
-        isWorkerGroup: groupMode === 'worker',
       } satisfies QueueJobGroup);
 
     group.jobs.push(job);
-    if (groupMode === 'asset' && job.batchId && !group.batchId) {
+    if (job.batchId && !group.batchId) {
       group.batchId = job.batchId;
       group.isBatch = true;
     }
@@ -1252,13 +1235,6 @@ function shortText(value: string, maxLength: number) {
     return compact;
   }
   return `${compact.slice(0, maxLength - 1)}...`;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
 }
 
 function statusColor(status: string) {

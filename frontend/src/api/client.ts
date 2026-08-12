@@ -135,6 +135,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  removeMissingAsset: (path: string) =>
+    request<{ status: string; path: string; message: string }>(`/api/assets/missing?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
   recoverAsset: (path: string) =>
     request<{ status: string; sourcePath: string; recoveredPath: string; message: string }>(`/api/assets/recover?path=${encodeURIComponent(path)}`, {
       method: 'POST',

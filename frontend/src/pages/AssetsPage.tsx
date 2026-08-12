@@ -66,11 +66,19 @@ import { assetDerivedGopRecommendation, parseReliableFrameRate } from '../utils/
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
   const [assetQuery, setAssetQuery] = useState('');
-  const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
+  const jobs = useQuery({
+    queryKey: ['queueJobs'],
+    queryFn: api.queueJobs,
+    refetchInterval: (query) => query.state.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 3000 : false,
+  });
+  const assets = useQuery({
+    queryKey: ['assets'],
+    queryFn: api.assets,
+    refetchInterval: jobs.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 3000 : false,
+  });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
-  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
   const snapshotOperations = useQuery({
     queryKey: ['snapshotOperations'],
     queryFn: () => api.snapshotOperations(''),
@@ -230,6 +238,13 @@ function AssetTabLabel({ label, count, color }: { label: string; count: number; 
 }
 
 function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
+  const queryClient = useQueryClient();
+  const removeMissingAsset = useMutation({
+    mutationFn: api.removeMissingAsset,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
   const reports = inventory?.reports;
   if (!reports) {
     return (
@@ -240,6 +255,7 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
   }
   const missingActionable = reports.missingActionable ?? reports.missingFiles ?? 0;
   const missingHistorical = reports.missingHistorical ?? 0;
+  const convertedSavedBytes = reports.convertedSpaceSavedBytes ?? 0;
 
   return (
     <CardContent>
@@ -252,6 +268,13 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <ReportTile label="Converted by MVForge" value={String(reports.convertedFiles)} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <ReportTile
+            label={convertedSavedBytes >= 0 ? 'Space saved by conversion' : 'Conversion size increase'}
+            value={formatBytes(Math.abs(convertedSavedBytes))}
+            helper={`${reports.convertedComparedFiles ?? 0}/${reports.convertedFiles} active converted assets compared · ${formatBytes(reports.convertedOriginalBytes ?? 0)} → ${formatBytes(reports.convertedOutputBytes ?? 0)}`}
+          />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <ReportTile label="Archive originals" value={String(reports.archiveFiles)} helper={formatBytes(reports.archiveBytes)} />
@@ -271,6 +294,11 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
               These paths have no verified file of the same size and are not classified as renamed or archived history.
             </Typography>
           </Box>
+          {removeMissingAsset.isError ? (
+            <Alert severity="warning" sx={{ m: 1.5 }}>
+              {removeMissingAsset.error instanceof Error ? removeMissingAsset.error.message : 'The missing asset could not be removed.'}
+            </Alert>
+          ) : null}
           <Box sx={{ overflowX: 'auto' }}>
             <Table size="small" sx={{ minWidth: 760 }}>
               <TableHead>
@@ -279,6 +307,7 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
                   <TableCell>Status</TableCell>
                   <TableCell>Source</TableCell>
                   <TableCell align="right">Recorded size</TableCell>
+                  <TableCell align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -288,6 +317,24 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
                     <TableCell><Chip label={statusLabel(asset.status)} color={statusColor(asset.status)} size="small" /></TableCell>
                     <TableCell>{asset.libraryName || 'Unknown'}</TableCell>
                     <TableCell align="right">{formatBytes(asset.sizeBytes)}</TableCell>
+                    <TableCell align="right">
+                      <Tooltip title="Remove this absent file from the inventory. Historical jobs, logs, reports and snapshots are preserved.">
+                        <span>
+                          <IconButton
+                            color="error"
+                            size="small"
+                            disabled={removeMissingAsset.isPending}
+                            aria-label={`Remove missing asset ${asset.fileName}`}
+                            onClick={() => {
+                              if (!window.confirm(`Remove the missing asset record for “${asset.fileName}”?\n\nThe media file is already absent. MVForge will preserve job history, logs, reports and snapshots.`)) return;
+                              removeMissingAsset.mutate(asset.path);
+                            }}
+                          >
+                            <DeleteForeverIcon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -2684,8 +2731,10 @@ function AssetConversionOverridePanel({
   }
 
   function updateFrameStructurePolicy(patch: Record<string, unknown>) {
+    const retainedQualityPreset = String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom');
     Object.entries(patch).filter(([name]) => name !== 'frameStructureMode').forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
     if ('frameStructureMode' in patch) onChange('frameStructureMode', patch.frameStructureMode as AssetConversionOverrideState['frameStructureMode']);
+    onChange('hardwareQualityPreset', retainedQualityPreset);
     if (effectiveVideoEncoder === 'hevc_qsv' || effectiveVideoEncoder === 'hevc_videotoolbox') {
       const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
       encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
@@ -3040,7 +3089,7 @@ function AssetConversionOverridePanel({
                 </Grid>
               ) : null}
               {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
-              {encoderQualityRecommendation.data ? <Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />{encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack> : null}
+              {encoderQualityRecommendation.data ? <Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />{encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}{encoderQualityRecommendation.data.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack> : null}
               {encoderQualityRecommendation.data?.recommendation.effectiveBFramePolicy ? <Alert severity={encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? 'warning' : 'info'}>VideoToolbox B-frames: {encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy} · efficiency ×{encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier?.toFixed(2)} · target {((encoderQualityRecommendation.data.recommendation.targetBitrate ?? 0) / 1_000_000).toFixed(2)} Mbps{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? ` · ${encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}` : ''}</Alert> : null}
             </Box>
           </Grid>

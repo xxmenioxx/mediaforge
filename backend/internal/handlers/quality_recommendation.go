@@ -10,6 +10,7 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 
@@ -76,6 +77,15 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 	var err error
 	switch encoder {
 	case "hevc_qsv":
+		if intent.MeasuredVideoBitrate == 0 {
+			minimumRatio, maximumRatio, samples := scheduler.HistoricalQSVSampleRatios(h.db, workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), scheduler.ProfileEstimateFingerprint(profile))
+			if samples == 1 {
+				samples = 2
+			} else if samples == 0 {
+				minimumRatio, maximumRatio, samples = scheduler.HistoricalQSVSampleRatios(h.db, workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))
+			}
+			intent.HistoricalRatioMin, intent.HistoricalRatioMax, intent.HistoricalSamples = minimumRatio, maximumRatio, samples
+		}
 		if preset := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]))); preset == "" || preset == "custom" {
 			recommendation = genericEncoderRecommendation(profile, intent, encoder)
 			rateControl := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvRateControl"])))

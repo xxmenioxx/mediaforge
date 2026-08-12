@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import CancelIcon from '@mui/icons-material/Cancel';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import RemoveCircleOutlineIcon from '@mui/icons-material/RemoveCircleOutline';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
@@ -40,6 +41,7 @@ export function WorkersPage() {
   const [failedRowsPerPage, setFailedRowsPerPage] = useState(6);
   const [detailsJob, setDetailsJob] = useState<QueueJob | null>(null);
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
+  const workerFilter = searchParams.get('worker') ?? 'all';
 
   const claimJob = useMutation({
     mutationFn: async (claim: { workerName: string }) => {
@@ -58,12 +60,21 @@ export function WorkersPage() {
     },
   });
 
+  const removeBatch = useMutation({
+    mutationFn: api.dismissQueueBatch,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+    },
+  });
+
   const stats = useMemo(() => summarizeJobs(jobs.data ?? []), [jobs.data]);
   const activeJobs = (jobs.data ?? [])
-    .filter((job) => statusFilter === 'all' || job.status === statusFilter)
+    .filter((job) => (statusFilter === 'all' || job.status === statusFilter) && (workerFilter === 'all' || (job.workerName || 'unassigned') === workerFilter))
     .sort(compareWorkerJobs);
+  const workerOptions = [...new Set((jobs.data ?? []).map((job) => job.workerName || 'unassigned'))].sort();
+  const activeBatches = groupWorkerJobsByBatch(activeJobs);
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === 'failed');
-  const pagedActiveJobs = activeJobs.slice(activePage * activeRowsPerPage, activePage * activeRowsPerPage + activeRowsPerPage);
+  const pagedActiveBatches = activeBatches.slice(activePage * activeRowsPerPage, activePage * activeRowsPerPage + activeRowsPerPage);
   const pagedFailedJobs = failedJobs.slice(failedPage * failedRowsPerPage, failedPage * failedRowsPerPage + failedRowsPerPage);
   const recentJobs = (jobs.data ?? []).filter((job) => job.status !== 'queued' && job.status !== 'running').slice(0, 6);
 
@@ -83,6 +94,10 @@ export function WorkersPage() {
       status: 'canceled',
       progress: job.progress,
     });
+  }
+
+  function cancelBatch(batch: WorkerJobBatch) {
+    batch.jobs.filter((job) => job.status === 'queued' || job.status === 'running').forEach(cancelJob);
   }
 
   return (
@@ -114,6 +129,23 @@ export function WorkersPage() {
               />
             ))}
             {!workerNodes.isLoading && !(workerNodes.data ?? []).length ? <Typography color="text.secondary">No workers have registered a heartbeat.</Typography> : null}
+          </Stack>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {['all', ...workerOptions].map((worker) => (
+              <Chip
+                key={worker}
+                clickable
+                color={workerFilter === worker ? 'primary' : 'default'}
+                variant={workerFilter === worker ? 'filled' : 'outlined'}
+                label={worker === 'all' ? 'All workers' : worker === 'unassigned' ? 'Unassigned' : worker}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  if (worker === 'all') next.delete('worker'); else next.set('worker', worker);
+                  setSearchParams(next);
+                  setActivePage(0);
+                }}
+              />
+            ))}
           </Stack>
         </Stack></CardContent></Card>
 
@@ -168,13 +200,19 @@ export function WorkersPage() {
                   Jobs
                 </Typography>
                 <Stack spacing={1.5}>
-                  {pagedActiveJobs.map((job) => (
-                    <WorkerJobCard
-                      key={job.id}
-                      job={job}
-                      onCancel={cancelJob}
+                  {pagedActiveBatches.map((batch) => (
+                    <WorkerBatchCard
+                      key={batch.id}
+                      batch={batch}
+                      onCancelJob={cancelJob}
+                      onCancelBatch={cancelBatch}
+                      onRemoveBatch={(item) => {
+                        const removable = item.jobs.filter((job) => job.status !== 'completed').length;
+                        if (!removable || !window.confirm(`Remove ${removable} non-completed job${removable === 1 ? '' : 's'} from “${item.name}”? Logs and completed jobs will be preserved.`)) return;
+                        removeBatch.mutate(item.batchId);
+                      }}
                       onDetails={setDetailsJob}
-                      isUpdating={updateJob.isPending}
+                      isUpdating={updateJob.isPending || removeBatch.isPending}
                     />
                   ))}
                   {!jobs.isLoading && activeJobs.length === 0 ? (
@@ -184,7 +222,7 @@ export function WorkersPage() {
                 {activeJobs.length > 0 ? (
                   <TablePagination
                     component="div"
-                    count={activeJobs.length}
+                    count={activeBatches.length}
                     page={activePage}
                     rowsPerPage={activeRowsPerPage}
                     onPageChange={(_, page) => setActivePage(page)}
@@ -316,19 +354,24 @@ function WorkerMetric({
   );
 }
 
-function WorkerJobCard({
-  job,
-  onCancel,
+function WorkerBatchCard({
+  batch,
+  onCancelJob,
+  onCancelBatch,
+  onRemoveBatch,
   onDetails,
   isUpdating,
 }: {
-  job: QueueJob;
-  onCancel: (job: QueueJob) => void;
+  batch: WorkerJobBatch;
+  onCancelJob: (job: QueueJob) => void;
+  onCancelBatch: (batch: WorkerJobBatch) => void;
+  onRemoveBatch: (batch: WorkerJobBatch) => void;
   onDetails: (job: QueueJob) => void;
   isUpdating: boolean;
 }) {
-  const canCancel = job.status === 'queued' || job.status === 'running';
-  const timing = jobTiming(job);
+  const pending = batch.jobs.filter((job) => job.status === 'queued' || job.status === 'running');
+  const completed = batch.jobs.filter((job) => job.status === 'completed').length;
+  const progress = Math.round(batch.jobs.reduce((sum, job) => sum + job.progress, 0) / Math.max(1, batch.jobs.length));
 
   return (
     <Card variant="outlined" sx={{ bgcolor: 'transparent' }}>
@@ -336,85 +379,58 @@ function WorkerJobCard({
         <Stack spacing={1.5}>
           <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
             <Stack spacing={0.4} sx={{ minWidth: 0 }}>
-              <Typography variant="h3" noWrap>
-                {fileNameFromPath(job.mediaPath)}
+              <Typography variant="h3">
+                {batch.name}
               </Typography>
-              <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                {job.mediaPath}
+              <Typography color="text.secondary" variant="body2">
+                {completed}/{batch.jobs.length} completed · {pending.length} active
               </Typography>
             </Stack>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <JobStatusChip status={job.status} />
-              <Chip label={`P${job.priority}`} size="small" />
+              {[...new Set(batch.jobs.map((job) => job.workerName || 'Unassigned'))].map((worker) => <Chip key={worker} label={worker} size="small" />)}
+              {batch.batchId ? <Chip label="Batch" color="primary" size="small" /> : <Chip label="Single job" size="small" />}
             </Stack>
           </Stack>
-
-          <Stack spacing={0.6}>
-            <Stack direction="row" justifyContent="space-between">
-              <Typography color="text.secondary" variant="body2">
-                {job.workerName || 'Unclaimed'}
-              </Typography>
-              <Typography color="text.secondary" variant="body2">
-                {job.progress}%
-              </Typography>
-            </Stack>
-            <LinearProgress variant="determinate" value={job.progress} />
-            <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-              {timing.elapsed ? (
-                <Typography color="text.secondary" variant="body2">
-                  Elapsed: {timing.elapsed}
-                </Typography>
-              ) : null}
-              {timing.eta ? (
-                <Typography color="text.secondary" variant="body2">
-                  ETA: {timing.eta}
-                </Typography>
-              ) : null}
-            </Stack>
+          <LinearProgress variant="determinate" value={progress} />
+          <Stack spacing={1}>
+            {batch.jobs.map((job) => (
+              <Stack key={job.id} direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1} sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+                <Stack sx={{ minWidth: 0 }}>
+                  <Typography fontWeight={700} noWrap>{fileNameFromPath(job.mediaPath)}</Typography>
+                  <Typography color="text.secondary" variant="body2">{job.progress}% · P{job.priority} · {job.workerName || 'Unclaimed'}</Typography>
+                  {job.errorMessage ? <Typography color="error" variant="body2">{job.errorMessage}</Typography> : null}
+                </Stack>
+                <Stack direction="row" spacing={1}>
+                  <JobStatusChip status={job.status} />
+                  <Button size="small" variant="outlined" onClick={() => onDetails(job)}>Details</Button>
+                  <Button size="small" color="warning" onClick={() => onCancelJob(job)} disabled={!['queued', 'running'].includes(job.status) || isUpdating}>Cancel</Button>
+                </Stack>
+              </Stack>
+            ))}
           </Stack>
-
-          {job.errorMessage ? <Alert severity="warning">{job.errorMessage}</Alert> : null}
-          {job.outputPath ? (
-            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-              Output: {job.outputPath}
-            </Typography>
+          {batch.batchId ? (
+            <Stack direction="row" spacing={1} justifyContent="flex-end">
+              <Button startIcon={<CancelIcon />} color="warning" variant="outlined" onClick={() => onCancelBatch(batch)} disabled={!pending.length || isUpdating}>Cancel Batch</Button>
+              <Button startIcon={<RemoveCircleOutlineIcon />} color="error" variant="outlined" onClick={() => onRemoveBatch(batch)} disabled={isUpdating || batch.jobs.every((job) => job.status === 'completed')}>Remove Batch</Button>
+            </Stack>
           ) : null}
-          {job.notes.includes('Dry-run command:') ? (
-            <Box
-              component="pre"
-              sx={{
-                border: 1,
-                borderColor: 'divider',
-                borderRadius: 1,
-                bgcolor: 'rgba(255,255,255,0.03)',
-                m: 0,
-                p: 1.5,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {job.notes}
-            </Box>
-          ) : null}
-
-          <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap sx={{ '& .MuiButton-root': { flex: { xs: 1, sm: '0 0 auto' } } }}>
-            <Button variant="outlined" onClick={() => onDetails(job)}>
-              Details
-            </Button>
-            <Button
-              startIcon={<CancelIcon />}
-              color="warning"
-              variant="outlined"
-              onClick={() => onCancel(job)}
-              disabled={!canCancel || isUpdating}
-            >
-              Cancel
-            </Button>
-          </Stack>
         </Stack>
       </CardContent>
     </Card>
   );
+}
+
+type WorkerJobBatch = { id: string; batchId: string; name: string; jobs: QueueJob[] };
+
+function groupWorkerJobsByBatch(jobs: QueueJob[]): WorkerJobBatch[] {
+  const groups = new Map<string, WorkerJobBatch>();
+  for (const job of jobs) {
+    const id = job.batchId ? `batch:${job.batchId}` : `job:${job.id}`;
+    const group = groups.get(id) ?? { id, batchId: job.batchId || '', name: job.batchName || fileNameFromPath(job.mediaPath), jobs: [] };
+    group.jobs.push(job);
+    groups.set(id, group);
+  }
+  return [...groups.values()];
 }
 
 const mobilePaginationSx = {
@@ -488,38 +504,4 @@ function getWorkerSettings(settings?: AppSetting[]) {
     defaultWorkerName: typeof value.defaultWorkerName === 'string' ? value.defaultWorkerName : 'local-worker',
     autoWorkerEnabled: typeof value.autoWorkerEnabled === 'boolean' ? value.autoWorkerEnabled : true,
   };
-}
-
-function jobTiming(job: QueueJob) {
-  if (!job.startedAt) {
-    return { elapsed: '', eta: '' };
-  }
-
-  const startMs = new Date(job.startedAt).getTime();
-  const endMs = job.finishedAt ? new Date(job.finishedAt).getTime() : Date.now();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
-    return { elapsed: '', eta: '' };
-  }
-
-  const elapsedSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
-  const canEstimate = job.status === 'running' && job.progress > 0 && job.progress < 100;
-  const etaSeconds = canEstimate ? Math.round((elapsedSeconds * (100 - job.progress)) / job.progress) : 0;
-
-  return {
-    elapsed: formatDuration(elapsedSeconds),
-    eta: canEstimate ? formatDuration(etaSeconds) : '',
-  };
-}
-
-function formatDuration(totalSeconds: number) {
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m ${seconds}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
 }

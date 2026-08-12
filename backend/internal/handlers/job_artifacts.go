@@ -735,7 +735,8 @@ func persistCompletedEncoderResult(db *gorm.DB, artifact jobArtifact) {
 		"sourceVideoBitrate":    source.Bitrate, "outputVideoBitrate": output.Bitrate,
 		"durationSeconds": source.Duration, "sourceWidth": source.Width, "sourceHeight": source.Height,
 		"outputWidth": output.Width, "outputHeight": output.Height,
-		"actualOutputBytes": actualOutputBytes,
+		"actualOutputBytes":  actualOutputBytes,
+		"profileFingerprint": scheduler.ProfileEstimateFingerprint(artifact.Profile),
 	}
 	if hasActivePlan {
 		record["estimatedOutputMinBytes"] = activePlan.EstimatedOutputMinBytes
