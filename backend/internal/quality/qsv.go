@@ -27,7 +27,7 @@ func QSVFormat(preset Preset) (profile, pixelFormat string, ok bool) {
 	if _, known := QSVBaseQuality(preset); !known {
 		return "", "", false
 	}
-	if preset == PresetHighQuality || preset == PresetArchive || preset == PresetMaster {
+	if preset == PresetRecommended || preset == PresetBest || preset == PresetHighQuality || preset == PresetArchive || preset == PresetMaster {
 		return "main10", "p010le", true
 	}
 	return "main", "nv12", true

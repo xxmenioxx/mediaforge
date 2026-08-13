@@ -836,7 +836,7 @@ export type QSVFrameStructureAnalysis = {
 export type SnapshotOperation = {
   id: string;
   assetPath: string;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'completed' | 'error' | 'paused';
   phase: string;
   progress: number;
   message: string;

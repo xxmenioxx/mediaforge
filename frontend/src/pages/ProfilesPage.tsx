@@ -32,8 +32,9 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
+import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
@@ -90,6 +91,7 @@ const initialProfile: ProfileInput = {
 
 const encoderPresetOptions = [
   { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful while testing.' },
+  { value: 'fast', label: 'Fast', description: 'Faster than Balanced while retaining more compression efficiency than Fast preview.' },
   { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
   { value: 'slow', label: 'Higher compression', description: 'Slower, usually smaller files at the same quality.' },
   { value: 'slower', label: 'Archive patience', description: 'Very slow. Use only when size matters more than time.' },
@@ -123,10 +125,12 @@ export function ProfilesPage() {
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const [form, setForm] = useState<ProfileInput>(initialProfile);
+  const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [profileSearch, setProfileSearch] = useState('');
   const [profileJson, setProfileJson] = useState(JSON.stringify(initialProfile, null, 2));
+  const hardwareDefaultAppliedRef = useRef(false);
   const normalizedProfileSearch = profileSearch.trim().toLowerCase();
   const visibleProfiles = (profiles.data ?? [])
     .filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt))
@@ -147,6 +151,22 @@ export function ProfilesPage() {
   const defaultHardwareEncoder = availableProfileEncoderOptions.find(
     (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
+  useEffect(() => {
+    if (hardwareDefaultAppliedRef.current || !showForm || !defaultHardwareEncoder || form.name.trim()) return;
+    hardwareDefaultAppliedRef.current = true;
+    const next = synchronizeAuthoritativeContract({
+      ...form,
+      workerConfig: applySharedHardwareQualityPreset({
+        ...form.workerConfig,
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+      }, defaultHardwareEncoder, 'recommended'),
+    });
+    queueMicrotask(() => {
+      setForm(next);
+      setProfileJson(JSON.stringify(next, null, 2));
+    });
+  }, [defaultHardwareEncoder, form, showForm]);
   const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
   const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
  
@@ -176,6 +196,19 @@ export function ProfilesPage() {
     onSuccess: async () => {
       setForm(initialProfile);
       setProfileJson(JSON.stringify(initialProfile, null, 2));
+      setEditingProfileId(null);
+      setShowForm(false);
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
+    },
+  });
+
+  const updateProfile = useMutation({
+    mutationFn: api.updateProfile,
+    onSuccess: async () => {
+      setForm(initialProfile);
+      setProfileJson(JSON.stringify(initialProfile, null, 2));
+      setEditingProfileId(null);
       setShowForm(false);
       await queryClient.invalidateQueries({ queryKey: ['profiles'] });
       await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
@@ -566,20 +599,35 @@ export function ProfilesPage() {
       },
     });
 
-    createProfile.mutate(payload);
+    if (editingProfileId) {
+      updateProfile.mutate({ id: editingProfileId, ...payload });
+    } else {
+      createProfile.mutate(payload);
+    }
   }
 
   function addProfile() {
-    navigate('/profile-lab?section=video');
+    hardwareDefaultAppliedRef.current = false;
+    setEditingProfileId(null);
+    setProfileForm(initialProfile);
+    setShowForm(true);
   }
 
   function editProfile(profile: Profile) {
-    navigate(`/profile-lab?videoProfileId=${profile.id}`);
+    hardwareDefaultAppliedRef.current = true;
+    setEditingProfileId(profile.id);
+    setProfileForm(profileInputFromProfile(profile));
+    setShowForm(true);
+  }
+
+  function testProfileInLab(profile: Profile) {
+    navigate(`/profile-lab?videoProfileId=${profile.id}&section=video`);
   }
 
   function cancelEdit() {
     setForm(initialProfile);
     setProfileJson(JSON.stringify(initialProfile, null, 2));
+    setEditingProfileId(null);
     setShowForm(false);
   }
 
@@ -634,7 +682,7 @@ export function ProfilesPage() {
           </Button>
         </Stack>
         <Dialog open={showForm} onClose={cancelEdit} maxWidth="lg" fullWidth>
-          <DialogTitle>New Profile</DialogTitle>
+          <DialogTitle>{editingProfileId ? 'Edit Video Profile' : 'New Video Profile'}</DialogTitle>
           <DialogContent>
             <Box component="form" onSubmit={submit}>
               <Stack spacing={3}>
@@ -842,6 +890,7 @@ export function ProfilesPage() {
                             fullWidth
                           />
                         </Grid>
+                        {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, workerConfigString(form, 'videoEncoder', defaultHardwareEncoder))} helperText="Recommended and Best use Main10 when supported by the selected worker." fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid> : null}
                         <Grid size={{ xs: 12 }}>
                           <FrameStructureControls
                             config={form.workerConfig ?? {}}
@@ -890,7 +939,6 @@ export function ProfilesPage() {
                                 fullWidth
                               />
                             </Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_qsv')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField label="P strategy" select value={workerConfigNumber(form, 'qsvPStrategy', 0)} onChange={(event) => updateWorkerConfig('qsvPStrategy', Number(event.target.value))} helperText="Available only when B-frames are Off and validated by the worker." fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={workerConfigString(form, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple · requires Off</MenuItem><MenuItem value={2} disabled={workerConfigString(form, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <Stack>
@@ -935,7 +983,6 @@ export function ProfilesPage() {
                         ) : null}
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                           <>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField label="Quality preset" select value={workerConfigString(form, 'hardwareQualityPreset', 'recommended')} onChange={(event) => applyProfileHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}>
                               <TextField label="VideoToolbox bitrate (Mbps)" type="number" value={workerConfigNumber(form, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBitrateMbps', Number(event.target.value))} helperText="Updates maxrate ×1.5, buffer ×2.5, and the effective estimate." inputProps={{ min: 0.01, max: 200, step: 0.01 }} fullWidth />
                             </Grid>
@@ -1225,12 +1272,12 @@ export function ProfilesPage() {
                   <Grid size={{ xs: 12, md: 3 }}>
                     <Button
                       type="submit"
-                      startIcon={<AddIcon />}
+                      startIcon={editingProfileId ? <EditIcon /> : <AddIcon />}
                       variant="contained"
-                      disabled={createProfile.isPending}
+                      disabled={createProfile.isPending || updateProfile.isPending}
                       fullWidth
                     >
-                      Create Profile
+                      {editingProfileId ? 'Save Changes' : 'Create Profile'}
                     </Button>
                   </Grid>
                 </Grid>
@@ -1239,6 +1286,11 @@ export function ProfilesPage() {
             {createProfile.isError ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 Profile could not be created. Profile names must be unique.
+              </Alert>
+            ) : null}
+            {updateProfile.isError ? (
+              <Alert severity="warning" sx={{ mt: 2 }}>
+                Profile could not be updated. Verify the name and encoder settings.
               </Alert>
             ) : null}
           </DialogContent>
@@ -1290,9 +1342,12 @@ export function ProfilesPage() {
                       </Typography>
                     </TableCell>
                     <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
                         <Button startIcon={<EditIcon />} variant="outlined" onClick={() => editProfile(profile)} disabled={Boolean(profile.deletedAt)}>
                           Edit
+                        </Button>
+                        <Button startIcon={<ScienceIcon />} variant="outlined" onClick={() => testProfileInLab(profile)} disabled={Boolean(profile.deletedAt)}>
+                          Probar en Lab
                         </Button>
                         <Button
                           variant="outlined"
@@ -1548,6 +1603,31 @@ function formatX265Params(params: Map<string, string>) {
 
 function encoderPresetDescription(value: string) {
   return encoderPresetOptions.find((option) => option.value === value)?.description ?? 'Controls how much time FFmpeg spends compressing video.';
+}
+
+function profileInputFromProfile(profile: Profile): ProfileInput {
+  return {
+    name: profile.name,
+    description: profile.description,
+    container: profile.container,
+    videoCodec: profile.videoCodec,
+    codecFamily: profile.codecFamily,
+    encoderPolicy: profile.encoderPolicy,
+    preferredEncoder: profile.preferredEncoder,
+    allowedEncoders: [...(profile.allowedEncoders ?? [])],
+    fallbackPolicy: profile.fallbackPolicy,
+    bitDepth: profile.bitDepth,
+    pixelFormat: profile.pixelFormat,
+    qualityStrategy: profile.qualityStrategy,
+    audioCodec: profile.audioCodec,
+    qualityMode: profile.qualityMode,
+    qualityValue: profile.qualityValue,
+    preserveHdr: profile.preserveHdr,
+    preserveSubtitles: profile.preserveSubtitles,
+    preserveChapters: profile.preserveChapters,
+    workerConfig: { ...(profile.workerConfig ?? {}) },
+    disabled: profile.disabled,
+  };
 }
 
 function pixelFormatDescription(value: string) {

@@ -19,7 +19,7 @@ func TestVideoToolboxTranslatorPreservesAdaptiveSDCalculation(t *testing.T) {
 	if err != nil || recommendation.BaseTargetBitrate == nil || *recommendation.BaseTargetBitrate != 1_290_000 || recommendation.TargetBitrate == nil || *recommendation.TargetBitrate != 1_330_000 || recommendation.Maxrate == nil || *recommendation.Maxrate != 2_000_000 || recommendation.Buffer == nil || *recommendation.Buffer != 3_330_000 {
 		t.Fatalf("unexpected VideoToolbox recommendation: %#v err=%v", recommendation, err)
 	}
-	if recommendation.Profile != "main" || recommendation.PixelFormat != "yuv420p" {
+	if recommendation.Profile != "main10" || recommendation.PixelFormat != "p010le" {
 		t.Fatalf("unexpected VideoToolbox format recommendation: %#v", recommendation)
 	}
 }
@@ -35,6 +35,22 @@ func TestVideoToolboxTranslatorPresetOrderAndSDCeiling(t *testing.T) {
 	}
 	if previous != 6_180_000 {
 		t.Fatalf("master SD ceiling changed: %d", previous)
+	}
+}
+
+func TestRecommendedAndBestQualityPresetsUseMain10(t *testing.T) {
+	for _, preset := range []Preset{PresetRecommended, PresetBest} {
+		profile, pixelFormat, ok := QSVFormat(preset)
+		if !ok || profile != "main10" || pixelFormat != "p010le" {
+			t.Fatalf("QSV preset %s did not select Main10: profile=%q pixelFormat=%q ok=%v", preset, profile, pixelFormat, ok)
+		}
+
+		recommendation, err := (VideoToolboxTranslator{}).Translate(NewIntent(IntentInput{
+			Preset: string(preset), SourceHeight: 1080, SourceVideoBitrate: 8_000_000,
+		}), WorkerCapabilities{})
+		if err != nil || recommendation.Profile != "main10" || recommendation.PixelFormat != "p010le" {
+			t.Fatalf("VideoToolbox preset %s did not select Main10: %#v err=%v", preset, recommendation, err)
+		}
 	}
 }
 

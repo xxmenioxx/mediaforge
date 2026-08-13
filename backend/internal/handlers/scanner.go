@@ -45,8 +45,9 @@ type SnapshotOperation struct {
 
 var snapshotOperations = struct {
 	sync.RWMutex
-	items map[string]*SnapshotOperation
-}{items: map[string]*SnapshotOperation{}}
+	items   map[string]*SnapshotOperation
+	cancels map[string]context.CancelFunc
+}{items: map[string]*SnapshotOperation{}, cancels: map[string]context.CancelFunc{}}
 
 const snapshotOperationTimeout = 15 * time.Minute
 
@@ -146,6 +147,10 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 }
 
 func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request ScanRequest, progress func(string, float64, string)) (models.ScanResult, bool, error) {
+	return h.scanResolvedFileContext(context.Background(), path, info, request, progress)
+}
+
+func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string, info os.FileInfo, request ScanRequest, progress func(string, float64, string)) (models.ScanResult, bool, error) {
 	report := func(phase string, value float64, message string) {
 		if progress != nil {
 			progress(phase, value, message)
@@ -164,7 +169,7 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 		}
 	}
 
-	probe, raw, err := runFFProbeWithProgress(path, normalizedAnalysisSeconds(request.AnalysisSeconds), report, frameStructureSamplingPolicy(h.db))
+	probe, raw, err := runFFProbeWithProgressContext(ctx, path, normalizedAnalysisSeconds(request.AnalysisSeconds), report, frameStructureSamplingPolicy(h.db))
 	if err != nil {
 		return models.ScanResult{}, false, err
 	}
@@ -242,20 +247,27 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 
 	now := time.Now()
 	id := fmt.Sprintf("snapshot-%d", now.UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
 	operation := &SnapshotOperation{ID: id, AssetPath: path, Status: "running", Phase: "preparing", Progress: 1, Message: "Preparing this asset snapshot", CreatedAt: now, UpdatedAt: now}
 	snapshotOperations.Lock()
 	snapshotOperations.items[id] = operation
+	snapshotOperations.cancels[id] = cancel
 	snapshotOperations.Unlock()
 	response := *operation
 
 	go func(fileInfo os.FileInfo) {
+		defer func() {
+			snapshotOperations.Lock()
+			delete(snapshotOperations.cancels, id)
+			snapshotOperations.Unlock()
+		}()
 		type scanOutcome struct {
 			result models.ScanResult
 			err    error
 		}
 		outcomes := make(chan scanOutcome, 1)
 		go func() {
-			result, _, scanErr := h.scanResolvedFile(path, fileInfo, request, func(phase string, progress float64, message string) {
+			result, _, scanErr := h.scanResolvedFileContext(ctx, path, fileInfo, request, func(phase string, progress float64, message string) {
 				updateSnapshotOperation(id, func(item *SnapshotOperation) {
 					if item.Status != "running" {
 						return
@@ -270,6 +282,7 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		select {
 		case outcome = <-outcomes:
 		case <-time.After(snapshotOperationTimeout):
+			cancel()
 			updateSnapshotOperation(id, func(item *SnapshotOperation) {
 				item.Status, item.Phase, item.Error, item.Message = "error", "timeout", "snapshot analysis exceeded 15 minutes", "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
 			})
@@ -277,15 +290,43 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		}
 		if outcome.err != nil {
 			updateSnapshotOperation(id, func(item *SnapshotOperation) {
+				if item.Status == "paused" {
+					return
+				}
 				item.Status, item.Phase, item.Error, item.Message = "error", "error", outcome.err.Error(), "Asset snapshot failed"
 			})
 			return
 		}
 		updateSnapshotOperation(id, func(item *SnapshotOperation) {
+			if item.Status == "paused" {
+				return
+			}
 			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &outcome.result
 		})
 	}(info)
 	c.JSON(http.StatusAccepted, response)
+}
+
+func (h ScannerHandler) CancelSnapshotOperation(c *gin.Context) {
+	id := c.Param("id")
+	snapshotOperations.Lock()
+	operation := snapshotOperations.items[id]
+	if operation == nil {
+		snapshotOperations.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": "snapshot operation not found"})
+		return
+	}
+	if operation.Status == "running" {
+		if cancel := snapshotOperations.cancels[id]; cancel != nil {
+			cancel()
+		}
+		delete(snapshotOperations.cancels, id)
+		operation.Status, operation.Phase, operation.Message = "paused", "paused", "Asset snapshot paused by user"
+		operation.UpdatedAt = time.Now()
+	}
+	copy := *operation
+	snapshotOperations.Unlock()
+	c.JSON(http.StatusOK, copy)
 }
 
 func (h ScannerHandler) GetSnapshotOperation(c *gin.Context) {
@@ -388,6 +429,10 @@ func runFFProbe(path string, analysisSeconds int) (FFProbeResult, models.JSONMap
 }
 
 func runFFProbeWithProgress(path string, analysisSeconds int, progress func(string, float64, string), samplingPolicy FrameStructureSamplingPolicy) (FFProbeResult, models.JSONMap, error) {
+	return runFFProbeWithProgressContext(context.Background(), path, analysisSeconds, progress, samplingPolicy)
+}
+
+func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSeconds int, progress func(string, float64, string), samplingPolicy FrameStructureSamplingPolicy) (FFProbeResult, models.JSONMap, error) {
 	report := func(phase string, value float64, message string) {
 		if progress != nil {
 			progress(phase, value, message)
@@ -395,7 +440,7 @@ func runFFProbeWithProgress(path string, analysisSeconds int, progress func(stri
 	}
 	report("metadata", 10, "Reading media metadata")
 	ctxTimeout := 60 * time.Second
-	cmd := exec.Command(
+	cmd := exec.CommandContext(ctx,
 		"ffprobe",
 		"-v", "error",
 		"-print_format", "json",
@@ -436,13 +481,22 @@ func runFFProbeWithProgress(path string, analysisSeconds int, progress func(stri
 	}
 	video := firstStream(probe.Streams, "video")
 	report("interlace", 30, "Analyzing motion and interlace samples")
-	raw["interlaceAnalysis"] = detectInterlace(path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	raw["interlaceAnalysis"] = detectInterlaceContext(ctx, path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	if err := ctx.Err(); err != nil {
+		return FFProbeResult{}, nil, err
+	}
 	report("crop", 55, "Checking sampled scenes for crop boundaries")
-	raw["cropAnalysis"] = detectCrop(path, video.Width, video.Height, parseFloat(probe.Format.Duration))
+	raw["cropAnalysis"] = detectCropContext(ctx, path, video.Width, video.Height, parseFloat(probe.Format.Duration))
+	if err := ctx.Err(); err != nil {
+		return FFProbeResult{}, nil, err
+	}
 	report("frame_structure", 80, "Inspecting I, P, B and GOP frame structure")
-	frameContext, cancelFrameAnalysis := context.WithTimeout(context.Background(), 3*time.Minute)
+	frameContext, cancelFrameAnalysis := context.WithTimeout(ctx, 3*time.Minute)
 	frameAnalysis, frameErr := analyzeVideoFrameStructureDistributed(frameContext, path, parseFloat(probe.Format.Duration), samplingPolicy)
 	cancelFrameAnalysis()
+	if err := ctx.Err(); err != nil {
+		return FFProbeResult{}, nil, err
+	}
 	if frameErr == nil {
 		encoded, _ := json.Marshal(frameAnalysis)
 		frameMap := models.JSONMap{}

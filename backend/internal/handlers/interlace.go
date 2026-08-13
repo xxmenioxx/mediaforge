@@ -56,6 +56,10 @@ var (
 )
 
 func detectInterlace(path, fieldOrder string, duration float64, windowSeconds int) InterlaceAnalysis {
+	return detectInterlaceContext(context.Background(), path, fieldOrder, duration, windowSeconds)
+}
+
+func detectInterlaceContext(ctx context.Context, path, fieldOrder string, duration float64, windowSeconds int) InterlaceAnalysis {
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
 	containerOrder := normalizeFieldOrder(fieldOrder)
 	analysis := InterlaceAnalysis{
@@ -64,7 +68,7 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 		ContainerFieldOrder: containerOrder, Source: "ffprobe", WindowSeconds: windowSeconds,
 	}
 	for _, start := range distributedInterlaceStarts(duration, windowSeconds) {
-		sample, ok := runIDET(path, start, windowSeconds, "idet")
+		sample, ok := runIDETContext(ctx, path, start, windowSeconds, "idet")
 		if !ok {
 			continue
 		}
@@ -92,7 +96,7 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 	classifyInterlace(&analysis)
 	finalizeFieldMetadataAnalysis(&analysis)
 	if shouldValidateIVTC(analysis) {
-		validateIVTC(path, duration, windowSeconds, &analysis)
+		validateIVTCContext(ctx, path, duration, windowSeconds, &analysis)
 	}
 	return analysis
 }
@@ -132,7 +136,11 @@ func distributedInterlaceStarts(duration float64, windowSeconds int) []float64 {
 }
 
 func runIDET(path string, start float64, seconds int, filter string) (InterlaceAnalysis, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(seconds+30)*time.Second)
+	return runIDETContext(context.Background(), path, start, seconds, filter)
+}
+
+func runIDETContext(parent context.Context, path string, start float64, seconds int, filter string) (InterlaceAnalysis, bool) {
+	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds+30)*time.Second)
 	defer cancel()
 	args := []string{"-hide_banner", "-ss", fmt.Sprintf("%.3f", start), "-i", path, "-map", "0:v:0", "-t", strconv.Itoa(seconds), "-vf", filter, "-an", "-sn", "-f", "null", "-"}
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
@@ -197,9 +205,13 @@ func shouldValidateIVTC(analysis InterlaceAnalysis) bool {
 }
 
 func validateIVTC(path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
+	validateIVTCContext(context.Background(), path, duration, seconds, analysis)
+}
+
+func validateIVTCContext(ctx context.Context, path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
 	start := max(0, duration/2-float64(seconds)/2)
-	tff, tffOK := runIDET(path, start, seconds, "fieldmatch=order=tff,idet")
-	bff, bffOK := runIDET(path, start, seconds, "fieldmatch=order=bff,idet")
+	tff, tffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=tff,idet")
+	bff, bffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=bff,idet")
 	if !tffOK || !bffOK {
 		return
 	}

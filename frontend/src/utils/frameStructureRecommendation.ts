@@ -50,8 +50,16 @@ export function assetDerivedGopRecommendation(input: {
   const confidence = fps ? (input.confidence || (sourceFrames > 0 ? 'medium' : 'low')) : 'low';
   if (!fps) return { mode, sourceFrames, confidence, warning: 'A reliable asset frame rate is required before MVForge can calculate GOP frames.' };
   const sourceSeconds = sourceFrames > 0 ? sourceFrames / fps : undefined;
-  const baseline = sourceSeconds === undefined ? ({ compatible: 2.5, balanced: 2.75, maximum_compression: 3, custom: 3 }[mode]) : clamp(sourceSeconds, 2, 4);
-  let targetSeconds = mode === 'compatible' ? baseline : mode === 'maximum_compression' ? Math.min(baseline + 2, 5.5) : mode === 'balanced' ? Math.min(baseline + 0.75, 4) : baseline;
+  const baseline = sourceSeconds === undefined ? undefined : clamp(sourceSeconds, 2, 4);
+  let targetSeconds = baseline === undefined
+    ? ({ compatible: 2.5, balanced: 3.5, maximum_compression: 5, custom: 3 }[mode])
+    : mode === 'compatible'
+      ? Math.min(baseline, 3)
+      : mode === 'maximum_compression'
+        ? Math.min(baseline + 2, 5.5)
+        : mode === 'balanced'
+          ? Math.min(baseline + 0.75, 4)
+          : baseline;
   if (confidence.toLowerCase() === 'low') targetSeconds = Math.min(targetSeconds, 3.5);
   targetSeconds = clamp(targetSeconds, 2, 8);
   return { mode, fps, sourceFrames, sourceSeconds, targetSeconds, targetFrames: Math.max(1, Math.round(fps * targetSeconds)), confidence };

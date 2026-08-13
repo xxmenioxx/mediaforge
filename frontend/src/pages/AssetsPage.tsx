@@ -2122,7 +2122,20 @@ async function generateExternalSubtitle(
             {snapshot.isPending ? (
               <Alert severity="info">
                 <Stack spacing={1}>
-                  <Typography variant="body2">{snapshotOperation?.message || 'Preparing this asset snapshot…'}</Typography>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Typography variant="body2">{snapshotOperation?.message || 'Preparing this asset snapshot…'}</Typography>
+                    <Button
+                      size="small"
+                      color="inherit"
+                      disabled={!snapshotOperation || snapshotOperation.status !== 'running'}
+                      onClick={async () => {
+                        if (!snapshotOperation) return;
+                        setSnapshotOperation(await api.cancelSnapshotOperation(snapshotOperation.id));
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </Stack>
                   <LinearProgress
                     variant={snapshotOperation && snapshotOperation.progress > 0 ? 'determinate' : 'indeterminate'}
                     value={snapshotOperation?.progress ?? 0}
@@ -2679,10 +2692,11 @@ const audioCodecOptions: SelectOption[] = [
 
 const speedOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
+  { value: 'veryfast', label: 'Fast preview' },
   { value: 'fast', label: 'Fast' },
   { value: 'medium', label: 'Balanced' },
-  { value: 'slow', label: 'Slow / smaller file' },
-  { value: 'slower', label: 'Very slow / smallest file' },
+  { value: 'slow', label: 'Higher compression' },
+  { value: 'slower', label: 'Archive patience' },
 ];
 
 const colorDepthOptions: SelectOption[] = [
@@ -2762,6 +2776,19 @@ function AssetConversionOverridePanel({
   const defaultHardwareEncoder = availableAssetEncoderOptions.find(
     (option) => isHardwareAssetEncoder(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
+  const hardwareDefaultAppliedRef = useRef(false);
+  useEffect(() => {
+    const profilePreference = stringFromRecord(profile?.workerConfig ?? {}, 'preferredEncoder');
+    if (hardwareDefaultAppliedRef.current || processingPreference || profilePreference || !defaultHardwareEncoder || !hardwareCodecSupported || readOnly) return;
+    hardwareDefaultAppliedRef.current = true;
+    const defaults = applySharedHardwareQualityPreset({
+      preferredEncoder: 'hardware',
+      useHardwareIfAvailable: true,
+    }, defaultHardwareEncoder, 'recommended');
+    queueMicrotask(() => {
+      Object.entries(defaults).forEach(([name, value]) => onChange(name as keyof AssetConversionOverrideState, value as never));
+    });
+  }, [defaultHardwareEncoder, hardwareCodecSupported, onChange, processingPreference, profile?.workerConfig, readOnly]);
   const effectiveVideoEncoder = draft.videoEncoder || defaultHardwareEncoder;
   const qsvSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_qsv';
   const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
@@ -2894,8 +2921,17 @@ function AssetConversionOverridePanel({
           </Stack>
         </Stack>
         <Divider />
+        <Alert severity="info">
+          <strong>copy</strong> keeps the original video stream untouched. Choose x264/x265 when you need smaller files, compatibility, or image filters. Blank override values continue using the related profile.
+        </Alert>
         <Box component="fieldset" disabled={readOnly} sx={{ border: 0, p: 0, m: 0, minWidth: 0 }}>
         <Grid container spacing={2}>
+          <Grid size={{ xs: 12 }}>
+            <Stack spacing={0.35}>
+              <Typography fontWeight={700}>Technical settings</Typography>
+              <Typography variant="body2" color="text.secondary">These values override only this asset and follow the same video pipeline used by Profile Lab.</Typography>
+            </Stack>
+          </Grid>
           <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
@@ -2935,9 +2971,20 @@ function AssetConversionOverridePanel({
           <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               select
-              label="Speed"
+              label="Encoding speed"
               value={draft.videoPreset ?? ''}
               onChange={(event) => onChange('videoPreset', event.target.value)}
+              helperText={draft.videoPreset
+                ? draft.videoPreset === 'veryfast'
+                  ? 'Faster conversions and larger files. Useful for quick tests.'
+                  : draft.videoPreset === 'fast'
+                    ? 'Faster than Balanced while retaining more compression efficiency than Fast preview.'
+                  : draft.videoPreset === 'medium'
+                    ? 'Recommended balance of quality, size, and speed.'
+                    : draft.videoPreset === 'slow'
+                      ? 'Slower, usually smaller files at the same quality.'
+                      : 'Very slow. Use when size matters and time is acceptable.'
+                : 'Uses the encoding speed from the selected video profile.'}
               size="small"
               fullWidth
             >
@@ -2947,6 +2994,12 @@ function AssetConversionOverridePanel({
                 </MenuItem>
               ))}
             </TextField>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <Stack spacing={0.35} sx={{ mb: 1 }}>
+              <Typography fontWeight={700}>Image cleanup</Typography>
+              <Typography variant="body2" color="text.secondary">Crop, field handling, and cleanup filters are applied to this asset only.</Typography>
+            </Stack>
           </Grid>
           <Grid size={{ xs: 12, md: 8 }}>
             <TextField
@@ -3030,6 +3083,10 @@ function AssetConversionOverridePanel({
           </Grid>
           <Grid size={{ xs: 12 }}>
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)' }}>
+              <Stack spacing={0.35} sx={{ mb: 2 }}>
+                <Typography fontWeight={700}>Encoder and frame structure</Typography>
+                <Typography variant="body2" color="text.secondary">Requested settings are validated against the selected worker; effective values may be downgraded when the runtime does not support them.</Typography>
+              </Stack>
               <Grid container spacing={2} alignItems="flex-start">
                 <Grid size={{ xs: 12, md: 4 }}><TextField select label="Execution worker" value={assetWorker?.name ?? ''} onChange={(event) => onChange('targetWorkerName', event.target.value)} helperText={assetWorker ? `${assetWorkerEncoders.size} usable encoder(s) reported` : 'No online worker is reporting encoders'} size="small" fullWidth>{(workerNodes.data ?? []).filter((worker) => worker.status === 'online').map((worker) => <MenuItem key={worker.id} value={worker.name}>{worker.name} · {encoderNamesForWorker(worker).size} encoders</MenuItem>)}</TextField></Grid>
                 <Grid size={{ xs: 12, md: 4 }}>
@@ -3108,6 +3165,7 @@ function AssetConversionOverridePanel({
                     fullWidth
                   />
                 </Grid>
+                {hardwareSelected ? <Grid size={{ xs: 12, md: 4 }}><TextField title="The backend translates this intent using the active worker probe." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, effectiveVideoEncoder)} helperText="Recommended and Best use Main10 when supported by the selected worker." size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid> : null}
                 <Grid size={{ xs: 12 }}>
                   <FrameStructureControls
                     config={{ ...(profile?.workerConfig ?? {}), ...draft }}
@@ -3137,7 +3195,6 @@ function AssetConversionOverridePanel({
               </Grid>
               {qsvSelected ? (
                 <Grid container spacing={1.5} sx={{ mt: 1 }}>
-                  <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField title="The backend translates this intent using the active worker probe." select label="Quality preset" value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_qsv')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={draft.qsvPStrategy ?? Number(profile?.workerConfig?.qsvPStrategy ?? 0)} onChange={(event) => onChange('qsvPStrategy', Number(event.target.value) as 0 | 1 | 2)} helperText="Available only when B-frames are Off and validated by the worker." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 1)}>Simple · requires Off</MenuItem><MenuItem value={2} disabled={String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') !== 'off' || !qsvPStrategySupported(qsvCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="QSV rate control" value={draft.qsvRateControl || stringFromRecord(profile?.workerConfig ?? {}, 'qsvRateControl') || 'icq'} onChange={(event) => onChange('qsvRateControl', event.target.value as 'icq' | 'la_icq')} size="small" fullWidth>
@@ -3188,14 +3245,27 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                     <TextField title="Rate-control buffer. Larger values give the encoder more freedom in complex scenes." label="VideoToolbox buffer (Mbps)" type="number" value={Number(effectiveHardwarePresetConfig.videoToolboxBufferMbps ?? 5)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBufferMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 500, step: 0.01 }} size="small" fullWidth />
                   </Grid>
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Quality preset" select value={String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value, 'hevc_videotoolbox')} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField title="HEVC Main uses 8-bit output; Main10 uses 10-bit output and requires a compatible pixel format." label="Profile" value={draft.videoToolboxProfile ?? String(profile?.workerConfig?.videoToolboxProfile ?? '')} onChange={(event) => onChange('videoToolboxProfile', event.target.value)} placeholder="main or main10" helperText="Blank follows bit depth" size="small" fullWidth /></Grid>
                   <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={draft.videoToolboxRealtime ?? profile?.workerConfig?.videoToolboxRealtime === true} onChange={(event) => onChange('videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={draft.videoToolboxAutoAdjustBitrate ?? profile?.workerConfig?.videoToolboxAutoAdjustBitrate === true} onChange={(event) => onChange('videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
               {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
-              {encoderQualityRecommendation.data ? <Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />{encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}{encoderQualityRecommendation.data.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMaxBytes)}`} /> : null}</Stack><Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography></Stack> : null}
-              {encoderQualityRecommendation.data?.recommendation.effectiveBFramePolicy ? <Alert severity={encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? 'warning' : 'info'}>VideoToolbox B-frames: {encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy} · efficiency ×{encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier?.toFixed(2)} · target {((encoderQualityRecommendation.data.recommendation.targetBitrate ?? 0) / 1_000_000).toFixed(2)} Mbps{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? ` · ${encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}` : ''}</Alert> : null}
+              {encoderQualityRecommendation.data ? (
+                <Stack spacing={1} sx={{ mt: 1.5 }}>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} />
+                    <Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />
+                    {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → ${encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy}`} /> : null}
+                    {encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}
+                    {encoderQualityRecommendation.data.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(encoderQualityRecommendation.data.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+                    {encoderQualityRecommendation.data.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(encoderQualityRecommendation.data.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+                    {encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}
+                    {encoderQualityRecommendation.data.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMaxBytes)}`} /> : null}
+                  </Stack>
+                  {encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}</Alert> : null}
+                  <Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography>
+                </Stack>
+              ) : null}
             </Box>
           </Grid>
           <Grid size={{ xs: 12, md: 4 }}>

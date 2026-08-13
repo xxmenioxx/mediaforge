@@ -398,6 +398,8 @@ export const api = {
     }),
   snapshotOperation: (operationId: string) =>
     request<SnapshotOperation>(`/api/scan/operations/${encodeURIComponent(operationId)}`),
+  cancelSnapshotOperation: (operationId: string) =>
+    request<SnapshotOperation>(`/api/scan/operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
   snapshotOperations: (path: string) =>
     request<{ operations: SnapshotOperation[] }>(`/api/scan/operations?path=${encodeURIComponent(path)}`),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
@@ -405,12 +407,12 @@ export const api = {
     `${API_BASE_URL}${compatiblePreviewPath(options)}`,
   compatibleAssetFrameUrl: (options: CompatiblePreviewOptions, frame: 'source' | 'output') =>
     `${API_BASE_URL}${compatiblePreviewPath(options)}&frame=${frame}`,
-  compatibleAssetFrameMetrics: (options: CompatiblePreviewOptions) =>
-    request<PreviewFrameMetrics>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/metrics')),
-  inspectCompatibleAssetPreview: (options: CompatiblePreviewOptions) =>
-    request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect')),
-  estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }) =>
-    request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input) }),
+  compatibleAssetFrameMetrics: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
+    request<PreviewFrameMetrics>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/metrics'), { signal }),
+  inspectCompatibleAssetPreview: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
+    request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect'), { signal }),
+  estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }, signal?: AbortSignal) =>
+    request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input), signal }),
   recommendEncoderQuality: (input: { path?: string; profile: ProfileInput }) =>
     request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input) }),
   audioPreviewUrl: ({

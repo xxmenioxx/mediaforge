@@ -16,12 +16,15 @@ type HardwareConfig = Record<string, unknown>;
 // Named presets are quality intent only. Encoder-specific values come from
 // POST /assets/quality-recommendation and are never calculated in TypeScript.
 export function applyHardwareQualityPreset(config: HardwareConfig, encoder: string, preset: string): HardwareConfig {
+  const main10Preset = preset === 'recommended' || preset === 'best_quality';
   return {
     ...config,
     videoEncoder: encoder,
     hardwareQualityPreset: preset,
     hardwareQualityPresetScale: 2,
     ...(encoder === 'hevc_qsv' && preset !== 'custom' ? { qsvRateControl: 'icq' } : {}),
+    ...(main10Preset && encoder === 'hevc_qsv' ? { pixFmt: 'p010le' } : {}),
+    ...(main10Preset && encoder === 'hevc_videotoolbox' ? { pixFmt: 'p010le', videoToolboxProfile: 'main10' } : {}),
   };
 }
 

@@ -59,12 +59,13 @@ import type {
   PreviewInspection,
   PreviewFrameMetrics,
   ScanResult,
+  SnapshotOperation,
   StreamMetadataOverride,
   QSVFrameStructureAnalysis,
   QSVFeatureStatus,
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
-import { MediaSnapshotDetails, MediaTechnicalSnapshotSummary } from '../components/MediaSnapshotDetails';
+import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -150,6 +151,7 @@ const videoCodecOptions = [
 
 const encoderPresetOptions = [
   { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful for quick tests.' },
+  { value: 'fast', label: 'Fast', description: 'Faster than Balanced while retaining more compression efficiency than Fast preview.' },
   { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
   { value: 'slow', label: 'Higher compression', description: 'Slower, usually smaller files at the same quality.' },
   { value: 'slower', label: 'Archive patience', description: 'Very slow. Use only when size matters and time is acceptable.' },
@@ -587,6 +589,7 @@ export function ProfileLabPage() {
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
   const [processedVideoQualityValue, setProcessedVideoQualityValue] = useState(emptyVideoDraft.qualityValue);
   const [processedVideoOptions, setProcessedVideoOptions] = useState(videoPreviewOptions(emptyVideoDraft));
+  const [processedPreviewNormalization, setProcessedPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
   const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
   const [audioPreviewStreamIndex, setAudioPreviewStreamIndex] = useState<number | null>(null);
@@ -600,6 +603,9 @@ export function ProfileLabPage() {
   const [videoProfileSaveMessage, setVideoProfileSaveMessage] = useState('');
   const [selectedVideoStarterPreset, setSelectedVideoStarterPreset] = useState('');
   const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
+  const fidelityAbortRef = useRef<AbortController | null>(null);
+  const estimateAbortRef = useRef<AbortController | null>(null);
+  const hardwareDefaultAppliedRef = useRef(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
   const [savedAudioProfileKey, setSavedAudioProfileKey] = useState<string | null>(null);
   const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
@@ -685,6 +691,18 @@ export function ProfileLabPage() {
   const defaultHardwareEncoder = availableVideoEncoderOptions.find(
     (encoder) => isHardwareEncoderOption(encoder.value) && runtimeSnapshot.data?.encoders?.[encoder.value]?.usable,
   )?.value ?? '';
+  useEffect(() => {
+    if (hardwareDefaultAppliedRef.current || !defaultHardwareEncoder || savedVideoProfileId || selectedVideoStarterPreset || videoDraft.name.trim()) return;
+    hardwareDefaultAppliedRef.current = true;
+    setVideoDraft((current) => synchronizeLabAuthoritativeContract({
+      ...current,
+      workerConfig: applySharedHardwareQualityPreset({
+        ...current.workerConfig,
+        preferredEncoder: 'hardware',
+        useHardwareIfAvailable: true,
+      }, defaultHardwareEncoder, 'recommended'),
+    }));
+  }, [defaultHardwareEncoder, savedVideoProfileId, selectedVideoStarterPreset, videoDraft.name]);
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
   const videoPreviewStale =
@@ -692,6 +710,7 @@ export function ProfileLabPage() {
     videoPreviewStatus !== 'loading' &&
     (processedVideoCodec !== videoDraft.videoCodec ||
       processedVideoQualityValue !== videoDraft.qualityValue ||
+      processedPreviewNormalization !== previewNormalization ||
       JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft)));
 
   useEffect(() => {
@@ -844,7 +863,21 @@ export function ProfileLabPage() {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
-  const trackSnapshot = useMutation({ mutationFn: api.scan });
+  const [labSnapshotOperation, setLabSnapshotOperation] = useState<SnapshotOperation | null>(null);
+  const trackSnapshot = useMutation({
+    mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
+      let operation = await api.startSnapshotOperation(input);
+      setLabSnapshotOperation(operation);
+      while (operation.status === 'running') {
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+        operation = await api.snapshotOperation(operation.id);
+        setLabSnapshotOperation(operation);
+      }
+      if (operation.status === 'paused') throw new Error('Asset snapshot paused by user');
+      if (operation.status === 'error' || !operation.result) throw new Error(operation.error || 'Asset snapshot did not return a result');
+      return operation.result;
+    },
+  });
   const autoRecommendation = useMutation({
     mutationFn: async (path: string) => {
       await trackSnapshot.mutateAsync({ path });
@@ -877,13 +910,15 @@ export function ProfileLabPage() {
     mutationFn: async ({
       reference,
       conversion,
+      signal,
     }: {
       reference: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
       conversion: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
+      signal?: AbortSignal;
     }): Promise<LabFidelityInspection> => {
       const [referenceInspection, metrics] = await Promise.all([
-        api.inspectCompatibleAssetPreview(reference),
-        api.compatibleAssetFrameMetrics(conversion),
+        api.inspectCompatibleAssetPreview(reference, signal),
+        api.compatibleAssetFrameMetrics(conversion, signal),
       ]);
       const duration = trackSnapshot.data?.duration ?? 0;
       const sampling = labFrameSamplingPolicy(settings.data, duration);
@@ -891,7 +926,7 @@ export function ProfileLabPage() {
       const conversionInspections: Array<{ inspection: PreviewInspection; position: number; startSeconds: number }> = [];
       for (const position of positions) {
         const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
-        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: true }), position, startSeconds });
+        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: true }, signal), position, startSeconds });
       }
       const conversionInspection = conversionInspections[Math.floor(conversionInspections.length / 2)].inspection;
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
@@ -923,7 +958,10 @@ export function ProfileLabPage() {
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
-  const profileSampleEstimate = useMutation({ mutationFn: api.estimateCompatibleAssetProfile });
+  const profileSampleEstimate = useMutation({
+    mutationFn: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number; signal?: AbortSignal }) =>
+      api.estimateCompatibleAssetProfile(input, input.signal),
+  });
   const currentProfileSampleEstimate = profileSampleEstimate.data?.assetPath === assetPath
     && profileSampleEstimate.variables?.path === assetPath
     && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
@@ -1215,13 +1253,6 @@ export function ProfileLabPage() {
     if (section === 'video') {
       setSelectedVideoStarterPreset('');
       setVideoDraft(recommendedVideoDraft);
-      setPreviewNonce((current) => current + 1);
-      setProcessedVideoCodec(recommendedVideoDraft.videoCodec);
-      setProcessedVideoQualityValue(recommendedVideoDraft.qualityValue);
-      setProcessedVideoOptions(videoPreviewOptions(recommendedVideoDraft));
-      setVideoPreviewStatus('loading');
-      setVideoPreviewNonce((current) => current + 1);
-      scrollToPreviews();
     }
 
     const incompatibleAudio = scan.audioStreams.filter((stream) => !['aac', 'ac3', 'eac3', 'opus', 'flac'].includes(stream.codec.toLowerCase()));
@@ -1243,12 +1274,6 @@ export function ProfileLabPage() {
       setSavedAudioProfileKey(null);
       setAudioDraft(recommendedAudioDraft);
       setAudioFilterChainEdited(false);
-      setPreviewNonce((current) => current + 1);
-      setProcessedAudioFilters(effectiveAudioFilters(recommendedAudioDraft) || 'anull');
-      setProcessedAudioChannelMode(recommendedAudioDraft.channelMode);
-      setAudioPreviewStatus('loading');
-      setAudioPreviewNonce((current) => current + 1);
-      scrollToPreviews();
     }
     audioReasons.push(
       incompatibleAudio.length > 0
@@ -1318,21 +1343,10 @@ export function ProfileLabPage() {
       setSavedVideoProfileId(defaults.savedVideoProfileId);
       setVideoProfileSaveMessage('');
       setSelectedVideoStarterPreset(defaults.selectedVideoStarterPreset);
-      setPreviewNonce((current) => current + 1);
-      setProcessedVideoCodec(defaults.video.videoCodec);
-      setProcessedVideoQualityValue(defaults.video.qualityValue);
-      setProcessedVideoOptions(videoPreviewOptions(defaults.video));
-      setVideoPreviewStatus('loading');
-      setVideoPreviewNonce((current) => current + 1);
     } else if (section === 'audio') {
       setAudioDraft(defaults.audio);
       setAudioFilterChainEdited(false);
       setSelectedAudioStarterPreset(defaults.selectedAudioStarterPreset);
-      setPreviewNonce((current) => current + 1);
-      setProcessedAudioFilters(effectiveAudioFilters(defaults.audio) || 'anull');
-      setProcessedAudioChannelMode(defaults.audio.channelMode);
-      setAudioPreviewStatus('loading');
-      setAudioPreviewNonce((current) => current + 1);
     } else {
       setTrackDraft(defaults.tracks);
       setTrackConversionDraft(defaults.trackConversion);
@@ -1582,11 +1596,15 @@ export function ProfileLabPage() {
   }
 
   function processVideoPreview() {
+    fidelityAbortRef.current?.abort();
+    const controller = new AbortController();
+    fidelityAbortRef.current = controller;
     fidelityInspection.reset();
     setFidelityTab('previews');
     const options = videoPreviewOptions(videoDraft);
     setProcessedVideoCodec(videoDraft.videoCodec);
     setProcessedVideoQualityValue(videoDraft.qualityValue);
+    setProcessedPreviewNormalization(previewNormalization);
     setProcessedVideoOptions({
       ...options,
       profile: videoDraft,
@@ -1617,6 +1635,7 @@ export function ProfileLabPage() {
           previewNormalization,
           profile: videoDraft,
         },
+        signal: controller.signal,
       });
     }
     scrollToPreviews();
@@ -1624,36 +1643,22 @@ export function ProfileLabPage() {
 
   function changePreviewColorDomain(next: 'preserve' | 'normalize_bt709') {
     setPreviewNormalization(next);
-    if (!assetPath || previewNonce === 0 || videoPreviewNonce === 0) {
-      return;
+  }
+
+  function measureProfileSamples() {
+    if (!assetPath) return;
+    estimateAbortRef.current?.abort();
+    const controller = new AbortController();
+    estimateAbortRef.current = controller;
+    profileSampleEstimate.mutate({ path: assetPath, profileId: savedVideoProfileId ?? 0, profile: videoDraft, seconds: 20, signal: controller.signal });
+  }
+
+  async function cancelActiveLabAnalysis() {
+    if (trackSnapshot.isPending && labSnapshotOperation?.status === 'running') {
+      setLabSnapshotOperation(await api.cancelSnapshotOperation(labSnapshotOperation.id));
     }
-    const options = videoPreviewOptions(videoDraft);
-    fidelityInspection.mutate({
-      reference: {
-        path: assetPath,
-        start,
-        seconds,
-        mode: 'quality',
-        videoCodec: 'x264',
-        qualityValue: 16,
-        videoPreset: 'medium',
-        pixFmt: 'yuv420p',
-        videoEncoder: 'libx264',
-        useHardwareIfAvailable: false,
-        globalQuality: 21,
-        previewNormalization: next,
-      },
-      conversion: {
-        path: assetPath,
-        start,
-        seconds,
-        videoCodec: videoDraft.videoCodec,
-        qualityValue: videoDraft.qualityValue,
-        mode: 'quality',
-        previewNormalization: next,
-        ...options,
-      },
-    });
+    if (fidelityInspection.isPending) fidelityAbortRef.current?.abort();
+    if (profileSampleEstimate.isPending) estimateAbortRef.current?.abort();
   }
 
   function resetProcessedAudioPreview() {
@@ -1757,12 +1762,26 @@ export function ProfileLabPage() {
                 <Typography variant="h6">Processing asset</Typography>
                 <Typography variant="body2" color="text.secondary">{labAnalysisPhase}</Typography>
               </Stack>
-              <LinearProgress />
+              <LinearProgress
+                variant={labSnapshotOperation?.status === 'running' && labSnapshotOperation.progress > 0 ? 'determinate' : 'indeterminate'}
+                value={labSnapshotOperation?.progress ?? 0}
+              />
               <Stack direction="row" justifyContent="space-between" spacing={2}>
                 <Typography variant="caption" color="text.secondary">The analysis may take several minutes on a slower NAS.</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
               </Stack>
-              <Typography variant="caption">Keep this page open. Controls will return automatically when the current analysis finishes.</Typography>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                <Typography variant="caption">Keep this page open. Controls will return automatically when the current analysis finishes.</Typography>
+                {(trackSnapshot.isPending && labSnapshotOperation?.status === 'running') || fidelityInspection.isPending || profileSampleEstimate.isPending ? (
+                  <Button
+                    size="small"
+                    color="inherit"
+                    onClick={cancelActiveLabAnalysis}
+                  >
+                    Cancel
+                  </Button>
+                ) : null}
+              </Stack>
             </Stack>
           </CardContent>
         </Card>
@@ -2169,7 +2188,7 @@ export function ProfileLabPage() {
                       </Stack>
                       {fidelityInspection.isPending ? <Alert severity="info">Generating both previews and validating their video characteristics…</Alert> : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                        <Button size="small" variant="outlined" disabled={profileSampleEstimate.isPending || !assetPath} onClick={() => profileSampleEstimate.mutate({ path: assetPath, profileId: savedVideoProfileId ?? 0, profile: videoDraft, seconds: 20 })}>Measure 5 samples</Button>
+                        <Button size="small" variant="outlined" disabled={profileSampleEstimate.isPending || !assetPath} onClick={measureProfileSamples}>Measure 5 samples</Button>
                         {profileSampleEstimate.isPending ? <Typography variant="body2" color="text.secondary">Encoding five distributed samples…</Typography> : null}
                         {currentProfileSampleEstimate ? <Chip size="small" color={currentProfileSampleEstimate.persisted ? 'success' : 'warning'} label={`Video estimate ${formatBytes(currentProfileSampleEstimate.estimatedVideoBytes)} · ${currentProfileSampleEstimate.effectiveEncoder}${currentProfileSampleEstimate.persisted ? ' · saved for Queue' : ' · profile changed or is not saved'}`} /> : null}
                       </Stack>
@@ -2490,11 +2509,7 @@ export function ProfileLabPage() {
                             <TextField
                               label="Final color policy"
                               value={videoWorkerValue(videoDraft, 'finalColorPolicy', 'preserve')}
-                              onChange={(event) => {
-                                const policy = event.target.value;
-                                updateVideoWorkerConfig(setVideoDraft, 'finalColorPolicy', policy);
-                                changePreviewColorDomain(policy === 'normalize_bt709' ? 'normalize_bt709' : 'preserve');
-                              }}
+                              onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'finalColorPolicy', event.target.value)}
                               helperText="No correction is applied unless Automatic or BT.709 normalization is selected."
                               select
                               size="small"
@@ -2535,6 +2550,11 @@ export function ProfileLabPage() {
                                   {selectedHardwareEncoder} is listed by FFmpeg but failed its real encoding smoke test. MVForge will use the matching software encoder instead.
                                 </Alert>
                               ) : null}
+                            </Grid>
+                          ) : null}
+                          {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? (
+                            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                              <TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} helperText="Recommended and Best use Main10 when the selected worker supports it." size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField>
                             </Grid>
                           ) : null}
                           <Grid size={{ xs: 12 }}>
@@ -2590,7 +2610,6 @@ export function ProfileLabPage() {
                                   fullWidth
                                 />
                               </Grid>
-                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="P strategy" select value={numberWorkerValue(videoDraft, 'qsvPStrategy', 0)} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvPStrategy', Number(event.target.value))} helperText="Available only when B-frames are Off and validated by the worker." size="small" fullWidth><MenuItem value={0}>Default</MenuItem><MenuItem value={1} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 1)}>Simple · requires Off</MenuItem><MenuItem value={2} disabled={videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') !== 'off' || !qsvPStrategySupported(selectedHardwareCapability, qsvMain10Selected, 2)}>Pyramid · requires Off</MenuItem></TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <FormControlLabel
@@ -2638,7 +2657,6 @@ export function ProfileLabPage() {
                           ) : null}
                           {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && videoWorkerValue(videoDraft, 'videoEncoder', 'auto') === 'hevc_videotoolbox' ? (
                             <>
-                              <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField label="Quality preset" select value={videoWorkerValue(videoDraft, 'hardwareQualityPreset', 'recommended')} onChange={(event) => selectHardwareQualityPreset(event.target.value)} size="small" fullWidth>{hardwareQualityPresetOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
                               <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                 <TextField label="Custom target bitrate (Mbps)" type="number" value={numberWorkerValue(videoDraft, 'videoToolboxBitrateMbps', 2)} onChange={(event) => updateVideoToolboxCustomRate('videoToolboxBitrateMbps', Number(event.target.value))} inputProps={{ min: 0.01, max: 200, step: 0.01 }} helperText="Updates maxrate ×1.5, buffer ×2.5, and the effective estimate." size="small" fullWidth />
                               </Grid>
@@ -3560,7 +3578,7 @@ function LabTechnicalSnapshot({ scan }: { scan?: ScanResult }) {
           Source facts relevant to profile decisions. Frame counts describe the bitstream and do not prove that Adaptive I or Adaptive B was enabled.
         </Typography>
       </Stack>
-      <MediaTechnicalSnapshotSummary scan={scan} />
+      <MediaSnapshotDetails scan={scan} section="general" />
     </Stack>
   );
 }

@@ -145,13 +145,15 @@ func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, cont
 		case "compatible", "compatibility":
 			seconds = 2.5
 		case "maximum_compression":
-			seconds = 3
+			seconds = 5
 		default:
-			seconds = 2.75
+			seconds = 3.5
 		}
 	} else {
 		seconds = math.Max(2, math.Min(4, seconds))
 		switch mode {
+		case "compatible", "compatibility":
+			seconds = math.Min(seconds, 3)
 		case "maximum_compression":
 			seconds = math.Min(seconds+2, 5.5)
 		case "balanced":

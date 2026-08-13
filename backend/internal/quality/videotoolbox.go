@@ -145,7 +145,7 @@ type videoToolboxSettings struct {
 func videoToolboxPresetSettings(preset Preset) (videoToolboxSettings, bool) {
 	value, ok := map[Preset]videoToolboxSettings{
 		PresetCompact: {0.18, "main", "yuv420p"}, PresetMedium: {0.24, "main", "yuv420p"},
-		PresetRecommended: {0.30, "main", "yuv420p"}, PresetBest: {0.38, "main", "yuv420p"},
+		PresetRecommended: {0.30, "main10", "p010le"}, PresetBest: {0.38, "main10", "p010le"},
 		PresetHighQuality: {0.48, "main10", "p010le"}, PresetArchive: {0.65, "main10", "p010le"},
 		PresetMaster: {0.95, "main10", "p010le"},
 	}[preset]

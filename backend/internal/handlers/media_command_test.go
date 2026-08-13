@@ -118,7 +118,7 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		VideoToolboxBitrateMbps: 6,
 		VideoToolboxMaxrateMbps: 8,
 		VideoToolboxBufferMbps:  12,
-		CropAspectPolicy:         "preserve_dar",
+		CropAspectPolicy:        "preserve_dar",
 	})
 
 	if profile.WorkerConfig["useHardwareIfAvailable"] != true ||
@@ -395,7 +395,7 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2,
 	}})
-	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "nv12" {
+	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "p010le" {
 		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
 	}
 	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
@@ -404,7 +404,7 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	videoToolbox := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
 	}})
-	if videoToolbox.WorkerConfig["videoToolboxProfile"] != "main" || videoToolbox.WorkerConfig["pixFmt"] != "yuv420p" {
+	if videoToolbox.WorkerConfig["videoToolboxProfile"] != "main10" || videoToolbox.WorkerConfig["pixFmt"] != "p010le" {
 		t.Fatalf("unexpected VideoToolbox preset normalization: %#v", videoToolbox.WorkerConfig)
 	}
 	custom := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
@@ -533,7 +533,7 @@ func TestVideoToolboxRecommendationIsStoredOnEffectivePlan(t *testing.T) {
 		Audio: []MediaAudioStream{{Bitrate: 192_000}},
 	})
 	effective := applyVideoToolboxQualityRecommendation(profile, intent)
-	if effective.WorkerConfig["videoToolboxBaseTargetKbps"] != int64(1_290) || effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_330) || effective.WorkerConfig["videoToolboxBitrateMbps"] != 1.33 || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
+	if effective.WorkerConfig["videoToolboxBaseTargetKbps"] != int64(1_290) || effective.WorkerConfig["videoToolboxRecommendedTargetKbps"] != int64(1_330) || effective.WorkerConfig["videoToolboxBitrateMbps"] != 1.33 || effective.WorkerConfig["videoToolboxEffectiveProfile"] != "main10" || effective.WorkerConfig["videoToolboxEffectivePixelFormat"] != "p010le" || effective.WorkerConfig["videoToolboxEstimateConfidence"] != "medium" {
 		t.Fatalf("unexpected stored VideoToolbox recommendation: %#v", effective.WorkerConfig)
 	}
 }

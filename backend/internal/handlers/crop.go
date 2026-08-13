@@ -39,6 +39,10 @@ type cropCandidate struct {
 var cropDetectPattern = regexp.MustCompile(`crop=(\d+):(\d+):(\d+):(\d+)`)
 
 func detectCrop(path string, width, height int, duration float64) CropAnalysis {
+	return detectCropContext(context.Background(), path, width, height, duration)
+}
+
+func detectCropContext(ctx context.Context, path string, width, height int, duration float64) CropAnalysis {
 	analysis := CropAnalysis{
 		Version: 3, Status: "unknown", Source: "cropdetect", OriginalWidth: width, OriginalHeight: height,
 		Reason: "Crop detection did not return enough stable samples.",
@@ -51,7 +55,7 @@ func detectCrop(path string, width, height int, duration float64) CropAnalysis {
 	analysis.SampledAt = starts
 	candidates := make([]cropCandidate, 0, len(starts))
 	for _, start := range starts {
-		if candidate, ok := cropCandidateAt(path, start, width, height); ok {
+		if candidate, ok := cropCandidateAtContext(ctx, path, start, width, height); ok {
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -71,7 +75,11 @@ func cropSampleStarts(duration float64, windowSeconds float64) []float64 {
 }
 
 func cropCandidateAt(path string, start float64, width, height int) (cropCandidate, bool) {
-	candidate, ok := cropCandidateAtLimit(path, start, 24)
+	return cropCandidateAtContext(context.Background(), path, start, width, height)
+}
+
+func cropCandidateAtContext(ctx context.Context, path string, start float64, width, height int) (cropCandidate, bool) {
+	candidate, ok := cropCandidateAtLimitContext(ctx, path, start, 24)
 	if !ok {
 		return cropCandidate{}, false
 	}
@@ -80,7 +88,7 @@ func cropCandidateAt(path string, start float64, width, height int) (cropCandida
 	// conservative pass sees essentially the complete frame. Multi-window
 	// consensus still prevents a dark scene from becoming an automatic crop.
 	if width-candidate.width < max(8, width/100) && height-candidate.height < max(8, height/100) {
-		if tolerant, tolerantOK := cropCandidateAtLimit(path, start, 64); tolerantOK {
+		if tolerant, tolerantOK := cropCandidateAtLimitContext(ctx, path, start, 64); tolerantOK {
 			return tolerant, true
 		}
 	}
@@ -88,7 +96,11 @@ func cropCandidateAt(path string, start float64, width, height int) (cropCandida
 }
 
 func cropCandidateAtLimit(path string, start float64, limit int) (cropCandidate, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	return cropCandidateAtLimitContext(context.Background(), path, start, limit)
+}
+
+func cropCandidateAtLimitContext(parent context.Context, path string, start float64, limit int) (cropCandidate, bool) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-ss", fmt.Sprintf("%.3f", start), "-i", path,

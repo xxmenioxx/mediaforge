@@ -216,6 +216,13 @@ func TestAssetDerivedGOPRecommendationUsesTimeAndFPS(t *testing.T) {
 	if compatible.TargetGOPFrames != 72 || balanced.TargetGOPFrames != 90 || maximum.TargetGOPFrames != 120 {
 		t.Fatalf("unexpected Rayearth GOP sequence: compatible=%d balanced=%d maximum=%d", compatible.TargetGOPFrames, balanced.TargetGOPFrames, maximum.TargetGOPFrames)
 	}
+	baccano := QSVFrameStructureAnalysis{AverageGOPLength: 156.4166666667, Confidence: "medium"}
+	baccanoCompatible := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "compatible", false, false, false)
+	baccanoBalanced := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "balanced", false, false, false)
+	baccanoMaximum := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "maximum_compression", false, false, false)
+	if baccanoCompatible.TargetGOPFrames != 72 || baccanoBalanced.TargetGOPFrames != 96 || baccanoMaximum.TargetGOPFrames != 132 {
+		t.Fatalf("long source GOP modes must remain distinct: compatible=%d balanced=%d maximum=%d", baccanoCompatible.TargetGOPFrames, baccanoBalanced.TargetGOPFrames, baccanoMaximum.TargetGOPFrames)
+	}
 	arbegas := recommendFrameStructure(QSVFrameStructureAnalysis{AverageGOPLength: 75.4, Confidence: "high"}, 29.97, "anime", "balanced", false, false, false)
 	if arbegas.TargetGOPFrames != 98 {
 		t.Fatalf("Arbegas must derive frames from its own FPS/time baseline, got %d", arbegas.TargetGOPFrames)

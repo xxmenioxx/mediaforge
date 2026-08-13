@@ -135,6 +135,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/scan/operations", scanner.StartSnapshotOperation)
 		api.GET("/scan/operations", scanner.ListSnapshotOperations)
 		api.GET("/scan/operations/:id", scanner.GetSnapshotOperation)
+		api.POST("/scan/operations/:id/cancel", scanner.CancelSnapshotOperation)
 	}
 
 	return router

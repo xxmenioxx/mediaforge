@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +95,37 @@ func TestMarkStaleSnapshotOperationAllowsRetry(t *testing.T) {
 	snapshotOperations.RUnlock()
 	if operation.Status != "error" || operation.Phase != "timeout" || operation.Error == "" {
 		t.Fatalf("stale operation was not released: %#v", operation)
+	}
+}
+
+func TestCancelSnapshotOperationPausesRunningAnalysis(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	canceled := false
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"cancel-me": {ID: "cancel-me", AssetPath: "/media/raw/example.mkv", Status: "running", Phase: "crop"},
+	}
+	snapshotOperations.cancels = map[string]context.CancelFunc{
+		"cancel-me": func() { canceled = true },
+	}
+	snapshotOperations.Unlock()
+
+	router := gin.New()
+	router.POST("/api/scan/operations/:id/cancel", NewScannerHandler(nil).CancelSnapshotOperation)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/scan/operations/cancel-me/cancel", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !canceled {
+		t.Fatal("operation context was not canceled")
+	}
+	snapshotOperations.RLock()
+	operation := *snapshotOperations.items["cancel-me"]
+	_, cancelRetained := snapshotOperations.cancels["cancel-me"]
+	snapshotOperations.RUnlock()
+	if operation.Status != "paused" || operation.Phase != "paused" || cancelRetained {
+		t.Fatalf("operation was not paused cleanly: %#v cancelRetained=%v", operation, cancelRetained)
 	}
 }
 
