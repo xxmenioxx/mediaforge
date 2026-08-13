@@ -118,6 +118,7 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		VideoToolboxBitrateMbps: 6,
 		VideoToolboxMaxrateMbps: 8,
 		VideoToolboxBufferMbps:  12,
+		CropAspectPolicy:         "preserve_dar",
 	})
 
 	if profile.WorkerConfig["useHardwareIfAvailable"] != true ||
@@ -133,6 +134,9 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		profile.WorkerConfig["videoToolboxMaxrateMbps"] != float64(8) ||
 		profile.WorkerConfig["videoToolboxBufferMbps"] != float64(12) {
 		t.Fatalf("hardware overrides were not applied: %#v", profile.WorkerConfig)
+	}
+	if profile.WorkerConfig["cropAspectPolicy"] != "preserve_dar" {
+		t.Fatalf("crop aspect policy override was not applied: %#v", profile.WorkerConfig)
 	}
 }
 
@@ -534,9 +538,9 @@ func TestVideoToolboxRecommendationIsStoredOnEffectivePlan(t *testing.T) {
 	}
 }
 
-func TestCropPreservesDisplayedAspectRatio(t *testing.T) {
+func TestCropPreservesSourcePixelAspectRatio(t *testing.T) {
 	filters := applyCropAspectPolicy("crop=720:460:0:10", models.Profile{}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
-	assertContains(t, filters, "crop=720:460:0:10,setsar=23/27")
+	assertContains(t, filters, "crop=720:460:0:10,setsar=8/9")
 	assertNotContains(t, filters, "setdar=")
 }
 
@@ -1676,8 +1680,15 @@ func TestFFmpegCommandBuilderClearsInheritedMatroskaStreamStatistics(t *testing.
 	assertNotContains(t, command, "-metadata:s:s:0 BPS-eng=")
 }
 
-func TestCropAspectPolicyReducesCastleSARAndPreservesDAR(t *testing.T) {
-	filters := applyCropAspectPolicy("crop=672:438:24:20", models.Profile{}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
+func TestCropAspectPolicyPreservesSourceSARByDefault(t *testing.T) {
+	filters := applyCropAspectPolicy("crop=700:446:10:65", models.Profile{}, &MediaStream{Width: 720, Height: 576, SampleAspectRatio: "16:15"})
+	assertContains(t, filters, "crop=700:446:10:65,setsar=16/15")
+	assertNotContains(t, filters, "79/93")
+	assertNotContains(t, filters, "setdar=")
+}
+
+func TestCropAspectPolicyCanExplicitlyPreserveDAR(t *testing.T) {
+	filters := applyCropAspectPolicy("crop=672:438:24:20", models.Profile{WorkerConfig: models.JSONMap{"cropAspectPolicy": "preserve_dar"}}, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9"})
 	assertContains(t, filters, "setsar=73/84")
 	assertNotContains(t, filters, "setdar=")
 }

@@ -140,6 +140,7 @@ export type AssetConversionOverrideState = {
   videoPreset?: string;
   pixFmt?: string;
   videoFilters?: string;
+  cropAspectPolicy?: 'source_sar' | 'preserve_dar';
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
   frameStructureMode?: 'compatible' | 'balanced' | 'maximum_compression' | 'custom';

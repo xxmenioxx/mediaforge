@@ -780,6 +780,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.VideoFilters); value != "" {
 		workerConfig["videoFilters"] = value
 	}
+	if value := strings.ToLower(strings.TrimSpace(override.CropAspectPolicy)); value == "source_sar" || value == "preserve_dar" {
+		workerConfig["cropAspectPolicy"] = value
+	}
 	if value := strings.TrimSpace(override.X265Params); value != "" {
 		workerConfig["x265Params"] = value
 	}
@@ -1731,11 +1734,17 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 }
 
 func applyCropAspectPolicy(filters string, profile models.Profile, source *MediaStream) string {
-	if source == nil || strings.ToLower(workerStringValue(profile.WorkerConfig["cropAspectPolicy"])) == "source_sar" {
+	if source == nil || !strings.Contains(filters, "crop=") {
 		return filters
 	}
 	policy := strings.ToLower(workerStringValue(profile.WorkerConfig["cropAspectPolicy"]))
-	if policy != "" && policy != "preserve_dar" {
+	if policy == "" || policy == "source_sar" {
+		if validAspectRatio(source.SampleAspectRatio) && !strings.Contains(filters, "setsar=") && !strings.Contains(filters, "setdar=") {
+			return filters + ",setsar=" + strings.ReplaceAll(source.SampleAspectRatio, ":", "/")
+		}
+		return filters
+	}
+	if policy != "preserve_dar" {
 		return filters
 	}
 	var cropWidth, cropHeight int

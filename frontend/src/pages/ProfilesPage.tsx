@@ -819,6 +819,19 @@ export function ProfilesPage() {
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
+                            label="Crop aspect handling"
+                            value={workerConfigString(form, 'cropAspectPolicy', 'source_sar')}
+                            onChange={(event) => updateWorkerConfig('cropAspectPolicy', event.target.value)}
+                            helperText="Used whenever this profile applies a crop. Source SAR avoids stretching the remaining image."
+                            select
+                            fullWidth
+                          >
+                            <MenuItem value="source_sar">Preserve source SAR (recommended)</MenuItem>
+                            <MenuItem value="preserve_dar">Preserve original DAR</MenuItem>
+                          </TextField>
+                        </Grid>
+                        <Grid size={{ xs: 12, md: 4 }}>
+                          <TextField
                             label={workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? 'Software fallback CRF' : 'Software CRF'}
                             value={form.qualityValue}
                             onChange={(event) => updateField('qualityValue', Math.min(30, Math.max(14, Number(event.target.value))))}

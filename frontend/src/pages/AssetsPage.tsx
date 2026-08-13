@@ -3002,6 +3002,19 @@ function AssetConversionOverridePanel({
                 {currentCropFilter && !suggestedCropEnabled ? (
                   <Alert severity="info">A custom crop is currently active: {currentCropFilter}. Enabling the suggestion will replace it.</Alert>
                 ) : null}
+                <TextField
+                  select
+                  label="Crop aspect handling"
+                  value={draft.cropAspectPolicy ?? (stringFromRecord(profile?.workerConfig ?? {}, 'cropAspectPolicy') || 'source_sar')}
+                  onChange={(event) => onChange('cropAspectPolicy', event.target.value as AssetConversionOverrideState['cropAspectPolicy'])}
+                  disabled={!currentCropFilter}
+                  helperText="Preserve source SAR is recommended; preserving the old DAR may stretch the cropped image."
+                  size="small"
+                  sx={{ maxWidth: 360 }}
+                >
+                  <MenuItem value="source_sar">Preserve source SAR (recommended)</MenuItem>
+                  <MenuItem value="preserve_dar">Preserve original DAR</MenuItem>
+                </TextField>
                 {suggestedCropEnabled && bitmapSubtitleCount > 0 ? (
                   <Alert severity="warning">
                     {bitmapSubtitleCount} bitmap subtitle track(s) may place text inside the cropped bars. Verify representative subtitled scenes before processing.
@@ -4185,6 +4198,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
       clean[key] = text;
     }
   });
+  if (value.cropAspectPolicy === 'source_sar' || value.cropAspectPolicy === 'preserve_dar') {
+    clean.cropAspectPolicy = value.cropAspectPolicy;
+  }
   if (value.externalSubtitleFormat === 'disabled' || value.externalSubtitleFormat === 'source' || value.externalSubtitleFormat === 'srt' || value.externalSubtitleFormat === 'ass' || value.externalSubtitleFormat === 'remove') {
     clean.externalSubtitleFormat = value.externalSubtitleFormat;
   }

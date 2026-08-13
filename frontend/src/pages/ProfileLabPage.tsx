@@ -844,8 +844,12 @@ export function ProfileLabPage() {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+  const trackSnapshot = useMutation({ mutationFn: api.scan });
   const autoRecommendation = useMutation({
-    mutationFn: api.suggestProfile,
+    mutationFn: async (path: string) => {
+      await trackSnapshot.mutateAsync({ path });
+      return api.suggestProfile(path);
+    },
     onSuccess: (suggestion) => {
       recommendationDefaultsRef.current = {
         video: videoDraft,
@@ -869,7 +873,6 @@ export function ProfileLabPage() {
     mutationFn: api.recommendEncoderQuality,
     onSuccess: (data, variables) => setLastEncoderRecommendation({ path: variables.path, data }),
   });
-  const trackSnapshot = useMutation({ mutationFn: api.scan });
   const fidelityInspection = useMutation({
     mutationFn: async ({
       reference,
@@ -1815,18 +1818,27 @@ export function ProfileLabPage() {
                   fullWidth
                 />
               </Grid>
-              <Grid size={{ xs: 12, sm: 5, lg: 2 }}>
+              <Grid size={{ xs: 12, sm: 5, lg: 3 }}>
                 <Stack direction="row" spacing={0.75}>
                   <Button
                     startIcon={<AutoFixHighIcon />}
                     variant="outlined"
                     size="small"
-                    disabled={!assetPath || autoRecommendation.isPending}
+                    disabled={!assetPath || autoRecommendation.isPending || trackSnapshot.isPending}
                     onClick={() => autoRecommendation.mutate(assetPath)}
                     fullWidth
                     sx={{ minHeight: 40 }}
                   >
                     {autoRecommendation.isPending ? 'Processing…' : 'Process Asset'}
+                  </Button>
+                  <Button
+                    variant="text"
+                    size="small"
+                    disabled={!assetPath || trackSnapshot.isPending || autoRecommendation.isPending}
+                    onClick={() => scanTrackAsset(true)}
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    {trackSnapshot.isPending ? 'Scanning…' : 'Re-scan'}
                   </Button>
                   {recommendationReport ? (
                     <Button size="small" variant="text" onClick={() => setRecommendationOpen(true)} sx={{ minWidth: 'auto', px: 1 }}>
@@ -1836,6 +1848,19 @@ export function ProfileLabPage() {
                 </Stack>
               </Grid>
             </Grid>
+            {trackSnapshot.data ? (
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mt: 1 }}>
+                <Chip size="small" color="success" variant="outlined" label="Snapshot available" />
+                <Typography variant="caption" color="text.secondary">
+                  Last scan: {formatLabScanDate(trackSnapshot.data.updatedAt || trackSnapshot.data.createdAt)} · {trackSnapshot.data.videoCodec || 'unknown codec'} · {trackSnapshot.data.width}×{trackSnapshot.data.height} · {trackSnapshot.data.audioTracks} audio · {trackSnapshot.data.subtitleTracks} subtitles
+                </Typography>
+              </Stack>
+            ) : null}
+            {trackSnapshot.isError ? (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                The last asset scan could not be loaded. Use Re-scan to analyze it again.
+              </Alert>
+            ) : null}
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mt: 1.5 }}>
               <TextField
                 label="Preview color domain"
@@ -2769,7 +2794,23 @@ export function ProfileLabPage() {
                                       size="small"
                                       fullWidth
                                     />
+                                    <TextField
+                                      select
+                                      label="Crop aspect handling"
+                                      value={videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar')}
+                                      onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'cropAspectPolicy', event.target.value)}
+                                      disabled={videoFilterControlValue(videoDraft, 'crop', 'off') !== 'manual'}
+                                      helperText="Source SAR is safest for active-image crops."
+                                      size="small"
+                                      sx={{ minWidth: { sm: 260 } }}
+                                    >
+                                      <MenuItem value="source_sar">Preserve source SAR (recommended)</MenuItem>
+                                      <MenuItem value="preserve_dar">Preserve original DAR</MenuItem>
+                                    </TextField>
                                   </Stack>
+                                  {videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' && videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar') === 'preserve_dar' ? (
+                                    <Alert severity="warning" sx={{ mt: 1 }}>Preserving the pre-crop DAR recalculates SAR and can make the remaining image look stretched. Use it only when that is intentional.</Alert>
+                                  ) : null}
                                 </Grid>
                                     </Grid>
                                   </Stack>
@@ -3522,6 +3563,13 @@ function LabTechnicalSnapshot({ scan }: { scan?: ScanResult }) {
       <MediaTechnicalSnapshotSummary scan={scan} />
     </Stack>
   );
+}
+
+function formatLabScanDate(value?: string) {
+  if (!value) return 'unknown date';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
 }
 
 function LabWarningsAndGuidance({
@@ -5202,7 +5250,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
   const deinterlace = videoWorkerValue(profile, 'deinterlaceMode', 'auto');
   const filters = buildVideoFilterChain(profile.workerConfig ?? {});
   const crop = filters.match(/(?:^|,)crop=(\d+):(\d+):/);
-  const cropAspectPolicy = videoWorkerValue(profile, 'cropAspectPolicy', 'preserve_dar');
+  const cropAspectPolicy = videoWorkerValue(profile, 'cropAspectPolicy', 'source_sar');
   const qualityPreset = videoWorkerValue(profile, 'hardwareQualityPreset', 'custom');
   const sourceAudioTracks = source?.audioStreams?.length ?? 0;
   const sourceSubtitleTracks = source?.subtitleStreams?.length ?? 0;
@@ -5257,7 +5305,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
     ['Profile', video?.profile || 'Unknown', videoWorkerValue(profile, 'videoToolboxProfile', profile.videoCodec.includes('10bit') ? 'Main 10' : 'Encoder default'), 'Configured output'],
     ['Pixel format / bit depth', video?.pixFmt || 'Unknown', pixFmt, video?.pixFmt === pixFmt ? 'Preserved' : 'Changed intentionally'],
     ['Frame size', source ? `${source.width}×${source.height}` : 'Unknown', source ? `${source.width}×${source.height}` : 'Preserve source', 'Preserved unless crop/filter changes it'],
-    ...(crop ? [['Crop geometry', `${video?.sampleAspectRatio || 'Unknown'} SAR · ${video?.displayAspectRatio || 'Unknown'} DAR`, `${crop[1]}×${crop[2]} · ${cropAspectPolicy === 'source_sar' ? 'Preserve source SAR' : 'Recalculate SAR / preserve original DAR'}`, cropAspectPolicy === 'source_sar' ? 'Crop may change displayed aspect ratio' : 'Pipeline emits setsar and setdar after crop']] : []),
+    ...(crop ? [['Crop geometry', `${video?.sampleAspectRatio || 'Unknown'} SAR · ${video?.displayAspectRatio || 'Unknown'} DAR`, `${crop[1]}×${crop[2]} · ${cropAspectPolicy === 'source_sar' ? 'Preserve source SAR' : 'Explicitly preserve original DAR'}`, cropAspectPolicy === 'source_sar' ? 'Crop removes pixels; displayed aspect ratio may change naturally' : 'Pipeline recalculates SAR only because preserve DAR was explicitly selected']] : []),
     ['Frame rate', video?.avgFrameRate || 'Unknown', 'Preserve source', 'No CFR override'],
     ['Field handling', video?.fieldOrder || source?.interlaceAnalysis?.status || 'Unknown', deinterlace, deinterlace === 'off' ? 'No deinterlacing' : 'Filter applied when required'],
     ['Preview color domain', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', previewNormalization === 'normalize_bt709' ? 'Normalize preview to BT.709' : 'Preserve source domain', 'LAB/Fidelity only · not saved in the profile'],

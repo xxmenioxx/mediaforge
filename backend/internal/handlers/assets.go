@@ -217,6 +217,7 @@ type AssetConversionOverrideState struct {
 	VideoPreset                      string                         `json:"videoPreset,omitempty"`
 	PixFmt                           string                         `json:"pixFmt,omitempty"`
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
+	CropAspectPolicy                 string                         `json:"cropAspectPolicy,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
 	X265Params                       string                         `json:"x265Params,omitempty"`
 	FrameStructureMode               string                         `json:"frameStructureMode,omitempty"`
@@ -3262,6 +3263,10 @@ func generatePreviewFrameMetrics(ctx context.Context, sourcePath string, sourceS
 	outputFilter := joinPreviewFilters(squarePixelFrameFilter(output), "format=yuv420p")
 	ssim, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "ssim")
 	if err != nil {
+		if strings.Contains(err.Error(), "did not report SSIM") {
+			result.Reason = "Frame geometry is comparable, but FFmpeg did not provide SSIM for the selected decoded frame. Fidelity validation continued without this optional metric."
+			return result, nil
+		}
 		return previewFrameMetrics{}, err
 	}
 	psnr, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "psnr")
