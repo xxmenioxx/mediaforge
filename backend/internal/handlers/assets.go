@@ -2524,6 +2524,16 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
+		// A rename changes the asset identity path, not the observed media facts.
+		// Move every persisted snapshot to the new key without changing its scan
+		// timestamp so LAB and Assets continue to reuse the same evidence.
+		if tx.Migrator().HasTable(&models.ScanResult{}) {
+			if err := tx.Model(&models.ScanResult{}).Where("path = ?", resolvedPath).UpdateColumns(map[string]interface{}{
+				"path": target, "file_name": fileName,
+			}).Error; err != nil {
+				return err
+			}
+		}
 		metadata := assetMetadataOverrides(tx)
 		if value, ok := metadata[filepath.Clean(resolvedPath)]; ok {
 			delete(metadata, filepath.Clean(resolvedPath))

@@ -38,6 +38,61 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestRenameAssetPreservesPersistedSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-preserves-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.ScanResult{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "episode 01.mkv")
+	newPath := filepath.Join(root, "Show - S01E01.mkv")
+	writeTestFile(t, oldPath, "disposable media fixture")
+	if err := db.Create(&models.Library{Name: "Anime", SourcePath: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: oldPath, RootPath: root, RelativePath: filepath.Base(oldPath), FileName: filepath.Base(oldPath), LibraryID: 1, LibraryName: "Anime", Status: "unprocessed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	scannedAt := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	snapshot := models.ScanResult{Path: oldPath, FileName: filepath.Base(oldPath), VideoCodec: "hevc", Width: 1920, Height: 1080, CreatedAt: scannedAt, UpdatedAt: scannedAt}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/rename", NewAssetHandler(db).Rename)
+	body := fmt.Sprintf(`{"path":%q,"fileName":%q}`, oldPath, filepath.Base(newPath))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var renamed models.ScanResult
+	if err := db.Where("path = ?", newPath).First(&renamed).Error; err != nil {
+		t.Fatalf("snapshot was not moved to renamed path: %v", err)
+	}
+	if renamed.FileName != filepath.Base(newPath) || renamed.VideoCodec != "hevc" || renamed.Width != 1920 || renamed.Height != 1080 {
+		t.Fatalf("snapshot facts were not preserved: %#v", renamed)
+	}
+	if !renamed.UpdatedAt.Equal(scannedAt) {
+		t.Fatalf("rename changed last scan date: got %s want %s", renamed.UpdatedAt, scannedAt)
+	}
+	var stale int64
+	if err := db.Model(&models.ScanResult{}).Where("path = ?", oldPath).Count(&stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Fatalf("old path still owns %d snapshots", stale)
+	}
+}
+
 func TestAssetGroupsIgnoreStalePersistedSeasonSubpath(t *testing.T) {
 	records := []models.AssetRecord{
 		{

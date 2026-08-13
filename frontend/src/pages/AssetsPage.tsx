@@ -578,10 +578,11 @@ function AssetGroupRow({
   const [selectedAssetPaths, setSelectedAssetPaths] = useState<string[]>([]);
   const groupAssets = safeArray(group.assets);
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
+  const inheritedPathCategory = firstCategory(pathMetadata.categories);
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
-  const [groupCategory, setGroupCategory] = useState<string>(firstCategory(pathMetadata.categories));
+  const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
   const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
@@ -607,6 +608,10 @@ function AssetGroupRow({
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+
+  useEffect(() => {
+    setGroupCategory(inheritedPathCategory);
+  }, [inheritedPathCategory]);
   const migratePath = useMutation({
     mutationFn: api.migrateAssetPath,
     onSuccess: async () => {
