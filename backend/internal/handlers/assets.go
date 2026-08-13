@@ -2818,6 +2818,9 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				qualityIntent,
 				capabilities.CheckEncoder("hevc_qsv"),
 			)
+			profile = profileWithAutomaticDeinterlace(profile, h.previewInterlaceAnalysis(path, streams))
+			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
 
 			effectivePreviewProfile = &profile
 
@@ -2826,6 +2829,8 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				videoWorkerArgsForSource(profile, &streams.Video[0])...,
 			)
 		} else {
+			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
 			effectivePreviewProfile = &profile
 
 			videoCodecArguments = append(
@@ -3288,6 +3293,30 @@ func generatePreviewFrameMetrics(ctx context.Context, sourcePath string, sourceS
 	result.SSIM = ssim
 	result.PSNR = psnr
 	return result, nil
+}
+
+func (h AssetHandler) previewInterlaceAnalysis(path string, streams MediaStreamInventory) InterlaceAnalysis {
+	fieldOrder := "unknown"
+	if len(streams.Video) > 0 {
+		fieldOrder = streams.Video[0].FieldOrder
+	}
+	fallback := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
+	if h.db == nil || !h.db.Migrator().HasTable(&models.ScanResult{}) {
+		return fallback
+	}
+	var scan models.ScanResult
+	if err := h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error; err != nil || len(scan.InterlaceAnalysis) == 0 {
+		return fallback
+	}
+	raw, err := json.Marshal(scan.InterlaceAnalysis)
+	if err != nil {
+		return fallback
+	}
+	var analysis InterlaceAnalysis
+	if err := json.Unmarshal(raw, &analysis); err != nil || strings.TrimSpace(analysis.Status) == "" {
+		return fallback
+	}
+	return analysis
 }
 
 func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string) (float64, error) {

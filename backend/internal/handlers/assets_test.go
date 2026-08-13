@@ -38,6 +38,30 @@ func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
 	}
 }
 
+func TestPreviewInterlaceAnalysisUsesPersistedSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:preview-interlace-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/movies/example.mkv"
+	if err := db.Create(&models.ScanResult{Path: path, FileName: "example.mkv", InterlaceAnalysis: models.JSONMap{
+		"status": "interlaced", "fieldOrder": "tt", "detectedFieldOrder": "tff", "source": "idet",
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	analysis := (AssetHandler{db: db}).previewInterlaceAnalysis(path, MediaStreamInventory{Video: []MediaStream{{FieldOrder: "progressive"}}})
+	if analysis.Status != "interlaced" || analysis.DetectedFieldOrder != "tff" || analysis.Source != "idet" {
+		t.Fatalf("preview did not use persisted interlace analysis: %#v", analysis)
+	}
+	profile := profileWithAutomaticDeinterlace(models.Profile{WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"}}, analysis)
+	if got := workerStringValue(profile.WorkerConfig["videoFilters"]); !strings.Contains(got, "bwdif=mode=send_frame:parity=tff:deint=all") {
+		t.Fatalf("automatic preview deinterlace was not resolved: %q", got)
+	}
+}
+
 func TestRenameAssetPreservesPersistedSnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:rename-preserves-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

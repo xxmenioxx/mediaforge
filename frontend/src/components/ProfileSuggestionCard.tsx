@@ -133,7 +133,7 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
           ? `${analysis.fieldOrderMismatch ? `Container field order ${(analysis.containerFieldOrder || 'unknown').toUpperCase()} conflicts with detected ${(analysis.detectedFieldOrder || 'unknown').toUpperCase()}. ` : ''}Recommended filter: ${analysis.recommendedFilter}${window}.`
           : `Validate cadence in LAB before choosing deinterlacing or IVTC${window}.`,
         severity: 'warning',
-        action: analysis.recommendedMode ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Apply fieldmatch + decimate',
+        action: analysis.recommendedMode && analysis.recommendedFilter ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Apply automatic BWDIF fallback',
       };
     default:
       return { title: 'Scan type unknown', detail: `MVForge could not classify motion structure reliably; inspect a preview before conversion${window}.`, severity: 'info', action: 'Mark for review' };

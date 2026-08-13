@@ -119,6 +119,16 @@ type LabFidelityInspection = {
     aliasWarnings?: string[];
   };
   metrics: PreviewFrameMetrics;
+  fidelityWindows: Array<{
+    position: number;
+    startSeconds: number;
+    durationSeconds: number;
+    source: PreviewVideoCharacteristics;
+    output: PreviewVideoCharacteristics;
+    metrics: PreviewFrameMetrics;
+    options: CompatiblePreviewOptions;
+  }>;
+  completedAt: number;
 };
 
 const languageOptions = [
@@ -589,6 +599,7 @@ export function ProfileLabPage() {
   const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
   const [processedVideoQualityValue, setProcessedVideoQualityValue] = useState(emptyVideoDraft.qualityValue);
   const [processedVideoOptions, setProcessedVideoOptions] = useState(videoPreviewOptions(emptyVideoDraft));
+  const [processedVideoDraftSignature, setProcessedVideoDraftSignature] = useState('');
   const [processedPreviewNormalization, setProcessedPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
   const [videoPreviewStatus, setVideoPreviewStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [audioPreviewNonce, setAudioPreviewNonce] = useState(0);
@@ -616,6 +627,7 @@ export function ProfileLabPage() {
   const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
   const [fidelityOpen, setFidelityOpen] = useState(true);
   const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
+  const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
@@ -708,10 +720,8 @@ export function ProfileLabPage() {
   const videoPreviewStale =
     videoPreviewNonce > 0 &&
     videoPreviewStatus !== 'loading' &&
-    (processedVideoCodec !== videoDraft.videoCodec ||
-      processedVideoQualityValue !== videoDraft.qualityValue ||
-      processedPreviewNormalization !== previewNormalization ||
-      JSON.stringify(processedVideoOptions) !== JSON.stringify(videoPreviewOptions(videoDraft)));
+    (processedPreviewNormalization !== previewNormalization ||
+      processedVideoDraftSignature !== JSON.stringify(videoDraft));
 
   useEffect(() => {
     if (
@@ -916,19 +926,25 @@ export function ProfileLabPage() {
       conversion: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
       signal?: AbortSignal;
     }): Promise<LabFidelityInspection> => {
-      const [referenceInspection, metrics] = await Promise.all([
-        api.inspectCompatibleAssetPreview(reference, signal),
-        api.compatibleAssetFrameMetrics(conversion, signal),
-      ]);
+      const referenceInspection = await api.inspectCompatibleAssetPreview(reference, signal);
       const duration = trackSnapshot.data?.duration ?? 0;
       const sampling = labFrameSamplingPolicy(settings.data, duration);
       const { windowSeconds, positions } = sampling;
-      const conversionInspections: Array<{ inspection: PreviewInspection; position: number; startSeconds: number }> = [];
+      const conversionInspections: Array<{ inspection: PreviewInspection; metrics: PreviewFrameMetrics; options: CompatiblePreviewOptions; position: number; startSeconds: number }> = [];
       for (const position of positions) {
         const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
-        conversionInspections.push({ inspection: await api.inspectCompatibleAssetPreview({ ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: true }, signal), position, startSeconds });
+        const options = { ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: false };
+        const inspection = await api.inspectCompatibleAssetPreview(options, signal);
+        const metrics = await api.compatibleAssetFrameMetrics(options, signal).catch((error: unknown) => ({
+          comparable: false,
+          reason: error instanceof Error ? error.message : 'Frame fidelity metrics were not available for this region.',
+          sourceDimensions: '',
+          outputDimensions: '',
+        }));
+        conversionInspections.push({ inspection, metrics, options, position, startSeconds });
       }
-      const conversionInspection = conversionInspections[Math.floor(conversionInspections.length / 2)].inspection;
+      const representativeWindow = conversionInspections[Math.floor(conversionInspections.length / 2)];
+      const conversionInspection = representativeWindow.inspection;
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
       const sourceFrameStructure = trackSnapshot.data?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
       const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, trackSnapshot.data, conversion.profile);
@@ -952,9 +968,20 @@ export function ProfileLabPage() {
         referenceEncoder: referenceInspection.effectiveEncoder,
         ffmpegArgs: conversionInspection.ffmpegArgs,
         normalization: referenceInspection.normalization,
-        metrics,
+        metrics: representativeWindow.metrics,
+        fidelityWindows: conversionInspections.map((window) => ({
+          position: window.position,
+          startSeconds: window.startSeconds,
+          durationSeconds: windowSeconds,
+          source: window.inspection.source,
+          output: window.inspection.output,
+          metrics: window.metrics,
+          options: window.options,
+        })),
+        completedAt: Date.now(),
       };
     },
+    onSuccess: (inspection) => setLastFidelityInspection(inspection),
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
@@ -971,10 +998,8 @@ export function ProfileLabPage() {
     ? lastEncoderRecommendation.data
     : undefined;
   const currentFidelityInspection =
-    fidelityInspection.data?.assetPath === assetPath &&
-    fidelityInspection.data?.draftSignature === JSON.stringify(videoDraft) &&
-    !fidelityInspection.isPending
-    ? fidelityInspection.data
+    lastFidelityInspection?.assetPath === assetPath
+    ? lastFidelityInspection
     : undefined;
   const availableAudioStreams = trackSnapshot.data?.audioStreams ?? [];
   const selectedAudioStreamIndex = availableAudioStreams.some((stream) => stream.index === audioPreviewStreamIndex)
@@ -1015,6 +1040,7 @@ export function ProfileLabPage() {
     setPreviewNonce((current) => assetPath ? current + 1 : 0);
     resetProcessedPreviews();
     fidelityInspection.reset();
+    setLastFidelityInspection(null);
     encoderQualityRecommendation.reset();
     setLastEncoderRecommendation(undefined);
     if (assetPath) {
@@ -1184,11 +1210,11 @@ export function ProfileLabPage() {
       const detectedOrder = scan.interlaceAnalysis.detectedFieldOrder?.toLowerCase()
         || scan.interlaceAnalysis.fieldOrder?.toLowerCase()
         || '';
-      deinterlaceMode = scan.interlaceAnalysis.recommendedMode
-        || (detectedOrder.startsWith('b') ? 'ivtc_bff' : 'ivtc_tff');
-      videoReasons.push(
-        `Telecine is suspected; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with fieldmatch and decimate.`,
-      );
+      const validatedIVTC = Boolean(scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter);
+      deinterlaceMode = validatedIVTC ? scan.interlaceAnalysis.recommendedMode! : 'auto';
+      videoReasons.push(validatedIVTC
+        ? `Telecine cadence was validated; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with ${scan.interlaceAnalysis.recommendedFilter}.`
+        : `Telecine is suspected but IVTC was not validated; Auto will use a safe BWDIF ${detectedOrder.startsWith('b') ? 'BFF' : 'TFF'} fallback.`);
       if (scan.interlaceAnalysis.fieldOrderMismatch) {
         videoReasons.push(
           `The container reports ${(scan.interlaceAnalysis.containerFieldOrder || 'unknown').toUpperCase()}, but distributed samples detected ${detectedOrder.toUpperCase()}; the measured content order was used.`,
@@ -1604,6 +1630,7 @@ export function ProfileLabPage() {
     const options = videoPreviewOptions(videoDraft);
     setProcessedVideoCodec(videoDraft.videoCodec);
     setProcessedVideoQualityValue(videoDraft.qualityValue);
+    setProcessedVideoDraftSignature(JSON.stringify(videoDraft));
     setProcessedPreviewNormalization(previewNormalization);
     setProcessedVideoOptions({
       ...options,
@@ -1671,6 +1698,7 @@ export function ProfileLabPage() {
   function resetProcessedVideoPreview() {
     setVideoPreviewNonce(0);
     setVideoPreviewStatus('idle');
+    setProcessedVideoDraftSignature('');
     fidelityInspection.reset();
   }
 
@@ -1704,37 +1732,6 @@ export function ProfileLabPage() {
           shellQuote(argument),
         ),
       ].join(' ')
-    : '';
-
-  const sourceFrameOptions: CompatiblePreviewOptions = {
-    path: assetPath,
-    start,
-    seconds,
-    mode: 'quality',
-    videoCodec: 'x264',
-    qualityValue: 16,
-    videoPreset: 'medium',
-    pixFmt: 'yuv420p',
-    videoEncoder: 'libx264',
-    useHardwareIfAvailable: false,
-    globalQuality: 21,
-    previewNormalization,
-  };
-  const outputFrameOptions: CompatiblePreviewOptions = {
-    path: assetPath,
-    start,
-    seconds,
-    videoCodec: processedVideoCodec,
-    qualityValue: processedVideoQualityValue,
-    mode: 'quality',
-    previewNormalization,
-    ...processedVideoOptions,
-  };
-  const sourceFrameUrl = assetPath && videoPreviewNonce > 0
-    ? `${api.compatibleAssetFrameUrl(sourceFrameOptions, 'source')}&nonce=${videoPreviewNonce}`
-    : '';
-  const outputFrameUrl = assetPath && videoPreviewNonce > 0
-    ? `${api.compatibleAssetFrameUrl(outputFrameOptions, 'output')}&nonce=${videoPreviewNonce}`
     : '';
 
   async function copyCombinedTerminalCommand() {
@@ -2163,6 +2160,11 @@ export function ProfileLabPage() {
               {assetPath && previewNonce > 0 && fidelityTab !== 'previews' ? (
                 <Card variant="outlined">
                   <CardContent>
+                    {videoPreviewStale && currentFidelityInspection && ['frames', 'characteristics', 'warnings'].includes(fidelityTab) ? (
+                      <Alert severity="info" sx={{ mb: 1.5 }}>
+                        Showing results from the last Process Video run. Run Process Video again to validate the current profile settings.
+                      </Alert>
+                    ) : null}
                     {fidelityTab === 'technical' ? (
                       <LabTechnicalSnapshot
                         scan={recommendationSuggestion?.scan ?? trackSnapshot.data}
@@ -2201,7 +2203,7 @@ export function ProfileLabPage() {
                       <Collapse in={fidelityOpen}>
                         {currentFidelityInspection ? (
                           fidelityTab === 'frames' ? (
-                            <FrameFidelityComparison sourceUrl={sourceFrameUrl} outputUrl={outputFrameUrl} inspection={currentFidelityInspection} />
+                            <FrameFidelityComparison inspection={currentFidelityInspection} />
                           ) : (
                             <FidelityCharacteristicsTable inspection={currentFidelityInspection} />
                           )
@@ -2787,49 +2789,6 @@ export function ProfileLabPage() {
                                     ))}
                                   </TextField>
                                 </Grid>
-                                <Grid size={{ xs: 12 }}>
-                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
-                                    <FormControlLabel
-                                      control={
-                                        <Checkbox
-                                          checked={videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'}
-                                          onChange={(event) => updateVideoFilterControl(setVideoDraft, 'crop', event.target.checked ? 'manual' : 'off')}
-                                        />
-                                      }
-                                      label="Enable crop"
-                                      sx={{ minWidth: 150, m: 0 }}
-                                    />
-                                    <TextField
-                                      label={videoWorkerValue(videoDraft, 'cropValue') ? 'Suggested crop' : 'Manual crop'}
-                                      value={videoWorkerValue(videoDraft, 'cropValue')}
-                                      onChange={(event) => updateVideoFilterControl(setVideoDraft, 'cropValue', event.target.value)}
-                                      placeholder="iw:ih-80:0:40"
-                                      helperText={
-                                        videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'
-                                          ? 'Enabled for Sample B and the saved profile.'
-                                          : 'Saved as a suggestion, but not applied until enabled.'
-                                      }
-                                      size="small"
-                                      fullWidth
-                                    />
-                                    <TextField
-                                      select
-                                      label="Crop aspect handling"
-                                      value={videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar')}
-                                      onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'cropAspectPolicy', event.target.value)}
-                                      disabled={videoFilterControlValue(videoDraft, 'crop', 'off') !== 'manual'}
-                                      helperText="Source SAR is safest for active-image crops."
-                                      size="small"
-                                      sx={{ minWidth: { sm: 260 } }}
-                                    >
-                                      <MenuItem value="source_sar">Preserve source SAR (recommended)</MenuItem>
-                                      <MenuItem value="preserve_dar">Preserve original DAR</MenuItem>
-                                    </TextField>
-                                  </Stack>
-                                  {videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' && videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar') === 'preserve_dar' ? (
-                                    <Alert severity="warning" sx={{ mt: 1 }}>Preserving the pre-crop DAR recalculates SAR and can make the remaining image look stretched. Use it only when that is intentional.</Alert>
-                                  ) : null}
-                                </Grid>
                                     </Grid>
                                   </Stack>
                                 </Grid>
@@ -2949,6 +2908,63 @@ export function ProfileLabPage() {
                                   />
                                     </Box>
                                   </Stack>
+                                </Grid>
+                                <Grid size={{ xs: 12 }}>
+                                  <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.02)' }}>
+                                    <Stack spacing={1.5}>
+                                      <Stack spacing={0.35}>
+                                        <Typography fontWeight={700}>Aspect ratio adjustment</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                          Apply a suggested or manual crop and choose how MVForge preserves the displayed proportions.
+                                        </Typography>
+                                      </Stack>
+                                      <Grid container spacing={2} alignItems="flex-start">
+                                        <Grid size={{ xs: 12, md: 3 }}>
+                                          <FormControlLabel
+                                            control={
+                                              <Checkbox
+                                                checked={videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'}
+                                                onChange={(event) => updateVideoFilterControl(setVideoDraft, 'crop', event.target.checked ? 'manual' : 'off')}
+                                              />
+                                            }
+                                            label="Enable crop"
+                                            sx={{ m: 0, minHeight: 40 }}
+                                          />
+                                        </Grid>
+                                        <Grid size={{ xs: 12, md: 5 }}>
+                                          <TextField
+                                            label={videoWorkerValue(videoDraft, 'cropValue') ? 'Suggested crop' : 'Manual crop'}
+                                            value={videoWorkerValue(videoDraft, 'cropValue')}
+                                            onChange={(event) => updateVideoFilterControl(setVideoDraft, 'cropValue', event.target.value)}
+                                            placeholder="iw:ih-80:0:40"
+                                            helperText={videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual'
+                                              ? 'Enabled for Sample B and the saved profile.'
+                                              : 'Saved as a suggestion, but not applied until enabled.'}
+                                            size="small"
+                                            fullWidth
+                                          />
+                                        </Grid>
+                                        <Grid size={{ xs: 12, md: 4 }}>
+                                          <TextField
+                                            select
+                                            label="Crop aspect handling"
+                                            value={videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar')}
+                                            onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'cropAspectPolicy', event.target.value)}
+                                            disabled={videoFilterControlValue(videoDraft, 'crop', 'off') !== 'manual'}
+                                            helperText="Source SAR is safest for active-image crops."
+                                            size="small"
+                                            fullWidth
+                                          >
+                                            <MenuItem value="source_sar">Preserve source SAR (recommended)</MenuItem>
+                                            <MenuItem value="preserve_dar">Preserve original DAR</MenuItem>
+                                          </TextField>
+                                        </Grid>
+                                      </Grid>
+                                      {videoFilterControlValue(videoDraft, 'crop', 'off') === 'manual' && videoWorkerValue(videoDraft, 'cropAspectPolicy', 'source_sar') === 'preserve_dar' ? (
+                                        <Alert severity="warning">Preserving the pre-crop DAR recalculates SAR and can make the remaining image look stretched. Use it only when that is intentional.</Alert>
+                                      ) : null}
+                                    </Stack>
+                                  </Box>
                                 </Grid>
                               </Grid>
                             </Stack>
@@ -3863,113 +3879,128 @@ function QSVFrameStructureCard({
   );
 }
 
-function FrameFidelityComparison({ sourceUrl, outputUrl, inspection }: { sourceUrl: string; outputUrl: string; inspection: LabFidelityInspection }) {
-  const [mode, setMode] = useState<'slider' | 'side-by-side' | 'blink'>('slider');
-  const [position, setPosition] = useState(50);
-  const [blinkSource, setBlinkSource] = useState(true);
+function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspection }) {
   const [loadError, setLoadError] = useState('');
-
+  const [selectedWindowIndex, setSelectedWindowIndex] = useState(0);
+  const [comparisonMode, setComparisonMode] = useState<'slider' | 'side-by-side' | 'blink'>('side-by-side');
+  const [comparisonPosition, setComparisonPosition] = useState(50);
+  const [blinkSource, setBlinkSource] = useState(true);
   useEffect(() => {
-    setLoadError('');
-  }, [sourceUrl, outputUrl]);
-
-  useEffect(() => {
-    if (mode !== 'blink') {
-      setBlinkSource(true);
-      return;
-    }
+    if (comparisonMode !== 'blink') return;
     const timer = window.setInterval(() => setBlinkSource((current) => !current), 650);
     return () => window.clearInterval(timer);
-  }, [mode]);
-
-  if (!sourceUrl || !outputUrl) {
+  }, [comparisonMode]);
+  const windows = inspection.fidelityWindows ?? [];
+  if (!windows.length) {
     return <Alert severity="info">Process Video to create the canonical source and decoded output frames.</Alert>;
   }
-
-  const frameStyle = {
-    display: 'block',
-    width: '100%',
-    height: '100%',
-    objectFit: 'contain' as const,
-    bgcolor: 'black',
-  };
-  const sourceDimensions = squarePixelDimensions(inspection.source);
-  const outputDimensions = squarePixelDimensions(inspection.conversion);
-  const dimensionsMatch = sourceDimensions === outputDimensions;
+  const comparable = windows.filter((window) => window.metrics.comparable && Number.isFinite(window.metrics.ssim));
+  const averageSSIM = comparable.length ? comparable.reduce((sum, window) => sum + (window.metrics.ssim ?? 0), 0) / comparable.length : undefined;
+  const averagePSNRWindows = comparable.filter((window) => Number.isFinite(window.metrics.psnr));
+  const averagePSNR = averagePSNRWindows.length ? averagePSNRWindows.reduce((sum, window) => sum + (window.metrics.psnr ?? 0), 0) / averagePSNRWindows.length : undefined;
+  const worst = comparable.reduce<(typeof comparable)[number] | undefined>((current, window) => !current || (window.metrics.ssim ?? 1) < (current.metrics.ssim ?? 1) ? window : current, undefined);
+  const minimumSSIM = worst?.metrics.ssim;
+  const minimumPSNR = averagePSNRWindows.length ? Math.min(...averagePSNRWindows.map((window) => window.metrics.psnr ?? Infinity)) : undefined;
+  const overallVerdict = fidelityMetricVerdict(minimumSSIM);
+  const safeWindowIndex = Math.min(selectedWindowIndex, windows.length - 1);
+  const selectedWindow = windows[safeWindowIndex];
+  const sourceUrl = `${api.compatibleAssetFrameUrl(selectedWindow.options, 'source')}&run=${inspection.completedAt}`;
+  const outputUrl = `${api.compatibleAssetFrameUrl(selectedWindow.options, 'output')}&run=${inspection.completedAt}`;
+  const selectedVerdict = fidelityMetricVerdict(selectedWindow.metrics.ssim);
+  const dimensionsMatch = squarePixelDimensions(selectedWindow.source) === squarePixelDimensions(selectedWindow.output);
 
   return (
     <Stack spacing={1.5}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button size="small" variant={mode === 'slider' ? 'contained' : 'outlined'} onClick={() => setMode('slider')}>Before / after</Button>
-          <Button size="small" variant={mode === 'side-by-side' ? 'contained' : 'outlined'} onClick={() => setMode('side-by-side')}>Side by side</Button>
-          <Button size="small" variant={mode === 'blink' ? 'contained' : 'outlined'} onClick={() => setMode('blink')}>Blink</Button>
-        </Stack>
-        <Typography variant="caption" color="text.secondary">
-          PNG frames decoded by FFmpeg · square-pixel display geometry
-        </Typography>
-      </Stack>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip size="small" label={`Source frame · ${sourceDimensions}`} />
-        <Chip size="small" label={`Result frame · ${outputDimensions}`} />
-        <Chip size="small" color={dimensionsMatch ? 'success' : 'warning'} label={dimensionsMatch ? 'Geometry aligned' : 'Geometry differs'} />
-        {inspection.metrics.comparable ? <Chip size="small" color="info" label={`SSIM ${inspection.metrics.ssim?.toFixed(4)}`} /> : null}
-        {inspection.metrics.comparable ? <Chip size="small" color="info" label={`PSNR ${inspection.metrics.psnr?.toFixed(2)} dB`} /> : null}
+        <Chip size="small" color={fidelityVerdictColor(overallVerdict)} label={`Overall · ${overallVerdict}`} />
+        <Chip size="small" label={`${windows.length} regions`} />
+        {averageSSIM !== undefined ? <Chip size="small" label={`Average SSIM · ${averageSSIM.toFixed(4)}`} /> : null}
+        {minimumSSIM !== undefined ? <Chip size="small" label={`Minimum SSIM · ${minimumSSIM.toFixed(4)}`} /> : null}
+        {averagePSNR !== undefined ? <Chip size="small" label={`Average PSNR · ${averagePSNR.toFixed(2)} dB`} /> : null}
+        {minimumPSNR !== undefined ? <Chip size="small" label={`Minimum PSNR · ${minimumPSNR.toFixed(2)} dB`} /> : null}
+        {worst ? <Chip size="small" color="warning" label={`Worst region · ${Math.round(worst.position * 100)}%`} /> : null}
       </Stack>
-      {!dimensionsMatch ? (
-        <Alert severity="warning">The displayed frame dimensions differ. Overlay and future pixel metrics are not considered geometrically equivalent.</Alert>
-      ) : null}
-      <Typography variant="caption" color="text.secondary">{inspection.metrics.reason}</Typography>
       {loadError ? <Alert severity="warning">{loadError}</Alert> : null}
-      {mode === 'side-by-side' ? (
-        <Grid container spacing={1.5}>
-          <Grid size={{ xs: 12, md: 6 }}>
-            <FrameImage label="Canonical source" src={sourceUrl} onError={() => setLoadError('The canonical source PNG could not be generated.')} />
-          </Grid>
-          <Grid size={{ xs: 12, md: 6 }}>
-            <FrameImage label="Decoded profile result" src={outputUrl} onError={() => setLoadError('The profile-result PNG could not be generated.')} />
-          </Grid>
-        </Grid>
-      ) : (
-        <Box>
-          <Box sx={{ position: 'relative', width: '100%', height: { xs: 280, md: 520 }, overflow: 'hidden', bgcolor: 'black', borderRadius: 1 }}>
-            <Box component="img" src={outputUrl} alt="Decoded profile result frame" onError={() => setLoadError('The profile-result PNG could not be generated.')} sx={frameStyle} />
-            {mode === 'slider' ? (
-              <>
-                <Box
-                  component="img"
-                  src={sourceUrl}
-                  alt="Canonical source frame"
-                  onError={() => setLoadError('The canonical source PNG could not be generated.')}
-                  sx={{ ...frameStyle, position: 'absolute', inset: 0, clipPath: `inset(0 ${100 - position}% 0 0)` }}
-                />
-                <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${position}%`, width: 2, bgcolor: 'primary.main', transform: 'translateX(-1px)' }} />
-                <Chip size="small" label="Canonical source" sx={{ position: 'absolute', left: 12, top: 12 }} />
-                <Chip size="small" label="Profile result" sx={{ position: 'absolute', right: 12, top: 12 }} />
-              </>
+      <Card variant="outlined">
+        <CardContent>
+          <Stack spacing={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+              <TextField
+                select
+                label="Fidelity image"
+                value={safeWindowIndex}
+                onChange={(event) => {
+                  setSelectedWindowIndex(Number(event.target.value));
+                  setLoadError('');
+                }}
+                size="small"
+                sx={{ minWidth: { sm: 280 } }}
+              >
+                {windows.map((window, index) => (
+                  <MenuItem key={`${window.position}-${window.startSeconds}`} value={index}>
+                    Photo {index + 1} · {Math.round(window.position * 100)}% · {formatElapsedTime(window.startSeconds)}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <Chip size="small" color={fidelityVerdictColor(selectedVerdict)} label={selectedVerdict} />
+            </Stack>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              {selectedWindow.metrics.comparable ? <Chip size="small" label={`SSIM ${selectedWindow.metrics.ssim?.toFixed(4)}`} /> : <Chip size="small" color="warning" label="SSIM unavailable" />}
+              {selectedWindow.metrics.comparable && selectedWindow.metrics.psnr !== undefined ? <Chip size="small" label={`PSNR ${selectedWindow.metrics.psnr.toFixed(2)} dB`} /> : null}
+              <Chip size="small" color={dimensionsMatch ? 'success' : 'warning'} label={dimensionsMatch ? 'Geometry aligned' : 'Geometry differs'} />
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button size="small" variant={comparisonMode === 'slider' ? 'contained' : 'outlined'} onClick={() => setComparisonMode('slider')}>Before / after</Button>
+              <Button size="small" variant={comparisonMode === 'side-by-side' ? 'contained' : 'outlined'} onClick={() => setComparisonMode('side-by-side')}>Side by side</Button>
+              <Button size="small" variant={comparisonMode === 'blink' ? 'contained' : 'outlined'} onClick={() => setComparisonMode('blink')}>Blink</Button>
+            </Stack>
+            {comparisonMode === 'side-by-side' ? (
+              <Grid container spacing={1.5}>
+                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Canonical source" src={sourceUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} /></Grid>
+                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Profile result" src={outputUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} /></Grid>
+              </Grid>
             ) : (
-              <>
-                <Box
-                  component="img"
-                  src={sourceUrl}
-                  alt="Canonical source frame"
-                  onError={() => setLoadError('The canonical source PNG could not be generated.')}
-                  sx={{ ...frameStyle, position: 'absolute', inset: 0, opacity: blinkSource ? 1 : 0 }}
-                />
-                <Chip size="small" color={blinkSource ? 'info' : 'warning'} label={blinkSource ? 'Canonical source' : 'Profile result'} sx={{ position: 'absolute', left: 12, top: 12 }} />
-              </>
+              <Stack spacing={0.75}>
+                <Stack direction="row" justifyContent="flex-end"><Button component="a" href={blinkSource && comparisonMode === 'blink' ? sourceUrl : outputUrl} target="_blank" rel="noreferrer" size="small">Open full size</Button></Stack>
+                <Box sx={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: { xs: 260, md: 480 }, overflow: 'hidden', bgcolor: 'black', borderRadius: 1 }}>
+                  <Box component="img" src={outputUrl} alt="Profile result frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} sx={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%' }} />
+                  {comparisonMode === 'slider' ? (
+                    <>
+                      <Box component="img" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ position: 'absolute', inset: 0, m: 'auto', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }} />
+                      <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${comparisonPosition}%`, width: 2, bgcolor: 'primary.main' }} />
+                      <Chip size="small" label="Canonical source" sx={{ position: 'absolute', left: 12, top: 12 }} />
+                      <Chip size="small" label="Profile result" sx={{ position: 'absolute', right: 12, top: 12 }} />
+                    </>
+                  ) : (
+                    <>
+                      <Box component="img" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ position: 'absolute', inset: 0, m: 'auto', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', opacity: blinkSource ? 1 : 0 }} />
+                      <Chip size="small" color={blinkSource ? 'info' : 'warning'} label={blinkSource ? 'Canonical source' : 'Profile result'} sx={{ position: 'absolute', left: 12, top: 12 }} />
+                    </>
+                  )}
+                </Box>
+                {comparisonMode === 'slider' ? <Slider value={comparisonPosition} min={0} max={100} onChange={(_, value) => setComparisonPosition(Array.isArray(value) ? value[0] : value)} aria-label="Before and after position" /> : null}
+              </Stack>
             )}
-          </Box>
-          {mode === 'slider' ? (
-            <Slider value={position} min={0} max={100} onChange={(_, value) => setPosition(Array.isArray(value) ? value[0] : value)} aria-label="Before and after frame position" />
-          ) : null}
-        </Box>
-      )}
+            <Typography variant="caption" color="text.secondary">{selectedWindow.metrics.reason}</Typography>
+          </Stack>
+        </CardContent>
+      </Card>
       <Alert severity="info">
-        Frame Fidelity bypasses browser video decoding. The source frame receives the selected preview color policy; the result frame is decoded from the generated profile preview.
+        These frames use the same five distributed profile outputs analyzed by Process Video. Source frames receive the selected color policy; result frames are decoded from those generated outputs.
       </Alert>
     </Stack>
   );
+}
+
+function fidelityMetricVerdict(ssim?: number) {
+  if (!Number.isFinite(ssim)) return 'Review' as const;
+  if ((ssim ?? 0) >= 0.95) return 'Safe' as const;
+  if ((ssim ?? 0) >= 0.90) return 'Review' as const;
+  return 'Reject' as const;
+}
+
+function fidelityVerdictColor(verdict: 'Safe' | 'Review' | 'Reject'): 'success' | 'warning' | 'error' {
+  return verdict === 'Safe' ? 'success' : verdict === 'Reject' ? 'error' : 'warning';
 }
 
 function squarePixelDimensions(characteristics: PreviewVideoCharacteristics) {
@@ -3981,8 +4012,19 @@ function squarePixelDimensions(characteristics: PreviewVideoCharacteristics) {
 function FrameImage({ label, src, onError }: { label: string; src: string; onError: () => void }) {
   return (
     <Stack spacing={0.75}>
-      <Typography fontWeight={700} variant="body2">{label}</Typography>
-      <Box component="img" src={src} alt={`${label} frame`} onError={onError} sx={{ display: 'block', width: '100%', height: { xs: 260, md: 420 }, objectFit: 'contain', bgcolor: 'black', borderRadius: 1 }} />
+      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+        <Typography fontWeight={700} variant="body2">{label}</Typography>
+        <Button component="a" href={src} target="_blank" rel="noreferrer" size="small">Open full size</Button>
+      </Stack>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: { xs: 220, md: 320 }, overflow: 'auto', bgcolor: 'black', borderRadius: 1 }}>
+        <Box
+          component="img"
+          src={src}
+          alt={`${label} frame`}
+          onError={onError}
+          sx={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%' }}
+        />
+      </Box>
     </Stack>
   );
 }
@@ -5644,7 +5686,9 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
       : interlace === 'progressive'
         ? 'Keep deinterlacing disabled because the analyzed window is progressive.'
         : interlace === 'telecine_suspected'
-          ? `Enable inverse telecine ${(scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder)?.toLowerCase().startsWith('b') ? 'BFF' : 'TFF'} with ${scan.interlaceAnalysis.recommendedFilter || 'fieldmatch and decimate'}.`
+          ? scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter
+            ? `Enable validated ${scan.interlaceAnalysis.recommendedMode.toUpperCase()} with ${scan.interlaceAnalysis.recommendedFilter}.`
+            : 'Use automatic BWDIF fallback because telecine is suspected but inverse telecine was not validated.'
         : `Keep conversion-time motion analysis enabled because the source was classified as ${interlace}.`,
     crop === 'detected' && scan.subtitleStreams.some(isBitmapSubtitleStream)
       ? 'Keep crop disabled because bitmap subtitles may be positioned inside the detected black bars.'
@@ -6405,8 +6449,13 @@ function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult)
   }
   if (status === 'telecine_suspected') {
     const mode = scan.interlaceAnalysis.recommendedMode;
-    const order = mode === 'ivtc_bff' ? 'bff' : 'tff';
-    return [`fieldmatch=order=${order}`, 'decimate', 'setfield=prog'];
+    if (mode && scan.interlaceAnalysis.recommendedFilter) {
+      const order = mode === 'ivtc_bff' ? 'bff' : 'tff';
+      return [`fieldmatch=order=${order}`, 'decimate', 'setfield=prog'];
+    }
+    const detected = (scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder || '').toLowerCase();
+    const parity = detected.startsWith('b') ? 'bff' : detected.startsWith('t') ? 'tff' : 'auto';
+    return [`bwdif=mode=send_frame:parity=${parity}:deint=all`, 'setfield=prog'];
   }
   if (status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch) {
     return ['setfield=prog'];

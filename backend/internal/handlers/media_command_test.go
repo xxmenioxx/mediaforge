@@ -591,7 +591,7 @@ func TestFFmpegCommandBuilderCorrectsProgressiveFieldMetadataWithoutDeinterlacin
 	assertNotContains(t, command, "bwdif")
 }
 
-func TestFFmpegCommandBuilderDoesNotAutomaticallyFilterTelecine(t *testing.T) {
+func TestFFmpegCommandBuilderAutomaticallyFallsBackForUnvalidatedTelecine(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
 		ProcessingMode: ProcessingModeFullEncode,
@@ -599,11 +599,11 @@ func TestFFmpegCommandBuilderDoesNotAutomaticallyFilterTelecine(t *testing.T) {
 			VideoCodec: "x265_10bit", AudioCodec: "copy",
 			WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"},
 		},
-		Interlace: InterlaceAnalysis{Status: "telecine_suspected"},
+		Interlace: InterlaceAnalysis{Status: "telecine_suspected", DetectedFieldOrder: "bff"},
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertNotContains(t, command, "bwdif")
+	assertContains(t, command, "bwdif=mode=send_frame:parity=bff:deint=all")
 }
 
 func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {

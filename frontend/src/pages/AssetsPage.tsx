@@ -1384,7 +1384,7 @@ function AssetRow({
     const workerConfig = proposed.workerConfig ?? {};
     const status = scan.interlaceAnalysis.status;
     const withoutMotion = withoutMotionFilters(conversionDraft.videoFilters);
-    const recommendedMotionFilter = scan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
+    const validatedIVTC = Boolean(scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter);
     const motionPatch: AssetConversionOverrideState = status === 'progressive'
       ? {
           deinterlaceMode: 'off',
@@ -1393,10 +1393,12 @@ function AssetRow({
       : status === 'interlaced'
         ? { deinterlaceMode: 'force', videoFilters: withoutMotion }
         : status === 'telecine_suspected'
-          ? {
-              deinterlaceMode: scan.interlaceAnalysis.recommendedMode === 'ivtc_bff' ? 'ivtc_bff' : 'ivtc_tff',
-              videoFilters: joinFilters(recommendedMotionFilter, withoutMotion),
-            }
+          ? validatedIVTC
+            ? {
+                deinterlaceMode: scan.interlaceAnalysis.recommendedMode === 'ivtc_bff' ? 'ivtc_bff' : 'ivtc_tff',
+                videoFilters: joinFilters(scan.interlaceAnalysis.recommendedFilter!, withoutMotion),
+              }
+            : { deinterlaceMode: 'auto', videoFilters: withoutMotion }
           : {};
     const hardwareEnabled = workerConfig.useHardwareIfAvailable === true;
     const next = cleanConversionOverride({

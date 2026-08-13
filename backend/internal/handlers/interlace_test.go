@@ -55,6 +55,17 @@ func TestEffectiveDeinterlaceFilterDoesNotPrefixIVTC(t *testing.T) {
 	}
 }
 
+func TestAutomaticDeinterlaceFallsBackForUnvalidatedTelecine(t *testing.T) {
+	analysis := InterlaceAnalysis{Status: "telecine_suspected", DetectedFieldOrder: "bff"}
+	if filter := effectiveDeinterlaceFilter("auto", analysis); filter != "bwdif=mode=send_frame:parity=bff:deint=all" {
+		t.Fatalf("expected safe BWDIF fallback for unvalidated telecine, got %q", filter)
+	}
+	analysis.RecommendedFilter = "fieldmatch=order=bff,decimate"
+	if filter := effectiveDeinterlaceFilter("auto", analysis); filter != analysis.RecommendedFilter {
+		t.Fatalf("expected validated IVTC recommendation, got %q", filter)
+	}
+}
+
 func TestDominantFieldOrderOverridesIncorrectContainerMetadata(t *testing.T) {
 	analysis := InterlaceAnalysis{
 		ContainerFieldOrder: "bb",

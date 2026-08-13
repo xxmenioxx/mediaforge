@@ -316,7 +316,10 @@ func effectiveDeinterlaceFilter(profileMode string, analysis InterlaceAnalysis) 
 	case "force", "forced", "on":
 		return bwdifFilter(analysis)
 	default:
-		if analysis.Status == "interlaced" {
+		if analysis.Status == "telecine_suspected" && strings.TrimSpace(analysis.RecommendedFilter) != "" {
+			return strings.TrimSpace(analysis.RecommendedFilter)
+		}
+		if analysis.Status == "interlaced" || analysis.Status == "telecine_suspected" {
 			return bwdifFilter(analysis)
 		}
 		return ""
