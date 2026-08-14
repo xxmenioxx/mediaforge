@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -236,6 +237,17 @@ func (h QueueHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "library replacement source must be inside the selected library destination"})
 			return
 		}
+		if existing, err := h.activePublicationForSamePhysicalFile(input.MediaPath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if existing != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":         "this physical Library file already has an active MVForge publication through another library path",
+				"publishedPath": existing.PublishedPath,
+				"jobId":         existing.ID,
+			})
+			return
+		}
 	}
 
 	priority := input.Priority
@@ -286,6 +298,34 @@ func (h QueueHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, job)
+}
+
+func (h QueueHandler) activePublicationForSamePhysicalFile(mediaPath string) (*models.QueueJob, error) {
+	requested, err := os.Stat(filepath.Clean(mediaPath))
+	if err != nil {
+		return nil, err
+	}
+	var publications []models.QueueJob
+	if err := h.db.Where("publication_retired_at IS NULL AND published_path <> ''").Order("id desc").Find(&publications).Error; err != nil {
+		return nil, err
+	}
+	for index := range publications {
+		candidatePath := filepath.Clean(strings.TrimSpace(publications[index].PublishedPath))
+		if candidatePath == "." {
+			continue
+		}
+		candidate, statErr := os.Stat(candidatePath)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				continue
+			}
+			return nil, statErr
+		}
+		if os.SameFile(requested, candidate) {
+			return &publications[index], nil
+		}
+	}
+	return nil, nil
 }
 
 func (h QueueHandler) Update(c *gin.Context) {
@@ -521,17 +561,30 @@ func normalizeQueueProcessingMode(value string) string {
 
 func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, error) {
 	cleanPath := filepath.Clean(mediaPath)
-	var count int64
-	query := h.db.Model(&models.QueueJob{}).
-		Where("media_path = ?", cleanPath).
+	var jobs []models.QueueJob
+	query := h.db.
 		Where("dismissed_at IS NULL").
 		Where("status <> ?", JobStatusCanceled).
 		Where("published_at IS NULL")
 	if excludeID != 0 {
 		query = query.Where("id <> ?", excludeID)
 	}
-	if err := query.Count(&count).Error; err != nil {
+	if err := query.Find(&jobs).Error; err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	requested, requestedErr := os.Stat(cleanPath)
+	for _, job := range jobs {
+		candidatePath := filepath.Clean(job.MediaPath)
+		if candidatePath == cleanPath {
+			return true, nil
+		}
+		if requestedErr != nil {
+			continue
+		}
+		candidate, err := os.Stat(candidatePath)
+		if err == nil && os.SameFile(requested, candidate) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

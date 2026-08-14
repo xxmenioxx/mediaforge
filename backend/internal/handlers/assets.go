@@ -662,17 +662,19 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "the archived original is missing; converted asset was not deleted"})
 		return
 	}
-	restorePath := filepath.Clean(job.MediaPath)
-	if !pathIsInside(restorePath, rawRoot) {
-		c.JSON(http.StatusConflict, gin.H{"error": "the original Raw destination is outside the configured Raw root"})
+	restorePath, restoreLocation, err := safeDeleteRestoreDestination(h.db, job, rawRoot)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
-	if _, statErr := os.Stat(restorePath); statErr == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "an asset already exists at the original Raw path; converted asset was not deleted"})
-		return
-	} else if !os.IsNotExist(statErr) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
-		return
+	if filepath.Clean(restorePath) != filepath.Clean(path) {
+		if _, statErr := os.Stat(restorePath); statErr == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "an asset already exists at the original " + restoreLocation + " path; converted asset was not deleted"})
+			return
+		} else if !os.IsNotExist(statErr) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
+			return
+		}
 	}
 
 	retiredAt := time.Now()
@@ -733,7 +735,7 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		}
 	}
 
-	job.Notes = appendNote(job.Notes, "Converted asset deleted after archived original was restored to Raw: "+restorePath)
+	job.Notes = appendNote(job.Notes, "Converted asset deleted after archived original was restored to "+restoreLocation+": "+restorePath)
 	_ = h.db.Save(&job).Error
 	if err := h.db.Delete(&record).Error; err != nil {
 		appendSystemLog(h.db, "converted_asset_inventory_record_delete_failed", map[string]string{"convertedPath": path}, err)
@@ -747,7 +749,23 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 		appendSystemLog(h.db, "converted_asset_deleted_inventory_sync_failed", map[string]string{"convertedPath": path, "restoredPath": restorePath}, syncErr)
 	}
 	appendSystemLog(h.db, "converted_asset_deleted_original_restored", map[string]string{"convertedPath": path, "archivePath": archivePath, "restoredPath": restorePath, "jobId": strconv.FormatUint(uint64(job.ID), 10)}, nil)
-	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "jobId": job.ID, "message": "Converted asset deleted and original restored to Raw. Reports, logs, and job history were preserved."})
+	c.JSON(http.StatusOK, gin.H{"status": "deleted", "convertedPath": path, "archivedOriginalPath": archivePath, "restoredPath": restorePath, "restoreLocation": restoreLocation, "jobId": job.ID, "message": "Converted asset deleted and original restored to " + restoreLocation + ". Reports, logs, and job history were preserved."})
+}
+
+func safeDeleteRestoreDestination(db *gorm.DB, job models.QueueJob, rawRoot string) (string, string, error) {
+	restorePath := filepath.Clean(strings.TrimSpace(job.MediaPath))
+	if restorePath == "." {
+		return "", "", fmt.Errorf("the original destination is not recorded")
+	}
+	var library models.Library
+	if db != nil && job.LibraryID != 0 && db.First(&library, job.LibraryID).Error == nil &&
+		pathIsInside(restorePath, library.DestinationPath) {
+		return restorePath, "Library", nil
+	}
+	if !pathIsInside(restorePath, rawRoot) {
+		return "", "", fmt.Errorf("the original destination is outside both the configured Raw root and its Library destination")
+	}
+	return restorePath, "Raw", nil
 }
 
 func inheritRecoveredAssetSnapshot(db *gorm.DB, archivePath, rawPath string) error {

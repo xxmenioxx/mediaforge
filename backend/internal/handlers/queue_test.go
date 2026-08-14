@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +17,58 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestQueueLibraryReplacementRejectsAliasOfActivePublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-library-alias?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.Library{}, &models.Profile{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	animeRoot := filepath.Join(root, "anime")
+	cartoonRoot := filepath.Join(root, "cartoon")
+	if err := os.MkdirAll(filepath.Join(animeRoot, "Beck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cartoonRoot, "Beck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	animePath := filepath.Join(animeRoot, "Beck", "BECK - 01.mkv")
+	aliasPath := filepath.Join(cartoonRoot, "Beck", "BECK - 01.mkv")
+	if err := os.WriteFile(animePath, []byte("converted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(animePath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{ID: 7, Name: "Cartoons", SourcePath: filepath.Join(root, "raw"), DestinationPath: cartoonRoot, Type: "cartoon"}
+	profile := models.Profile{Name: "Test", VideoCodec: "x265", AudioCodec: "copy"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now()
+	publication := models.QueueJob{MediaPath: animePath, LibraryID: 1, ProfileID: profile.ID, Status: JobStatusCompleted, PublishedPath: animePath, PublishedAt: &publishedAt}
+	if err := db.Create(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	body := `{"mediaPath":"` + aliasPath + `","publishMode":"replace_library_asset","libraryId":7,"profileId":` + strconv.FormatUint(uint64(profile.ID), 10) + `}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "physical Library file") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
 
 func TestDismissQueuedPlaceholderDeletesRecordPlanAndReservation(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-dismiss?mode=memory&cache=shared"), &gorm.Config{})

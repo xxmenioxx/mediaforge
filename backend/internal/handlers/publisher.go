@@ -24,9 +24,12 @@ const (
 	PublishModeReplaceLibrary = "replace_library_asset"
 )
 
-// Publishing can be triggered manually while the automatic publisher is also
-// reconciling jobs. Serialize original archival so two publishers cannot both
-// copy the same source across different mounts before either removes it.
+// Publishing can be triggered by the worker and the periodic automatic
+// publisher at nearly the same time. Serialize and re-read the job so only one
+// goroutine can publish/archive it; the second call becomes idempotent.
+var publicationMu sync.Mutex
+
+// Standard publication also serializes the original archive move.
 var originalArchiveMu sync.Mutex
 
 type PublisherHandler struct {
@@ -97,6 +100,21 @@ func (h PublisherHandler) PublishJob(c *gin.Context) {
 }
 
 func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (PublishResult, error) {
+	publicationMu.Lock()
+	defer publicationMu.Unlock()
+	if job.ID != 0 {
+		var current models.QueueJob
+		if err := h.db.First(&current, job.ID).Error; err != nil {
+			return PublishResult{}, err
+		}
+		job = current
+		if job.PublishedAt != nil && strings.TrimSpace(job.PublishedPath) != "" {
+			return PublishResult{
+				JobID: job.ID, Status: "already_published", SourcePath: job.OutputPath,
+				PublishedPath: job.PublishedPath, Message: "Job output was already published.",
+			}, nil
+		}
+	}
 	if job.Status != JobStatusCompleted {
 		return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "job must be completed before publishing"}
 	}

@@ -255,6 +255,17 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if archiveRecord.Status != "archive" || archiveRecord.SizeBytes != int64(len("original")) {
 		t.Fatalf("unexpected archive inventory record: %#v", archiveRecord)
 	}
+	second, err := (PublisherHandler{db: db}).publishQueueJob(job, false)
+	if err != nil {
+		t.Fatalf("idempotent second publication failed: %v", err)
+	}
+	if second.Status != "already_published" {
+		t.Fatalf("second publication status=%q", second.Status)
+	}
+	archivedFiles, err := filepath.Glob(filepath.Join(filepath.Dir(archived), "*.mkv"))
+	if err != nil || len(archivedFiles) != 1 {
+		t.Fatalf("second publication archived the converted output: files=%v err=%v", archivedFiles, err)
+	}
 }
 
 func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {

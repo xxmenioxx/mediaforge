@@ -1566,6 +1566,52 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, convertedPath, archivePath, restorePath)
 }
 
+func TestDeleteConvertedLibraryReplacementRestoresOriginalToLibrary(t *testing.T) {
+	db, _, libraryRoot, archiveRoot := safeDeleteTestDB(t, "library-replacement")
+	library := models.Library{ID: 7, Name: "Cartoons", SourcePath: "/media/raw", DestinationPath: libraryRoot, Type: "cartoon"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(libraryRoot, "Beck", "BECK - 01.mkv")
+	convertedPath := originalPath
+	archivePath := filepath.Join(archiveRoot, "library-replacements", "library-7", "Beck", "BECK - 01.mkv")
+	writeTestFile(t, convertedPath, "converted")
+	writeTestFile(t, archivePath, "original library file")
+	job := models.QueueJob{
+		MediaPath: originalPath, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1,
+		Status: JobStatusCompleted, PublishedPath: convertedPath, ReplacementTargetPath: convertedPath, OriginalArchivedPath: archivePath,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: convertedPath, RootPath: libraryRoot, RelativePath: "Beck/BECK - 01.mkv", FileName: "BECK - 01.mkv", Status: "converted", LibraryID: library.ID, LibraryName: library.Name}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/delete-converted", NewAssetHandler(db).DeleteConverted)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/delete-converted?path="+url.QueryEscape(convertedPath), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(originalPath)
+	if err != nil || string(content) != "original library file" {
+		t.Fatalf("restored library content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archived original still exists: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["restoreLocation"] != "Library" {
+		t.Fatalf("restore location=%#v body=%s", payload["restoreLocation"], response.Body.String())
+	}
+}
+
 func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "recover-archive")
 	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {

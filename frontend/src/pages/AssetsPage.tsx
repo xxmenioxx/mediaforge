@@ -19,6 +19,7 @@ import {
   LinearProgress,
   MenuItem,
   Slider,
+  Snackbar,
   Stack,
   Switch,
   Tab,
@@ -1957,22 +1958,27 @@ async function generateExternalSubtitle(
               </Tooltip>
             ) : null}
           </Stack>
+          <Snackbar
+            open={createJob.isSuccess || createJob.isError}
+            autoHideDuration={createJob.isSuccess ? 4000 : 7000}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            onClose={(_, reason) => {
+              if (reason !== 'clickaway') createJob.reset();
+            }}
+          >
+            <Alert
+              severity={createJob.isError ? 'warning' : 'success'}
+              variant="filled"
+              onClose={() => createJob.reset()}
+              sx={{ maxWidth: 520, overflowWrap: 'anywhere' }}
+            >
+              {createJob.isError
+                ? createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'
+                : 'Asset queued individually.'}
+            </Alert>
+          </Snackbar>
         </TableCell>
       </TableRow>
-      {createJob.isSuccess ? (
-        <TableRow>
-          <TableCell colSpan={rowColumnCount} sx={{ bgcolor: 'rgba(102,217,168,0.05)', maxWidth: 0 }}>
-            <Alert severity="success">Asset queued individually.</Alert>
-          </TableCell>
-        </TableRow>
-      ) : null}
-      {createJob.isError ? (
-        <TableRow>
-          <TableCell colSpan={rowColumnCount} sx={{ bgcolor: 'rgba(246,180,75,0.05)', maxWidth: 0 }}>
-            <Alert severity="warning">{createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'}</Alert>
-          </TableCell>
-        </TableRow>
-      ) : null}
       {deleteConvertedAsset.isSuccess ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
