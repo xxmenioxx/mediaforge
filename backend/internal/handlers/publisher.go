@@ -426,7 +426,7 @@ func assetRecordForPublishedPath(mediaPath, root, status string, library models.
 		Status: status, LibraryID: library.ID, LibraryName: library.Name, Missing: false, SyncedAt: syncedAt,
 	}
 	if status == "archive" && keepDays > 0 {
-		expiresAt := info.ModTime().Add(time.Duration(keepDays) * 24 * time.Hour)
+		expiresAt := syncedAt.Add(time.Duration(keepDays) * 24 * time.Hour)
 		record.ExpiresAt = &expiresAt
 	}
 	return record, nil
@@ -640,8 +640,8 @@ func originalsArchivePath(db *gorm.DB) (string, error) {
 	configuredArchiveRoot := roleArchiveRoot
 	if err := db.First(&pathsSetting, "key = ?", "paths").Error; err == nil && pathsSetting.Value != nil && configuredArchiveRoot == "" {
 		configuredArchiveRoot = normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["originalsArchivePath"])))
-		if value := normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["trashPath"]))); value != "" {
-			configuredArchiveRoot = value
+		if configuredArchiveRoot == "" {
+			configuredArchiveRoot = normalizedOriginalsArchivePath(strings.TrimSpace(stringFromUnknown(pathsSetting.Value["trashPath"])))
 		}
 	} else if err != nil && err != gorm.ErrRecordNotFound {
 		return "", err

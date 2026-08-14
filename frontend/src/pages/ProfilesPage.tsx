@@ -34,7 +34,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
@@ -46,9 +46,11 @@ import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from 
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
+import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 
 const initialProfile: ProfileInput = {
   name: '',
+  scope: 'asset',
   description: '',
   container: 'mkv',
   videoCodec: 'x265',
@@ -60,6 +62,7 @@ const initialProfile: ProfileInput = {
   bitDepth: 10,
   pixelFormat: 'yuv420p10le',
   qualityStrategy: 'crf',
+  optimizationIntent: 'balanced',
   audioCodec: 'copy',
   qualityMode: 'crf',
   qualityValue: 20,
@@ -124,13 +127,13 @@ export function ProfilesPage() {
   });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const [form, setForm] = useState<ProfileInput>(initialProfile);
   const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [profileSearch, setProfileSearch] = useState('');
   const [profileJson, setProfileJson] = useState(JSON.stringify(initialProfile, null, 2));
-  const hardwareDefaultAppliedRef = useRef(false);
   const normalizedProfileSearch = profileSearch.trim().toLowerCase();
   const visibleProfiles = (profiles.data ?? [])
     .filter((profile) => showInactive || (!profile.disabled && !profile.deletedAt))
@@ -151,22 +154,6 @@ export function ProfilesPage() {
   const defaultHardwareEncoder = availableProfileEncoderOptions.find(
     (option) => isHardwareEncoderOption(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
-  useEffect(() => {
-    if (hardwareDefaultAppliedRef.current || !showForm || !defaultHardwareEncoder || form.name.trim()) return;
-    hardwareDefaultAppliedRef.current = true;
-    const next = synchronizeAuthoritativeContract({
-      ...form,
-      workerConfig: applySharedHardwareQualityPreset({
-        ...form.workerConfig,
-        preferredEncoder: 'hardware',
-        useHardwareIfAvailable: true,
-      }, defaultHardwareEncoder, 'recommended'),
-    });
-    queueMicrotask(() => {
-      setForm(next);
-      setProfileJson(JSON.stringify(next, null, 2));
-    });
-  }, [defaultHardwareEncoder, form, showForm]);
   const qsvCapability = runtimeSnapshot.data?.encoders?.hevc_qsv;
   const qsvMain10Selected = ['p010le', 'yuv420p10le'].includes(workerConfigString(form, 'pixFmt', '').toLowerCase());
  
@@ -607,14 +594,13 @@ export function ProfilesPage() {
   }
 
   function addProfile() {
-    hardwareDefaultAppliedRef.current = false;
     setEditingProfileId(null);
-    setProfileForm(initialProfile);
+    const available = new Set((workerNodes.data ?? []).filter((worker) => worker.status === 'online').flatMap((worker) => [...encoderNamesForWorker(worker)]));
+    setProfileForm(synchronizeAuthoritativeContract(applyMVForgeVideoPreferences(initialProfile, getMVForgePreferences(settings.data), available)));
     setShowForm(true);
   }
 
   function editProfile(profile: Profile) {
-    hardwareDefaultAppliedRef.current = true;
     setEditingProfileId(profile.id);
     setProfileForm(profileInputFromProfile(profile));
     setShowForm(true);
@@ -763,7 +749,18 @@ export function ProfilesPage() {
                       fullWidth
                     />
                   </Grid>
-                  <Grid size={{ xs: 12, md: 8 }}>
+                  <Grid size={{ xs: 12, md: 4 }}>
+                    <TextField label="Profile applies to" value={form.scope ?? 'asset'} onChange={(event) => updateField('scope', event.target.value as 'asset' | 'path')} select fullWidth>
+                      <MenuItem value="asset">Asset</MenuItem>
+                      <MenuItem value="path">Path</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid size={{ xs: 12, md: 4 }}>
+                    <TextField label="Quality / storage intent" value={form.optimizationIntent ?? 'balanced'} onChange={(event) => updateField('optimizationIntent', event.target.value as ProfileInput['optimizationIntent'])} select fullWidth>
+                      <MenuItem value="maximum_savings">Maximum space saving</MenuItem><MenuItem value="balanced">Balanced</MenuItem><MenuItem value="conservative">Conservative quality</MenuItem><MenuItem value="maximum_quality">Maximum quality</MenuItem><MenuItem value="archive">Archive</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid size={{ xs: 12 }}>
                     <TextField
                       label="What this profile is for"
                       value={form.description}
@@ -1314,6 +1311,8 @@ export function ProfilesPage() {
                       <Stack spacing={0.5}>
                         <Typography fontWeight={700}>{profile.name}</Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+						  <Chip label={profile.scope === 'path' ? 'Path profile' : 'Asset profile'} size="small" color="info" variant="outlined" />
+                          {profile.optimizationIntent ? <Chip label={profile.optimizationIntent.replaceAll('_', ' ')} size="small" variant="outlined" /> : null}
                           <Chip label={`${profile.qualityMode.toUpperCase()} ${profile.qualityValue}`} size="small" />
                           <Chip label={profile.videoCodec === 'copy' ? 'Original quality' : `CRF ${profile.qualityValue}`} size="small" />
                           {profile.disabled ? <Chip label="Disabled" size="small" color="warning" /> : null}
@@ -1608,6 +1607,7 @@ function encoderPresetDescription(value: string) {
 function profileInputFromProfile(profile: Profile): ProfileInput {
   return {
     name: profile.name,
+    scope: profile.scope,
     description: profile.description,
     container: profile.container,
     videoCodec: profile.videoCodec,
@@ -1619,6 +1619,7 @@ function profileInputFromProfile(profile: Profile): ProfileInput {
     bitDepth: profile.bitDepth,
     pixelFormat: profile.pixelFormat,
     qualityStrategy: profile.qualityStrategy,
+    optimizationIntent: profile.optimizationIntent,
     audioCodec: profile.audioCodec,
     qualityMode: profile.qualityMode,
     qualityValue: profile.qualityValue,

@@ -18,8 +18,12 @@ type QueueJob struct {
 	ActiveExecutionPlanID *uint      `json:"activeExecutionPlanId" gorm:"index"`
 	AudioProfileKey       string     `json:"audioProfileKey"`
 	TrackProfileKey       string     `json:"trackProfileKey"`
+	AudioProfileSnapshot  JSONMap    `json:"audioProfileSnapshot" gorm:"type:json"`
+	TrackProfileSnapshot  JSONMap    `json:"trackProfileSnapshot" gorm:"type:json"`
+	ProfileResolution     JSONMap    `json:"profileResolution" gorm:"type:json"`
 	ProcessingMode        string     `json:"processingMode"`
 	Priority              int        `json:"priority" gorm:"not null;default:5"`
+	QueuePosition         int64      `json:"queuePosition" gorm:"not null;default:0;index"`
 	Status                string     `json:"status" gorm:"not null;default:queued"`
 	Stage                 string     `json:"stage" gorm:"not null;default:queued;index"`
 	StageUpdatedAt        *time.Time `json:"stageUpdatedAt"`

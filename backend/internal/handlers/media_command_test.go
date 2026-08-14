@@ -106,6 +106,7 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
 		WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "useHardwareIfAvailable": false},
 	}, AssetConversionOverrideState{
+		OptimizationIntent:      "maximum_quality",
 		UseHardwareIfAvailable:  &enabled,
 		VideoEncoder:            "hevc_qsv",
 		PreferredEncoder:        "hardware",
@@ -137,6 +138,9 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 	}
 	if profile.WorkerConfig["cropAspectPolicy"] != "preserve_dar" {
 		t.Fatalf("crop aspect policy override was not applied: %#v", profile.WorkerConfig)
+	}
+	if profile.OptimizationIntent != "maximum_quality" {
+		t.Fatalf("optimization intent override was not applied: %#v", profile)
 	}
 }
 
@@ -1430,6 +1434,7 @@ func TestCommonFrameStructurePolicyMapsRequestedModes(t *testing.T) {
 		{name: "qsv custom emits common values", encoder: "hevc_qsv", config: models.JSONMap{"frameStructureGopMode": "custom", "frameStructureGopFrames": 90, "frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 2}, contains: []string{"-g 90", "-bf 2"}},
 		{name: "qsv off explicitly disables b frames", encoder: "hevc_qsv", config: models.JSONMap{"frameStructureBFrameMode": "off", "frameStructureMaxBFrames": 3}, contains: []string{"-bf 0"}},
 		{name: "videotoolbox custom GOP reaches encoder command", encoder: "hevc_videotoolbox", config: models.JSONMap{"frameStructureGopMode": "custom", "frameStructureGopFrames": 96, "frameStructureBFrameMode": "auto"}, contains: []string{"-g 96"}, notContain: []string{"-bf"}},
+		{name: "global off omits common frame structure", encoder: "libx265", config: models.JSONMap{"frameStructureMode": "off", "frameStructureGopMode": "custom", "frameStructureGopFrames": 96, "frameStructureBFrameMode": "off"}, notContain: []string{"-g", "-bf"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -18,7 +18,6 @@ import {
   InputAdornment,
   LinearProgress,
   MenuItem,
-  Slider,
   Snackbar,
   Stack,
   Switch,
@@ -56,18 +55,20 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
-import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
+import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgePreferences';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
   const [assetQuery, setAssetQuery] = useState('');
+  const [mediaArea, setMediaArea] = useState('');
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
@@ -104,7 +105,13 @@ export function AssetsPage() {
   const currentGroups = safeArray(
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
-  const filteredGroups = filterAssetGroups(currentGroups, assetQuery);
+  const allInventoryGroups = [
+    ...safeArray(assets.data?.unprocessedGroups), ...safeArray(assets.data?.libraryGroups),
+    ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
+  ];
+  const mediaAreas = [...new Set(allInventoryGroups.map((group) => mediaAreaForGroup(group, settings.data)).filter(Boolean))].sort();
+  const areaGroups = mediaArea ? currentGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : currentGroups;
+  const filteredGroups = filterAssetGroups(areaGroups, assetQuery);
   const runningSnapshotPaths = new Set(
     (snapshotOperations.data?.operations ?? [])
       .filter((operation) => operation.status === 'running')
@@ -153,6 +160,19 @@ export function AssetsPage() {
                   </Button>
                   {tab !== 'reports' ? (
                     <TextField
+                      select
+                      value={mediaArea}
+                      onChange={(event) => setMediaArea(event.target.value)}
+                      label="Media area"
+                      size="small"
+                      sx={{ width: { xs: '100%', sm: 210 } }}
+                    >
+                      <MenuItem value="">All media</MenuItem>
+                      {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
+                    </TextField>
+                  ) : null}
+                  {tab !== 'reports' ? (
+                    <TextField
                       value={assetQuery}
                       onChange={(event) => setAssetQuery(event.target.value)}
                       placeholder="Search path, file, library, status"
@@ -170,7 +190,7 @@ export function AssetsPage() {
                 </Stack>
                 {tab !== 'reports' ? (
                   <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
-                    <Chip label={`${filteredGroups.length}/${currentGroups.length} groups`} size="small" />
+                    <Chip label={`${filteredGroups.length}/${areaGroups.length} groups`} size="small" />
                     <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
                     <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
                     {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
@@ -203,7 +223,7 @@ export function AssetsPage() {
             <AssetsErrorBoundary boundaryKey={tab}>
               <AssetTable
                 key={tab}
-                groups={currentGroups}
+                groups={areaGroups}
                 libraries={libraries.data ?? []}
                 profiles={profiles.data ?? []}
                 audioProfiles={audioProfiles}
@@ -570,9 +590,14 @@ function AssetGroupRow({
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
+  const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
-  const [selectedProfileId, setSelectedProfileId] = useState<number>(profiles[0]?.id ?? 0);
+  const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path');
+  const pathAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'path');
+  const pathTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'path');
+	const firstPathVideoProfileId = pathVideoProfiles[0]?.id ?? 0;
+  const [selectedProfileId, setSelectedProfileId] = useState<number>(pathVideoProfiles[0]?.id ?? 0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
   const pathTrackAssignments = getTrackProfilePathAssignments(settings);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(pathTrackAssignments[normalizePath(group.path)] ?? '');
@@ -584,7 +609,7 @@ function AssetGroupRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
-  const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || profiles[0]?.id || 0;
+  const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || pathVideoProfiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
   const isPublishedAsIsGroup = group.status === 'published_as_is' || (groupAssets.length > 0 && groupAssets.every((asset) => asset.publicationMode === 'as_is'));
@@ -603,6 +628,20 @@ function AssetGroupRow({
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
+  const updateProfileAssignment = useMutation({
+    mutationFn: api.updateProfileAssignment,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
+  });
+  useEffect(() => {
+    if (!profileAssignments.data) return;
+	const assignments = profileAssignments.data.filter((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path));
+	const video = assignments.find((assignment) => assignment.mediaType === 'video');
+	const audio = assignments.find((assignment) => assignment.mediaType === 'audio');
+	const tracks = assignments.find((assignment) => assignment.mediaType === 'tracks');
+	setSelectedProfileId(video?.selection === 'disabled' ? -1 : video?.videoProfileId || firstPathVideoProfileId);
+    setSelectedAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : '');
+    setSelectedTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '');
+	}, [profileAssignments.data, group.path, firstPathVideoProfileId]);
   const updateMetadata = useMutation({
     mutationFn: api.updateAssetMetadata,
     onSuccess: async () => {
@@ -644,7 +683,7 @@ function AssetGroupRow({
     mutationFn: async () => {
       const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
       const hasSelectedOperation = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(trackProfile);
-      const queueProfileId = effectiveProfileId || (hasSelectedOperation ? profiles[0]?.id ?? 0 : 0);
+      const queueProfileId = effectiveProfileId || (hasSelectedOperation ? pathVideoProfiles[0]?.id ?? profiles[0]?.id ?? 0 : 0);
       const copyVideo = selectedProfileId < 0;
       if (!queueProfileId || !selectedLibraryId) {
         return [];
@@ -652,21 +691,20 @@ function AssetGroupRow({
 
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-	  const validations = trackProfile ? await Promise.all(groupAssets.map(async (asset) => ({ asset, result: validateTrackProfile(trackProfile, await api.scan({ path: asset.path, force: false })) }))) : groupAssets.map((asset) => ({ asset, result: { applies: true, reasons: [] as string[] } }));
+	  const validations = await Promise.all(groupAssets.map(async (asset) => {
+        const assignment = profileAssignments.data?.find((candidate) => candidate.targetType === 'asset' && candidate.mediaType === 'tracks' && normalizePath(candidate.targetPath) === normalizePath(asset.path));
+        const effectiveTrack = assignment?.selection === 'disabled' ? undefined : assignment?.selection === 'profile' ? trackProfiles.find((profile) => profile.key === assignment.profileKey) : trackProfile;
+        return { asset, profile: effectiveTrack, result: effectiveTrack ? validateTrackProfile(effectiveTrack, await api.scan({ path: asset.path, force: false })) : { applies: true, reasons: [] as string[] } };
+      }));
 	  const incompatible = validations.filter(({ result }) => !result.applies);
-	  if (trackProfile?.validationMode === 'block' && incompatible.length) {
+	  if (incompatible.some(({ profile }) => profile?.validationMode === 'block')) {
 	    throw new Error(`Track profile blocked this path: ${incompatible.map(({ asset, result }) => `${asset.fileName}: ${result.reasons.join(', ')}`).join(' · ')}`);
 	  }
-	  if (trackProfile?.validationMode === 'review') {
-	    await Promise.all(incompatible.filter(({ asset }) => !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
-	  }
-	  const queueable = validations.filter(({ asset, result }) => result.applies || trackProfile?.validationMode === 'warn' || (trackProfile?.validationMode === 'review' && assetReviewApproved(asset)));
+	  await Promise.all(incompatible.filter(({ asset, profile }) => profile?.validationMode === 'review' && !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
+	  const queueable = validations.filter(({ asset, profile, result }) => result.applies || profile?.validationMode === 'warn' || (profile?.validationMode === 'review' && assetReviewApproved(asset)));
 	  const queued = [];
 	  for (let index = 0; index < queueable.length; index += 1) {
-	    const { asset, result } = queueable[index];
-	    if (trackProfile) {
-	      await api.updateAssetConversion({ path: asset.path, ...asset.conversion, ...trackProfileOverride(trackProfile), trackProfileKey: trackProfile.key });
-	    }
+	    const { asset, profile: effectiveTrack, result } = queueable[index];
 	    queued.push(await api.createQueueJob({
             mediaPath: asset.path,
             publishMode: isLibraryGroup ? 'replace_library_asset' : 'standard',
@@ -676,10 +714,11 @@ function AssetGroupRow({
             libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
             profileId: queueProfileId,
             audioProfileKey: selectedAudioProfileKey,
-            trackProfileKey: trackProfile?.key ?? '',
+            trackProfileKey: effectiveTrack?.key ?? '',
+            resolveProfileAssignments: true,
             processingMode: copyVideo ? 'audio_only' : 'full_encode',
 			priority: 5,
-            notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${trackProfile?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
+            notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${effectiveTrack?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
 		  }));
 	  }
 	  return queued;
@@ -721,8 +760,8 @@ function AssetGroupRow({
     },
   });
   function toggleExpanded() {
-    if (!selectedProfileId && profiles[0]) {
-      setSelectedProfileId(profiles[0].id);
+    if (!selectedProfileId && pathVideoProfiles[0]) {
+      setSelectedProfileId(pathVideoProfiles[0].id);
     }
     setExpanded((current) => !current);
   }
@@ -740,10 +779,17 @@ function AssetGroupRow({
 
   function selectPathTrackProfile(key: string) {
 	setSelectedTrackProfileKey(key);
-	const assignments = { ...pathTrackAssignments };
-	if (key) assignments[normalizePath(group.path)] = key;
-	else delete assignments[normalizePath(group.path)];
-	updateSetting.mutate({ key: 'trackProfilePathAssignments', value: { assignments } });
+	updateProfileAssignment.mutate({ targetType: 'path', targetPath: group.path, mediaType: 'tracks', selection: key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key });
+  }
+
+  function selectPathVideoProfile(id: number) {
+    setSelectedProfileId(id);
+    updateProfileAssignment.mutate({ targetType: 'path', targetPath: group.path, mediaType: 'video', selection: id > 0 ? 'profile' : 'disabled', videoProfileId: Math.max(0, id), profileKey: '' });
+  }
+
+  function selectPathAudioProfile(key: string) {
+    setSelectedAudioProfileKey(key);
+    updateProfileAssignment.mutate({ targetType: 'path', targetPath: group.path, mediaType: 'audio', selection: key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key });
   }
 
   function toggleBulkAsset(path: string, selected: boolean) {
@@ -893,19 +939,20 @@ function AssetGroupRow({
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <ProfileAutocomplete profiles={profiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={setSelectedProfileId} label="Video profile" size="small" allowNone />
+					  <ProfileAutocomplete profiles={pathVideoProfiles} value={selectedProfileId < 0 ? -1 : effectiveProfileId} onChange={selectPathVideoProfile} label="Video profile · Path" size="small" allowNone disabled={profileAssignments.isLoading || updateProfileAssignment.isPending} />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <AudioProfileAutocomplete
-                        profiles={audioProfiles}
+                        profiles={pathAudioProfiles}
                         value={selectedAudioProfileKey}
-                        onChange={setSelectedAudioProfileKey}
-                        label="Audio profile"
+                        onChange={selectPathAudioProfile}
+                        label="Audio profile · Path"
                         size="small"
+						disabled={profileAssignments.isLoading || updateProfileAssignment.isPending}
                       />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
-                      <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={selectPathTrackProfile} disabled={updateSetting.isPending} />
+					  <TrackProfileAutocomplete profiles={pathTrackProfiles} value={selectedTrackProfileKey} onChange={selectPathTrackProfile} disabled={profileAssignments.isLoading || updateProfileAssignment.isPending} label="Tracks · Path" />
                     </Grid>
                     <Grid size={{ xs: 12, md: 2 }}>
                       <LibraryAutocomplete libraries={libraries} value={isLibraryGroup ? group.libraryId : selectedLibraryId} onChange={setSelectedLibraryId} label="Destination library" size="small" disabled={isLibraryGroup} />
@@ -920,7 +967,7 @@ function AssetGroupRow({
                           queueGroup.mutate();
                         }}
                         disabled={
-                          queueGroup.isPending ||
+						  profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending ||
                           (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) ||
                           !selectedLibraryId ||
                           groupAssets.length === 0 ||
@@ -1154,10 +1201,17 @@ function AssetRow({
   onBulkSelectionChange: (path: string, selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [selectedProfileId, setSelectedProfileId] = useState<number>(() => relatedVideoProfile(profiles, asset)?.id ?? groupProfileId);
-  const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>(() => relatedAudioProfile(audioProfiles, asset)?.key ?? groupAudioProfileKey);
-  const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(() => relatedTrackProfile(trackProfiles, asset)?.key ?? pathTrackProfile?.key ?? '');
-  const selectedTrackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
+  const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
+  const assetVideoProfiles = profiles.filter((profile) => profile.scope === 'asset');
+  const assetAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'asset');
+  const assetTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'asset');
+  const [selectedProfileId, setSelectedProfileId] = useState<number>(0);
+  const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('__inherit__');
+  const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>('__inherit__');
+  const effectiveProfileId = selectedProfileId === 0 ? groupProfileId : selectedProfileId;
+  const effectiveAudioProfileKey = selectedAudioProfileKey === '__inherit__' ? groupAudioProfileKey : selectedAudioProfileKey;
+  const effectiveTrackProfileKey = selectedTrackProfileKey === '__inherit__' ? pathTrackProfile?.key ?? '' : selectedTrackProfileKey;
+  const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [snapshotTab, setSnapshotTab] = useState(0);
@@ -1208,9 +1262,9 @@ function AssetRow({
     enabled: showSnapshotDialog && asset.status !== 'archive' && !asset.missing,
   });
   const advisor = useQuery({
-    queryKey: ['advisor', 'asset-row', asset.path, selectedProfileId],
-    queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: selectedProfileId }),
-    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && selectedProfileId > 0,
+    queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
+    queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
+    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && effectiveProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -1223,7 +1277,6 @@ function AssetRow({
         if (!result.applies && selectedTrackProfile.validationMode === 'block') {
           throw new Error(`Track profile blocked this asset: ${result.reasons.join('; ')}`);
         }
-        await api.updateAssetConversion({ path: asset.path, ...conversionDraft, ...trackProfileOverride(selectedTrackProfile), trackProfileKey: selectedTrackProfile.key });
         if (!result.applies) {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${selectedTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
@@ -1275,6 +1328,10 @@ function AssetRow({
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
+  });
+  const updateProfileAssignment = useMutation({
+    mutationFn: api.updateProfileAssignment,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
   });
   const recoverAsset = useMutation({
     mutationFn: api.recoverAsset,
@@ -1339,7 +1396,32 @@ function AssetRow({
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
-  const canQueueWithSelection = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(selectedTrackProfile) || hasTrackSelectionOverride(conversionDraft);
+  const canQueueWithSelection = effectiveProfileId > 0 || Boolean(effectiveAudioProfileKey) || Boolean(selectedTrackProfile) || hasTrackSelectionOverride(conversionDraft);
+  useEffect(() => {
+    if (!profileAssignments.data) return;
+    const assignments = profileAssignments.data.filter((assignment) => assignment.targetType === 'asset' && normalizePath(assignment.targetPath) === normalizePath(asset.path));
+    const video = assignments.find((assignment) => assignment.mediaType === 'video');
+    const audio = assignments.find((assignment) => assignment.mediaType === 'audio');
+    const tracks = assignments.find((assignment) => assignment.mediaType === 'tracks');
+    setSelectedProfileId(video ? video.selection === 'disabled' ? -1 : video.videoProfileId || 0 : 0);
+    setSelectedAudioProfileKey(audio ? audio.selection === 'disabled' ? '' : audio.profileKey || '__inherit__' : '__inherit__');
+    setSelectedTrackProfileKey(tracks ? tracks.selection === 'disabled' ? '' : tracks.profileKey || '__inherit__' : '__inherit__');
+  }, [profileAssignments.data, asset.path]);
+
+  function selectAssetVideoProfile(id: number) {
+    setSelectedProfileId(id);
+    updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'video', selection: id === 0 ? 'inherit' : id > 0 ? 'profile' : 'disabled', videoProfileId: Math.max(0, id), profileKey: '' });
+  }
+
+  function selectAssetAudioProfile(key: string) {
+    setSelectedAudioProfileKey(key);
+    updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'audio', selection: key === '__inherit__' ? 'inherit' : key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key === '__inherit__' ? '' : key });
+  }
+
+  function selectAssetTrackProfile(key: string) {
+    setSelectedTrackProfileKey(key);
+    updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'tracks', selection: key === '__inherit__' ? 'inherit' : key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key === '__inherit__' ? '' : key });
+  }
   useEffect(() => {
     if (!showSnapshotDialog || asset.status === 'archive' || asset.missing) {
       return;
@@ -1379,61 +1461,17 @@ function AssetRow({
     snapshot.mutate({ path: asset.path, force: true });
   }
 
-  async function applySnapshotRecommendations(suggestion: ProfileSuggestion) {
-    const scan = suggestion.scan;
-    const proposed = suggestion.proposedProfile;
-    const workerConfig = proposed.workerConfig ?? {};
-    const status = scan.interlaceAnalysis.status;
-    const withoutMotion = withoutMotionFilters(conversionDraft.videoFilters);
-    const validatedIVTC = Boolean(scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter);
-    const motionPatch: AssetConversionOverrideState = status === 'progressive'
-      ? {
-          deinterlaceMode: 'off',
-          videoFilters: withoutMotion,
-        }
-      : status === 'interlaced'
-        ? { deinterlaceMode: 'force', videoFilters: withoutMotion }
-        : status === 'telecine_suspected'
-          ? validatedIVTC
-            ? {
-                deinterlaceMode: scan.interlaceAnalysis.recommendedMode === 'ivtc_bff' ? 'ivtc_bff' : 'ivtc_tff',
-                videoFilters: joinFilters(scan.interlaceAnalysis.recommendedFilter!, withoutMotion),
-              }
-            : { deinterlaceMode: 'auto', videoFilters: withoutMotion }
-          : {};
-    const hardwareEnabled = workerConfig.useHardwareIfAvailable === true;
-    const next = cleanConversionOverride({
-      ...conversionDraft,
-      videoCodec: proposed.videoCodec,
-      audioCodec: proposed.audioCodec,
-      qualityMode: proposed.qualityMode,
-      qualityValue: suggestion.insights.recommendedCrf || proposed.qualityValue,
-      videoPreset: stringFromRecord(workerConfig, 'videoPreset'),
-      pixFmt: stringFromRecord(workerConfig, 'pixFmt') || stringFromRecord(workerConfig, 'pixelFormat'),
-      preserveHdr: proposed.preserveHdr,
-      preserveSubtitles: proposed.preserveSubtitles,
-      preserveChapters: proposed.preserveChapters,
-      addAacStereoTrack: typeof workerConfig.addAacStereoTrack === 'boolean' ? workerConfig.addAacStereoTrack : conversionDraft.addAacStereoTrack,
-      aacStereoDefault: typeof workerConfig.addAacStereoDefault === 'boolean' ? workerConfig.addAacStereoDefault : conversionDraft.aacStereoDefault,
-      useHardwareIfAvailable: hardwareEnabled,
-      preferredEncoder: hardwareEnabled
-        ? (stringFromRecord(workerConfig, 'preferredEncoder') === 'auto' ? 'auto' : 'hardware')
-        : 'software',
-      videoEncoder: stringFromRecord(workerConfig, 'videoEncoder') || 'auto',
-      globalQuality: Number(workerConfig.globalQuality || qsvQualityRangeForCrf(suggestion.insights.recommendedCrf || proposed.qualityValue).recommended),
-      qsvRateControl: stringFromRecord(workerConfig, 'qsvRateControl') === 'la_icq' ? 'la_icq' : 'icq',
-      qsvLookAheadDepth: Number(workerConfig.qsvLookAheadDepth || 40),
-      qsvExtendedBrc: workerConfig.qsvExtendedBRC === true,
-      qsvAdaptiveI: workerConfig.qsvAdaptiveI === true,
-      qsvAdaptiveB: workerConfig.qsvAdaptiveB === true,
-      qsvPStrategy: Math.min(2, Math.max(0, Number(workerConfig.qsvPStrategy ?? 0))) as 0 | 1 | 2,
-      frameStructureMode: (['compatible', 'balanced', 'maximum_compression', 'custom'].includes(String(workerConfig.frameStructureMode)) ? workerConfig.frameStructureMode : 'custom') as AssetConversionOverrideState['frameStructureMode'],
-      frameStructureGopMode: (['auto', 'recommended', 'custom'].includes(String(workerConfig.frameStructureGopMode)) ? workerConfig.frameStructureGopMode : 'auto') as AssetConversionOverrideState['frameStructureGopMode'],
-      frameStructureGopFrames: Math.max(1, Math.min(1000, Number(workerConfig.frameStructureGopFrames ?? 120))),
-      frameStructureBFrameMode: (['auto', 'recommended', 'custom', 'off'].includes(String(workerConfig.frameStructureBFrameMode)) ? workerConfig.frameStructureBFrameMode : 'auto') as AssetConversionOverrideState['frameStructureBFrameMode'],
-      frameStructureMaxBFrames: Math.max(0, Math.min(16, Number(workerConfig.frameStructureMaxBFrames ?? 3))),
-      ...motionPatch,
+  async function applySnapshotRecommendations(findings: AdvisorFinding[]) {
+    let draft: AssetConversionOverrideState = { ...conversionDraft };
+    findings.forEach((finding) => {
+      const patch = (finding.patch ?? {}) as Partial<AssetConversionOverrideState>;
+      if (typeof patch.videoFilters === 'string' && patch.videoFilters.startsWith('crop=')) {
+        draft = { ...draft, ...patch, videoFilters: joinFilters(withoutCropFilters(draft.videoFilters), patch.videoFilters) };
+      } else {
+        draft = { ...draft, ...patch };
+      }
     });
+    const next = cleanConversionOverride(draft);
     await updateConversion.mutateAsync({ path: asset.path, ...next });
     setConversionDraft(next);
     setSnapshotTab(5);
@@ -1678,7 +1716,7 @@ async function generateExternalSubtitle(
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    const queueProfileId = selectedProfileId > 0 ? selectedProfileId : canQueueWithSelection ? profiles[0]?.id ?? 0 : 0;
+    const queueProfileId = effectiveProfileId > 0 ? effectiveProfileId : canQueueWithSelection ? profiles[0]?.id ?? 0 : 0;
     if (!queueProfileId || !selectedLibraryId) {
       return;
     }
@@ -1691,11 +1729,12 @@ async function generateExternalSubtitle(
       publishMode: isLibraryReplacement ? 'replace_library_asset' : 'standard',
       libraryId: isLibraryReplacement ? asset.libraryId : selectedLibraryId,
       profileId: queueProfileId,
-      audioProfileKey: selectedAudioProfileKey,
+      audioProfileKey: effectiveAudioProfileKey,
       trackProfileKey: selectedTrackProfile?.key ?? '',
-      processingMode: selectedProfileId < 0 ? 'audio_only' : 'full_encode',
+      processingMode: effectiveProfileId < 0 ? 'audio_only' : 'full_encode',
+      resolveProfileAssignments: true,
       priority: priorityForSize(asset.sizeBytes),
-      notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, selectedAudioProfileKey),
+      notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, effectiveAudioProfileKey),
     });
   }
 
@@ -1845,14 +1884,14 @@ async function generateExternalSubtitle(
         {!isArchive && !isConverted && !isPublishedAsIs ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
-              <ProfileAutocomplete profiles={profiles} value={selectedProfileId} onChange={setSelectedProfileId} label="Video" size="small" disabled={rowLocked} allowNone />
+              <ProfileAutocomplete profiles={assetVideoProfiles} value={selectedProfileId} onChange={selectAssetVideoProfile} label="Video · Asset" size="small" disabled={rowLocked || updateProfileAssignment.isPending} allowNone allowInherit />
             </TableCell>
             <TableCell sx={{ minWidth: 220 }}>
-              <AudioProfileAutocomplete profiles={audioProfiles} value={selectedAudioProfileKey} onChange={setSelectedAudioProfileKey} label="Audio" size="small" disabled={rowLocked} />
+              <AudioProfileAutocomplete profiles={assetAudioProfiles} value={selectedAudioProfileKey} onChange={selectAssetAudioProfile} label="Audio · Asset" size="small" disabled={rowLocked || updateProfileAssignment.isPending} allowInherit />
             </TableCell>
             {mode === 'unprocessed' ? (
               <TableCell sx={{ minWidth: 220 }}>
-                <TrackProfileAutocomplete profiles={trackProfiles} value={selectedTrackProfileKey} onChange={setSelectedTrackProfileKey} disabled={rowLocked} label="Tracks" />
+                <TrackProfileAutocomplete profiles={assetTrackProfiles} value={selectedTrackProfileKey} onChange={selectAssetTrackProfile} disabled={rowLocked || updateProfileAssignment.isPending} label="Tracks · Asset" allowInherit />
               </TableCell>
             ) : null}
             <TableCell sx={{ minWidth: 220 }}>
@@ -1936,7 +1975,7 @@ async function generateExternalSubtitle(
                 <IconButton
                   color="primary"
                   onClick={queueAsset}
-                  disabled={createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+				  disabled={profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
                   aria-label={`Queue ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -1949,7 +1988,7 @@ async function generateExternalSubtitle(
                 <IconButton
                   color="warning"
                   onClick={queueAsset}
-                  disabled={createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
+				  disabled={profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
                   aria-label={`Replace ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -2271,9 +2310,9 @@ async function generateExternalSubtitle(
                     </Grid>
                     {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}
                     <Grid container spacing={1.5}>
-                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Video profile applied</Typography><Typography>{associatedJob ? profiles.find((profile) => profile.id === associatedJob.profileId)?.name || `Profile #${associatedJob.profileId}` : profiles.find((profile) => profile.id === selectedProfileId)?.name || 'None'}</Typography></Grid>
-                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Audio profile applied</Typography><Typography>{associatedJob?.audioProfileKey || selectedAudioProfileKey || 'None'}</Typography></Grid>
-                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Tracks profile applied</Typography><Typography>{conversionDraft.trackProfileKey || pathTrackProfile?.name || pathTrackProfile?.key || 'None'}</Typography></Grid>
+					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Video profile applied{profileAssignmentSource(associatedJob, 'video')}</Typography><Typography>{associatedJob ? profiles.find((profile) => profile.id === associatedJob.profileId)?.name || `Profile #${associatedJob.profileId}` : profiles.find((profile) => profile.id === effectiveProfileId)?.name || 'None'}</Typography></Grid>
+					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Audio profile applied{profileAssignmentSource(associatedJob, 'audio')}</Typography><Typography>{associatedJob?.audioProfileKey || effectiveAudioProfileKey || 'None'}</Typography></Grid>
+					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Tracks profile applied{profileAssignmentSource(associatedJob, 'tracks')}</Typography><Typography>{associatedJob?.trackProfileKey || selectedTrackProfile?.name || selectedTrackProfile?.key || conversionDraft.trackProfileKey || 'None'}</Typography></Grid>
                       <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Advisor score</Typography><Typography>{advisor.data ? `${advisor.data.score}/100` : 'Not evaluated'}</Typography></Grid>
                       <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Direct Play score</Typography><Typography>{associatedJob ? directPlayScoreLabel(associatedJob) : 'Not evaluated'}</Typography></Grid>
                     </Grid>
@@ -2298,7 +2337,7 @@ async function generateExternalSubtitle(
                       <ProfileSuggestionCard
                         suggestion={profileSuggestion.data}
                         onSelect={(profile) => setSelectedProfileId(profile.id)}
-                        onApplyMotionRecommendation={() => applySnapshotRecommendations(profileSuggestion.data!)}
+                        onApplyRecommendations={applySnapshotRecommendations}
                         onReviewInLab={() => { window.location.href = `/profile-lab?assetPath=${encodeURIComponent(asset.path)}`; }}
                       />
                     ) : null}
@@ -2312,9 +2351,10 @@ async function generateExternalSubtitle(
                       <AssetConversionOverridePanel
                         assetPath={asset.path}
                         draft={conversionDraft}
-                        profile={profiles.find((profile) => profile.id === selectedProfileId)}
+                        profile={profiles.find((profile) => profile.id === effectiveProfileId)}
                         scan={snapshot.data}
                         onChange={updateConversionDraft}
+                        onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
                         saving={updateConversion.isPending}
@@ -2401,7 +2441,7 @@ async function generateExternalSubtitle(
               </Typography>
             </Stack>
             {advisor.data ? (
-              <AdvisorSummary advisor={advisor.data} audioProfile={audioProfiles.find((profile) => profile.key === selectedAudioProfileKey)} />
+              <AdvisorSummary advisor={advisor.data} audioProfile={audioProfiles.find((profile) => profile.key === effectiveAudioProfileKey)} />
             ) : advisor.isError ? (
               <Alert severity="warning">Could not evaluate this asset with the selected profile.</Alert>
             ) : (
@@ -2748,6 +2788,7 @@ function AssetConversionOverridePanel({
   profile,
   scan,
   onChange,
+  onChangeMany,
   onSave,
   onReset,
   saving,
@@ -2758,6 +2799,7 @@ function AssetConversionOverridePanel({
   profile?: Profile;
   scan?: ScanResult;
   onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
+  onChangeMany: (patch: Partial<AssetConversionOverrideState>) => void;
   onSave: () => void;
   onReset: () => void;
   saving: boolean;
@@ -2766,6 +2808,7 @@ function AssetConversionOverridePanel({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
   const recommendedCrop = ['detected', 'variable'].includes(scan?.cropAnalysis?.status ?? '') ? (scan?.cropAnalysis?.recommendedCrop ?? '').trim() : '';
   const manualCropCandidate = scan?.cropAnalysis?.status === 'variable' && Boolean(recommendedCrop);
@@ -2784,19 +2827,6 @@ function AssetConversionOverridePanel({
   const defaultHardwareEncoder = availableAssetEncoderOptions.find(
     (option) => isHardwareAssetEncoder(option.value) && runtimeSnapshot.data?.encoders?.[option.value]?.usable,
   )?.value ?? '';
-  const hardwareDefaultAppliedRef = useRef(false);
-  useEffect(() => {
-    const profilePreference = stringFromRecord(profile?.workerConfig ?? {}, 'preferredEncoder');
-    if (hardwareDefaultAppliedRef.current || processingPreference || profilePreference || !defaultHardwareEncoder || !hardwareCodecSupported || readOnly) return;
-    hardwareDefaultAppliedRef.current = true;
-    const defaults = applySharedHardwareQualityPreset({
-      preferredEncoder: 'hardware',
-      useHardwareIfAvailable: true,
-    }, defaultHardwareEncoder, 'recommended');
-    queueMicrotask(() => {
-      Object.entries(defaults).forEach(([name, value]) => onChange(name as keyof AssetConversionOverrideState, value as never));
-    });
-  }, [defaultHardwareEncoder, hardwareCodecSupported, onChange, processingPreference, profile?.workerConfig, readOnly]);
   const effectiveVideoEncoder = draft.videoEncoder || defaultHardwareEncoder;
   const qsvSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_qsv';
   const videoToolboxSelected = hardwareSelected && effectiveVideoEncoder === 'hevc_videotoolbox';
@@ -2920,6 +2950,9 @@ function AssetConversionOverridePanel({
             </Typography>
           </Stack>
           <Stack direction="row" spacing={1}>
+            <Button variant="text" onClick={() => onChangeMany(assetOverridePreferenceDraft(getMVForgePreferences(settings.data), assetWorkerEncoders))} disabled={saving || readOnly || settings.isLoading}>
+              Load preferences
+            </Button>
             <Button variant="outlined" onClick={onReset} disabled={saving || readOnly}>
               Remove
             </Button>
@@ -2939,6 +2972,16 @@ function AssetConversionOverridePanel({
               <Typography fontWeight={700}>Technical settings</Typography>
               <Typography variant="body2" color="text.secondary">These values override only this asset and follow the same video pipeline used by Profile Lab.</Typography>
             </Stack>
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField select label="Quality / storage intent" value={draft.optimizationIntent ?? ''} onChange={(event) => onChange('optimizationIntent', (event.target.value || undefined) as AssetConversionOverrideState['optimizationIntent'])} fullWidth>
+              <MenuItem value="">Inherit from profile</MenuItem>
+              <MenuItem value="maximum_savings">Maximum space saving</MenuItem>
+              <MenuItem value="balanced">Balanced</MenuItem>
+              <MenuItem value="conservative">Conservative quality</MenuItem>
+              <MenuItem value="maximum_quality">Maximum quality</MenuItem>
+              <MenuItem value="archive">Archive</MenuItem>
+            </TextField>
           </Grid>
           <Grid size={{ xs: 12, md: 4 }}>
             <TextField
@@ -3650,6 +3693,7 @@ function ProfileAutocomplete({
   size,
   disabled,
   allowNone = false,
+  allowInherit = false,
 }: {
   profiles: Profile[];
   value: number;
@@ -3658,8 +3702,10 @@ function ProfileAutocomplete({
   size?: 'small' | 'medium';
   disabled?: boolean;
   allowNone?: boolean;
+  allowInherit?: boolean;
 }) {
   const options = [
+    ...(allowInherit ? [{ id: 0, name: 'Inherit from path', videoCodec: 'Path profile', search: 'inherit path profile' }] : []),
     ...(allowNone ? [{ id: -1, name: 'Disabled', videoCodec: 'No video profile', search: 'disabled none no profile' }] : []),
     ...profiles.map((profile) => ({ id: profile.id, name: profile.name, videoCodec: profile.videoCodec, search: `${profile.name} ${profile.description} ${profile.container} ${profile.videoCodec} ${profile.audioCodec}` })),
   ];
@@ -3668,7 +3714,7 @@ function ProfileAutocomplete({
       options={options}
       value={options.find((profile) => profile.id === value) ?? null}
       onChange={(_, profile) => onChange(profile?.id ?? 0)}
-      getOptionLabel={(profile) => profile.id === -1 ? 'Disabled' : `${profile.name} · ${profile.videoCodec}`}
+      getOptionLabel={(profile) => profile.id === 0 ? 'Inherit from path' : profile.id === -1 ? 'Disabled' : `${profile.name} · ${profile.videoCodec}`}
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [profile.search])
@@ -3687,6 +3733,7 @@ function AudioProfileAutocomplete({
   label,
   size,
   disabled,
+  allowInherit = false,
 }: {
   profiles: AudioEnhancementProfile[];
   value: string;
@@ -3694,19 +3741,21 @@ function AudioProfileAutocomplete({
   label: string;
   size?: 'small' | 'medium';
   disabled?: boolean;
+  allowInherit?: boolean;
 }) {
   const none: AudioEnhancementProfile = {
     key: '', name: 'Disabled', description: '', intent: '', filters: '', rnnoiseModelPath: '', channelMode: 'preserve',
     forceStereoMode: 'auto', stereoDelayMs: 0, stereoWidth: 0, eqBands: {}, preserveOriginalTrack: true,
     outputCodec: 'copy', targetLoudness: 0, truePeak: 0, notes: '',
   };
-  const options = [none, ...profiles];
+  const inherit: AudioEnhancementProfile = { ...none, key: '__inherit__', name: 'Inherit from path' };
+  const options = [...(allowInherit ? [inherit] : []), none, ...profiles];
   return (
     <Autocomplete
       options={options}
       value={options.find((profile) => profile.key === value) ?? none}
       onChange={(_, profile) => onChange(profile?.key ?? '')}
-      getOptionLabel={(profile) => profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'Disabled'}
+      getOptionLabel={(profile) => profile.key === '__inherit__' ? 'Inherit from path' : profile.key ? `${profile.name} · ${profile.outputCodec || 'copy'}` : 'Disabled'}
       isOptionEqualToValue={(option, selected) => option.key === selected.key}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [
@@ -3724,13 +3773,14 @@ function AudioProfileAutocomplete({
   );
 }
 
-function TrackProfileAutocomplete({ profiles, value, onChange, disabled, label = 'Tracks for path' }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean; label?: string }) {
+function TrackProfileAutocomplete({ profiles, value, onChange, disabled, label = 'Tracks for path', allowInherit = false }: { profiles: TrackProfile[]; value: string; onChange: (key: string) => void; disabled?: boolean; label?: string; allowInherit?: boolean }) {
   const none: TrackProfile = {
     key: '', name: 'Disabled', description: '', videoMode: 'first', audioMode: 'all', audioLanguages: [], audioRequired: false,
     dropCommentary: false, defaultAudioLanguage: '', subtitleMode: 'all', subtitleLanguages: [], subtitlesRequired: false,
     defaultSubtitleLanguage: '', validationMode: 'warn', notes: '',
   };
-  const options = [none, ...profiles];
+  const inherit: TrackProfile = { ...none, key: '__inherit__', name: 'Inherit from path' };
+  const options = [...(allowInherit ? [inherit] : []), none, ...profiles];
   return <Autocomplete options={options} value={options.find((profile) => profile.key === value) ?? none} onChange={(_, profile) => onChange(profile?.key ?? '')} getOptionLabel={(profile) => profile.name} isOptionEqualToValue={(option, selected) => option.key === selected.key} disabled={disabled} renderInput={(params) => <TextField {...params} label={label} size="small" />} fullWidth />;
 }
 
@@ -3748,9 +3798,11 @@ function validateTrackProfile(profile: TrackProfile, scan: ScanResult) {
     const missing = requested.filter((index) => !available.has(index));
     if (missing.length) reasons.push(`${label} streams missing: ${missing.join(', ')}`);
   };
-  checkIndexes('video', profile.keepVideoStreams, scan.videoStreams);
-  checkIndexes('audio', profile.keepAudioStreams, scan.audioStreams);
-  checkIndexes('subtitle', profile.keepSubtitleStreams, scan.subtitleStreams);
+	if (profile.scope !== 'path') {
+	  checkIndexes('video', profile.keepVideoStreams, scan.videoStreams);
+	  checkIndexes('audio', profile.keepAudioStreams, scan.audioStreams);
+	  checkIndexes('subtitle', profile.keepSubtitleStreams, scan.subtitleStreams);
+	}
   if (profile.videoMode === 'require-one' && scan.videoStreams.length !== 1) reasons.push(`requires exactly one video stream; found ${scan.videoStreams.length}`);
   const languages = (streams: MediaStreamInfo[]) => new Set(streams.map((stream) => stream.language.toLowerCase()).filter(Boolean));
   if (profile.audioRequired && scan.audioStreams.length === 0) reasons.push('requires an audio stream');
@@ -3827,6 +3879,25 @@ function filterAssetGroups(groups: AssetGroup[], query: string) {
     ];
     return values.some((value) => value.toLowerCase().includes(cleanQuery));
   });
+}
+
+function mediaAreaForGroup(group: AssetGroup, settings?: AppSetting[]) {
+  const configuredPaths = settings?.find((setting) => setting.key === 'paths')?.value ?? {};
+  const roots = ['rawRoot', 'libraryRoot', 'originalsArchivePath']
+    .map((key) => typeof configuredPaths[key] === 'string' ? normalizePath(configuredPaths[key] as string) : '')
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  const groupPath = normalizePath(group.path);
+  for (const root of roots) {
+    if (groupPath !== root && !groupPath.startsWith(`${root}/`)) continue;
+    const parts = groupPath.slice(root.length).split('/').filter(Boolean);
+    const archiveWrapper = parts[0];
+    while (parts[0] === 'processed-originals' || parts[0] === 'library-replacements') parts.shift();
+    if (archiveWrapper === 'library-replacements' && /^library-\d+$/i.test(parts[0] ?? '')) parts.shift();
+    if (parts[0]) return parts[0].toLowerCase();
+  }
+  const relativeParts = normalizePath(group.relativePath).split('/').filter(Boolean);
+  return relativeParts[0]?.toLowerCase() ?? '';
 }
 
 function sumGroupFiles(groups: AssetGroup[]) {
@@ -4006,32 +4077,19 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
     });
 }
 
-function relatedVideoProfile(profiles: Profile[], asset: Asset) {
-  const assetPath = normalizePath(asset.path);
-  return [...profiles].reverse().find((profile) =>
-    normalizePath(stringFromRecord(profile.workerConfig, 'derivedFromAsset')) === assetPath,
-  );
-}
-
-function relatedAudioProfile(profiles: AudioEnhancementProfile[], asset: Asset) {
-  const marker = `Lab asset: ${asset.path}`;
-  return [...profiles].reverse().find((profile) => profile.notes.split('\n').some((line) => line.trim() === marker));
-}
-
-function relatedTrackProfile(profiles: TrackProfile[], asset: Asset) {
-  const assetPath = normalizePath(asset.path);
-  return [...profiles].reverse().find((profile) =>
-    normalizePath(profile.sourceAssetPath ?? '') === assetPath ||
-    (!profile.sourceAssetPath && Boolean(profile.sourceAssetName) && profile.sourceAssetName === asset.fileName),
-  );
-}
-
 function directPlayScoreLabel(job: QueueJob) {
   const directPlay = recordFromRecord(job.validationReport ?? {}, 'directPlay');
   const enabled = directPlay.enabled === true;
   const score = Number(directPlay.lowestScore);
   if (!enabled || !Number.isFinite(score)) return 'Not evaluated';
   return `${score}/100`;
+}
+
+function profileAssignmentSource(job: QueueJob | undefined, mediaType: 'video' | 'audio' | 'tracks') {
+	if (!job?.profileResolution) return '';
+	const resolution = recordFromRecord(job.profileResolution, mediaType);
+	const source = String(resolution.source ?? '');
+	return source === 'asset' ? ' · Asset' : source === 'path' ? ' · Path' : '';
 }
 
 function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueue: boolean): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {
@@ -4153,6 +4211,21 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
   const analysis = scan?.frameStructureAnalysis;
   if (!scan) return undefined;
+  const stored = scan.frameStructureRecommendation;
+  const storedBalanced = stored?.byMode?.balanced;
+  if (stored && stored.version >= 1 && storedBalanced?.targetGopFrames) {
+    return {
+      fps: stored.fps,
+      gop: storedBalanced.targetGopFrames,
+      gopSeconds: storedBalanced.targetGopSeconds,
+      bFrames: stored.recommendedMaxBFrames || storedBalanced.maxBFrames || 3,
+      gopByMode: {
+        compatible: stored.byMode.compatible?.targetGopFrames,
+        balanced: storedBalanced.targetGopFrames,
+        maximum_compression: stored.byMode.maximum_compression?.targetGopFrames,
+      },
+    };
+  }
   const fps = reliableFrameRateForScan(scan);
   if (!fps) return undefined;
   const sourceAverageGop = analysis && analysis.framesAnalyzed > 0 ? analysis.averageGopLength : undefined;
@@ -4284,6 +4357,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.cropAspectPolicy === 'source_sar' || value.cropAspectPolicy === 'preserve_dar') {
     clean.cropAspectPolicy = value.cropAspectPolicy;
   }
+  if (value.optimizationIntent === 'maximum_savings' || value.optimizationIntent === 'balanced' || value.optimizationIntent === 'conservative' || value.optimizationIntent === 'maximum_quality' || value.optimizationIntent === 'archive') {
+    clean.optimizationIntent = value.optimizationIntent;
+  }
   if (value.externalSubtitleFormat === 'disabled' || value.externalSubtitleFormat === 'source' || value.externalSubtitleFormat === 'srt' || value.externalSubtitleFormat === 'ass' || value.externalSubtitleFormat === 'remove') {
     clean.externalSubtitleFormat = value.externalSubtitleFormat;
   }
@@ -4293,7 +4369,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
-  if (value.frameStructureMode === 'compatible' || value.frameStructureMode === 'balanced' || value.frameStructureMode === 'maximum_compression' || value.frameStructureMode === 'custom') clean.frameStructureMode = value.frameStructureMode;
+  if (value.frameStructureMode === 'auto' || value.frameStructureMode === 'off' || value.frameStructureMode === 'compatible' || value.frameStructureMode === 'balanced' || value.frameStructureMode === 'maximum_compression' || value.frameStructureMode === 'custom') clean.frameStructureMode = value.frameStructureMode;
   if (value.frameStructureGopMode === 'auto' || value.frameStructureGopMode === 'recommended' || value.frameStructureGopMode === 'custom') clean.frameStructureGopMode = value.frameStructureGopMode;
   if (typeof value.frameStructureGopFrames === 'number' && Number.isFinite(value.frameStructureGopFrames) && value.frameStructureGopFrames > 0) clean.frameStructureGopFrames = Math.min(1000, Math.round(value.frameStructureGopFrames));
   if (value.frameStructureBFrameMode === 'auto' || value.frameStructureBFrameMode === 'recommended' || value.frameStructureBFrameMode === 'custom' || value.frameStructureBFrameMode === 'off') clean.frameStructureBFrameMode = value.frameStructureBFrameMode;
@@ -4464,10 +4540,6 @@ function optionItems(options: SelectOption[], currentValue?: string) {
   return [...options, { value, label: `Custom (advanced): ${value}` }];
 }
 
-function withoutMotionFilters(value?: string) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && !item.startsWith('fieldmatch') && item !== 'decimate').join(',');
-}
-
 function cropFilterFromChain(value?: string) {
   return (value ?? '').split(',').map((item) => item.trim()).find((item) => item.startsWith('crop=')) ?? '';
 }
@@ -4577,6 +4649,7 @@ function normalizeAudioProfile(value: unknown): AudioEnhancementProfile | null {
     key: candidate.key,
     name: candidate.name,
     description: stringValue(candidate.description),
+	  scope: candidate.scope === 'path' ? 'path' : 'asset',
     intent: stringValue(candidate.intent),
     filters: stringValue(candidate.filters),
     rnnoiseModelPath: stringValue(candidate.rnnoiseModelPath),
@@ -4649,6 +4722,7 @@ function assetQualityProfile(profile: Profile | undefined, draft: AssetConversio
     bitDepth: pixelFormat.includes('10') || pixelFormat.includes('p010') ? 10 : 8,
     pixelFormat,
     qualityStrategy: profile?.qualityStrategy ?? 'hardware',
+    optimizationIntent: draft.optimizationIntent ?? profile?.optimizationIntent,
     audioCodec: draft.audioCodec || profile?.audioCodec || 'copy',
     qualityMode: draft.qualityMode || profile?.qualityMode || 'crf',
     qualityValue: draft.qualityValue ?? profile?.qualityValue ?? 20,

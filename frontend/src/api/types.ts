@@ -39,6 +39,7 @@ export type AudioEnhancementProfile = {
   key: string;
   name: string;
   description: string;
+  scope?: 'asset' | 'path';
   intent: string;
   filters: string;
   rnnoiseModelPath: string;
@@ -112,6 +113,7 @@ export type AssetReviewState = {
 export type AssetMetadataState = {
   categories: string[];
   tags: string[];
+  inheritedFrom?: string;
   updatedAt: string;
 };
 
@@ -137,13 +139,14 @@ export type AssetConversionOverrideState = {
   audioCodec?: string;
   qualityMode?: string;
   qualityValue?: number;
+  optimizationIntent?: MVForgeQualityGoal;
   videoPreset?: string;
   pixFmt?: string;
   videoFilters?: string;
   cropAspectPolicy?: 'source_sar' | 'preserve_dar';
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   x265Params?: string;
-  frameStructureMode?: 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
+  frameStructureMode?: 'auto' | 'off' | 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   frameStructureGopMode?: 'auto' | 'recommended' | 'custom';
   frameStructureGopFrames?: number;
   frameStructureBFrameMode?: 'auto' | 'recommended' | 'custom' | 'off';
@@ -296,10 +299,11 @@ export type ProfileCandidate = {
   profile: Profile;
   score: number;
   reasons: string[];
+  source?: string;
 };
 
 export type ProfileSuggestion = {
-  matchType: 'existing' | 'create';
+  matchType: 'existing' | 'create' | 'assigned_asset' | 'assigned_path';
   summary: string;
   scan: ScanResult;
   suggestedProfile?: Profile;
@@ -313,11 +317,26 @@ export type ProfileSuggestion = {
     estimatedSavingsHigh: number;
     recommendations: string[];
   };
+  findings: AdvisorFinding[];
+};
+
+export type AdvisorFinding = {
+  id: string;
+  category: 'video' | 'frame_structure' | 'color' | 'audio' | 'tracks' | 'encoder' | string;
+  title: string;
+  detail: string;
+  severity: 'information' | 'recommended' | 'review' | 'unsafe' | string;
+  confidence: 'low' | 'medium' | 'high' | string;
+  actionable: boolean;
+  defaultSelected: boolean;
+  patch?: Record<string, unknown>;
+  evidence?: string[];
 };
 
 export type Profile = {
   id: number;
   name: string;
+  scope: 'asset' | 'path';
   description: string;
   container: string;
   videoCodec: string;
@@ -329,6 +348,7 @@ export type Profile = {
   bitDepth: number;
   pixelFormat: string;
   qualityStrategy: string;
+  optimizationIntent?: MVForgeQualityGoal;
   profileVersion: number;
   audioCodec: string;
   qualityMode: string;
@@ -345,6 +365,7 @@ export type Profile = {
 
 export type ProfileInput = {
   name: string;
+  scope?: 'asset' | 'path';
   description: string;
   container: string;
   videoCodec: string;
@@ -356,6 +377,7 @@ export type ProfileInput = {
   bitDepth?: number;
   pixelFormat?: string;
   qualityStrategy?: string;
+  optimizationIntent?: MVForgeQualityGoal;
   audioCodec: string;
   qualityMode: string;
   qualityValue: number;
@@ -464,8 +486,12 @@ export type QueueJob = {
   activeExecutionPlanId?: number;
   audioProfileKey: string;
   trackProfileKey: string;
+  audioProfileSnapshot?: Record<string, unknown>;
+  trackProfileSnapshot?: Record<string, unknown>;
+  profileResolution?: Record<string, unknown>;
   processingMode: 'full_encode' | 'audio_only' | '';
   priority: number;
+  queuePosition: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
   stage: string;
   stageUpdatedAt?: string;
@@ -619,6 +645,23 @@ export type QueueJobInput = {
   processingMode?: 'full_encode' | 'audio_only';
   priority: number;
   notes?: string;
+  resolveProfileAssignments?: boolean;
+};
+
+export type ProfileAssignment = {
+  id: number;
+  targetType: 'asset' | 'path';
+  targetPath: string;
+  mediaType: 'video' | 'audio' | 'tracks';
+  selection: 'profile' | 'disabled';
+  videoProfileId?: number;
+  profileKey?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProfileAssignmentInput = Omit<ProfileAssignment, 'id' | 'createdAt' | 'updatedAt' | 'selection'> & {
+  selection: 'profile' | 'disabled' | 'inherit';
 };
 
 export type ClaimJobInput = {
@@ -646,6 +689,12 @@ export type QueueJobUpdateInput = {
   priority?: number;
   status?: QueueJob['status'];
   notes?: string;
+};
+
+export type QueueReorderInput = {
+  jobId: number;
+  targetJobId: number;
+  placement: 'before' | 'after';
 };
 
 export type ExecuteJobInput = {
@@ -782,9 +831,43 @@ export type ScanResult = {
     reason?: string;
   };
   frameStructureAnalysis?: QSVFrameStructureAnalysis;
+  frameStructureRecommendation?: FrameStructureRecommendationSet;
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MVForgeQualityGoal = 'maximum_savings' | 'balanced' | 'conservative' | 'maximum_quality' | 'archive';
+
+export type MVForgePreferences = {
+  qualityGoal: MVForgeQualityGoal;
+  executionPreference: 'software' | 'hardware';
+  preferredVideoEncoder: string;
+  preferredLanguages: string[];
+};
+
+export type FrameStructureRecommendationSet = {
+  version: number;
+  sourceAnalysisVersion: number;
+  fps: number;
+  recommendedMaxBFrames: number;
+  confidence: string;
+  byMode: Partial<Record<'compatible' | 'balanced' | 'maximum_compression', QSVFrameStructureRecommendation>>;
+  warnings?: string[];
+};
+
+export type QSVFrameStructureRecommendation = {
+  targetGopFrames: number;
+  targetGopSeconds: number;
+  maxBFrames: number;
+  adaptiveI: boolean;
+  adaptiveB: boolean;
+  sourceAverageGop: number;
+  sourceMaxBRun: number;
+  sourceBRatio: number;
+  confidence: string;
+  reasons: string[];
+  warnings: string[];
 };
 
 export type PreviewVideoCharacteristics = {

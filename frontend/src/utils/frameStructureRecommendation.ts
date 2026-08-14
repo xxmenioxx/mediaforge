@@ -45,6 +45,7 @@ export function assetDerivedGopRecommendation(input: {
   mode?: FrameStructureMode;
 }): AssetGopRecommendation {
   const mode = input.mode ?? 'balanced';
+  const recommendationMode = mode === 'auto' || mode === 'off' ? 'balanced' : mode;
   const fps = input.fps && Number.isFinite(input.fps) && input.fps > 0 ? input.fps : undefined;
   const sourceFrames = input.sourceAverageGop && input.sourceAverageGop > 0 ? input.sourceAverageGop : 0;
   const confidence = fps ? (input.confidence || (sourceFrames > 0 ? 'medium' : 'low')) : 'low';
@@ -52,12 +53,12 @@ export function assetDerivedGopRecommendation(input: {
   const sourceSeconds = sourceFrames > 0 ? sourceFrames / fps : undefined;
   const baseline = sourceSeconds === undefined ? undefined : clamp(sourceSeconds, 2, 4);
   let targetSeconds = baseline === undefined
-    ? ({ compatible: 2.5, balanced: 3.5, maximum_compression: 5, custom: 3 }[mode])
-    : mode === 'compatible'
+    ? ({ compatible: 2.5, balanced: 3.5, maximum_compression: 5, custom: 3 }[recommendationMode])
+    : recommendationMode === 'compatible'
       ? Math.min(baseline, 3)
-      : mode === 'maximum_compression'
+      : recommendationMode === 'maximum_compression'
         ? Math.min(baseline + 2, 5.5)
-        : mode === 'balanced'
+        : recommendationMode === 'balanced'
           ? Math.min(baseline + 0.75, 4)
           : baseline;
   if (confidence.toLowerCase() === 'low') targetSeconds = Math.min(targetSeconds, 3.5);

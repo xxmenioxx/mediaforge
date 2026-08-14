@@ -11,20 +11,21 @@ import (
 const ProfileSnapshotSchemaVersion = 1
 
 type profileSnapshot struct {
-	SchemaVersion     int                  `json:"schemaVersion"`
-	CaptureSource     string               `json:"captureSource"`
-	CapturedAt        time.Time            `json:"capturedAt"`
-	ProfileID         uint                 `json:"profileId"`
-	ProfileVersion    int                  `json:"profileVersion"`
-	ProfileName       string               `json:"profileName"`
-	Constraints       ExecutionConstraints `json:"constraints"`
-	Container         string               `json:"container"`
-	VideoCodec        string               `json:"videoCodec"`
-	AudioCodec        string               `json:"audioCodec"`
-	PreserveHDR       bool                 `json:"preserveHdr"`
-	PreserveSubtitles bool                 `json:"preserveSubtitles"`
-	PreserveChapters  bool                 `json:"preserveChapters"`
-	WorkerConfig      models.JSONMap       `json:"workerConfig"`
+	SchemaVersion      int                  `json:"schemaVersion"`
+	CaptureSource      string               `json:"captureSource"`
+	CapturedAt         time.Time            `json:"capturedAt"`
+	ProfileID          uint                 `json:"profileId"`
+	ProfileVersion     int                  `json:"profileVersion"`
+	ProfileName        string               `json:"profileName"`
+	Constraints        ExecutionConstraints `json:"constraints"`
+	Container          string               `json:"container"`
+	VideoCodec         string               `json:"videoCodec"`
+	AudioCodec         string               `json:"audioCodec"`
+	OptimizationIntent string               `json:"optimizationIntent,omitempty"`
+	PreserveHDR        bool                 `json:"preserveHdr"`
+	PreserveSubtitles  bool                 `json:"preserveSubtitles"`
+	PreserveChapters   bool                 `json:"preserveChapters"`
+	WorkerConfig       models.JSONMap       `json:"workerConfig"`
 }
 
 func CaptureProfileSnapshot(profile models.Profile, capturedAt time.Time, source string) (models.JSONMap, error) {
@@ -34,20 +35,21 @@ func CaptureProfileSnapshot(profile models.Profile, capturedAt time.Time, source
 	}
 
 	value := profileSnapshot{
-		SchemaVersion:     ProfileSnapshotSchemaVersion,
-		CaptureSource:     source,
-		CapturedAt:        capturedAt,
-		ProfileID:         profile.ID,
-		ProfileVersion:    constraints.SourceProfileVersion,
-		ProfileName:       profile.Name,
-		Constraints:       constraints,
-		Container:         profile.Container,
-		VideoCodec:        profile.VideoCodec,
-		AudioCodec:        profile.AudioCodec,
-		PreserveHDR:       profile.PreserveHDR,
-		PreserveSubtitles: profile.PreserveSubtitles,
-		PreserveChapters:  profile.PreserveChapters,
-		WorkerConfig:      profile.WorkerConfig,
+		SchemaVersion:      ProfileSnapshotSchemaVersion,
+		CaptureSource:      source,
+		CapturedAt:         capturedAt,
+		ProfileID:          profile.ID,
+		ProfileVersion:     constraints.SourceProfileVersion,
+		ProfileName:        profile.Name,
+		Constraints:        constraints,
+		Container:          profile.Container,
+		VideoCodec:         profile.VideoCodec,
+		AudioCodec:         profile.AudioCodec,
+		OptimizationIntent: profile.OptimizationIntent,
+		PreserveHDR:        profile.PreserveHDR,
+		PreserveSubtitles:  profile.PreserveSubtitles,
+		PreserveChapters:   profile.PreserveChapters,
+		WorkerConfig:       profile.WorkerConfig,
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -76,25 +78,26 @@ func RestoreProfileSnapshot(snapshot models.JSONMap) (models.Profile, error) {
 		return models.Profile{}, err
 	}
 	return models.Profile{
-		ID:                value.ProfileID,
-		Name:              value.ProfileName,
-		Container:         value.Container,
-		VideoCodec:        value.VideoCodec,
-		CodecFamily:       value.Constraints.CodecFamily,
-		EncoderPolicy:     value.Constraints.EncoderPolicy,
-		PreferredEncoder:  value.Constraints.PreferredEncoder,
-		AllowedEncoders:   models.StringList(value.Constraints.AllowedEncoders),
-		FallbackPolicy:    value.Constraints.FallbackPolicy,
-		BitDepth:          value.Constraints.BitDepth,
-		PixelFormat:       value.Constraints.PixelFormat,
-		QualityStrategy:   value.Constraints.QualityStrategy,
-		ProfileVersion:    value.ProfileVersion,
-		AudioCodec:        value.AudioCodec,
-		QualityMode:       value.Constraints.QualityMode,
-		QualityValue:      value.Constraints.QualityValue,
-		PreserveHDR:       value.PreserveHDR,
-		PreserveSubtitles: value.PreserveSubtitles,
-		PreserveChapters:  value.PreserveChapters,
-		WorkerConfig:      value.WorkerConfig,
+		ID:                 value.ProfileID,
+		Name:               value.ProfileName,
+		Container:          value.Container,
+		VideoCodec:         value.VideoCodec,
+		CodecFamily:        value.Constraints.CodecFamily,
+		EncoderPolicy:      value.Constraints.EncoderPolicy,
+		PreferredEncoder:   value.Constraints.PreferredEncoder,
+		AllowedEncoders:    models.StringList(value.Constraints.AllowedEncoders),
+		FallbackPolicy:     value.Constraints.FallbackPolicy,
+		BitDepth:           value.Constraints.BitDepth,
+		PixelFormat:        value.Constraints.PixelFormat,
+		QualityStrategy:    value.Constraints.QualityStrategy,
+		ProfileVersion:     value.ProfileVersion,
+		AudioCodec:         value.AudioCodec,
+		OptimizationIntent: value.OptimizationIntent,
+		QualityMode:        value.Constraints.QualityMode,
+		QualityValue:       value.Constraints.QualityValue,
+		PreserveHDR:        value.PreserveHDR,
+		PreserveSubtitles:  value.PreserveSubtitles,
+		PreserveChapters:   value.PreserveChapters,
+		WorkerConfig:       value.WorkerConfig,
 	}, nil
 }

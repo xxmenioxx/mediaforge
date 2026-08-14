@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -48,6 +50,28 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			return
 		}
 	}
+	if key == "mvforgePreferences" {
+		if err := validateMVForgePreferences(input.Value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if key == "originalRetentionPolicy" {
+		if err := validateOriginalRetentionPolicy(input.Value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if key == "audioEnhancementProfiles" || key == "trackProfiles" {
+		mediaType := "audio"
+		if key == "trackProfiles" {
+			mediaType = "tracks"
+		}
+		if err := validateSettingProfileAssignments(h.db, mediaType, input.Value); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	setting := models.AppSetting{Key: key, Value: input.Value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := h.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "key"}},
@@ -90,4 +114,75 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, setting)
+}
+
+func validateOriginalRetentionPolicy(value models.JSONMap) error {
+	days := intValueSetting(value["keepOriginalsDays"], -1)
+	if days < 0 || days > 3650 {
+		return fmt.Errorf("keepOriginalsDays must be between 0 and 3650")
+	}
+	if boolSetting(value["autoDeleteEnabled"], false) && days == 0 {
+		return fmt.Errorf("keepOriginalsDays must be greater than 0 when automatic deletion is enabled")
+	}
+	archivePath := strings.TrimSpace(stringFromUnknown(value["processedOriginalsPath"]))
+	if archivePath == "" || !strings.HasPrefix(archivePath, "/") {
+		return fmt.Errorf("processedOriginalsPath must be an absolute path")
+	}
+	return nil
+}
+
+func validateMVForgePreferences(value models.JSONMap) error {
+	if normalizedOptimizationIntent(stringFromUnknown(value["qualityGoal"])) == "" {
+		return fmt.Errorf("qualityGoal must be maximum_savings, balanced, conservative, maximum_quality, or archive")
+	}
+	execution := strings.ToLower(strings.TrimSpace(stringFromUnknown(value["executionPreference"])))
+	if execution != "software" && execution != "hardware" {
+		return fmt.Errorf("executionPreference must be software or hardware")
+	}
+	if strings.TrimSpace(stringFromUnknown(value["preferredVideoEncoder"])) == "" {
+		return fmt.Errorf("preferredVideoEncoder is required")
+	}
+	encoder := strings.ToLower(strings.TrimSpace(stringFromUnknown(value["preferredVideoEncoder"])))
+	if execution == "hardware" && encoder != "auto" && !strings.HasSuffix(encoder, "_qsv") && !strings.HasSuffix(encoder, "_videotoolbox") && !strings.HasSuffix(encoder, "_nvenc") && !strings.HasSuffix(encoder, "_vaapi") && !strings.HasSuffix(encoder, "_amf") {
+		return fmt.Errorf("preferredVideoEncoder must be auto or a hardware encoder when executionPreference is hardware")
+	}
+	if execution == "software" && encoder != "auto" && !strings.HasPrefix(encoder, "lib") {
+		return fmt.Errorf("preferredVideoEncoder must be auto or a software encoder when executionPreference is software")
+	}
+	if len(normalizedPreferenceLanguages(value["preferredLanguages"])) == 0 {
+		return fmt.Errorf("at least one preferred language is required")
+	}
+	return nil
+}
+
+func validateSettingProfileAssignments(db *gorm.DB, mediaType string, value models.JSONMap) error {
+	if !db.Migrator().HasTable(&models.ProfileAssignment{}) {
+		return nil
+	}
+	profiles := settingProfileValues(value["profiles"])
+	byKey := map[string]map[string]any{}
+	for _, raw := range profiles {
+		profile := settingProfileObject(raw)
+		if profile != nil {
+			byKey[strings.TrimSpace(stringFromUnknown(profile["key"]))] = profile
+		}
+	}
+	var assignments []models.ProfileAssignment
+	if err := db.Where("media_type = ? AND selection = ?", mediaType, "profile").Find(&assignments).Error; err != nil {
+		return err
+	}
+	for _, assignment := range assignments {
+		profile, exists := byKey[assignment.ProfileKey]
+		if !exists {
+			return fmt.Errorf("profile %q is assigned and cannot be removed", assignment.ProfileKey)
+		}
+		if storedSettingProfileScope(profile) != assignment.TargetType {
+			return fmt.Errorf("profile %q scope cannot change while assigned to a %s", assignment.ProfileKey, assignment.TargetType)
+		}
+		disabled, _ := profile["disabled"].(bool)
+		if disabled || strings.TrimSpace(stringFromUnknown(profile["deletedAt"])) != "" {
+			return fmt.Errorf("profile %q is assigned and cannot be disabled or deleted", assignment.ProfileKey)
+		}
+	}
+	return nil
 }

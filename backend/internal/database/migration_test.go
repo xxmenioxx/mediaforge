@@ -120,3 +120,76 @@ func TestMigratePreservesEveryLegacyHardwareQualityLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateBackfillsLegacyTrackPathAssignments(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "track-assignments.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/anime/Show"
+	if err := db.Create(&models.AppSetting{Key: "trackProfilePathAssignments", Value: models.JSONMap{
+		"assignments": models.JSONMap{path: "jpn-spa"},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{
+		"profiles": models.JSONList{models.JSONMap{"key": "jpn-spa", "name": "Japanese + Spanish", "sourceAssetPath": "/media/raw/anime/Show/01.mkv"}},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var assignment models.ProfileAssignment
+	if err := db.Where("target_type = ? AND target_path = ? AND media_type = ?", "path", path, "tracks").First(&assignment).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assignment.ProfileKey != "jpn-spa" || assignment.Selection != "profile" {
+		t.Fatalf("legacy assignment not preserved: %#v", assignment)
+	}
+	var profiles models.AppSetting
+	if err := db.First(&profiles, "key = ?", "trackProfiles").Error; err != nil {
+		t.Fatal(err)
+	}
+	values := settingValuesForTest(profiles.Value["profiles"])
+	if len(values) != 1 || jsonMapFromAny(values[0])["scope"] != "path" {
+		t.Fatalf("legacy assigned profile was not promoted to path scope: %#v", profiles.Value)
+	}
+	var legacyCount int64
+	if err := db.Model(&models.AppSetting{}).Where("key = ?", "trackProfilePathAssignments").Count(&legacyCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacyCount != 0 {
+		t.Fatalf("legacy assignment setting remained after migration")
+	}
+}
+
+func TestMigrateAddsDraftIntentAndSnapshotFrameRecommendationColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "recommendation-columns.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasColumn(&models.Profile{}, "optimization_intent") {
+		t.Fatal("profiles.optimization_intent was not migrated")
+	}
+	if !db.Migrator().HasColumn(&models.ScanResult{}, "frame_structure_recommendation") {
+		t.Fatal("scan_results.frame_structure_recommendation was not migrated")
+	}
+}
+
+func settingValuesForTest(value any) []any {
+	switch values := value.(type) {
+	case []any:
+		return values
+	case models.JSONList:
+		return []any(values)
+	default:
+		return nil
+	}
+}

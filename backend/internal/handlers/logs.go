@@ -236,7 +236,7 @@ func workersLog(db *gorm.DB) string {
 	var workers []models.WorkerNode
 	var jobs []models.QueueJob
 	_ = db.Order("name asc").Find(&workers).Error
-	_ = db.Where("status IN ?", []string{JobStatusQueued, JobStatusRunning}).Order("priority asc, created_at asc").Find(&jobs).Error
+	_ = db.Where("status IN ?", []string{JobStatusQueued, JobStatusRunning}).Order("queue_position asc, priority asc, created_at asc").Find(&jobs).Error
 	var builder strings.Builder
 	builder.WriteString("MVForge workers log\nGenerated: " + time.Now().Format(time.RFC3339) + "\n\nWorkers\n")
 	for _, worker := range workers {

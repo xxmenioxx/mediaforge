@@ -31,6 +31,20 @@ type ProfileCandidate struct {
 	Profile models.Profile `json:"profile"`
 	Score   int            `json:"score"`
 	Reasons []string       `json:"reasons"`
+	Source  string         `json:"source,omitempty"`
+}
+
+type AdvisorFinding struct {
+	ID              string         `json:"id"`
+	Category        string         `json:"category"`
+	Title           string         `json:"title"`
+	Detail          string         `json:"detail"`
+	Severity        string         `json:"severity"`
+	Confidence      string         `json:"confidence"`
+	Actionable      bool           `json:"actionable"`
+	DefaultSelected bool           `json:"defaultSelected"`
+	Patch           models.JSONMap `json:"patch,omitempty"`
+	Evidence        []string       `json:"evidence,omitempty"`
 }
 
 type ProfileSuggestionResponse struct {
@@ -41,6 +55,14 @@ type ProfileSuggestionResponse struct {
 	Candidates       []ProfileCandidate `json:"candidates"`
 	ProposedProfile  ProfileInput       `json:"proposedProfile"`
 	Insights         AnalysisInsights   `json:"insights"`
+	Findings         []AdvisorFinding   `json:"findings"`
+}
+
+type MVForgePreferences struct {
+	QualityGoal           string   `json:"qualityGoal"`
+	ExecutionPreference   string   `json:"executionPreference"`
+	PreferredVideoEncoder string   `json:"preferredVideoEncoder"`
+	PreferredLanguages    []string `json:"preferredLanguages"`
 }
 
 type AnalysisInsights struct {
@@ -108,7 +130,9 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 		return
 	}
 
-	proposal := proposedProfileForScan(scan)
+	preferences := mvforgePreferences(h.db)
+	hardwareEncoder, hardwareWorker := preferredAvailableHardwareEncoder(h.db, preferences.PreferredVideoEncoder)
+	proposal := proposedProfileForScanWithPreferences(scan, preferences, hardwareEncoder)
 	var profiles []models.Profile
 	if err := h.db.Where("disabled = ? OR disabled IS NULL", false).Order("name asc").Find(&profiles).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -116,16 +140,34 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 	}
 	candidates := make([]ProfileCandidate, 0, len(profiles))
 	for _, profile := range profiles {
-		score, reasons := profileFit(profile, proposal, scan)
+		score, reasons := profileFitWithPreferences(profile, proposal, scan, preferences)
 		candidates = append(candidates, ProfileCandidate{Profile: profile, Score: score, Reasons: reasons})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Score > candidates[j].Score })
+	assignedSource := ""
+	if assignments, assignmentErr := profileAssignmentsForAsset(h.db, request.MediaPath); assignmentErr == nil {
+		if assignment, ok := assignments["video"]; ok && assignment.Selection == "profile" && assignment.VideoProfileID > 0 {
+			for index := range candidates {
+				if candidates[index].Profile.ID == assignment.VideoProfileID {
+					assignedSource = assignment.TargetType
+					candidates[index].Source = "assigned_" + assignment.TargetType
+					assigned := candidates[index]
+					candidates = append([]ProfileCandidate{assigned}, append(candidates[:index], candidates[index+1:]...)...)
+					break
+				}
+			}
+		}
+	}
 	if len(candidates) > 3 {
 		candidates = candidates[:3]
 	}
 
 	response := ProfileSuggestionResponse{MatchType: "create", Summary: "No existing profile covers the detected technical requirements closely enough.", Scan: scan, Candidates: candidates, ProposedProfile: proposal}
-	if len(candidates) > 0 && candidates[0].Score >= 80 {
+	if assignedSource != "" && len(candidates) > 0 {
+		response.MatchType = "assigned_" + assignedSource
+		response.SuggestedProfile = &candidates[0].Profile
+		response.Summary = fmt.Sprintf("%s is already assigned at %s scope; MVForge evaluated it before considering alternatives.", candidates[0].Profile.Name, assignedSource)
+	} else if len(candidates) > 0 && candidates[0].Score >= 80 {
 		response.MatchType = "existing"
 		response.SuggestedProfile = &candidates[0].Profile
 		response.Summary = fmt.Sprintf("%s is the closest existing profile for this source.", candidates[0].Profile.Name)
@@ -135,7 +177,84 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 		targetCRF = response.SuggestedProfile.QualityValue
 	}
 	response.Insights = analysisInsights(scan, targetCRF)
+	response.Findings = advisorFindings(scan, proposal, preferences, hardwareEncoder, hardwareWorker)
 	c.JSON(http.StatusOK, response)
+}
+
+func mvforgePreferences(db *gorm.DB) MVForgePreferences {
+	result := MVForgePreferences{QualityGoal: "balanced", ExecutionPreference: "software", PreferredVideoEncoder: "auto", PreferredLanguages: []string{"jpn", "spa", "eng"}}
+	if db == nil {
+		return result
+	}
+	var setting models.AppSetting
+	if err := db.Where("key = ?", "mvforgePreferences").First(&setting).Error; err != nil {
+		return result
+	}
+	if value := normalizedOptimizationIntent(stringFromUnknown(setting.Value["qualityGoal"])); value != "" {
+		result.QualityGoal = value
+	}
+	if value := strings.ToLower(strings.TrimSpace(stringFromUnknown(setting.Value["executionPreference"]))); value == "hardware" || value == "software" {
+		result.ExecutionPreference = value
+	}
+	if value := strings.TrimSpace(stringFromUnknown(setting.Value["preferredVideoEncoder"])); value != "" {
+		result.PreferredVideoEncoder = value
+	}
+	result.PreferredLanguages = normalizedPreferenceLanguages(setting.Value["preferredLanguages"])
+	if len(result.PreferredLanguages) == 0 {
+		result.PreferredLanguages = []string{"jpn", "spa", "eng"}
+	}
+	return result
+}
+
+func normalizedPreferenceLanguages(value any) []string {
+	values := []string{}
+	switch raw := value.(type) {
+	case []any:
+		for _, item := range raw {
+			values = append(values, stringFromUnknown(item))
+		}
+	case models.JSONList:
+		for _, item := range raw {
+			values = append(values, stringFromUnknown(item))
+		}
+	case []string:
+		values = append(values, raw...)
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func preferredAvailableHardwareEncoder(db *gorm.DB, preferred string) (string, string) {
+	if db == nil {
+		return "", ""
+	}
+	var workers []models.WorkerNode
+	if err := db.Where("status = ?", "online").Order("name asc").Find(&workers).Error; err != nil {
+		return "", ""
+	}
+	preferred = strings.TrimSpace(preferred)
+	order := []string{"hevc_qsv", "hevc_videotoolbox", "hevc_nvenc"}
+	if preferred != "" && preferred != "auto" {
+		order = append([]string{preferred}, order...)
+	}
+	for _, encoder := range order {
+		for _, worker := range workers {
+			for _, raw := range worker.Encoders {
+				if strings.EqualFold(strings.TrimSpace(stringFromUnknown(raw)), encoder) {
+					return encoder, worker.Name
+				}
+			}
+		}
+	}
+	return "", ""
 }
 
 func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
@@ -204,6 +323,7 @@ func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
 }
 
 func proposedProfileForScan(scan models.ScanResult) ProfileInput {
+	proposal := proposedProfileForScanWithPreferences(scan, MVForgePreferences{QualityGoal: "conservative", ExecutionPreference: "software", PreferredVideoEncoder: "auto"}, "")
 	crf := 20
 	if scan.Width >= 3840 || scan.Height >= 2160 || scan.HDR {
 		crf = 18
@@ -211,19 +331,49 @@ func proposedProfileForScan(scan models.ScanResult) ProfileInput {
 	if scan.Width > 0 && scan.Width <= 720 && scan.Height <= 576 {
 		crf = 21
 	}
+	proposal.QualityValue = crf
+	proposal.OptimizationIntent = ""
+	return proposal
+}
+
+func proposedProfileForScanWithPreferences(scan models.ScanResult, preferences MVForgePreferences, availableHardwareEncoder string) ProfileInput {
+	intent := normalizedOptimizationIntent(preferences.QualityGoal)
+	if intent == "" {
+		intent = "balanced"
+	}
+	crfByIntent := map[string]int{"maximum_savings": 26, "balanced": 22, "conservative": 20, "maximum_quality": 18, "archive": 16}
+	crf := crfByIntent[intent]
+	if scan.Width >= 3840 || scan.Height >= 2160 || scan.HDR {
+		crf = max(14, crf-2)
+	}
+	if scan.Width > 0 && scan.Width <= 720 && scan.Height <= 576 && intent != "archive" {
+		crf = min(28, crf+1)
+	}
+	encoder := "libx265"
+	preferredMode := "software"
+	useHardware := preferences.ExecutionPreference == "hardware" && availableHardwareEncoder != ""
+	if useHardware {
+		encoder = availableHardwareEncoder
+		preferredMode = "hardware"
+	}
 	name := fmt.Sprintf("Suggested %s CRF %d", strings.ToUpper(fallback(codecFamily(scan.VideoCodec), "source")), crf)
+	qualityPreset := map[string]string{"maximum_savings": "compact", "balanced": "recommended", "conservative": "best_quality", "maximum_quality": "high_quality", "archive": "archive"}[intent]
 	return ProfileInput{
 		Name: name, Description: "Generated from Scan/Analysis technical metadata. Review before saving.",
 		Container: "mkv", VideoCodec: "x265", CodecFamily: "hevc", EncoderPolicy: "locked",
-		PreferredEncoder: "libx265", AllowedEncoders: []string{"libx265"}, FallbackPolicy: "wait",
-		BitDepth: 10, PixelFormat: "yuv420p10le", QualityStrategy: "crf", AudioCodec: "copy",
+		PreferredEncoder: encoder, AllowedEncoders: []string{encoder}, FallbackPolicy: "wait",
+		BitDepth: 10, PixelFormat: "yuv420p10le", QualityStrategy: "crf", OptimizationIntent: intent, AudioCodec: "copy",
 		QualityMode: "crf", QualityValue: crf, PreserveHDR: scan.HDR,
 		PreserveSubtitles: scan.SubtitleTracks > 0, PreserveChapters: scan.Chapters > 0,
-		WorkerConfig: models.JSONMap{"encoder": "ffmpeg", "videoEncoder": "libx265", "videoPreset": "medium", "pixFmt": "yuv420p10le", "deinterlaceMode": "auto", "preserveOriginalAudio": true, "addAacStereoTrack": false, "aacStereoBitrateKbps": 192},
+		WorkerConfig: models.JSONMap{"encoder": "ffmpeg", "videoEncoder": encoder, "preferredEncoder": preferredMode, "useHardwareIfAvailable": useHardware, "hardwareQualityPreset": qualityPreset, "hardwareQualityPresetScale": 2, "videoPreset": "medium", "pixFmt": "yuv420p10le", "deinterlaceMode": "auto", "preserveOriginalAudio": true, "addAacStereoTrack": false, "aacStereoBitrateKbps": 192},
 	}
 }
 
 func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanResult) (int, []string) {
+	return profileFitWithPreferences(profile, proposal, scan, MVForgePreferences{QualityGoal: proposal.OptimizationIntent, ExecutionPreference: "software"})
+}
+
+func profileFitWithPreferences(profile models.Profile, proposal ProfileInput, scan models.ScanResult, preferences MVForgePreferences) (int, []string) {
 	score := 100
 	reasons := []string{}
 	if codecFamily(profile.CodecFamily) != codecFamily(proposal.CodecFamily) && codecFamily(profile.VideoCodec) != codecFamily(proposal.CodecFamily) {
@@ -234,12 +384,28 @@ func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanR
 		score -= 8
 		reasons = append(reasons, "Container differs from the suggested MKV container.")
 	}
-	if profile.QualityMode != "crf" {
-		score -= 15
-		reasons = append(reasons, "Profile does not use a CRF quality target.")
-	} else if delta := profile.QualityValue - proposal.QualityValue; delta < -3 || delta > 3 {
-		score -= min(20, abs(delta)*3)
-		reasons = append(reasons, fmt.Sprintf("CRF %d differs from the analyzed CRF %d target.", profile.QualityValue, proposal.QualityValue))
+	profileIntent := normalizedOptimizationIntent(profile.OptimizationIntent)
+	requestedIntent := normalizedOptimizationIntent(preferences.QualityGoal)
+	if profileIntent != "" && requestedIntent != "" && profileIntent != requestedIntent {
+		score -= 18
+		reasons = append(reasons, fmt.Sprintf("Profile intent %s differs from the preferred %s intent.", profileIntent, requestedIntent))
+	} else if profileIntent == "" && requestedIntent != "" {
+		score -= 4
+		reasons = append(reasons, "Profile has no optimization intent classification; quality matching has lower confidence.")
+	}
+	if profile.QualityMode == "crf" && proposal.QualityMode == "crf" {
+		if delta := profile.QualityValue - proposal.QualityValue; delta < -3 || delta > 3 {
+			score -= min(20, abs(delta)*3)
+			reasons = append(reasons, fmt.Sprintf("CRF %d differs from the analyzed CRF %d target.", profile.QualityValue, proposal.QualityValue))
+		}
+	} else if profile.QualityMode != proposal.QualityMode && profileIntent == "" {
+		score -= 8
+		reasons = append(reasons, "Quality controls use a different encoder domain and the profile has no declared intent for comparison.")
+	}
+	profileExecution := strings.ToLower(strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["preferredEncoder"])))
+	if preferences.ExecutionPreference != "" && profileExecution != "" && profileExecution != preferences.ExecutionPreference {
+		score -= 12
+		reasons = append(reasons, fmt.Sprintf("Profile prefers %s encoding while Settings prefers %s for new drafts.", profileExecution, preferences.ExecutionPreference))
 	}
 	if scan.HDR && !profile.PreserveHDR {
 		score -= 35
@@ -269,6 +435,154 @@ func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanR
 	return clamp(score, 0, 100), reasons
 }
 
+func advisorFindings(scan models.ScanResult, proposal ProfileInput, preferences MVForgePreferences, hardwareEncoder, hardwareWorker string) []AdvisorFinding {
+	findings := []AdvisorFinding{{
+		ID: "video-proposal", Category: "video", Title: "Use the proposed video quality intent",
+		Detail:   fmt.Sprintf("Use %s with the %s quality/space intent as the starting point.", proposal.VideoCodec, proposal.OptimizationIntent),
+		Severity: "recommended", Confidence: "medium", Actionable: true, DefaultSelected: true,
+		Patch: models.JSONMap{"videoCodec": proposal.VideoCodec, "qualityMode": proposal.QualityMode, "qualityValue": proposal.QualityValue, "optimizationIntent": proposal.OptimizationIntent},
+	}}
+	interlaceStatus := strings.TrimSpace(stringFromUnknown(scan.InterlaceAnalysis["status"]))
+	switch interlaceStatus {
+	case "progressive":
+		findings = append(findings, AdvisorFinding{ID: "motion-progressive", Category: "video", Title: "Keep deinterlacing disabled", Detail: "The distributed motion analysis classified the source as progressive.", Severity: "recommended", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "off"}})
+	case "interlaced":
+		findings = append(findings, AdvisorFinding{ID: "motion-deinterlace", Category: "video", Title: "Enable deinterlacing", Detail: "Interlaced frames were detected; use the validated field-aware deinterlacing path and review motion in LAB.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "force"}})
+	case "telecine_suspected":
+		mode := strings.TrimSpace(stringFromUnknown(scan.InterlaceAnalysis["recommendedMode"]))
+		actionable := mode == "ivtc_tff" || mode == "ivtc_bff"
+		finding := AdvisorFinding{ID: "motion-telecine", Category: "video", Title: "Review suspected telecine cadence", Detail: "Inverse telecine must be previewed before it becomes part of a profile.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: actionable, DefaultSelected: false}
+		if actionable {
+			finding.Patch = models.JSONMap{"deinterlaceMode": mode}
+		}
+		findings = append(findings, finding)
+	}
+	if status := strings.TrimSpace(stringFromUnknown(scan.CropAnalysis["status"])); status == "detected" {
+		crop := strings.TrimSpace(stringFromUnknown(scan.CropAnalysis["recommendedCrop"]))
+		if crop != "" {
+			findings = append(findings, AdvisorFinding{ID: "crop", Category: "video", Title: "Preview the detected crop", Detail: "Stable borders were detected, but crop remains opt-in because framing and subtitles require visual review.", Severity: "review", Confidence: confidenceLabel(scan.CropAnalysis["confidence"]), Actionable: true, DefaultSelected: false, Patch: models.JSONMap{"videoFilters": "crop=" + crop}})
+		}
+	}
+	frameRecommendation := storedFrameStructureRecommendation(scan, "balanced")
+	if frameRecommendation.TargetGOPFrames > 0 {
+		findings = append(findings, AdvisorFinding{ID: "frame-structure", Category: "frame_structure", Title: "Apply the source-derived frame structure", Detail: fmt.Sprintf("Balanced GOP %d (%.2fs) with maximum B depth %d.", frameRecommendation.TargetGOPFrames, frameRecommendation.TargetGOPSeconds, frameRecommendation.MaxBFrames), Severity: "recommended", Confidence: frameRecommendation.Confidence, Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"frameStructureMode": "balanced", "frameStructureGopMode": "recommended", "frameStructureGopFrames": frameRecommendation.TargetGOPFrames, "frameStructureBFrameMode": "recommended", "frameStructureMaxBFrames": frameRecommendation.MaxBFrames}, Evidence: frameRecommendation.Reasons})
+	}
+	if scan.HDR {
+		findings = append(findings, AdvisorFinding{ID: "preserve-hdr", Category: "color", Title: "Preserve HDR and 10-bit output", Detail: "HDR characteristics were detected. Preserve them unless a separate, explicit tone-mapping workflow is validated.", Severity: "recommended", Confidence: "high", Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"preserveHdr": true, "pixFmt": "yuv420p10le"}})
+	}
+	findings = append(findings, advisorDiagnosticFindings(scan)...)
+	findings = append(findings, colorMetadataFindings(scan)...)
+	if preferences.ExecutionPreference == "hardware" {
+		if hardwareEncoder != "" {
+			findings = append(findings, AdvisorFinding{ID: "encoder-preference", Category: "encoder", Title: "Use the preferred hardware encoder", Detail: fmt.Sprintf("%s is reported by online worker %s and matches the Settings preference for new drafts.", hardwareEncoder, hardwareWorker), Severity: "recommended", Confidence: "high", Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"preferredEncoder": "hardware", "useHardwareIfAvailable": true, "videoEncoder": hardwareEncoder, "hardwareQualityPreset": stringFromUnknown(proposal.WorkerConfig["hardwareQualityPreset"])}})
+		} else {
+			findings = append(findings, AdvisorFinding{ID: "encoder-unavailable", Category: "encoder", Title: "Preferred hardware encoder is unavailable", Detail: "No online worker currently reports the preferred hardware encoder. MVForge did not silently substitute one.", Severity: "review", Confidence: "high", Actionable: false})
+		}
+	} else {
+		findings = append(findings, AdvisorFinding{ID: "encoder-preference", Category: "encoder", Title: "Use software encoding", Detail: "Software is the Settings preference for new drafts.", Severity: "recommended", Confidence: "high", Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"preferredEncoder": "software", "useHardwareIfAvailable": false, "videoEncoder": "auto"}})
+	}
+	if scan.SubtitleTracks > 0 {
+		findings = append(findings, AdvisorFinding{ID: "preserve-subtitles", Category: "tracks", Title: "Preserve subtitle tracks", Detail: fmt.Sprintf("The source contains %d subtitle track(s). Track language/default decisions remain owned by a Tracks Profile.", scan.SubtitleTracks), Severity: "recommended", Confidence: "high", Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"preserveSubtitles": true}})
+	}
+	if scan.Chapters > 0 {
+		findings = append(findings, AdvisorFinding{ID: "preserve-chapters", Category: "tracks", Title: "Preserve chapters", Detail: fmt.Sprintf("The source contains %d chapter(s).", scan.Chapters), Severity: "recommended", Confidence: "high", Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"preserveChapters": true}})
+	}
+	return findings
+}
+
+func advisorDiagnosticFindings(scan models.ScanResult) []AdvisorFinding {
+	findings := []AdvisorFinding{}
+	overall := strings.TrimSpace(stringFromUnknown(scan.CompatibilityAnalysis["overall"]))
+	severity := "information"
+	if overall == "transcode_likely" || overall == "client_dependent" {
+		severity = "review"
+	}
+	seen := map[string]bool{}
+	index := 0
+	for _, key := range []string{"reasons", "warnings", "recommendations"} {
+		for _, detail := range advisorStringList(scan.CompatibilityAnalysis[key]) {
+			if seen[detail] {
+				continue
+			}
+			seen[detail] = true
+			index++
+			findings = append(findings, AdvisorFinding{
+				ID: fmt.Sprintf("playback-%d", index), Category: "compatibility", Title: "Playback compatibility finding",
+				Detail: detail, Severity: severity, Confidence: "medium", Actionable: false,
+			})
+		}
+	}
+	assessment := strings.TrimSpace(stringFromUnknown(scan.FrameStructureAnalysis["assessment"]))
+	if assessment != "" && (strings.Contains(strings.ToLower(assessment), "unusual") || strings.EqualFold(stringFromUnknown(scan.FrameStructureAnalysis["variability"]), "high")) {
+		findings = append(findings, AdvisorFinding{ID: "frame-structure-diagnostic", Category: "frame_structure", Title: "Review source frame structure", Detail: assessment, Severity: "review", Confidence: confidenceLabel(scan.FrameStructureAnalysis["confidence"]), Actionable: false})
+	}
+	return findings
+}
+
+func advisorStringList(value any) []string {
+	items := []any{}
+	switch typed := value.(type) {
+	case []any:
+		items = typed
+	case models.JSONList:
+		items = []any(typed)
+	case []string:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if item = strings.TrimSpace(item); item != "" {
+				result = append(result, item)
+			}
+		}
+		return result
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := strings.TrimSpace(stringFromUnknown(item)); text != "" {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
+func colorMetadataFindings(scan models.ScanResult) []AdvisorFinding {
+	if len(scan.VideoStreams) == 0 {
+		return nil
+	}
+	stream, _ := scan.VideoStreams[0].(map[string]interface{})
+	values := map[string]string{
+		"matrix": strings.TrimSpace(stringFromUnknown(stream["colorSpace"])), "transfer": strings.TrimSpace(stringFromUnknown(stream["colorTransfer"])),
+		"primaries": strings.TrimSpace(stringFromUnknown(stream["colorPrimaries"])), "range": strings.TrimSpace(stringFromUnknown(stream["colorRange"])),
+	}
+	missing := []string{}
+	evidence := []string{}
+	for _, key := range []string{"matrix", "transfer", "primaries", "range"} {
+		if values[key] == "" || strings.EqualFold(values[key], "unknown") || strings.EqualFold(values[key], "unspecified") {
+			missing = append(missing, key)
+		} else {
+			evidence = append(evidence, key+"="+values[key])
+		}
+	}
+	if len(missing) > 0 {
+		return []AdvisorFinding{{ID: "color-metadata", Category: "color", Title: "Color metadata requires review", Detail: fmt.Sprintf("Source color metadata is incomplete (%s). MVForge will preserve the source interpretation and will not normalize color automatically.", strings.Join(missing, ", ")), Severity: "review", Confidence: "high", Actionable: false, Evidence: evidence}}
+	}
+	return []AdvisorFinding{{ID: "color-metadata", Category: "color", Title: "Color metadata is complete", Detail: "Matrix, transfer, primaries and range are declared. Final output validation should confirm that the selected profile preserves the intended values.", Severity: "information", Confidence: "high", Actionable: false, Evidence: evidence}}
+}
+
+func confidenceLabel(value any) string {
+	if label := strings.ToLower(strings.TrimSpace(stringFromUnknown(value))); label == "low" || label == "medium" || label == "high" {
+		return label
+	}
+	confidence := workerNumberValue(value, 0)
+	switch {
+	case confidence >= 0.8:
+		return "high"
+	case confidence >= 0.5:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
 func abs(value int) int {
 	if value < 0 {
 		return -value
@@ -289,6 +603,9 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 	path = resolveMediaPath(h.db, path)
 	var existing models.ScanResult
 	if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+		if ensureFrameStructureRecommendation(&existing) {
+			_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
+		}
 		return existing, nil
 	}
 

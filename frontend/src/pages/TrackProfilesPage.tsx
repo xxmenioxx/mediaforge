@@ -22,7 +22,13 @@ export function TrackProfilesPage() {
   const save = () => {
     if (!draft) return;
     const key = slug(draft.key || draft.name);
-    const next = [...profiles.filter((profile) => profile.key !== key), { ...draft, key }];
+	const pathScope = draft.scope === 'path';
+	const normalized = pathScope ? {
+	  ...draft, key,
+	  keepVideoStreams: undefined, keepAudioStreams: undefined, keepSubtitleStreams: undefined,
+	  videoMetadata: undefined, audioMetadata: undefined, subtitleMetadata: undefined, subtitleTransforms: undefined,
+	} : { ...draft, key, scope: draft.scope ?? 'asset' as const };
+	const next = [...profiles.filter((profile) => profile.key !== key), normalized];
     update.mutate({ key: 'trackProfiles', value: { profiles: next } }, { onSuccess: () => setDraft(null) });
   };
   const toggle = (profile: TrackProfile) => update.mutate({ key: 'trackProfiles', value: { profiles: profiles.map((item) => item.key === profile.key ? { ...item, disabled: !item.disabled } : item) } });
@@ -89,13 +95,14 @@ export function TrackProfilesPage() {
         <Button startIcon={<AddIcon />} variant="contained" onClick={() => navigate('/profile-lab?section=tracks')}>Add Track Profile</Button>
       </Stack>
       <Card><CardContent sx={{ p: 0 }}><Table><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Streams</TableCell><TableCell>Rules</TableCell><TableCell>Status</TableCell><TableCell /></TableRow></TableHead><TableBody>
-        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
+        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Stack direction="row" spacing={0.5}><Chip size="small" label={profile.scope === 'path' ? 'Path' : 'Asset'} /><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></Stack></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
         {!visible.length ? <TableRow><TableCell colSpan={5}><Alert severity="info">{normalizedProfileSearch ? 'No track profiles match this search.' : 'No track profiles yet. Create one here or from Profile Lab.'}</Alert></TableCell></TableRow> : null}
       </TableBody></Table></CardContent></Card>
     </Stack></Box>
     <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} maxWidth="lg" fullWidth><DialogTitle>New Track Profile</DialogTitle><DialogContent>{draft ? <Stack spacing={2} sx={{ mt: 1 }}>
-      <TextField label="Name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required /><TextField label="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} multiline />
-      {sourceScan ? (
+      <TextField label="Name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required /><TextField select label="Profile applies to" value={draft.scope ?? 'asset'} onChange={(e) => setDraft({ ...draft, scope: e.target.value as 'asset' | 'path' })}><MenuItem value="asset">Asset</MenuItem><MenuItem value="path">Path</MenuItem></TextField><TextField label="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} multiline />
+	  {draft.scope === 'path' ? <Alert severity="info">Path profiles resolve streams per asset from semantic rules. Indexed selections, metadata, and subtitle transforms are asset-only.</Alert> : null}
+      {sourceScan && draft.scope !== 'path' ? (
         <>
           <Alert severity="info">
             Editing from the original snapshot for {draft.sourceAssetName || draft.sourceAssetPath}. Tracks removed from the converted asset remain available here as profile rules; applying them requires reprocessing from the archived original.
@@ -190,7 +197,7 @@ export function TrackProfilesPage() {
       ) : draft.sourceAssetPath || draft.sourceAssetName ? (
         <Alert severity="warning">The profile keeps its source asset reference, but no matching original analysis snapshot is available.</Alert>
       ) : null}
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}><IndexField label="Video stream indexes" value={draft.keepVideoStreams} onChange={(value) => setDraft({ ...draft, keepVideoStreams: value })} /><IndexField label="Audio stream indexes" value={draft.keepAudioStreams} onChange={(value) => setDraft({ ...draft, keepAudioStreams: value })} /><IndexField label="Subtitle stream indexes" value={draft.keepSubtitleStreams} onChange={(value) => setDraft({ ...draft, keepSubtitleStreams: value })} /></Stack>
+	  {draft.scope !== 'path' ? <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}><IndexField label="Video stream indexes" value={draft.keepVideoStreams} onChange={(value) => setDraft({ ...draft, keepVideoStreams: value })} /><IndexField label="Audio stream indexes" value={draft.keepAudioStreams} onChange={(value) => setDraft({ ...draft, keepAudioStreams: value })} /><IndexField label="Subtitle stream indexes" value={draft.keepSubtitleStreams} onChange={(value) => setDraft({ ...draft, keepSubtitleStreams: value })} /></Stack> : null}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}><TextField select fullWidth label="Audio rule" value={draft.audioMode} onChange={(e) => setDraft({ ...draft, audioMode: e.target.value as TrackProfile['audioMode'] })}>{['all','default','languages','none'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField><TextField select fullWidth label="Subtitle rule" value={draft.subtitleMode} onChange={(e) => setDraft({ ...draft, subtitleMode: e.target.value as TrackProfile['subtitleMode'] })}>{['all','none','forced','languages','forced-or-languages'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField><TextField select fullWidth label="Validation" value={draft.validationMode} onChange={(e) => setDraft({ ...draft, validationMode: e.target.value as TrackProfile['validationMode'] })}>{['block','review','warn'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField></Stack>
       <TextField label="Audio languages (comma separated)" value={draft.audioLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, audioLanguages: csv(e.target.value) })} /><TextField label="Subtitle languages (comma separated)" value={draft.subtitleLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, subtitleLanguages: csv(e.target.value) })} /><TextField label="Notes" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} multiline />
     </Stack> : null}</DialogContent><DialogActions><Button onClick={() => setDraft(null)}>Cancel</Button><Button variant="contained" onClick={save} disabled={!draft?.name || update.isPending}>Save</Button></DialogActions></Dialog>

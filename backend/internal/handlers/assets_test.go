@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1879,6 +1880,15 @@ func TestMVForgeOutputPathsRequireCompletedOrPublishedJobEvidence(t *testing.T) 
 	}
 }
 
+func TestRemoveFFmpegOptionRemovesOptionAndValue(t *testing.T) {
+	args := []string{"-c:v", "hevc_qsv", "-vf", "crop=720:460:0:10", "-bf", "3"}
+	got := removeFFmpegOption(args, "-vf")
+	want := []string{"-c:v", "hevc_qsv", "-bf", "3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("removeFFmpegOption() = %#v, want %#v", got, want)
+	}
+}
+
 func TestMergeAssetMetadataStateDeduplicatesCategoriesAndTags(t *testing.T) {
 	older := time.Now().Add(-time.Hour)
 	newer := time.Now()
@@ -1900,6 +1910,90 @@ func TestMergeAssetMetadataStateDeduplicatesCategoriesAndTags(t *testing.T) {
 	}
 	assertStringList(t, merged.Categories, []string{"anime", "movie", "extras"})
 	assertStringList(t, merged.Tags, []string{"dvd-source", "mono"})
+}
+
+func TestBackfillInheritedAssetCategoriesPersistsPathCategoryOnAssets(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:metadata-category-backfill?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	groupPath := filepath.Join(t.TempDir(), "Beck")
+	assets := []models.AssetRecord{
+		{Path: filepath.Join(groupPath, "BECK - 01.mkv"), Status: "converted"},
+		{Path: filepath.Join(groupPath, "BECK - 02.mkv"), Status: "converted"},
+	}
+	if err := db.Create(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetMetadataOverrides(db, map[string]AssetMetadataState{
+		groupPath: {Categories: []string{"Anime"}, UpdatedAt: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillInheritedAssetCategories(db); err != nil {
+		t.Fatal(err)
+	}
+	metadata := assetMetadataOverrides(db)
+	for _, asset := range assets {
+		item := metadata[filepath.Clean(asset.Path)]
+		if len(item.Categories) != 1 || item.Categories[0] != "Anime" || filepath.Clean(item.InheritedFrom) != filepath.Clean(groupPath) {
+			t.Fatalf("category was not persisted for %s: %#v", asset.Path, item)
+		}
+	}
+}
+
+func TestPathCategoryUpdateChangesInheritedAssetsButPreservesExplicitCategory(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:metadata-category-propagation?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.AppSetting{}, &models.Library{}); err != nil {
+		t.Fatal(err)
+	}
+	libraryRoot := t.TempDir()
+	groupPath := filepath.Join(libraryRoot, "Beck")
+	if err := os.MkdirAll(groupPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inheritedAsset := filepath.Join(groupPath, "BECK - 01.mkv")
+	explicitAsset := filepath.Join(groupPath, "BECK - 02.mkv")
+	for _, path := range []string{inheritedAsset, explicitAsset} {
+		writeTestFile(t, path, "video")
+		if err := db.Create(&models.AssetRecord{Path: path, Status: "converted"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.Library{Name: "Anime", SourcePath: libraryRoot, DestinationPath: libraryRoot, Type: "anime"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetMetadataOverrides(db, map[string]AssetMetadataState{
+		groupPath:      {Categories: []string{"Anime"}, UpdatedAt: time.Now()},
+		inheritedAsset: {Categories: []string{"Anime"}, InheritedFrom: groupPath, UpdatedAt: time.Now()},
+		explicitAsset:  {Categories: []string{"Cartoon"}, UpdatedAt: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/metadata", NewAssetHandler(db).UpdateMetadata)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/metadata?path="+url.QueryEscape(groupPath), strings.NewReader(`{"categories":["Drama"],"tags":[]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	metadata := assetMetadataOverrides(db)
+	if got := metadata[inheritedAsset]; len(got.Categories) != 1 || got.Categories[0] != "Drama" || filepath.Clean(got.InheritedFrom) != filepath.Clean(groupPath) {
+		t.Fatalf("inherited category was not updated: %#v", got)
+	}
+	if got := metadata[explicitAsset]; len(got.Categories) != 1 || got.Categories[0] != "Cartoon" || got.InheritedFrom != "" {
+		t.Fatalf("explicit category was overwritten: %#v", got)
+	}
 }
 
 func TestAssetKeySetUsesRelativePathToAvoidBasenameCollisions(t *testing.T) {
@@ -2006,6 +2100,127 @@ func TestArchivedOriginalForJobUsesRecordedPathThenLegacyNote(t *testing.T) {
 	job.Notes = ""
 	if actual := archivedOriginalForJob(job, "/raw", "/archive"); actual != filepath.Clean("/archive/movies/movie.mkv") {
 		t.Fatalf("derived archive path=%q", actual)
+	}
+}
+
+func TestAssetSyncDeletesOnlyExpiredOriginalsWithActiveValidatedPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-retention-safety?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	libraryRoot := filepath.Join(root, "library")
+	archiveRoot := filepath.Join(root, "archive")
+	for _, path := range []string{rawRoot, libraryRoot, archiveRoot} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishedPath := filepath.Join(libraryRoot, "movie.mkv")
+	eligibleArchive := filepath.Join(archiveRoot, "eligible.mkv")
+	untrackedArchive := filepath.Join(archiveRoot, "untracked.mkv")
+	for _, path := range []string{publishedPath, eligibleArchive, untrackedArchive} {
+		if err := os.WriteFile(path, []byte("media"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := []models.AppSetting{
+		{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}},
+		{Key: "originalRetentionPolicy", Value: models.JSONMap{"processedOriginalsPath": archiveRoot, "keepOriginalsDays": 1, "autoDeleteEnabled": true}},
+	}
+	for _, setting := range settings {
+		if err := db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.Library{Name: "Movies", DestinationPath: libraryRoot}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().Add(-48 * time.Hour)
+	if err := db.Create(&models.QueueJob{
+		MediaPath: "/raw/eligible.mkv", Status: JobStatusCompleted,
+		ValidationStatus: ValidationStatusPassed, PublishedPath: publishedPath,
+		PublishedAt: &publishedAt, OriginalArchivedPath: eligibleArchive,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewAssetHandler(db).syncAssetInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExpiredDeleted != 1 {
+		t.Fatalf("expiredDeleted=%d want 1", result.ExpiredDeleted)
+	}
+	if _, err := os.Stat(eligibleArchive); !os.IsNotExist(err) {
+		t.Fatalf("eligible archived original still exists: %v", err)
+	}
+	if _, err := os.Stat(untrackedArchive); err != nil {
+		t.Fatalf("untracked archived original must be preserved: %v", err)
+	}
+	var untracked models.AssetRecord
+	if err := db.First(&untracked, "path = ?", untrackedArchive).Error; err != nil {
+		t.Fatal(err)
+	}
+	if untracked.ExpiresAt != nil {
+		t.Fatalf("untracked original must not receive an expiration: %v", untracked.ExpiresAt)
+	}
+}
+
+func TestAssetSyncPreservesExpiredOriginalWhenAutomaticDeletionIsDisabled(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-retention-disabled?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	libraryRoot := filepath.Join(root, "library")
+	archiveRoot := filepath.Join(root, "archive")
+	for _, path := range []string{rawRoot, libraryRoot, archiveRoot} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishedPath := filepath.Join(libraryRoot, "movie.mkv")
+	archivePath := filepath.Join(archiveRoot, "movie.mkv")
+	for _, path := range []string{publishedPath, archivePath} {
+		if err := os.WriteFile(path, []byte("media"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, setting := range []models.AppSetting{
+		{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}},
+		{Key: "originalRetentionPolicy", Value: models.JSONMap{"processedOriginalsPath": archiveRoot, "keepOriginalsDays": 1, "autoDeleteEnabled": false}},
+	} {
+		if err := db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishedAt := time.Now().Add(-48 * time.Hour)
+	if err := db.Create(&models.QueueJob{
+		MediaPath: "/raw/movie.mkv", Status: JobStatusCompleted,
+		ValidationStatus: ValidationStatusWarning, PublishedPath: publishedPath,
+		PublishedAt: &publishedAt, OriginalArchivedPath: archivePath,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewAssetHandler(db).syncAssetInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExpiredDeleted != 0 {
+		t.Fatalf("expiredDeleted=%d want 0", result.ExpiredDeleted)
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("automatic deletion is disabled; original must remain: %v", err)
 	}
 }
 

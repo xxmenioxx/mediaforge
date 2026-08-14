@@ -43,7 +43,9 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe } from '../api/types';
+import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe } from '../api/types';
+import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
+import { encoderNamesForWorker } from '../utils/workerEncoders';
 
 type LibraryType = {
   key: string;
@@ -100,7 +102,6 @@ type SettingsForm = {
   assetInventory: {
     autoSyncEnabled: boolean;
     syncIntervalMinutes: number;
-    expireArchiveFiles: boolean;
     reconciliationMode: 'off' | 'review' | 'exact';
   };
   validation: {
@@ -115,7 +116,6 @@ type SettingsForm = {
   };
   originalRetentionPolicy: {
     keepOriginalsDays: number;
-    enabledForSuccessfulConversionsOnly: boolean;
     autoDeleteEnabled: boolean;
     processedOriginalsPath: string;
   };
@@ -196,7 +196,6 @@ const initialSettings: SettingsForm = buildSettingsForm({
   assetInventory: {
     autoSyncEnabled: true,
     syncIntervalMinutes: 60,
-    expireArchiveFiles: true,
     reconciliationMode: 'exact',
   },
   validation: { minimumScore: 90, requireDurationMatch: true },
@@ -208,7 +207,6 @@ const initialSettings: SettingsForm = buildSettingsForm({
   },
   originalRetentionPolicy: {
     keepOriginalsDays: 30,
-    enabledForSuccessfulConversionsOnly: true,
     autoDeleteEnabled: false,
     processedOriginalsPath: '/media/originals_archive/processed-originals',
   },
@@ -302,12 +300,13 @@ export function SettingsPage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
-  const [section, setSection] = useState<'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations'>(() => requestedSection && ['pipeline', 'runtime', 'assets', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'runtime' | 'assets' | 'operations' : 'overview');
-  const changeSection = (next: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
+  const [section, setSection] = useState<'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'runtime', 'assets', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations' : 'overview');
+  const changeSection = (next: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -324,6 +323,30 @@ export function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ['libraries'] });
       await queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] });
       await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
+    },
+  });
+
+  const saveCoreSettings = useMutation({
+    mutationFn: async (nextForm: SettingsForm) => {
+      const storageRoles = storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value);
+      storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
+      return Promise.all([
+        api.updateSetting({ key: 'paths', value: nextForm.paths }),
+        api.updateSetting({ key: 'storageRoles', value: storageRoles }),
+        api.updateSetting({ key: 'workers', value: nextForm.workers }),
+        api.updateSetting({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation }),
+        api.updateSetting({ key: 'assetInventory', value: nextForm.assetInventory }),
+        api.updateSetting({ key: 'validation', value: nextForm.validation }),
+        api.updateSetting({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy }),
+        api.updateSetting({ key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy }),
+        api.updateSetting({ key: 'assetTypes', value: { types: nextForm.assetTypes } }),
+        api.updateSetting({ key: 'assetCategories', value: { categories: nextForm.assetCategories } }),
+      ]);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      await queryClient.invalidateQueries({ queryKey: ['libraries'] });
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
 
@@ -366,15 +389,7 @@ export function SettingsPage() {
   }, [settings.data]);
 
   function saveSettings(nextForm = form) {
-    updateSetting.mutate({ key: 'paths', value: nextForm.paths });
-    updateSetting.mutate({ key: 'workers', value: nextForm.workers });
-    updateSetting.mutate({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation });
-    updateSetting.mutate({ key: 'assetInventory', value: nextForm.assetInventory });
-    updateSetting.mutate({ key: 'validation', value: nextForm.validation });
-    updateSetting.mutate({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy });
-    updateSetting.mutate({ key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy });
-    updateSetting.mutate({ key: 'assetTypes', value: { types: nextForm.assetTypes } });
-    updateSetting.mutate({ key: 'assetCategories', value: { categories: nextForm.assetCategories } });
+    saveCoreSettings.mutate(nextForm);
   }
 
   function saveAdvancedSettings() {
@@ -441,7 +456,6 @@ export function SettingsPage() {
       assetInventory: {
         autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
         syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
-        expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
         reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
       },
       validation: {
@@ -477,10 +491,6 @@ export function SettingsPage() {
         processedOriginalsPath: archivePathValue(
           originalRetentionPolicy.processedOriginalsPath,
           initialSettings.originalRetentionPolicy.processedOriginalsPath,
-        ),
-        enabledForSuccessfulConversionsOnly: booleanValue(
-          originalRetentionPolicy.enabledForSuccessfulConversionsOnly,
-          initialSettings.originalRetentionPolicy.enabledForSuccessfulConversionsOnly,
         ),
         autoDeleteEnabled: booleanValue(
           originalRetentionPolicy.autoDeleteEnabled,
@@ -595,12 +605,12 @@ export function SettingsPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {settings.isError ? <Alert severity="warning">Unable to load settings.</Alert> : null}
-        {updateSetting.isSuccess ? (
+        {updateSetting.isSuccess || saveCoreSettings.isSuccess ? (
           <Alert severity="success" sx={{ mb: 2 }}>
             Settings saved.
           </Alert>
         ) : null}
-        {updateSetting.isError || updateLibrary.isError ? (
+        {updateSetting.isError || saveCoreSettings.isError || updateLibrary.isError ? (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Settings could not be fully saved.
           </Alert>
@@ -640,8 +650,15 @@ export function SettingsPage() {
                   <Grid size={{ xs: 12, md: 6 }}>
                     <PathsCard form={form} setForm={setForm} />
                   </Grid>
+                  <Grid size={{ xs: 12, md: 6 }}>
+                    <AssetInventoryCard form={form} setForm={setForm} />
+                  </Grid>
                 </Grid>
                 <StorageWorkspaceCard
+                  key={JSON.stringify({
+                    roles: storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value),
+                    workspace: workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value),
+                  })}
                   roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
                   workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
                   saving={updateSetting.isPending}
@@ -651,6 +668,10 @@ export function SettingsPage() {
                   }}
                 />
               </Stack>
+            ) : null}
+
+            {section === 'archive' ? (
+              <OriginalArchiveCard form={form} setForm={setForm} />
             ) : null}
 
             <Dialog open={showTypeForm} onClose={() => setShowTypeForm(false)} maxWidth="md" fullWidth>
@@ -758,6 +779,16 @@ export function SettingsPage() {
             </Dialog>
 
             {section === 'pipeline' ? (
+              <MVForgePreferencesCard
+                key={JSON.stringify(getMVForgePreferences(settings.data))}
+                value={getMVForgePreferences(settings.data)}
+                availableEncoders={[...new Set((workerNodes.data ?? []).flatMap((worker) => [...encoderNamesForWorker(worker)]))]}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'mvforgePreferences', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'pipeline' ? (
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <WorkersCard form={form} setForm={setForm} />
@@ -778,6 +809,7 @@ export function SettingsPage() {
 
             {section === 'runtime' ? (
               <RuntimeProfilesCard
+                key={JSON.stringify(runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value))}
                 catalog={runtimeProfilesQuery.data}
                 value={runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value)}
                 detectedProfile={runtimeSnapshot.data?.recommendedProfile ?? 'desktop_safe'}
@@ -805,6 +837,7 @@ export function SettingsPage() {
             
             {section === 'pipeline' ? (
               <DirectPlayCard
+                key={JSON.stringify(directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value))}
                 value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
                 saving={updateSetting.isPending}
                 onSave={(value) => updateSetting.mutate({ key: 'directPlay', value: value as unknown as Record<string, unknown> })}
@@ -812,18 +845,19 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'pipeline' ? (
-              <FrameStructureSamplingCard value={frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'frameStructureSampling', value: value as unknown as Record<string, unknown> })} />
+              <FrameStructureSamplingCard key={JSON.stringify(frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value))} value={frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'frameStructureSampling', value: value as unknown as Record<string, unknown> })} />
             ) : null}
 
             {section === 'pipeline' ? (
               <WorkingHoursCard
+                key={JSON.stringify(workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value))}
                 value={workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value)}
                 saving={updateSetting.isPending}
                 onSave={(value) => updateSetting.mutate({ key: 'workingHours', value: value as unknown as Record<string, unknown> })}
               />
             ) : null}
 
-            {section === 'runtime' ? (
+            {section === 'operations' ? (
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12 }}>
                   <SchedulerRecoveryCard report={schedulerRecovery.data} loading={schedulerRecovery.isLoading} error={schedulerRecovery.isError} running={runRecovery.isPending} runError={runRecovery.error} onRun={() => runRecovery.mutate()} />
@@ -831,11 +865,9 @@ export function SettingsPage() {
                 <Grid size={{ xs: 12, md: 6 }}>
                   <CancellationPolicyCard form={form} setForm={setForm} />
                 </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <OriginalRetentionCard form={form} setForm={setForm} />
-                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <HousekeepingCard
+                    key={JSON.stringify(housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value))}
                     value={housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value)}
                     saving={updateSetting.isPending}
                     preview={previewHousekeeping.data}
@@ -849,9 +881,9 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            {section === 'operations' ? (
+            {section === 'runtime' || section === 'operations' ? (
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12 }}>
+                <Grid size={{ xs: 12 }} sx={{ display: section === 'runtime' ? 'block' : 'none' }}>
                   <Card>
                     <CardContent>
                       <Stack spacing={1.5}>
@@ -949,7 +981,7 @@ export function SettingsPage() {
                     </CardContent>
                   </Card>
                 </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
+                <Grid size={{ xs: 12, md: 6 }} sx={{ display: section === 'operations' ? 'block' : 'none' }}>
                   <Card>
                     <CardContent>
                       <Stack spacing={1.5}>
@@ -965,7 +997,7 @@ export function SettingsPage() {
                     </CardContent>
                   </Card>
                 </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
+                <Grid size={{ xs: 12, md: 6 }} sx={{ display: section === 'operations' ? 'block' : 'none' }}>
                   <Card>
                     <CardContent>
                       <Stack spacing={1.5}>
@@ -988,14 +1020,14 @@ export function SettingsPage() {
               startIcon={<SaveIcon />}
               variant="contained"
               onClick={() => saveSettings()}
-              disabled={updateSetting.isPending}
+              disabled={updateSetting.isPending || saveCoreSettings.isPending}
               sx={{ alignSelf: 'flex-start' }}
             >
               Save Settings
             </Button>
           </Stack>
         ) : (
-          <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending} />
+          <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending || saveCoreSettings.isPending} />
         )}
       </Box>
 
@@ -1043,17 +1075,62 @@ export function SettingsPage() {
   );
 }
 
-function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'operations') => void }) {
+function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations') => void }) {
   const domains = [
     { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
     { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
-    { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
-    { key: 'operations' as const, title: 'Operations', description: 'Recovery, cleanup, retention, runtime diagnostics and system-wide logs.', color: 'warning.main' },
+    { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
+    { key: 'archive' as const, title: 'Original Archive', description: 'Archive locations, retention period and safe automatic deletion policy.', color: 'secondary.main' },
+    { key: 'operations' as const, title: 'Operations', description: 'Scheduler recovery, cancellation cleanup, housekeeping and system-wide logs.', color: 'warning.main' },
   ];
   return <Stack spacing={2}>
     {section !== 'overview' ? <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="h2">{domains.find((domain) => domain.key === section)?.title}</Typography><Typography color="text.secondary">{domains.find((domain) => domain.key === section)?.description}</Typography></Stack><Button onClick={() => onChange('overview')}>Back to settings dashboard</Button></Stack> : <Stack><Typography variant="h2">Configuration dashboard</Typography><Typography color="text.secondary">Choose an operational area. Related controls stay together on one page.</Typography></Stack>}
-    {section === 'overview' ? <Grid container spacing={2}>{domains.map((domain) => <Grid size={{ xs: 12, sm: 6, lg: 3 }} key={domain.key}><Card sx={{ height: '100%', borderTop: 3, borderTopColor: domain.color }}><CardContent><Stack spacing={1.5} sx={{ height: '100%' }}><Typography variant="h3">{domain.title}</Typography><Typography color="text.secondary" sx={{ flex: 1 }}>{domain.description}</Typography><Button variant="contained" onClick={() => onChange(domain.key)}>Open {domain.title}</Button>{domain.key === 'operations' ? <Button component={RouterLink} to="/logs">Open logs directly</Button> : null}</Stack></CardContent></Card></Grid>)}</Grid> : null}
+    {section === 'overview' ? <Grid container spacing={2}>{domains.map((domain) => <Grid size={{ xs: 12, sm: 6, lg: 4 }} key={domain.key}><Card sx={{ height: '100%', borderTop: 3, borderTopColor: domain.color }}><CardContent><Stack spacing={1.5} sx={{ height: '100%' }}><Typography variant="h3">{domain.title}</Typography><Typography color="text.secondary" sx={{ flex: 1 }}>{domain.description}</Typography><Button variant="contained" onClick={() => onChange(domain.key)}>Open {domain.title}</Button>{domain.key === 'operations' ? <Button component={RouterLink} to="/logs">Open logs directly</Button> : null}</Stack></CardContent></Card></Grid>)}</Grid> : null}
   </Stack>;
+}
+
+function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: { value: MVForgePreferences; availableEncoders: string[]; saving: boolean; onSave: (value: MVForgePreferences) => void }) {
+  const [draft, setDraft] = useState<MVForgePreferences>(value);
+  const candidates = draft.executionPreference === 'hardware'
+    ? [
+        { value: 'auto', label: 'Auto · first available hardware encoder' },
+        { value: 'hevc_qsv', label: 'HEVC Quick Sync' },
+        { value: 'hevc_videotoolbox', label: 'HEVC VideoToolbox' },
+        { value: 'hevc_nvenc', label: 'HEVC NVENC' },
+      ]
+    : [
+        { value: 'auto', label: 'Auto · software encoder for codec' },
+        { value: 'libx265', label: 'libx265' },
+        { value: 'libx264', label: 'libx264' },
+        { value: 'libsvtav1', label: 'SVT-AV1' },
+      ];
+  const encoderOptions = candidates.filter((option) => option.value === 'auto' || availableEncoders.includes(option.value));
+  const selectedEncoder = encoderOptions.some((option) => option.value === draft.preferredVideoEncoder) ? draft.preferredVideoEncoder : 'auto';
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack>
+      <Typography variant="h3">MVForge draft preferences</Typography>
+      <Typography color="text.secondary" variant="body2">
+        These values initialize new LAB, Profile, and Asset Override drafts. Queue and Worker never read this setting.
+      </Typography>
+    </Stack>
+    <Grid container spacing={1.5}>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Quality / storage preference" value={draft.qualityGoal} onChange={(event) => setDraft((current) => ({ ...current, qualityGoal: event.target.value as MVForgePreferences['qualityGoal'] }))}>
+        <MenuItem value="maximum_savings">Maximum space saving</MenuItem><MenuItem value="balanced">Balanced</MenuItem><MenuItem value="conservative">Conservative quality</MenuItem><MenuItem value="maximum_quality">Maximum quality</MenuItem><MenuItem value="archive">Archive</MenuItem>
+      </TextField></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Preferred execution" value={draft.executionPreference} onChange={(event) => setDraft((current) => ({ ...current, executionPreference: event.target.value as MVForgePreferences['executionPreference'], preferredVideoEncoder: 'auto' }))}>
+        <MenuItem value="software">Software preferred</MenuItem><MenuItem value="hardware">Hardware preferred</MenuItem>
+      </TextField></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Preferred video encoder" value={selectedEncoder} onChange={(event) => setDraft((current) => ({ ...current, preferredVideoEncoder: event.target.value }))}>
+        {encoderOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
+      </TextField></Grid>
+      {encoderOptions.length === 1 ? <Grid size={{ xs: 12 }}><Alert severity="info">No worker currently reports a compatible {draft.executionPreference} encoder. Auto remains available as a draft preference and Advisor will flag unavailable hardware instead of substituting it silently.</Alert></Grid> : null}
+      <Grid size={{ xs: 12 }}><Autocomplete multiple freeSolo options={['jpn', 'spa', 'eng', 'fra', 'deu', 'ita', 'por', 'kor', 'zho']} value={draft.preferredLanguages} onChange={(_, languages) => setDraft((current) => ({ ...current, preferredLanguages: [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))] }))} renderInput={(params) => <TextField {...params} label="Preferred languages" helperText="Ordered favorites used to prefill language fields; they do not select or remove tracks automatically." />} /></Grid>
+    </Grid>
+    <Stack direction="row" spacing={1}>
+      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || draft.preferredLanguages.length === 0} onClick={() => onSave({ ...draft, preferredVideoEncoder: selectedEncoder })}>Save preferences</Button>
+      <Button disabled={saving} onClick={() => setDraft(defaultMVForgePreferences)}>Restore defaults</Button>
+    </Stack>
+  </Stack></CardContent></Card>;
 }
 
 function SchedulerRecoveryCard({ report, loading, error, running, runError, onRun }: { report?: SchedulerRecoveryReport; loading: boolean; error: boolean; running: boolean; runError: Error | null; onRun: () => void }) {
@@ -1212,7 +1289,6 @@ const runtimeNumericFields: Array<{ key: keyof RuntimeProfileValues; label: stri
 
 function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave }: { catalog?: RuntimeProfilesResponse; value: RuntimePolicyValue; detectedProfile: string; saving: boolean; onSave: (value: RuntimePolicyValue) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [JSON.stringify(value)]);
   if (!catalog) return <Card><CardContent><Typography color="text.secondary">Loading runtime profiles…</Typography></CardContent></Card>;
   const selectedKey = draft.preferredProfile === 'auto' ? detectedProfile : draft.preferredProfile;
   const selected = catalog.profiles.find((profile) => profile.key === selectedKey) ?? catalog.profiles[0];
@@ -1243,7 +1319,6 @@ function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave }
 
 function HousekeepingCard({ value, saving, preview, result, busy, onSave, onPreview, onRun }: { value: HousekeepingValue; saving: boolean; preview?: HousekeepingReport; result?: HousekeepingReport; busy: boolean; onSave: (value: HousekeepingValue) => void; onPreview: () => void; onRun: () => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [JSON.stringify(value)]);
   const report = result ?? preview;
   const daysField = (key: 'failedRetentionDays' | 'canceledRetentionDays' | 'orphanRetentionDays', label: string) => <TextField type="number" label={label} value={draft[key]} inputProps={{ min: 0 }} onChange={(event) => setDraft({ ...draft, [key]: Math.max(0, Number(event.target.value)) })} fullWidth />;
   return <Card><CardContent><Stack spacing={2}>
@@ -1285,14 +1360,12 @@ function frameStructureSamplingValue(value: Record<string, unknown> | undefined)
 
 function FrameStructureSamplingCard({ value, saving, onSave }: { value: FrameStructureSamplingValue; saving: boolean; onSave: (value: FrameStructureSamplingValue) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
   const total = draft.windows * draft.windowSeconds;
   return <Card><CardContent><Stack spacing={2}><Box><Typography variant="h3">Frame Structure Sampling</Typography><Typography color="text.secondary" variant="body2">Distributed I/P/B and GOP analysis policy. Windows are analyzed independently.</Typography></Box><FormControlLabel control={<Switch checked={draft.adaptive} onChange={(event) => setDraft({ ...draft, adaptive: event.target.checked })} />} label="Adaptive sampling for short assets" /><Grid container spacing={1.5}><Grid size={{ xs: 12, sm: 4 }}><TextField label="Windows" type="number" size="small" value={draft.windows} onChange={(event) => setDraft({ ...draft, windows: Math.max(1, Math.min(9, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Window length (seconds)" type="number" size="small" value={draft.windowSeconds} onChange={(event) => setDraft({ ...draft, windowSeconds: Math.max(5, Math.min(60, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Total sampled" value={`${total} seconds maximum`} size="small" disabled fullWidth /></Grid><Grid size={{ xs: 12 }}><TextField label="Positions (%)" size="small" value={draft.positions.map((position) => Math.round(position * 100)).join(', ')} onChange={(event) => setDraft({ ...draft, positions: event.target.value.split(',').map((item) => Number(item.trim()) / 100).filter((item) => Number.isFinite(item) && item > 0 && item < 1) })} helperText="Window centers, for example: 8, 27, 50, 73, 92" fullWidth /></Grid></Grid><Box><Button variant="contained" startIcon={<SaveIcon />} disabled={saving || draft.positions.length < draft.windows} onClick={() => onSave(draft)}>Save sampling policy</Button></Box></Stack></CardContent></Card>;
 }
 
 function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [JSON.stringify(value)]);
   const toggleClient = (client: string) => setDraft((current) => ({ ...current, targetClients: current.targetClients.includes(client) ? current.targetClients.filter((item) => item !== client) : [...current.targetClients, client] }));
   return <Card><CardContent><Stack spacing={2}>
     <Stack><Typography variant="h3">DirectPlay Policy</Typography><Typography color="text.secondary" variant="body2">Estimate playback compatibility from the planned output profile for each target client.</Typography></Stack>
@@ -1327,7 +1400,6 @@ function workingHoursValue(value: Record<string, unknown> | undefined): WorkingH
 
 function WorkingHoursCard({ value, saving, onSave }: { value: WorkingHoursValue; saving: boolean; onSave: (value: WorkingHoursValue) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [JSON.stringify(value)]);
   const updateWindow = (index: number, patch: Partial<WorkingWindow>) => setDraft((current) => ({ ...current, windows: current.windows.map((window, position) => position === index ? { ...window, ...patch } : window) }));
   return <Card><CardContent><Stack spacing={2}>
     <Stack><Typography variant="h3">Working Hours</Typography><Typography color="text.secondary" variant="body2">Heavy conversions only start inside allowed windows; running jobs continue.</Typography></Stack>
@@ -1370,11 +1442,10 @@ function workspaceValue(value: Record<string, unknown> | undefined): WorkspaceVa
 function StorageWorkspaceCard({ roles, workspace, saving, onSave }: { roles: StorageRolesValue; workspace: WorkspaceValue; saving: boolean; onSave: (roles: Record<string, unknown>, workspace: WorkspaceValue) => void }) {
   const [roleDraft, setRoleDraft] = useState(roles);
   const [workspaceDraft, setWorkspaceDraft] = useState(workspace);
-  useEffect(() => setRoleDraft(roles), [JSON.stringify(roles)]);
-  useEffect(() => setWorkspaceDraft(workspace), [JSON.stringify(workspace)]);
   return <Grid container spacing={2}>
     <Grid size={{ xs: 12, md: 7 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Storage Roles</Typography><Typography color="text.secondary" variant="body2">Scheduler paths are referenced by role instead of host-specific locations.</Typography></Stack>
-      {storageRoleNames.map((role) => <TextField key={role} label={role.replaceAll('_', ' ')} value={roleDraft[role].path} onChange={(event) => setRoleDraft((current) => ({ ...current, [role]: { path: event.target.value } }))} fullWidth />)}
+      {storageRoleNames.filter((role) => role !== 'originals_archive').map((role) => <TextField key={role} label={role.replaceAll('_', ' ')} value={roleDraft[role].path} onChange={(event) => setRoleDraft((current) => ({ ...current, [role]: { path: event.target.value } }))} fullWidth />)}
+      <Alert severity="info">The originals_archive role is managed in the Original Archive settings section.</Alert>
     </Stack></CardContent></Card></Grid>
     <Grid size={{ xs: 12, md: 5 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Workspace Strategy</Typography><Typography color="text.secondary" variant="body2">Choose whether FFmpeg reads a work-disk copy or reads raw directly.</Typography></Stack>
       <TextField select label="Preferred mode" value={workspaceDraft.preferredMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, preferredMode: event.target.value as WorkspaceValue['preferredMode'] })}><MenuItem value="copy_to_work_disk">Copy input to work disk</MenuItem><MenuItem value="direct_mode">Read raw directly</MenuItem></TextField>
@@ -1407,26 +1478,6 @@ function PathsCard({ form, setForm }: SettingsCardProps) {
             fullWidth
           />
           <TextField
-            select
-            label="Renamed or relocated assets"
-            value={form.assetInventory.reconciliationMode}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                assetInventory: {
-                  ...current.assetInventory,
-                  reconciliationMode: event.target.value as 'off' | 'review' | 'exact',
-                },
-              }))
-            }
-            helperText="Exact fingerprints can be reconciled automatically; uncertain legacy matches are sent to Review."
-            fullWidth
-          >
-            <MenuItem value="exact">Automatically reconcile exact fingerprints</MenuItem>
-            <MenuItem value="review">Review all possible matches</MenuItem>
-            <MenuItem value="off">Off</MenuItem>
-          </TextField>
-          <TextField
             label="Library root"
             value={form.paths.libraryRoot}
             onChange={(event) =>
@@ -1440,15 +1491,6 @@ function PathsCard({ form, setForm }: SettingsCardProps) {
             onChange={(event) =>
               setForm((current) => ({ ...current, paths: { ...current.paths, stagingPath: event.target.value } }))
             }
-            fullWidth
-          />
-          <TextField
-            label="Originals archive path"
-            value={form.paths.originalsArchivePath}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, paths: { ...current.paths, originalsArchivePath: event.target.value } }))
-            }
-            helperText="Controlled root for originals that have already been converted and published."
             fullWidth
           />
           <TextField
@@ -1696,62 +1738,6 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
           <Typography color="text.secondary" variant="caption">
             Periodically cleans staging for published jobs. It does not move recovered originals back to Archive.
           </Typography>
-          <Divider />
-          <Typography variant="h3">Asset Inventory Sync</Typography>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={form.assetInventory.autoSyncEnabled}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    assetInventory: {
-                      ...current.assetInventory,
-                      autoSyncEnabled: event.target.checked,
-                    },
-                  }))
-                }
-              />
-            }
-            label="Automatic asset inventory sync"
-          />
-          <TextField
-            label="Sync interval minutes"
-            type="number"
-            value={form.assetInventory.syncIntervalMinutes}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                assetInventory: {
-                  ...current.assetInventory,
-                  syncIntervalMinutes: Number(event.target.value),
-                },
-              }))
-            }
-            helperText="How often MVForge refreshes raw/library/archive inventory in the DB."
-            inputProps={{ min: 5, max: 10080 }}
-            fullWidth
-          />
-          <Typography color="text.secondary" variant="caption">
-            Runs automatically after backend startup and at this interval. Each run also reconciles renamed or moved Library assets according to the reconciliation mode above.
-          </Typography>
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={form.assetInventory.expireArchiveFiles}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    assetInventory: {
-                      ...current.assetInventory,
-                      expireArchiveFiles: event.target.checked,
-                    },
-                  }))
-                }
-              />
-            }
-            label="Physically delete expired archive files during sync"
-          />
         </Stack>
       </CardContent>
     </Card>
@@ -1780,21 +1766,6 @@ function ValidationCard({ form, setForm }: SettingsCardProps) {
               }))
             }
             inputProps={{ min: 0, max: 100 }}
-            fullWidth
-          />
-          <TextField
-            label="Processed originals archive path"
-            value={form.originalRetentionPolicy.processedOriginalsPath}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                originalRetentionPolicy: {
-                  ...current.originalRetentionPolicy,
-                  processedOriginalsPath: event.target.value,
-                },
-              }))
-            }
-            helperText="Where MVForge should move converted originals before retention cleanup or reuse."
             fullWidth
           />
           <FormControlLabel
@@ -1898,69 +1869,137 @@ function CancellationPolicyCard({ form, setForm }: SettingsCardProps) {
   );
 }
 
-function OriginalRetentionCard({ form, setForm }: SettingsCardProps) {
+function AssetInventoryCard({ form, setForm }: SettingsCardProps) {
   return (
     <Card sx={{ height: '100%' }}>
       <CardContent>
         <Stack spacing={2}>
           <Stack>
-            <Typography variant="h3">Originals Retention</Typography>
+            <Typography variant="h3">Asset Inventory</Typography>
             <Typography color="text.secondary" variant="body2">
-              How long converted originals should be preserved before cleanup.
+              Discovery and reconciliation of Raw, Library, Converted, and Archive records.
             </Typography>
           </Stack>
-          <TextField
-            label="Keep originals for days"
-            type="number"
-            value={form.originalRetentionPolicy.keepOriginalsDays}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                originalRetentionPolicy: {
-                  ...current.originalRetentionPolicy,
-                  keepOriginalsDays: Number(event.target.value),
-                },
-              }))
-            }
-            inputProps={{ min: 0, max: 3650 }}
-            fullWidth
-          />
-          <TextField
-            label="Processed originals archive path"
-            value={form.originalRetentionPolicy.processedOriginalsPath}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                originalRetentionPolicy: {
-                  ...current.originalRetentionPolicy,
-                  processedOriginalsPath: event.target.value,
-                },
-              }))
-            }
-            helperText="Where MVForge should move converted originals before retention cleanup or reuse."
-            fullWidth
-          />
           <FormControlLabel
             control={
-              <Checkbox
-                checked={form.originalRetentionPolicy.enabledForSuccessfulConversionsOnly}
-                onChange={(event) =>
+              <Switch
+                checked={form.assetInventory.autoSyncEnabled}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  assetInventory: { ...current.assetInventory, autoSyncEnabled: event.target.checked },
+                }))}
+              />
+            }
+            label="Automatic inventory sync"
+          />
+          <TextField
+            label="Sync interval minutes"
+            type="number"
+            value={form.assetInventory.syncIntervalMinutes}
+            onChange={(event) => setForm((current) => ({
+              ...current,
+              assetInventory: { ...current.assetInventory, syncIntervalMinutes: Number(event.target.value) },
+            }))}
+            helperText="Runs after backend startup and then at this interval."
+            inputProps={{ min: 5, max: 10080 }}
+            disabled={!form.assetInventory.autoSyncEnabled}
+            fullWidth
+          />
+          <TextField
+            select
+            label="Renamed or relocated assets"
+            value={form.assetInventory.reconciliationMode}
+            onChange={(event) => setForm((current) => ({
+              ...current,
+              assetInventory: {
+                ...current.assetInventory,
+                reconciliationMode: event.target.value as 'off' | 'review' | 'exact',
+              },
+            }))}
+            helperText="Exact fingerprints can be reconciled automatically; uncertain legacy matches can require review."
+            fullWidth
+          >
+            <MenuItem value="exact">Automatically reconcile exact fingerprints</MenuItem>
+            <MenuItem value="review">Review all possible matches</MenuItem>
+            <MenuItem value="off">Off</MenuItem>
+          </TextField>
+          <Alert severity="info">
+            Inventory sync is read-only for media unless automatic Original Archive deletion is explicitly enabled in its own section.
+          </Alert>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OriginalArchiveCard({ form, setForm }: SettingsCardProps) {
+  const automaticDeletion = form.originalRetentionPolicy.autoDeleteEnabled;
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack>
+            <Typography variant="h3">Original Archive</Typography>
+            <Typography color="text.secondary" variant="body2">
+              One place for archive locations, retention, and physical deletion policy.
+            </Typography>
+          </Stack>
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="Original Archive root"
+                value={form.paths.originalsArchivePath}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  paths: { ...current.paths, originalsArchivePath: event.target.value },
+                }))}
+                helperText="Controlled root. MVForge will never apply this policy outside this path."
+                fullWidth
+              />
+            </Grid>
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="Processed originals path"
+                value={form.originalRetentionPolicy.processedOriginalsPath}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  originalRetentionPolicy: {
+                    ...current.originalRetentionPolicy,
+                    processedOriginalsPath: event.target.value,
+                  },
+                }))}
+                helperText="Destination for originals archived after a successful publication."
+                fullWidth
+              />
+            </Grid>
+            <Grid size={{ xs: 12, md: 6 }}>
+              <TextField
+                label="Keep originals for days"
+                type="number"
+                value={form.originalRetentionPolicy.keepOriginalsDays}
+                onChange={(event) => {
+                  const days = Math.max(0, Number(event.target.value));
                   setForm((current) => ({
                     ...current,
                     originalRetentionPolicy: {
                       ...current.originalRetentionPolicy,
-                      enabledForSuccessfulConversionsOnly: event.target.checked,
+                      keepOriginalsDays: days,
+                      autoDeleteEnabled: days === 0 ? false : current.originalRetentionPolicy.autoDeleteEnabled,
                     },
-                  }))
-                }
+                  }));
+                }}
+                helperText="0 keeps originals indefinitely and disables automatic deletion."
+                inputProps={{ min: 0, max: 3650 }}
+                fullWidth
               />
-            }
-            label="Only after successful conversions"
-          />
+            </Grid>
+          </Grid>
+          <Divider />
           <FormControlLabel
             control={
-              <Checkbox
-                checked={form.originalRetentionPolicy.autoDeleteEnabled}
+              <Switch
+                checked={automaticDeletion}
+                disabled={form.originalRetentionPolicy.keepOriginalsDays === 0}
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
@@ -1972,10 +2011,12 @@ function OriginalRetentionCard({ form, setForm }: SettingsCardProps) {
                 }
               />
             }
-            label="Enable automatic deletion later"
+            label="Automatically delete expired originals during inventory sync"
           />
-          <Alert severity="info">
-            Cleanup will only apply to originals tracked by MVForge after a successful conversion.
+          <Alert severity={automaticDeletion ? 'warning' : 'info'}>
+            {automaticDeletion
+              ? 'Physical deletion is enabled. MVForge only deletes an expired original when it is linked to an active completed job, validation passed or warned, and the published replacement still exists. Logs, reports, snapshots, and untracked archive files are preserved.'
+              : 'Physical deletion is disabled. Expiration dates remain visible for tracked originals, but sync only reconciles inventory and does not remove media.'}
           </Alert>
         </Stack>
       </CardContent>
@@ -2481,6 +2522,10 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
   const validation = byKey.validation ?? {};
   const cancellationPolicy = byKey.cancellationPolicy ?? {};
   const originalRetentionPolicy = byKey.originalRetentionPolicy ?? {};
+  const storageRoles = storageRolesValue(byKey.storageRoles);
+  const hasOriginalArchiveRole = Boolean(
+    byKey.storageRoles && typeof byKey.storageRoles.originals_archive === 'object',
+  );
   const assetTypes = byKey.assetTypes ?? {};
   const assetCategories = byKey.assetCategories ?? {};
 
@@ -2490,7 +2535,7 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       libraryRoot: stringValue(paths.libraryRoot, initialSettings.paths.libraryRoot),
       stagingPath: stringValue(paths.stagingPath, initialSettings.paths.stagingPath),
       originalsArchivePath: archivePathValue(
-        paths.originalsArchivePath ?? paths.trashPath,
+        hasOriginalArchiveRole ? storageRoles.originals_archive.path : paths.originalsArchivePath ?? paths.trashPath,
         initialSettings.paths.originalsArchivePath,
       ),
       asIsReportsPath: stringValue(paths.asIsReportsPath, initialSettings.paths.asIsReportsPath),
@@ -2535,7 +2580,6 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
     assetInventory: {
       autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
       syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
-      expireArchiveFiles: booleanValue(assetInventory.expireArchiveFiles, initialSettings.assetInventory.expireArchiveFiles),
       reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
     },
     validation: {
@@ -2571,10 +2615,6 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       processedOriginalsPath: archivePathValue(
         originalRetentionPolicy.processedOriginalsPath,
         initialSettings.originalRetentionPolicy.processedOriginalsPath,
-      ),
-      enabledForSuccessfulConversionsOnly: booleanValue(
-        originalRetentionPolicy.enabledForSuccessfulConversionsOnly,
-        initialSettings.originalRetentionPolicy.enabledForSuccessfulConversionsOnly,
       ),
       autoDeleteEnabled: booleanValue(
         originalRetentionPolicy.autoDeleteEnabled,

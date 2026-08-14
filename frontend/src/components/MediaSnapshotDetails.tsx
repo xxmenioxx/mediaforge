@@ -29,6 +29,7 @@ export type StreamMetadataControls = {
 export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
   const video = scan.videoStreams?.[0];
   const frames = scan.frameStructureAnalysis;
+  const frameRecommendation = scan.frameStructureRecommendation;
   const crop = scan.cropAnalysis;
   const interlace = scan.interlaceAnalysis;
 
@@ -58,6 +59,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Sampling', frames.windowCount ? `${frames.sampledSeconds?.toFixed(0) ?? 0}s across ${frames.windowCount} regions` : `${frames.framesAnalyzed} frames`],
           ['Coverage', frames.coverageRatio !== undefined ? `${(frames.coverageRatio * 100).toFixed(1)}% · ${frames.confidence || 'unknown'} confidence` : 'Legacy sample'],
           ['Variability', frames.variability || 'Unknown'],
+          ['Recommended GOP', frameRecommendation?.byMode?.balanced?.targetGopFrames ? `${frameRecommendation.byMode.balanced.targetGopFrames} frames · balanced` : 'Unavailable'],
+          ['Recommended B depth', frameRecommendation?.recommendedMaxBFrames !== undefined ? String(frameRecommendation.recommendedMaxBFrames) : 'Unavailable'],
         ] : [['Status', 'Run Process Asset to refresh frame analysis']]} />
       </Grid>
       <Grid size={{ xs: 12, md: 6 }}>

@@ -8,7 +8,7 @@ type Props = {
   config: Record<string, unknown>;
   recommendedGop?: number;
   recommendedBFrames?: number;
-  recommendedGopByMode?: Partial<Record<Exclude<FrameStructureMode, 'custom'>, number>>;
+  recommendedGopByMode?: Partial<Record<Exclude<FrameStructureMode, 'custom' | 'auto' | 'off'>, number>>;
   frameRate?: number;
   onChange: (key: string, value: unknown) => void;
   onChangeMany?: (patch: Record<string, unknown>) => void;
@@ -18,7 +18,8 @@ type Props = {
 };
 
 export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
-  const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
+  const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
+  const structureDisabled = disabled || structureMode === 'off';
   const gopMode = mode<GOPMode>(config.frameStructureGopMode, ['auto', 'recommended', 'custom'], 'auto');
   const bFrameMode = mode<BFrameMode>(config.frameStructureBFrameMode, ['auto', 'recommended', 'custom', 'off'], 'auto');
   const gop = positiveInt(config.frameStructureGopFrames, recommendedGop || 120);
@@ -44,7 +45,9 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
         </Stack>
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => { const next = event.target.value as FrameStructureMode; commit(frameStructureModePatch(next, next === 'custom' ? recommendedGop : recommendedGopByMode?.[next] ?? recommendedGop, recommendedBFrames)); }} helperText="Sets the visible advanced values; editing one changes the mode to Custom." size={compact ? 'small' : 'medium'} fullWidth>
+            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => { const next = event.target.value as FrameStructureMode; const policyGop = next === 'compatible' || next === 'balanced' || next === 'maximum_compression' ? recommendedGopByMode?.[next] : recommendedGop; commit(frameStructureModePatch(next, policyGop ?? recommendedGop, recommendedBFrames)); }} helperText={structureMode === 'auto' ? 'MVForge resolves Recommended values for each asset.' : structureMode === 'off' ? 'No frame-structure parameters are sent to the encoder.' : 'Editing an advanced value changes the mode to Custom.'} size={compact ? 'small' : 'medium'} fullWidth>
+              <MenuItem value="auto">Auto · MVForge Recommended</MenuItem>
+              <MenuItem value="off">Off · Encoder defaults</MenuItem>
               <MenuItem value="compatible">Compatible</MenuItem>
               <MenuItem value="balanced">Balanced</MenuItem>
               <MenuItem value="maximum_compression">Maximum Compression</MenuItem>
@@ -52,7 +55,7 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="GOP" value={gopMode} disabled={disabled} onChange={(event) => {
+            <TextField select label="GOP" value={gopMode} disabled={structureDisabled || structureMode === 'auto'} onChange={(event) => {
               const next = event.target.value as GOPMode;
               const params = { ...x265Params };
               if (next !== 'custom') delete params.scenecut;
@@ -64,10 +67,10 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={disabled || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={gopMode === 'auto' ? 'Encoder decides' : `${gop} frames${frameRate && frameRate > 0 ? ` · ~${(gop / frameRate).toFixed(2)} s` : ''}`} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
+            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={structureDisabled || structureMode === 'auto' || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={structureMode === 'off' ? 'Not sent to the encoder' : gopMode === 'auto' ? 'Encoder decides' : `${gop} frames${frameRate && frameRate > 0 ? ` · ~${(gop / frameRate).toFixed(2)} s` : ''}`} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="B-frames" value={bFrameMode} disabled={disabled} onChange={(event) => {
+            <TextField select label="B-frames" value={bFrameMode} disabled={structureDisabled || structureMode === 'auto'} onChange={(event) => {
               const next = event.target.value as BFrameMode;
               const params = { ...x265Params };
               delete params.bframes;
@@ -90,10 +93,10 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={bFrameMode === 'recommended' ? 'Recommended maximum' : 'Maximum B-frames'} type="number" value={bFrames} disabled={disabled || bFrameMode === 'auto' || bFrameMode === 'recommended' || bFrameMode === 'off'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureMaxBFrames: Math.max(1, Math.min(16, Number(event.target.value))) })} helperText={bFrameMode === 'auto' ? 'Encoder decides' : bFrameMode === 'off' ? encoder === 'hevc_qsv' ? 'Requests regular B-frame distance 0; GPB may remain active' : 'Effective request: -bf 0' : bFrameMode === 'recommended' ? `MVForge analysis: ${recommendedBFrames}` : 'User-selected maximum'} inputProps={{ min: 1, max: 16 }} size={compact ? 'small' : 'medium'} fullWidth />
+            <TextField label={bFrameMode === 'recommended' ? 'Recommended maximum' : 'Maximum B-frames'} type="number" value={bFrames} disabled={structureDisabled || structureMode === 'auto' || bFrameMode === 'auto' || bFrameMode === 'recommended' || bFrameMode === 'off'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureMaxBFrames: Math.max(1, Math.min(16, Number(event.target.value))) })} helperText={structureMode === 'off' ? 'Not sent to the encoder' : bFrameMode === 'auto' ? 'Encoder decides' : bFrameMode === 'off' ? encoder === 'hevc_qsv' ? 'Requests regular B-frame distance 0; GPB may remain active' : 'Effective request: -bf 0' : bFrameMode === 'recommended' ? `MVForge analysis: ${recommendedBFrames}` : 'User-selected maximum'} inputProps={{ min: 1, max: 16 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
         </Grid>
-        {encoder === 'libx265' && (gopMode === 'custom' || bFrameMode === 'custom') ? (
+        {structureMode !== 'off' && encoder === 'libx265' && (gopMode === 'custom' || bFrameMode === 'custom') ? (
           <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1.5 }}>
             <Typography variant="body2" fontWeight={700} sx={{ mb: 1 }}>x265 controls for the selected Custom modes</Typography>
             <Grid container spacing={1.5}>

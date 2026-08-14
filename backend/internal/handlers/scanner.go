@@ -160,6 +160,9 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	var existing models.ScanResult
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+			if ensureFrameStructureRecommendation(&existing) {
+				_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
+			}
 			report("completed", 100, "Using the existing asset snapshot")
 			return existing, true, nil
 		}
@@ -206,6 +209,7 @@ func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo
 	if source.RawProbe == nil {
 		source.RawProbe = models.JSONMap{}
 	}
+	ensureFrameStructureRecommendation(&source)
 	source.RawProbe["snapshotProvenance"] = models.JSONMap{
 		"source": "raw_asset", "sourcePath": filepath.Clean(job.MediaPath), "archivePath": filepath.Clean(archivePath), "jobId": job.ID,
 	}
@@ -541,6 +545,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		FrameStructureAnalysis: analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
+	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
 	return result
 }
 

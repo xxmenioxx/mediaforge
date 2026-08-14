@@ -43,6 +43,7 @@ func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&models.Library{},
 		&models.Profile{},
+		&models.ProfileAssignment{},
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
 		&models.RuntimeSnapshot{},
@@ -62,6 +63,12 @@ func Migrate(db *gorm.DB) error {
 	if err := normalizeProfileContracts(db); err != nil {
 		return err
 	}
+	if err := backfillProfileScopes(db); err != nil {
+		return err
+	}
+	if err := backfillLegacyTrackProfileAssignments(db); err != nil {
+		return err
+	}
 	if err := backfillQueueProfileSnapshots(db); err != nil {
 		return err
 	}
@@ -71,10 +78,129 @@ func Migrate(db *gorm.DB) error {
 	if err := backfillQueueExecutionNumbers(db); err != nil {
 		return err
 	}
+	if err := backfillQueuePositions(db); err != nil {
+		return err
+	}
 	if err := scheduler.ReconcileReservations(db); err != nil {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func backfillQueuePositions(db *gorm.DB) error {
+	var jobs []models.QueueJob
+	if err := db.Where("queue_position = 0").Order("priority asc, created_at asc, id asc").Find(&jobs).Error; err != nil {
+		return err
+	}
+	var highest int64
+	if err := db.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for index := range jobs {
+			highest++
+			if err := tx.Model(&jobs[index]).Update("queue_position", highest).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func backfillProfileScopes(db *gorm.DB) error {
+	var profiles []models.Profile
+	if err := db.Where("scope = '' OR scope IS NULL").Find(&profiles).Error; err != nil {
+		return err
+	}
+	for index := range profiles {
+		if err := db.Model(&profiles[index]).Update("scope", "asset").Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func stringFromJSON(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+// trackProfilePathAssignments predates first-class profile assignments. Move
+// those bindings into the relational assignment table and mark the referenced
+// profiles as path profiles so existing installations keep their behavior.
+func backfillLegacyTrackProfileAssignments(db *gorm.DB) error {
+	var assignmentSetting models.AppSetting
+	if err := db.First(&assignmentSetting, "key = ?", "trackProfilePathAssignments").Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		return err
+	}
+	assignments := jsonMapFromAny(assignmentSetting.Value["assignments"])
+	if len(assignments) == 0 {
+		return nil
+	}
+
+	keys := map[string]bool{}
+	for targetPath, rawKey := range assignments {
+		profileKey := strings.TrimSpace(stringFromJSON(rawKey))
+		targetPath = filepath.Clean(strings.TrimSpace(targetPath))
+		if profileKey == "" || targetPath == "." {
+			continue
+		}
+		keys[profileKey] = true
+		assignment := models.ProfileAssignment{
+			TargetType: "path", TargetPath: targetPath, MediaType: "tracks",
+			Selection: "profile", ProfileKey: profileKey,
+		}
+		if err := db.Where("target_type = ? AND target_path = ? AND media_type = ?", assignment.TargetType, assignment.TargetPath, assignment.MediaType).
+			FirstOrCreate(&assignment).Error; err != nil {
+			return err
+		}
+	}
+
+	var profilesSetting models.AppSetting
+	if err := db.First(&profilesSetting, "key = ?", "trackProfiles").Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		return err
+	}
+	var profiles []any
+	switch values := profilesSetting.Value["profiles"].(type) {
+	case []any:
+		profiles = values
+	case models.JSONList:
+		profiles = []any(values)
+	default:
+		return nil
+	}
+	changed := false
+	for _, raw := range profiles {
+		profile := jsonMapFromAny(raw)
+		if !keys[strings.TrimSpace(stringFromJSON(profile["key"]))] || stringFromJSON(profile["scope"]) == "path" {
+			continue
+		}
+		profile["scope"] = "path"
+		changed = true
+	}
+	if changed {
+		if err := db.Model(&profilesSetting).Update("value", profilesSetting.Value).Error; err != nil {
+			return err
+		}
+	}
+	return db.Delete(&assignmentSetting).Error
+}
+
+func jsonMapFromAny(value any) map[string]any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed
+	case models.JSONMap:
+		return map[string]any(typed)
+	default:
+		return nil
+	}
 }
 
 func backfillQueueExecutionNumbers(db *gorm.DB) error {
@@ -633,10 +759,9 @@ func seedSettings(db *gorm.DB) error {
 		{
 			Key: "originalRetentionPolicy",
 			Value: models.JSONMap{
-				"keepOriginalsDays":                   30,
-				"enabledForSuccessfulConversionsOnly": true,
-				"autoDeleteEnabled":                   false,
-				"processedOriginalsPath":              "/media/originals_archive/processed-originals",
+				"keepOriginalsDays":      30,
+				"autoDeleteEnabled":      false,
+				"processedOriginalsPath": "/media/originals_archive/processed-originals",
 			},
 		},
 		{
@@ -644,7 +769,6 @@ func seedSettings(db *gorm.DB) error {
 			Value: models.JSONMap{
 				"autoSyncEnabled":     true,
 				"syncIntervalMinutes": 60,
-				"expireArchiveFiles":  true,
 				"reconciliationMode":  "exact",
 			},
 		},

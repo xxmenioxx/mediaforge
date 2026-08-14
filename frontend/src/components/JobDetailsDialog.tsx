@@ -15,6 +15,11 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import HourglassTopIcon from '@mui/icons-material/HourglassTop';
+import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
 
@@ -82,11 +87,14 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
           ) : null}
           {artifacts.isLoading ? <Alert severity="info">Loading job artifacts...</Alert> : null}
           <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable">
+            <Tab label="Pipeline" />
             <Tab label="Original snapshot" />
             <Tab label={result ? 'Final result' : 'Planned result'} />
             <Tab label="Execution plan" />
           </Tabs>
           {tab === 0 ? (
+            <PipelineStages job={job} />
+          ) : tab === 1 ? (
             <Stack spacing={2}>
               {!asIs ? (
                 <Alert severity="info">
@@ -102,6 +110,8 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   ['Subtitles', subtitleStreamsSummary(sourceProbe)],
                   ['Selected profile', stringValue(profile, 'name') || `Profile #${job.profileId}`],
                   ['Audio profile', stringValue(asIs, 'audioProfileKey') || job.audioProfileKey || 'None'],
+				  ['Track profile', job.trackProfileKey || 'None'],
+				  ['Profile assignment', assignmentResolutionSummary(job)],
                   ['Processing mode', stringValue(asIs, 'processingMode') || 'Standard'],
                 ]}
               />
@@ -109,7 +119,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
               <ArtifactBlock title="AS-IS JSON" value={asIs} />
             </Stack>
-          ) : tab === 1 ? (
+          ) : tab === 2 ? (
             <Stack spacing={2}>
               {!result ? (
                 <Alert severity="info">
@@ -192,6 +202,88 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
       </DialogContent>
     </Dialog>
   );
+}
+
+const pipelineStages = [
+  'queued', 'claimed', 'preparing_workspace', 'copying_to_workspace', 'analyzing_as_is',
+  'preparing_subtitles', 'converting', 'validating', 'directplay_analysis', 'ready_to_publish',
+  'publishing', 'archiving_original', 'analyzing_final', 'cleaning_workspace', 'completed', 'failed', 'canceled',
+] as const;
+
+type PipelineStageState = 'pending' | 'active' | 'success' | 'warning' | 'error' | 'skipped';
+
+function PipelineStages({ job }: { job: QueueJob }) {
+  const history = normalizedStageHistory(job);
+  const currentIndex = pipelineStages.indexOf(job.stage as (typeof pipelineStages)[number]);
+  const terminal = job.status === 'completed' || job.status === 'failed' || job.status === 'canceled';
+  const failedHistoryIndex = history.findIndex((item) => item.stage === 'failed');
+  const failedStage = failedHistoryIndex > 0 ? history[failedHistoryIndex - 1].stage : '';
+  return (
+    <Stack spacing={1}>
+      <Typography color="text.secondary">
+        Persisted lifecycle stages for this execution. Durations are calculated from the recorded stage transitions.
+      </Typography>
+      {pipelineStages.map((stage, index) => {
+        const event = history.find((item) => item.stage === stage);
+        const state = pipelineStageState(job, stage, index, currentIndex, Boolean(event), terminal, failedStage);
+        return (
+          <Box key={stage} sx={{ display: 'grid', gridTemplateColumns: '28px minmax(180px, 1fr) minmax(90px, auto) minmax(100px, auto)', gap: 1, alignItems: 'center', border: 1, borderColor: state === 'active' ? 'primary.main' : 'divider', borderRadius: 1, px: 1.25, py: 1, bgcolor: state === 'active' ? 'rgba(79,179,255,0.08)' : 'transparent' }}>
+            {pipelineStageIcon(state)}
+            <Stack spacing={0.1}>
+              <Typography fontWeight={state === 'active' ? 700 : 500}>{stage.replaceAll('_', ' ')}</Typography>
+              {event?.at ? <Typography variant="caption" color="text.secondary">{new Date(event.at).toLocaleString()}</Typography> : null}
+            </Stack>
+            <Chip size="small" color={pipelineStageColor(state)} variant={state === 'active' ? 'filled' : 'outlined'} label={state} />
+            <Typography variant="body2" color="text.secondary" align="right">{event ? stageDuration(history, event, job) : '—'}</Typography>
+          </Box>
+        );
+      })}
+      {job.status === 'failed' && job.errorMessage ? <Alert severity="error">{job.errorMessage}</Alert> : null}
+      {job.validationStatus === 'warning' ? <Alert severity="warning">Validation completed with warnings. Review the Final result tab for details.</Alert> : null}
+    </Stack>
+  );
+}
+
+function normalizedStageHistory(job: QueueJob) {
+  return (job.stageHistory ?? []).flatMap((raw) => {
+    const stage = typeof raw.stage === 'string' ? raw.stage : '';
+    const at = typeof raw.at === 'string' ? raw.at : '';
+    return stage && at && !Number.isNaN(Date.parse(at)) ? [{ stage, at }] : [];
+  });
+}
+
+function pipelineStageState(job: QueueJob, stage: string, index: number, currentIndex: number, visited: boolean, terminal: boolean, failedStage: string): PipelineStageState {
+  if (stage === 'validating' && visited && job.validationStatus === 'warning') return 'warning';
+  if (job.status === 'failed' && (stage === job.stage || stage === failedStage)) return 'error';
+  if (job.status === 'canceled' && stage === job.stage) return 'warning';
+  if (!terminal && stage === job.stage) return 'active';
+  if (visited) return 'success';
+  if (terminal || (currentIndex >= 0 && index < currentIndex)) return 'skipped';
+  return 'pending';
+}
+
+function pipelineStageIcon(state: PipelineStageState) {
+  if (state === 'success') return <CheckCircleIcon color="success" fontSize="small" />;
+  if (state === 'warning') return <WarningAmberIcon color="warning" fontSize="small" />;
+  if (state === 'error') return <ErrorIcon color="error" fontSize="small" />;
+  if (state === 'active') return <HourglassTopIcon color="primary" fontSize="small" />;
+  return <RadioButtonUncheckedIcon color="disabled" fontSize="small" />;
+}
+
+function pipelineStageColor(state: PipelineStageState): 'default' | 'primary' | 'success' | 'warning' | 'error' {
+  if (state === 'active') return 'primary';
+  if (state === 'success') return 'success';
+  if (state === 'warning') return 'warning';
+  if (state === 'error') return 'error';
+  return 'default';
+}
+
+function stageDuration(history: Array<{ stage: string; at: string }>, event: { stage: string; at: string }, job: QueueJob) {
+  const index = history.indexOf(event);
+  const started = Date.parse(event.at);
+  const next = history[index + 1];
+  const ended = next ? Date.parse(next.at) : job.finishedAt ? Date.parse(job.finishedAt) : Date.now();
+  return formatSeconds(Math.max(0, (ended - started) / 1000)) || '< 1s';
 }
 
 function planString(value: Record<string, unknown>, key: string) {
@@ -439,6 +531,16 @@ function automationSummary(result?: Record<string, unknown>) {
   const stoppedAt = stringValue(automation, 'stoppedAt');
   const message = stringValue(automation, 'message');
   return [stoppedAt || 'complete', message].filter(Boolean).join(' · ');
+}
+
+function assignmentResolutionSummary(job: QueueJob) {
+	if (!job.profileResolution) return 'Explicit queue selection';
+	const labels = ['video', 'audio', 'tracks'].flatMap((mediaType) => {
+		const resolution = objectValue(job.profileResolution, mediaType);
+		const source = resolution ? stringValue(resolution, 'source') : '';
+		return source ? [`${mediaType}: ${source}`] : [];
+	});
+	return labels.length ? labels.join(' · ') : 'Explicit queue selection';
 }
 
 function languageOf(stream: Record<string, unknown>) {

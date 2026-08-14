@@ -6,7 +6,11 @@ export function encoderNamesForWorker(worker?: WorkerNode) {
 
 export function selectedWorker(workers: WorkerNode[] | undefined, requestedName: string) {
   const online = (workers ?? []).filter((worker) => worker.status === 'online');
-  return online.find((worker) => worker.name === requestedName) ?? online[0];
+  const requested = requestedName.trim();
+  // An explicit worker is part of the requested execution contract. Falling
+  // back here made the UI display another host's encoders while preserving the
+  // unavailable worker name in the profile.
+  return requested ? online.find((worker) => worker.name === requested) : online[0];
 }
 
 export function workerSupportsEncoder(worker: WorkerNode | undefined, encoder: string) {

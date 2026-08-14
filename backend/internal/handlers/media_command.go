@@ -746,6 +746,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if override.QualityValue > 0 {
 		profile.QualityValue = override.QualityValue
 	}
+	if value := normalizedOptimizationIntent(override.OptimizationIntent); value != "" {
+		profile.OptimizationIntent = value
+	}
 	if override.PreserveHDR != nil {
 		profile.PreserveHDR = *override.PreserveHDR
 	}
@@ -1356,7 +1359,9 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 		}
 		main10 := encoder == "hevc_videotoolbox" && videoToolboxProfile == "main10"
 		powerSupported := videoToolboxOptionalFeatureSupported(capability, "power_efficiency", main10)
-		if normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "" {
+		if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) == "off" {
+			args = append(args, "-realtime", map[bool]string{true: "1", false: "0"}[profileWorkerBool(profile, "videoToolboxRealtime", false)])
+		} else if normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "" {
 			args = append(args, videoToolboxRealtimeAndBFrameArgs(profile, capability, main10)...)
 		} else {
 			args = append(args, "-realtime", map[bool]string{true: "1", false: "0"}[profileWorkerBool(profile, "videoToolboxRealtime", false)])
@@ -1390,7 +1395,7 @@ func normalizedFrameStructureGOPMode(value string) string {
 
 func normalizedFrameStructureMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "compatible", "balanced", "maximum_compression", "custom":
+	case "auto", "off", "compatible", "balanced", "maximum_compression", "custom":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""
@@ -1421,6 +1426,9 @@ func effectiveX265Params(profile models.Profile) string {
 			continue
 		}
 		name := strings.ToLower(strings.TrimSpace(strings.SplitN(part, "=", 2)[0]))
+		if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) == "off" && (name == "keyint" || name == "min-keyint" || name == "scenecut" || name == "bframes" || name == "b-adapt" || name == "b-pyramid") {
+			continue
+		}
 		if (gopMode == "recommended" || gopMode == "custom") && (name == "keyint" || name == "min-keyint") {
 			continue
 		}
@@ -1440,6 +1448,9 @@ func effectiveX265Params(profile models.Profile) string {
 
 func commonFrameStructureArgs(profile models.Profile, encoder string) []string {
 	args := []string{}
+	if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) == "off" {
+		return args
+	}
 	if mode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"])); mode == "recommended" || mode == "custom" {
 		value := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 120)
 		args = append(args, "-g", strconv.Itoa(min(1000, max(1, value))))
@@ -1862,14 +1873,15 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if profileWorkerBool(profile, "qsvExtendedBRC", false) && features.ExtendedBRC {
 		args = append(args, "-extbrc", "1")
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
+	frameStructureEnabled := normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "off"
+	if frameStructureEnabled && profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
 		args = append(args, "-adaptive_i", "1")
 	}
-	if profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
+	if frameStructureEnabled && profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
 		args = append(args, "-adaptive_b", "1")
 	}
 	pStrategy := min(2, max(0, workerIntValue(profile.WorkerConfig["qsvPStrategy"], 0)))
-	if pStrategy > 0 {
+	if frameStructureEnabled && pStrategy > 0 {
 		format := "Main8"
 		if main10 {
 			format = "Main10"

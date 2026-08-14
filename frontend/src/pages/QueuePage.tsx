@@ -17,6 +17,7 @@ import {
   MenuItem,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import CancelIcon from '@mui/icons-material/Cancel';
@@ -28,8 +29,10 @@ import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import ReplayIcon from '@mui/icons-material/Replay';
 import RemoveCircleOutlineIcon from '@mui/icons-material/RemoveCircleOutline';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { DragEvent, FormEvent, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
@@ -67,8 +70,7 @@ export function QueuePage() {
   const [editingJob, setEditingJob] = useState<QueueJob | null>(null);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState('');
   const [jobSearch, setJobSearch] = useState('');
-  const [jobSortDirection, setJobSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [jobsPerPage, setJobsPerPage] = useState(10);
+  const [jobsPerPage, setJobsPerPage] = useState(25);
   const [jobPage, setJobPage] = useState(1);
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
   const batchFilter = searchParams.get('batch') ?? '';
@@ -104,15 +106,12 @@ export function QueuePage() {
       }),
     [allJobs, batchFilter, jobSearch, pathFilter, statusFilter, workerFilter],
   );
-  const jobGroups = useMemo(() => buildJobGroups(filteredJobs, jobSortDirection), [filteredJobs, jobSortDirection]);
-  const totalJobPages = Math.max(1, Math.ceil(jobGroups.length / jobsPerPage));
-  const pagedJobGroups = jobGroups.slice((jobPage - 1) * jobsPerPage, jobPage * jobsPerPage);
+  const orderedJobs = useMemo(() => [...filteredJobs].sort(sortJobsForQueue), [filteredJobs]);
+  const totalJobPages = Math.max(1, Math.ceil(orderedJobs.length / jobsPerPage));
+  const safeJobPage = Math.min(jobPage, totalJobPages);
+  const pagedJobs = orderedJobs.slice((safeJobPage - 1) * jobsPerPage, safeJobPage * jobsPerPage);
   const statusCounts = useMemo(() => summarizeStatusCounts(allJobs), [allJobs]);
   const selectedJob = selectedJobId ? jobHistory.find((job) => job.id === selectedJobId) ?? null : null;
-
-  useEffect(() => {
-    setJobPage(1);
-  }, [batchFilter, jobSearch, jobsPerPage, jobSortDirection, pathFilter, statusFilter, workerFilter]);
 
   async function applyQueueSelections(input: QueueJobInput) {
     const asset = findQueueAsset(assets.data, input.mediaPath);
@@ -282,7 +281,7 @@ export function QueuePage() {
                 <TextField
                   label="Search jobs"
                   value={jobSearch}
-                  onChange={(event) => setJobSearch(event.target.value)}
+                  onChange={(event) => { setJobSearch(event.target.value); setJobPage(1); }}
                   placeholder="Job number, asset, status, worker, notes..."
                   fullWidth
                 />
@@ -308,21 +307,9 @@ export function QueuePage() {
               </Grid>
               <Grid size={{ xs: 6, md: 2 }}>
                 <TextField
-                  label="Sort"
-                  value={jobSortDirection}
-                  onChange={(event) => setJobSortDirection(event.target.value as 'asc' | 'desc')}
-                  select
-                  fullWidth
-                >
-                  <MenuItem value="desc">Newest first</MenuItem>
-                  <MenuItem value="asc">Oldest first</MenuItem>
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 6, md: 2 }}>
-                <TextField
-                  label="Groups per page"
+                  label="Jobs per page"
                   value={jobsPerPage}
-                  onChange={(event) => setJobsPerPage(Number(event.target.value))}
+                  onChange={(event) => { setJobsPerPage(Number(event.target.value)); setJobPage(1); }}
                   select
                   fullWidth
                 >
@@ -335,15 +322,15 @@ export function QueuePage() {
               </Grid>
               <Grid size={{ xs: 12 }}>
                 <Stack direction="row" spacing={1} justifyContent={{ xs: 'stretch', md: 'flex-end' }} sx={{ '& > button': { flex: { xs: 1, md: 'initial' } } }}>
-                  <Button variant="outlined" disabled={jobPage <= 1} onClick={() => setJobPage((current) => Math.max(1, current - 1))}>
+                  <Button variant="outlined" disabled={safeJobPage <= 1} onClick={() => setJobPage((current) => Math.max(1, current - 1))}>
                     Prev
                   </Button>
-                  <Button variant="outlined" disabled={jobPage >= totalJobPages} onClick={() => setJobPage((current) => Math.min(totalJobPages, current + 1))}>
+                  <Button variant="outlined" disabled={safeJobPage >= totalJobPages} onClick={() => setJobPage((current) => Math.min(totalJobPages, current + 1))}>
                     Next
                   </Button>
                 </Stack>
                 <Typography color="text.secondary" variant="body2" align="right" sx={{ mt: 0.5 }}>
-                  Page {jobPage} / {totalJobPages}
+                  Page {safeJobPage} / {totalJobPages}
                 </Typography>
               </Grid>
             </Grid>
@@ -427,16 +414,7 @@ export function QueuePage() {
             </DialogActions>
           </Box>
         </Dialog>
-        <Stack spacing={2}>
-          {pagedJobGroups.map((group) => (
-            <QueueGroupCard
-              key={group.id}
-              group={group}
-              onEditJob={openEditJobDialog}
-              initiallyExpanded={Boolean(group.running || (pathFilter && normalizePath(group.id) === normalizePath(pathFilter)))}
-            />
-          ))}
-        </Stack>
+        <QueueFlatList jobs={pagedJobs} onEditJob={openEditJobDialog} />
         {!jobs.isLoading && jobs.data?.length === 0 ? (
           <Alert severity="info">No conversion jobs have been queued yet.</Alert>
         ) : null}
@@ -447,6 +425,7 @@ export function QueuePage() {
         ) : null}
       </Box>
       <JobDetailsDialog
+        key={selectedJob?.id ?? 'closed'}
         job={selectedJob}
         onClose={() => {
           const nextParams = new URLSearchParams(searchParams);
@@ -456,6 +435,194 @@ export function QueuePage() {
       />
     </>
   );
+}
+
+function QueueFlatList({ jobs, onEditJob }: { jobs: QueueJob[]; onEditJob: (job: QueueJob) => void }) {
+  const queryClient = useQueryClient();
+  const [, setSearchParams] = useSearchParams();
+  const [draggedJobID, setDraggedJobID] = useState<number | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: number; placement: 'before' | 'after' } | null>(null);
+  const updateJob = useMutation({
+    mutationFn: api.updateQueueJob,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+  });
+  const dismissJob = useMutation({
+    mutationFn: api.dismissQueueJob,
+    onSuccess: async () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      queryClient.invalidateQueries({ queryKey: ['assets'] }),
+    ]),
+  });
+  const reorderJob = useMutation({
+    mutationFn: api.reorderQueueJob,
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ['queueJobs'] });
+      const previous = queryClient.getQueryData<QueueJob[]>(['queueJobs']);
+      queryClient.setQueryData<QueueJob[]>(['queueJobs'], (current) => current ? reorderQueueJobs(current, input.jobId, input.targetJobId, input.placement) : current);
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previous) queryClient.setQueryData(['queueJobs'], context.previous);
+    },
+    onSettled: async () => queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+  });
+  const isUpdating = updateJob.isPending || dismissJob.isPending || reorderJob.isPending;
+
+  function openDetails(job: QueueJob) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('job', String(job.id));
+      return next;
+    });
+  }
+
+  function removeJob(job: QueueJob) {
+    if (job.executionNumber && !window.confirm(`Remove Job #${job.executionNumber} from Queue? Its database record, logs, and reports will be preserved.`)) return;
+    dismissJob.mutate(job.id);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>, target: QueueJob) {
+    if (draggedJobID === null || target.status !== 'queued' || target.id === draggedJobID) return;
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setDropTarget({ id: target.id, placement: event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after' });
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>, target: QueueJob) {
+    event.preventDefault();
+    if (draggedJobID === null || !dropTarget || target.id !== dropTarget.id || target.status !== 'queued') return;
+    reorderJob.mutate({ jobId: draggedJobID, targetJobId: target.id, placement: dropTarget.placement });
+    setDraggedJobID(null);
+    setDropTarget(null);
+  }
+
+  if (!jobs.length) return null;
+  return (
+    <Stack spacing={0.75}>
+      {reorderJob.isError ? <Alert severity="warning">The queue order could not be saved. The previous order was restored.</Alert> : null}
+      {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
+      <Typography variant="body2" color="text.secondary">
+        Drag queued jobs by the handle to set their exact execution order. Running and historical jobs are locked.
+      </Typography>
+      {jobs.map((job) => (
+        <FlatJobRow
+          key={job.id}
+          job={job}
+          isUpdating={isUpdating}
+          isDragging={draggedJobID === job.id}
+          dropPlacement={dropTarget?.id === job.id ? dropTarget.placement : undefined}
+          onDragStart={(event) => {
+            if (job.status !== 'queued' || isUpdating) return;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(job.id));
+            setDraggedJobID(job.id);
+          }}
+          onDragEnd={() => { setDraggedJobID(null); setDropTarget(null); }}
+          onDragOver={(event) => handleDragOver(event, job)}
+          onDrop={(event) => handleDrop(event, job)}
+          onDetails={() => openDetails(job)}
+          onEdit={() => onEditJob(job)}
+          onCancel={() => updateJob.mutate({ jobId: job.id, status: 'canceled' })}
+          onRequeue={() => updateJob.mutate({ jobId: job.id, status: 'queued' })}
+          onRemove={() => removeJob(job)}
+        />
+      ))}
+    </Stack>
+  );
+}
+
+function FlatJobRow({
+  job, isUpdating, isDragging, dropPlacement, onDragStart, onDragEnd, onDragOver, onDrop,
+  onDetails, onEdit, onCancel, onRequeue, onRemove,
+}: {
+  job: QueueJob;
+  isUpdating: boolean;
+  isDragging: boolean;
+  dropPlacement?: 'before' | 'after';
+  onDragStart: (event: DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDetails: () => void;
+  onEdit: () => void;
+  onCancel: () => void;
+  onRequeue: () => void;
+  onRemove: () => void;
+}) {
+  const stage = pipelineStage(job);
+  const timing = jobTiming(job);
+  const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
+  const canCancel = job.status === 'queued' || job.status === 'running';
+  const canRequeue = job.status === 'failed' || job.status === 'canceled';
+  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
+  const nextAction = nextPipelineAction(job);
+  return (
+    <Box
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      sx={{
+        position: 'relative', border: 1, borderColor: 'divider', borderRadius: 1, p: 1,
+        bgcolor: isDragging ? 'action.selected' : 'rgba(255,255,255,0.018)', opacity: isDragging ? 0.55 : 1,
+        '&::before': dropPlacement === 'before' ? dropIndicator('top') : undefined,
+        '&::after': dropPlacement === 'after' ? dropIndicator('bottom') : undefined,
+      }}
+    >
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '32px minmax(0, 1fr)', lg: '32px minmax(260px, 1fr) 160px 145px minmax(190px, 0.7fr) 120px auto' }, gap: 1, alignItems: 'center' }}>
+        <Tooltip title={job.status === 'queued' ? 'Drag to reorder' : 'Only queued jobs can be reordered'}>
+          <span>
+            <IconButton draggable={job.status === 'queued' && !isUpdating} onDragStart={onDragStart} onDragEnd={onDragEnd} disabled={job.status !== 'queued' || isUpdating} size="small" aria-label={`Reorder ${fileNameFromPath(job.mediaPath)}`} sx={{ cursor: job.status === 'queued' ? 'grab' : 'default' }}>
+              <DragIndicatorIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+          <Typography fontWeight={700} noWrap title={fileNameFromPath(job.mediaPath)}>
+            {job.executionNumber ? `#${job.executionNumber} · ` : ''}{fileNameFromPath(job.mediaPath)}
+          </Typography>
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            {job.batchName || job.batchId ? <Chip size="small" variant="outlined" label={job.batchName || `Batch ${job.batchId}`} /> : null}
+            {job.status === 'queued' ? <Typography variant="caption" color="text.secondary">Queue {job.queuePosition || 'pending'}</Typography> : null}
+            <Typography variant="caption" color="text.secondary">{job.workerName || 'Unassigned'}</Typography>
+          </Stack>
+        </Stack>
+        <Chip label={stage.label} color={stage.color} size="small" variant="outlined" sx={{ justifySelf: { lg: 'start' }, ml: { xs: 5, lg: 0 } }} />
+        <Stack spacing={0.1} sx={{ ml: { xs: 5, lg: 0 } }}>
+          <Typography variant="caption" color="text.secondary">Elapsed {timing.elapsed || '—'}</Typography>
+          <Typography variant="caption" color="text.secondary">ETA {timing.eta || '—'}</Typography>
+        </Stack>
+        <Stack spacing={0.35} sx={{ ml: { xs: 5, lg: 0 } }}>
+          <Stack direction="row" justifyContent="space-between"><Typography variant="caption">Progress</Typography><Typography variant="caption">{job.progress}%</Typography></Stack>
+          <LinearProgress variant="determinate" value={job.progress} sx={{ height: 7, borderRadius: 1 }} />
+        </Stack>
+        <Chip label={job.status} color={statusColor(job.status)} size="small" sx={{ justifySelf: { lg: 'start' }, ml: { xs: 5, lg: 0 } }} />
+        <Stack direction="row" spacing={0.25} justifyContent="flex-end" sx={{ gridColumn: { xs: '1 / -1', lg: 'auto' } }}>
+          {nextAction ? <Tooltip title={nextAction.label}><IconButton component={RouterLink} to={nextAction.to} size="small" color="primary"><OpenInNewIcon fontSize="small" /></IconButton></Tooltip> : null}
+          <Tooltip title="Details"><IconButton size="small" color={job.status === 'failed' ? 'error' : 'primary'} onClick={onDetails}><ErrorOutlineIcon fontSize="small" /></IconButton></Tooltip>
+          <Tooltip title="Edit"><span><IconButton size="small" disabled={isUpdating || !canEdit} onClick={onEdit}><EditIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Cancel"><span><IconButton size="small" color="warning" disabled={isUpdating || !canCancel} onClick={onCancel}><CancelIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Requeue"><span><IconButton size="small" color="primary" disabled={isUpdating || !canRequeue} onClick={onRequeue}><ReplayIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Remove"><span><IconButton size="small" color="error" disabled={isUpdating || !canRemove} onClick={onRemove}><RemoveCircleOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+        </Stack>
+      </Box>
+      {job.errorMessage ? <Alert severity={job.status === 'failed' ? 'error' : 'warning'} sx={{ mt: 0.75 }}>{shortText(job.errorMessage, 180)}</Alert> : null}
+    </Box>
+  );
+}
+
+function dropIndicator(edge: 'top' | 'bottom') {
+  return { content: '""', position: 'absolute', left: 4, right: 4, [edge]: -3, height: 3, borderRadius: 3, bgcolor: 'primary.main', zIndex: 1 };
+}
+
+function reorderQueueJobs(jobs: QueueJob[], jobID: number, targetJobID: number, placement: 'before' | 'after') {
+  const queued = jobs.filter((job) => job.status === 'queued').sort((left, right) => (left.queuePosition || Number.MAX_SAFE_INTEGER) - (right.queuePosition || Number.MAX_SAFE_INTEGER));
+  const draggedIndex = queued.findIndex((job) => job.id === jobID);
+  if (draggedIndex < 0) return jobs;
+  const [dragged] = queued.splice(draggedIndex, 1);
+  const targetIndex = queued.findIndex((job) => job.id === targetJobID);
+  if (targetIndex < 0) return jobs;
+  queued.splice(targetIndex + (placement === 'after' ? 1 : 0), 0, dragged);
+  const positions = new Map(queued.map((job, index) => [job.id, index + 1]));
+  return jobs.map((job) => positions.has(job.id) ? { ...job, queuePosition: positions.get(job.id) ?? job.queuePosition } : job);
 }
 
 type QueueJobGroup = {
@@ -640,7 +807,7 @@ function getAudioProfiles(settings?: AppSetting[]) {
   });
 }
 
-function QueueGroupCard({
+export function QueueGroupCard({
   group,
   onEditJob,
   initiallyExpanded = false,
@@ -738,18 +905,6 @@ function QueueGroupCard({
     batchAction.mutate('requeue');
   }
 
-  useEffect(() => {
-    if (initiallyExpanded) {
-      setExpanded(true);
-    }
-  }, [initiallyExpanded]);
-
-  useEffect(() => {
-    if (!expanded) {
-      setVisibleJobsCount(25);
-    }
-  }, [expanded]);
-
   const visibleJobs = group.jobs.slice(0, visibleJobsCount);
 
   return (
@@ -814,7 +969,10 @@ function QueueGroupCard({
               ) : null}
               <IconButton
                 color="primary"
-                onClick={() => setExpanded((current) => !current)}
+                onClick={() => setExpanded((current) => {
+                  if (current) setVisibleJobsCount(25);
+                  return !current;
+                })}
                 aria-label={expanded ? 'Collapse queue group' : 'Expand queue group'}
                 sx={{ border: 1, borderColor: 'divider', width: 44, height: 44 }}
               >
@@ -1091,6 +1249,9 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
   });
 }
 
+// Kept temporarily for compatibility with imports from older local UI builds.
+void buildJobGroups;
+
 function latestJobsByAsset(jobs: QueueJob[]) {
   const latest = new Map<string, QueueJob>();
   for (const job of jobs) {
@@ -1101,6 +1262,18 @@ function latestJobsByAsset(jobs: QueueJob[]) {
     }
   }
   return [...latest.values()];
+}
+
+function sortJobsForQueue(left: QueueJob, right: QueueJob) {
+  const statusDiff = queueStatusRank(left.status) - queueStatusRank(right.status);
+  if (statusDiff !== 0) return statusDiff;
+  if (left.status === 'queued' && right.status === 'queued') {
+    return (left.queuePosition || Number.MAX_SAFE_INTEGER) - (right.queuePosition || Number.MAX_SAFE_INTEGER) || left.id - right.id;
+  }
+  if (left.status === 'running' && right.status === 'running') {
+    return new Date(left.startedAt ?? left.createdAt).getTime() - new Date(right.startedAt ?? right.createdAt).getTime();
+  }
+  return right.id - left.id;
 }
 
 function queueAssetIdentity(mediaPath: string) {

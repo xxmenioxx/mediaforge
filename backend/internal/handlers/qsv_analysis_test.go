@@ -3,7 +3,29 @@ package handlers
 import (
 	"math"
 	"testing"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
+
+func TestSnapshotFrameStructureRecommendationStoresAllCommonModes(t *testing.T) {
+	scan := models.ScanResult{
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{
+			"version": 2, "framesAnalyzed": 2400, "averageGopLength": 75.4,
+			"maxConsecutiveBFrames": 3, "bFrameRatio": 0.42, "confidence": "medium",
+		},
+	}
+	result := buildFrameStructureRecommendationSet(scan)
+	if result.Version != 1 || result.SourceAnalysisVersion != 2 || result.FPS < 23.9 || result.FPS > 24.1 {
+		t.Fatalf("unexpected recommendation provenance: %#v", result)
+	}
+	if len(result.ByMode) != 3 || result.ByMode["balanced"].TargetGOPFrames <= 0 || result.ByMode["compatible"].TargetGOPFrames <= 0 || result.ByMode["maximum_compression"].TargetGOPFrames <= 0 {
+		t.Fatalf("common GOP modes were not persisted: %#v", result.ByMode)
+	}
+	if result.RecommendedMaxBFrames != 3 {
+		t.Fatalf("recommended B depth=%d", result.RecommendedMaxBFrames)
+	}
+}
 
 func TestQSVFrameStructureAssessment(t *testing.T) {
 	tests := []struct {

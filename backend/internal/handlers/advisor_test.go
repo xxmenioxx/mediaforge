@@ -149,3 +149,45 @@ func TestProfileFitAcceptsExternalSubtitlePreservation(t *testing.T) {
 		t.Fatalf("external subtitle preservation must not reduce profile fit: score=%d reasons=%#v", score, reasons)
 	}
 }
+
+func TestAdvisorPreferencesCreateHardwareDraftWithoutChangingPipelinePolicy(t *testing.T) {
+	scan := models.ScanResult{VideoCodec: "h264", Width: 1920, Height: 1080}
+	preferences := MVForgePreferences{QualityGoal: "maximum_quality", ExecutionPreference: "hardware", PreferredVideoEncoder: "hevc_qsv", PreferredLanguages: []string{"jpn", "spa"}}
+	proposal := proposedProfileForScanWithPreferences(scan, preferences, "hevc_qsv")
+	if proposal.OptimizationIntent != "maximum_quality" || proposal.QualityValue != 18 {
+		t.Fatalf("quality preference was not reflected in draft: %#v", proposal)
+	}
+	if proposal.WorkerConfig["videoEncoder"] != "hevc_qsv" || proposal.WorkerConfig["preferredEncoder"] != "hardware" {
+		t.Fatalf("hardware preference was not reflected in draft: %#v", proposal.WorkerConfig)
+	}
+	if proposal.WorkerConfig["hardwareQualityPresetScale"] != 2 {
+		t.Fatalf("advisor emitted a legacy hardware preset scale: %#v", proposal.WorkerConfig)
+	}
+}
+
+func TestAdvisorFindingsKeepIncompleteColorMetadataInformational(t *testing.T) {
+	scan := models.ScanResult{
+		VideoStreams:           models.JSONList{map[string]any{"avgFrameRate": "25/1", "colorSpace": "bt709"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 500, "averageGopLength": 75.0, "maxConsecutiveBFrames": 3, "confidence": "medium"},
+		CompatibilityAnalysis:  models.JSONMap{"overall": "client_dependent", "warnings": models.JSONList{"Client support depends on the selected playback device."}},
+	}
+	proposal := proposedProfileForScanWithPreferences(scan, MVForgePreferences{QualityGoal: "balanced", ExecutionPreference: "software"}, "")
+	findings := advisorFindings(scan, proposal, MVForgePreferences{QualityGoal: "balanced", ExecutionPreference: "software"}, "", "")
+	foundColorReview := false
+	foundFrameAction := false
+	foundCompatibility := false
+	for _, finding := range findings {
+		if finding.ID == "color-metadata" {
+			foundColorReview = finding.Severity == "review" && !finding.Actionable && len(finding.Patch) == 0
+		}
+		if finding.ID == "frame-structure" {
+			foundFrameAction = finding.Actionable && finding.Patch["frameStructureGopMode"] == "recommended"
+		}
+		if finding.Category == "compatibility" {
+			foundCompatibility = finding.Severity == "review" && !finding.Actionable
+		}
+	}
+	if !foundColorReview || !foundFrameAction || !foundCompatibility {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+}

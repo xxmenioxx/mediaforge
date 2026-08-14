@@ -64,6 +64,7 @@ const emptyProfile: AudioEnhancementProfile = {
   key: '',
   name: '',
   description: '',
+  scope: 'asset',
   intent: '',
   filters: 'anull',
   rnnoiseModelPath: '',
@@ -368,6 +369,7 @@ export function AudioProfilesPage() {
                           {profile.description}
                         </Typography>
                         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+						  <Chip label={profile.scope === 'path' ? 'Path profile' : 'Asset profile'} size="small" color="info" variant="outlined" />
                           {profile.disabled ? <Chip label="Disabled" size="small" color="warning" /> : null}
                           {profile.deletedAt ? <Chip label="Deleted" size="small" /> : null}
                         </Stack>
@@ -451,6 +453,12 @@ export function AudioProfilesPage() {
                     required
                     fullWidth
                   />
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField label="Profile applies to" value={form.scope ?? 'asset'} onChange={(event) => setForm((current) => ({ ...current, scope: event.target.value as 'asset' | 'path' }))} select fullWidth>
+                    <MenuItem value="asset">Asset</MenuItem>
+                    <MenuItem value="path">Path</MenuItem>
+                  </TextField>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <TextField
@@ -1016,6 +1024,7 @@ function normalizeAudioProfile(value: unknown): AudioEnhancementProfile | null {
     key: candidate.key,
     name: candidate.name,
     description: stringValue(candidate.description),
+	  scope: candidate.scope === 'path' ? 'path' : 'asset',
     intent: stringValue(candidate.intent),
     filters: sanitizeAudioFilterChain(candidate.filters),
     rnnoiseModelPath: stringValue(candidate.rnnoiseModelPath),

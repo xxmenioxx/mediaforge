@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -130,6 +131,52 @@ func TestDismissQueuedPlaceholderDeletesRecordPlanAndReservation(t *testing.T) {
 	}
 	if len(visible) != 0 {
 		t.Fatalf("dismissed jobs remain visible: %#v", visible)
+	}
+}
+
+func TestReorderQueuedJobsPersistsExactPosition(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-reorder?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	jobs := []models.QueueJob{
+		{MediaPath: "/raw/episode-01.mkv", Status: JobStatusQueued, QueuePosition: 1},
+		{MediaPath: "/raw/episode-02.mkv", Status: JobStatusRunning, QueuePosition: 2},
+		{MediaPath: "/raw/episode-03.mkv", Status: JobStatusQueued, QueuePosition: 3},
+		{MediaPath: "/raw/movie.mkv", Status: JobStatusQueued, QueuePosition: 4},
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs/reorder", NewQueueHandler(db).Reorder)
+	body := fmt.Sprintf(`{"jobId":%d,"targetJobId":%d,"placement":"before"}`, jobs[3].ID, jobs[2].ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs/reorder", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var queued []models.QueueJob
+	if err := db.Where("status = ?", JobStatusQueued).Order("queue_position asc").Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 3 || queued[0].ID != jobs[0].ID || queued[1].ID != jobs[3].ID || queued[2].ID != jobs[2].ID {
+		t.Fatalf("unexpected queued order: %#v", queued)
+	}
+	var running models.QueueJob
+	if err := db.First(&running, jobs[1].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if running.QueuePosition != 2 {
+		t.Fatalf("running job position changed: %d", running.QueuePosition)
 	}
 }
 
@@ -268,6 +315,37 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	}
 	if stored.ProfileVersion != 2 || snapshotQualityValue(stored.ProfileSnapshot) != 24 {
 		t.Fatalf("explicit refresh did not capture latest profile: %#v", stored.ProfileSnapshot)
+	}
+}
+
+func TestQueueProfileSnapshotIgnoresGlobalDraftPreferences(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-ignores-draft-preferences?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.OptimizationIntent = "maximum_quality"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "mvforgePreferences", Value: models.JSONMap{
+		"qualityGoal": "maximum_savings", "executionPreference": "hardware", "preferredVideoEncoder": "hevc_qsv", "preferredLanguages": models.JSONList{"jpn"},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: "/media/raw/draft-preferences.mkv", LibraryID: 1, Priority: 1, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.OptimizationIntent != "maximum_quality" || restored.QualityValue != 18 || restored.PreferredEncoder != "libx265" {
+		t.Fatalf("global draft preferences changed the queued profile: %#v", restored)
 	}
 }
 

@@ -28,7 +28,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { AppSetting, Asset, ScanResult } from '../api/types';
+import type { AdvisorFinding, AppSetting, Asset, AssetConversionOverrideState, ScanResult } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { PageHeader } from '../components/PageHeader';
@@ -179,32 +179,16 @@ export function AnalysisPage() {
     scanAsset.mutate({ path: record.assetPath, force: true, analysisSeconds });
   }
 
-  async function applyMotionRecommendation(status: ScanResult['interlaceAnalysis']['status']) {
+  async function applyRecommendations(findings: AdvisorFinding[]) {
     if (!currentScan) throw new Error('Analyze the asset first.');
-    if (status === 'mixed' || status === 'unknown' || !status) {
-      await api.updateAssetReview({ path: currentScan.path, requiresReview: true, source: 'analysis-motion', reason: `Motion analysis result requires review: ${status ?? 'unknown'}.`, tags: ['motion-review'] });
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
-      return 'Asset marked for motion review; no filter was applied.';
-    }
     const current = selectedAsset?.conversion ?? {};
-    const recommendedFilter = currentScan.interlaceAnalysis.recommendedFilter || 'fieldmatch,decimate';
-    const patch = status === 'progressive'
-      ? {
-          deinterlaceMode: 'off' as const,
-          videoFilters: withoutMotionFilters(current.videoFilters),
-        }
-      : status === 'interlaced'
-        ? { deinterlaceMode: 'force' as const, videoFilters: withoutMotionFilters(current.videoFilters) }
-        : { deinterlaceMode: 'off' as const, videoFilters: joinFilters(recommendedFilter, withoutMotionFilters(current.videoFilters)) };
-    await api.updateAssetConversion({ path: currentScan.path, ...current, ...patch });
+    let next: AssetConversionOverrideState = { ...current };
+    findings.forEach((finding) => {
+      next = { ...next, ...(finding.patch ?? {}) } as AssetConversionOverrideState;
+    });
+    await api.updateAssetConversion({ path: currentScan.path, ...next });
     await queryClient.invalidateQueries({ queryKey: ['assets'] });
-    if (status === 'progressive') {
-      return currentScan.interlaceAnalysis.fieldOrderMismatch
-        ? 'Saved: deinterlacing disabled and output field metadata set to progressive.'
-        : 'Saved: deinterlacing disabled for this asset.';
-    }
-    if (status === 'interlaced') return 'Saved: bwdif will be forced before encoding.';
-    return `Saved: ${recommendedFilter} will run before encoding.`;
+    return `Saved ${findings.length} selected recommendation${findings.length === 1 ? '' : 's'} to Asset Overrides.`;
   }
 
   return (
@@ -285,7 +269,7 @@ export function AnalysisPage() {
                   </Stack>
                   <MediaSnapshotDetails scan={currentScan} />
                   <PlaybackCompatibilityCard scan={currentScan} />
-                  {suggestion.data ? <ProfileSuggestionCard suggestion={suggestion.data} onSelect={(profile) => setSelectedProfileId(profile.id)} onApplyMotionRecommendation={applyMotionRecommendation} /> : suggestion.isPending ? <Alert severity="info">Comparing this analysis with available profiles…</Alert> : suggestion.isError ? <Alert severity="warning">Profile suggestions are unavailable for this analysis.</Alert> : null}
+                  {suggestion.data ? <ProfileSuggestionCard suggestion={suggestion.data} onSelect={(profile) => setSelectedProfileId(profile.id)} onApplyRecommendations={applyRecommendations} /> : suggestion.isPending ? <Alert severity="info">Comparing this analysis with available profiles…</Alert> : suggestion.isError ? <Alert severity="warning">Profile suggestions are unavailable for this analysis.</Alert> : null}
                   <Card variant="outlined">
                     <CardContent>
                       <Stack spacing={1.5}>
@@ -469,13 +453,6 @@ function PlaybackCompatibilityCard({ scan }: { scan: ScanResult }) {
   );
 }
 
-function withoutMotionFilters(value?: string) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter((item) => item && !item.startsWith('bwdif') && !item.startsWith('fieldmatch') && item !== 'decimate').join(',');
-}
-
-function joinFilters(...values: Array<string | undefined>) {
-  return values.map((value) => value?.trim()).filter(Boolean).join(',');
-}
 
 function AnalysisRecordDialog({
   record,

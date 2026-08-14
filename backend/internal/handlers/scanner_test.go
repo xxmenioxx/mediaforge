@@ -211,7 +211,11 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	if err := os.WriteFile(mediaPath, []byte("replacement with different size"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	existing := models.ScanResult{Path: mediaPath, FileName: "episode.mkv", SizeBytes: 3, VideoCodec: "cached-codec", CreatedAt: time.Now().Add(-time.Hour)}
+	existing := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: 3, VideoCodec: "cached-codec", CreatedAt: time.Now().Add(-time.Hour),
+		VideoStreams:           models.JSONList{map[string]any{"avgFrameRate": "25/1"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 500, "averageGopLength": 75.0, "maxConsecutiveBFrames": 3, "confidence": "medium"},
+	}
 	if err := db.Create(&existing).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +223,13 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{Force: false}, nil)
 	if err != nil || !cached || result.VideoCodec != "cached-codec" {
 		t.Fatalf("snapshot was regenerated without Re-scan: cached=%t result=%#v err=%v", cached, result, err)
+	}
+	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
+		t.Fatalf("cached snapshot was not enriched from stored source facts: %#v", result.FrameStructureRecommendation)
+	}
+	var stored models.ScanResult
+	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 1 {
+		t.Fatalf("enriched recommendation was not persisted: %#v err=%v", stored.FrameStructureRecommendation, err)
 	}
 }
 
@@ -250,5 +261,8 @@ func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	result, ok := inheritedOriginalSnapshot(db, archivePath, info)
 	if !ok || result.Path != archivePath || result.VideoCodec != "h264" || jsonMapInt(result.FrameStructureAnalysis, "framesAnalyzed") != 900 {
 		t.Fatalf("archive did not inherit Raw snapshot: ok=%t result=%#v", ok, result)
+	}
+	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
+		t.Fatalf("archive did not inherit the derived frame recommendation: %#v", result.FrameStructureRecommendation)
 	}
 }

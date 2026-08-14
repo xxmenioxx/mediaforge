@@ -131,6 +131,94 @@ type FrameStructureValidation struct {
 	Warnings   []string `json:"warnings"`
 }
 
+// FrameStructureRecommendationSet is derived exclusively from immutable
+// source facts. It is encoder-neutral: capability-gated controls such as QSV
+// Adaptive I/B or VideoToolbox frame reordering are resolved later.
+type FrameStructureRecommendationSet struct {
+	Version               int                                     `json:"version"`
+	SourceAnalysisVersion int                                     `json:"sourceAnalysisVersion"`
+	FPS                   float64                                 `json:"fps"`
+	RecommendedMaxBFrames int                                     `json:"recommendedMaxBFrames"`
+	Confidence            string                                  `json:"confidence"`
+	ByMode                map[string]FrameStructureRecommendation `json:"byMode"`
+	Warnings              []string                                `json:"warnings,omitempty"`
+}
+
+func buildFrameStructureRecommendationSet(scan models.ScanResult) FrameStructureRecommendationSet {
+	analysis := scan.FrameStructureAnalysis
+	source := QSVFrameStructureAnalysis{
+		Version:               workerIntValue(analysis["version"], 0),
+		FramesAnalyzed:        workerIntValue(analysis["framesAnalyzed"], 0),
+		AverageGOPLength:      workerNumberValue(analysis["averageGopLength"], 0),
+		MaxConsecutiveBFrames: workerIntValue(analysis["maxConsecutiveBFrames"], 0),
+		BFrameRatio:           workerNumberValue(analysis["bFrameRatio"], 0),
+		Confidence:            strings.TrimSpace(stringFromUnknown(analysis["confidence"])),
+	}
+	fps := scanFrameRate(scan)
+	result := FrameStructureRecommendationSet{
+		Version:               1,
+		SourceAnalysisVersion: source.Version,
+		FPS:                   fps,
+		Confidence:            source.Confidence,
+		ByMode:                map[string]FrameStructureRecommendation{},
+	}
+	if result.Confidence == "" {
+		result.Confidence = "low"
+	}
+	for _, mode := range []string{"compatible", "balanced", "maximum_compression"} {
+		recommendation := recommendFrameStructure(source, fps, "", mode, false, false, false)
+		result.ByMode[mode] = recommendation
+		if mode == "balanced" {
+			result.RecommendedMaxBFrames = recommendation.MaxBFrames
+		}
+		result.Warnings = append(result.Warnings, recommendation.Warnings...)
+	}
+	if result.RecommendedMaxBFrames <= 0 {
+		result.RecommendedMaxBFrames = 3
+	}
+	return result
+}
+
+func frameStructureRecommendationMap(scan models.ScanResult) models.JSONMap {
+	encoded, _ := json.Marshal(buildFrameStructureRecommendationSet(scan))
+	value := models.JSONMap{}
+	_ = json.Unmarshal(encoded, &value)
+	return value
+}
+
+func ensureFrameStructureRecommendation(scan *models.ScanResult) bool {
+	if scan == nil || workerIntValue(scan.FrameStructureRecommendation["version"], 0) >= 1 {
+		return false
+	}
+	scan.FrameStructureRecommendation = frameStructureRecommendationMap(*scan)
+	return true
+}
+
+func storedFrameStructureRecommendation(scan models.ScanResult, mode string) FrameStructureRecommendation {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "auto" || mode == "off" || mode == "" {
+		mode = "balanced"
+	}
+	if ensureFrameStructureRecommendation(&scan) {
+		// Derived in memory for legacy snapshots. Callers that own persistence may
+		// store the enrichment without probing the media again.
+	}
+	byMode, _ := scan.FrameStructureRecommendation["byMode"].(map[string]interface{})
+	if byMode == nil {
+		if raw, ok := scan.FrameStructureRecommendation["byMode"].(models.JSONMap); ok {
+			byMode = map[string]interface{}(raw)
+		}
+	}
+	raw, ok := byMode[mode]
+	if !ok {
+		raw = byMode["balanced"]
+	}
+	encoded, _ := json.Marshal(raw)
+	var recommendation FrameStructureRecommendation
+	_ = json.Unmarshal(encoded, &recommendation)
+	return recommendation
+}
+
 func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, contentType, policy string, advancedAllowed, adaptiveISupported, adaptiveBSupported bool) FrameStructureRecommendation {
 	if fps <= 0 {
 		return FrameStructureRecommendation{MaxBFrames: 3, Confidence: "low", Warnings: []string{"A reliable asset frame rate is required before MVForge can calculate an automatic GOP recommendation."}}

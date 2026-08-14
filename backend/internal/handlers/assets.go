@@ -196,9 +196,10 @@ type AssetReviewState struct {
 }
 
 type AssetMetadataState struct {
-	Categories []string  `json:"categories"`
-	Tags       []string  `json:"tags"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	Categories    []string  `json:"categories"`
+	Tags          []string  `json:"tags"`
+	InheritedFrom string    `json:"inheritedFrom,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type AssetConversionOverrideState struct {
@@ -214,6 +215,7 @@ type AssetConversionOverrideState struct {
 	AudioCodec                       string                         `json:"audioCodec,omitempty"`
 	QualityMode                      string                         `json:"qualityMode,omitempty"`
 	QualityValue                     int                            `json:"qualityValue,omitempty"`
+	OptimizationIntent               string                         `json:"optimizationIntent,omitempty"`
 	VideoPreset                      string                         `json:"videoPreset,omitempty"`
 	PixFmt                           string                         `json:"pixFmt,omitempty"`
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
@@ -351,6 +353,7 @@ type AssetConversionUpdateInput struct {
 	AudioCodec                       string                         `json:"audioCodec"`
 	QualityMode                      string                         `json:"qualityMode"`
 	QualityValue                     int                            `json:"qualityValue"`
+	OptimizationIntent               string                         `json:"optimizationIntent"`
 	VideoPreset                      string                         `json:"videoPreset"`
 	PixFmt                           string                         `json:"pixFmt"`
 	VideoFilters                     string                         `json:"videoFilters"`
@@ -2086,7 +2089,35 @@ func migrateAssetPathOverrides(db *gorm.DB, sourcePath, destinationPath string) 
 			metadata[filepath.Join(destinationPath, relative)] = value
 		}
 	}
-	return saveAssetMetadataOverrides(db, metadata)
+	if err := saveAssetMetadataOverrides(db, metadata); err != nil {
+		return err
+	}
+	return migrateProfileAssignmentPaths(db, sourcePath, destinationPath)
+}
+
+func migrateProfileAssignmentPaths(db *gorm.DB, sourcePath, destinationPath string) error {
+	if !db.Migrator().HasTable(&models.ProfileAssignment{}) {
+		return nil
+	}
+	var assignments []models.ProfileAssignment
+	if err := db.Find(&assignments).Error; err != nil {
+		return err
+	}
+	for index := range assignments {
+		oldPath := filepath.Clean(assignments[index].TargetPath)
+		if oldPath != filepath.Clean(sourcePath) && !pathIsInside(oldPath, sourcePath) {
+			continue
+		}
+		relative, err := filepath.Rel(sourcePath, oldPath)
+		if err != nil {
+			return err
+		}
+		assignments[index].TargetPath = filepath.Join(destinationPath, relative)
+		if err := db.Save(&assignments[index]).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func resetDirectPublicationOverrides(db *gorm.DB, records []models.AssetRecord, sourcePath, destinationPath string, publishedPaths map[string]string) error {
@@ -2396,6 +2427,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
 		QualityMode:                    strings.TrimSpace(input.QualityMode),
 		QualityValue:                   input.QualityValue,
+		OptimizationIntent:             normalizedOptimizationIntent(input.OptimizationIntent),
 		VideoPreset:                    strings.TrimSpace(input.VideoPreset),
 		PixFmt:                         strings.TrimSpace(input.PixFmt),
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
@@ -2478,13 +2510,41 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 	cleanPath := filepath.Clean(resolvedPath)
 	categories := normalizedTags(input.Categories)
 	tags := normalizedTags(input.Tags)
+	now := time.Now()
+	info, statErr := os.Stat(cleanPath)
+	isPathMetadata := statErr == nil && info.IsDir()
 	if len(categories) == 0 && len(tags) == 0 {
 		delete(entries, cleanPath)
 	} else {
 		entries[cleanPath] = AssetMetadataState{
 			Categories: categories,
 			Tags:       tags,
-			UpdatedAt:  time.Now(),
+			UpdatedAt:  now,
+		}
+	}
+	if isPathMetadata {
+		var records []models.AssetRecord
+		if err := h.db.Where("missing = ?", false).Find(&records).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, record := range records {
+			assetPath := filepath.Clean(record.Path)
+			if !pathIsInside(assetPath, cleanPath) {
+				continue
+			}
+			current := metadataForPath(assetPath, entries)
+			if len(current.Categories) > 0 && filepath.Clean(current.InheritedFrom) != cleanPath {
+				continue
+			}
+			current.Categories = append([]string{}, categories...)
+			current.InheritedFrom = cleanPath
+			current.UpdatedAt = now
+			if len(current.Categories) == 0 && len(current.Tags) == 0 {
+				delete(entries, assetPath)
+			} else {
+				entries[assetPath] = current
+			}
 		}
 	}
 
@@ -2573,6 +2633,11 @@ func (h AssetHandler) Rename(c *gin.Context) {
 			delete(conversions, filepath.Clean(resolvedPath))
 			conversions[filepath.Clean(target)] = value
 			if err := saveAssetConversionOverrides(tx, conversions); err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&models.ProfileAssignment{}) {
+			if err := tx.Model(&models.ProfileAssignment{}).Where("target_type = ? AND target_path = ?", "asset", resolvedPath).Update("target_path", target).Error; err != nil {
 				return err
 			}
 		}
@@ -2798,16 +2863,6 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	args = append(args, "-t", strconv.Itoa(seconds))
 	normalization := buildPreviewNormalization(path, previewNormalizationMode)
 	videoFilter := joinPreviewFilters(normalization.Filter, previewVideoFilterChain(videoFiltersOverride, previewMode))
-	if subtitleStreamIndex >= 0 {
-		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
-		if filterErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": filterErr.Error()})
-			return
-		}
-		args = append(args, "-filter_complex", filter, "-map", "[preview_video]")
-	} else {
-		args = append(args, "-map", "0:v:0?", "-vf", videoFilter)
-	}
 
 	requestedVideoEncoder := strings.ToLower(strings.TrimSpace(videoEncoderOverride))
 
@@ -2875,6 +2930,30 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			qsvAdaptiveBOverride,
 			min(2, max(0, qsvPStrategyOverride)),
 		)
+	}
+
+	// A profile owns its complete effective filter chain (including automatic
+	// deinterlace and preview normalization). Add mapping only after resolving
+	// that profile so FFmpeg receives exactly one -vf/-filter_complex path.
+	if effectivePreviewProfile != nil {
+		videoFilter = existingVideoFilters(*effectivePreviewProfile)
+	}
+	if subtitleStreamIndex >= 0 {
+		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
+		if filterErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": filterErr.Error()})
+			return
+		}
+		args = append(args, "-filter_complex", filter, "-map", "[preview_video]")
+		if effectivePreviewProfile != nil {
+			effectivePreviewProfile.WorkerConfig["videoFilters"] = ""
+			videoCodecArguments = removeFFmpegOption(videoCodecArguments, "-vf")
+		}
+	} else {
+		args = append(args, "-map", "0:v:0?")
+		if effectivePreviewProfile == nil {
+			args = append(args, "-vf", videoFilter)
+		}
 	}
 
 	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
@@ -3244,6 +3323,20 @@ func argumentValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func removeFFmpegOption(args []string, name string) []string {
+	filtered := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		if args[index] == name {
+			if index+1 < len(args) {
+				index++
+			}
+			continue
+		}
+		filtered = append(filtered, args[index])
+	}
+	return filtered
 }
 
 func (h AssetHandler) CompatiblePreviewInspection(c *gin.Context) {
@@ -4574,11 +4667,11 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	if err != nil {
 		return result, err
 	}
-	keepDays := originalRetentionDays(h.db)
-	expireArchive := assetInventoryExpireArchiveFiles(h.db)
+	keepDays, autoDeleteArchive := originalRetentionPolicy(h.db)
+	archiveJobs := activeArchivedOriginalJobs(h.db)
 
 	foundPaths := map[string]struct{}{}
-	rawRecords := collectAssetRecords(models.Library{Name: "Originals", SourcePath: rawRoot}, rawRoot, "unprocessed", now, keepDays)
+	rawRecords := collectAssetRecords(models.Library{Name: "Originals", SourcePath: rawRoot}, rawRoot, "unprocessed", now)
 	for _, record := range rawRecords {
 		foundPaths[record.Path] = struct{}{}
 		if err := upsertAssetRecord(h.db, record); err != nil {
@@ -4593,7 +4686,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		if destinationPath == "" {
 			continue
 		}
-		for _, record := range collectAssetRecords(library, destinationPath, "converted", now, keepDays) {
+		for _, record := range collectAssetRecords(library, destinationPath, "converted", now) {
 			owner, owned := destinationLibraryForMediaPath(record.Path, libraries)
 			if !owned || owner.ID != library.ID {
 				continue
@@ -4619,9 +4712,15 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		}
 	}
 
-	for _, record := range collectAssetRecords(models.Library{Name: "Original Archive"}, archiveRoot, "archive", now, keepDays) {
+	for _, record := range collectAssetRecords(models.Library{Name: "Original Archive"}, archiveRoot, "archive", now) {
 		foundPaths[record.Path] = struct{}{}
-		if expireArchive && record.ExpiresAt != nil && now.After(*record.ExpiresAt) {
+		job, tracked := archiveJobs[filepath.Clean(record.Path)]
+		if tracked && keepDays > 0 && job.PublishedAt != nil {
+			expiresAt := job.PublishedAt.Add(time.Duration(keepDays) * 24 * time.Hour)
+			record.ExpiresAt = &expiresAt
+		}
+		if autoDeleteArchive && record.ExpiresAt != nil && now.After(*record.ExpiresAt) &&
+			archiveOriginalEligibleForDeletion(job, tracked) && pathIsInside(record.Path, archiveRoot) {
 			if err := os.Remove(record.Path); err == nil {
 				record.Missing = true
 				result.ExpiredDeleted++
@@ -4649,7 +4748,51 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 			}
 		}
 	}
+	if err := backfillInheritedAssetCategories(h.db); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+func backfillInheritedAssetCategories(db *gorm.DB) error {
+	var records []models.AssetRecord
+	if err := db.Where("missing = ?", false).Find(&records).Error; err != nil {
+		return err
+	}
+	entries := assetMetadataOverrides(db)
+	changed := false
+	now := time.Now()
+	for _, record := range records {
+		assetPath := filepath.Clean(record.Path)
+		current := metadataForPath(assetPath, entries)
+		if len(current.Categories) > 0 {
+			continue
+		}
+		inheritedPath := ""
+		inheritedCategories := []string{}
+		for candidatePath, candidate := range entries {
+			candidatePath = filepath.Clean(candidatePath)
+			if candidatePath == assetPath || len(candidate.Categories) == 0 || !pathIsInside(assetPath, candidatePath) {
+				continue
+			}
+			if inheritedPath == "" || len(candidatePath) > len(inheritedPath) {
+				inheritedPath = candidatePath
+				inheritedCategories = candidate.Categories
+			}
+		}
+		if inheritedPath == "" {
+			continue
+		}
+		current.Categories = append([]string{}, inheritedCategories...)
+		current.InheritedFrom = inheritedPath
+		current.UpdatedAt = now
+		entries[assetPath] = current
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return saveAssetMetadataOverrides(db, entries)
 }
 
 func destinationLibraryForMediaPath(mediaPath string, libraries []models.Library) (models.Library, bool) {
@@ -4823,7 +4966,12 @@ func migrateSingleAssetPathOverrides(db *gorm.DB, oldPath, newPath string) error
 	if value, exists := metadata[oldPath]; exists {
 		delete(metadata, oldPath)
 		metadata[newPath] = value
-		return saveAssetMetadataOverrides(db, metadata)
+		if err := saveAssetMetadataOverrides(db, metadata); err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasTable(&models.ProfileAssignment{}) {
+		return db.Model(&models.ProfileAssignment{}).Where("target_type = ? AND target_path = ?", "asset", oldPath).Update("target_path", newPath).Error
 	}
 	return nil
 }
@@ -4871,7 +5019,7 @@ func mediaFileFingerprint(filePath string) (string, error) {
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
-func collectAssetRecords(library models.Library, root string, status string, syncedAt time.Time, keepDays int) []models.AssetRecord {
+func collectAssetRecords(library models.Library, root string, status string, syncedAt time.Time) []models.AssetRecord {
 	if strings.TrimSpace(root) == "" {
 		return []models.AssetRecord{}
 	}
@@ -4904,10 +5052,6 @@ func collectAssetRecords(library models.Library, root string, status string, syn
 			LibraryName:  library.Name,
 			Missing:      false,
 			SyncedAt:     syncedAt,
-		}
-		if status == "archive" && keepDays > 0 {
-			expiresAt := info.ModTime().Add(time.Duration(keepDays) * 24 * time.Hour)
-			record.ExpiresAt = &expiresAt
 		}
 		records = append(records, record)
 		return nil
@@ -5127,19 +5271,53 @@ func activeConversionOriginalBytes(db *gorm.DB, job models.QueueJob) int64 {
 }
 
 func originalRetentionDays(db *gorm.DB) int {
-	setting := models.AppSetting{}
-	if err := db.First(&setting, "key = ?", "originalRetentionPolicy").Error; err != nil || setting.Value == nil {
-		return 30
-	}
-	return intValueSetting(setting.Value["keepOriginalsDays"], 30)
+	days, _ := originalRetentionPolicy(db)
+	return days
 }
 
-func assetInventoryExpireArchiveFiles(db *gorm.DB) bool {
+func originalRetentionPolicy(db *gorm.DB) (int, bool) {
 	setting := models.AppSetting{}
-	if err := db.First(&setting, "key = ?", "assetInventory").Error; err != nil || setting.Value == nil {
-		return true
+	if err := db.First(&setting, "key = ?", "originalRetentionPolicy").Error; err != nil || setting.Value == nil {
+		return 30, false
 	}
-	return boolSetting(setting.Value["expireArchiveFiles"], true)
+	return intValueSetting(setting.Value["keepOriginalsDays"], 30), boolSetting(setting.Value["autoDeleteEnabled"], false)
+}
+
+func activeArchivedOriginalJobs(db *gorm.DB) map[string]models.QueueJob {
+	jobsByPath := map[string]models.QueueJob{}
+	if db == nil || !db.Migrator().HasTable(&models.QueueJob{}) {
+		return jobsByPath
+	}
+	var jobs []models.QueueJob
+	if err := db.Where(
+		"original_archived_path <> '' AND status = ? AND publication_retired_at IS NULL AND published_at IS NOT NULL AND published_path <> '' AND validation_status IN ?",
+		JobStatusCompleted,
+		[]string{ValidationStatusPassed, ValidationStatusWarning},
+	).Order("published_at desc, id desc").Find(&jobs).Error; err != nil {
+		return jobsByPath
+	}
+	for _, job := range jobs {
+		path := filepath.Clean(strings.TrimSpace(job.OriginalArchivedPath))
+		if path == "." {
+			continue
+		}
+		if _, exists := jobsByPath[path]; !exists {
+			jobsByPath[path] = job
+		}
+	}
+	return jobsByPath
+}
+
+func archiveOriginalEligibleForDeletion(job models.QueueJob, tracked bool) bool {
+	if !tracked || job.Status != JobStatusCompleted || job.PublishedAt == nil ||
+		job.PublicationRetiredAt != nil || strings.TrimSpace(job.PublishedPath) == "" {
+		return false
+	}
+	if job.ValidationStatus != ValidationStatusPassed && job.ValidationStatus != ValidationStatusWarning {
+		return false
+	}
+	info, err := os.Stat(filepath.Clean(job.PublishedPath))
+	return err == nil && !info.IsDir()
 }
 
 func collectAssets(library models.Library, root string, status string) []Asset {
@@ -5250,8 +5428,9 @@ func assetMetadataOverrides(db *gorm.DB) map[string]AssetMetadataState {
 			continue
 		}
 		metadata := AssetMetadataState{
-			Categories: stringSliceFromUnknown(entry["categories"]),
-			Tags:       stringSliceFromUnknown(entry["tags"]),
+			Categories:    stringSliceFromUnknown(entry["categories"]),
+			Tags:          stringSliceFromUnknown(entry["tags"]),
+			InheritedFrom: stringFromUnknown(entry["inheritedFrom"]),
 		}
 		if updatedAt, err := time.Parse(time.RFC3339, stringFromUnknown(entry["updatedAt"])); err == nil {
 			metadata.UpdatedAt = updatedAt
@@ -5265,9 +5444,10 @@ func saveAssetMetadataOverrides(db *gorm.DB, metadata map[string]AssetMetadataSt
 	entries := map[string]interface{}{}
 	for path, item := range metadata {
 		entry := map[string]interface{}{
-			"categories": item.Categories,
-			"tags":       item.Tags,
-			"updatedAt":  item.UpdatedAt.Format(time.RFC3339),
+			"categories":    item.Categories,
+			"tags":          item.Tags,
+			"inheritedFrom": item.InheritedFrom,
+			"updatedAt":     item.UpdatedAt.Format(time.RFC3339),
 		}
 		entries[filepath.Clean(path)] = entry
 	}
@@ -5519,6 +5699,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.AudioCodec) == "" &&
 		strings.TrimSpace(override.QualityMode) == "" &&
 		override.QualityValue == 0 &&
+		strings.TrimSpace(override.OptimizationIntent) == "" &&
 		strings.TrimSpace(override.VideoPreset) == "" &&
 		strings.TrimSpace(override.PixFmt) == "" &&
 		strings.TrimSpace(override.VideoFilters) == "" &&

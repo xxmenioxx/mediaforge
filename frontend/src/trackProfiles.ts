@@ -15,6 +15,7 @@ export type TrackProfile = {
   key: string;
   name: string;
   description: string;
+  scope?: 'asset' | 'path';
   sourceAssetPath?: string;
   sourceAssetName?: string;
   keepVideoStreams?: number[];
@@ -94,6 +95,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
   return {
     ...emptyTrackProfile,
     key: item.key, name: item.name, description: typeof item.description === 'string' ? item.description : '',
+	  scope: item.scope === 'path' ? 'path' : 'asset',
     sourceAssetPath: typeof item.sourceAssetPath === 'string' ? item.sourceAssetPath : undefined,
     sourceAssetName: typeof item.sourceAssetName === 'string' ? item.sourceAssetName : undefined,
     keepVideoStreams: numbers(item.keepVideoStreams), keepAudioStreams: numbers(item.keepAudioStreams), keepSubtitleStreams: numbers(item.keepSubtitleStreams),

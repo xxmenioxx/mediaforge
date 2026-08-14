@@ -21,11 +21,14 @@ import type {
   JobArtifactsResponse,
   Profile,
   ProfileInput,
+  ProfileAssignment,
+  ProfileAssignmentInput,
   PathBrowseResponse,
   PublishResult,
   QueueJob,
   QueueJobInput,
   QueueJobUpdateInput,
+  QueueReorderInput,
   RuntimeSnapshot,
   RuntimeProfilesResponse,
   ScanResult,
@@ -305,6 +308,12 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({}),
     }),
+  profileAssignments: () => request<ProfileAssignment[]>('/api/profile-assignments'),
+  updateProfileAssignment: (assignment: ProfileAssignmentInput) =>
+    request<ProfileAssignment | { status: string }>('/api/profile-assignments', {
+      method: 'POST',
+      body: JSON.stringify(assignment),
+    }),
   queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
   createQueueJob: (job: QueueJobInput) =>
     request<QueueJob>('/api/queue/jobs', {
@@ -315,6 +324,11 @@ export const api = {
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
       method: 'POST',
       body: JSON.stringify(job),
+    }),
+  reorderQueueJob: (input: QueueReorderInput) =>
+    request<{ jobs: QueueJob[] }>('/api/queue/jobs/reorder', {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
   dismissQueueJob: (jobId: number) =>
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
@@ -413,8 +427,8 @@ export const api = {
     request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect'), { signal }),
   estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }, signal?: AbortSignal) =>
     request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input), signal }),
-  recommendEncoderQuality: (input: { path?: string; profile: ProfileInput }) =>
-    request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input) }),
+  recommendEncoderQuality: ({ signal, ...input }: { path?: string; profile: ProfileInput; signal?: AbortSignal }) =>
+    request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input), signal }),
   audioPreviewUrl: ({
     path,
     profileKey = '',

@@ -84,6 +84,30 @@ func TestOriginalsArchivePathMapsLegacyContainerPathToConfiguredHostRoot(t *test
 	}
 }
 
+func TestOriginalsArchivePathDoesNotOverrideConfiguredRootWithLegacyTrashPath(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-path-not-trash?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRoot := filepath.Join(t.TempDir(), "originals")
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{
+		"originalsArchivePath": archiveRoot,
+		"trashPath":            "/media/trash",
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := originalsArchivePath(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != archiveRoot {
+		t.Fatalf("got %q want configured archive root %q", got, archiveRoot)
+	}
+}
+
 func TestConcurrentOriginalArchivalCreatesOnlyOneArchive(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:concurrent-original-archive?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -220,7 +220,7 @@ func nextClaimableJob(tx *gorm.DB, limits workerLimits) (models.QueueJob, error)
 		Joins("LEFT JOIN execution_plans ON execution_plans.id = queue_jobs.active_execution_plan_id").
 		Where("queue_jobs.status = ?", JobStatusQueued).
 		Where("queue_jobs.active_execution_plan_id IS NULL OR execution_plans.status = ?", scheduler.ExecutionPlanReady).
-		Order("queue_jobs.priority asc, queue_jobs.created_at asc").
+		Order("queue_jobs.queue_position asc, queue_jobs.priority asc, queue_jobs.created_at asc").
 		Find(&jobs).Error; err != nil {
 		return models.QueueJob{}, err
 	}
@@ -294,7 +294,7 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 		if err == gorm.ErrRecordNotFound {
 			message := "no runnable queued jobs are available"
 			var job models.QueueJob
-			if h.db.Where("status = ?", JobStatusQueued).Order("priority asc, created_at asc").First(&job).Error == nil && job.ActiveExecutionPlanID != nil {
+			if h.db.Where("status = ?", JobStatusQueued).Order("queue_position asc, priority asc, created_at asc").First(&job).Error == nil && job.ActiveExecutionPlanID != nil {
 				var plan models.ExecutionPlan
 				if h.db.First(&plan, *job.ActiveExecutionPlanID).Error == nil && plan.WaitingState != "" {
 					message = fmt.Sprintf("queued job %d is blocked in %s", job.ID, plan.WaitingState)
@@ -532,6 +532,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
+	effectiveProfile = resolveAutomaticFrameStructure(h.db, job.MediaPath, effectiveProfile)
 	paths, err := h.pathSettings()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -545,12 +546,12 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 			inputPath = filepath.Join(paths.stagingPath, fmt.Sprintf("job-%d", job.ID), "_input", filepath.Base(job.MediaPath))
 		}
 	}
-	audioProfile, err := h.audioProfile(job.AudioProfileKey)
+	audioProfile, err := h.audioProfileForJob(job)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, profile, audioProfile, true, override)
+	plan, err := buildMediaJobPlanWithOverride(inputPath, outputPath, effectiveProfile, audioProfile, true, override)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -697,6 +698,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
+	effectiveProfile = resolveAutomaticFrameStructure(h.db, job.MediaPath, effectiveProfile)
 	if effectiveProfile.WorkerConfig == nil {
 		effectiveProfile.WorkerConfig = models.JSONMap{}
 	} else {
@@ -717,7 +719,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		return job, http.StatusInternalServerError, err
 	}
 
-	audioProfile, err := h.audioProfile(job.AudioProfileKey)
+	audioProfile, err := h.audioProfileForJob(job)
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
@@ -823,6 +825,80 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	return job, http.StatusAccepted, nil
 }
 
+// resolveAutomaticFrameStructure turns the reusable Auto intent into effective,
+// asset-specific values at execution time. The captured profile remains the
+// requested configuration; only the worker's effective copy is changed.
+func resolveAutomaticFrameStructure(db *gorm.DB, mediaPath string, profile models.Profile) models.Profile {
+	if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "auto" {
+		return profile
+	}
+	workerConfig := models.JSONMap{}
+	for key, value := range profile.WorkerConfig {
+		workerConfig[key] = value
+	}
+	profile.WorkerConfig = workerConfig
+
+	var scan models.ScanResult
+	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+		// A conservative effective recommendation is still preferable to silently
+		// reverting the global Auto policy to encoder defaults.
+		workerConfig["frameStructureGopMode"] = "recommended"
+		workerConfig["frameStructureGopFrames"] = 120
+		workerConfig["frameStructureBFrameMode"] = "recommended"
+		workerConfig["frameStructureMaxBFrames"] = 3
+		workerConfig["qsvAdaptiveI"] = true
+		workerConfig["qsvAdaptiveB"] = true
+		return profile
+	}
+	recommendation := storedFrameStructureRecommendation(scan, "balanced")
+	if recommendation.TargetGOPFrames <= 0 {
+		recommendation.TargetGOPFrames = 120
+	}
+	if recommendation.MaxBFrames <= 0 {
+		recommendation.MaxBFrames = 3
+	}
+	workerConfig["frameStructureGopMode"] = "recommended"
+	workerConfig["frameStructureGopFrames"] = recommendation.TargetGOPFrames
+	workerConfig["frameStructureBFrameMode"] = "recommended"
+	workerConfig["frameStructureMaxBFrames"] = recommendation.MaxBFrames
+	workerConfig["qsvAdaptiveI"] = true
+	workerConfig["qsvAdaptiveB"] = true
+	workerConfig["frameStructureAutoResolved"] = true
+	workerConfig["frameStructureAutoConfidence"] = recommendation.Confidence
+	return profile
+}
+
+func scanFrameRate(scan models.ScanResult) float64 {
+	for _, raw := range scan.VideoStreams {
+		stream, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"avgFrameRate", "realFrameRate"} {
+			if fps := parseFrameRateValue(stringFromUnknown(stream[key])); fps > 0 {
+				return fps
+			}
+		}
+	}
+	return 0
+}
+
+func parseFrameRateValue(value string) float64 {
+	parts := strings.Split(strings.TrimSpace(value), "/")
+	if len(parts) == 2 {
+		numerator, numeratorErr := strconv.ParseFloat(parts[0], 64)
+		denominator, denominatorErr := strconv.ParseFloat(parts[1], 64)
+		if numeratorErr == nil && denominatorErr == nil && denominator > 0 && numerator/denominator <= 240 {
+			return numerator / denominator
+		}
+	}
+	fps, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err == nil && fps > 0 && fps <= 240 {
+		return fps
+	}
+	return 0
+}
+
 func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error) {
 	if len(job.ProfileSnapshot) > 0 {
 		return scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
@@ -838,7 +914,38 @@ const assetConversionOverrideSnapshotKey = "assetConversionOverride"
 
 func currentConversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
 	override := conversionOverrideForPath(job.MediaPath, entries)
+	if len(job.TrackProfileSnapshot) > 0 {
+		var profileOverride AssetConversionOverrideState
+		if encoded, err := json.Marshal(job.TrackProfileSnapshot); err == nil && json.Unmarshal(encoded, &profileOverride) == nil {
+			override = mergeTrackProfileBelowAssetOverride(profileOverride, override)
+		}
+	}
 	return applyJobSelectionsToConversionOverride(job, override)
+}
+
+func mergeTrackProfileBelowAssetOverride(profile, asset AssetConversionOverrideState) AssetConversionOverrideState {
+	if asset.KeepVideoStreams == nil {
+		asset.KeepVideoStreams = profile.KeepVideoStreams
+	}
+	if asset.KeepAudioStreams == nil {
+		asset.KeepAudioStreams = profile.KeepAudioStreams
+	}
+	if asset.KeepSubtitleStreams == nil {
+		asset.KeepSubtitleStreams = profile.KeepSubtitleStreams
+	}
+	if len(asset.VideoMetadata) == 0 {
+		asset.VideoMetadata = profile.VideoMetadata
+	}
+	if len(asset.AudioMetadata) == 0 {
+		asset.AudioMetadata = profile.AudioMetadata
+	}
+	if len(asset.SubtitleMetadata) == 0 {
+		asset.SubtitleMetadata = profile.SubtitleMetadata
+	}
+	if len(asset.SubtitleTransforms) == 0 {
+		asset.SubtitleTransforms = profile.SubtitleTransforms
+	}
+	return asset
 }
 
 func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
@@ -1076,6 +1183,13 @@ func (h WorkerHandler) audioProfile(key string) (*audioEnhancementProfile, error
 	return lookupAudioProfile(h.db, key)
 }
 
+func (h WorkerHandler) audioProfileForJob(job models.QueueJob) (*audioEnhancementProfile, error) {
+	if len(job.AudioProfileSnapshot) > 0 {
+		return audioProfileFromMap(job.AudioProfileKey, job.AudioProfileSnapshot), nil
+	}
+	return h.audioProfile(job.AudioProfileKey)
+}
+
 func lookupAudioProfile(db *gorm.DB, key string) (*audioEnhancementProfile, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, nil
@@ -1102,22 +1216,26 @@ func lookupAudioProfile(db *gorm.DB, key string) (*audioEnhancementProfile, erro
 		if workerStringValue(candidate["key"]) != key {
 			continue
 		}
-		return &audioEnhancementProfile{
-			Key:              key,
-			Filters:          workerStringValue(candidate["filters"]),
-			OutputCodec:      workerStringValue(candidate["outputCodec"]),
-			RNNoiseModelPath: workerStringValue(candidate["rnnoiseModelPath"]),
-			ChannelMode:      workerStringValue(candidate["channelMode"]),
-			ForceStereoMode:  workerStringValue(candidate["forceStereoMode"]),
-			StereoDelayMs:    workerNumberValue(candidate["stereoDelayMs"], 12),
-			StereoWidth:      workerNumberValue(candidate["stereoWidth"], 20),
-			EQBands:          workerNumberMap(candidate["eqBands"]),
-			TargetLoudness:   workerNumberValue(candidate["targetLoudness"], -18),
-			TruePeak:         workerNumberValue(candidate["truePeak"], -2),
-		}, nil
+		return audioProfileFromMap(key, candidate), nil
 	}
 
 	return nil, nil
+}
+
+func audioProfileFromMap(key string, candidate map[string]any) *audioEnhancementProfile {
+	return &audioEnhancementProfile{
+		Key:              key,
+		Filters:          workerStringValue(candidate["filters"]),
+		OutputCodec:      workerStringValue(candidate["outputCodec"]),
+		RNNoiseModelPath: workerStringValue(candidate["rnnoiseModelPath"]),
+		ChannelMode:      workerStringValue(candidate["channelMode"]),
+		ForceStereoMode:  workerStringValue(candidate["forceStereoMode"]),
+		StereoDelayMs:    workerNumberValue(candidate["stereoDelayMs"], 12),
+		StereoWidth:      workerNumberValue(candidate["stereoWidth"], 20),
+		EQBands:          workerNumberMap(candidate["eqBands"]),
+		TargetLoudness:   workerNumberValue(candidate["targetLoudness"], -18),
+		TruePeak:         workerNumberValue(candidate["truePeak"], -2),
+	}
 }
 
 func effectiveAudioFilters(profile audioEnhancementProfile) string {

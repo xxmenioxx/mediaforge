@@ -11,6 +11,24 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestNextClaimableJobUsesExactQueuePosition(t *testing.T) {
+	db := queueJobTestDB(t)
+	jobs := []models.QueueJob{
+		{MediaPath: "/raw/episode.mkv", Status: JobStatusQueued, Priority: 1, QueuePosition: 20},
+		{MediaPath: "/raw/movie.mkv", Status: JobStatusQueued, Priority: 10, QueuePosition: 2},
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := nextClaimableJob(db, workerLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != jobs[1].ID {
+		t.Fatalf("claimed job %d, want queue-position leader %d", claimed.ID, jobs[1].ID)
+	}
+}
+
 func TestAssignExecutionNumberIgnoresQueuedPlaceholderIDs(t *testing.T) {
 	db := queueJobTestDB(t)
 	executedNumber := uint(4)
@@ -30,6 +48,40 @@ func TestAssignExecutionNumberIgnoresQueuedPlaceholderIDs(t *testing.T) {
 	}
 	if placeholder.ExecutionNumber == nil || *placeholder.ExecutionNumber != 5 {
 		t.Fatalf("execution number = %#v, want 5", placeholder.ExecutionNumber)
+	}
+}
+
+func TestResolveAutomaticFrameStructureUsesAssetSnapshot(t *testing.T) {
+	db := queueJobTestDB(t)
+	mediaPath := "/media/raw/anime/episode.mkv"
+	scan := models.ScanResult{
+		Path:         mediaPath,
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{
+			"averageGopLength":      72.0,
+			"maxConsecutiveBFrames": 2,
+			"confidence":            "high",
+		},
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	original := models.Profile{WorkerConfig: models.JSONMap{"frameStructureMode": "auto", "frameStructureGopMode": "auto"}}
+	effective := resolveAutomaticFrameStructure(db, mediaPath, original)
+	if got := workerStringValue(effective.WorkerConfig["frameStructureGopMode"]); got != "recommended" {
+		t.Fatalf("effective GOP mode = %q, want recommended", got)
+	}
+	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 90 {
+		t.Fatalf("effective GOP = %d, want 90", got)
+	}
+	if got := workerIntValue(effective.WorkerConfig["frameStructureMaxBFrames"], 0); got != 2 {
+		t.Fatalf("effective B-frame maximum = %d, want 2", got)
+	}
+	if !profileWorkerBool(effective, "qsvAdaptiveI", false) || !profileWorkerBool(effective, "qsvAdaptiveB", false) {
+		t.Fatal("Auto should request Adaptive I and Adaptive B")
+	}
+	if got := workerStringValue(original.WorkerConfig["frameStructureGopMode"]); got != "auto" {
+		t.Fatalf("requested profile was mutated: GOP mode = %q", got)
 	}
 }
 
