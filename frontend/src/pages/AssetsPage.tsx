@@ -2868,14 +2868,38 @@ function AssetConversionOverridePanel({
     return () => window.clearTimeout(timer);
   }, [assetPath, effectiveEvaluationSignature]);
 
-  function selectHardwareQualityPreset(preset: string, encoder: string) {
+  function selectHardwareQualityPreset(
+  preset: string,
+  encoder: string,
+  draftOverride?: AssetConversionOverrideState,
+  ) {
     onChange('hardwareQualityPreset', preset);
+
     if (preset === 'custom') return;
-    if (encoder === 'hevc_qsv') onChange('qsvRateControl', 'icq');
-    const requested = assetQualityProfile(profile, draft, encoder, preset);
-    encoderQualityRecommendation.mutate({ path: assetPath, profile: requested }, {
-      onSuccess: (result) => applyEffectiveProfileToAssetOverrides(onChange, result.effectiveProfile),
-    });
+
+    if (encoder === 'hevc_qsv') {
+      onChange('qsvRateControl', 'icq');
+    }
+
+    const effectiveDraft = draftOverride ?? draft;
+
+    const requested = assetQualityProfile(
+      profile,
+      effectiveDraft,
+      encoder,
+      preset,
+    );
+
+    encoderQualityRecommendation.mutate(
+      { path: assetPath, profile: requested },
+      {
+        onSuccess: (result) =>
+          applyEffectiveProfileToAssetOverrides(
+            onChange,
+            result.effectiveProfile,
+          ),
+      },
+    );
   }
 
   function updateVideoToolboxCustomRate(key: 'videoToolboxBitrateMbps' | 'videoToolboxMaxrateMbps' | 'videoToolboxBufferMbps', value: number) {
@@ -3179,8 +3203,25 @@ function AssetConversionOverridePanel({
                     label="Hardware encoder"
                     value={effectiveVideoEncoder}
                     onChange={(event) => {
-                      onChange('videoEncoder', event.target.value);
-                      selectHardwareQualityPreset('recommended', event.target.value);
+                      const encoder = event.target.value;
+
+                      const pixFmt =
+                        defaultHardwareMain10PixelFormatForAsset(encoder);
+
+                      const nextDraft: AssetConversionOverrideState = {
+                        ...draft,
+                        videoEncoder: encoder,
+                        pixFmt,
+                      };
+
+                      onChange('videoEncoder', encoder);
+                      onChange('pixFmt', pixFmt);
+
+                      selectHardwareQualityPreset(
+                        'recommended',
+                        encoder,
+                        nextDraft,
+                      );
                     }}
                     helperText="Only encoders reported by the current runtime are selectable."
                     size="small"
