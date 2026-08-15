@@ -2749,8 +2749,11 @@ const speedOptions: SelectOption[] = [
 
 const colorDepthOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
-  { value: 'yuv420p', label: '8-bit SDR compatibility' },
-  { value: 'yuv420p10le', label: '10-bit / HDR friendly' },
+  { value: 'auto', label: 'Auto / codec default' },
+  { value: 'yuv420p10le', label: '10-bit Main10' },
+  { value: 'p010le', label: 'Hardware 10-bit Main10 (P010)' },
+  { value: 'yuv420p', label: '8-bit compatibility' },
+  { value: 'nv12', label: 'QSV 8-bit Main (NV12)' },
 ];
 
 const imageCleanupOptions: SelectOption[] = [
