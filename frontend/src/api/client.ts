@@ -385,6 +385,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ overwrite }),
     }),
+  discardPublisherJob: (jobId: number) =>
+    request<{
+      jobId: number;
+      discarded: boolean;
+      originalRecovery: string;
+    }>(`/api/publisher/jobs/${jobId}`, {
+      method: 'DELETE',
+    }),
   settings: () => request<AppSetting[]>('/api/settings'),
   softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
   runtimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime'),

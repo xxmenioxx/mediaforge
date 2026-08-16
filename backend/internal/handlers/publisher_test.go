@@ -2,13 +2,17 @@ package handlers
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -369,5 +373,520 @@ func TestPathIsInsideRejectsSiblingPrefix(t *testing.T) {
 	}
 	if pathIsInside(filepath.Join(root+"-other", "movie.mkv"), root) {
 		t.Fatal("sibling prefix must not be accepted")
+	}
+}
+
+func TestRestoreOriginalIfNeededSkipsWhenRawOriginalExists(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:restore-original-already-present?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(rawRoot, "Movies", "movie.mkv")
+	archivedOriginal := filepath.Join(archiveRoot, "Movies", "movie.mkv")
+
+	if err := os.MkdirAll(filepath.Dir(rawOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(archivedOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately use different content.
+	// Raw must always win.
+	if err := os.WriteFile(rawOriginal, []byte("raw-original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(archivedOriginal, []byte("archived-original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath:            rawOriginal,
+		OriginalArchivedPath: archivedOriginal,
+	}
+
+	result, err := (PublisherHandler{db: db}).restoreOriginalIfNeeded(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result != "already_present" {
+		t.Fatalf("restore result=%q want=%q", result, "already_present")
+	}
+
+	rawContent, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(rawContent) != "raw-original" {
+		t.Fatalf(
+			"raw original was modified: content=%q",
+			string(rawContent),
+		)
+	}
+
+	archiveContent, err := os.ReadFile(archivedOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(archiveContent) != "archived-original" {
+		t.Fatalf(
+			"archived original was unexpectedly modified: content=%q",
+			string(archiveContent),
+		)
+	}
+}
+
+func TestRestoreOriginalIfNeededRestoresFromArchiveWhenRawMissing(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:restore-original-from-archive?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(rawRoot, "Movies", "movie.mkv")
+	archivedOriginal := filepath.Join(archiveRoot, "Movies", "movie.mkv")
+
+	if err := os.MkdirAll(filepath.Dir(archivedOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		archivedOriginal,
+		[]byte("archived-original"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath:            rawOriginal,
+		OriginalArchivedPath: archivedOriginal,
+	}
+
+	result, err := (PublisherHandler{db: db}).restoreOriginalIfNeeded(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result != "restored" {
+		t.Fatalf("restore result=%q want=%q", result, "restored")
+	}
+
+	rawContent, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(rawContent) != "archived-original" {
+		t.Fatalf(
+			"restored raw content=%q want=%q",
+			string(rawContent),
+			"archived-original",
+		)
+	}
+
+	if _, err := os.Stat(archivedOriginal); !os.IsNotExist(err) {
+		t.Fatalf(
+			"archived original should no longer exist after restore, err=%v",
+			err,
+		)
+	}
+}
+
+func TestDiscardJobKeepsRawAndRemovesStaging(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:discard-publisher-keeps-raw?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.QueueJob{},
+		&models.AppSetting{},
+		&models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+
+	rawRoot := filepath.Join(root, "raw")
+	stagingRoot := filepath.Join(root, "staging")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(
+		rawRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	if err := os.MkdirAll(filepath.Dir(rawOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		rawOriginal,
+		[]byte("original"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"stagingPath":          stagingRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: rawOriginal,
+		Status:    JobStatusCompleted,
+		Stage:     JobStageReadyToPublish,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	jobRoot := filepath.Join(
+		stagingRoot,
+		fmt.Sprintf("job-%d", job.ID),
+	)
+
+	outputPath := filepath.Join(
+		jobRoot,
+		"output.mkv",
+	)
+
+	if err := os.MkdirAll(jobRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		outputPath,
+		[]byte("converted"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	job.OutputPath = outputPath
+
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(
+		http.MethodDelete,
+		fmt.Sprintf("/api/publisher/jobs/%d", job.ID),
+		nil,
+	)
+
+	ctx.Params = gin.Params{
+		{
+			Key:   "id",
+			Value: strconv.FormatUint(uint64(job.ID), 10),
+		},
+	}
+
+	handler := PublisherHandler{
+		db: db,
+	}
+
+	handler.DiscardJob(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf(
+			"status=%d body=%s",
+			rec.Code,
+			rec.Body.String(),
+		)
+	}
+
+	// RAW original must remain untouched.
+	rawContent, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(rawContent) != "original" {
+		t.Fatalf(
+			"raw original changed: content=%q",
+			string(rawContent),
+		)
+	}
+
+	// Entire staging workspace must be removed.
+	if _, err := os.Stat(jobRoot); !os.IsNotExist(err) {
+		t.Fatalf(
+			"staging job directory still exists: %s err=%v",
+			jobRoot,
+			err,
+		)
+	}
+
+	var updated models.QueueJob
+
+	if err := db.First(&updated, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if updated.Status != JobStatusCanceled {
+		t.Fatalf(
+			"status=%q want=%q",
+			updated.Status,
+			JobStatusCanceled,
+		)
+	}
+
+	if updated.Stage != JobStageCanceled {
+		t.Fatalf(
+			"stage=%q want=%q",
+			updated.Stage,
+			JobStageCanceled,
+		)
+	}
+
+	if updated.DismissedAt == nil {
+		t.Fatal("expected dismissed_at to be set")
+	}
+}
+
+func TestDiscardJobRestoresRawFromArchiveAndRemovesStaging(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:discard-publisher-restores-raw?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.QueueJob{},
+		&models.AppSetting{},
+		&models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+
+	rawRoot := filepath.Join(root, "raw")
+	stagingRoot := filepath.Join(root, "staging")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(
+		rawRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	archivedOriginal := filepath.Join(
+		archiveRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	if err := os.MkdirAll(filepath.Dir(archivedOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		archivedOriginal,
+		[]byte("original-from-archive"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"stagingPath":          stagingRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath:            rawOriginal,
+		OriginalArchivedPath: archivedOriginal,
+		Status:               JobStatusCompleted,
+		Stage:                JobStageReadyToPublish,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	jobRoot := filepath.Join(
+		stagingRoot,
+		fmt.Sprintf("job-%d", job.ID),
+	)
+
+	outputPath := filepath.Join(
+		jobRoot,
+		"output.mkv",
+	)
+
+	if err := os.MkdirAll(jobRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		outputPath,
+		[]byte("converted"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	job.OutputPath = outputPath
+
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(
+		http.MethodDelete,
+		fmt.Sprintf("/api/publisher/jobs/%d", job.ID),
+		nil,
+	)
+
+	ctx.Params = gin.Params{
+		{
+			Key:   "id",
+			Value: strconv.FormatUint(uint64(job.ID), 10),
+		},
+	}
+
+	handler := PublisherHandler{
+		db: db,
+	}
+
+	handler.DiscardJob(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf(
+			"status=%d body=%s",
+			rec.Code,
+			rec.Body.String(),
+		)
+	}
+
+	rawContent, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(rawContent) != "original-from-archive" {
+		t.Fatalf(
+			"restored raw content=%q want=%q",
+			string(rawContent),
+			"original-from-archive",
+		)
+	}
+
+	if _, err := os.Stat(archivedOriginal); !os.IsNotExist(err) {
+		t.Fatalf(
+			"archived original still exists: %s err=%v",
+			archivedOriginal,
+			err,
+		)
+	}
+
+	if _, err := os.Stat(jobRoot); !os.IsNotExist(err) {
+		t.Fatalf(
+			"staging job directory still exists: %s err=%v",
+			jobRoot,
+			err,
+		)
+	}
+
+	var updated models.QueueJob
+
+	if err := db.First(&updated, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if updated.Status != JobStatusCanceled {
+		t.Fatalf(
+			"status=%q want=%q",
+			updated.Status,
+			JobStatusCanceled,
+		)
+	}
+
+	if updated.Stage != JobStageCanceled {
+		t.Fatalf(
+			"stage=%q want=%q",
+			updated.Stage,
+			JobStageCanceled,
+		)
+	}
+
+	if updated.DismissedAt == nil {
+		t.Fatal("expected dismissed_at to be set")
 	}
 }

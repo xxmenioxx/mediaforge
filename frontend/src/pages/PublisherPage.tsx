@@ -6,6 +6,11 @@ import {
   CardContent,
   Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   FormControlLabel,
   Stack,
   Table,
@@ -19,18 +24,57 @@ import PublishIcon from '@mui/icons-material/Publish';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
+import type { QueueJob } from '../api/types';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+
 import { PageHeader } from '../components/PageHeader';
 
 export function PublisherPage() {
   const queryClient = useQueryClient();
   const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs, refetchInterval: 5000 });
   const [overwrite, setOverwrite] = useState(false);
+  const [discardTarget, setDiscardTarget] = useState<QueueJob | null>(null);
   const publishJob = useMutation({
     mutationFn: api.publishJob,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
+
+  const discardJob = useMutation({
+    mutationFn: api.discardPublisherJob,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+    },
+  });
+
+  const openDiscardDialog = (job: QueueJob) => {
+    discardJob.reset();
+    setDiscardTarget(job);
+  };
+
+  const closeDiscardDialog = () => {
+    if (discardJob.isPending) {
+      return;
+    }
+
+    setDiscardTarget(null);
+  };
+
+  const confirmDiscard = async () => {
+    if (!discardTarget) {
+      return;
+    }
+
+    try {
+      await discardJob.mutateAsync(discardTarget.id);
+      setDiscardTarget(null);
+    } catch {
+      // Error state is already handled by the mutation alert.
+    }
+  };
+
+
   const publishableJobs = (jobs.data ?? []).filter(
     (job) => !job.publishedAt && job.status === 'completed' && (job.validationStatus === 'passed' || job.validationStatus === 'warning'),
   );
@@ -46,7 +90,21 @@ export function PublisherPage() {
         {jobs.isError ? <Alert severity="warning">Unable to load validated jobs.</Alert> : null}
         {publishJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>Publish failed. The file may already exist or be missing.</Alert> : null}
         {publishJob.isSuccess ? <Alert severity="success" sx={{ mb: 2 }}>Job published.</Alert> : null}
+        {discardJob.isError ? (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {discardJob.error instanceof Error
+              ? discardJob.error.message
+              : 'Unable to discard the job.'}
+          </Alert>
+        ) : null}
 
+        {discardJob.isSuccess ? (
+          <Alert severity="success" sx={{ mb: 2 }}>
+            {discardJob.data?.originalRecovery === 'restored'
+              ? 'Job discarded. The staged output was removed and the original was restored to Raw.'
+              : 'Job discarded. The staged output was removed and the original remains in Raw.'}
+          </Alert>
+        ) : null}
         <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2 }}>
           <FormControlLabel
             control={<Checkbox checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />}
@@ -95,6 +153,16 @@ export function PublisherPage() {
                       >
                         {job.publishedAt ? 'Published' : 'Publish'}
                       </Button>
+                        <Button
+                          variant="outlined"
+                          color="error"
+                          size="small"
+                          startIcon={<DeleteOutlineIcon />}
+                          disabled={publishJob.isPending || discardJob.isPending}
+                          onClick={() => openDiscardDialog(job)}
+                        >
+                          Discard
+                        </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -108,6 +176,47 @@ export function PublisherPage() {
           </Alert>
         ) : null}
       </Box>
+      <Dialog
+        open={discardTarget !== null}
+        onClose={closeDiscardDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Discard job?</DialogTitle>
+
+        <DialogContent>
+          <DialogContentText>
+            The converted file in staging will be permanently removed.
+            The original file in Raw will be preserved. If the original is
+            missing from Raw and an archived copy is available, MVForge will
+            restore it before removing staging.
+          </DialogContentText>
+
+          {discardTarget ? (
+            <DialogContentText sx={{ mt: 2 }}>
+              Job #{discardTarget.id}
+            </DialogContentText>
+          ) : null}
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            onClick={closeDiscardDialog}
+            disabled={discardJob.isPending}
+          >
+            Cancel
+          </Button>
+
+          <Button
+            color="error"
+            variant="contained"
+            onClick={confirmDiscard}
+            disabled={discardJob.isPending}
+          >
+            {discardJob.isPending ? 'Discarding…' : 'Discard'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }
@@ -115,3 +224,4 @@ export function PublisherPage() {
 function fileNameFromPath(path: string) {
   return path.split('/').filter(Boolean).pop() ?? path;
 }
+

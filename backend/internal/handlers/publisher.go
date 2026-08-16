@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -493,6 +494,216 @@ func fileSHA256(filePath string) ([sha256.Size]byte, error) {
 	}
 	copy(result[:], hash.Sum(nil))
 	return result, nil
+}
+
+func (h PublisherHandler) restoreOriginalIfNeeded(job models.QueueJob) (string, error) {
+	mediaPath := filepath.Clean(strings.TrimSpace(job.MediaPath))
+	if mediaPath == "." || mediaPath == "" {
+		return "", fmt.Errorf("job media path is empty")
+	}
+
+	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
+	if err != nil {
+		return "", fmt.Errorf("resolve raw root: %w", err)
+	}
+
+	rawRoot = filepath.Clean(strings.TrimSpace(rawRoot))
+	if rawRoot == "." || rawRoot == "" {
+		return "", fmt.Errorf("raw root is empty")
+	}
+
+	if !pathIsInside(mediaPath, rawRoot) {
+		return "", fmt.Errorf(
+			"refusing to restore original outside raw root: %s",
+			mediaPath,
+		)
+	}
+
+	// The original already exists in Raw.
+	//
+	// This is the preferred state. Never overwrite it with an archived copy.
+	if info, statErr := os.Stat(mediaPath); statErr == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("original media path is a directory: %s", mediaPath)
+		}
+
+		return "already_present", nil
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf(
+			"check original media path %s: %w",
+			mediaPath,
+			statErr,
+		)
+	}
+
+	archivedPath := filepath.Clean(strings.TrimSpace(job.OriginalArchivedPath))
+	if archivedPath == "." || archivedPath == "" {
+		return "archive_not_recorded", nil
+	}
+
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return "", fmt.Errorf("resolve originals archive root: %w", err)
+	}
+
+	archiveRoot = filepath.Clean(strings.TrimSpace(archiveRoot))
+	if archiveRoot == "." || archiveRoot == "" {
+		return "", fmt.Errorf("originals archive root is empty")
+	}
+
+	if !pathIsInside(archivedPath, archiveRoot) {
+		return "", fmt.Errorf(
+			"refusing to restore original outside originals archive root: %s",
+			archivedPath,
+		)
+	}
+
+	info, statErr := os.Stat(archivedPath)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "archive_missing", nil
+		}
+
+		return "", fmt.Errorf(
+			"check archived original %s: %w",
+			archivedPath,
+			statErr,
+		)
+	}
+
+	if info.IsDir() {
+		return "", fmt.Errorf(
+			"archived original path is a directory: %s",
+			archivedPath,
+		)
+	}
+
+	// Check again immediately before restoring.
+	//
+	// Another process may have recreated the original between the first Stat
+	// and this point. Raw always wins and must never be overwritten.
+	if _, statErr := os.Stat(mediaPath); statErr == nil {
+		return "already_present", nil
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf(
+			"recheck original media path %s: %w",
+			mediaPath,
+			statErr,
+		)
+	}
+
+	if err := moveFile(archivedPath, mediaPath); err != nil {
+		return "", fmt.Errorf(
+			"restore archived original from %s to %s: %w",
+			archivedPath,
+			mediaPath,
+			err,
+		)
+	}
+
+	return "restored", nil
+}
+
+func (h PublisherHandler) DiscardJob(c *gin.Context) {
+	var job models.QueueJob
+
+	if err := h.db.First(&job, c.Param("id")).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "job not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Only jobs currently waiting in Publisher may be discarded here.
+	if job.Stage != JobStageReadyToPublish {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "only jobs ready to publish can be discarded",
+		})
+		return
+	}
+
+	// Defensive check: a published job must never be discarded through
+	// this endpoint because its destination file may already be live.
+	if job.PublishedAt != nil || strings.TrimSpace(job.PublishedPath) != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "published jobs cannot be discarded",
+		})
+		return
+	}
+
+	restoreResult, err := h.restoreOriginalIfNeeded(job)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("restore original: %v", err),
+		})
+		return
+	}
+
+	// If Raw is missing and there is no usable archived original,
+	// keep staging intact. We do not want to destroy the only remaining
+	// usable artifact.
+	if restoreResult == "archive_not_recorded" ||
+		restoreResult == "archive_missing" {
+
+		c.JSON(http.StatusConflict, gin.H{
+			"error":            "original file is not available in raw and cannot be restored",
+			"originalRecovery": restoreResult,
+		})
+		return
+	}
+
+	// The original is now known to be safe:
+	// - it already existed in Raw, or
+	// - it was successfully restored.
+	//
+	// Only now is it safe to remove the staging workspace.
+	if err := h.cleanupStagedJob(job); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("cleanup staging: %v", err),
+		})
+		return
+	}
+
+	now := time.Now()
+
+	job.Status = JobStatusCanceled
+	job.DismissedAt = &now
+	job.FinishedAt = &now
+
+	job.Notes = appendNote(
+		job.Notes,
+		"Discarded from Publisher; original recovery: "+restoreResult,
+	)
+
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := transitionJobStage(tx, &job, JobStageCanceled); err != nil {
+			return err
+		}
+
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+
+		return scheduler.ReleaseReservation(tx, job.ID)
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"jobId":            job.ID,
+		"discarded":        true,
+		"originalRecovery": restoreResult,
+	})
 }
 
 func (h PublisherHandler) cleanupStagedJob(job models.QueueJob) error {

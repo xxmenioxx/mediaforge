@@ -108,6 +108,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/profile-assignments", profileAssignments.List)
 		api.POST("/profile-assignments", profileAssignments.Upsert)
 		api.POST("/publisher/jobs/:id/publish", publisher.PublishJob)
+		api.DELETE("/publisher/jobs/:id", publisher.DiscardJob)
 		api.GET("/queue/jobs", queue.List)
 		api.GET("/queue/jobs/:id/artifacts", handlers.JobArtifacts(db))
 		api.GET("/queue/jobs/:id/execution-plans", executionPlans.ListForJob)

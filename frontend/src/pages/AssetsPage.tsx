@@ -1732,7 +1732,7 @@ async function generateExternalSubtitle(
       audioProfileKey: effectiveAudioProfileKey,
       trackProfileKey: selectedTrackProfile?.key ?? '',
       processingMode: effectiveProfileId < 0 ? 'audio_only' : 'full_encode',
-      resolveProfileAssignments: false,
+      resolveProfileAssignments: true,
       priority: priorityForSize(asset.sizeBytes),
       notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, effectiveAudioProfileKey),
     });
