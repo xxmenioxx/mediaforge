@@ -99,6 +99,69 @@ func (h PublisherHandler) PublishJob(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+func (h PublisherHandler) failPublishingBeforeArchive(
+	job *models.QueueJob,
+	publishErr error,
+) (PublishResult, error) {
+	if job == nil {
+		return PublishResult{}, publishErr
+	}
+
+	// Re-read the persisted job before attempting rollback.
+	// Another publishing path may have advanced it already.
+	if job.ID != 0 {
+		var current models.QueueJob
+		if err := h.db.First(&current, job.ID).Error; err != nil {
+			return PublishResult{}, fmt.Errorf(
+				"%w; additionally failed to reload job for publisher rollback: %v",
+				publishErr,
+				err,
+			)
+		}
+
+		*job = current
+	}
+
+	// Roll back only the early Publisher stage.
+	//
+	// Once the job advances to archiving_original or later, filesystem
+	// state may already have changed and it must not be treated as a
+	// simple retryable publishing failure.
+	if job.Stage != JobStagePublishing {
+		return PublishResult{}, publishErr
+	}
+
+	// Defensive protection: a job that already has publication metadata
+	// must never be moved back to ready_to_publish here.
+	if job.PublishedAt != nil || strings.TrimSpace(job.PublishedPath) != "" {
+		return PublishResult{}, publishErr
+	}
+
+	job.Notes = appendNote(
+		job.Notes,
+		"Publish attempt failed before original archival; returned to ready_to_publish: "+publishErr.Error(),
+	)
+
+	if err := transitionJobStage(h.db, job, JobStageReadyToPublish); err != nil {
+		return PublishResult{}, fmt.Errorf(
+			"%w; additionally failed to return job to ready_to_publish: %v",
+			publishErr,
+			err,
+		)
+	}
+
+	if job.ID != 0 {
+		if err := h.db.Model(job).Update("notes", job.Notes).Error; err != nil {
+			return PublishResult{}, fmt.Errorf(
+				"%w; publisher stage was restored but notes could not be saved: %v",
+				publishErr,
+				err,
+			)
+		}
+	}
+
+	return PublishResult{}, publishErr
+}
 
 func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (PublishResult, error) {
 	publicationMu.Lock()
@@ -170,10 +233,16 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			if _, err := os.Stat(destinationPath); err == nil {
 				equal, compareErr := filesEqual(job.OutputPath, destinationPath)
 				if compareErr != nil {
-					return PublishResult{}, compareErr
+					return h.failPublishingBeforeArchive(&job, compareErr)
 				}
 				if !equal {
-					return PublishResult{}, publishError{Status: http.StatusConflict, Message: "destination exists with different content"}
+					return h.failPublishingBeforeArchive(
+						&job,
+						publishError{
+							Status:  http.StatusConflict,
+							Message: "destination exists with different content",
+						},
+					)
 				}
 				alreadyPublished = true
 			}
@@ -184,19 +253,47 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 				if os.IsExist(err) {
 					status = http.StatusConflict
 				}
-				return PublishResult{}, publishError{Status: status, Err: err}
+				return h.failPublishingBeforeArchive(
+					&job,
+					publishError{
+						Status: status,
+						Err:    err,
+					},
+				)
 			}
 		}
 	} else if !overwrite {
 		if _, err := os.Stat(destinationPath); err != nil {
-			return PublishResult{}, publishError{Status: http.StatusNotFound, Message: "published output path is not readable", Err: err}
+			return h.failPublishingBeforeArchive(
+				&job,
+				publishError{
+					Status:  http.StatusNotFound,
+					Message: "published output path is not readable",
+					Err:     err,
+				},
+			)
+
 		}
 	}
 	if _, err := copyExternalSubtitleSidecars(job.MediaPath, destinationPath); err != nil {
-		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "video output is ready but existing subtitle sidecars could not be copied to Library; original was not archived", Err: err}
+		return h.failPublishingBeforeArchive(
+			&job,
+			publishError{
+				Status:  http.StatusInternalServerError,
+				Message: "video output is ready but existing subtitle sidecars could not be copied to Library; original was not archived",
+				Err:     err,
+			},
+		)
 	}
 	if _, err := publishSubtitleArtifacts(&job, destinationPath, overwrite); err != nil {
-		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "video output is ready but subtitle sidecars could not be published; original was not archived", Err: err}
+		return h.failPublishingBeforeArchive(
+			&job,
+			publishError{
+				Status:  http.StatusInternalServerError,
+				Message: "video output is ready but subtitle sidecars could not be published; original was not archived",
+				Err:     err,
+			},
+		)
 	}
 
 	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
@@ -622,9 +719,15 @@ func (h PublisherHandler) DiscardJob(c *gin.Context) {
 	}
 
 	// Only jobs currently waiting in Publisher may be discarded here.
-	if job.Stage != JobStageReadyToPublish {
+	switch job.Stage {
+	case JobStageReadyToPublish, JobStagePublishing:
+		// Allowed.
+		//
+		// A failed publication attempt may leave a completed job in
+		// "publishing" even though publication never completed.
+	default:
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "only jobs ready to publish can be discarded",
+			"error": "job is not in a discardable publisher stage",
 		})
 		return
 	}

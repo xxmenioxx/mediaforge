@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -708,6 +709,175 @@ func TestDiscardJobKeepsRawAndRemovesStaging(t *testing.T) {
 	}
 }
 
+func TestDiscardJobAllowsStuckPublishingJob(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:discard-stuck-publishing-job?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.QueueJob{},
+		&models.AppSetting{},
+		&models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+
+	rawRoot := filepath.Join(root, "raw")
+	stagingRoot := filepath.Join(root, "staging")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(
+		rawRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	if err := os.MkdirAll(filepath.Dir(rawOriginal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		rawOriginal,
+		[]byte("original"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"stagingPath":          stagingRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: rawOriginal,
+		Status:    JobStatusCompleted,
+		Stage:     JobStagePublishing,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	jobRoot := filepath.Join(
+		stagingRoot,
+		fmt.Sprintf("job-%d", job.ID),
+	)
+
+	outputPath := filepath.Join(
+		jobRoot,
+		"output.mkv",
+	)
+
+	if err := os.MkdirAll(jobRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		outputPath,
+		[]byte("converted"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	job.OutputPath = outputPath
+
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(
+		http.MethodDelete,
+		fmt.Sprintf("/api/publisher/jobs/%d", job.ID),
+		nil,
+	)
+
+	ctx.Params = gin.Params{
+		{
+			Key:   "id",
+			Value: strconv.FormatUint(uint64(job.ID), 10),
+		},
+	}
+
+	handler := PublisherHandler{
+		db: db,
+	}
+
+	handler.DiscardJob(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf(
+			"status=%d body=%s",
+			rec.Code,
+			rec.Body.String(),
+		)
+	}
+
+	// RAW original must remain untouched.
+	rawContent, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(rawContent) != "original" {
+		t.Fatalf(
+			"raw original changed: content=%q",
+			string(rawContent),
+		)
+	}
+
+	// Entire staging workspace must be removed.
+	if _, err := os.Stat(jobRoot); !os.IsNotExist(err) {
+		t.Fatalf(
+			"staging job directory still exists: %s err=%v",
+			jobRoot,
+			err,
+		)
+	}
+
+	var updated models.QueueJob
+
+	if err := db.First(&updated, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if updated.Status != JobStatusCanceled {
+		t.Fatalf(
+			"status=%q want=%q",
+			updated.Status,
+			JobStatusCanceled,
+		)
+	}
+
+	if updated.Stage != JobStageCanceled {
+		t.Fatalf(
+			"stage=%q want=%q",
+			updated.Stage,
+			JobStageCanceled,
+		)
+	}
+
+	if updated.DismissedAt == nil {
+		t.Fatal("expected dismissed_at to be set")
+	}
+}
+
 func TestDiscardJobRestoresRawFromArchiveAndRemovesStaging(t *testing.T) {
 	db, err := gorm.Open(
 		sqlite.Open("file:discard-publisher-restores-raw?mode=memory&cache=shared"),
@@ -888,5 +1058,227 @@ func TestDiscardJobRestoresRawFromArchiveAndRemovesStaging(t *testing.T) {
 
 	if updated.DismissedAt == nil {
 		t.Fatal("expected dismissed_at to be set")
+	}
+}
+
+func TestPublishFailureBeforeArchiveReturnsJobToReadyToPublish(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:publish-failure-rolls-back-stage?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Library{},
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.AppSetting{},
+		&models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+
+	rawRoot := filepath.Join(root, "raw")
+	stagingRoot := filepath.Join(root, "staging")
+	libraryRoot := filepath.Join(root, "library")
+	archiveRoot := filepath.Join(root, "archive")
+
+	rawOriginal := filepath.Join(
+		rawRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	outputPath := filepath.Join(
+		stagingRoot,
+		"job-output",
+		"movie.mkv",
+	)
+
+	destinationPath := filepath.Join(
+		libraryRoot,
+		"Movies",
+		"movie.mkv",
+	)
+
+	for _, path := range []string{
+		rawOriginal,
+		outputPath,
+		destinationPath,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.WriteFile(
+		rawOriginal,
+		[]byte("original"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		outputPath,
+		[]byte("converted-output"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing Library destination deliberately differs from staging.
+	if err := os.WriteFile(
+		destinationPath,
+		[]byte("existing-different-content"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "paths",
+		Value: models.JSONMap{
+			"rawRoot":              rawRoot,
+			"stagingPath":          stagingRoot,
+			"originalsArchivePath": archiveRoot,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	library := models.Library{
+		Name:            "Movies",
+		SourcePath:      libraryRoot,
+		DestinationPath: libraryRoot,
+		Type:            "movies",
+	}
+
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	profile := models.Profile{
+		Name:      "Test Profile",
+		Container: "mkv",
+	}
+
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath:            rawOriginal,
+		OutputPath:           outputPath,
+		PlannedPublishedPath: destinationPath,
+		LibraryID:            library.ID,
+		ProfileID:            profile.ID,
+		Status:               JobStatusCompleted,
+		Stage:                JobStageReadyToPublish,
+		ValidationStatus:     ValidationStatusPassed,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	handler := PublisherHandler{db: db}
+
+	_, publishErr := handler.publishQueueJob(job, false)
+
+	if publishErr == nil {
+		t.Fatal("expected publication conflict")
+	}
+
+	var typedErr publishError
+	if !errors.As(publishErr, &typedErr) {
+		t.Fatalf(
+			"publish error type=%T want publishError: %v",
+			publishErr,
+			publishErr,
+		)
+	}
+
+	if typedErr.Status != http.StatusConflict {
+		t.Fatalf(
+			"publish status=%d want=%d",
+			typedErr.Status,
+			http.StatusConflict,
+		)
+	}
+
+	var updated models.QueueJob
+	if err := db.First(&updated, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if updated.Stage != JobStageReadyToPublish {
+		t.Fatalf(
+			"stage=%q want=%q",
+			updated.Stage,
+			JobStageReadyToPublish,
+		)
+	}
+
+	if updated.Status != JobStatusCompleted {
+		t.Fatalf(
+			"status=%q want=%q",
+			updated.Status,
+			JobStatusCompleted,
+		)
+	}
+
+	if updated.PublishedAt != nil {
+		t.Fatal("published_at must remain nil after failed publication")
+	}
+
+	if strings.TrimSpace(updated.PublishedPath) != "" {
+		t.Fatalf(
+			"published_path=%q want empty",
+			updated.PublishedPath,
+		)
+	}
+
+	// Staging output must remain available for retry/discard.
+	gotOutput, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(gotOutput) != "converted-output" {
+		t.Fatalf(
+			"staging output changed: content=%q",
+			string(gotOutput),
+		)
+	}
+
+	// Existing Library file must not be overwritten.
+	gotDestination, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(gotDestination) != "existing-different-content" {
+		t.Fatalf(
+			"existing destination changed: content=%q",
+			string(gotDestination),
+		)
+	}
+
+	// Original must still be untouched because archival was never reached.
+	gotOriginal, err := os.ReadFile(rawOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(gotOriginal) != "original" {
+		t.Fatalf(
+			"raw original changed: content=%q",
+			string(gotOriginal),
+		)
 	}
 }
