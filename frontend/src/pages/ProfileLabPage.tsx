@@ -1081,53 +1081,46 @@ export function ProfileLabPage() {
       'recommended',
     );
 
-    // Custom is explicitly controlled by the user.
     if (
-      encoder !== 'hevc_qsv' ||
+      !isHardwareEncoderOption(encoder) ||
       qualityPreset === 'custom'
     ) {
       return;
     }
 
-    const recommendation = currentEncoderRecommendation.recommendation;
+    const effectiveProfile =
+      currentEncoderRecommendation.effectiveProfile;
 
-    if (
-      typeof recommendation.globalQuality !== 'number' ||
-      !Number.isFinite(recommendation.globalQuality)
-    ) {
+    if (!effectiveProfile) {
       return;
     }
 
     setVideoDraft((current) => {
-      const currentQuality = numberWorkerValue(
-        current,
-        'globalQuality',
-        recommendation.globalQuality!,
-      );
+      const currentSignature = JSON.stringify(current);
 
-      if (currentQuality === recommendation.globalQuality) {
+      const next = synchronizeLabAuthoritativeContract({
+        ...effectiveProfile,
+
+        // Keep Lab-only identity fields from the current draft.
+        name: current.name,
+        description: current.description,
+
+        workerConfig: {
+          ...effectiveProfile.workerConfig,
+
+          // Preserve where this Lab draft came from.
+          derivedFromProfileId:
+            current.workerConfig?.derivedFromProfileId,
+          derivedFromAsset:
+            current.workerConfig?.derivedFromAsset,
+        },
+      });
+
+      if (JSON.stringify(next) === currentSignature) {
         return current;
       }
 
-      return {
-        ...current,
-        workerConfig: {
-          ...current.workerConfig,
-
-          globalQuality: recommendation.globalQuality,
-
-          // Keep the backend recommendation provenance available
-          // for UI/debugging and future save operations.
-          qsvRequestedGlobalQuality:
-            recommendation.requestedGlobalQuality,
-          qsvEffectiveGlobalQuality:
-            recommendation.globalQuality,
-          qsvAssetQualityAdjustment:
-            recommendation.qualityAdjustment,
-          qsvAssetQualityReasons:
-            recommendation.qualityReasons,
-        },
-      };
+      return next;
     });
   }, [currentEncoderRecommendation]);
 
