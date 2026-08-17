@@ -653,16 +653,29 @@ export type ProfileAssignment = {
   targetType: 'asset' | 'path';
   targetPath: string;
   mediaType: 'video' | 'audio' | 'tracks';
-  selection: 'profile' | 'disabled';
+  selection:
+    | 'profile'
+    | 'disabled'
+    | 'override_only'
+    | 'audio_only';
   videoProfileId?: number;
   profileKey?: string;
   createdAt: string;
   updatedAt: string;
 };
 
-export type ProfileAssignmentInput = Omit<ProfileAssignment, 'id' | 'createdAt' | 'updatedAt' | 'selection'> & {
-  selection: 'profile' | 'disabled' | 'inherit';
-};
+export type ProfileAssignmentInput =
+  Omit<
+    ProfileAssignment,
+    'id' | 'createdAt' | 'updatedAt' | 'selection'
+  > & {
+    selection:
+      | 'profile'
+      | 'disabled'
+      | 'inherit'
+      | 'override_only'
+      | 'audio_only';
+  };
 
 export type ClaimJobInput = {
   workerName: string;

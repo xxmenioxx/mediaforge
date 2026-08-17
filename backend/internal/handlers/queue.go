@@ -37,6 +37,11 @@ type QueueJobInput struct {
 	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
 }
 
+const (
+	VideoAssignmentOverrideOnly = "override_only"
+	VideoAssignmentAudioOnly    = "audio_only"
+)
+
 type QueueJobUpdateInput struct {
 	MediaPath       string  `json:"mediaPath"`
 	LibraryID       *uint   `json:"libraryId"`
@@ -265,6 +270,23 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 	})
 }
 
+func queueUsesOverrideOnlyVideo(resolution models.JSONMap) bool {
+	raw, ok := resolution["video"]
+	if !ok {
+		return false
+	}
+
+	video, ok := raw.(models.JSONMap)
+	if !ok {
+		if generic, genericOK := raw.(map[string]any); genericOK {
+			return boolValue(generic["overrideOnly"], false)
+		}
+		return false
+	}
+
+	return boolValue(video["overrideOnly"], false)
+}
+
 func (h QueueHandler) Create(c *gin.Context) {
 	var input QueueJobInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -356,9 +378,25 @@ func (h QueueHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.captureProfile(&job, input.ProfileID, "queue_create"); err != nil {
-		h.profileCaptureError(c, err)
-		return
+	if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
+		if err := h.captureOverrideOnlyProfile(
+			&job,
+			"queue_create_override_only",
+		); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+			return
+		}
+	} else {
+		if err := h.captureProfile(
+			&job,
+			input.ProfileID,
+			"queue_create",
+		); err != nil {
+			h.profileCaptureError(c, err)
+			return
+		}
 	}
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -398,16 +436,34 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	}
 	for mediaType, assignment := range assignments {
 		resolution[mediaType] = models.JSONMap{
-			"source": assignment.TargetType, "targetPath": assignment.TargetPath,
-			"selection": assignment.Selection, "videoProfileId": assignment.VideoProfileID, "profileKey": assignment.ProfileKey,
+			"source":         assignment.TargetType,
+			"targetPath":     assignment.TargetPath,
+			"selection":      assignment.Selection,
+			"videoProfileId": assignment.VideoProfileID,
+			"profileKey":     assignment.ProfileKey,
+			"overrideOnly":   assignment.Selection == VideoAssignmentOverrideOnly,
 		}
 		switch mediaType {
+
 		case "video":
-			if assignment.Selection == "profile" && assignment.VideoProfileID > 0 {
-				input.ProfileID = assignment.VideoProfileID
-			} else if assignment.Selection == "disabled" {
+			switch assignment.Selection {
+			case "profile":
+				if assignment.VideoProfileID > 0 {
+					input.ProfileID = assignment.VideoProfileID
+					input.ProcessingMode = ProcessingModeFullEncode
+				}
+
+			case VideoAssignmentOverrideOnly:
+				input.ProfileID = 0
+				input.ProcessingMode = ProcessingModeFullEncode
+
+			case VideoAssignmentAudioOnly, "disabled":
+				// Keep "disabled" for backward compatibility with existing
+				// stored assignments, but new UI should use "audio_only".
+				input.ProfileID = 0
 				input.ProcessingMode = ProcessingModeAudioOnly
 			}
+
 		case "audio":
 			if assignment.Selection == "profile" {
 				input.AudioProfileKey = assignment.ProfileKey
@@ -838,6 +894,117 @@ func (h QueueHandler) Update(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, job)
+}
+
+func (h QueueHandler) captureOverrideOnlyProfile(
+	job *models.QueueJob,
+	source string,
+) error {
+	override := currentConversionOverrideForJob(
+		*job,
+		assetConversionOverrides(h.db),
+	)
+
+	if assetConversionOverrideEmpty(override) {
+		return fmt.Errorf(
+			"override-only video selection requires an asset conversion override",
+		)
+	}
+
+	// Neutral baseline.
+	//
+	// This profile is intentionally not loaded from any persisted profile.
+	// The asset override becomes the authoritative video configuration.
+	profile := models.Profile{
+		ID:             0,
+		Name:           "Asset Override Only",
+		ProfileVersion: 1,
+
+		// MKV is the safest neutral container for MVForge because it can
+		// preserve arbitrary audio/subtitle streams without inheriting a
+		// container choice from the path profile.
+		Container: "mkv",
+
+		// Start from copy semantics. Asset video overrides are then applied
+		// explicitly below.
+		VideoCodec: "copy",
+		AudioCodec: "copy",
+
+		QualityMode:  "crf",
+		QualityValue: 24,
+
+		PreserveHDR:       true,
+		PreserveSubtitles: true,
+		PreserveChapters:  true,
+
+		WorkerConfig: models.JSONMap{},
+	}
+
+	profile = applyAssetConversionOverrideToProfile(profile, override)
+
+	// A full_encode override-only job must end up with an actual video
+	// configuration. Do not silently inherit any persisted profile.
+	videoEncoder := strings.TrimSpace(
+		workerStringValue(profile.WorkerConfig["videoEncoder"]),
+	)
+	videoCodec := strings.TrimSpace(profile.VideoCodec)
+
+	if videoEncoder == "" && (videoCodec == "" || videoCodec == "copy") {
+		return fmt.Errorf(
+			"override-only video selection requires videoCodec or videoEncoder in the asset override",
+		)
+	}
+
+	// Asset-level encoder choice must remain authoritative for scheduler
+	// planning, just like captureProfile().
+	if strings.TrimSpace(override.PreferredEncoder) != "" ||
+		strings.TrimSpace(override.VideoEncoder) != "" ||
+		strings.TrimSpace(override.VideoCodec) != "" ||
+		override.UseHardwareIfAvailable != nil {
+
+		profile.EncoderPolicy = ""
+		profile.PreferredEncoder = ""
+		profile.AllowedEncoders = nil
+		profile.FallbackPolicy = ""
+		profile.CodecFamily = ""
+		profile.BitDepth = 0
+		profile.PixelFormat = ""
+		profile.QualityStrategy = ""
+	}
+
+	now := time.Now()
+
+	snapshot, err := scheduler.CaptureProfileSnapshot(
+		profile,
+		now,
+		source,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Freeze the asset override into the same snapshot mechanism used by
+	// normal profiles. The worker will therefore execute the exact override
+	// that existed when the job was queued.
+	encoded, err := json.Marshal(override)
+	if err != nil {
+		return err
+	}
+
+	var frozen map[string]any
+	if err := json.Unmarshal(encoded, &frozen); err != nil {
+		return err
+	}
+
+	snapshot[assetConversionOverrideSnapshotKey] = frozen
+	snapshot["overrideOnly"] = true
+
+	job.ProfileID = 0
+	job.ProfileVersion = 1
+	job.ProfileSnapshot = snapshot
+	job.ProfileCapturedAt = &now
+
+	return nil
 }
 
 var errQueueProfileDisabled = errors.New("profile is disabled")

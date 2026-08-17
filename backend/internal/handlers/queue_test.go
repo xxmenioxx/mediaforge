@@ -518,3 +518,129 @@ func snapshotQualityValue(snapshot models.JSONMap) int {
 	value, _ := constraints["qualityValue"].(float64)
 	return int(value)
 }
+
+func TestQueueOverrideOnlyUsesAssetVideoOverrideWithoutPathProfileInheritance(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:queue-override-only-video?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// This represents the profile that would normally come from the path.
+	// Its QSV quality must NOT leak into override-only mode.
+	pathProfile := authoritativeTestProfile()
+	pathProfile.Name = "Path QSV Profile"
+	pathProfile.WorkerConfig["videoEncoder"] = "hevc_qsv"
+	pathProfile.WorkerConfig["globalQuality"] = 26
+
+	if err := db.Create(&pathProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	mediaPath := "/media/raw/anime/example.mkv"
+
+	if err := saveAssetConversionOverrides(
+		db,
+		map[string]AssetConversionOverrideState{
+			mediaPath: {
+				VideoEncoder:  "hevc_qsv",
+				GlobalQuality: 20,
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewQueueHandler(db)
+
+	job := models.QueueJob{
+		MediaPath:      mediaPath,
+		LibraryID:      1,
+		Status:         JobStatusQueued,
+		ProcessingMode: ProcessingModeFullEncode,
+		ProfileID:      0,
+		ProfileResolution: models.JSONMap{
+			"video": models.JSONMap{
+				"selection":    VideoAssignmentOverrideOnly,
+				"overrideOnly": true,
+			},
+		},
+	}
+
+	if err := handler.captureOverrideOnlyProfile(
+		&job,
+		"queue_create_override_only",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if job.ProcessingMode != ProcessingModeFullEncode {
+		t.Fatalf(
+			"processing mode=%q want=%q",
+			job.ProcessingMode,
+			ProcessingModeFullEncode,
+		)
+	}
+
+	if job.ProfileID != 0 {
+		t.Fatalf(
+			"profile id=%d want=0",
+			job.ProfileID,
+		)
+	}
+
+	if !queueUsesOverrideOnlyVideo(job.ProfileResolution) {
+		t.Fatal("expected override-only video resolution")
+	}
+
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if restored.Name != "Asset Override Only" {
+		t.Fatalf(
+			"profile name=%q want=%q",
+			restored.Name,
+			"Asset Override Only",
+		)
+	}
+
+	if workerStringValue(restored.WorkerConfig["videoEncoder"]) != "hevc_qsv" {
+		t.Fatalf(
+			"video encoder=%q want=%q",
+			workerStringValue(restored.WorkerConfig["videoEncoder"]),
+			"hevc_qsv",
+		)
+	}
+
+	if workerIntValue(restored.WorkerConfig["globalQuality"], 0) != 20 {
+		t.Fatalf(
+			"global quality=%d want=20",
+			workerIntValue(restored.WorkerConfig["globalQuality"], 0),
+		)
+	}
+
+	if workerIntValue(restored.WorkerConfig["globalQuality"], 0) == 26 {
+		t.Fatal("override-only profile inherited globalQuality=26 from path profile")
+	}
+
+	rawOverride, ok := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]
+	if !ok {
+		t.Fatal("asset conversion override was not frozen into profile snapshot")
+	}
+
+	if rawOverride == nil {
+		t.Fatal("frozen asset conversion override is nil")
+	}
+}

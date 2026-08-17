@@ -1055,9 +1055,82 @@ export function ProfileLabPage() {
     && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
     ? profileSampleEstimate.data
     : undefined;
-  const currentEncoderRecommendation = lastEncoderRecommendation && lastEncoderRecommendation.path === (assetPath || undefined)
+  const currentVideoDraftSignature = JSON.stringify(videoDraft);
+
+  const currentEncoderRecommendation =
+  lastEncoderRecommendation &&
+  lastEncoderRecommendation.path === (assetPath || undefined) &&
+  lastEncoderRecommendation.signature === currentVideoDraftSignature
     ? lastEncoderRecommendation.data
     : undefined;
+
+  useEffect(() => {
+    if (!currentEncoderRecommendation) {
+      return;
+    }
+
+    const encoder = videoWorkerValue(
+      videoDraft,
+      'videoEncoder',
+      'auto',
+    );
+
+    const qualityPreset = videoWorkerValue(
+      videoDraft,
+      'hardwareQualityPreset',
+      'recommended',
+    );
+
+    // Custom is explicitly controlled by the user.
+    if (
+      encoder !== 'hevc_qsv' ||
+      qualityPreset === 'custom'
+    ) {
+      return;
+    }
+
+    const recommendation = currentEncoderRecommendation.recommendation;
+
+    if (
+      typeof recommendation.globalQuality !== 'number' ||
+      !Number.isFinite(recommendation.globalQuality)
+    ) {
+      return;
+    }
+
+    setVideoDraft((current) => {
+      const currentQuality = numberWorkerValue(
+        current,
+        'globalQuality',
+        recommendation.globalQuality!,
+      );
+
+      if (currentQuality === recommendation.globalQuality) {
+        return current;
+      }
+
+      return {
+        ...current,
+        workerConfig: {
+          ...current.workerConfig,
+
+          globalQuality: recommendation.globalQuality,
+
+          // Keep the backend recommendation provenance available
+          // for UI/debugging and future save operations.
+          qsvRequestedGlobalQuality:
+            recommendation.requestedGlobalQuality,
+          qsvEffectiveGlobalQuality:
+            recommendation.globalQuality,
+          qsvAssetQualityAdjustment:
+            recommendation.qualityAdjustment,
+          qsvAssetQualityReasons:
+            recommendation.qualityReasons,
+        },
+      };
+    });
+  }, [currentEncoderRecommendation]);
+
   const currentFidelityInspection =
     lastFidelityInspection?.assetPath === assetPath
     ? lastFidelityInspection

@@ -65,6 +65,9 @@ import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '
 import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgePreferences';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 
+const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
+const VIDEO_PROFILE_AUDIO_ONLY = -2;
+
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
   const [assetQuery, setAssetQuery] = useState('');
@@ -609,7 +612,10 @@ function AssetGroupRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
-  const effectiveProfileId = selectedProfileId < 0 ? 0 : selectedProfileId || pathVideoProfiles[0]?.id || 0;
+  const effectiveProfileId =
+  selectedProfileId < 0
+    ? 0
+    : selectedProfileId || pathVideoProfiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
   const isPublishedAsIsGroup = group.status === 'published_as_is' || (groupAssets.length > 0 && groupAssets.every((asset) => asset.publicationMode === 'as_is'));
@@ -638,9 +644,20 @@ function AssetGroupRow({
 	const video = assignments.find((assignment) => assignment.mediaType === 'video');
 	const audio = assignments.find((assignment) => assignment.mediaType === 'audio');
 	const tracks = assignments.find((assignment) => assignment.mediaType === 'tracks');
-	setSelectedProfileId(video?.selection === 'disabled' ? -1 : video?.videoProfileId || firstPathVideoProfileId);
-    setSelectedAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : '');
-    setSelectedTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '');
+
+
+  
+  setSelectedProfileId(
+    video
+      ? video.selection === 'override_only'
+        ? VIDEO_PROFILE_OVERRIDE_ONLY
+        : video.selection === 'audio_only' || video.selection === 'disabled'
+          ? VIDEO_PROFILE_AUDIO_ONLY
+          : video.videoProfileId || 0
+      : 0
+  );
+  setSelectedAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : '');
+   setSelectedTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '');
 	}, [profileAssignments.data, group.path, firstPathVideoProfileId]);
   const updateMetadata = useMutation({
     mutationFn: api.updateAssetMetadata,
@@ -1208,7 +1225,12 @@ function AssetRow({
   const [selectedProfileId, setSelectedProfileId] = useState<number>(0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('__inherit__');
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>('__inherit__');
-  const effectiveProfileId = selectedProfileId === 0 ? groupProfileId : selectedProfileId;
+  const effectiveProfileId =
+    selectedProfileId === 0
+      ? groupProfileId
+      : selectedProfileId > 0
+        ? selectedProfileId
+        : 0;
   const effectiveAudioProfileKey = selectedAudioProfileKey === '__inherit__' ? groupAudioProfileKey : selectedAudioProfileKey;
   const effectiveTrackProfileKey = selectedTrackProfileKey === '__inherit__' ? pathTrackProfile?.key ?? '' : selectedTrackProfileKey;
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
@@ -1396,7 +1418,20 @@ function AssetRow({
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
-  const canQueueWithSelection = effectiveProfileId > 0 || Boolean(effectiveAudioProfileKey) || Boolean(selectedTrackProfile) || hasTrackSelectionOverride(conversionDraft);
+  const isOverrideOnly =
+    selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
+
+  const isAudioOnly =
+    selectedProfileId === VIDEO_PROFILE_AUDIO_ONLY;
+
+  const canQueueWithSelection =
+    effectiveProfileId > 0 ||
+    (isOverrideOnly && assetHasConversionOverride(conversionDraft)) ||
+    isAudioOnly ||
+    Boolean(effectiveAudioProfileKey) ||
+    Boolean(selectedTrackProfile) ||
+    hasTrackSelectionOverride(conversionDraft);
+
   useEffect(() => {
     if (!profileAssignments.data) return;
     const assignments = profileAssignments.data.filter((assignment) => assignment.targetType === 'asset' && normalizePath(assignment.targetPath) === normalizePath(asset.path));
@@ -1410,7 +1445,24 @@ function AssetRow({
 
   function selectAssetVideoProfile(id: number) {
     setSelectedProfileId(id);
-    updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'video', selection: id === 0 ? 'inherit' : id > 0 ? 'profile' : 'disabled', videoProfileId: Math.max(0, id), profileKey: '' });
+
+    const selection =
+      id === 0
+        ? 'inherit'
+        : id === VIDEO_PROFILE_OVERRIDE_ONLY
+          ? 'override_only'
+          : id === VIDEO_PROFILE_AUDIO_ONLY
+            ? 'audio_only'
+            : 'profile';
+
+    updateProfileAssignment.mutate({
+      targetType: 'asset',
+      targetPath: asset.path,
+      mediaType: 'video',
+      selection,
+      videoProfileId: id > 0 ? id : 0,
+      profileKey: '',
+    });
   }
 
   function selectAssetAudioProfile(key: string) {
@@ -1716,8 +1768,11 @@ async function generateExternalSubtitle(
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    const queueProfileId = effectiveProfileId > 0 ? effectiveProfileId : canQueueWithSelection ? profiles[0]?.id ?? 0 : 0;
-    if (!queueProfileId || !selectedLibraryId) {
+    const queueProfileId =
+      effectiveProfileId > 0
+        ? effectiveProfileId
+        : 0;
+    if (!selectedLibraryId || !canQueueWithSelection) {
       return;
     }
     if (isLibraryReplacement && !window.confirm('Convert this Library asset and replace it only after validation? The current file will be moved to Originals Archive.')) {
@@ -1731,7 +1786,7 @@ async function generateExternalSubtitle(
       profileId: queueProfileId,
       audioProfileKey: effectiveAudioProfileKey,
       trackProfileKey: selectedTrackProfile?.key ?? '',
-      processingMode: effectiveProfileId < 0 ? 'audio_only' : 'full_encode',
+      processingMode: isAudioOnly ? 'audio_only' : 'full_encode',
       resolveProfileAssignments: true,
       priority: priorityForSize(asset.sizeBytes),
       notes: queueNotes(`Queued individually from folder view: ${relativeAssetPath(asset, libraries)}`, effectiveAudioProfileKey),
@@ -1884,7 +1939,17 @@ async function generateExternalSubtitle(
         {!isArchive && !isConverted && !isPublishedAsIs ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
-              <ProfileAutocomplete profiles={assetVideoProfiles} value={selectedProfileId} onChange={selectAssetVideoProfile} label="Video · Asset" size="small" disabled={rowLocked || updateProfileAssignment.isPending} allowNone allowInherit />
+              <ProfileAutocomplete
+                profiles={assetVideoProfiles}
+                value={selectedProfileId}
+                onChange={selectAssetVideoProfile}
+                label="Video · Asset"
+                size="small"
+                disabled={rowLocked || updateProfileAssignment.isPending}
+                allowInherit
+                allowOverrideOnly
+                allowAudioOnly
+              />           
             </TableCell>
             <TableCell sx={{ minWidth: 220 }}>
               <AudioProfileAutocomplete profiles={assetAudioProfiles} value={selectedAudioProfileKey} onChange={selectAssetAudioProfile} label="Audio · Asset" size="small" disabled={rowLocked || updateProfileAssignment.isPending} allowInherit />
@@ -3738,6 +3803,8 @@ function ProfileAutocomplete({
   disabled,
   allowNone = false,
   allowInherit = false,
+  allowOverrideOnly = false,
+  allowAudioOnly = false,
 }: {
   profiles: Profile[];
   value: number;
@@ -3747,9 +3814,28 @@ function ProfileAutocomplete({
   disabled?: boolean;
   allowNone?: boolean;
   allowInherit?: boolean;
+  allowOverrideOnly?: boolean;
+  allowAudioOnly?: boolean;
 }) {
   const options = [
     ...(allowInherit ? [{ id: 0, name: 'Inherit from path', videoCodec: 'Path profile', search: 'inherit path profile' }] : []),
+    ...(allowOverrideOnly
+    ? [{
+        id: VIDEO_PROFILE_OVERRIDE_ONLY,
+        name: 'Override only',
+        videoCodec: 'Asset overrides',
+        search: 'override only asset overrides no path profile',
+      }]
+    : []),
+
+    ...(allowAudioOnly
+    ? [{
+        id: VIDEO_PROFILE_AUDIO_ONLY,
+        name: 'Audio only',
+        videoCodec: 'No video processing',
+        search: 'audio only no video',
+      }]
+    : []),
     ...(allowNone ? [{ id: -1, name: 'Disabled', videoCodec: 'No video profile', search: 'disabled none no profile' }] : []),
     ...profiles.map((profile) => ({ id: profile.id, name: profile.name, videoCodec: profile.videoCodec, search: `${profile.name} ${profile.description} ${profile.container} ${profile.videoCodec} ${profile.audioCodec}` })),
   ];
@@ -3758,7 +3844,17 @@ function ProfileAutocomplete({
       options={options}
       value={options.find((profile) => profile.id === value) ?? null}
       onChange={(_, profile) => onChange(profile?.id ?? 0)}
-      getOptionLabel={(profile) => profile.id === 0 ? 'Inherit from path' : profile.id === -1 ? 'Disabled' : `${profile.name} · ${profile.videoCodec}`}
+      getOptionLabel={(profile) =>
+        profile.id === 0
+          ? 'Inherit from path'
+          : profile.id === VIDEO_PROFILE_OVERRIDE_ONLY
+            ? 'Override only'
+            : profile.id === VIDEO_PROFILE_AUDIO_ONLY
+              ? 'Audio only'
+              : profile.id === -3
+                ? 'Disabled'
+                : `${profile.name} · ${profile.videoCodec}`
+      }
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
         filterByText(options, state.inputValue, (profile) => [profile.search])
