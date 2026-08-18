@@ -233,6 +233,102 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	}
 }
 
+func TestScanResolvedFileRefreshesLegacySnapshotWithoutFrameStructure(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:legacy-snapshot-frame-refresh?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaPath := filepath.Join(t.TempDir(), "legacy-episode.mkv")
+
+	// This does not need to be valid media.
+	//
+	// If the legacy snapshot is incorrectly reused, scanResolvedFile()
+	// will return it immediately.
+	//
+	// If the snapshot is correctly considered incomplete, the scanner
+	// will continue into FFprobe and this fake file will fail analysis.
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := models.ScanResult{
+		Path:       mediaPath,
+		FileName:   "legacy-episode.mkv",
+		SizeBytes:  14,
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec":        "h264",
+				"avgFrameRate": "25/1",
+			},
+		},
+
+		// Simulates a snapshot generated before Frame Structure
+		// analysis was persisted.
+		FrameStructureAnalysis: models.JSONMap{},
+
+		CreatedAt: time.Now().Add(-24 * time.Hour),
+	}
+
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var phases []string
+
+	result, cached, scanErr := NewScannerHandler(db).scanResolvedFile(
+		mediaPath,
+		info,
+		ScanRequest{Force: false},
+		func(phase string, progress float64, message string) {
+			phases = append(phases, phase)
+		},
+	)
+
+	if cached {
+		t.Fatalf(
+			"legacy snapshot without frame structure was incorrectly reused: %#v",
+			result,
+		)
+	}
+
+	foundRefresh := false
+	for _, phase := range phases {
+		if phase == "snapshot_refresh" {
+			foundRefresh = true
+			break
+		}
+	}
+
+	if !foundRefresh {
+		t.Fatalf(
+			"legacy snapshot did not trigger snapshot refresh; phases=%v",
+			phases,
+		)
+	}
+
+	// The fixture is intentionally not valid media.
+	// Reaching FFprobe and failing proves that the stale cache was bypassed.
+	if scanErr == nil {
+		t.Fatal("expected fake media analysis to fail after bypassing stale snapshot")
+	}
+}
+
 func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:archive-inherits-raw-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -264,5 +360,86 @@ func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	}
 	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
 		t.Fatalf("archive did not inherit the derived frame recommendation: %#v", result.FrameStructureRecommendation)
+	}
+}
+
+func TestSnapshotRequiresFrameStructureRefreshForLegacyVideo(t *testing.T) {
+	legacy := models.ScanResult{
+		Path:       "/media/raw/anime/legacy.mkv",
+		FileName:   "legacy.mkv",
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec": "h264",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{},
+	}
+
+	if !snapshotRequiresFrameStructureRefresh(legacy) {
+		t.Fatal("legacy video snapshot without frame structure analysis must be refreshed")
+	}
+}
+
+func TestSnapshotDoesNotRequireFrameStructureRefreshWhenAnalysisExists(t *testing.T) {
+	current := models.ScanResult{
+		Path:       "/media/raw/anime/current.mkv",
+		FileName:   "current.mkv",
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec": "h264",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":        2,
+			"framesAnalyzed": 500,
+		},
+	}
+
+	if snapshotRequiresFrameStructureRefresh(current) {
+		t.Fatal("snapshot with frame structure analysis must remain cacheable")
+	}
+}
+
+func TestSnapshotWithoutVideoDoesNotRequireFrameStructureRefresh(t *testing.T) {
+	audioOnly := models.ScanResult{
+		Path:                   "/media/raw/music/track.flac",
+		FileName:               "track.flac",
+		AudioTracks:            1,
+		VideoStreams:           models.JSONList{},
+		FrameStructureAnalysis: models.JSONMap{},
+	}
+
+	if snapshotRequiresFrameStructureRefresh(audioOnly) {
+		t.Fatal("audio-only snapshot must not require frame structure analysis")
+	}
+}
+
+func TestSnapshotRequiresFrameStructureRefreshWhenAnalysisIsUnverified(t *testing.T) {
+	snapshot := models.ScanResult{
+		Path:       "/media/raw/anime/unverified.mkv",
+		FileName:   "unverified.mkv",
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec": "h264",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version": 1,
+			"status":  "unverified",
+			"error":   "frame structure analysis failed",
+		},
+	}
+
+	if !snapshotRequiresFrameStructureRefresh(snapshot) {
+		t.Fatal("video snapshot with unverified frame structure analysis must be refreshed")
 	}
 }

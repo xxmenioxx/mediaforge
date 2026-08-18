@@ -150,6 +150,29 @@ func (h ScannerHandler) scanResolvedFile(path string, info os.FileInfo, request 
 	return h.scanResolvedFileContext(context.Background(), path, info, request, progress)
 }
 
+func snapshotRequiresFrameStructureRefresh(snapshot models.ScanResult) bool {
+	hasVideo := len(snapshot.VideoStreams) > 0 ||
+		strings.TrimSpace(snapshot.VideoCodec) != "" ||
+		snapshot.Width > 0 ||
+		snapshot.Height > 0
+
+	if !hasVideo {
+		return false
+	}
+
+	analysis := snapshot.FrameStructureAnalysis
+	if len(analysis) == 0 {
+		return true
+	}
+
+	status := strings.ToLower(strings.TrimSpace(stringFromUnknown(analysis["status"])))
+	if status == "unverified" {
+		return true
+	}
+
+	return false
+}
+
 func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string, info os.FileInfo, request ScanRequest, progress func(string, float64, string)) (models.ScanResult, bool, error) {
 	report := func(phase string, value float64, message string) {
 		if progress != nil {
@@ -160,11 +183,19 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	var existing models.ScanResult
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
-			if ensureFrameStructureRecommendation(&existing) {
-				_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
+			if snapshotRequiresFrameStructureRefresh(existing) {
+				report(
+					"snapshot_refresh",
+					10,
+					"Existing snapshot is incomplete; rebuilding asset analysis",
+				)
+			} else {
+				if ensureFrameStructureRecommendation(&existing) {
+					_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
+				}
+				report("completed", 100, "Using the existing asset snapshot")
+				return existing, true, nil
 			}
-			report("completed", 100, "Using the existing asset snapshot")
-			return existing, true, nil
 		}
 		if inherited, ok := inheritedOriginalSnapshot(h.db, path, info); ok {
 			report("completed", 100, "Using the Raw snapshot for this archived original")
