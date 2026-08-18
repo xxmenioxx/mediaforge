@@ -392,7 +392,8 @@ func TestSnapshotDoesNotRequireFrameStructureRefreshWhenAnalysisExists(t *testin
 		Height:     1080,
 		VideoStreams: models.JSONList{
 			map[string]any{
-				"codec": "h264",
+				"codec":        "h264",
+				"avgFrameRate": "25/1",
 			},
 		},
 		FrameStructureAnalysis: models.JSONMap{
@@ -441,5 +442,58 @@ func TestSnapshotRequiresFrameStructureRefreshWhenAnalysisIsUnverified(t *testin
 
 	if !snapshotRequiresFrameStructureRefresh(snapshot) {
 		t.Fatal("video snapshot with unverified frame structure analysis must be refreshed")
+	}
+}
+
+func TestSnapshotRequiresFrameStructureRefreshWhenFrameRateMissing(t *testing.T) {
+	snapshot := models.ScanResult{
+		Path:       "/media/raw/anime/missing-fps.mkv",
+		FileName:   "missing-fps.mkv",
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec": "h264",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":               2,
+			"framesAnalyzed":        500,
+			"averageGopLength":      72.0,
+			"maxConsecutiveBFrames": 3,
+			"confidence":            "medium",
+		},
+	}
+
+	if !snapshotRequiresFrameStructureRefresh(snapshot) {
+		t.Fatal("video snapshot without a reliable frame rate must be refreshed")
+	}
+}
+
+func TestSnapshotDoesNotRequireFrameStructureRefreshWithRealFrameRate(t *testing.T) {
+	snapshot := models.ScanResult{
+		Path:       "/media/raw/anime/real-fps.mkv",
+		FileName:   "real-fps.mkv",
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec":         "h264",
+				"realFrameRate": "24000/1001",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":               2,
+			"framesAnalyzed":        500,
+			"averageGopLength":      72.0,
+			"maxConsecutiveBFrames": 3,
+			"confidence":            "medium",
+		},
+	}
+
+	if snapshotRequiresFrameStructureRefresh(snapshot) {
+		t.Fatal("snapshot with a valid realFrameRate must remain cacheable")
 	}
 }

@@ -170,6 +170,10 @@ func snapshotRequiresFrameStructureRefresh(snapshot models.ScanResult) bool {
 		return true
 	}
 
+	if scanFrameRate(snapshot) <= 0 {
+		return true
+	}
+
 	return false
 }
 
