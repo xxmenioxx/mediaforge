@@ -18,8 +18,34 @@ type Props = {
 };
 
 export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
-  const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
+  const structureMode = mode<FrameStructureMode>(
+    config.frameStructureMode,
+    ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'],
+    'auto',
+  );
+
+  const effectiveRecommendedGop = (() => {
+    switch (structureMode) {
+      case 'auto':
+      case 'balanced':
+        return recommendedGopByMode?.balanced ?? recommendedGop;
+
+      case 'compatible':
+        return recommendedGopByMode?.compatible ?? recommendedGop;
+
+      case 'maximum_compression':
+        return (
+          recommendedGopByMode?.maximum_compression ??
+          recommendedGop
+        );
+
+      default:
+        return recommendedGop;
+    }
+  })();
+
   const structureDisabled = disabled || structureMode === 'off';
+
   const configuredGopMode = mode<GOPMode>(
     config.frameStructureGopMode,
     ['auto', 'recommended', 'custom'],
@@ -32,29 +58,43 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
     'auto',
   );
 
+  const calculatedStructureMode =
+    structureMode === 'auto' ||
+    structureMode === 'balanced' ||
+    structureMode === 'compatible' ||
+    structureMode === 'maximum_compression';
+
   const gopMode: GOPMode =
-    structureMode === 'auto'
+    calculatedStructureMode &&
+    effectiveRecommendedGop &&
+    effectiveRecommendedGop > 0
       ? 'recommended'
       : configuredGopMode;
 
   const bFrameMode: BFrameMode =
-    structureMode === 'auto'
+    calculatedStructureMode &&
+    recommendedBFrames &&
+    recommendedBFrames > 0
       ? 'recommended'
       : configuredBFrameMode;
 
   const gop =
-    structureMode === 'auto'
+    calculatedStructureMode &&
+    effectiveRecommendedGop &&
+    effectiveRecommendedGop > 0
       ? positiveInt(
-          recommendedGop,
+          effectiveRecommendedGop,
           positiveInt(config.frameStructureGopFrames, 120),
         )
       : positiveInt(
           config.frameStructureGopFrames,
-          recommendedGop || 120,
+          effectiveRecommendedGop || 120,
         );
 
   const bFrames =
-    structureMode === 'auto'
+    calculatedStructureMode &&
+    recommendedBFrames &&
+    recommendedBFrames > 0
       ? boundedInt(
           recommendedBFrames,
           boundedInt(

@@ -89,6 +89,9 @@ const initialProfile: ProfileInput = {
     warnSubtitleFormats: true,
     subtitleOCRMode: 'accurate',
     subtitleOCRLanguage: 'auto',
+    frameStructureMode: 'auto',
+    frameStructureGopMode: 'recommended',
+    frameStructureBFrameMode: 'recommended',
   },
 };
 

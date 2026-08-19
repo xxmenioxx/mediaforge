@@ -504,6 +504,9 @@ const emptyVideoDraft: ProfileInput = {
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
     warnSubtitleFormats: true,
+    frameStructureMode: 'auto',
+    frameStructureGopMode: 'recommended',
+    frameStructureBFrameMode: 'recommended',
   },
 };
 
@@ -3982,7 +3985,7 @@ function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput):
 }
 
 function frameStructureValidationForLab(recommendation: ReturnType<typeof frameStructureRecommendationForLab>, source: QSVFrameStructureAnalysis, output: QSVFrameStructureAnalysis, profile: ProfileInput, qsv?: QSVFeatureStatus) {
-  const structureMode = videoWorkerValue(profile, 'frameStructureMode', 'balanced');
+  const structureMode = videoWorkerValue(profile, 'frameStructureMode', 'auto');
   const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
   const requestedBFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
   const gopIsManaged = structureMode !== 'off' && (structureMode === 'auto' || structureMode === 'compatible' || structureMode === 'balanced' || structureMode === 'maximum_compression' || gopMode === 'recommended' || gopMode === 'custom');
@@ -5552,7 +5555,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
   const frameStructureMode = videoWorkerValue(
     profile,
     'frameStructureMode',
-    'custom',
+    'auto',
   );
 
   const gopMode = videoWorkerValue(

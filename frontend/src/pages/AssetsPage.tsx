@@ -4374,34 +4374,69 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 }
 
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
-  const analysis = scan?.frameStructureAnalysis;
   if (!scan) return undefined;
-  const stored = scan.frameStructureRecommendation;
-  const storedBalanced = stored?.byMode?.balanced;
-  if (stored && stored.version >= 1 && storedBalanced?.targetGopFrames) {
-    return {
-      fps: stored.fps,
-      gop: storedBalanced.targetGopFrames,
-      gopSeconds: storedBalanced.targetGopSeconds,
-      bFrames: stored.recommendedMaxBFrames || storedBalanced.maxBFrames || 3,
-      gopByMode: {
-        compatible: stored.byMode.compatible?.targetGopFrames,
-        balanced: storedBalanced.targetGopFrames,
-        maximum_compression: stored.byMode.maximum_compression?.targetGopFrames,
-      },
-    };
-  }
+
+  const analysis = scan.frameStructureAnalysis;
   const fps = reliableFrameRateForScan(scan);
+
   if (!fps) return undefined;
-  const sourceAverageGop = analysis && analysis.framesAnalyzed > 0 ? analysis.averageGopLength : undefined;
-  const confidence = analysis && analysis.framesAnalyzed > 0 ? analysis.confidence : 'low';
+
+  const sourceAverageGop =
+    analysis && analysis.framesAnalyzed > 0
+      ? analysis.averageGopLength
+      : undefined;
+
+  const confidence =
+    analysis && analysis.framesAnalyzed > 0
+      ? analysis.confidence
+      : 'low';
+
   const recommendations = {
-    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'compatible' }),
-    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'balanced' }),
-    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'maximum_compression' }),
+    compatible: assetDerivedGopRecommendation({
+      fps,
+      sourceAverageGop,
+      confidence,
+      mode: 'compatible',
+    }),
+
+    balanced: assetDerivedGopRecommendation({
+      fps,
+      sourceAverageGop,
+      confidence,
+      mode: 'balanced',
+    }),
+
+    maximum_compression: assetDerivedGopRecommendation({
+      fps,
+      sourceAverageGop,
+      confidence,
+      mode: 'maximum_compression',
+    }),
   };
-  const bFrames = analysis && analysis.maxConsecutiveBFrames >= 1 && analysis.maxConsecutiveBFrames <= 4 ? analysis.maxConsecutiveBFrames : 3;
-  return { fps, gop: recommendations.balanced.targetFrames, gopSeconds: recommendations.balanced.targetSeconds, bFrames, gopByMode: { compatible: recommendations.compatible.targetFrames, balanced: recommendations.balanced.targetFrames, maximum_compression: recommendations.maximum_compression.targetFrames } };
+
+  const bFrames =
+    analysis &&
+    analysis.maxConsecutiveBFrames >= 1 &&
+    analysis.maxConsecutiveBFrames <= 4
+      ? analysis.maxConsecutiveBFrames
+      : 3;
+
+  return {
+    fps,
+
+    // AUTO intentionally uses Balanced.
+    gop: recommendations.balanced.targetFrames,
+    gopSeconds: recommendations.balanced.targetSeconds,
+
+    bFrames,
+
+    gopByMode: {
+      compatible: recommendations.compatible.targetFrames,
+      balanced: recommendations.balanced.targetFrames,
+      maximum_compression:
+        recommendations.maximum_compression.targetFrames,
+    },
+  };
 }
 
 function softwareEncoderForAssetCodec(codec: string) {
