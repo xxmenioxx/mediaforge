@@ -120,6 +120,11 @@ Coloca un archivo pequeño bajo el path raw del host. Dentro del contenedor apar
 
 Usa **Scanner**, **Assets** o **Analysis** para inspeccionarlo. MVForge obtiene streams, codecs, resolución, audio, subtítulos, capítulos y datos necesarios para planificar.
 
+En **Assets**, el filtro `Media area` usa sólo el primer directorio bajo el root
+configurado (`media/anime`, `media/movies`, etc.). No crea opciones separadas
+para una serie, temporada o subpath más profundo, y la misma selección se puede
+reutilizar en Unprocessed, Library, Converted y Archive.
+
 ## 5. Revisar el análisis
 
 Antes de convertir:

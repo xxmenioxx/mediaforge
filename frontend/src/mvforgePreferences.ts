@@ -68,7 +68,16 @@ export function assetOverridePreferenceDraft(
     name: '', description: '', container: 'mkv', videoCodec: 'x265', audioCodec: 'copy', qualityMode: 'crf', qualityValue: 22,
     preserveHdr: true, preserveSubtitles: true, preserveChapters: true, workerConfig: {},
   }, preferences, availableEncoders);
+  const preferredEncoder = String(
+    profile.workerConfig?.videoEncoder ?? 'auto',
+  );
+
+  const videoCodec =
+    preferredEncoder === 'auto'
+      ? profile.videoCodec
+      : videoCodecForPreferredEncoder(preferredEncoder);
   return {
+    videoCodec,
     qualityMode: profile.qualityMode,
     qualityValue: profile.qualityValue,
     optimizationIntent: preferences.qualityGoal,
@@ -99,4 +108,24 @@ function isQualityGoal(value: unknown): value is MVForgeQualityGoal {
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))];
+}
+
+function videoCodecForPreferredEncoder(encoder: string) {
+  const value = encoder.trim().toLowerCase();
+
+  if (
+    value === 'libx264' ||
+    value.startsWith('h264_')
+  ) {
+    return 'x264';
+  }
+
+  if (
+    value === 'libx265' ||
+    value.startsWith('hevc_')
+  ) {
+    return 'x265';
+  }
+
+  return 'x265';
 }

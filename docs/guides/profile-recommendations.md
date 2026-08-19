@@ -20,6 +20,18 @@ Empieza con el perfil menos destructivo que resuelva el problema real:
 5. Ejecuta dry run y revisa el execution plan.
 6. Convierte un archivo pequeño y descartable antes de lanzar un batch.
 
+`MVForge Suggestions` ya no usa un perfil de anime fijo como respuesta
+universal. Si existe una asignación de asset o path, la propone primero; después
+muestra perfiles existentes ordenados y, cuando ninguno alcanza el match
+necesario, ofrece un draft nuevo junto con hasta dos alternativas. Cada finding
+aplicable tiene su propia casilla y sólo los seleccionados cambian el draft u
+override. Los findings de color y compatibilidad que requieren inspección son
+diagnósticos: no ejecutan una normalización ni cambian tracks automáticamente.
+
+Las preferencias de Settings (`quality/storage`, software/hardware, encoder e
+idiomas) sólo preparan drafts nuevos y ayudan a ordenar estas propuestas. No
+cambian perfiles guardados ni jobs en Queue.
+
 ## Perfiles de video incluidos en v0.1.2
 
 Una base limpia de MVForge v0.1.2 incluye perfiles conservadores MKV/x265

@@ -1281,6 +1281,9 @@ function AssetRow({
   const [reviewTags, setReviewTags] = useState<string[]>(safeArray(assetReview.tags));
   const [category, setCategory] = useState<string>(firstCategory(assetMetadata.categories) || groupCategory);
   const [conversionDraft, setConversionDraft] = useState<AssetConversionOverrideState>(() => normalizeAssetConversionOverride(asset.conversion));
+  const persistedConversionSignature = JSON.stringify(
+    normalizeAssetConversionOverride(asset.conversion),
+  );
   const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
   const snapshot = useMutation({
     mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
@@ -1514,8 +1517,10 @@ function AssetRow({
   }, [assetMetadata.categories, groupCategory]);
 
   useEffect(() => {
-    setConversionDraft(normalizeAssetConversionOverride(asset.conversion));
-  }, [asset.conversion]);
+    setConversionDraft(
+      normalizeAssetConversionOverride(asset.conversion),
+    );
+  }, [asset.path, persistedConversionSignature]);
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -2444,6 +2449,7 @@ async function generateExternalSubtitle(
                         draft={conversionDraft}
                         profile={profiles.find((profile) => profile.id === effectiveProfileId)}
                         scan={snapshot.data}
+                        hasPersistedOverride={assetHasConversionOverride(asset.conversion)}
                         onChange={updateConversionDraft}
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
@@ -2881,6 +2887,7 @@ function AssetConversionOverridePanel({
   draft,
   profile,
   scan,
+  hasPersistedOverride,
   onChange,
   onChangeMany,
   onSave,
@@ -2892,6 +2899,7 @@ function AssetConversionOverridePanel({
   draft: AssetConversionOverrideState;
   profile?: Profile;
   scan?: ScanResult;
+  hasPersistedOverride: boolean;
   onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
   onChangeMany: (patch: Partial<AssetConversionOverrideState>) => void;
   onSave: () => void;
@@ -2929,6 +2937,49 @@ function AssetConversionOverridePanel({
   const processingPreference = draft.preferredEncoder ?? '';
   const assetWorker = resolveSelectedWorker(workerNodes.data, draft.targetWorkerName ?? String(profile?.workerConfig?.targetWorkerName ?? ''));
   const assetWorkerEncoders = encoderNamesForWorker(assetWorker);
+  const preferencesInitializedForPath = useRef<string>('');
+
+    useEffect(() => {
+      if (readOnly) return;
+
+      if (settings.isLoading || workerNodes.isLoading) {
+        return;
+      }
+
+      // Existing saved overrides are authoritative.
+      if (hasPersistedOverride) {
+        return;
+      }
+
+      // Do not overwrite something the user has already edited locally.
+      if (assetHasConversionOverride(draft)) {
+        return;
+      }
+
+      // Only initialize once for this open asset.
+      if (preferencesInitializedForPath.current === assetPath) {
+        return;
+      }
+
+      const preferenceDraft = assetOverridePreferenceDraft(
+        getMVForgePreferences(settings.data),
+        assetWorkerEncoders,
+      );
+
+      onChangeMany(preferenceDraft);
+
+      preferencesInitializedForPath.current = assetPath;
+    }, [
+      assetPath,
+      draft,
+      hasPersistedOverride,
+      readOnly,
+      settings.isLoading,
+      settings.data,
+      workerNodes.isLoading,
+      assetWorkerEncoders,
+      onChangeMany,
+    ]);
   const availableAssetEncoderOptions = assetEncoderOptions.filter((option) => option.value === 'auto' || assetWorkerEncoders.has(option.value));
   const assetFrameRecommendation = recommendedFrameStructureForAsset(scan);
   const effectiveVideoCodec = draft.videoCodec || profile?.videoCodec || 'copy';
@@ -3009,7 +3060,7 @@ function AssetConversionOverridePanel({
       {
         onSuccess: (result) =>
           applyEffectiveProfileToAssetOverrides(
-            onChange,
+            onChangeMany,
             result.effectiveProfile,
           ),
       },
@@ -4967,23 +5018,44 @@ function assetQualityProfile(profile: Profile | undefined, draft: AssetConversio
       preferredEncoder: 'hardware',
       pixFmt: pixelFormat,
       hardwareQualityPreset: preset,
+      hardwareQualityPresetScale: 2,
     },
   };
 }
-
-function applyEffectiveProfileToAssetOverrides(onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void, profile: Profile) {
+function applyEffectiveProfileToAssetOverrides(
+  onChangeMany: (
+    patch: Partial<AssetConversionOverrideState>,
+  ) => void,
+  profile: Profile,
+) {
   const config = profile.workerConfig ?? {};
-  const mapping: Array<[keyof AssetConversionOverrideState, unknown]> = [
-    ['hardwareQualityPreset', config.hardwareQualityPreset], ['globalQuality', config.globalQuality],
-    ['qsvRateControl', config.qsvRateControl], ['qsvLookAheadDepth', config.qsvLookAheadDepth],
-    ['qsvExtendedBrc', config.qsvExtendedBRC], ['qsvAdaptiveI', config.qsvAdaptiveI], ['qsvAdaptiveB', config.qsvAdaptiveB],
-    ['videoToolboxBitrateMbps', config.videoToolboxBitrateMbps], ['videoToolboxMaxrateMbps', config.videoToolboxMaxrateMbps],
-    ['videoToolboxBufferMbps', config.videoToolboxBufferMbps], ['videoToolboxProfile', config.videoToolboxProfile],
+
+  const patch: Partial<AssetConversionOverrideState> = {};
+
+  const mapping: Array<
+    [keyof AssetConversionOverrideState, unknown]
+  > = [
+    ['hardwareQualityPreset', config.hardwareQualityPreset],
+    ['globalQuality', config.globalQuality],
+    ['qsvRateControl', config.qsvRateControl],
+    ['qsvLookAheadDepth', config.qsvLookAheadDepth],
+    ['qsvExtendedBrc', config.qsvExtendedBRC],
+    ['qsvAdaptiveI', config.qsvAdaptiveI],
+    ['qsvAdaptiveB', config.qsvAdaptiveB],
+    ['videoToolboxBitrateMbps', config.videoToolboxBitrateMbps],
+    ['videoToolboxMaxrateMbps', config.videoToolboxMaxrateMbps],
+    ['videoToolboxBufferMbps', config.videoToolboxBufferMbps],
+    ['videoToolboxProfile', config.videoToolboxProfile],
     ['pixFmt', config.pixFmt],
   ];
+
   mapping.forEach(([key, value]) => {
-    if (value !== undefined) onChange(key, value as never);
+    if (value !== undefined) {
+      patch[key] = value as never;
+    }
   });
+
+  onChangeMany(patch);
 }
 
 function createBatchId(group: AssetGroup) {
