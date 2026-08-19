@@ -2296,3 +2296,121 @@ func assertStringList(t *testing.T, actual []string, expected []string) {
 		}
 	}
 }
+
+func TestDirectPublicationEpisodeNamingResetsEpisodeAndSeasonPerSubpath(t *testing.T) {
+	root := t.TempDir()
+
+	sourcePath := filepath.Join(root, "raw", "anime", "Show")
+	destinationPath := filepath.Join(root, "library", "anime", "Show")
+
+	records := []models.AssetRecord{
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 01",
+				"title_02.mkv",
+			),
+		},
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 02",
+				"02-El tercero.mkv",
+			),
+		},
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 01",
+				"title.mkv",
+			),
+		},
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 02",
+				"00-El primero.mkv",
+			),
+		},
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 01",
+				"title_01.mkv",
+			),
+		},
+		{
+			Path: filepath.Join(
+				sourcePath,
+				"Season 02",
+				"01-El segundo.mkv",
+			),
+		},
+	}
+
+	for _, record := range records {
+		relative, err := filepath.Rel(sourcePath, record.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		writeTestFile(
+			t,
+			filepath.Join(destinationPath, relative),
+			"video",
+		)
+	}
+
+	library := models.Library{
+		ValidationRules: models.JSONMap{
+			"episodeNamingEnabled": true,
+		},
+	}
+
+	published, rollback, err := applyDirectPublicationEpisodeNames(
+		sourcePath,
+		destinationPath,
+		records,
+		library,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rollback)
+
+	expected := map[string]string{
+		filepath.Join(sourcePath, "Season 01", "title.mkv"): filepath.Join(destinationPath, "Season 01", "Show - S01E01.mkv"),
+
+		filepath.Join(sourcePath, "Season 01", "title_01.mkv"): filepath.Join(destinationPath, "Season 01", "Show - S01E02.mkv"),
+
+		filepath.Join(sourcePath, "Season 01", "title_02.mkv"): filepath.Join(destinationPath, "Season 01", "Show - S01E03.mkv"),
+
+		filepath.Join(sourcePath, "Season 02", "00-El primero.mkv"): filepath.Join(destinationPath, "Season 02", "Show - S02E01.mkv"),
+
+		filepath.Join(sourcePath, "Season 02", "01-El segundo.mkv"): filepath.Join(destinationPath, "Season 02", "Show - S02E02.mkv"),
+
+		filepath.Join(sourcePath, "Season 02", "02-El tercero.mkv"): filepath.Join(destinationPath, "Season 02", "Show - S02E03.mkv"),
+	}
+
+	for source, want := range expected {
+		got := filepath.Clean(published[source])
+
+		if got != filepath.Clean(want) {
+			t.Fatalf(
+				"published[%q] = %q, want %q",
+				source,
+				got,
+				want,
+			)
+		}
+
+		if _, err := os.Stat(want); err != nil {
+			t.Fatalf(
+				"renamed output missing %q: %v",
+				want,
+				err,
+			)
+		}
+	}
+}

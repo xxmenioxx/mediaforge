@@ -294,3 +294,39 @@ func TestEpisodeSequencePositionsResetPerContainingPath(t *testing.T) {
 		}
 	}
 }
+
+func TestSortAssetGroupsUsesNaturalPathOrder(t *testing.T) {
+	groups := []AssetGroup{
+		{
+			LibraryName:  "Anime",
+			RelativePath: "Show/Season 10",
+		},
+		{
+			LibraryName:  "Anime",
+			RelativePath: "Show/Season 2",
+		},
+		{
+			LibraryName:  "Anime",
+			RelativePath: "Show/Season 1",
+		},
+	}
+
+	sortAssetGroups(groups)
+
+	expected := []string{
+		"Show/Season 1",
+		"Show/Season 2",
+		"Show/Season 10",
+	}
+
+	for index, want := range expected {
+		if groups[index].RelativePath != want {
+			t.Fatalf(
+				"group position %d = %q, want %q",
+				index,
+				groups[index].RelativePath,
+				want,
+			)
+		}
+	}
+}

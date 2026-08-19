@@ -1625,12 +1625,22 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 	}
 
 	sorted := append([]models.AssetRecord(nil), records...)
-	batchName := filepath.ToSlash(filepath.Base(sourcePath))
-	title := sanitizeMediaFileName(filepath.Base(sourcePath))
-	season := firstPositiveInt(seasonNumberFromPath(sourcePath), 1)
+
+	episodePositions := episodeSequencePositions(sourcePath, records)
+
+	title := sanitizeMediaFileName(
+		episodeSeriesTitle(
+			filepath.ToSlash(sourcePath),
+			filepath.ToSlash(sourcePath),
+		),
+	)
+	if title == "" {
+		title = sanitizeMediaFileName(filepath.Base(sourcePath))
+	}
+
 	targets := map[string]string{}
+
 	for _, record := range sorted {
-		episodePositions := episodeSequencePositions(sourcePath, records)
 		episode := episodePositions[record.Path]
 		if episode <= 0 {
 			episode = 1
@@ -1639,8 +1649,28 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 		if err != nil {
 			return nil, func() {}, err
 		}
-		job := models.QueueJob{MediaPath: record.Path, BatchName: batchName}
-		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}
+		recordGroupPath := filepath.Dir(record.Path)
+
+		season := firstPositiveInt(
+			seasonNumberFromPath(recordGroupPath),
+			seasonNumberFromPath(sourcePath),
+			1,
+		)
+
+		job := models.QueueJob{
+			MediaPath: record.Path,
+
+			// Direct publication already knows the concrete asset group.
+			// Using it as the batch scope prevents a structural Season XX
+			// directory from replacing the actual series title.
+			BatchName: filepath.ToSlash(recordGroupPath),
+		}
+
+		spec := multiEpisodeNameSpec{
+			SeriesTitle: title,
+			Season:      season,
+			Episode:     episode,
+		}
 		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
 		target := filepath.Join(destinationPath, namedRelative)
 		if current := published[record.Path]; filepath.Clean(current) != filepath.Clean(target) {
@@ -6075,9 +6105,20 @@ func sortAssets(assets []Asset) {
 
 func sortAssetGroups(groups []AssetGroup) {
 	sort.SliceStable(groups, func(i, j int) bool {
-		if groups[i].LibraryName == groups[j].LibraryName {
-			return groups[i].RelativePath < groups[j].RelativePath
+		left := groups[i]
+		right := groups[j]
+
+		if left.LibraryName != right.LibraryName {
+			return left.LibraryName < right.LibraryName
 		}
-		return groups[i].LibraryName < groups[j].LibraryName
+
+		if comparison := naturalAssetCompare(
+			left.RelativePath,
+			right.RelativePath,
+		); comparison != 0 {
+			return comparison < 0
+		}
+
+		return left.RelativePath < right.RelativePath
 	})
 }
