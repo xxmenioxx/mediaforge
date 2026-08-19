@@ -74,6 +74,8 @@ type MediaStream struct {
 	Codec              string
 	FieldOrder         string
 	PixelFormat        string
+	AttachedPic        bool
+	StillImage         bool
 	ColorRange         string
 	ColorSpace         string
 	ColorTransfer      string
@@ -224,7 +226,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	}
 	args = appendClearInheritedStreamStatistics(args, streamPlan)
 
-	for index, stream := range selectedVideoStreams(plan.Streams.Video, plan.Override) {
+	for index, stream := range selectedVideoStreamsForPlan(plan) {
 		metadata := metadataOverrideFor(plan.Override.VideoMetadata, stream.Index)
 		if metadata.Title != "" {
 			args = append(args, fmt.Sprintf("-metadata:s:v:%d", index), "title="+metadata.Title)
@@ -925,7 +927,7 @@ func resolveStreamPlan(plan MediaJobPlan, mappedAudio []MediaAudioStream, needsA
 		aacStereoDefault = true
 	}
 	derivedAudioDefault := plan.AudioProfile != nil || (needsAACCompatibility && aacStereoDefault)
-	for typeIndex, stream := range selectedVideoStreams(plan.Streams.Video, plan.Override) {
+	for typeIndex, stream := range selectedVideoStreamsForPlan(plan) {
 		action, codec := "copy", "copy"
 		if plan.ProcessingMode == ProcessingModeFullEncode {
 			action, codec = "encode", resolvedVideoEncoder(plan.Profile)
@@ -2075,7 +2077,7 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 	cmd := exec.Command(
 		"ffprobe",
 		"-v", "error",
-		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced",
+		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,attached_pic,still_image",
 		"-show_chapters",
 		"-of", "json",
 		inputPath,
@@ -2117,8 +2119,10 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			DisplayAspectRatio string            `json:"display_aspect_ratio"`
 			Tags               map[string]string `json:"tags"`
 			Disposition        struct {
-				Default int `json:"default"`
-				Forced  int `json:"forced"`
+				Default     int `json:"default"`
+				Forced      int `json:"forced"`
+				AttachedPic int `json:"attached_pic"`
+				StillImage  int `json:"still_image"`
 			} `json:"disposition"`
 		} `json:"streams"`
 		Chapters []struct {
@@ -2136,6 +2140,8 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			Codec:              stream.CodecName,
 			FieldOrder:         stream.FieldOrder,
 			PixelFormat:        stream.PixelFormat,
+			AttachedPic:        stream.Disposition.AttachedPic == 1,
+			StillImage:         stream.Disposition.StillImage == 1,
 			ColorRange:         stream.ColorRange,
 			ColorSpace:         stream.ColorSpace,
 			ColorTransfer:      stream.ColorTransfer,
@@ -2244,4 +2250,59 @@ func enhancedAudioTitle(profile audioEnhancementProfile) string {
 
 func dryRunCommandFromArgs(args []string) string {
 	return "ffmpeg " + shellJoin(args)
+}
+
+func isAuxiliaryVideoStream(
+	stream MediaStream,
+	videoIndex int,
+	totalVideos int,
+) bool {
+	if totalVideos <= 1 {
+		return false
+	}
+
+	// El primer video sigue siendo tratado como principal.
+	if videoIndex == 0 {
+		return false
+	}
+
+	if stream.AttachedPic || stream.StillImage {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(stream.Codec)) {
+	case "mjpeg":
+		return true
+	default:
+		return false
+	}
+}
+
+func selectedVideoStreamsForPlan(
+	plan MediaJobPlan,
+) []MediaStream {
+	selected := selectedVideoStreams(
+		plan.Streams.Video,
+		plan.Override,
+	)
+
+	if plan.ProcessingMode != ProcessingModeFullEncode {
+		return selected
+	}
+
+	result := make([]MediaStream, 0, len(selected))
+
+	for index, stream := range selected {
+		if isAuxiliaryVideoStream(
+			stream,
+			index,
+			len(selected),
+		) {
+			continue
+		}
+
+		result = append(result, stream)
+	}
+
+	return result
 }

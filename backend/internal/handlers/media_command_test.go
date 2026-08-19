@@ -1723,3 +1723,85 @@ func assertNotContains(t *testing.T, value string, unexpected string) {
 		t.Fatalf("expected command not to contain %q\ncommand: %s", unexpected, value)
 	}
 }
+
+func TestFullEncodeOmitsSecondaryMJPEGAuxiliaryVideo(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath:      "/media/raw/movie.mkv",
+		OutputPath:     "/media/staging/movie.mkv",
+		Overwrite:      true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265",
+			AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{
+				"videoEncoder": "hevc_qsv",
+			},
+		},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{
+				{
+					Index:       0,
+					Codec:       "h264",
+					Width:       1920,
+					Height:      1080,
+					FrameRate:   "24000/1001",
+					PixelFormat: "yuv420p",
+				},
+				{
+					Index:       2,
+					Codec:       "mjpeg",
+					Width:       640,
+					Height:      360,
+					FrameRate:   "0/0",
+					PixelFormat: "yuvj420p",
+				},
+			},
+			Audio: []MediaAudioStream{
+				{Index: 1, Codec: "aac"},
+			},
+		},
+	}
+
+	command := shellJoin(
+		FFmpegCommandBuilder{}.Build(plan),
+	)
+
+	assertContains(t, command, "-map 0:0")
+	assertContains(t, command, "-map 0:1")
+
+	assertNotContains(t, command, "-map 0:2")
+}
+
+func TestFullEncodeKeepsPrimaryMJPEGVideo(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath:      "/media/raw/mjpeg-source.mkv",
+		OutputPath:     "/media/staging/mjpeg-source.mkv",
+		Overwrite:      true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265",
+			AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{
+				"videoEncoder": "libx265",
+			},
+		},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{
+				{
+					Index:       0,
+					Codec:       "mjpeg",
+					Width:       1280,
+					Height:      720,
+					FrameRate:   "30000/1001",
+					PixelFormat: "yuvj420p",
+				},
+			},
+		},
+	}
+
+	command := shellJoin(
+		FFmpegCommandBuilder{}.Build(plan),
+	)
+
+	assertContains(t, command, "-map 0:0")
+}
