@@ -1320,26 +1320,8 @@ function groupPathFromMediaPath(mediaPath: string) {
   }
   return normalized.slice(0, index);
 }
-
 function queueGroupPathFromMediaPath(mediaPath: string) {
-  const normalized = normalizePath(mediaPath);
-  const rawMarker = '/media/raw/';
-  const rawIndex = normalized.indexOf(rawMarker);
-  if (rawIndex >= 0) {
-    const root = normalized.slice(0, rawIndex + rawMarker.length - 1);
-    const relativeParts = normalized
-      .slice(rawIndex + rawMarker.length)
-      .split('/')
-      .filter(Boolean);
-    if (relativeParts.length <= 1) {
-      return root;
-    }
-    if (relativeParts.length === 2) {
-      return `${root}/${relativeParts[0]}`;
-    }
-    return `${root}/${relativeParts[0]}/${relativeParts[1]}`;
-  }
-  return groupPathFromMediaPath(normalized);
+  return groupPathFromMediaPath(normalizePath(mediaPath));
 }
 
 function normalizePath(value: string) {

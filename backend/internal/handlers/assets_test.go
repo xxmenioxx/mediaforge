@@ -20,21 +20,24 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestLogicalAssetGroupPathUsesTopLevelFolder(t *testing.T) {
+func TestLogicalAssetGroupPathUsesImmediateContainingFolder(t *testing.T) {
 	tests := map[string]string{
 		"1.mkv":                             "",
 		"movies/1.mkv":                      "movies",
 		"movies/movie1/movie.mkv":           "movies/movie1",
-		"movies/movie1/extras/extra1.mkv":   "movies/movie1",
-		"series/show/season1/episode01.mkv": "series/show",
-		"series/show/season2/episode01.mkv": "series/show",
-		"Baccano/Season0/episode01.mkv":     "Baccano",
-		"Baccano/episode02.mkv":             "Baccano",
+		"movies/movie1/extras/extra1.mkv":   "movies/movie1/extras",
+		"series/show/season1/episode01.mkv": "series/show/season1",
+		"series/show/season2/episode01.mkv": "series/show/season2",
 	}
 
 	for input, expected := range tests {
 		if actual := logicalAssetGroupPath(input); actual != expected {
-			t.Fatalf("logicalAssetGroupPath(%q) = %q, expected %q", input, actual, expected)
+			t.Fatalf(
+				"logicalAssetGroupPath(%q) = %q, expected %q",
+				input,
+				actual,
+				expected,
+			)
 		}
 	}
 }
@@ -118,7 +121,7 @@ func TestRenameAssetPreservesPersistedSnapshot(t *testing.T) {
 	}
 }
 
-func TestAssetGroupsIgnoreStalePersistedSeasonSubpath(t *testing.T) {
+func TestAssetGroupsPreserveImmediateContainingSubpath(t *testing.T) {
 	records := []models.AssetRecord{
 		{
 			Path:         "/media/library/anime/Baccano/Baccano - S01E01.mkv",
@@ -139,13 +142,40 @@ func TestAssetGroupsIgnoreStalePersistedSeasonSubpath(t *testing.T) {
 			Status:       "converted",
 		},
 	}
+
 	assets := make([]Asset, 0, len(records))
 	for _, record := range records {
 		assets = append(assets, assetFromRecord(record))
 	}
+
 	groups := groupAssets(assets, nil, nil)
-	if len(groups) != 1 || groups[0].RelativePath != "Baccano" || groups[0].FileCount != 2 {
-		t.Fatalf("converted season subpath was not collapsed into its parent group: %#v", groups)
+
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 independent asset groups, got %#v", groups)
+	}
+
+	groupsByPath := make(map[string]AssetGroup, len(groups))
+	for _, group := range groups {
+		groupsByPath[group.RelativePath] = group
+	}
+
+	parent, ok := groupsByPath["Baccano"]
+	if !ok {
+		t.Fatalf("missing Baccano group: %#v", groups)
+	}
+	if parent.FileCount != 1 {
+		t.Fatalf("Baccano file count = %d, want 1", parent.FileCount)
+	}
+
+	season0, ok := groupsByPath["Baccano/Season0"]
+	if !ok {
+		t.Fatalf("missing Baccano/Season0 group: %#v", groups)
+	}
+	if season0.FileCount != 1 {
+		t.Fatalf(
+			"Baccano/Season0 file count = %d, want 1",
+			season0.FileCount,
+		)
 	}
 }
 

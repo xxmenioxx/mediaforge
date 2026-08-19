@@ -1625,20 +1625,22 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 	}
 
 	sorted := append([]models.AssetRecord(nil), records...)
-	sort.Slice(sorted, func(i, j int) bool {
-		return strings.ToLower(sorted[i].Path) < strings.ToLower(sorted[j].Path)
-	})
 	batchName := filepath.ToSlash(filepath.Base(sourcePath))
 	title := sanitizeMediaFileName(filepath.Base(sourcePath))
 	season := firstPositiveInt(seasonNumberFromPath(sourcePath), 1)
 	targets := map[string]string{}
-	for index, record := range sorted {
+	for _, record := range sorted {
+		episodePositions := episodeSequencePositions(sourcePath, records)
+		episode := episodePositions[record.Path]
+		if episode <= 0 {
+			episode = 1
+		}
 		relative, err := filepath.Rel(sourcePath, record.Path)
 		if err != nil {
 			return nil, func() {}, err
 		}
 		job := models.QueueJob{MediaPath: record.Path, BatchName: batchName}
-		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: index + 1}
+		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}
 		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
 		target := filepath.Join(destinationPath, namedRelative)
 		if current := published[record.Path]; filepath.Clean(current) != filepath.Clean(target) {
@@ -5979,35 +5981,13 @@ func logicalAssetGroupPath(relativePath string) string {
 	if cleanPath == "." || cleanPath == string(os.PathSeparator) {
 		return ""
 	}
-	parts := strings.Split(cleanPath, string(os.PathSeparator))
-	if len(parts) <= 1 {
+
+	groupPath := filepath.Dir(cleanPath)
+	if groupPath == "." || groupPath == string(os.PathSeparator) {
 		return ""
 	}
-	directories := append([]string(nil), parts[:len(parts)-1]...)
-	if len(directories) > 1 && isSeasonDirectory(directories[len(directories)-1]) {
-		directories = directories[:len(directories)-1]
-	}
-	if len(directories) > 2 {
-		directories = directories[:2]
-	}
-	return filepath.Join(directories...)
-}
 
-func isSeasonDirectory(value string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	for _, prefix := range []string{"season", "temporada"} {
-		if !strings.HasPrefix(normalized, prefix) {
-			continue
-		}
-		remainder := strings.TrimSpace(strings.TrimPrefix(normalized, prefix))
-		if remainder == "" {
-			return true
-		}
-		if _, err := strconv.Atoi(remainder); err == nil {
-			return true
-		}
-	}
-	return false
+	return groupPath
 }
 
 func absoluteAssetGroupPath(asset Asset) string {
@@ -6061,10 +6041,35 @@ func isMediaExtension(extension string) bool {
 
 func sortAssets(assets []Asset) {
 	sort.SliceStable(assets, func(i, j int) bool {
-		if assets[i].LibraryName == assets[j].LibraryName {
-			return assets[i].RelativePath < assets[j].RelativePath
+		left := assets[i]
+		right := assets[j]
+
+		if left.LibraryName != right.LibraryName {
+			return left.LibraryName < right.LibraryName
 		}
-		return assets[i].LibraryName < assets[j].LibraryName
+
+		leftGroup := filepath.Clean(left.GroupPath)
+		rightGroup := filepath.Clean(right.GroupPath)
+
+		if comparison := naturalAssetCompare(leftGroup, rightGroup); comparison != 0 {
+			return comparison < 0
+		}
+
+		leftName := strings.TrimSpace(left.FileName)
+		if leftName == "" {
+			leftName = filepath.Base(left.RelativePath)
+		}
+
+		rightName := strings.TrimSpace(right.FileName)
+		if rightName == "" {
+			rightName = filepath.Base(right.RelativePath)
+		}
+
+		if leftName != rightName {
+			return assetSequenceLess(leftName, rightName)
+		}
+
+		return left.RelativePath < right.RelativePath
 	})
 }
 

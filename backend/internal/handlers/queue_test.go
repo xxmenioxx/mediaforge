@@ -644,3 +644,420 @@ func TestQueueOverrideOnlyUsesAssetVideoOverrideWithoutPathProfileInheritance(t 
 		t.Fatal("frozen asset conversion override is nil")
 	}
 }
+
+func TestQueuedBatchJobsOrderByBatchPosition(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	jobs := []models.QueueJob{
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/title_02.mkv",
+			BatchID:       "season-01",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 3,
+			Status:        JobStatusQueued,
+			QueuePosition: 1,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/title.mkv",
+			BatchID:       "season-01",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 1,
+			Status:        JobStatusQueued,
+			QueuePosition: 2,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/title_01.mkv",
+			BatchID:       "season-01",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 2,
+			Status:        JobStatusQueued,
+			QueuePosition: 3,
+		},
+	}
+
+	for index := range jobs {
+		if err := db.Create(&jobs[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := normalizeQueuedBatchOrder(db, "season-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored []models.QueueJob
+	if err := db.
+		Where("batch_id = ?", "season-01").
+		Order("queue_position asc").
+		Find(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []string{
+		"title.mkv",
+		"title_01.mkv",
+		"title_02.mkv",
+	}
+
+	if len(stored) != len(expected) {
+		t.Fatalf("got %d jobs, want %d", len(stored), len(expected))
+	}
+
+	for index := range stored {
+		if filepath.Base(stored[index].MediaPath) != expected[index] {
+			t.Fatalf(
+				"queue position %d = %q, want %q",
+				index+1,
+				filepath.Base(stored[index].MediaPath),
+				expected[index],
+			)
+		}
+
+		if stored[index].BatchPosition != index+1 {
+			t.Fatalf(
+				"job %q batchPosition = %d, want %d",
+				stored[index].MediaPath,
+				stored[index].BatchPosition,
+				index+1,
+			)
+		}
+	}
+}
+
+func TestNormalizeQueuedBatchOrderPreservesGlobalBatchOrder(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	// Batch A ya estaba correctamente en Queue.
+	batchA := []models.QueueJob{
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/A01.mkv",
+			BatchID:       "batch-a",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 1,
+			Status:        JobStatusQueued,
+			QueuePosition: 1,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/A02.mkv",
+			BatchID:       "batch-a",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 2,
+			Status:        JobStatusQueued,
+			QueuePosition: 2,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 01/A03.mkv",
+			BatchID:       "batch-a",
+			BatchName:     "Anime/Season 01",
+			BatchPosition: 3,
+			Status:        JobStatusQueued,
+			QueuePosition: 3,
+		},
+	}
+
+	for index := range batchA {
+		if err := db.Create(&batchA[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Batch B llegó después, por lo que ocupa globalmente 4..6,
+	// pero sus assets quedaron internamente desordenados.
+	batchB := []models.QueueJob{
+		{
+			MediaPath:     "/media/raw/Anime/Season 02/title_02.mkv",
+			BatchID:       "batch-b",
+			BatchName:     "Anime/Season 02",
+			BatchPosition: 3,
+			Status:        JobStatusQueued,
+			QueuePosition: 4,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 02/title.mkv",
+			BatchID:       "batch-b",
+			BatchName:     "Anime/Season 02",
+			BatchPosition: 1,
+			Status:        JobStatusQueued,
+			QueuePosition: 5,
+		},
+		{
+			MediaPath:     "/media/raw/Anime/Season 02/title_01.mkv",
+			BatchID:       "batch-b",
+			BatchName:     "Anime/Season 02",
+			BatchPosition: 2,
+			Status:        JobStatusQueued,
+			QueuePosition: 6,
+		},
+	}
+
+	for index := range batchB {
+		if err := db.Create(&batchB[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := normalizeQueuedBatchOrder(db, "batch-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored []models.QueueJob
+	if err := db.
+		Where("status = ?", JobStatusQueued).
+		Order("queue_position asc").
+		Find(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []struct {
+		file          string
+		batchID       string
+		batchPosition int
+		queuePosition int64
+	}{
+		{"A01.mkv", "batch-a", 1, 1},
+		{"A02.mkv", "batch-a", 2, 2},
+		{"A03.mkv", "batch-a", 3, 3},
+
+		{"title.mkv", "batch-b", 1, 4},
+		{"title_01.mkv", "batch-b", 2, 5},
+		{"title_02.mkv", "batch-b", 3, 6},
+	}
+
+	if len(stored) != len(expected) {
+		t.Fatalf("got %d queued jobs, want %d", len(stored), len(expected))
+	}
+
+	for index, want := range expected {
+		got := stored[index]
+
+		if filepath.Base(got.MediaPath) != want.file {
+			t.Fatalf(
+				"queue position %d file = %q, want %q",
+				index+1,
+				filepath.Base(got.MediaPath),
+				want.file,
+			)
+		}
+
+		if got.BatchID != want.batchID {
+			t.Fatalf(
+				"job %q batchID = %q, want %q",
+				got.MediaPath,
+				got.BatchID,
+				want.batchID,
+			)
+		}
+
+		if got.BatchPosition != want.batchPosition {
+			t.Fatalf(
+				"job %q batchPosition = %d, want %d",
+				got.MediaPath,
+				got.BatchPosition,
+				want.batchPosition,
+			)
+		}
+
+		if got.QueuePosition != want.queuePosition {
+			t.Fatalf(
+				"job %q queuePosition = %d, want %d",
+				got.MediaPath,
+				got.QueuePosition,
+				want.queuePosition,
+			)
+		}
+	}
+}
+
+func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:queue-create-batch-order?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.ExecutionPlan{},
+		&models.SchedulerReservation{},
+		&models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+
+	createJob := func(
+		mediaPath string,
+		batchID string,
+		batchName string,
+		batchPosition int,
+	) models.QueueJob {
+		t.Helper()
+
+		body := fmt.Sprintf(
+			`{
+				"mediaPath":%q,
+				"libraryId":1,
+				"profileId":%d,
+				"batchId":%q,
+				"batchName":%q,
+				"batchPosition":%d
+			}`,
+			mediaPath,
+			profile.ID,
+			batchID,
+			batchName,
+			batchPosition,
+		)
+
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/queue/jobs",
+			strings.NewReader(body),
+		)
+		request.Header.Set("Content-Type", "application/json")
+
+		router.ServeHTTP(response, request)
+
+		if response.Code != http.StatusCreated {
+			t.Fatalf(
+				"create %q status=%d body=%s",
+				mediaPath,
+				response.Code,
+				response.Body.String(),
+			)
+		}
+
+		var job models.QueueJob
+		if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+			t.Fatal(err)
+		}
+
+		return job
+	}
+
+	// Batch A arrives first and is already internally ordered.
+	createJob(
+		"/media/raw/Anime/Season 01/A01.mkv",
+		"batch-a",
+		"Anime/Season 01",
+		1,
+	)
+	createJob(
+		"/media/raw/Anime/Season 01/A02.mkv",
+		"batch-a",
+		"Anime/Season 01",
+		2,
+	)
+	createJob(
+		"/media/raw/Anime/Season 01/A03.mkv",
+		"batch-a",
+		"Anime/Season 01",
+		3,
+	)
+
+	// Batch B arrives AFTER Batch A, but its HTTP requests/assets arrive
+	// internally out of sequence: 3, 1, 2.
+	createJob(
+		"/media/raw/Anime/Season 02/title_02.mkv",
+		"batch-b",
+		"Anime/Season 02",
+		3,
+	)
+	createJob(
+		"/media/raw/Anime/Season 02/title.mkv",
+		"batch-b",
+		"Anime/Season 02",
+		1,
+	)
+	createJob(
+		"/media/raw/Anime/Season 02/title_01.mkv",
+		"batch-b",
+		"Anime/Season 02",
+		2,
+	)
+
+	var queued []models.QueueJob
+	if err := db.
+		Where("status = ? AND dismissed_at IS NULL", JobStatusQueued).
+		Order("queue_position asc").
+		Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []struct {
+		file          string
+		batchID       string
+		batchPosition int
+		queuePosition int64
+	}{
+		{"A01.mkv", "batch-a", 1, 1},
+		{"A02.mkv", "batch-a", 2, 2},
+		{"A03.mkv", "batch-a", 3, 3},
+
+		{"title.mkv", "batch-b", 1, 4},
+		{"title_01.mkv", "batch-b", 2, 5},
+		{"title_02.mkv", "batch-b", 3, 6},
+	}
+
+	if len(queued) != len(expected) {
+		t.Fatalf(
+			"queued jobs=%d want=%d: %#v",
+			len(queued),
+			len(expected),
+			queued,
+		)
+	}
+
+	for index, want := range expected {
+		got := queued[index]
+
+		if filepath.Base(got.MediaPath) != want.file {
+			t.Fatalf(
+				"queue position %d file=%q want=%q",
+				index+1,
+				filepath.Base(got.MediaPath),
+				want.file,
+			)
+		}
+
+		if got.BatchID != want.batchID {
+			t.Fatalf(
+				"%q batchID=%q want=%q",
+				got.MediaPath,
+				got.BatchID,
+				want.batchID,
+			)
+		}
+
+		if got.BatchPosition != want.batchPosition {
+			t.Fatalf(
+				"%q batchPosition=%d want=%d",
+				got.MediaPath,
+				got.BatchPosition,
+				want.batchPosition,
+			)
+		}
+
+		if got.QueuePosition != want.queuePosition {
+			t.Fatalf(
+				"%q queuePosition=%d want=%d",
+				got.MediaPath,
+				got.QueuePosition,
+				want.queuePosition,
+			)
+		}
+	}
+}

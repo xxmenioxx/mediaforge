@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -287,6 +288,101 @@ func queueUsesOverrideOnlyVideo(resolution models.JSONMap) bool {
 	return boolValue(video["overrideOnly"], false)
 }
 
+func normalizeQueuedBatchOrder(db *gorm.DB, batchID string) error {
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		return normalizeQueuedBatchOrderTx(tx, batchID)
+	})
+}
+
+func normalizeQueuedBatchOrderTx(tx *gorm.DB, batchID string) error {
+	var jobs []models.QueueJob
+
+	if err := tx.
+		Where(
+			"batch_id = ? AND status = ? AND dismissed_at IS NULL",
+			batchID,
+			JobStatusQueued,
+		).
+		Order("queue_position asc, created_at asc, id asc").
+		Find(&jobs).Error; err != nil {
+		return err
+	}
+
+	if len(jobs) < 2 {
+		return nil
+	}
+
+	// Preserve exactly the global queue slots already occupied by this batch.
+	//
+	// Example:
+	// Batch A occupies 1,2,3
+	// Batch B occupies 4,5,6
+	//
+	// Normalizing Batch B may change WHICH B job owns 4/5/6,
+	// but must never move Batch B into 1/2/3.
+	slots := make([]int64, len(jobs))
+	for index := range jobs {
+		slots[index] = jobs[index].QueuePosition
+	}
+
+	ordered := append([]models.QueueJob(nil), jobs...)
+
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := ordered[i]
+		right := ordered[j]
+
+		leftPosition := left.BatchPosition
+		rightPosition := right.BatchPosition
+
+		// Explicit batch positions are authoritative.
+		if leftPosition > 0 || rightPosition > 0 {
+			if leftPosition == 0 {
+				return false
+			}
+			if rightPosition == 0 {
+				return true
+			}
+			if leftPosition != rightPosition {
+				return leftPosition < rightPosition
+			}
+		}
+
+		// Defensive fallback for legacy/duplicate/missing batchPosition.
+		if left.MediaPath != right.MediaPath {
+			return assetSequenceLess(left.MediaPath, right.MediaPath)
+		}
+
+		return left.ID < right.ID
+	})
+
+	for index := range ordered {
+		targetPosition := slots[index]
+
+		if ordered[index].QueuePosition == targetPosition {
+			continue
+		}
+
+		if err := tx.
+			Model(&models.QueueJob{}).
+			Where(
+				"id = ? AND status = ? AND dismissed_at IS NULL",
+				ordered[index].ID,
+				JobStatusQueued,
+			).
+			Update("queue_position", targetPosition).
+			Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (h QueueHandler) Create(c *gin.Context) {
 	var input QueueJobInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -414,8 +510,29 @@ func (h QueueHandler) Create(c *gin.Context) {
 		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {
 			return err
 		}
-		_, err := scheduler.CreatePendingExecutionPlan(tx, &job, "Execution plan created from queued profile snapshot")
-		return err
+
+		if _, err := scheduler.CreatePendingExecutionPlan(
+			tx,
+			&job,
+			"Execution plan created from queued profile snapshot",
+		); err != nil {
+			return err
+		}
+
+		batchID := strings.TrimSpace(job.BatchID)
+		if batchID != "" {
+			if err := normalizeQueuedBatchOrderTx(tx, batchID); err != nil {
+				return err
+			}
+
+			// Normalization may have changed this job's global queue slot.
+			// Reload it so the API response contains the effective queuePosition.
+			if err := tx.First(&job, job.ID).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}); err != nil {
 		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
 			c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
