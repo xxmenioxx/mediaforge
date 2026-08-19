@@ -98,6 +98,7 @@ type SettingsForm = {
     autoValidationEnabled: boolean;
     autoPublisherEnabled: boolean;
     publishedJobReconciliationEnabled: boolean;
+    forceFreshSnapshotBeforeExecution: boolean;
   };
   assetInventory: {
     autoSyncEnabled: boolean;
@@ -192,6 +193,7 @@ const initialSettings: SettingsForm = buildSettingsForm({
     autoValidationEnabled: false,
     autoPublisherEnabled: false,
     publishedJobReconciliationEnabled: false,
+    forceFreshSnapshotBeforeExecution: false,
   },
   assetInventory: {
     autoSyncEnabled: true,
@@ -434,6 +436,10 @@ export function SettingsPage() {
         autoAnalysisEnabled: booleanValue(
           pipelineAutomation.autoAnalysisEnabled,
           initialSettings.pipelineAutomation.autoAnalysisEnabled,
+        ),
+        forceFreshSnapshotBeforeExecution: booleanValue(
+          pipelineAutomation.forceFreshSnapshotBeforeExecution,
+          initialSettings.pipelineAutomation.forceFreshSnapshotBeforeExecution,
         ),
         reviewMode: stringValue(pipelineAutomation.reviewMode, initialSettings.pipelineAutomation.reviewMode) as SettingsForm['pipelineAutomation']['reviewMode'],
         autoExecutionEnabled: booleanValue(
@@ -1668,6 +1674,33 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
             }
             label="Automatic analysis"
           />
+          <FormControlLabel
+            control={
+              <Switch
+                checked={
+                  form.pipelineAutomation.forceFreshSnapshotBeforeExecution
+                }
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    pipelineAutomation: {
+                      ...current.pipelineAutomation,
+                      forceFreshSnapshotBeforeExecution:
+                        event.target.checked,
+                    },
+                  }))
+                }
+              />
+            }
+            label="Force fresh snapshot before execution"
+          />
+
+          <Typography color="text.secondary" variant="caption">
+            Re-analyzes the physical asset immediately before a real conversion.
+            Existing snapshots are ignored for that analysis. This adds processing
+            time but ensures AUTO decisions use current media metadata and frame
+            structure.
+          </Typography>
           <TextField
             label="Review Plan approval"
             value={form.pipelineAutomation.reviewMode}
@@ -2558,6 +2591,10 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       autoAnalysisEnabled: booleanValue(
         pipelineAutomation.autoAnalysisEnabled,
         initialSettings.pipelineAutomation.autoAnalysisEnabled,
+      ),
+      forceFreshSnapshotBeforeExecution: booleanValue(
+        pipelineAutomation.forceFreshSnapshotBeforeExecution,
+        initialSettings.pipelineAutomation.forceFreshSnapshotBeforeExecution,
       ),
       reviewMode: stringValue(pipelineAutomation.reviewMode, initialSettings.pipelineAutomation.reviewMode) as SettingsForm['pipelineAutomation']['reviewMode'],
       autoExecutionEnabled: booleanValue(

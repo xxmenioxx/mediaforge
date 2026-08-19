@@ -173,6 +173,28 @@ func (h WorkerHandler) workerLimits() (workerLimits, error) {
 	}, nil
 }
 
+func forceFreshSnapshotBeforeExecution(db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+
+	var setting models.AppSetting
+	if err := db.
+		First(&setting, "key = ?", "pipelineAutomation").
+		Error; err != nil {
+		return false
+	}
+
+	if setting.Value == nil {
+		return false
+	}
+
+	return boolSetting(
+		setting.Value["forceFreshSnapshotBeforeExecution"],
+		false,
+	)
+}
+
 func canClaimJob(tx *gorm.DB, limits workerLimits) error {
 	if limits.MaxConcurrentJobs > 0 {
 		var running int64
@@ -679,6 +701,30 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+
+	if forceFreshSnapshotBeforeExecution(h.db) {
+		if _, err := refreshSnapshotBeforeExecution(
+			h.db,
+			job.MediaPath,
+		); err != nil {
+			return job,
+				http.StatusUnprocessableEntity,
+				fmt.Errorf(
+					"forced fresh snapshot before execution: %w",
+					err,
+				)
+		}
+
+		job.Notes = appendNote(
+			job.Notes,
+			"Fresh asset snapshot generated before execution",
+		)
+
+		if err := h.db.Save(&job).Error; err != nil {
+			return job, http.StatusInternalServerError, err
+		}
+	}
+
 	if err := transitionJobStage(h.db, &job, JobStagePreparingWorkspace); err != nil {
 		return job, http.StatusInternalServerError, err
 	}
@@ -841,6 +887,50 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	return job, http.StatusAccepted, nil
+}
+
+func refreshSnapshotBeforeExecution(
+	db *gorm.DB,
+	mediaPath string,
+) (models.ScanResult, error) {
+	if db == nil {
+		return models.ScanResult{}, fmt.Errorf(
+			"fresh execution snapshot requires a database",
+		)
+	}
+
+	cleanPath := filepath.Clean(mediaPath)
+
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return models.ScanResult{}, fmt.Errorf(
+			"fresh execution snapshot cannot read input media: %w",
+			err,
+		)
+	}
+
+	if info.IsDir() {
+		return models.ScanResult{}, fmt.Errorf(
+			"fresh execution snapshot requires a media file",
+		)
+	}
+
+	result, _, err := NewScannerHandler(db).scanResolvedFile(
+		cleanPath,
+		info,
+		ScanRequest{
+			Force: true,
+		},
+		nil,
+	)
+	if err != nil {
+		return models.ScanResult{}, fmt.Errorf(
+			"fresh execution snapshot failed: %w",
+			err,
+		)
+	}
+
+	return result, nil
 }
 
 func automaticFrameStructureSnapshot(db *gorm.DB, mediaPath string) (models.ScanResult, error) {

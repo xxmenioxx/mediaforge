@@ -940,3 +940,226 @@ func TestExecuteQueueJobFailsWhenAutoFrameStructureCannotResolve(t *testing.T) {
 		)
 	}
 }
+
+func TestForceFreshSnapshotBeforeExecutionSetting(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	if forceFreshSnapshotBeforeExecution(db) {
+		t.Fatal("force fresh snapshot must default to false when the setting is absent")
+	}
+
+	setting := models.AppSetting{
+		Key: "pipelineAutomation",
+		Value: models.JSONMap{
+			"forceFreshSnapshotBeforeExecution": true,
+		},
+	}
+
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if !forceFreshSnapshotBeforeExecution(db) {
+		t.Fatal("force fresh snapshot must be enabled from pipelineAutomation settings")
+	}
+}
+
+func TestRefreshSnapshotBeforeExecutionBypassesValidCachedSnapshot(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	mediaPath := filepath.Join(t.TempDir(), "recovered-asset.mkv")
+
+	// Archivo deliberadamente inválido.
+	//
+	// Si el helper reutiliza el snapshot existente, no habrá error.
+	// Si realmente fuerza el análisis, llegará a ffprobe y fallará.
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := models.ScanResult{
+		Path:       mediaPath,
+		FileName:   filepath.Base(mediaPath),
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec":        "h264",
+				"avgFrameRate": "24000/1001",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":               2,
+			"framesAnalyzed":        1000,
+			"averageGopLength":      120.0,
+			"maxConsecutiveBFrames": 3,
+			"confidence":            "high",
+		},
+	}
+
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := refreshSnapshotBeforeExecution(db, mediaPath)
+	if err == nil {
+		t.Fatal(
+			"forced execution snapshot must analyze the physical file instead of reusing a valid cached snapshot",
+		)
+	}
+
+	var stored models.ScanResult
+	if err := db.
+		Where("path = ?", mediaPath).
+		Order("updated_at desc, id desc").
+		First(&stored).
+		Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Because the forced scan failed, the existing valid snapshot should
+	// still remain. We must not destroy the last known-good snapshot
+	// before a replacement has successfully been generated.
+	if stored.ID != existing.ID {
+		t.Fatalf(
+			"failed forced scan replaced the previous valid snapshot: got ID=%d want ID=%d",
+			stored.ID,
+			existing.ID,
+		)
+	}
+}
+
+func TestExecuteQueueJobForcesFreshSnapshotWhenSettingEnabled(t *testing.T) {
+	db := queueJobTestDB(t)
+	if err := db.AutoMigrate(
+		&models.Library{},
+		&models.Profile{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "recovered-source.mkv")
+
+	// Existe físicamente, pero deliberadamente no es media válida.
+	if err := os.WriteFile(
+		mediaPath,
+		[]byte("not real media"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	library := models.Library{
+		Name:            "Test",
+		SourcePath:      filepath.Dir(mediaPath),
+		DestinationPath: filepath.Join(t.TempDir(), "library"),
+	}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	profile := authoritativeTestProfile()
+
+	// No queremos que este test dependa de AUTO.
+	// La política de snapshot debe funcionar para cualquier ejecución.
+	if profile.WorkerConfig == nil {
+		profile.WorkerConfig = models.JSONMap{}
+	}
+	profile.WorkerConfig["frameStructureMode"] = "manual"
+
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Create(&models.AppSetting{
+		Key: "pipelineAutomation",
+		Value: models.JSONMap{
+			"forceFreshSnapshotBeforeExecution": true,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot antiguo pero completamente usable.
+	oldSnapshot := models.ScanResult{
+		Path:       mediaPath,
+		FileName:   filepath.Base(mediaPath),
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"codec":        "h264",
+				"avgFrameRate": "24000/1001",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":               2,
+			"framesAnalyzed":        1000,
+			"averageGopLength":      120.0,
+			"maxConsecutiveBFrames": 3,
+			"confidence":            "high",
+		},
+	}
+	if err := db.Create(&oldSnapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: mediaPath,
+		LibraryID: library.ID,
+		ProfileID: profile.ID,
+		Status:    JobStatusRunning,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewWorkerHandler(db)
+
+	_, status, err := handler.executeQueueJob(job, false)
+
+	if err == nil {
+		t.Fatal(
+			"execution with forced fresh snapshot must analyze the physical file",
+		)
+	}
+
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf(
+			"status=%d want=%d err=%v",
+			status,
+			http.StatusUnprocessableEntity,
+			err,
+		)
+	}
+
+	if !strings.Contains(
+		strings.ToLower(err.Error()),
+		"forced fresh snapshot",
+	) {
+		t.Fatalf(
+			"error does not identify forced snapshot failure: %v",
+			err,
+		)
+	}
+
+	// El análisis nuevo falló, por lo que el snapshot anterior debe seguir.
+	var stored models.ScanResult
+	if err := db.
+		Where("path = ?", mediaPath).
+		Order("updated_at desc, id desc").
+		First(&stored).
+		Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if stored.ID != oldSnapshot.ID {
+		t.Fatalf(
+			"failed forced scan replaced old snapshot: got=%d want=%d",
+			stored.ID,
+			oldSnapshot.ID,
+		)
+	}
+}
