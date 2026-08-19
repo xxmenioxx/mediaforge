@@ -89,9 +89,10 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		line := scanner.Text()
 		if nextProgress, ok := progressFromFFmpegLine(line, durationSeconds); ok {
 			if nextProgress > lastProgress && (nextProgress-lastProgress >= 2 || time.Since(lastSaved) > 2*time.Second) {
-				h.updateRunningJobProgress(jobID, nextProgress)
-				lastProgress = nextProgress
-				lastSaved = time.Now()
+				if err := h.updateRunningJobProgress(jobID, nextProgress); err == nil {
+					lastProgress = nextProgress
+					lastSaved = time.Now()
+				}
 			}
 		}
 	}
@@ -272,11 +273,42 @@ func jobExecutionTiming(job models.QueueJob, mediaDurationSeconds float64) map[s
 	return result
 }
 
-func (h WorkerHandler) updateRunningJobProgress(jobID uint, progress int) {
+func (h WorkerHandler) updateRunningJobProgress(jobID uint, progress int) error {
 	progress = clamp(progress, 5, 95)
-	_ = h.db.Model(&models.QueueJob{}).
+
+	result := h.db.Model(&models.QueueJob{}).
 		Where("id = ? AND status = ?", jobID, JobStatusRunning).
-		Updates(map[string]any{"progress": progress}).Error
+		Update("progress", progress)
+
+	if result.Error != nil {
+		applog.Event(
+			"error",
+			"ffmpeg",
+			"progress_update_failed",
+			map[string]any{
+				"jobId":    jobID,
+				"progress": progress,
+			},
+			result.Error,
+		)
+
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		applog.Event(
+			"warning",
+			"ffmpeg",
+			"progress_update_skipped",
+			map[string]any{
+				"jobId":    jobID,
+				"progress": progress,
+			},
+			nil,
+		)
+	}
+
+	return nil
 }
 
 func registerRunningJobProcess(jobID uint, cmd *exec.Cmd) {

@@ -5549,10 +5549,29 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
       : `${profile.qualityMode.toUpperCase()} ${profile.qualityValue}`;
   const sourceFrameStructure = source?.frameStructureAnalysis;
   const frameRecommendation = sourceFrameStructure ? frameStructureRecommendationForLab(sourceFrameStructure, source, profile) : undefined;
-  const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
-  const requestedGop = gopMode === 'auto'
-    ? 'Auto · encoder decides'
-    : `${gopMode === 'recommended' ? 'MVForge Recommended' : 'Custom'} · ${numberWorkerValue(profile, 'frameStructureGopFrames', frameRecommendation?.targetGopFrames ?? 120)} frames`;
+  const frameStructureMode = videoWorkerValue(
+    profile,
+    'frameStructureMode',
+    'custom',
+  );
+
+  const gopMode = videoWorkerValue(
+    profile,
+    'frameStructureGopMode',
+    'auto',
+  );
+
+  const requestedGop =
+    frameStructureMode === 'auto' && frameRecommendation
+      ? `AUTO · MVForge Recommended · ${frameRecommendation.targetGopFrames} frames`
+      : gopMode === 'auto'
+        ? 'Auto · encoder decides'
+        : `${gopMode === 'recommended' ? 'MVForge Recommended' : 'Custom'} · ${numberWorkerValue(
+            profile,
+            'frameStructureGopFrames',
+            frameRecommendation?.targetGopFrames ?? 120,
+          )} frames`;
+  
   const effectiveGopArgument = recommendation ? ffmpegArgumentValue(recommendation.ffmpegVideoArguments, '-g') : '';
   const effectiveGop = effectiveGopArgument ? `-g ${effectiveGopArgument}` : 'Encoder default · no -g override';
   const bFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
@@ -6529,11 +6548,103 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
       if (x265Params) args.push('-x265-params', shellQuote(x265Params));
     }
   }
-  const gopMode = videoWorkerValue(profile, 'frameStructureGopMode', 'auto');
-  if (gopMode === 'recommended' || gopMode === 'custom') args.push('-g', String(Math.max(1, Math.min(1000, numberWorkerValue(profile, 'frameStructureGopFrames', 120)))));
-  const bFrameMode = videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto');
-  if (bFrameMode === 'recommended' || bFrameMode === 'custom') args.push('-bf', String(Math.max(1, Math.min(encoder === 'hevc_videotoolbox' ? 4 : 16, numberWorkerValue(profile, 'frameStructureMaxBFrames', 3)))));
-  if (bFrameMode === 'off') args.push('-bf', '0');
+  const frameStructureMode = videoWorkerValue(
+    profile,
+    'frameStructureMode',
+    'custom',
+  );
+
+  if (frameStructureMode === 'auto') {
+    const recommendation = frameStructureRecommendationForLab(
+      scan.frameStructureAnalysis,
+      scan,
+      profile,
+    );
+
+    if (recommendation.targetGopFrames > 0) {
+      args.push(
+        '-g',
+        String(
+          Math.max(
+            1,
+            Math.min(
+              1000,
+              recommendation.targetGopFrames,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (recommendation.maxBFrames > 0) {
+      args.push(
+        '-bf',
+        String(
+          Math.max(
+            1,
+            Math.min(
+              encoder === 'hevc_videotoolbox' ? 4 : 16,
+              recommendation.maxBFrames,
+            ),
+          ),
+        ),
+      );
+    }
+  } else {
+    const gopMode = videoWorkerValue(
+      profile,
+      'frameStructureGopMode',
+      'auto',
+    );
+
+    if (gopMode === 'recommended' || gopMode === 'custom') {
+      args.push(
+        '-g',
+        String(
+          Math.max(
+            1,
+            Math.min(
+              1000,
+              numberWorkerValue(
+                profile,
+                'frameStructureGopFrames',
+                120,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    const bFrameMode = videoWorkerValue(
+      profile,
+      'frameStructureBFrameMode',
+      'auto',
+    );
+
+    if (bFrameMode === 'recommended' || bFrameMode === 'custom') {
+      args.push(
+        '-bf',
+        String(
+          Math.max(
+            1,
+            Math.min(
+              encoder === 'hevc_videotoolbox' ? 4 : 16,
+              numberWorkerValue(
+                profile,
+                'frameStructureMaxBFrames',
+                3,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (bFrameMode === 'off') {
+      args.push('-bf', '0');
+    }
+  }
   if (filters) args.push('-vf', shellQuote(filters));
   return args;
 }

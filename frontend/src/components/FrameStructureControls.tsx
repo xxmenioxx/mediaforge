@@ -20,10 +20,58 @@ type Props = {
 export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
   const structureMode = mode<FrameStructureMode>(config.frameStructureMode, ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'], 'custom');
   const structureDisabled = disabled || structureMode === 'off';
-  const gopMode = mode<GOPMode>(config.frameStructureGopMode, ['auto', 'recommended', 'custom'], 'auto');
-  const bFrameMode = mode<BFrameMode>(config.frameStructureBFrameMode, ['auto', 'recommended', 'custom', 'off'], 'auto');
-  const gop = positiveInt(config.frameStructureGopFrames, recommendedGop || 120);
-  const bFrames = boundedInt(config.frameStructureMaxBFrames, recommendedBFrames || 3, 1, 16);
+  const configuredGopMode = mode<GOPMode>(
+    config.frameStructureGopMode,
+    ['auto', 'recommended', 'custom'],
+    'auto',
+  );
+
+  const configuredBFrameMode = mode<BFrameMode>(
+    config.frameStructureBFrameMode,
+    ['auto', 'recommended', 'custom', 'off'],
+    'auto',
+  );
+
+  const gopMode: GOPMode =
+    structureMode === 'auto'
+      ? 'recommended'
+      : configuredGopMode;
+
+  const bFrameMode: BFrameMode =
+    structureMode === 'auto'
+      ? 'recommended'
+      : configuredBFrameMode;
+
+  const gop =
+    structureMode === 'auto'
+      ? positiveInt(
+          recommendedGop,
+          positiveInt(config.frameStructureGopFrames, 120),
+        )
+      : positiveInt(
+          config.frameStructureGopFrames,
+          recommendedGop || 120,
+        );
+
+  const bFrames =
+    structureMode === 'auto'
+      ? boundedInt(
+          recommendedBFrames,
+          boundedInt(
+            config.frameStructureMaxBFrames,
+            3,
+            1,
+            16,
+          ),
+          1,
+          16,
+        )
+      : boundedInt(
+          config.frameStructureMaxBFrames,
+          recommendedBFrames || 3,
+          1,
+          16,
+        );
   const commit = (patch: Record<string, unknown>) => {
     if (onChangeMany) onChangeMany(patch);
     else Object.entries(patch).forEach(([key, value]) => onChange(key, value));
