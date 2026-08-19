@@ -267,3 +267,52 @@ func TestFrameStructureWindowAggregationHelpers(t *testing.T) {
 		t.Fatalf("variability=%q", got)
 	}
 }
+
+func TestStoredFrameStructureRecommendationRebuildsMalformedCachedRecommendation(t *testing.T) {
+	scan := models.ScanResult{
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"avgFrameRate": "24000/1001",
+			},
+		},
+
+		FrameStructureAnalysis: models.JSONMap{
+			"version":               2,
+			"framesAnalyzed":        1000,
+			"averageGopLength":      72.0,
+			"maxConsecutiveBFrames": 3,
+			"bFrameRatio":           0.45,
+			"confidence":            "high",
+		},
+
+		// Simulates a persisted derived cache that claims to be current
+		// but does not actually contain a usable balanced recommendation.
+		FrameStructureRecommendation: models.JSONMap{
+			"version": 1,
+			"byMode":  models.JSONMap{},
+		},
+	}
+
+	recommendation := storedFrameStructureRecommendation(
+		scan,
+		"balanced",
+	)
+
+	if recommendation.TargetGOPFrames <= 0 {
+		t.Fatalf(
+			"malformed cached recommendation was not rebuilt: %#v",
+			recommendation,
+		)
+	}
+
+	if recommendation.MaxBFrames <= 0 {
+		t.Fatalf(
+			"rebuilt recommendation has invalid B-frame count: %#v",
+			recommendation,
+		)
+	}
+}

@@ -1041,7 +1041,14 @@ func resolveAutomaticFrameStructure(
 		)
 	}
 
-	recommendation := storedFrameStructureRecommendation(scan, "balanced")
+	recommendationSet := buildFrameStructureRecommendationSet(scan)
+
+	recommendation, ok := recommendationSet.ByMode["balanced"]
+	if !ok {
+		return models.Profile{}, fmt.Errorf(
+			"automatic frame structure did not produce a balanced recommendation",
+		)
+	}
 
 	if recommendation.TargetGOPFrames <= 0 {
 		return models.Profile{}, fmt.Errorf(

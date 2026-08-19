@@ -194,29 +194,59 @@ func ensureFrameStructureRecommendation(scan *models.ScanResult) bool {
 	return true
 }
 
-func storedFrameStructureRecommendation(scan models.ScanResult, mode string) FrameStructureRecommendation {
+func storedFrameStructureRecommendation(
+	scan models.ScanResult,
+	mode string,
+) FrameStructureRecommendation {
 	mode = strings.ToLower(strings.TrimSpace(mode))
+
 	if mode == "auto" || mode == "off" || mode == "" {
 		mode = "balanced"
 	}
+
 	if ensureFrameStructureRecommendation(&scan) {
-		// Derived in memory for legacy snapshots. Callers that own persistence may
-		// store the enrichment without probing the media again.
+		// Derived in memory for legacy snapshots.
 	}
+
+	var recommendation FrameStructureRecommendation
+
 	byMode, _ := scan.FrameStructureRecommendation["byMode"].(map[string]interface{})
+
 	if byMode == nil {
 		if raw, ok := scan.FrameStructureRecommendation["byMode"].(models.JSONMap); ok {
 			byMode = map[string]interface{}(raw)
 		}
 	}
-	raw, ok := byMode[mode]
-	if !ok {
-		raw = byMode["balanced"]
+
+	if byMode != nil {
+		raw, ok := byMode[mode]
+		if !ok {
+			raw = byMode["balanced"]
+		}
+
+		encoded, _ := json.Marshal(raw)
+		_ = json.Unmarshal(encoded, &recommendation)
 	}
-	encoded, _ := json.Marshal(raw)
-	var recommendation FrameStructureRecommendation
-	_ = json.Unmarshal(encoded, &recommendation)
-	return recommendation
+
+	//
+	// FrameStructureRecommendation is derived cache.
+	// FrameStructureAnalysis + FPS are the source of truth.
+	//
+	// A stored version marker alone does not guarantee that the cached
+	// recommendation is complete or usable.
+	//
+	if recommendation.TargetGOPFrames > 0 &&
+		recommendation.MaxBFrames > 0 {
+		return recommendation
+	}
+
+	fresh := buildFrameStructureRecommendationSet(scan)
+
+	if rebuilt, ok := fresh.ByMode[mode]; ok {
+		return rebuilt
+	}
+
+	return fresh.ByMode["balanced"]
 }
 
 func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, contentType, policy string, advancedAllowed, adaptiveISupported, adaptiveBSupported bool) FrameStructureRecommendation {
