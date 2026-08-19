@@ -1684,12 +1684,20 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 	if content, err := os.ReadFile(librarySidecar); err != nil || string(content) != "keep this subtitle" {
 		t.Fatalf("Library sidecar was removed during Archive recovery: content=%q err=%v", content, err)
 	}
-	var recoveredSnapshot models.ScanResult
-	if err := db.Where("path = ?", rawPath).First(&recoveredSnapshot).Error; err != nil {
-		t.Fatalf("recovered Raw snapshot missing: %v", err)
+	var recoveredSnapshotCount int64
+	if err := db.
+		Model(&models.ScanResult{}).
+		Where("path = ?", rawPath).
+		Count(&recoveredSnapshotCount).
+		Error; err != nil {
+		t.Fatal(err)
 	}
-	if recoveredSnapshot.VideoCodec != "h264" || jsonMapInt(recoveredSnapshot.FrameStructureAnalysis, "framesAnalyzed") != 1200 {
-		t.Fatalf("recovered Raw snapshot lost archived analysis: %#v", recoveredSnapshot)
+
+	if recoveredSnapshotCount != 0 {
+		t.Fatalf(
+			"recovered physical asset inherited %d stale snapshots; want none",
+			recoveredSnapshotCount,
+		)
 	}
 	var archivedSnapshotCount int64
 	if err := db.Model(&models.ScanResult{}).Where("path = ?", archivePath).Count(&archivedSnapshotCount).Error; err != nil || archivedSnapshotCount != 1 {

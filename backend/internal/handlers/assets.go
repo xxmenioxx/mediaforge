@@ -595,8 +595,19 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := inheritRecoveredAssetSnapshot(h.db, record.Path, destination); err != nil {
-		appendSystemLog(h.db, "archive_asset_recovered_snapshot_inheritance_failed", map[string]string{"archivePath": record.Path, "recoveredPath": destination}, err)
+	if err := invalidateRecoveredAssetSnapshot(
+		h.db,
+		destination,
+	); err != nil {
+		appendSystemLog(
+			h.db,
+			"archive_asset_recovered_snapshot_invalidation_failed",
+			map[string]string{
+				"archivePath":   record.Path,
+				"recoveredPath": destination,
+			},
+			err,
+		)
 	}
 	if err := resetRecoveredAssetOverrides(h.db, record.Path, destination); err != nil {
 		appendSystemLog(h.db, "archive_asset_recovered_override_reset_failed", map[string]string{"archivePath": record.Path, "recoveredPath": destination}, err)
@@ -728,8 +739,19 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 			return
 		}
 	}
-	if err := inheritRecoveredAssetSnapshot(h.db, archivePath, restorePath); err != nil {
-		appendSystemLog(h.db, "converted_asset_recovered_snapshot_inheritance_failed", map[string]string{"archivePath": archivePath, "restoredPath": restorePath}, err)
+	if err := invalidateRecoveredAssetSnapshot(
+		h.db,
+		restorePath,
+	); err != nil {
+		appendSystemLog(
+			h.db,
+			"converted_asset_recovered_snapshot_invalidation_failed",
+			map[string]string{
+				"archivePath":  archivePath,
+				"restoredPath": restorePath,
+			},
+			err,
+		)
 	}
 	libraryRoot := filepath.Clean(strings.TrimSpace(record.RootPath))
 	if libraryRoot != "." && libraryRoot != "" && pathIsInside(filepath.Dir(path), libraryRoot) {
@@ -769,45 +791,6 @@ func safeDeleteRestoreDestination(db *gorm.DB, job models.QueueJob, rawRoot stri
 		return "", "", fmt.Errorf("the original destination is outside both the configured Raw root and its Library destination")
 	}
 	return restorePath, "Raw", nil
-}
-
-func inheritRecoveredAssetSnapshot(db *gorm.DB, archivePath, rawPath string) error {
-	if db == nil || !db.Migrator().HasTable(&models.ScanResult{}) {
-		return nil
-	}
-	archivePath = filepath.Clean(strings.TrimSpace(archivePath))
-	rawPath = filepath.Clean(strings.TrimSpace(rawPath))
-	if archivePath == "." || rawPath == "." || archivePath == rawPath {
-		return nil
-	}
-	var current models.ScanResult
-	if err := db.Where("path = ?", rawPath).Order("created_at desc, id desc").First(&current).Error; err == nil {
-		return nil
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("read recovered Raw snapshot: %w", err)
-	}
-	var archived models.ScanResult
-	if err := db.Where("path = ?", archivePath).Order("created_at desc, id desc").First(&archived).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		return fmt.Errorf("read archived snapshot: %w", err)
-	}
-	archived.ID = 0
-	archived.Path = rawPath
-	archived.FileName = filepath.Base(rawPath)
-	archived.CreatedAt = time.Time{}
-	archived.UpdatedAt = time.Time{}
-	if archived.RawProbe == nil {
-		archived.RawProbe = models.JSONMap{}
-	}
-	archived.RawProbe["snapshotProvenance"] = models.JSONMap{
-		"source": "recovered_original", "archivePath": archivePath, "recoveredPath": rawPath,
-	}
-	if err := persistFinalAssetSnapshot(db, &archived); err != nil {
-		return fmt.Errorf("persist recovered Raw snapshot: %w", err)
-	}
-	return nil
 }
 
 func (h *AssetHandler) ListSubtitleExtractionOperations(c *gin.Context) {
@@ -6121,4 +6104,26 @@ func sortAssetGroups(groups []AssetGroup) {
 
 		return left.RelativePath < right.RelativePath
 	})
+}
+
+func invalidateRecoveredAssetSnapshot(
+	db *gorm.DB,
+	recoveredPath string,
+) error {
+	if db == nil || !db.Migrator().HasTable(&models.ScanResult{}) {
+		return nil
+	}
+
+	recoveredPath = filepath.Clean(
+		strings.TrimSpace(recoveredPath),
+	)
+
+	if recoveredPath == "." || recoveredPath == "" {
+		return nil
+	}
+
+	return db.
+		Where("path = ?", recoveredPath).
+		Delete(&models.ScanResult{}).
+		Error
 }
