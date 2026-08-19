@@ -544,7 +544,7 @@ function profileInputFromSavedProfile(profile: Profile): ProfileInput {
     scope: profile.scope,
     description: profile.description,
     container: profile.container,
-    videoCodec: profile.videoCodec,
+    videoCodec: normalized.videoCodec,
     codecFamily: profile.codecFamily,
     encoderPolicy: profile.encoderPolicy,
     preferredEncoder: profile.preferredEncoder,
