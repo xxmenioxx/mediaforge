@@ -2449,7 +2449,6 @@ async function generateExternalSubtitle(
                         draft={conversionDraft}
                         profile={profiles.find((profile) => profile.id === effectiveProfileId)}
                         scan={snapshot.data}
-                        hasPersistedOverride={assetHasConversionOverride(asset.conversion)}
                         onChange={updateConversionDraft}
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
@@ -2822,7 +2821,6 @@ type SelectOption = {
 const videoCodecOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
   { value: 'copy', label: 'Keep original video' },
-  { value: 'x265_10bit', label: 'HEVC / x265 10-bit' },
   { value: 'x265', label: 'HEVC / x265' },
   { value: 'x264', label: 'H.264 / x264' },
 ];
@@ -2887,7 +2885,6 @@ function AssetConversionOverridePanel({
   draft,
   profile,
   scan,
-  hasPersistedOverride,
   onChange,
   onChangeMany,
   onSave,
@@ -2899,7 +2896,6 @@ function AssetConversionOverridePanel({
   draft: AssetConversionOverrideState;
   profile?: Profile;
   scan?: ScanResult;
-  hasPersistedOverride: boolean;
   onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
   onChangeMany: (patch: Partial<AssetConversionOverrideState>) => void;
   onSave: () => void;
@@ -2946,16 +2942,6 @@ function AssetConversionOverridePanel({
         return;
       }
 
-      // Existing saved overrides are authoritative.
-      if (hasPersistedOverride) {
-        return;
-      }
-
-      // Do not overwrite something the user has already edited locally.
-      if (assetHasConversionOverride(draft)) {
-        return;
-      }
-
       // Only initialize once for this open asset.
       if (preferencesInitializedForPath.current === assetPath) {
         return;
@@ -2966,13 +2952,28 @@ function AssetConversionOverridePanel({
         assetWorkerEncoders,
       );
 
-      onChangeMany(preferenceDraft);
+      const missingPreferences =
+        Object.fromEntries(
+          Object.entries(preferenceDraft).filter(([key, value]) => {
+            if (value === undefined) {
+              return false;
+            }
+
+            const currentValue =
+              draft[key as keyof AssetConversionOverrideState];
+
+            return currentValue === undefined;
+          }),
+        ) as Partial<AssetConversionOverrideState>;
+
+      if (Object.keys(missingPreferences).length > 0) {
+        onChangeMany(missingPreferences);
+      }
 
       preferencesInitializedForPath.current = assetPath;
     }, [
       assetPath,
       draft,
-      hasPersistedOverride,
       readOnly,
       settings.isLoading,
       settings.data,
@@ -4580,6 +4581,22 @@ function normalizeAssetConversionOverride(value?: AssetConversionOverrideState):
     keepAudioStreams: Array.isArray(value.keepAudioStreams) ? normalizeNumberList(value.keepAudioStreams) : undefined,
     keepSubtitleStreams: Array.isArray(value.keepSubtitleStreams) ? normalizeNumberList(value.keepSubtitleStreams) : undefined,
   });
+  if (normalized.videoCodec === 'x265_10bit') {
+    normalized.videoCodec = 'x265';
+
+    if (!normalized.pixFmt || normalized.pixFmt === 'auto') {
+      const prefersHardware =
+        normalized.preferredEncoder === 'hardware' ||
+        (
+          !normalized.preferredEncoder &&
+          normalized.useHardwareIfAvailable === true
+        );
+
+      normalized.pixFmt = prefersHardware
+        ? 'p010le'
+        : 'yuv420p10le';
+    }
+  }
   if (!normalized.preferredEncoder && typeof normalized.useHardwareIfAvailable === 'boolean') {
     normalized.preferredEncoder = normalized.useHardwareIfAvailable ? 'hardware' : 'software';
     if (normalized.useHardwareIfAvailable && !normalized.videoEncoder) {

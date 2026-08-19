@@ -79,6 +79,7 @@ import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../util
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
+import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -251,7 +252,7 @@ const videoStarterPresets = [
     label: 'Anime DVD',
     description: 'DVDs comerciales y rips limpios. Balance ideal de calidad y tamaño.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 20,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -273,7 +274,7 @@ const videoStarterPresets = [
     label: 'Anime TV Rip',
     description: 'Capturas MPEG-2, fansubs antiguos o fuentes con entrelazado/ruido.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 21,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -295,7 +296,7 @@ const videoStarterPresets = [
     label: 'Archivo Maestro',
     description: 'Para animes favoritos o conversiones donde pesa más la fidelidad.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 18,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -317,7 +318,7 @@ const videoStarterPresets = [
     label: 'Compresión Alta',
     description: 'Cuando el espacio importa más. Suele funcionar bien con anime SD.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 23,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -339,7 +340,7 @@ const videoStarterPresets = [
     label: 'HEVC Small Size',
     description: 'Software x265 cuando importa más ahorrar espacio.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 21,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -366,7 +367,7 @@ const videoStarterPresets = [
     label: 'HEVC Archive Quality',
     description: 'Software x265 para películas, conciertos y assets difíciles.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 19,
       workerConfig: {
         videoEncoder: 'libx265',
@@ -393,7 +394,7 @@ const videoStarterPresets = [
     label: 'HEVC Balanced Fast',
     description: 'QSV/hardware cuando importa más velocidad y no saturar el NAS.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 20,
       workerConfig: {
         videoEncoder: 'hevc_qsv',
@@ -426,7 +427,7 @@ const videoStarterPresets = [
     label: 'HEVC Bulk Convert',
     description: 'Hardware HEVC para bibliotecas grandes y conversiones masivas.',
     draft: {
-      videoCodec: 'x265_10bit',
+      videoCodec: 'x265',
       qualityValue: 23,
       workerConfig: {
         videoEncoder: 'hevc_qsv',
@@ -512,10 +513,20 @@ const emptyVideoDraft: ProfileInput = {
 };
 
 function profileInputFromSavedProfile(profile: Profile): ProfileInput {
-  const workerConfig = { ...emptyVideoDraft.workerConfig, ...profile.workerConfig };
+  
+  const normalized = normalizeLegacyVideoCodec(
+    profile.videoCodec,
+    profile.workerConfig,
+  );
+
+  const workerConfig = {
+    ...emptyVideoDraft.workerConfig,
+    ...normalized.workerConfig,
+  };
   delete workerConfig.processingMode;
   const requestedPreference = typeof workerConfig.preferredEncoder === 'string' ? workerConfig.preferredEncoder : '';
-  const hardwareSupported = hardwareEncodingSupportedForCodec(profile.videoCodec);
+  const hardwareSupported =
+    hardwareEncodingSupportedForCodec(normalized.videoCodec);
   const preference = requestedPreference === 'hardware' && !hardwareSupported
     ? 'software'
     : requestedPreference === 'hardware' || requestedPreference === 'software'
@@ -2565,12 +2576,26 @@ export function ProfileLabPage() {
                           <Typography fontWeight={700}>Technical settings</Typography>
                           <Grid container spacing={2}>
                             <Grid size={{ xs: 12, sm: 6 }}>
-                              <TextField label="Video codec" value={displayVideoCodec(videoDraft.videoCodec)} onChange={(event) => updateVideoCodecDraft(setVideoDraft, event.target.value)} select fullWidth>
-                                {videoCodecOptions
-                                  .filter((codec) => videoWorkerValue(videoDraft, 'preferredEncoder', 'software') !== 'hardware' || hardwareEncodingSupportedForCodec(codec.value))
-                                  .map((codec) => (
-                                    <MenuItem key={codec.value} value={codec.value}>{codec.label}</MenuItem>
-                                  ))}
+                              <TextField
+                                label="Video codec"
+                                value={displayVideoCodec(videoDraft.videoCodec)}
+                                onChange={(event) =>
+                                  updateVideoCodecDraft(
+                                    setVideoDraft,
+                                    event.target.value,
+                                  )
+                                }
+                                select
+                                fullWidth
+                              >
+                                {videoCodecOptions.map((codec) => (
+                                  <MenuItem
+                                    key={codec.value}
+                                    value={codec.value}
+                                  >
+                                    {codec.label}
+                                  </MenuItem>
+                                ))}
                               </TextField>
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>

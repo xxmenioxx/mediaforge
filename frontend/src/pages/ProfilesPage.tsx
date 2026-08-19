@@ -47,6 +47,7 @@ import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
+import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -469,7 +470,7 @@ export function ProfilesPage() {
         name: form.name || 'HEVC Small Size',
         description: 'Software x265 for assets where saving space matters more than speed.',
         container: 'mkv',
-        videoCodec: 'x265_10bit',
+        videoCodec: 'x265',
         audioCodec: 'copy',
         qualityValue: 21,
         preserveHdr: true,
@@ -493,7 +494,7 @@ export function ProfilesPage() {
         name: form.name || 'HEVC Balanced Fast',
         description: 'Hardware HEVC for faster queues and lower NAS pressure.',
         container: 'mkv',
-        videoCodec: 'x265_10bit',
+        videoCodec: 'x265',
         audioCodec: 'copy',
         qualityValue: 20,
         preserveHdr: true,
@@ -523,7 +524,7 @@ export function ProfilesPage() {
         name: form.name || 'HEVC Archive Quality',
         description: 'Software x265 for important movies, concerts, and difficult sources.',
         container: 'mkv',
-        videoCodec: 'x265_10bit',
+        videoCodec: 'x265',
         audioCodec: 'copy',
         qualityValue: 19,
         preserveHdr: true,
@@ -547,7 +548,7 @@ export function ProfilesPage() {
         name: form.name || 'HEVC Bulk Convert',
         description: 'Hardware HEVC for large libraries and unattended bulk conversion.',
         container: 'mkv',
-        videoCodec: 'x265_10bit',
+        videoCodec: 'x265',
         audioCodec: 'copy',
         qualityValue: 23,
         preserveHdr: true,
@@ -1608,12 +1609,16 @@ function encoderPresetDescription(value: string) {
 }
 
 function profileInputFromProfile(profile: Profile): ProfileInput {
+  const normalized = normalizeLegacyVideoCodec(
+    profile.videoCodec,
+    profile.workerConfig,
+  );
   return {
     name: profile.name,
     scope: profile.scope,
     description: profile.description,
     container: profile.container,
-    videoCodec: profile.videoCodec,
+    videoCodec: normalized.videoCodec,
     codecFamily: profile.codecFamily,
     encoderPolicy: profile.encoderPolicy,
     preferredEncoder: profile.preferredEncoder,
@@ -1629,7 +1634,7 @@ function profileInputFromProfile(profile: Profile): ProfileInput {
     preserveHdr: profile.preserveHdr,
     preserveSubtitles: profile.preserveSubtitles,
     preserveChapters: profile.preserveChapters,
-    workerConfig: { ...(profile.workerConfig ?? {}) },
+    workerConfig: normalized.workerConfig,
     disabled: profile.disabled,
   };
 }
