@@ -133,7 +133,33 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
         </Stack>
         <Grid container spacing={1.5}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} onChange={(event) => { const next = event.target.value as FrameStructureMode; const policyGop = next === 'compatible' || next === 'balanced' || next === 'maximum_compression' ? recommendedGopByMode?.[next] : recommendedGop; commit(frameStructureModePatch(next, policyGop ?? recommendedGop, recommendedBFrames)); }} helperText={structureMode === 'auto' ? 'MVForge resolves Recommended values for each asset.' : structureMode === 'off' ? 'No frame-structure parameters are sent to the encoder.' : 'Editing an advanced value changes the mode to Custom.'} size={compact ? 'small' : 'medium'} fullWidth>
+            <TextField select label="Frame Structure Mode" value={structureMode} disabled={disabled} 
+            onChange={(event) => {
+              const next = event.target.value as FrameStructureMode;
+
+              const policyGop =
+                next === 'custom'
+                  ? gop
+                  : next === 'compatible' ||
+                      next === 'balanced' ||
+                      next === 'maximum_compression'
+                    ? recommendedGopByMode?.[next]
+                    : recommendedGop;
+
+              const policyBFrames =
+                next === 'custom'
+                  ? bFrames
+                  : recommendedBFrames;
+
+              commit(
+                frameStructureModePatch(
+                  next,
+                  policyGop ?? recommendedGop,
+                  policyBFrames,
+                ),
+              );
+            }}
+            helperText={structureMode === 'auto' ? 'MVForge resolves Recommended values for each asset.' : structureMode === 'off' ? 'No frame-structure parameters are sent to the encoder.' : 'Editing an advanced value changes the mode to Custom.'} size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="auto">Auto · MVForge Recommended</MenuItem>
               <MenuItem value="off">Off · Encoder defaults</MenuItem>
               <MenuItem value="compatible">Compatible</MenuItem>

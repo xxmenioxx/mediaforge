@@ -10,12 +10,6 @@ export function frameStructureModePatch(
   recommendedGop?: number,
   recommendedBFrames = 3,
 ) {
-  if (selected === 'custom') {
-    return {
-      frameStructureMode: selected,
-    };
-  }
-
   const baseGop =
     recommendedGop && recommendedGop > 0
       ? Math.max(1, Math.min(1000, Math.round(recommendedGop)))
@@ -25,6 +19,20 @@ export function frameStructureModePatch(
     1,
     Math.min(4, Math.round(recommendedBFrames || 3)),
   );
+
+  if (selected === 'custom') {
+    return {
+      frameStructureMode: 'custom',
+
+      frameStructureGopMode: 'custom',
+      ...(baseGop
+        ? { frameStructureGopFrames: baseGop }
+        : {}),
+
+      frameStructureBFrameMode: 'custom',
+      frameStructureMaxBFrames: baseBFrames,
+    };
+  }
 
   if (selected === 'off') {
     return {

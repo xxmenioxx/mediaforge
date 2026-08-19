@@ -55,7 +55,7 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, QueueJobInput, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -64,6 +64,7 @@ import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgePreferences';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
+import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
@@ -2902,7 +2903,23 @@ function AssetConversionOverridePanel({
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
-  const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
+  const [lastEncoderRecommendation, setLastEncoderRecommendation] =
+    useState<{
+      path: string;
+      data: QualityRecommendationResponse;
+    }>();
+
+  const encoderQualityRecommendation = useMutation({
+    mutationFn: api.recommendEncoderQuality,
+    onSuccess: (data, variables) => {
+      if (!variables.path) return;
+
+      setLastEncoderRecommendation({
+        path: variables.path,
+        data,
+      });
+    },
+  });
   const recommendedCrop = ['detected', 'variable'].includes(scan?.cropAnalysis?.status ?? '') ? (scan?.cropAnalysis?.recommendedCrop ?? '').trim() : '';
   const manualCropCandidate = scan?.cropAnalysis?.status === 'variable' && Boolean(recommendedCrop);
   const currentCropFilter = cropFilterFromChain(draft.videoFilters);
@@ -2952,7 +2969,14 @@ function AssetConversionOverridePanel({
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
   const effectiveEvaluationProfile = assetQualityProfile(profile, draft, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
   const effectiveEvaluationSignature = JSON.stringify(effectiveEvaluationProfile);
+  const displayedEncoderRecommendation =
+    lastEncoderRecommendation?.path === assetPath
+      ? lastEncoderRecommendation.data
+      : undefined;
 
+  const encoderRecommendationUpdating =
+    Boolean(displayedEncoderRecommendation) &&
+    encoderQualityRecommendation.isPending;
   useEffect(() => {
     const timer = window.setTimeout(() => encoderQualityRecommendation.mutate({ path: assetPath, profile: effectiveEvaluationProfile }), 250);
     return () => window.clearTimeout(timer);
@@ -3435,20 +3459,24 @@ function AssetConversionOverridePanel({
                 </Grid>
               ) : null}
               {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
-              {encoderQualityRecommendation.data ? (
+              {displayedEncoderRecommendation ? (
                 <Stack spacing={1} sx={{ mt: 1.5 }}>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Chip size="small" label={`Effective · ${encoderQualityRecommendation.data.recommendation.effectiveRateControl || 'bitrate'}`} />
-                    <Chip size="small" label={`Confidence · ${encoderQualityRecommendation.data.recommendation.estimateConfidence}`} />
-                    {encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${encoderQualityRecommendation.data.recommendation.requestedBFramePolicy} → ${encoderQualityRecommendation.data.recommendation.effectiveBFramePolicy}`} /> : null}
-                    {encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${encoderQualityRecommendation.data.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}
-                    {encoderQualityRecommendation.data.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(encoderQualityRecommendation.data.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
-                    {encoderQualityRecommendation.data.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(encoderQualityRecommendation.data.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
-                    {encoderQualityRecommendation.data.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(encoderQualityRecommendation.data.estimatedOutputMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedOutputMaxBytes)}`} /> : null}
-                    {encoderQualityRecommendation.data.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMinBytes)}–${formatBytes(encoderQualityRecommendation.data.estimatedSavingsMaxBytes)}`} /> : null}
+                    <Chip size="small" label={`Effective · ${displayedEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} />
+                    <Chip size="small" label={`Confidence · ${displayedEncoderRecommendation.recommendation.estimateConfidence}`} />
+                    {displayedEncoderRecommendation.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${displayedEncoderRecommendation.recommendation.requestedBFramePolicy} → ${displayedEncoderRecommendation.recommendation.effectiveBFramePolicy}`} /> : null}
+                    {displayedEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${displayedEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}
+                    {displayedEncoderRecommendation.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(displayedEncoderRecommendation.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+                    {displayedEncoderRecommendation.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(displayedEncoderRecommendation.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}
+                    {displayedEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatEstimatedByteRange(
+                        displayedEncoderRecommendation.estimatedOutputMinBytes,
+                        displayedEncoderRecommendation.estimatedOutputMaxBytes,
+                        formatBytes,
+                      )}`} /> : null}
+                    {displayedEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(displayedEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(displayedEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}
                   </Stack>
-                  {encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{encoderQualityRecommendation.data.recommendation.bFrameDowngradeReason}</Alert> : null}
-                  <Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {encoderQualityRecommendation.data.ffmpegVideoArguments.join(' ')}</Typography>
+                  {displayedEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{displayedEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}
+                  <Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {displayedEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography>
                 </Stack>
               ) : null}
             </Box>

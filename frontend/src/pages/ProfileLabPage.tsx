@@ -78,6 +78,7 @@ import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
+import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
@@ -1058,6 +1059,7 @@ export function ProfileLabPage() {
     && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
     ? profileSampleEstimate.data
     : undefined;
+
   const currentVideoDraftSignature = JSON.stringify(videoDraft);
 
   const currentEncoderRecommendation =
@@ -1067,6 +1069,25 @@ export function ProfileLabPage() {
     ? lastEncoderRecommendation.data
     : undefined;
 
+  const sameAssetLastEncoderRecommendation =
+    lastEncoderRecommendation?.path === (assetPath || undefined)
+      ? lastEncoderRecommendation
+      : undefined;
+
+  const displayedEncoderRecommendation =
+    currentEncoderRecommendation ??
+    sameAssetLastEncoderRecommendation?.data;
+
+  const encoderRecommendationUpdating =
+    Boolean(displayedEncoderRecommendation) &&
+    !currentEncoderRecommendation &&
+    Boolean(assetPath) &&
+    (
+      encoderQualityRecommendation.isPending ||
+      sameAssetLastEncoderRecommendation?.signature !==
+        currentVideoDraftSignature
+    );
+  
   useEffect(() => {
     if (!currentEncoderRecommendation) {
       return;
@@ -2869,7 +2890,11 @@ export function ProfileLabPage() {
                               </>
                           ) : null}
                           {encoderQualityRecommendation.isError && !isCanceledFidelityRequest(encoderQualityRecommendation.error) ? <Grid size={{ xs: 12 }}><Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert></Grid> : null}
-                          {currentEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${currentEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${currentEncoderRecommendation.recommendation.estimateConfidence}`} />{currentEncoderRecommendation.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${currentEncoderRecommendation.recommendation.requestedBFramePolicy} → ${currentEncoderRecommendation.recommendation.effectiveBFramePolicy}`} /> : null}{currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${currentEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}{currentEncoderRecommendation.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(currentEncoderRecommendation.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(currentEncoderRecommendation.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{currentEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatBytes(currentEncoderRecommendation.estimatedOutputMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedOutputMaxBytes)}`} /> : null}{currentEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(currentEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(currentEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack>{currentEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{currentEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}<Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {currentEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
+                          {displayedEncoderRecommendation ? <Grid size={{ xs: 12 }}><Stack spacing={1}><Stack direction="row" spacing={1} flexWrap="wrap"><Chip size="small" label={`Effective · ${displayedEncoderRecommendation.recommendation.effectiveRateControl || 'bitrate'}`} /><Chip size="small" label={`Confidence · ${displayedEncoderRecommendation.recommendation.estimateConfidence}`} />{displayedEncoderRecommendation.recommendation.effectiveBFramePolicy ? <Chip size="small" label={`B-frames · ${displayedEncoderRecommendation.recommendation.requestedBFramePolicy} → ${displayedEncoderRecommendation.recommendation.effectiveBFramePolicy}`} /> : null}{displayedEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier ? <Chip size="small" label={`Efficiency · ×${displayedEncoderRecommendation.recommendation.bFrameEfficiencyMultiplier.toFixed(2)}`} /> : null}{displayedEncoderRecommendation.recommendation.baseTargetBitrate ? <Chip size="small" label={`Base · ${(displayedEncoderRecommendation.recommendation.baseTargetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{displayedEncoderRecommendation.recommendation.targetBitrate ? <Chip size="small" label={`Effective target · ${(displayedEncoderRecommendation.recommendation.targetBitrate / 1_000_000).toFixed(2)} Mbps`} /> : null}{displayedEncoderRecommendation.estimatedOutputMaxBytes > 0 ? <Chip size="small" label={`Estimated output · ${formatEstimatedByteRange(
+                            displayedEncoderRecommendation.estimatedOutputMinBytes,
+                            displayedEncoderRecommendation.estimatedOutputMaxBytes,
+                            formatBytes,
+                          )}`} /> : null}{displayedEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(displayedEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(displayedEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}</Stack>{displayedEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{displayedEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}<Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {displayedEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography></Stack></Grid> : null}
                         </Grid>
                       </Box>
                     </Grid>
