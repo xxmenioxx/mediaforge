@@ -3929,13 +3929,39 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
   const stored = scan?.frameStructureRecommendation?.byMode?.[recommendationMode];
   const hasSourceAnalysis = Boolean(source && source.framesAnalyzed > 0);
   const sourceAverageGop = hasSourceAnalysis ? source?.averageGopLength : undefined;
-  const derived = assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence: hasSourceAnalysis ? source?.confidence : 'low', mode });
-  const customFrames = profile ? numberWorkerValue(profile, 'frameStructureGopFrames', 0) : 0;
-  const targetGopFrames = mode === 'custom' && customFrames > 0 ? customFrames : stored?.targetGopFrames ?? derived.targetFrames ?? 0;
-  const targetGopSeconds = fps && targetGopFrames > 0 ? targetGopFrames / fps : stored?.targetGopSeconds ?? derived.targetSeconds ?? 0;
+  const derived = assetDerivedGopRecommendation({
+    fps,
+    sourceAverageGop,
+    confidence: hasSourceAnalysis ? source?.confidence : 'low',
+    mode: recommendationMode,
+  });
+
+  const customFrames = profile
+    ? numberWorkerValue(profile, 'frameStructureGopFrames', 0)
+    : 0;
+
+  const targetGopFrames =
+    mode === 'custom' && customFrames > 0
+      ? customFrames
+      : derived.targetFrames ?? stored?.targetGopFrames ?? 0;  
+  const targetGopSeconds =
+    fps && targetGopFrames > 0
+      ? targetGopFrames / fps
+      : stored?.targetGopSeconds ?? derived.targetSeconds ?? 0;
   const bFrameMode = profile ? videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') : 'auto';
   const configuredBFrames = profile ? numberWorkerValue(profile, 'frameStructureMaxBFrames', 0) : 0;
-  const suggestedBFrames = scan?.frameStructureRecommendation?.recommendedMaxBFrames ?? stored?.maxBFrames ?? (source && source.maxConsecutiveBFrames >= 1 && source.maxConsecutiveBFrames <= 4 ? source.maxConsecutiveBFrames : 3);
+  const sourceSuggestedBFrames =
+    source &&
+    source.maxConsecutiveBFrames >= 1 &&
+    source.maxConsecutiveBFrames <= 4
+      ? source.maxConsecutiveBFrames
+      : undefined;
+
+  const suggestedBFrames =
+    sourceSuggestedBFrames ??
+    stored?.maxBFrames ??
+    scan?.frameStructureRecommendation?.recommendedMaxBFrames ??
+    3;
   const maxBFrames = bFrameMode === 'custom' && configuredBFrames > 0 ? configuredBFrames : suggestedBFrames;
   const encoder = String(profile?.workerConfig?.videoEncoder || 'generic');
   const encoderReason = encoder === 'hevc_videotoolbox'
@@ -3948,21 +3974,59 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
   return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined && source ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || `No source frame-structure sample is stored; using a conservative ${mode} time baseline of ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).`, source ? `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.` : `No source B-run is stored; using conservative maximum B depth ${maxBFrames}.`, encoderReason] };
 }
 
-function frameStructureGopFramesByMode(source: QSVFrameStructureAnalysis | undefined, scan?: ScanResult) {
-  const stored = scan?.frameStructureRecommendation;
-  if (stored && stored.version >= 1) return {
-    compatible: stored.byMode.compatible?.targetGopFrames,
-    balanced: stored.byMode.balanced?.targetGopFrames,
-    maximum_compression: stored.byMode.maximum_compression?.targetGopFrames,
-  };
+function frameStructureGopFramesByMode(
+  source: QSVFrameStructureAnalysis | undefined,
+  scan?: ScanResult,
+) {
   const fps = reliableFrameRateForScan(scan);
-  const hasSourceAnalysis = Boolean(source && source.framesAnalyzed > 0);
-  const sourceAverageGop = hasSourceAnalysis ? source?.averageGopLength : undefined;
-  const confidence = hasSourceAnalysis ? source?.confidence : 'low';
+
+  const hasSourceAnalysis = Boolean(
+    source && source.framesAnalyzed > 0,
+  );
+
+  const sourceAverageGop = hasSourceAnalysis
+    ? source?.averageGopLength
+    : undefined;
+
+  const confidence = hasSourceAnalysis
+    ? source?.confidence
+    : 'low';
+
+  const compatible = assetDerivedGopRecommendation({
+    fps,
+    sourceAverageGop,
+    confidence,
+    mode: 'compatible',
+  });
+
+  const balanced = assetDerivedGopRecommendation({
+    fps,
+    sourceAverageGop,
+    confidence,
+    mode: 'balanced',
+  });
+
+  const maximumCompression = assetDerivedGopRecommendation({
+    fps,
+    sourceAverageGop,
+    confidence,
+    mode: 'maximum_compression',
+  });
+
+  const stored = scan?.frameStructureRecommendation;
+
   return {
-    compatible: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'compatible' }).targetFrames,
-    balanced: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'balanced' }).targetFrames,
-    maximum_compression: assetDerivedGopRecommendation({ fps, sourceAverageGop, confidence, mode: 'maximum_compression' }).targetFrames,
+    compatible:
+      compatible.targetFrames ??
+      stored?.byMode.compatible?.targetGopFrames,
+
+    balanced:
+      balanced.targetFrames ??
+      stored?.byMode.balanced?.targetGopFrames,
+
+    maximum_compression:
+      maximumCompression.targetFrames ??
+      stored?.byMode.maximum_compression?.targetGopFrames,
   };
 }
 
