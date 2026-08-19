@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,11 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	"net/http"
+	"net/http/httptest"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestNextClaimableJobUsesExactQueuePosition(t *testing.T) {
@@ -67,7 +74,10 @@ func TestResolveAutomaticFrameStructureUsesAssetSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := models.Profile{WorkerConfig: models.JSONMap{"frameStructureMode": "auto", "frameStructureGopMode": "auto"}}
-	effective := resolveAutomaticFrameStructure(db, mediaPath, original)
+	effective, err := resolveAutomaticFrameStructure(db, mediaPath, original)
+	if err != nil {
+		t.Fatalf("resolve automatic frame structure: %v", err)
+	}
 	if got := workerStringValue(effective.WorkerConfig["frameStructureGopMode"]); got != "recommended" {
 		t.Fatalf("effective GOP mode = %q, want recommended", got)
 	}
@@ -664,4 +674,269 @@ func queueJobTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate test models: %v", err)
 	}
 	return db
+}
+
+func TestAutomaticFrameStructureSnapshotUsesValidCachedSnapshot(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	mediaPath := "/media/raw/anime/cached.mkv"
+
+	expected := models.ScanResult{
+		Path:       mediaPath,
+		VideoCodec: "h264",
+		Width:      1920,
+		Height:     1080,
+		VideoStreams: models.JSONList{
+			map[string]any{
+				"avgFrameRate": "24000/1001",
+			},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"version":          2,
+			"framesAnalyzed":   500,
+			"averageGopLength": 72.0,
+			"confidence":       "high",
+		},
+	}
+
+	if err := db.Create(&expected).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := automaticFrameStructureSnapshot(db, mediaPath)
+	if err != nil {
+		t.Fatalf("valid cached snapshot returned error: %v", err)
+	}
+
+	if got.ID != expected.ID {
+		t.Fatalf("snapshot ID = %d, want %d", got.ID, expected.ID)
+	}
+}
+
+func TestAutomaticFrameStructureSnapshotAttemptsScanWhenMissing(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	mediaPath := filepath.Join(t.TempDir(), "missing-snapshot.mkv")
+
+	// Intentionally invalid media. If the helper correctly tries to build
+	// a missing snapshot, FFprobe should be reached and return an error.
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := automaticFrameStructureSnapshot(db, mediaPath)
+	if err == nil {
+		t.Fatal("missing AUTO snapshot must trigger media analysis instead of silently using fallback values")
+	}
+}
+
+func TestResolveAutomaticFrameStructureFailsWithoutUsableSnapshot(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	mediaPath := filepath.Join(t.TempDir(), "invalid-auto.mkv")
+
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := models.Profile{
+		WorkerConfig: models.JSONMap{
+			"frameStructureMode": "auto",
+		},
+	}
+
+	effective, err := resolveAutomaticFrameStructure(
+		db,
+		mediaPath,
+		profile,
+	)
+
+	if err == nil {
+		t.Fatalf(
+			"expected AUTO frame structure to fail without a usable snapshot, got profile %#v",
+			effective,
+		)
+	}
+
+	if resolved, ok := effective.WorkerConfig["frameStructureAutoResolved"].(bool); ok && resolved {
+		t.Fatal("AUTO frame structure must not report itself as resolved after analysis failure")
+	}
+
+	if workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0) == 120 {
+		t.Fatal("AUTO frame structure must not silently fall back to GOP 120")
+	}
+
+	if workerIntValue(effective.WorkerConfig["frameStructureMaxBFrames"], 0) == 3 {
+		t.Fatal("AUTO frame structure must not silently fall back to 3 B-frames")
+	}
+}
+
+func TestDryRunReturnsUnprocessableEntityWhenAutoFrameStructureCannotResolve(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := queueJobTestDB(t)
+
+	if err := db.AutoMigrate(
+		&models.Library{},
+		&models.Profile{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaPath := filepath.Join(t.TempDir(), "invalid-auto.mkv")
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	library := models.Library{
+		Name:            "Test Library",
+		SourcePath:      filepath.Dir(mediaPath),
+		DestinationPath: filepath.Join(t.TempDir(), "library"),
+	}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	profile := models.Profile{
+		Name:      "AUTO Test",
+		Container: "mkv",
+		WorkerConfig: models.JSONMap{
+			"frameStructureMode": "auto",
+		},
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: mediaPath,
+		LibraryID: library.ID,
+		ProfileID: profile.ID,
+		Status:    JobStatusRunning,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{
+		{Key: "id", Value: strconv.FormatUint(uint64(job.ID), 10)},
+	}
+
+	NewWorkerHandler(db).DryRun(ctx)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf(
+			"DryRun status = %d, want %d; body=%s",
+			recorder.Code,
+			http.StatusUnprocessableEntity,
+			recorder.Body.String(),
+		)
+	}
+
+	if !strings.Contains(
+		recorder.Body.String(),
+		"automatic frame structure",
+	) {
+		t.Fatalf(
+			"DryRun error should explain AUTO frame structure failure; body=%s",
+			recorder.Body.String(),
+		)
+	}
+
+	var stored models.QueueJob
+	if err := db.First(&stored, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(stored.Notes, "Dry-run command:") {
+		t.Fatalf(
+			"DryRun must not generate an FFmpeg command after AUTO resolution failure: %s",
+			stored.Notes,
+		)
+	}
+}
+
+func TestExecuteQueueJobFailsWhenAutoFrameStructureCannotResolve(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	if err := db.AutoMigrate(
+		&models.Library{},
+		&models.Profile{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	mediaPath := filepath.Join(t.TempDir(), "invalid-auto-execute.mkv")
+	if err := os.WriteFile(mediaPath, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	library := models.Library{
+		Name:            "Test Library",
+		SourcePath:      filepath.Dir(mediaPath),
+		DestinationPath: filepath.Join(t.TempDir(), "library"),
+	}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	profile := models.Profile{
+		Name:      "AUTO Execute Test",
+		Container: "mkv",
+		WorkerConfig: models.JSONMap{
+			"frameStructureMode": "auto",
+		},
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: mediaPath,
+		LibraryID: library.ID,
+		ProfileID: profile.ID,
+		Status:    JobStatusRunning,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewWorkerHandler(db)
+
+	result, status, err := handler.executeQueueJob(job, false)
+
+	if err == nil {
+		t.Fatalf(
+			"expected AUTO frame structure failure, got status=%d result=%#v",
+			status,
+			result,
+		)
+	}
+
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf(
+			"executeQueueJob status = %d, want %d",
+			status,
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	if !strings.Contains(
+		strings.ToLower(err.Error()),
+		"automatic frame structure",
+	) {
+		t.Fatalf(
+			"execution error should explain AUTO frame structure failure: %v",
+			err,
+		)
+	}
+
+	if strings.Contains(result.Notes, "Conversion command:") {
+		t.Fatalf(
+			"FFmpeg must not start after AUTO resolution failure: %s",
+			result.Notes,
+		)
+	}
 }

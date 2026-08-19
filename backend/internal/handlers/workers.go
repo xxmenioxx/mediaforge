@@ -532,7 +532,17 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
-	effectiveProfile = resolveAutomaticFrameStructure(h.db, job.MediaPath, effectiveProfile)
+	effectiveProfile, err = resolveAutomaticFrameStructure(
+		h.db,
+		job.MediaPath,
+		effectiveProfile,
+	)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
 	paths, err := h.pathSettings()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -698,7 +708,15 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
-	effectiveProfile = resolveAutomaticFrameStructure(h.db, job.MediaPath, effectiveProfile)
+
+	effectiveProfile, err = resolveAutomaticFrameStructure(
+		h.db,
+		job.MediaPath,
+		effectiveProfile,
+	)
+	if err != nil {
+		return job, http.StatusUnprocessableEntity, err
+	}
 	if effectiveProfile.WorkerConfig == nil {
 		effectiveProfile.WorkerConfig = models.JSONMap{}
 	} else {
@@ -825,38 +843,128 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	return job, http.StatusAccepted, nil
 }
 
+func automaticFrameStructureSnapshot(db *gorm.DB, mediaPath string) (models.ScanResult, error) {
+	if db == nil {
+		return models.ScanResult{}, fmt.Errorf("automatic frame structure requires a database")
+	}
+
+	cleanPath := filepath.Clean(mediaPath)
+
+	var scan models.ScanResult
+	err := db.
+		Where("path = ?", cleanPath).
+		Order("updated_at desc, id desc").
+		First(&scan).
+		Error
+
+	if err == nil && !snapshotRequiresFrameStructureRefresh(scan) {
+		if ensureFrameStructureRecommendation(&scan) {
+			if updateErr := db.Model(&scan).
+				Update(
+					"frame_structure_recommendation",
+					scan.FrameStructureRecommendation,
+				).Error; updateErr != nil {
+				return models.ScanResult{}, updateErr
+			}
+		}
+
+		return scan, nil
+	}
+
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.ScanResult{}, err
+	}
+
+	info, statErr := os.Stat(cleanPath)
+	if statErr != nil {
+		return models.ScanResult{}, fmt.Errorf(
+			"automatic frame structure cannot read input media: %w",
+			statErr,
+		)
+	}
+
+	if info.IsDir() {
+		return models.ScanResult{}, fmt.Errorf(
+			"automatic frame structure requires a media file",
+		)
+	}
+
+	result, _, scanErr := NewScannerHandler(db).scanResolvedFile(
+		cleanPath,
+		info,
+		ScanRequest{
+			Force: false,
+		},
+		nil,
+	)
+	if scanErr != nil {
+		return models.ScanResult{}, fmt.Errorf(
+			"automatic frame structure snapshot failed: %w",
+			scanErr,
+		)
+	}
+
+	if snapshotRequiresFrameStructureRefresh(result) {
+		return models.ScanResult{}, fmt.Errorf(
+			"automatic frame structure could not produce a usable asset snapshot",
+		)
+	}
+
+	if ensureFrameStructureRecommendation(&result) {
+		if updateErr := db.Model(&result).
+			Update(
+				"frame_structure_recommendation",
+				result.FrameStructureRecommendation,
+			).Error; updateErr != nil {
+			return models.ScanResult{}, updateErr
+		}
+	}
+
+	return result, nil
+}
+
 // resolveAutomaticFrameStructure turns the reusable Auto intent into effective,
 // asset-specific values at execution time. The captured profile remains the
 // requested configuration; only the worker's effective copy is changed.
-func resolveAutomaticFrameStructure(db *gorm.DB, mediaPath string, profile models.Profile) models.Profile {
-	if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "auto" {
-		return profile
+func resolveAutomaticFrameStructure(
+	db *gorm.DB,
+	mediaPath string,
+	profile models.Profile,
+) (models.Profile, error) {
+	if normalizedFrameStructureMode(
+		workerStringValue(profile.WorkerConfig["frameStructureMode"]),
+	) != "auto" {
+		return profile, nil
 	}
+
 	workerConfig := models.JSONMap{}
 	for key, value := range profile.WorkerConfig {
 		workerConfig[key] = value
 	}
 	profile.WorkerConfig = workerConfig
 
-	var scan models.ScanResult
-	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
-		// A conservative effective recommendation is still preferable to silently
-		// reverting the global Auto policy to encoder defaults.
-		workerConfig["frameStructureGopMode"] = "recommended"
-		workerConfig["frameStructureGopFrames"] = 120
-		workerConfig["frameStructureBFrameMode"] = "recommended"
-		workerConfig["frameStructureMaxBFrames"] = 3
-		workerConfig["qsvAdaptiveI"] = true
-		workerConfig["qsvAdaptiveB"] = true
-		return profile
+	scan, err := automaticFrameStructureSnapshot(db, mediaPath)
+	if err != nil {
+		return models.Profile{}, fmt.Errorf(
+			"resolve automatic frame structure: %w",
+			err,
+		)
 	}
+
 	recommendation := storedFrameStructureRecommendation(scan, "balanced")
+
 	if recommendation.TargetGOPFrames <= 0 {
-		recommendation.TargetGOPFrames = 120
+		return models.Profile{}, fmt.Errorf(
+			"automatic frame structure did not produce a valid GOP recommendation",
+		)
 	}
+
 	if recommendation.MaxBFrames <= 0 {
-		recommendation.MaxBFrames = 3
+		return models.Profile{}, fmt.Errorf(
+			"automatic frame structure did not produce a valid B-frame recommendation",
+		)
 	}
+
 	workerConfig["frameStructureGopMode"] = "recommended"
 	workerConfig["frameStructureGopFrames"] = recommendation.TargetGOPFrames
 	workerConfig["frameStructureBFrameMode"] = "recommended"
@@ -865,7 +973,8 @@ func resolveAutomaticFrameStructure(db *gorm.DB, mediaPath string, profile model
 	workerConfig["qsvAdaptiveB"] = true
 	workerConfig["frameStructureAutoResolved"] = true
 	workerConfig["frameStructureAutoConfidence"] = recommendation.Confidence
-	return profile
+
+	return profile, nil
 }
 
 func scanFrameRate(scan models.ScanResult) float64 {
@@ -874,12 +983,14 @@ func scanFrameRate(scan models.ScanResult) float64 {
 		if !ok {
 			continue
 		}
+
 		for _, key := range []string{"avgFrameRate", "realFrameRate"} {
 			if fps := parseFrameRateValue(stringFromUnknown(stream[key])); fps > 0 {
 				return fps
 			}
 		}
 	}
+
 	return 0
 }
 
