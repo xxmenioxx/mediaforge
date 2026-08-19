@@ -23,13 +23,26 @@ export function normalizeLegacyVideoCodec(
       normalizedWorkerConfig.videoEncoder ?? '',
     ).toLowerCase();
 
-    const hardwareMain10 = [
-      'hevc_qsv',
-      'hevc_vaapi',
-      'hevc_nvenc',
-      'hevc_videotoolbox',
-      'hevc_amf',
-    ].includes(encoder);
+    const preferredEncoder = String(
+      normalizedWorkerConfig.preferredEncoder ?? '',
+    ).toLowerCase();
+
+    const hardwareRequested =
+      preferredEncoder === 'hardware' ||
+      (
+        !preferredEncoder &&
+        normalizedWorkerConfig.useHardwareIfAvailable === true
+      );
+
+    const hardwareMain10 =
+      [
+        'hevc_qsv',
+        'hevc_vaapi',
+        'hevc_nvenc',
+        'hevc_videotoolbox',
+        'hevc_amf',
+      ].includes(encoder) ||
+      hardwareRequested;
 
     normalizedWorkerConfig.pixFmt = hardwareMain10
       ? 'p010le'

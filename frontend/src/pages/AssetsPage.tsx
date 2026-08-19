@@ -65,6 +65,7 @@ import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '
 import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgePreferences';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
+import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
@@ -4581,20 +4582,26 @@ function normalizeAssetConversionOverride(value?: AssetConversionOverrideState):
     keepAudioStreams: Array.isArray(value.keepAudioStreams) ? normalizeNumberList(value.keepAudioStreams) : undefined,
     keepSubtitleStreams: Array.isArray(value.keepSubtitleStreams) ? normalizeNumberList(value.keepSubtitleStreams) : undefined,
   });
-  if (normalized.videoCodec === 'x265_10bit') {
-    normalized.videoCodec = 'x265';
+  if (normalized.videoCodec) {
+    const legacyCodec = normalizeLegacyVideoCodec(
+      normalized.videoCodec,
+      {
+        pixFmt: normalized.pixFmt,
+        videoEncoder: normalized.videoEncoder,
+        preferredEncoder: normalized.preferredEncoder,
+        useHardwareIfAvailable:
+          normalized.useHardwareIfAvailable,
+      },
+    );
 
-    if (!normalized.pixFmt || normalized.pixFmt === 'auto') {
-      const prefersHardware =
-        normalized.preferredEncoder === 'hardware' ||
-        (
-          !normalized.preferredEncoder &&
-          normalized.useHardwareIfAvailable === true
-        );
+    normalized.videoCodec = legacyCodec.videoCodec;
 
-      normalized.pixFmt = prefersHardware
-        ? 'p010le'
-        : 'yuv420p10le';
+    if (
+      typeof legacyCodec.workerConfig.pixFmt === 'string' &&
+      legacyCodec.workerConfig.pixFmt.trim()
+    ) {
+      normalized.pixFmt =
+        legacyCodec.workerConfig.pixFmt;
     }
   }
   if (!normalized.preferredEncoder && typeof normalized.useHardwareIfAvailable === 'boolean') {
