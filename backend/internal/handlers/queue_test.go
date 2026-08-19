@@ -1061,3 +1061,316 @@ func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing
 		}
 	}
 }
+
+func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:queue-create-atomic-batch?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.ExecutionPlan{},
+		&models.SchedulerReservation{},
+		&models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing queue content must remain before the new batch.
+	existing := models.QueueJob{
+		MediaPath:     "/media/raw/Movies/existing.mkv",
+		Status:        JobStatusQueued,
+		Stage:         JobStageQueued,
+		QueuePosition: 1,
+	}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
+
+	body := fmt.Sprintf(
+		`{
+			"batchId":"batch-b",
+			"batchName":"Anime/Season 02",
+			"jobs":[
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title_02.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				},
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				},
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title_01.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				}
+			]
+		}`,
+		profile.ID,
+		profile.ID,
+		profile.ID,
+	)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/queue/batches",
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf(
+			"status=%d body=%s",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var queued []models.QueueJob
+	if err := db.
+		Where("dismissed_at IS NULL").
+		Order("queue_position asc").
+		Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(queued) != 4 {
+		t.Fatalf("queued jobs=%d want=4: %#v", len(queued), queued)
+	}
+
+	expected := []struct {
+		file          string
+		batchID       string
+		batchPosition int
+		queuePosition int64
+	}{
+		{"existing.mkv", "", 0, 1},
+		{"title.mkv", "batch-b", 1, 2},
+		{"title_01.mkv", "batch-b", 2, 3},
+		{"title_02.mkv", "batch-b", 3, 4},
+	}
+
+	for index, want := range expected {
+		got := queued[index]
+
+		if filepath.Base(got.MediaPath) != want.file {
+			t.Fatalf(
+				"queue position %d file=%q want=%q",
+				index+1,
+				filepath.Base(got.MediaPath),
+				want.file,
+			)
+		}
+
+		if got.BatchID != want.batchID {
+			t.Fatalf(
+				"%q batchID=%q want=%q",
+				got.MediaPath,
+				got.BatchID,
+				want.batchID,
+			)
+		}
+
+		if got.BatchPosition != want.batchPosition {
+			t.Fatalf(
+				"%q batchPosition=%d want=%d",
+				got.MediaPath,
+				got.BatchPosition,
+				want.batchPosition,
+			)
+		}
+
+		if got.QueuePosition != want.queuePosition {
+			t.Fatalf(
+				"%q queuePosition=%d want=%d",
+				got.MediaPath,
+				got.QueuePosition,
+				want.queuePosition,
+			)
+		}
+	}
+}
+
+func TestQueueCreateBatchRollsBackEntireBatchWhenOneAssetReservationFails(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:queue-create-atomic-rollback?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.ExecutionPlan{},
+		&models.SchedulerReservation{},
+		&models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conflictingPath := filepath.Clean(
+		"/media/raw/Anime/Season 02/title_01.mkv",
+	)
+
+	// Deliberately create only a scheduler reservation, not a QueueJob.
+	//
+	// This means prepareBatchQueueJob() will not reject the asset early.
+	// The conflict will happen inside CreateBatch's transaction when
+	// LockQueuedAsset() reaches this asset.
+	existingReservation := models.SchedulerReservation{
+		JobID:    999999,
+		AssetKey: conflictingPath,
+		State:    scheduler.ReservationStateLocked,
+	}
+
+	if err := db.Create(&existingReservation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
+
+	body := fmt.Sprintf(
+		`{
+			"batchId":"rollback-batch",
+			"batchName":"Anime/Season 02",
+			"jobs":[
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title_02.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				},
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				},
+				{
+					"mediaPath":"/media/raw/Anime/Season 02/title_01.mkv",
+					"libraryId":1,
+					"profileId":%d,
+					"priority":5
+				}
+			]
+		}`,
+		profile.ID,
+		profile.ID,
+		profile.ID,
+	)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/queue/batches",
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf(
+			"status=%d want=%d body=%s",
+			response.Code,
+			http.StatusConflict,
+			response.Body.String(),
+		)
+	}
+
+	// The first naturally ordered asset (title.mkv) is created before
+	// title_01.mkv hits the reservation conflict. If the DB transaction
+	// is truly atomic, that first QueueJob must also disappear.
+	var batchJobCount int64
+	if err := db.
+		Model(&models.QueueJob{}).
+		Where("batch_id = ?", "rollback-batch").
+		Count(&batchJobCount).
+		Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if batchJobCount != 0 {
+		t.Fatalf(
+			"atomic batch rollback left %d QueueJobs behind",
+			batchJobCount,
+		)
+	}
+
+	// Execution plans created before the conflicting asset must roll
+	// back together with their QueueJobs.
+	var planCount int64
+	if err := db.
+		Model(&models.ExecutionPlan{}).
+		Count(&planCount).
+		Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if planCount != 0 {
+		t.Fatalf(
+			"atomic batch rollback left %d execution plans behind",
+			planCount,
+		)
+	}
+
+	// The only reservation that should remain is the deliberately
+	// pre-existing conflicting one. Any lock created for title.mkv
+	// inside the failed transaction must have been rolled back.
+	var reservations []models.SchedulerReservation
+	if err := db.
+		Order("id asc").
+		Find(&reservations).
+		Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(reservations) != 1 {
+		t.Fatalf(
+			"reservations=%d want=1: %#v",
+			len(reservations),
+			reservations,
+		)
+	}
+
+	if reservations[0].ID != existingReservation.ID {
+		t.Fatalf(
+			"unexpected reservation survived rollback: %#v",
+			reservations[0],
+		)
+	}
+}

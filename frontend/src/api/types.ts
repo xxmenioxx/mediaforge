@@ -648,6 +648,18 @@ export type QueueJobInput = {
   resolveProfileAssignments?: boolean;
 };
 
+export type QueueBatchInput = {
+  batchId: string;
+  batchName?: string;
+  jobs: QueueJobInput[];
+};
+
+export type QueueBatchResponse = {
+  batchId: string;
+  batchName: string;
+  jobs: QueueJob[];
+};
+
 export type ProfileAssignment = {
   id: number;
   targetType: 'asset' | 'path';

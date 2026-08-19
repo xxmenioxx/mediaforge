@@ -29,6 +29,8 @@ import type {
   QueueJobInput,
   QueueJobUpdateInput,
   QueueReorderInput,
+  QueueBatchInput,
+  QueueBatchResponse, 
   RuntimeSnapshot,
   RuntimeProfilesResponse,
   ScanResult,
@@ -320,6 +322,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(job),
     }),
+  createQueueBatch: (batch: QueueBatchInput) =>
+  request<QueueBatchResponse>('/api/queue/batches', {
+    method: 'POST',
+    body: JSON.stringify(batch),
+  }),
   updateQueueJob: ({ jobId, ...job }: QueueJobUpdateInput) =>
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
       method: 'POST',

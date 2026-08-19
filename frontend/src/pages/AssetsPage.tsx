@@ -55,7 +55,7 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, QueueJobInput, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -703,7 +703,7 @@ function AssetGroupRow({
       const queueProfileId = effectiveProfileId || (hasSelectedOperation ? pathVideoProfiles[0]?.id ?? profiles[0]?.id ?? 0 : 0);
       const copyVideo = selectedProfileId < 0;
       if (!queueProfileId || !selectedLibraryId) {
-        return [];
+          throw new Error('A video profile and destination library are required to queue this folder.');
       }
 
       const batchId = createBatchId(group);
@@ -719,26 +719,46 @@ function AssetGroupRow({
 	  }
 	  await Promise.all(incompatible.filter(({ asset, profile }) => profile?.validationMode === 'review' && !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
 	  const queueable = validations.filter(({ asset, profile, result }) => result.applies || profile?.validationMode === 'warn' || (profile?.validationMode === 'review' && assetReviewApproved(asset)));
-	  const queued = [];
-	  for (let index = 0; index < queueable.length; index += 1) {
-	    const { asset, profile: effectiveTrack, result } = queueable[index];
-	    queued.push(await api.createQueueJob({
-            mediaPath: asset.path,
-            publishMode: isLibraryGroup ? 'replace_library_asset' : 'standard',
-            batchId,
-            batchName,
-			batchPosition: index + 1,
-            libraryId: isLibraryGroup ? asset.libraryId : selectedLibraryId,
-            profileId: queueProfileId,
-            audioProfileKey: selectedAudioProfileKey,
-            trackProfileKey: effectiveTrack?.key ?? '',
-            resolveProfileAssignments: true,
-            processingMode: copyVideo ? 'audio_only' : 'full_encode',
-			priority: 5,
-            notes: queueNotes(`Queued from folder: ${batchName}${result.applies ? '' : `\nTrack profile ${effectiveTrack?.key} did not apply: ${result.reasons.join('; ')}`}`, selectedAudioProfileKey),
-		  }));
-	  }
-	  return queued;
+	  if (queueable.length === 0) {
+      throw new Error('No assets in this path are eligible for queueing.');
+    }
+
+    const batchJobs: QueueJobInput[] = queueable.map(
+      ({ asset, profile: effectiveTrack, result }) => ({
+        mediaPath: asset.path,
+        publishMode: isLibraryGroup
+          ? 'replace_library_asset'
+          : 'standard',
+
+        libraryId: isLibraryGroup
+          ? asset.libraryId
+          : selectedLibraryId,
+
+        profileId: queueProfileId,
+        audioProfileKey: selectedAudioProfileKey,
+        trackProfileKey: effectiveTrack?.key ?? '',
+        resolveProfileAssignments: true,
+        processingMode: copyVideo
+          ? 'audio_only'
+          : 'full_encode',
+        priority: 5,
+
+        notes: queueNotes(
+          `Queued from folder: ${batchName}${
+            result.applies
+              ? ''
+              : `\nTrack profile ${effectiveTrack?.key} did not apply: ${result.reasons.join('; ')}`
+          }`,
+          selectedAudioProfileKey,
+        ),
+      }),
+    );
+
+    return api.createQueueBatch({
+      batchId,
+      batchName,
+      jobs: batchJobs,
+    });
     },
     onSuccess: async () => {
       await Promise.all([
@@ -1010,7 +1030,12 @@ function AssetGroupRow({
                 ) : null}
                 {!isReadOnlyGroup && advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
-                {queueGroup.isSuccess ? <Alert severity="success">{groupAssets.length} files queued from this folder.</Alert> : null}
+                {queueGroup.isSuccess ? (
+                  <Alert severity="success">
+                    {queueGroup.data.jobs.length} files queued atomically from this folder.
+                  </Alert>
+                ) : null}
+
                 {queueGroup.isError ? <Alert severity="warning">{queueGroup.error instanceof Error ? queueGroup.error.message : 'Could not queue this folder.'}</Alert> : null}
                 {mode === 'unprocessed' && !isReadOnlyGroup ? (
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }}>

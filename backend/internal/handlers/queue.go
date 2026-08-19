@@ -38,6 +38,12 @@ type QueueJobInput struct {
 	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
 }
 
+type QueueBatchInput struct {
+	BatchID   string          `json:"batchId" binding:"required"`
+	BatchName string          `json:"batchName"`
+	Jobs      []QueueJobInput `json:"jobs" binding:"required,min=1,dive"`
+}
+
 const (
 	VideoAssignmentOverrideOnly = "override_only"
 	VideoAssignmentAudioOnly    = "audio_only"
@@ -381,6 +387,328 @@ func normalizeQueuedBatchOrderTx(tx *gorm.DB, batchID string) error {
 	}
 
 	return nil
+}
+
+func (h QueueHandler) prepareBatchQueueJob(
+	input QueueJobInput,
+) (models.QueueJob, int, error) {
+	input.MediaPath = filepath.Clean(input.MediaPath)
+
+	if review := reviewForPath(
+		input.MediaPath,
+		assetReviewOverrides(h.db),
+	); review.RequiresReview {
+		return models.QueueJob{},
+			http.StatusConflict,
+			fmt.Errorf("asset requires review before queueing")
+	}
+
+	if active, err := h.assetHasOpenJob(input.MediaPath, 0); err != nil {
+		return models.QueueJob{}, http.StatusInternalServerError, err
+	} else if active {
+		return models.QueueJob{},
+			http.StatusConflict,
+			fmt.Errorf("asset already has an open queue job")
+	}
+
+	profileResolution := models.JSONMap{}
+
+	if input.ResolveProfileAssignments {
+		var err error
+		profileResolution, err = h.resolveProfileAssignments(&input)
+		if err != nil {
+			return models.QueueJob{},
+				http.StatusInternalServerError,
+				fmt.Errorf("resolve profile assignments: %w", err)
+		}
+	}
+
+	publishMode := strings.TrimSpace(input.PublishMode)
+	if publishMode == "" {
+		publishMode = PublishModeStandard
+	}
+
+	if publishMode != PublishModeStandard &&
+		publishMode != PublishModeReplaceLibrary {
+		return models.QueueJob{},
+			http.StatusBadRequest,
+			fmt.Errorf("invalid publish mode")
+	}
+
+	processingMode := normalizeQueueProcessingMode(input.ProcessingMode)
+
+	if strings.TrimSpace(input.ProcessingMode) != "" &&
+		processingMode == "" {
+		return models.QueueJob{},
+			http.StatusBadRequest,
+			fmt.Errorf("invalid processing mode")
+	}
+
+	if publishMode == PublishModeReplaceLibrary {
+		var library models.Library
+
+		if err := h.db.First(&library, input.LibraryID).Error; err != nil {
+			return models.QueueJob{},
+				http.StatusBadRequest,
+				fmt.Errorf("library not found")
+		}
+
+		if !pathIsInside(input.MediaPath, library.DestinationPath) {
+			return models.QueueJob{},
+				http.StatusBadRequest,
+				fmt.Errorf(
+					"library replacement source must be inside the selected library destination",
+				)
+		}
+
+		existing, err := h.activePublicationForSamePhysicalFile(
+			input.MediaPath,
+		)
+		if err != nil {
+			return models.QueueJob{},
+				http.StatusInternalServerError,
+				err
+		}
+
+		if existing != nil {
+			return models.QueueJob{},
+				http.StatusConflict,
+				fmt.Errorf(
+					"this physical Library file already has an active MVForge publication through another library path",
+				)
+		}
+	}
+
+	priority := input.Priority
+	if priority == 0 {
+		priority = 5
+	}
+
+	job := models.QueueJob{
+		MediaPath:         input.MediaPath,
+		PublishMode:       publishMode,
+		LibraryID:         input.LibraryID,
+		ProfileID:         input.ProfileID,
+		AudioProfileKey:   input.AudioProfileKey,
+		TrackProfileKey:   input.TrackProfileKey,
+		ProfileResolution: profileResolution,
+		ProcessingMode:    processingMode,
+		Priority:          priority,
+		Status:            JobStatusQueued,
+		Stage:             JobStageQueued,
+		Notes:             input.Notes,
+	}
+
+	if err := h.captureSupplementalProfiles(&job); err != nil {
+		return models.QueueJob{}, http.StatusBadRequest, err
+	}
+
+	if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
+		if err := h.captureOverrideOnlyProfile(
+			&job,
+			"queue_batch_create_override_only",
+		); err != nil {
+			return models.QueueJob{}, http.StatusBadRequest, err
+		}
+	} else {
+		if err := h.captureProfile(
+			&job,
+			input.ProfileID,
+			"queue_batch_create",
+		); err != nil {
+			switch {
+			case errors.Is(err, errQueueProfileDisabled):
+				return models.QueueJob{}, http.StatusConflict, err
+
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				return models.QueueJob{},
+					http.StatusBadRequest,
+					fmt.Errorf("profile not found")
+
+			default:
+				return models.QueueJob{},
+					http.StatusBadRequest,
+					err
+			}
+		}
+	}
+
+	return job, http.StatusOK, nil
+}
+
+func (h QueueHandler) CreateBatch(c *gin.Context) {
+	var input QueueBatchInput
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	input.BatchID = strings.TrimSpace(input.BatchID)
+	input.BatchName = strings.TrimSpace(input.BatchName)
+
+	if input.BatchID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "batch id is required",
+		})
+		return
+	}
+
+	if len(input.Jobs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "batch must contain at least one job",
+		})
+		return
+	}
+
+	//
+	// A batch represents exactly one physical containing path.
+	//
+	groupPath := ""
+
+	for index := range input.Jobs {
+		current := filepath.Dir(
+			filepath.Clean(input.Jobs[index].MediaPath),
+		)
+
+		if index == 0 {
+			groupPath = current
+			continue
+		}
+
+		if current != groupPath {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "all jobs in a batch must belong to the same path",
+			})
+			return
+		}
+	}
+
+	//
+	// Backend is authoritative for asset order.
+	//
+	jobsInput := append([]QueueJobInput(nil), input.Jobs...)
+
+	sort.SliceStable(jobsInput, func(i, j int) bool {
+		return assetSequenceLess(
+			jobsInput[i].MediaPath,
+			jobsInput[j].MediaPath,
+		)
+	})
+
+	//
+	// Detect exact duplicates before doing expensive profile preparation.
+	//
+	seenPaths := map[string]bool{}
+
+	for _, item := range jobsInput {
+		cleanPath := filepath.Clean(item.MediaPath)
+
+		if seenPaths[cleanPath] {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf(
+					"duplicate asset in batch: %s",
+					cleanPath,
+				),
+			})
+			return
+		}
+
+		seenPaths[cleanPath] = true
+	}
+
+	//
+	// Prepare every job before opening the DB transaction.
+	//
+	// No queued job exists yet, so workers cannot see a partial batch.
+	//
+	prepared := make([]models.QueueJob, 0, len(jobsInput))
+
+	for index, item := range jobsInput {
+		job, status, err := h.prepareBatchQueueJob(item)
+		if err != nil {
+			c.JSON(status, gin.H{
+				"error":     err.Error(),
+				"mediaPath": item.MediaPath,
+			})
+			return
+		}
+
+		job.BatchID = input.BatchID
+		job.BatchName = input.BatchName
+		job.BatchPosition = index + 1
+
+		prepared = append(prepared, job)
+	}
+
+	//
+	// Everything below is atomic.
+	//
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		var highest int64
+
+		if err := tx.
+			Model(&models.QueueJob{}).
+			Select("COALESCE(MAX(queue_position), 0)").
+			Scan(&highest).
+			Error; err != nil {
+			return err
+		}
+
+		for index := range prepared {
+			job := &prepared[index]
+
+			job.QueuePosition = highest + int64(index) + 1
+
+			if err := tx.Create(job).Error; err != nil {
+				return err
+			}
+
+			if err := scheduler.LockQueuedAsset(tx, *job); err != nil {
+				return err
+			}
+
+			if err := transitionJobStage(
+				tx,
+				job,
+				JobStageQueued,
+			); err != nil {
+				return err
+			}
+
+			if _, err := scheduler.CreatePendingExecutionPlan(
+				tx,
+				job,
+				"Execution plan created from atomic queue batch",
+			); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "one or more assets already have an open queue job",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"batchId":   input.BatchID,
+		"batchName": input.BatchName,
+		"jobs":      prepared,
+	})
 }
 
 func (h QueueHandler) Create(c *gin.Context) {

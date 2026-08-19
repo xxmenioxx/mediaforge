@@ -115,6 +115,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/queue/jobs/:id/execution-plans/:planId/approve", executionPlans.Approve)
 		api.POST("/queue/jobs/:id/execution-plans/:planId/reject", executionPlans.Reject)
 		api.POST("/queue/jobs", queue.Create)
+		api.POST("/queue/batches", queue.CreateBatch)
 		api.POST("/queue/jobs/reorder", queue.Reorder)
 		api.POST("/queue/jobs/:id", queue.Update)
 		api.DELETE("/queue/jobs/:id", queue.Dismiss)
