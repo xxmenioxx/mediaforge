@@ -1268,14 +1268,47 @@ func outputFileRelativePath(relative string, profile models.Profile) string {
 func libraryOutputRelativePathForJob(db *gorm.DB, job models.QueueJob, library models.Library, fallbackRelative string) string {
 	if previousRelative := retiredPublishedRelativePath(db, job, library); previousRelative != "" {
 		previousRelative = libraryOutputBaseRelativePath(previousRelative, library)
-		previousEpisodeID := episodeIdentifierFromName(path.Base(previousRelative))
-		sourceEpisodeID := episodeIdentifierFromName(path.Base(job.MediaPath))
-		if sourceEpisodeID == "" {
-			if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
-				season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
-				sourceEpisodeID = fmt.Sprintf("S%02dE%02d", season, episode)
+
+		previousEpisodeID := episodeIdentifierFromName(
+			path.Base(previousRelative),
+		)
+
+		sourceEpisodeID := episodeIdentifierFromName(
+			path.Base(job.MediaPath),
+		)
+
+		// When episode naming is enabled, calculate the episode identity using the
+		// same current rules that will be used for the final published filename.
+		// This prevents stale publication history from overriding a Season-folder
+		// ordinal such as Season2/21.mkv -> S02E01.
+		if libraryEpisodeNamingEnabled(library) {
+			if spec, ok := multiEpisodeNameSpecForJob(db, job); ok {
+				sourceEpisodeID = fmt.Sprintf(
+					"S%02dE%02d",
+					spec.Season,
+					spec.Episode,
+				)
 			}
 		}
+
+		if sourceEpisodeID == "" {
+			if episode, ok := leadingEpisodeNumberFromName(
+				path.Base(job.MediaPath),
+			); ok {
+				season := firstPositiveInt(
+					seasonNumberFromPath(job.BatchName),
+					seasonNumberFromPath(job.MediaPath),
+					1,
+				)
+
+				sourceEpisodeID = fmt.Sprintf(
+					"S%02dE%02d",
+					season,
+					episode,
+				)
+			}
+		}
+
 		historicalEpisodeMatches := sourceEpisodeID == "" || previousEpisodeID == "" || sourceEpisodeID == previousEpisodeID
 		if historicalEpisodeMatches && (!libraryEpisodeNamingEnabled(library) || previousEpisodeID != "" || nonEpisodeCreditName(path.Base(previousRelative)) != "") {
 			return previousRelative

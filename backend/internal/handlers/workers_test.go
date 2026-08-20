@@ -1312,3 +1312,86 @@ func TestSeasonFolderOrdinalPositionWinsOverSourceTrackMetadata(t *testing.T) {
 		)
 	}
 }
+
+func TestSeasonFolderOrdinalRejectsHistoricalEpisodeNumber(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	library := models.Library{
+		ID:              1,
+		Name:            "Anime",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/anime",
+		ValidationRules: models.JSONMap{
+			"episodeNamingEnabled": true,
+		},
+	}
+
+	profile := models.Profile{
+		Container: "mkv",
+	}
+
+	paths := []string{
+		"/media/raw/My Show/Season2/21.mkv",
+		"/media/raw/My Show/Season2/22.mkv",
+		"/media/raw/My Show/Season2/23.mkv",
+		"/media/raw/My Show/Season2/24.mkv",
+		"/media/raw/My Show/Season2/45.mkv",
+	}
+
+	for _, mediaPath := range paths {
+		if err := db.Create(&models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "My Show/Season2",
+			FileName:     filepath.Base(mediaPath),
+			Status:       "unprocessed",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	retiredAt := time.Now()
+
+	previous := models.QueueJob{
+		MediaPath:            paths[0],
+		LibraryID:            library.ID,
+		ProfileID:            1,
+		Status:               JobStatusCompleted,
+		PublishedPath:        "/media/anime/My Show/Season2/My Show - S02E21.mkv",
+		PublicationRetiredAt: &retiredAt,
+	}
+
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: paths[0],
+		BatchID:   "season2-retry",
+		BatchName: "My Show/Season2",
+		LibraryID: library.ID,
+		ProfileID: 1,
+	}
+
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got := plannedOutputPathForJob(
+		db,
+		job,
+		library,
+		profile,
+	)
+
+	want := "/media/anime/My Show/Season2/My Show - S02E01.mkv"
+
+	if got != want {
+		t.Fatalf(
+			"season-folder historical output=%q want=%q",
+			got,
+			want,
+		)
+	}
+}
