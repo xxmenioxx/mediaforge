@@ -97,6 +97,7 @@ type SettingsForm = {
     autoExecutionEnabled: boolean;
     autoValidationEnabled: boolean;
     autoPublisherEnabled: boolean;
+    publisherOverwriteEnabled: boolean;
     publishedJobReconciliationEnabled: boolean;
     forceFreshSnapshotBeforeExecution: boolean;
   };
@@ -192,6 +193,7 @@ const initialSettings: SettingsForm = buildSettingsForm({
     autoExecutionEnabled: true,
     autoValidationEnabled: false,
     autoPublisherEnabled: false,
+    publisherOverwriteEnabled: false,
     publishedJobReconciliationEnabled: false,
     forceFreshSnapshotBeforeExecution: false,
   },
@@ -453,6 +455,10 @@ export function SettingsPage() {
         autoPublisherEnabled: booleanValue(
           pipelineAutomation.autoPublisherEnabled,
           initialSettings.pipelineAutomation.autoPublisherEnabled,
+        ),
+        publisherOverwriteEnabled: booleanValue(
+          pipelineAutomation.publisherOverwriteEnabled,
+          initialSettings.pipelineAutomation.publisherOverwriteEnabled,
         ),
         publishedJobReconciliationEnabled: booleanValue(
           pipelineAutomation.publishedJobReconciliationEnabled,
@@ -1754,6 +1760,28 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
           <FormControlLabel
             control={
               <Switch
+                checked={form.pipelineAutomation.publisherOverwriteEnabled}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    pipelineAutomation: {
+                      ...current.pipelineAutomation,
+                      publisherOverwriteEnabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+            }
+            label="Allow publisher overwrite"
+          />
+
+          <Typography color="text.secondary" variant="caption">
+            Allows Publisher to replace existing media files and subtitle sidecars at
+            their destination. Disabled by default.
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
                 checked={form.pipelineAutomation.publishedJobReconciliationEnabled}
                 onChange={(event) =>
                   setForm((current) => ({
@@ -2608,6 +2636,10 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
       autoPublisherEnabled: booleanValue(
         pipelineAutomation.autoPublisherEnabled,
         initialSettings.pipelineAutomation.autoPublisherEnabled,
+      ),
+      publisherOverwriteEnabled: booleanValue(
+        pipelineAutomation.publisherOverwriteEnabled,
+        initialSettings.pipelineAutomation.publisherOverwriteEnabled,
       ),
       publishedJobReconciliationEnabled: booleanValue(
         pipelineAutomation.publishedJobReconciliationEnabled,

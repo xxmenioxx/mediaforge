@@ -32,7 +32,32 @@ import { PageHeader } from '../components/PageHeader';
 export function PublisherPage() {
   const queryClient = useQueryClient();
   const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs, refetchInterval: 5000 });
-  const [overwrite, setOverwrite] = useState(false);
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings,
+  });
+  const pipelineAutomationSetting = settings.data?.find(
+    (setting) => setting.key === 'pipelineAutomation',
+  );
+
+  const pipelineAutomation = (() => {
+    if (!pipelineAutomationSetting?.value) {
+      return {};
+    }
+
+    try {
+      return typeof pipelineAutomationSetting.value === 'string'
+        ? JSON.parse(pipelineAutomationSetting.value)
+        : pipelineAutomationSetting.value;
+    } catch {
+      return {};
+    }
+  })() as {
+    publisherOverwriteEnabled?: boolean;
+  };
+
+  const overwrite =
+    pipelineAutomation.publisherOverwriteEnabled === true;
   const [discardTarget, setDiscardTarget] = useState<QueueJob | null>(null);
   const publishJob = useMutation({
     mutationFn: api.publishJob,
@@ -83,7 +108,7 @@ export function PublisherPage() {
     <>
       <PageHeader title="Publisher" eyebrow="Destination release">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Publish validated outputs into destination libraries. Overwrites are disabled unless explicitly enabled.
+          Publish validated outputs into destination libraries. Overwrite behavior is controlled by Pipeline Automation settings.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
@@ -107,8 +132,17 @@ export function PublisherPage() {
         ) : null}
         <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2 }}>
           <FormControlLabel
-            control={<Checkbox checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />}
-            label="Allow overwrite"
+            control={
+              <Checkbox
+                checked={overwrite}
+                disabled
+              />
+            }
+            label={
+              overwrite
+                ? 'Overwrite enabled in Settings'
+                : 'Overwrite disabled in Settings'
+            }
           />
         </Stack>
 

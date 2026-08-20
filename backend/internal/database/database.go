@@ -699,6 +699,7 @@ func seedSettings(db *gorm.DB) error {
 				"autoExecutionEnabled":              true,
 				"autoValidationEnabled":             false,
 				"autoPublisherEnabled":              false,
+				"publisherOverwriteEnabled":         false,
 				"publishedJobReconciliationEnabled": false,
 			},
 		},

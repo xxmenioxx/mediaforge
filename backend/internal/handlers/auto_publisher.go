@@ -52,7 +52,10 @@ func (p *AutoPublisher) tick() {
 		return
 	}
 	for _, job := range jobs {
-		_, _ = (PublisherHandler{db: p.db}).publishQueueJob(job, false)
+		_, _ = (PublisherHandler{db: p.db}).publishQueueJob(
+			job,
+			automation.PublisherOverwriteEnabled,
+		)
 	}
 }
 
