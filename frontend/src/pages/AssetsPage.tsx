@@ -9,6 +9,7 @@ import {
   Chip,
   Collapse,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
@@ -741,6 +742,13 @@ function AssetGroupRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
+  const [pathAdvisorOpen, setPathAdvisorOpen] = useState(false);
+  const [pathAdvisorCurrent, setPathAdvisorCurrent] = useState('');
+  const [pathAdvisorResults, setPathAdvisorResults] = useState<Array<{
+    asset: Asset;
+    response?: AdvisorResponse;
+    error?: string;
+  }>>([]);
   const effectiveProfileId =
   selectedProfileId < 0
     ? 0
@@ -824,6 +832,26 @@ function AssetGroupRow({
         profileId: effectiveProfileId,
       }),
     enabled: expanded && !isReadOnlyGroup && isConfidenceEnabled && Boolean(effectiveProfileId && representativeAsset),
+  });
+  const runPathAdvisor = useMutation({
+    mutationFn: async () => {
+      const candidates = groupAssets.filter((asset) => !asset.missing);
+      setPathAdvisorResults([]);
+      for (const asset of candidates) {
+        setPathAdvisorCurrent(asset.path);
+        try {
+          const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId });
+          queryClient.setQueryData(['advisor', 'asset-row', asset.path, effectiveProfileId], response);
+          setPathAdvisorResults((current) => [...current, { asset, response }]);
+        } catch (error) {
+          setPathAdvisorResults((current) => [...current, {
+            asset,
+            error: error instanceof Error ? error.message : 'Advisor evaluation failed.',
+          }]);
+        }
+      }
+      setPathAdvisorCurrent('');
+    },
   });
   const queueGroup = useMutation({
     mutationFn: async () => {
@@ -930,6 +958,11 @@ function AssetGroupRow({
       setSelectedProfileId(pathVideoProfiles[0].id);
     }
     setExpanded((current) => !current);
+  }
+
+  function startPathAdvisor() {
+    setPathAdvisorOpen(true);
+    runPathAdvisor.mutate();
   }
 
   function toggleConfidence(enabled: boolean) {
@@ -1152,6 +1185,19 @@ function AssetGroupRow({
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
                   </Alert>
                 ) : null}
+                {!isReadOnlyGroup ? (
+                  <Stack direction="row" justifyContent="flex-end">
+                    <Button
+                      variant="outlined"
+                      startIcon={<InfoOutlinedIcon />}
+                      onClick={startPathAdvisor}
+                      disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                      sx={{ width: { xs: '100%', sm: 'auto' } }}
+                    >
+                      Run Advisor on path
+                    </Button>
+                  </Stack>
+                ) : null}
                 {groupReview.requiresReview ? (
                   <Alert severity="warning">
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
@@ -1260,7 +1306,7 @@ function AssetGroupRow({
                     }}
                   >
                     <TableHead>
-                      <TableRow>
+      <TableRow>
                         {isReadOnlyGroup && hasMultipleSelectableAssets ? (
                           <TableCell padding="checkbox" sx={{ width: 48 }}>
                             <Checkbox
@@ -1322,6 +1368,94 @@ function AssetGroupRow({
           </Collapse>
         </TableCell>
       </TableRow>
+      <Dialog
+        open={pathAdvisorOpen}
+        onClose={() => {
+          if (!runPathAdvisor.isPending) setPathAdvisorOpen(false);
+        }}
+        disableEscapeKeyDown={runPathAdvisor.isPending}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>Advisor · {groupTitle(group)}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
+              {group.path}
+            </Typography>
+            <Stack spacing={0.75}>
+              <Stack direction="row" justifyContent="space-between" spacing={1}>
+                <Typography fontWeight={700}>
+                  {runPathAdvisor.isPending ? 'Evaluating assets one at a time' : 'Evaluation complete'}
+                </Typography>
+                <Typography color="text.secondary">
+                  {pathAdvisorResults.length}/{groupAssets.filter((asset) => !asset.missing).length}
+                </Typography>
+              </Stack>
+              <LinearProgress
+                variant="determinate"
+                value={groupAssets.filter((asset) => !asset.missing).length
+                  ? (pathAdvisorResults.length / groupAssets.filter((asset) => !asset.missing).length) * 100
+                  : 0}
+              />
+              {pathAdvisorCurrent ? (
+                <Typography color="text.secondary" variant="caption" sx={{ wordBreak: 'break-all' }}>
+                  Evaluating: {pathAdvisorCurrent}
+                </Typography>
+              ) : null}
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Chip
+                color="success"
+                label={`${pathAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply`}
+                size="small"
+              />
+              <Chip
+                color="warning"
+                label={`${pathAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review`}
+                size="small"
+              />
+              <Chip
+                label={`${pathAdvisorResults.filter((result) => result.response?.recommendation === 'not_recommended').length} not recommended`}
+                size="small"
+              />
+              {pathAdvisorResults.some((result) => result.error) ? (
+                <Chip color="error" label={`${pathAdvisorResults.filter((result) => result.error).length} failed`} size="small" />
+              ) : null}
+            </Stack>
+            <Stack spacing={1} sx={{ maxHeight: '48vh', overflowY: 'auto', pr: 0.5 }}>
+              {pathAdvisorResults.map((result) => (
+                <Box key={result.asset.path} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} spacing={1}>
+                    <Stack sx={{ minWidth: 0 }}>
+                      <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{result.asset.fileName}</Typography>
+                      <Typography color="text.secondary" variant="caption" sx={{ overflowWrap: 'anywhere' }}>{result.asset.path}</Typography>
+                    </Stack>
+                    {result.response ? (
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Chip
+                          label={recommendationLabel(result.response.recommendation)}
+                          color={recommendationColor(result.response.recommendation)}
+                          size="small"
+                        />
+                        <Typography fontWeight={700}>{result.response.score}%</Typography>
+                      </Stack>
+                    ) : (
+                      <Chip label="Failed" color="error" size="small" />
+                    )}
+                  </Stack>
+                  {result.error ? <Typography color="error" variant="body2" sx={{ mt: 0.75 }}>{result.error}</Typography> : null}
+                </Box>
+              ))}
+            </Stack>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPathAdvisorOpen(false)} disabled={runPathAdvisor.isPending} variant="contained">
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }
@@ -1443,7 +1577,7 @@ function AssetRow({
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
-    enabled: mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && effectiveProfileId > 0,
+    enabled: showAdvisorDialog && mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && effectiveProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -1632,7 +1766,7 @@ function AssetRow({
     updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'tracks', selection: key === '__inherit__' ? 'inherit' : key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key === '__inherit__' ? '' : key });
   }
   useEffect(() => {
-    if (!showSnapshotDialog || asset.status === 'archive' || asset.missing) {
+    if (!showSnapshotDialog || asset.missing) {
       return;
     }
 
@@ -2065,11 +2199,11 @@ async function generateExternalSubtitle(
               size="small"
               variant="outlined"
               startIcon={<InfoOutlinedIcon />}
-              disabled={!confidenceEnabled || advisor.isPending || advisor.isError || !advisor.data}
+              disabled={!confidenceEnabled || effectiveProfileId <= 0}
               onClick={() => setShowAdvisorDialog(true)}
-              sx={{ minWidth: 86 }}
+              sx={{ minWidth: 96 }}
             >
-              {confidenceEnabled ? advisor.isPending ? '...' : advisor.data ? advisor.data.score : 'N/A' : 'Off'}
+              {confidenceEnabled ? advisor.data ? advisor.data.score : 'Evaluate' : 'Off'}
             </Button>
           </TableCell>
         ) : null}
@@ -2483,13 +2617,16 @@ async function generateExternalSubtitle(
                             }
                       }
                     />
-                    {!isArchive ? (
-                      <EmbeddedSubtitleActions
-                        streams={snapshot.data.subtitleStreams}
-                        generations={subtitleGenerations}
-                        onGenerate={generateExternalSubtitle}
-                      />
+                    {isArchive ? (
+                      <Alert severity="info">
+                        The archived original is used as the subtitle source. Generated files are saved beside its active converted asset.
+                      </Alert>
                     ) : null}
+                    <EmbeddedSubtitleActions
+                      streams={snapshot.data.subtitleStreams}
+                      generations={subtitleGenerations}
+                      onGenerate={generateExternalSubtitle}
+                    />
                     {!isArchive ? (
                       <ExternalSubtitleList
                         values={externalSubtitles.data ?? []}

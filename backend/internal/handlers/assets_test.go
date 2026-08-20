@@ -987,6 +987,70 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	}
 }
 
+func TestExtractSubtitlesFromArchivePublishesBesideActiveConvertedAsset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-subtitle-extraction?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveRoot := t.TempDir()
+	libraryRoot := t.TempDir()
+	archivePath := filepath.Join(archiveRoot, "Your Name.original.mkv")
+	convertedPath := filepath.Join(libraryRoot, "Your Name.mkv")
+	if err := os.WriteFile(archivePath, []byte("archived original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(convertedPath, []byte("converted asset"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Library{Name: "Anime", DestinationPath: libraryRoot}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: filepath.Base(archivePath), FileName: filepath.Base(archivePath), Status: "archive"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now()
+	if err := db.Create(&models.QueueJob{
+		MediaPath: archivePath, Status: JobStatusCompleted, ValidationStatus: ValidationStatusPassed,
+		OriginalArchivedPath: archivePath, PublishedPath: convertedPath, PublishedAt: &publishedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	ffprobe := filepath.Join(bin, "ffprobe")
+	ffmpeg := filepath.Join(bin, "ffmpeg")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":2,\"codec_type\":\"subtitle\",\"codec_name\":\"subrip\",\"tags\":{\"language\":\"eng\"}}]}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nfor argument do output=\"$argument\"; done\nif [ \"$output\" = \"-\" ]; then exit 0; fi\nprintf '%s\\n' 'generated subtitle' > \"$output\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(archivePath), strings.NewReader(`{"streamIndex":2,"format":"srt"}`))
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	expected := strings.TrimSuffix(convertedPath, filepath.Ext(convertedPath)) + ".eng.2.srt"
+	if _, err := os.Stat(expected); err != nil {
+		t.Fatalf("expected subtitle beside converted asset: %v", err)
+	}
+	archiveSidecar := strings.TrimSuffix(archivePath, filepath.Ext(archivePath)) + ".eng.2.srt"
+	if _, err := os.Stat(archiveSidecar); !os.IsNotExist(err) {
+		t.Fatalf("archive sidecar must not be created, stat error=%v", err)
+	}
+}
+
 type subtitleExtractionStartedResponse struct {
 	OperationID string `json:"operationId"`
 	Status      string `json:"status"`

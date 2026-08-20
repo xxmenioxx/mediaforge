@@ -54,7 +54,8 @@ func scanLinesAndCarriageReturns(
 
 func generateBitmapSubtitleSidecar(
 	ctx context.Context,
-	mediaPath string,
+	sourceMediaPath string,
+	destinationMediaPath string,
 	stream FFProbeStream,
 	input SubtitleExtractionInput,
 	onProgress OCRProgressFunc,
@@ -74,7 +75,7 @@ func generateBitmapSubtitleSidecar(
 	}
 	outputPath := fmt.Sprintf(
 		"%s.%s.%d.%s",
-		strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath)),
+		strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath)),
 		fileLanguage,
 		stream.Index,
 		format,
@@ -106,7 +107,7 @@ func generateBitmapSubtitleSidecar(
 
 	message, err := runBitmapOCR(
 		ctx,
-		mediaPath,
+		sourceMediaPath,
 		stream,
 		format,
 		language,

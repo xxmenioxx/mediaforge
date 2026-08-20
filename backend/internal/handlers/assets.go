@@ -967,19 +967,24 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 
 	var record models.AssetRecord
 	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset not found in inventory"})
-		return
-	}
-	if record.Status == "archive" {
-		c.JSON(http.StatusConflict, gin.H{"error": "recover the archived original before generating external subtitles"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "asset not found in inventory"})
 		return
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "converted asset is not readable from the backend container"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "asset is not readable from the backend container"})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(path)
+
+	destinationMediaPath := path
+	if record.Status == "archive" {
+		destinationMediaPath, err = h.subtitleDestinationForArchivedOriginal(path)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	allowed, err := h.pathBelongsToLibrary(destinationMediaPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1010,7 +1015,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be srt or ass"})
 		return
 	}
-	plans, unsupported := subtitleExtractionPlansForRequest(path, streams, input)
+	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
 	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
 	if len(plans) == 0 && len(bitmapStreams) == 0 {
 		if len(unsupported) > 0 {
@@ -1120,7 +1125,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		// That context is cancelled as soon as this HTTP request finishes.
 		go func(
 			operationID string,
-			mediaPath string,
+			sourceMediaPath string,
+			destinationMediaPath string,
 			stream FFProbeStream,
 			input SubtitleExtractionInput,
 			initialResult SubtitleExtractionResult,
@@ -1142,7 +1148,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 
 			ocrResult, ocrErr := generateBitmapSubtitleSidecar(
 				ctx,
-				mediaPath,
+				sourceMediaPath,
+				destinationMediaPath,
 				stream,
 				input,
 				func(processed, total int) {
@@ -1222,6 +1229,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		}(
 			operationID,
 			path,
+			destinationMediaPath,
 			stream,
 			input,
 			result,
@@ -1240,6 +1248,32 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func (h AssetHandler) subtitleDestinationForArchivedOriginal(archivePath string) (string, error) {
+	var job models.QueueJob
+	err := h.db.Where(
+		"original_archived_path = ? AND status = ? AND publication_retired_at IS NULL AND published_at IS NOT NULL AND published_path <> '' AND validation_status IN ?",
+		archivePath,
+		JobStatusCompleted,
+		[]string{ValidationStatusPassed, ValidationStatusWarning},
+	).Order("published_at desc, id desc").First(&job).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("archived original has no active validated converted publication")
+	}
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve the converted publication: %w", err)
+	}
+
+	destination := filepath.Clean(strings.TrimSpace(job.PublishedPath))
+	if destination == "." || destination == "" {
+		return "", fmt.Errorf("the active publication has no converted destination")
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.IsDir() {
+		return "", fmt.Errorf("the associated converted asset is not readable from the backend container")
+	}
+	return destination, nil
 }
 
 func (h AssetHandler) ExternalSubtitles(c *gin.Context) {
