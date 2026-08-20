@@ -253,7 +253,12 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			destinationHadBackup := false
 
 			if overwrite {
-				backup, err := backupExistingPublishPath(destinationPath)
+				var err error
+
+				destinationHadBackup, err = ensurePublishBackup(
+					destinationPath,
+					&publishBackups,
+				)
 				if err != nil {
 					return h.failPublishingBeforeArchive(
 						&job,
@@ -264,16 +269,13 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 						},
 					)
 				}
-
-				if backup != nil {
-					publishBackups = append(
-						publishBackups,
-						*backup,
-					)
-					destinationHadBackup = true
-				}
 			}
 			if err := copyPublishedFile(job.OutputPath, destinationPath, overwrite); err != nil {
+				rollbackPublishAttempt(
+					createdPublishPaths,
+					publishBackups,
+				)
+
 				status := http.StatusInternalServerError
 				if os.IsExist(err) {
 					status = http.StatusConflict
@@ -369,12 +371,10 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		)
 	}
 
-	if !overwrite {
-		createdPublishPaths = append(
-			createdPublishPaths,
-			publishedGeneratedSubtitles...,
-		)
-	}
+	createdPublishPaths = append(
+		createdPublishPaths,
+		publishedGeneratedSubtitles...,
+	)
 
 	if err := transitionJobStage(
 		h.db,
@@ -1247,17 +1247,14 @@ func copyExternalSubtitleSidecars(
 		destinationHadBackup := false
 
 		if overwrite && backups != nil {
-			backup, err := backupExistingPublishPath(destination)
+			var err error
+
+			destinationHadBackup, err = ensurePublishBackup(
+				destination,
+				backups,
+			)
 			if err != nil {
 				return copied, err
-			}
-
-			if backup != nil {
-				*backups = append(
-					*backups,
-					*backup,
-				)
-				destinationHadBackup = true
 			}
 		}
 		if err := copyPublishedFile(sidecar.Path, destination, overwrite); err != nil {
@@ -1303,4 +1300,43 @@ func resolveSidecarDestination(sourcePath string, destinationBase string, suffix
 			return candidate, true, nil
 		}
 	}
+}
+
+func ensurePublishBackup(
+	destination string,
+	backups *[]publishBackup,
+) (bool, error) {
+	cleanDestination := filepath.Clean(
+		strings.TrimSpace(destination),
+	)
+
+	if cleanDestination == "." || cleanDestination == "" {
+		return false, nil
+	}
+
+	// The destination may already have been prepared earlier in the same
+	// publish attempt. Never replace the original backup with content
+	// written by a later publish step.
+	if backups != nil {
+		for _, existing := range *backups {
+			if filepath.Clean(existing.OriginalPath) == cleanDestination {
+				return true, nil
+			}
+		}
+	}
+
+	backup, err := backupExistingPublishPath(cleanDestination)
+	if err != nil {
+		return false, err
+	}
+
+	if backup == nil {
+		return false, nil
+	}
+
+	if backups != nil {
+		*backups = append(*backups, *backup)
+	}
+
+	return true, nil
 }

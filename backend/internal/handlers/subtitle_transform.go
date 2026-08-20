@@ -238,19 +238,14 @@ func publishSubtitleArtifacts(
 			destinationHadBackup := false
 
 			if overwrite && backups != nil {
-				backup, err := backupExistingPublishPath(
+				var err error
+
+				destinationHadBackup, err = ensurePublishBackup(
 					destinations[index],
+					backups,
 				)
 				if err != nil {
 					return published, err
-				}
-
-				if backup != nil {
-					*backups = append(
-						*backups,
-						*backup,
-					)
-					destinationHadBackup = true
 				}
 			}
 			if err := copyPublishedFile(artifact.StagedPath, destinations[index], overwrite); err != nil {
