@@ -78,7 +78,7 @@ func TestPublishSubtitleArtifactsUsesJellyfinPlexSidecarName(t *testing.T) {
 	}})}
 	destinationMedia := filepath.Join(temp, "library", "Movie.mkv")
 
-	published, err := publishSubtitleArtifacts(&job, destinationMedia, false)
+	published, err := publishSubtitleArtifacts(&job, destinationMedia, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestPublishSubtitleArtifactsRejectsDuplicateDestinationsBeforeCopy(t *testi
 	})}
 	destinationMedia := filepath.Join(temp, "library", "Movie.mkv")
 
-	_, err := publishSubtitleArtifacts(&job, destinationMedia, false)
+	_, err := publishSubtitleArtifacts(&job, destinationMedia, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "same destination") {
 		t.Fatalf("expected duplicate destination error, got %v", err)
 	}
@@ -137,7 +137,7 @@ func TestPublishSubtitleArtifactsAcceptsAnIdenticalRetry(t *testing.T) {
 		StreamIndex: 2, Format: "srt", Language: "spa", StagedPath: staged, SizeBytes: int64(len(content)),
 	}})}
 
-	published, err := publishSubtitleArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false)
+	published, err := publishSubtitleArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestPublishSubtitleArtifactsPreservesDifferentLibrarySidecar(t *testing.T) 
 		StreamIndex: 2, Format: "srt", Language: "spa", StagedPath: staged, SizeBytes: 9,
 	}})}
 
-	published, err := publishSubtitleArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false)
+	published, err := publishSubtitleArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
