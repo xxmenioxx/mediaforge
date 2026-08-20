@@ -1342,3 +1342,179 @@ func TestExternalSubtitleSidecarOverwriteCreatesBackup(t *testing.T) {
 		)
 	}
 }
+
+func TestRollbackPublishAttemptRestoresExistingDestination(t *testing.T) {
+	root := t.TempDir()
+
+	destination := filepath.Join(root, "library", "Movie.mkv")
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(
+		destination,
+		[]byte("old-video"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	backups := []publishBackup{}
+
+	hadBackup, err := ensurePublishBackup(
+		destination,
+		&backups,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hadBackup {
+		t.Fatal("expected existing destination to be backed up")
+	}
+
+	if err := os.WriteFile(
+		destination,
+		[]byte("new-video"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackPublishAttempt(nil, backups)
+
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(got) != "old-video" {
+		t.Fatalf(
+			"restored content=%q want=%q",
+			string(got),
+			"old-video",
+		)
+	}
+
+	if _, err := os.Stat(destination + ".mvforge-publish-backup"); !os.IsNotExist(err) {
+		t.Fatalf("backup remained after rollback: %v", err)
+	}
+}
+
+func TestRollbackPublishAttemptRemovesNewDestination(t *testing.T) {
+	root := t.TempDir()
+
+	destination := filepath.Join(root, "library", "Movie.mkv")
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	backups := []publishBackup{}
+
+	hadBackup, err := ensurePublishBackup(
+		destination,
+		&backups,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if hadBackup {
+		t.Fatal("unexpected backup for nonexistent destination")
+	}
+
+	if err := os.WriteFile(
+		destination,
+		[]byte("new-video"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackPublishAttempt(
+		[]string{destination},
+		backups,
+	)
+
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf(
+			"new destination remained after rollback: %v",
+			err,
+		)
+	}
+}
+
+func TestEnsurePublishBackupDoesNotReplaceOriginalBackup(t *testing.T) {
+	root := t.TempDir()
+
+	destination := filepath.Join(root, "Movie.srt")
+
+	if err := os.WriteFile(
+		destination,
+		[]byte("original"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	backups := []publishBackup{}
+
+	hadBackup, err := ensurePublishBackup(
+		destination,
+		&backups,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hadBackup || len(backups) != 1 {
+		t.Fatalf(
+			"first backup: hadBackup=%v backups=%d",
+			hadBackup,
+			len(backups),
+		)
+	}
+
+	// Simulates another publisher stage replacing the destination.
+	if err := os.WriteFile(
+		destination,
+		[]byte("intermediate"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	hadBackup, err = ensurePublishBackup(
+		destination,
+		&backups,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hadBackup {
+		t.Fatal("expected destination to remain protected")
+	}
+
+	if len(backups) != 1 {
+		t.Fatalf(
+			"duplicate backup created: backups=%d want=1",
+			len(backups),
+		)
+	}
+
+	backupData, err := os.ReadFile(backups[0].BackupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(backupData) != "original" {
+		t.Fatalf(
+			"backup was replaced: content=%q want=%q",
+			string(backupData),
+			"original",
+		)
+	}
+}
