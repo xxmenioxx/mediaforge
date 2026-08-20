@@ -1788,24 +1788,106 @@ func episodeIdentifierFromName(fileName string) string {
 	return ""
 }
 
-func multiEpisodeNameSpecForJob(db *gorm.DB, job models.QueueJob) (multiEpisodeNameSpec, bool) {
-	if season, episode, ok := episodeIdentityFromScan(db, job.MediaPath); ok {
-		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+func seasonFolderEpisodePosition(
+	db *gorm.DB,
+	job models.QueueJob,
+) (int, int, bool) {
+	season := firstPositiveInt(
+		seasonNumberFromPath(path.Dir(
+			strings.ReplaceAll(job.MediaPath, "\\", "/"),
+		)),
+		seasonNumberFromPath(job.BatchName),
+	)
+
+	if season <= 0 {
+		return 0, 0, false
+	}
+
+	episode := episodeNumberFromAssetGroup(
+		db,
+		job.MediaPath,
+	)
+
+	if episode <= 0 {
+		return 0, 0, false
+	}
+
+	return season, episode, true
+}
+
+func multiEpisodeNameSpecForJob(
+	db *gorm.DB,
+	job models.QueueJob,
+) (multiEpisodeNameSpec, bool) {
+	// Explicit SxxExx in the filename is authoritative.
+	if season, episode, ok :=
+		seasonEpisodeFromName(path.Base(job.MediaPath)); ok {
+
+		title := episodeSeriesTitle(
+			job.BatchName,
+			job.MediaPath,
+		)
+
 		if title == "" {
 			return multiEpisodeNameSpec{}, false
 		}
+
+		return multiEpisodeNameSpec{
+			SeriesTitle: title,
+			Season:      season,
+			Episode:     episode,
+		}, true
+	}
+
+	// Inside an explicit Season folder, filenames establish natural
+	// ordering but the episode number is the ordinal inventory position.
+	if season, episode, ok :=
+		seasonFolderEpisodePosition(db, job); ok {
+
+		title := episodeSeriesTitle(
+			job.BatchName,
+			job.MediaPath,
+		)
+
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+
+		return multiEpisodeNameSpec{
+			SeriesTitle: title,
+			Season:      season,
+			Episode:     episode,
+		}, true
+	}
+
+	// Existing metadata behavior remains useful outside Season folders.
+	if season, episode, ok :=
+		episodeIdentityFromScan(db, job.MediaPath); ok {
+
+		title := episodeSeriesTitle(
+			job.BatchName,
+			job.MediaPath,
+		)
+
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+
 		if season <= 0 {
-			season = firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+			season = firstPositiveInt(
+				seasonNumberFromPath(job.BatchName),
+				seasonNumberFromPath(job.MediaPath),
+				1,
+			)
 		}
-		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+
+		return multiEpisodeNameSpec{
+			SeriesTitle: title,
+			Season:      season,
+			Episode:     episode,
+		}, true
 	}
-	if season, episode, ok := seasonEpisodeFromName(path.Base(job.MediaPath)); ok {
-		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
-		if title == "" {
-			return multiEpisodeNameSpec{}, false
-		}
-		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
-	}
+
 	if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
 		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
 		if title == "" {

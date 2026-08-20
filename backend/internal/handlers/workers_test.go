@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1160,6 +1161,154 @@ func TestExecuteQueueJobForcesFreshSnapshotWhenSettingEnabled(t *testing.T) {
 			"failed forced scan replaced old snapshot: got=%d want=%d",
 			stored.ID,
 			oldSnapshot.ID,
+		)
+	}
+}
+
+func TestSeasonFolderNumericAssetsUseOrdinalEpisodePosition(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	library := models.Library{
+		ID:              1,
+		Name:            "Anime",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{
+			"episodeNamingEnabled": true,
+		},
+	}
+
+	profile := models.Profile{
+		Container: "mkv",
+	}
+
+	paths := []string{
+		"/media/raw/My Show/Season2/21.mkv",
+		"/media/raw/My Show/Season2/22.mkv",
+		"/media/raw/My Show/Season2/23.mkv",
+		"/media/raw/My Show/Season2/24.mkv",
+		"/media/raw/My Show/Season2/45.mkv",
+	}
+
+	for _, mediaPath := range paths {
+		record := models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "My Show/Season2",
+			FileName:     filepath.Base(mediaPath),
+			Status:       "unprocessed",
+		}
+
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for index, mediaPath := range paths {
+		job := models.QueueJob{
+			MediaPath: mediaPath,
+			BatchID:   "season2-numeric",
+			BatchName: "My Show/Season2",
+			LibraryID: library.ID,
+			ProfileID: 1,
+		}
+
+		if err := db.Create(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		got := plannedOutputPathForJob(
+			db,
+			job,
+			library,
+			profile,
+		)
+
+		want := fmt.Sprintf(
+			"/media/library/anime/My Show/Season2/My Show - S02E%02d.mkv",
+			index+1,
+		)
+
+		if got != want {
+			t.Fatalf(
+				"%s output=%q want=%q",
+				filepath.Base(mediaPath),
+				got,
+				want,
+			)
+		}
+	}
+}
+
+func TestSeasonFolderOrdinalPositionWinsOverSourceTrackMetadata(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	library := models.Library{
+		ID:              1,
+		Name:            "Anime",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+		ValidationRules: models.JSONMap{
+			"episodeNamingEnabled": true,
+		},
+	}
+
+	profile := models.Profile{Container: "mkv"}
+
+	paths := []string{
+		"/media/raw/My Show/Season2/21.mkv",
+		"/media/raw/My Show/Season2/22.mkv",
+		"/media/raw/My Show/Season2/23.mkv",
+	}
+
+	for _, mediaPath := range paths {
+		if err := db.Create(&models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "My Show/Season2",
+			FileName:     filepath.Base(mediaPath),
+			Status:       "unprocessed",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Simulates source metadata carrying the original disc/title number.
+	if err := db.Create(&models.ScanResult{
+		Path: paths[0],
+		RawProbe: models.JSONMap{
+			"format": map[string]interface{}{
+				"tags": map[string]interface{}{
+					"track": "21",
+				},
+			},
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: paths[0],
+		BatchName: "My Show/Season2",
+		LibraryID: library.ID,
+	}
+
+	got := plannedOutputPathForJob(
+		db,
+		job,
+		library,
+		profile,
+	)
+
+	want := "/media/library/anime/My Show/Season2/My Show - S02E01.mkv"
+
+	if got != want {
+		t.Fatalf(
+			"season-folder ordinal output=%q want=%q",
+			got,
+			want,
 		)
 	}
 }
