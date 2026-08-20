@@ -227,6 +227,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	if err := transitionJobStage(h.db, &job, JobStagePublishing); err != nil {
 		return PublishResult{}, err
 	}
+	createdPublishPaths := make([]string, 0, 8)
+	publishBackups := make([]publishBackup, 0, 8)
 	if path.Clean(job.OutputPath) != path.Clean(destinationPath) {
 		alreadyPublished := false
 		if !overwrite {
@@ -248,6 +250,26 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			}
 		}
 		if !alreadyPublished {
+			if overwrite {
+				backup, err := backupExistingPublishPath(destinationPath)
+				if err != nil {
+					return h.failPublishingBeforeArchive(
+						&job,
+						publishError{
+							Status:  http.StatusInternalServerError,
+							Message: "existing published video could not be backed up before overwrite",
+							Err:     err,
+						},
+					)
+				}
+
+				if backup != nil {
+					publishBackups = append(
+						publishBackups,
+						*backup,
+					)
+				}
+			}
 			if err := copyPublishedFile(job.OutputPath, destinationPath, overwrite); err != nil {
 				status := http.StatusInternalServerError
 				if os.IsExist(err) {
@@ -259,6 +281,12 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 						Status: status,
 						Err:    err,
 					},
+				)
+			}
+			if !overwrite {
+				createdPublishPaths = append(
+					createdPublishPaths,
+					destinationPath,
 				)
 			}
 		}
@@ -275,11 +303,24 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 
 		}
 	}
-	if _, err := copyExternalSubtitleSidecars(
-		job.MediaPath,
-		destinationPath,
-		overwrite,
-	); err != nil {
+	publishedExternalSubtitles, err :=
+		copyExternalSubtitleSidecars(
+			job.MediaPath,
+			destinationPath,
+			overwrite,
+		)
+
+	if err != nil {
+		created := append(
+			append([]string{}, createdPublishPaths...),
+			publishedExternalSubtitles...,
+		)
+
+		rollbackPublishAttempt(
+			created,
+			publishBackups,
+		)
+
 		return h.failPublishingBeforeArchive(
 			&job,
 			publishError{
@@ -289,7 +330,30 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			},
 		)
 	}
-	if _, err := publishSubtitleArtifacts(&job, destinationPath, overwrite); err != nil {
+
+	if !overwrite {
+		createdPublishPaths = append(
+			createdPublishPaths,
+			publishedExternalSubtitles...,
+		)
+	}
+	publishedGeneratedSubtitles, err :=
+		publishSubtitleArtifacts(
+			&job,
+			destinationPath,
+			overwrite,
+		)
+
+	if err != nil {
+		if !overwrite {
+			_ = rollbackPublishedPaths(
+				append(
+					createdPublishPaths,
+					publishedGeneratedSubtitles...,
+				),
+			)
+		}
+
 		return h.failPublishingBeforeArchive(
 			&job,
 			publishError{
@@ -300,7 +364,22 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		)
 	}
 
-	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
+	if !overwrite {
+		createdPublishPaths = append(
+			createdPublishPaths,
+			publishedGeneratedSubtitles...,
+		)
+	}
+
+	if err := transitionJobStage(
+		h.db,
+		&job,
+		JobStageArchivingOriginal,
+	); err != nil {
+		if !overwrite {
+			_ = rollbackPublishedPaths(createdPublishPaths)
+		}
+
 		return PublishResult{}, err
 	}
 	if archivedPath, err := h.archivePublishedOriginal(job); err != nil {
@@ -357,6 +436,14 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		PublishedPath: destinationPath,
 		Message:       "Output published to destination library.",
 	}, nil
+}
+
+func rollbackPublishAttempt(
+	createdPaths []string,
+	backups []publishBackup,
+) {
+	rollbackPublishedPaths(createdPaths)
+	restorePublishBackups(backups)
 }
 
 func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library models.Library, profile models.Profile) (PublishResult, error) {
@@ -839,6 +926,86 @@ func (h PublisherHandler) cleanupStagedJob(job models.QueueJob) error {
 		return os.RemoveAll(jobRoot)
 	}
 	return fmt.Errorf("output is not inside expected job directory %s", jobRoot)
+}
+
+type publishBackup struct {
+	OriginalPath string
+	BackupPath   string
+}
+
+func backupExistingPublishPath(path string) (*publishBackup, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if info.IsDir() {
+		return nil, fmt.Errorf("publish destination is a directory: %s", path)
+	}
+
+	backupPath := path + ".mvforge-publish-backup"
+
+	if err := copyPublishedFile(path, backupPath, true); err != nil {
+		return nil, err
+	}
+
+	return &publishBackup{
+		OriginalPath: path,
+		BackupPath:   backupPath,
+	}, nil
+}
+
+func restorePublishBackups(backups []publishBackup) {
+	for index := len(backups) - 1; index >= 0; index-- {
+		backup := backups[index]
+
+		_ = os.Remove(backup.OriginalPath)
+
+		_ = os.Rename(
+			backup.BackupPath,
+			backup.OriginalPath,
+		)
+	}
+}
+
+func removePublishBackups(backups []publishBackup) {
+	for _, backup := range backups {
+		_ = os.Remove(backup.BackupPath)
+	}
+}
+
+func rollbackPublishedPaths(paths []string) error {
+	var rollbackErr error
+
+	for index := len(paths) - 1; index >= 0; index-- {
+		candidate := filepath.Clean(
+			strings.TrimSpace(paths[index]),
+		)
+
+		if candidate == "." || candidate == "" {
+			continue
+		}
+
+		if err := os.Remove(candidate); err != nil &&
+			!os.IsNotExist(err) {
+
+			if rollbackErr == nil {
+				rollbackErr = err
+			} else {
+				rollbackErr = fmt.Errorf(
+					"%v; remove %s: %w",
+					rollbackErr,
+					candidate,
+					err,
+				)
+			}
+		}
+	}
+
+	return rollbackErr
 }
 
 func copyPublishedFile(source string, destination string, overwrite bool) error {
