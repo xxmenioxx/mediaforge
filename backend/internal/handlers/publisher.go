@@ -389,9 +389,23 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		return PublishResult{}, err
 	}
 	if archivedPath, err := h.archivePublishedOriginal(job); err != nil {
-		job.Notes = appendNote(job.Notes, "Original archive failed: "+err.Error())
+		rollbackPublishAttempt(
+			createdPublishPaths,
+			publishBackups,
+		)
+
+		job.Stage = JobStageReadyToPublish
+		job.Notes = appendNote(
+			job.Notes,
+			"Original archive failed: "+err.Error(),
+		)
 		_ = h.db.Save(&job).Error
-		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "output copied but original could not be archived; publication will be retried", Err: err}
+
+		return PublishResult{}, publishError{
+			Status:  http.StatusInternalServerError,
+			Message: "original could not be archived; published output was rolled back and publication can be retried",
+			Err:     err,
+		}
 	} else if archivedPath != "" {
 		job.Notes = appendNote(job.Notes, "Original archived: "+archivedPath)
 		job.OriginalArchivedPath = archivedPath
@@ -408,6 +422,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			job.Notes = appendNote(job.Notes, "Published fingerprint warning: "+fingerprintErr.Error())
 		}
 	}
+	removePublishBackups(publishBackups)
+	publishBackups = nil
 	if err := transitionJobStage(h.db, &job, JobStageAnalyzingFinal); err != nil {
 		return PublishResult{}, err
 	}
