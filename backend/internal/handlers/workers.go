@@ -2056,12 +2056,19 @@ func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
 	}
 	cleanPath := filepath.Clean(mediaPath)
 	var asset models.AssetRecord
-	if err := db.Where("path = ? AND missing = ?", cleanPath, false).First(&asset).Error; err != nil || strings.TrimSpace(asset.GroupPath) == "" {
+	if err := db.Where(
+		"path = ?",
+		cleanPath,
+	).First(&asset).Error; err != nil ||
+		strings.TrimSpace(asset.GroupPath) == "" {
 		return 0
 	}
 	var siblings []models.AssetRecord
-	if err := db.Where("root_path = ? AND group_path = ? AND missing = ?", asset.RootPath, asset.GroupPath, false).
-		Find(&siblings).Error; err != nil || len(siblings) <= 1 {
+	if err := db.Where(
+		"root_path = ? AND group_path = ?",
+		asset.RootPath,
+		asset.GroupPath,
+	).Find(&siblings).Error; err != nil || len(siblings) <= 1 {
 		return 0
 	}
 	sort.SliceStable(siblings, func(i, j int) bool {

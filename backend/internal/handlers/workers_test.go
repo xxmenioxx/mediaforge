@@ -1395,3 +1395,54 @@ func TestSeasonFolderOrdinalRejectsHistoricalEpisodeNumber(t *testing.T) {
 		)
 	}
 }
+
+func TestSeasonFolderEpisodePositionDoesNotShiftAfterEarlierPublish(t *testing.T) {
+	db := queueJobTestDB(t)
+
+	paths := []string{
+		"/media/raw/Arbegas/Season1/Arbegas1.mkv",
+		"/media/raw/Arbegas/Season1/Arbegas2.mkv",
+		"/media/raw/Arbegas/Season1/Arbegas3.mkv",
+	}
+
+	for _, mediaPath := range paths {
+		if err := db.Create(&models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "Arbegas/Season1",
+			FileName:     filepath.Base(mediaPath),
+			Missing:      false,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Episode 1 was already published and archived.
+	if err := db.Model(&models.AssetRecord{}).
+		Where("path = ?", paths[0]).
+		Update("missing", true).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath:     paths[2],
+		BatchID:       "arbegas-season1",
+		BatchName:     "Arbegas/Season1",
+		BatchPosition: 3,
+	}
+
+	season, episode, ok := seasonFolderEpisodePosition(db, job)
+
+	if !ok {
+		t.Fatal("expected season-folder episode position")
+	}
+
+	if season != 1 || episode != 3 {
+		t.Fatalf(
+			"got S%02dE%02d; want S01E03",
+			season,
+			episode,
+		)
+	}
+}
