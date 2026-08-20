@@ -250,6 +250,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			}
 		}
 		if !alreadyPublished {
+			destinationHadBackup := false
+
 			if overwrite {
 				backup, err := backupExistingPublishPath(destinationPath)
 				if err != nil {
@@ -268,6 +270,7 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 						publishBackups,
 						*backup,
 					)
+					destinationHadBackup = true
 				}
 			}
 			if err := copyPublishedFile(job.OutputPath, destinationPath, overwrite); err != nil {
@@ -283,7 +286,7 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 					},
 				)
 			}
-			if !overwrite {
+			if !overwrite || !destinationHadBackup {
 				createdPublishPaths = append(
 					createdPublishPaths,
 					destinationPath,
@@ -332,12 +335,11 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		)
 	}
 
-	if !overwrite {
-		createdPublishPaths = append(
-			createdPublishPaths,
-			publishedExternalSubtitles...,
-		)
-	}
+	createdPublishPaths = append(
+		createdPublishPaths,
+		publishedExternalSubtitles...,
+	)
+
 	publishedGeneratedSubtitles, err :=
 		publishSubtitleArtifacts(
 			&job,
@@ -1242,6 +1244,8 @@ func copyExternalSubtitleSidecars(
 			continue
 		}
 
+		destinationHadBackup := false
+
 		if overwrite && backups != nil {
 			backup, err := backupExistingPublishPath(destination)
 			if err != nil {
@@ -1253,9 +1257,9 @@ func copyExternalSubtitleSidecars(
 					*backups,
 					*backup,
 				)
+				destinationHadBackup = true
 			}
 		}
-
 		if err := copyPublishedFile(sidecar.Path, destination, overwrite); err != nil {
 			if os.IsExist(err) {
 				equal, compareErr := filesEqual(sidecar.Path, destination)
@@ -1265,7 +1269,9 @@ func copyExternalSubtitleSidecars(
 			}
 			return copied, err
 		}
-		copied = append(copied, destination)
+		if !overwrite || !destinationHadBackup {
+			copied = append(copied, destination)
+		}
 	}
 	return copied, nil
 }

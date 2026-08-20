@@ -235,6 +235,8 @@ func publishSubtitleArtifacts(
 	published := []string{}
 	for index, artifact := range artifacts {
 		if !alreadyPublished[index] {
+			destinationHadBackup := false
+
 			if overwrite && backups != nil {
 				backup, err := backupExistingPublishPath(
 					destinations[index],
@@ -248,12 +250,19 @@ func publishSubtitleArtifacts(
 						*backups,
 						*backup,
 					)
+					destinationHadBackup = true
 				}
 			}
 			if err := copyPublishedFile(artifact.StagedPath, destinations[index], overwrite); err != nil {
 				return published, err
 			}
-			published = append(published, destinations[index])
+
+			if !overwrite || !destinationHadBackup {
+				published = append(
+					published,
+					destinations[index],
+				)
+			}
 		}
 		artifacts[index].PublishedPath = destinations[index]
 	}
