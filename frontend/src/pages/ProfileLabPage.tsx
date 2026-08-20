@@ -506,6 +506,7 @@ const emptyVideoDraft: ProfileInput = {
     preserveOriginalAudio: true,
     preferSrtSubtitles: false,
     warnSubtitleFormats: true,
+    removeAttachments: false,
     frameStructureMode: 'auto',
     frameStructureGopMode: 'recommended',
     frameStructureBFrameMode: 'recommended',
@@ -2538,6 +2539,50 @@ export function ProfileLabPage() {
                                 label="Preserve chapters"
                               />
                             </Grid>
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={
+                                    videoDraft.workerConfig?.removeAttachments === true
+                                  }
+                                  onChange={(event) =>
+                                    setVideoDraft((current) => ({
+                                      ...current,
+                                      workerConfig: {
+                                        ...current.workerConfig,
+                                        removeAttachments: event.target.checked,
+                                      },
+                                    }))
+                                  }
+                                />
+                              }
+                              label="Remove attachments"
+                            />
+                          </Grid>
+                          <Grid size={{ xs: 12, sm: 6 }}>
+                            <Tooltip title="Removes container attachments such as embedded fonts, cover images, XML files, and other MKV attachments from the converted output.">
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={
+                                      videoDraft.workerConfig?.removeAttachments === true
+                                    }
+                                    onChange={(event) =>
+                                      setVideoDraft((current) => ({
+                                        ...current,
+                                        workerConfig: {
+                                          ...current.workerConfig,
+                                          removeAttachments: event.target.checked,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                }
+                                label="Remove attachments"
+                              />
+                            </Tooltip>
                           </Grid>
                           <TextField
                             select
