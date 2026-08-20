@@ -275,7 +275,11 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 
 		}
 	}
-	if _, err := copyExternalSubtitleSidecars(job.MediaPath, destinationPath); err != nil {
+	if _, err := copyExternalSubtitleSidecars(
+		job.MediaPath,
+		destinationPath,
+		overwrite,
+	); err != nil {
 		return h.failPublishingBeforeArchive(
 			&job,
 			publishError{
@@ -1013,7 +1017,11 @@ func moveFile(source string, destination string) error {
 	return os.Remove(source)
 }
 
-func copyExternalSubtitleSidecars(sourceMediaPath string, destinationMediaPath string) ([]string, error) {
+func copyExternalSubtitleSidecars(
+	sourceMediaPath string,
+	destinationMediaPath string,
+	overwrite bool,
+) ([]string, error) {
 	sourceMediaPath = filepath.Clean(strings.TrimSpace(sourceMediaPath))
 	destinationMediaPath = filepath.Clean(strings.TrimSpace(destinationMediaPath))
 	if sourceMediaPath == "." || destinationMediaPath == "." || sourceMediaPath == destinationMediaPath {
@@ -1034,6 +1042,22 @@ func copyExternalSubtitleSidecars(sourceMediaPath string, destinationMediaPath s
 		if suffix == sidecar.Path || suffix == "" {
 			continue
 		}
+		destination := destinationBase + suffix
+		alreadyPublished := false
+
+		if !overwrite {
+			var resolveErr error
+			destination, alreadyPublished, resolveErr =
+				resolveSidecarDestination(
+					sidecar.Path,
+					destinationBase,
+					suffix,
+				)
+
+			if resolveErr != nil {
+				return copied, resolveErr
+			}
+		}
 		destination, alreadyPublished, resolveErr := resolveSidecarDestination(sidecar.Path, destinationBase, suffix)
 		if resolveErr != nil {
 			return copied, resolveErr
@@ -1041,7 +1065,7 @@ func copyExternalSubtitleSidecars(sourceMediaPath string, destinationMediaPath s
 		if alreadyPublished {
 			continue
 		}
-		if err := copyPublishedFile(sidecar.Path, destination, false); err != nil {
+		if err := copyPublishedFile(sidecar.Path, destination, overwrite); err != nil {
 			if os.IsExist(err) {
 				equal, compareErr := filesEqual(sidecar.Path, destination)
 				if compareErr == nil && equal {

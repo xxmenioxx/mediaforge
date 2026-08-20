@@ -319,7 +319,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	copied, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia)
+	copied, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	if err := os.WriteFile(libraryBase+".spa.default.srt", []byte("edited in library"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia); err != nil {
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false); err != nil {
 		t.Fatalf("different Library sidecar must not block publication: %v", err)
 	}
 	if got, err := os.ReadFile(libraryBase + ".spa.default.srt"); err != nil || string(got) != "edited in library" {
@@ -359,7 +359,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	if err := os.WriteFile(libraryBase+".mvf.spa.default.srt", []byte("another version"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia); err != nil {
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(libraryBase + ".mvf-2.spa.default.srt"); err != nil || string(got) != "spanish" {
