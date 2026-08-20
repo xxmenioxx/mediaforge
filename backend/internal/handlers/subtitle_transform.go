@@ -190,7 +190,12 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 	return result
 }
 
-func publishSubtitleArtifacts(job *models.QueueJob, destinationMediaPath string, overwrite bool) ([]string, error) {
+func publishSubtitleArtifacts(
+	job *models.QueueJob,
+	destinationMediaPath string,
+	overwrite bool,
+	backups *[]publishBackup,
+) ([]string, error) {
 	artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
 	if len(artifacts) == 0 {
 		return nil, nil
@@ -230,6 +235,21 @@ func publishSubtitleArtifacts(job *models.QueueJob, destinationMediaPath string,
 	published := []string{}
 	for index, artifact := range artifacts {
 		if !alreadyPublished[index] {
+			if overwrite && backups != nil {
+				backup, err := backupExistingPublishPath(
+					destinations[index],
+				)
+				if err != nil {
+					return published, err
+				}
+
+				if backup != nil {
+					*backups = append(
+						*backups,
+						*backup,
+					)
+				}
+			}
 			if err := copyPublishedFile(artifact.StagedPath, destinations[index], overwrite); err != nil {
 				return published, err
 			}

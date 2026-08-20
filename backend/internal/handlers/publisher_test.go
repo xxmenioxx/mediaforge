@@ -319,7 +319,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	copied, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false)
+	copied, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	if err := os.WriteFile(libraryBase+".spa.default.srt", []byte("edited in library"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false); err != nil {
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false, nil); err != nil {
 		t.Fatalf("different Library sidecar must not block publication: %v", err)
 	}
 	if got, err := os.ReadFile(libraryBase + ".spa.default.srt"); err != nil || string(got) != "edited in library" {
@@ -359,7 +359,7 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	if err := os.WriteFile(libraryBase+".mvf.spa.default.srt", []byte("another version"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false); err != nil {
+	if _, err := copyExternalSubtitleSidecars(rawMedia, libraryMedia, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(libraryBase + ".mvf-2.spa.default.srt"); err != nil || string(got) != "spanish" {
@@ -1280,5 +1280,120 @@ func TestPublishFailureBeforeArchiveReturnsJobToReadyToPublish(t *testing.T) {
 			"raw original changed: content=%q",
 			string(gotOriginal),
 		)
+	}
+}
+
+func TestExternalSubtitleSidecarOverwriteCreatesBackup(t *testing.T) {
+	root := t.TempDir()
+
+	sourceMedia := filepath.Join(root, "raw", "Movie.mkv")
+	sourceSubtitle := filepath.Join(root, "raw", "Movie.en.srt")
+
+	destinationMedia := filepath.Join(root, "library", "Movie.mkv")
+	destinationSubtitle := filepath.Join(root, "library", "Movie.en.srt")
+
+	if err := os.MkdirAll(filepath.Dir(sourceMedia), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destinationMedia), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(sourceMedia, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(sourceSubtitle, []byte("new subtitle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(destinationSubtitle, []byte("old subtitle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	backups := []publishBackup{}
+
+	_, err := copyExternalSubtitleSidecars(
+		sourceMedia,
+		destinationMedia,
+		true,
+		&backups,
+	)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(backups) != 1 {
+		t.Fatalf("backups=%d want=1", len(backups))
+	}
+
+	backupData, err := os.ReadFile(backups[0].BackupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(backupData) != "old subtitle" {
+		t.Fatalf(
+			"backup content=%q want=%q",
+			string(backupData),
+			"old subtitle",
+		)
+	}
+}
+
+func TestPublishOverwriteRestoresPreviousFilesOnSubtitleFailure(t *testing.T) {
+	// Basarlo en el setup de un test existente de publishQueueJob
+	// que ya prepare DB, job, staging, raw y library.
+
+	// Estado previo en Library:
+	//   Movie.mkv     = "old video"
+	//   Movie.en.srt  = "old subtitle"
+	//
+	// Staging:
+	//   nuevo Movie.mkv
+	//   nuevo subtitle
+	//
+	// Fuerza después un error en otro subtitle/artifact para que
+	// publishQueueJob falle antes de archiving_original.
+
+	// publishQueueJob(job, true)
+
+	// Debe fallar.
+	// Luego valida:
+
+	videoData, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(videoData) != "old video" {
+		t.Fatalf(
+			"video after rollback=%q want=%q",
+			string(videoData),
+			"old video",
+		)
+	}
+
+	subtitleData, err := os.ReadFile(destinationSubtitlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(subtitleData) != "old subtitle" {
+		t.Fatalf(
+			"subtitle after rollback=%q want=%q",
+			string(subtitleData),
+			"old subtitle",
+		)
+	}
+
+	if _, err := os.Stat(destinationPath + ".mvforge-publish-backup"); !os.IsNotExist(err) {
+		t.Fatalf("video backup remained after rollback: %v", err)
+	}
+
+	if _, err := os.Stat(destinationSubtitlePath + ".mvforge-publish-backup"); !os.IsNotExist(err) {
+		t.Fatalf("subtitle backup remained after rollback: %v", err)
 	}
 }

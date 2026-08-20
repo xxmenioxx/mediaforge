@@ -308,6 +308,7 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			job.MediaPath,
 			destinationPath,
 			overwrite,
+			&publishBackups,
 		)
 
 	if err != nil {
@@ -342,17 +343,19 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 			&job,
 			destinationPath,
 			overwrite,
+			&publishBackups,
 		)
 
 	if err != nil {
-		if !overwrite {
-			_ = rollbackPublishedPaths(
-				append(
-					createdPublishPaths,
-					publishedGeneratedSubtitles...,
-				),
-			)
-		}
+		created := append(
+			append([]string{}, createdPublishPaths...),
+			publishedGeneratedSubtitles...,
+		)
+
+		rollbackPublishAttempt(
+			created,
+			publishBackups,
+		)
 
 		return h.failPublishingBeforeArchive(
 			&job,
@@ -376,9 +379,10 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		&job,
 		JobStageArchivingOriginal,
 	); err != nil {
-		if !overwrite {
-			_ = rollbackPublishedPaths(createdPublishPaths)
-		}
+		rollbackPublishAttempt(
+			createdPublishPaths,
+			publishBackups,
+		)
 
 		return PublishResult{}, err
 	}
@@ -428,6 +432,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	_ = h.db.Save(&job).Error
 	_ = transitionJobStage(h.db, &job, JobStageCompleted)
 	_ = scheduler.ReleaseReservation(h.db, job.ID)
+
+	removePublishBackups(publishBackups)
 
 	return PublishResult{
 		JobID:         job.ID,
@@ -497,7 +503,13 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		_ = h.db.Save(&job).Error
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed; original was restored", Err: err}
 	}
-	publishedSubtitles, subtitleErr := publishSubtitleArtifacts(&job, target, false)
+	publishedSubtitles, subtitleErr :=
+		publishSubtitleArtifacts(
+			&job,
+			target,
+			false,
+			nil,
+		)
 	if subtitleErr != nil {
 		_ = os.Remove(target)
 		for _, published := range publishedSubtitles {
@@ -1188,6 +1200,7 @@ func copyExternalSubtitleSidecars(
 	sourceMediaPath string,
 	destinationMediaPath string,
 	overwrite bool,
+	backups *[]publishBackup,
 ) ([]string, error) {
 	sourceMediaPath = filepath.Clean(strings.TrimSpace(sourceMediaPath))
 	destinationMediaPath = filepath.Clean(strings.TrimSpace(destinationMediaPath))
@@ -1225,13 +1238,24 @@ func copyExternalSubtitleSidecars(
 				return copied, resolveErr
 			}
 		}
-		destination, alreadyPublished, resolveErr := resolveSidecarDestination(sidecar.Path, destinationBase, suffix)
-		if resolveErr != nil {
-			return copied, resolveErr
-		}
 		if alreadyPublished {
 			continue
 		}
+
+		if overwrite && backups != nil {
+			backup, err := backupExistingPublishPath(destination)
+			if err != nil {
+				return copied, err
+			}
+
+			if backup != nil {
+				*backups = append(
+					*backups,
+					*backup,
+				)
+			}
+		}
+
 		if err := copyPublishedFile(sidecar.Path, destination, overwrite); err != nil {
 			if os.IsExist(err) {
 				equal, compareErr := filesEqual(sidecar.Path, destination)
