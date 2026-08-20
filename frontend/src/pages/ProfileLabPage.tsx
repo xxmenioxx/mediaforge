@@ -2541,27 +2541,6 @@ export function ProfileLabPage() {
                             </Grid>
                           </Grid>
                           <Grid size={{ xs: 12, sm: 6 }}>
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={
-                                    videoDraft.workerConfig?.removeAttachments === true
-                                  }
-                                  onChange={(event) =>
-                                    setVideoDraft((current) => ({
-                                      ...current,
-                                      workerConfig: {
-                                        ...current.workerConfig,
-                                        removeAttachments: event.target.checked,
-                                      },
-                                    }))
-                                  }
-                                />
-                              }
-                              label="Remove attachments"
-                            />
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6 }}>
                             <Tooltip title="Removes container attachments such as embedded fonts, cover images, XML files, and other MKV attachments from the converted output.">
                               <FormControlLabel
                                 control={
