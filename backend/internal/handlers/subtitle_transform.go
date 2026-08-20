@@ -208,14 +208,34 @@ func publishSubtitleArtifacts(
 		if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() || info.Size() == 0 {
 			return nil, fmt.Errorf("staged subtitle artifact is missing or empty: %s", artifact.StagedPath)
 		}
-		suffix := "." + safeSubtitleFilenamePart(artifact.Language)
+		language := safeSubtitleFilenamePart(artifact.Language)
+		if language == "" {
+			language = "und"
+		}
+		suffix := "." + language
 		if artifact.Default {
 			suffix += ".default"
 		}
 		suffix += "." + artifact.Format
 		preferredDestination := base + suffix
 		if _, duplicate := usedDestinations[preferredDestination]; duplicate {
-			return nil, fmt.Errorf("multiple subtitle transformations resolve to the same destination: %s", preferredDestination)
+			suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
+			if artifact.Default {
+				suffix += ".default"
+			}
+			suffix += "." + artifact.Format
+			preferredDestination = base + suffix
+			for discriminator := 2; ; discriminator++ {
+				if _, duplicate = usedDestinations[preferredDestination]; !duplicate {
+					break
+				}
+				suffix = fmt.Sprintf(".%s.%d.%d", language, artifact.StreamIndex, discriminator)
+				if artifact.Default {
+					suffix += ".default"
+				}
+				suffix += "." + artifact.Format
+				preferredDestination = base + suffix
+			}
 		}
 		usedDestinations[preferredDestination] = struct{}{}
 		if !overwrite {

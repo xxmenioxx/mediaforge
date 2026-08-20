@@ -117,6 +117,7 @@ export function AssetsPage() {
   const mediaAreas = [...new Set(allInventoryGroups.map((group) => mediaAreaForGroup(group, settings.data)).filter(Boolean))].sort();
   const areaGroups = mediaArea ? currentGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : currentGroups;
   const filteredGroups = filterAssetGroups(areaGroups, assetQuery);
+  const filteredArchiveAssets = tab === 'archive' ? archiveAssetsFromGroups(areaGroups, assetQuery) : [];
   const runningSnapshotPaths = new Set(
     (snapshotOperations.data?.operations ?? [])
       .filter((operation) => operation.status === 'running')
@@ -195,9 +196,13 @@ export function AssetsPage() {
                 </Stack>
                 {tab !== 'reports' ? (
                   <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
-                    <Chip label={`${filteredGroups.length}/${areaGroups.length} groups`} size="small" />
-                    <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" />
-                    <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" />
+                    {tab === 'archive' ? (
+                      <Chip label={`${filteredArchiveAssets.length}/${sumGroupFiles(areaGroups)} assets`} size="small" />
+                    ) : (
+                      <Chip label={`${filteredGroups.length}/${areaGroups.length} groups`} size="small" />
+                    )}
+                    <Chip label={`${tab === 'archive' ? filteredArchiveAssets.length : sumGroupFiles(filteredGroups)} files`} size="small" />
+                    <Chip label={formatBytes(tab === 'archive' ? sumAssetBytes(filteredArchiveAssets) : sumGroupBytes(filteredGroups))} size="small" />
                     {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
                     {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
                   </Stack>
@@ -500,6 +505,23 @@ function AssetTable({
     setPage(0);
   }, [query, mode, visibleGroups.length]);
 
+  if (mode === 'archive') {
+    return (
+      <ArchivedAssetTable
+        groups={visibleGroups}
+        libraries={libraries}
+        profiles={profiles}
+        audioProfiles={audioProfiles}
+        trackProfiles={trackProfiles}
+        assetCategories={assetCategories}
+        queueJobs={queueJobs}
+        runningSnapshotPaths={runningSnapshotPaths}
+        query={query}
+        emptyLabel={emptyLabel}
+      />
+    );
+  }
+
   if (visibleGroups.length === 0) {
     return (
       <CardContent>
@@ -555,6 +577,111 @@ function AssetTable({
         component="div"
         count={filteredGroups.length}
         page={Math.min(page, Math.max(0, Math.ceil(filteredGroups.length / rowsPerPage) - 1))}
+        rowsPerPage={rowsPerPage}
+        rowsPerPageOptions={[10, 25, 50, 100]}
+        onPageChange={(_, nextPage) => setPage(nextPage)}
+        onRowsPerPageChange={(event) => {
+          setRowsPerPage(Number(event.target.value));
+          setPage(0);
+        }}
+        sx={{
+          '& .MuiTablePagination-toolbar': { px: { xs: 1, sm: 2 } },
+          '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } },
+        }}
+      />
+    </>
+  );
+}
+
+function ArchivedAssetTable({
+  groups,
+  libraries,
+  profiles,
+  audioProfiles,
+  trackProfiles,
+  assetCategories,
+  queueJobs,
+  runningSnapshotPaths,
+  query,
+  emptyLabel,
+}: {
+  groups: AssetGroup[];
+  libraries: Library[];
+  profiles: Profile[];
+  audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
+  assetCategories: string[];
+  queueJobs: QueueJob[];
+  runningSnapshotPaths: Set<string>;
+  query: string;
+  emptyLabel: string;
+}) {
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const assets = archiveAssetsFromGroups(groups, query);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(assets.length / rowsPerPage) - 1));
+  const pagedAssets = assets.slice(safePage * rowsPerPage, safePage * rowsPerPage + rowsPerPage);
+
+  if (sumGroupFiles(groups) === 0) {
+    return (
+      <CardContent>
+        <Alert severity="info">{emptyLabel}</Alert>
+      </CardContent>
+    );
+  }
+
+  return (
+    <>
+      <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
+        <Table size="small" sx={{ minWidth: 820, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 330 }}>Asset</TableCell>
+              <TableCell sx={{ width: 190 }}>Status</TableCell>
+              <TableCell sx={{ width: 110 }}>Size</TableCell>
+              <TableCell sx={{ width: 150 }}>Modified</TableCell>
+              <TableCell align="center" sx={{ width: 180 }}>Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {pagedAssets.length ? pagedAssets.map(({ asset, group }) => (
+              <AssetRow
+                key={`${asset.status}-${asset.libraryId}-${asset.path}`}
+                asset={asset}
+                libraries={libraries}
+                profiles={profiles}
+                audioProfiles={audioProfiles}
+                trackProfiles={trackProfiles}
+                assetCategories={assetCategories}
+                groupRelativePath={group.relativePath}
+                groupCategory=""
+                confidenceEnabled
+                groupProfileId={0}
+                groupAudioProfileKey=""
+                groupLibraryId={group.libraryId}
+                hasOpenJob={assetHasOpenJob(asset, queueJobs)}
+                queueJobs={queueJobs}
+                snapshotRunning={runningSnapshotPaths.has(asset.path)}
+                mode="archive"
+                bulkSelected={false}
+                bulkSelectionEnabled={false}
+                bulkSelectionDisabled
+                onBulkSelectionChange={() => undefined}
+              />
+            )) : (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Alert severity="info">No archived assets match this search.</Alert>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Box>
+      <TablePagination
+        component="div"
+        count={assets.length}
+        page={safePage}
         rowsPerPage={rowsPerPage}
         rowsPerPageOptions={[10, 25, 50, 100]}
         onPageChange={(_, nextPage) => setPage(nextPage)}
@@ -4127,6 +4254,26 @@ function filterAssetGroups(groups: AssetGroup[], query: string) {
   });
 }
 
+function archiveAssetsFromGroups(groups: AssetGroup[], query: string) {
+  const cleanQuery = query.trim().toLowerCase();
+  return safeArray(groups)
+    .flatMap((group) => safeArray(group.assets).map((asset) => ({ asset, group })))
+    .filter(({ asset, group }) => {
+      if (!cleanQuery) return true;
+      return [
+        asset.path,
+        asset.relativePath,
+        asset.fileName,
+        asset.status,
+        asset.libraryName,
+        group.path,
+        group.relativePath,
+        group.libraryName,
+      ].some((value) => (value ?? '').toLowerCase().includes(cleanQuery));
+    })
+    .sort((left, right) => left.asset.path.localeCompare(right.asset.path));
+}
+
 function mediaAreaForGroup(group: AssetGroup, settings?: AppSetting[]) {
   const configuredPaths = settings?.find((setting) => setting.key === 'paths')?.value ?? {};
   const roots = ['rawRoot', 'libraryRoot', 'originalsArchivePath']
@@ -4152,6 +4299,10 @@ function sumGroupFiles(groups: AssetGroup[]) {
 
 function sumGroupBytes(groups: AssetGroup[]) {
   return groups.reduce((total, group) => total + (Number.isFinite(group.sizeBytes) ? group.sizeBytes : 0), 0);
+}
+
+function sumAssetBytes(assets: Array<{ asset: Asset }>) {
+  return assets.reduce((total, { asset }) => total + (Number.isFinite(asset.sizeBytes) ? asset.sizeBytes : 0), 0);
 }
 
 function recommendationLabel(recommendation: AdvisorResponse['recommendation']) {

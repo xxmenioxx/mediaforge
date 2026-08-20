@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -95,7 +96,7 @@ func TestPublishSubtitleArtifactsUsesJellyfinPlexSidecarName(t *testing.T) {
 	}
 }
 
-func TestPublishSubtitleArtifactsRejectsDuplicateDestinationsBeforeCopy(t *testing.T) {
+func TestPublishSubtitleArtifactsUsesStreamIndexForDuplicateDestinations(t *testing.T) {
 	temp := t.TempDir()
 	first := filepath.Join(temp, "one.srt")
 	second := filepath.Join(temp, "two.srt")
@@ -105,17 +106,34 @@ func TestPublishSubtitleArtifactsRejectsDuplicateDestinationsBeforeCopy(t *testi
 		}
 	}
 	job := models.QueueJob{SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{
-		{StreamIndex: 2, Format: "srt", Language: "spa", StagedPath: first, SizeBytes: 40},
-		{StreamIndex: 3, Format: "srt", Language: "spa", StagedPath: second, SizeBytes: 40},
+		{StreamIndex: 5, Format: "srt", Language: "eng", StagedPath: first, SizeBytes: 40},
+		{StreamIndex: 6, Format: "srt", Language: "eng", StagedPath: second, SizeBytes: 40},
 	})}
 	destinationMedia := filepath.Join(temp, "library", "Movie.mkv")
 
-	_, err := publishSubtitleArtifacts(&job, destinationMedia, false, nil)
-	if err == nil || !strings.Contains(err.Error(), "same destination") {
-		t.Fatalf("expected duplicate destination error, got %v", err)
+	published, err := publishSubtitleArtifacts(&job, destinationMedia, false, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(filepath.Join(temp, "library", "Movie.spa.srt")); !os.IsNotExist(statErr) {
-		t.Fatalf("destination should not be created during failed preflight: %v", statErr)
+	expected := []string{
+		filepath.Join(temp, "library", "Movie.eng.srt"),
+		filepath.Join(temp, "library", "Movie.eng.6.srt"),
+	}
+	if !reflect.DeepEqual(published, expected) {
+		t.Fatalf("published paths=%#v want %#v", published, expected)
+	}
+	for _, destination := range expected {
+		if info, statErr := os.Stat(destination); statErr != nil || info.Size() == 0 {
+			t.Fatalf("published subtitle %q is not readable: info=%#v err=%v", destination, info, statErr)
+		}
+	}
+
+	published, err = publishSubtitleArtifacts(&job, destinationMedia, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(published) != 0 {
+		t.Fatalf("identical retry must not create more sidecars: %#v", published)
 	}
 }
 

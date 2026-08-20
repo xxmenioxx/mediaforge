@@ -16,7 +16,7 @@ import CancelIcon from '@mui/icons-material/Cancel';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RemoveCircleOutlineIcon from '@mui/icons-material/RemoveCircleOutline';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { AppSetting, QueueJob } from '../api/types';
@@ -34,7 +34,8 @@ export function WorkersPage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const workerNodes = useQuery({ queryKey: ['workerNodes'], queryFn: api.workerNodes, refetchInterval: 5000 });
   const workerSettings = getWorkerSettings(settings.data);
-  const [workerName, setWorkerName] = useState('local-worker');
+  const [workerNameOverride, setWorkerNameOverride] = useState('');
+  const workerName = workerNameOverride || workerSettings.defaultWorkerName || 'local-worker';
   const [activePage, setActivePage] = useState(0);
   const [activeRowsPerPage, setActiveRowsPerPage] = useState(5);
   const [failedPage, setFailedPage] = useState(0);
@@ -78,12 +79,6 @@ export function WorkersPage() {
   const pagedFailedJobs = failedJobs.slice(failedPage * failedRowsPerPage, failedPage * failedRowsPerPage + failedRowsPerPage);
   const recentJobs = (jobs.data ?? []).filter((job) => job.status !== 'queued' && job.status !== 'running').slice(0, 6);
 
-  useEffect(() => {
-    if (workerSettings.defaultWorkerName) {
-      setWorkerName(workerSettings.defaultWorkerName);
-    }
-  }, [workerSettings.defaultWorkerName]);
-
   function claimAndRunNextJob() {
     claimJob.mutate({ workerName });
   }
@@ -119,17 +114,27 @@ export function WorkersPage() {
         <Card sx={{ mb: 2 }}><CardContent><Stack spacing={1.5}>
           <Typography variant="h3">Worker availability</Typography>
           {workerNodes.isError ? <Alert severity="warning">Unable to load registered workers.</Alert> : null}
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+          <Grid container spacing={1}>
             {(workerNodes.data ?? []).map((worker) => (
-              <Chip
-                key={worker.id}
-                color={worker.status === 'online' ? 'success' : 'default'}
-                label={`${worker.name} · ${worker.status} · ${worker.runtimeProfile || 'unknown runtime'} · ${worker.maxConcurrentJobs} slots · ${worker.encoders.filter((item): item is string => typeof item === 'string').join(', ') || 'no encoders'}`}
-                sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
-              />
+              <Grid key={worker.id} size={{ xs: 12, sm: 6, lg: 4 }}>
+                <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25, height: '100%' }}>
+                  <Stack spacing={0.75}>
+                    <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center">
+                      <Typography fontWeight={700} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>{worker.name}</Typography>
+                      <Chip label={worker.status} color={worker.status === 'online' ? 'success' : 'default'} size="small" />
+                    </Stack>
+                    <Typography color="text.secondary" variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+                      {worker.runtimeProfile || 'Unknown runtime'} · {worker.maxConcurrentJobs} slots
+                    </Typography>
+                    <Typography color="text.secondary" variant="caption" sx={{ overflowWrap: 'anywhere' }}>
+                      {worker.encoders.filter((item): item is string => typeof item === 'string').join(', ') || 'No encoders reported'}
+                    </Typography>
+                  </Stack>
+                </Box>
+              </Grid>
             ))}
-            {!workerNodes.isLoading && !(workerNodes.data ?? []).length ? <Typography color="text.secondary">No workers have registered a heartbeat.</Typography> : null}
-          </Stack>
+            {!workerNodes.isLoading && !(workerNodes.data ?? []).length ? <Grid size={{ xs: 12 }}><Typography color="text.secondary">No workers have registered a heartbeat.</Typography></Grid> : null}
+          </Grid>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             {['all', ...workerOptions].map((worker) => (
               <Chip
@@ -152,7 +157,7 @@ export function WorkersPage() {
         <Grid container spacing={2} sx={{ mb: 2 }}>
           <Grid size={{ xs: 12, md: 5 }}>
             <Card sx={{ height: '100%' }}>
-              <CardContent>
+              <CardContent sx={{ p: { xs: 1.5, sm: 2 }, '&:last-child': { pb: { xs: 1.5, sm: 2 } } }}>
                 <Stack spacing={2}>
                   <Stack>
                     <Typography variant="h3">Local Worker</Typography>
@@ -164,7 +169,7 @@ export function WorkersPage() {
                     <TextField
                       label="Worker name"
                       value={workerName}
-                      onChange={(event) => setWorkerName(event.target.value)}
+                      onChange={(event) => setWorkerNameOverride(event.target.value)}
                       fullWidth
                     />
                     <Button
@@ -249,10 +254,10 @@ export function WorkersPage() {
                     <Stack key={job.id} spacing={0.75} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
                       <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={1}>
                         <Stack sx={{ minWidth: 0 }}>
-                          <Typography fontWeight={700} noWrap>
+                          <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>
                             {job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'} · {fileNameFromPath(job.mediaPath)}
                           </Typography>
-                          <Typography color="text.secondary" variant="body2" noWrap>
+                          <Typography color="text.secondary" variant="body2" sx={{ overflowWrap: 'anywhere' }}>
                             {job.workerName || 'Unclaimed'} · P{job.priority}
                           </Typography>
                         </Stack>
@@ -375,7 +380,7 @@ function WorkerBatchCard({
 
   return (
     <Card variant="outlined" sx={{ bgcolor: 'transparent' }}>
-      <CardContent>
+      <CardContent sx={{ p: { xs: 1.5, sm: 2 }, '&:last-child': { pb: { xs: 1.5, sm: 2 } } }}>
         <Stack spacing={1.5}>
           <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
             <Stack spacing={0.4} sx={{ minWidth: 0 }}>
@@ -400,7 +405,7 @@ function WorkerBatchCard({
                   <Typography color="text.secondary" variant="body2">{job.progress}% · P{job.priority} · {job.workerName || 'Unclaimed'}</Typography>
                   {job.errorMessage ? <Typography color="error" variant="body2">{job.errorMessage}</Typography> : null}
                 </Stack>
-                <Stack direction="row" spacing={1}>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ '& .MuiButton-root': { flex: { xs: '1 1 calc(50% - 8px)', sm: '0 0 auto' } } }}>
                   <JobStatusChip status={job.status} />
                   <Button size="small" variant="outlined" onClick={() => onDetails(job)}>Details</Button>
                   <Button size="small" color="warning" onClick={() => onCancelJob(job)} disabled={!['queued', 'running'].includes(job.status) || isUpdating}>Cancel</Button>
@@ -409,7 +414,7 @@ function WorkerBatchCard({
             ))}
           </Stack>
           {batch.batchId ? (
-            <Stack direction="row" spacing={1} justifyContent="flex-end">
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' } } }}>
               <Button startIcon={<CancelIcon />} color="warning" variant="outlined" onClick={() => onCancelBatch(batch)} disabled={!pending.length || isUpdating}>Cancel Batch</Button>
               <Button startIcon={<RemoveCircleOutlineIcon />} color="error" variant="outlined" onClick={() => onRemoveBatch(batch)} disabled={isUpdating || batch.jobs.every((job) => job.status === 'completed')}>Remove Batch</Button>
             </Stack>

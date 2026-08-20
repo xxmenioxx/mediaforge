@@ -242,7 +242,7 @@ export function QueuePage() {
           </Button>
         </Alert>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" justifyContent="space-between" useFlexGap sx={{ mb: 2 }}>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ width: { xs: '100%', sm: 'auto' }, '& .MuiButton-root': { flex: { xs: '1 1 calc(50% - 8px)', sm: '0 0 auto' } } }}>
             {(['all', 'running', 'queued', 'completed', 'failed', 'canceled'] as const).map((status) => (
               <Button
                 key={status}
@@ -336,10 +336,16 @@ export function QueuePage() {
             </Grid>
           </CardContent>
         </Card>
-        <Dialog open={isJobDialogOpen} onClose={closeJobDialog} maxWidth="md" fullWidth>
+        <Dialog
+          open={isJobDialogOpen}
+          onClose={closeJobDialog}
+          maxWidth="md"
+          fullWidth
+          PaperProps={{ sx: { m: { xs: 0, sm: 4 }, width: { xs: '100%', sm: 'calc(100% - 64px)' }, maxHeight: { xs: '100%', sm: 'calc(100% - 64px)' }, borderRadius: { xs: 0, sm: 1 } } }}
+        >
           <DialogTitle>{editingJob ? (editingJob.executionNumber ? `Edit Job #${editingJob.executionNumber}` : 'Edit Pending Item') : 'Queue Job'}</DialogTitle>
           <Box component="form" onSubmit={submit}>
-            <DialogContent>
+            <DialogContent sx={{ px: { xs: 2, sm: 3 } }}>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 4 }}>
                   <AssetAutocomplete
@@ -406,7 +412,7 @@ export function QueuePage() {
               </Alert>
             ) : null}
             </DialogContent>
-            <DialogActions>
+            <DialogActions sx={{ px: { xs: 2, sm: 3 }, pb: { xs: 2, sm: 1 }, '& .MuiButton-root': { flex: { xs: 1, sm: 'initial' } } }}>
               <Button onClick={closeJobDialog}>Cancel</Button>
               <Button type="submit" variant="contained" disabled={createJob.isPending || editJob.isPending || !form.mediaPath || !form.libraryId || (!form.profileId && !form.audioProfileKey && !selectedTrackProfileKey)}>
                 {editingJob ? 'Save' : 'Queue'}
@@ -561,7 +567,7 @@ function FlatJobRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
       sx={{
-        position: 'relative', border: 1, borderColor: 'divider', borderRadius: 1, p: 1,
+        position: 'relative', border: 1, borderColor: 'divider', borderRadius: 1, p: { xs: 0.75, sm: 1 },
         bgcolor: isDragging ? 'action.selected' : 'rgba(255,255,255,0.018)', opacity: isDragging ? 0.55 : 1,
         '&::before': dropPlacement === 'before' ? dropIndicator('top') : undefined,
         '&::after': dropPlacement === 'after' ? dropIndicator('bottom') : undefined,
@@ -585,17 +591,17 @@ function FlatJobRow({
             <Typography variant="caption" color="text.secondary">{job.workerName || 'Unassigned'}</Typography>
           </Stack>
         </Stack>
-        <Chip label={stage.label} color={stage.color} size="small" variant="outlined" sx={{ justifySelf: { lg: 'start' }, ml: { xs: 5, lg: 0 } }} />
-        <Stack spacing={0.1} sx={{ ml: { xs: 5, lg: 0 } }}>
+        <Chip label={stage.label} color={stage.color} size="small" variant="outlined" sx={{ gridColumn: { xs: '2', lg: 'auto' }, justifySelf: 'start' }} />
+        <Stack spacing={0.1} sx={{ gridColumn: { xs: '2', lg: 'auto' } }}>
           <Typography variant="caption" color="text.secondary">Elapsed {timing.elapsed || '—'}</Typography>
           <Typography variant="caption" color="text.secondary">ETA {timing.eta || '—'}</Typography>
         </Stack>
-        <Stack spacing={0.35} sx={{ ml: { xs: 5, lg: 0 } }}>
+        <Stack spacing={0.35} sx={{ gridColumn: { xs: '2', lg: 'auto' }, minWidth: 0 }}>
           <Stack direction="row" justifyContent="space-between"><Typography variant="caption">Progress</Typography><Typography variant="caption">{job.progress}%</Typography></Stack>
           <LinearProgress variant="determinate" value={job.progress} sx={{ height: 7, borderRadius: 1 }} />
         </Stack>
-        <Chip label={job.status} color={statusColor(job.status)} size="small" sx={{ justifySelf: { lg: 'start' }, ml: { xs: 5, lg: 0 } }} />
-        <Stack direction="row" spacing={0.25} justifyContent="flex-end" sx={{ gridColumn: { xs: '1 / -1', lg: 'auto' } }}>
+        <Chip label={job.status} color={statusColor(job.status)} size="small" sx={{ gridColumn: { xs: '2', lg: 'auto' }, justifySelf: 'start' }} />
+        <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap sx={{ gridColumn: { xs: '1 / -1', lg: 'auto' }, borderTop: { xs: 1, lg: 0 }, borderColor: 'divider', pt: { xs: 0.5, lg: 0 } }}>
           {nextAction ? <Tooltip title={nextAction.label}><IconButton component={RouterLink} to={nextAction.to} size="small" color="primary"><OpenInNewIcon fontSize="small" /></IconButton></Tooltip> : null}
           <Tooltip title="Details"><IconButton size="small" color={job.status === 'failed' ? 'error' : 'primary'} onClick={onDetails}><ErrorOutlineIcon fontSize="small" /></IconButton></Tooltip>
           <Tooltip title="Edit"><span><IconButton size="small" disabled={isUpdating || !canEdit} onClick={onEdit}><EditIcon fontSize="small" /></IconButton></span></Tooltip>
