@@ -49,7 +49,7 @@ import PlaylistRemoveIcon from '@mui/icons-material/PlaylistRemove';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -70,6 +70,7 @@ import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgeP
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
+import { withStreamSelection } from '../utils/assetTrackSelection';
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
@@ -724,6 +725,7 @@ function ArchivedAssetTable({
                 trackProfiles={trackProfiles}
                 assetCategories={assetCategories}
                 groupRelativePath={group.relativePath}
+                groupPath={group.path}
                 groupCategory=""
                 confidenceEnabled
                 groupProfileId={0}
@@ -793,6 +795,7 @@ function AssetGroupRow({
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
 }) {
   const queryClient = useQueryClient();
+  const pendingAssetTrackSaves = useIsMutating({ mutationKey: ['assetTrackSelection', normalizePath(group.path)] });
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
@@ -1241,7 +1244,7 @@ function AssetGroupRow({
                           queueGroup.mutate();
                         }}
                         disabled={
-						  profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending ||
+                          profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || pendingAssetTrackSaves > 0 ||
                           (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) ||
                           !selectedLibraryId ||
                           groupAssets.length === 0 ||
@@ -1250,7 +1253,7 @@ function AssetGroupRow({
                         fullWidth
                         sx={{ minHeight: 40, alignSelf: 'center' }}
                       >
-                        Queue Folder
+                        {pendingAssetTrackSaves > 0 ? 'Saving Tracks…' : 'Queue Folder'}
                       </Button>
                     </Grid>
                   </Grid>
@@ -1420,6 +1423,7 @@ function AssetGroupRow({
                           pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
                           groupRelativePath={group.relativePath}
+                          groupPath={group.path}
                           groupCategory={groupCategory}
                           confidenceEnabled={isConfidenceEnabled}
                           groupProfileId={selectedProfileId < 0 ? -1 : effectiveProfileId}
@@ -1544,6 +1548,7 @@ function AssetRow({
   pathTrackProfile,
   assetCategories,
   groupRelativePath,
+  groupPath,
   groupCategory,
   confidenceEnabled,
   groupProfileId,
@@ -1567,6 +1572,7 @@ function AssetRow({
   pathTrackProfile?: TrackProfile;
   assetCategories: string[];
   groupRelativePath: string;
+  groupPath: string;
   groupCategory: string;
   confidenceEnabled: boolean;
   groupProfileId: number;
@@ -1717,6 +1723,7 @@ function AssetRow({
     },
   });
   const updateConversion = useMutation({
+    mutationKey: ['assetTrackSelection', normalizePath(groupPath)],
     mutationFn: api.updateAssetConversion,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
@@ -1927,19 +1934,10 @@ function AssetRow({
     const allIndexes = streamIndexesForType(scan, type);
     const current = conversionStreamIndexes(conversionDraft, scan, type);
     const next = keep ? normalizeNumberList([...current, index]) : safeArray(current).filter((candidate) => candidate !== index);
-    updateConversionDraftStream(type, selectedOrUndefined(next, allIndexes));
-  }
-
-  function updateConversionDraftStream(type: MediaStreamInfo['type'], indexes: number[] | undefined) {
-    setConversionDraft((current) => {
-      if (type === 'video') {
-        return { ...current, keepVideoStreams: indexes };
-      }
-      if (type === 'audio') {
-        return { ...current, keepAudioStreams: indexes };
-      }
-      return { ...current, keepSubtitleStreams: indexes };
-    });
+    const indexes = selectedOrUndefined(next, allIndexes);
+    const nextDraft = withStreamSelection(conversionDraft, type, indexes);
+    setConversionDraft(nextDraft);
+    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
 
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
