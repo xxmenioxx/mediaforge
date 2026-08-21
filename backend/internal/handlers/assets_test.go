@@ -326,6 +326,116 @@ func TestAssetReportsSavingsUsesOnlyActiveConvertedPublications(t *testing.T) {
 	}
 }
 
+func TestAcceptAsIsAndReconsiderPreserveMediaSnapshotAndQueue(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:accept-as-is-decision?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{},
+		&models.DirectPublication{}, &models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	libraryRoot := filepath.Join(root, "library")
+	archiveRoot := filepath.Join(root, "archive")
+	for _, directory := range []string{rawRoot, libraryRoot, archiveRoot} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mediaPath := filepath.Join(libraryRoot, "movies", "My Movie.mkv")
+	writeTestFile(t, mediaPath, "reviewed-media")
+	library := models.Library{Name: "Movies", DestinationPath: libraryRoot, Type: "movies"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{
+		Path: mediaPath, RootPath: libraryRoot, RelativePath: "movies/My Movie.mkv", GroupPath: "movies",
+		FileName: "My Movie.mkv", Extension: ".mkv", SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
+		Status: "converted", LibraryID: library.ID, LibraryName: library.Name, SyncedAt: time.Now(),
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan := models.ScanResult{Path: mediaPath, FileName: record.FileName, VideoCodec: "hevc"}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewAssetHandler(db)
+	router.POST("/api/assets/accept-as-is", handler.AcceptAsIs)
+	router.POST("/api/assets/reconsider", handler.Reconsider)
+	requestDecision := func(endpoint string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, endpoint+"?path="+url.QueryEscape(mediaPath), strings.NewReader(`{}`)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", endpoint, response.Code, response.Body.String())
+		}
+	}
+
+	requestDecision("/api/assets/accept-as-is")
+	if err := db.First(&record, record.ID).Error; err != nil || record.Status != "accepted" {
+		t.Fatalf("accepted record=%#v err=%v", record, err)
+	}
+	if content, err := os.ReadFile(mediaPath); err != nil || string(content) != "reviewed-media" {
+		t.Fatalf("media was modified: content=%q err=%v", content, err)
+	}
+	var jobs, scans int64
+	_ = db.Model(&models.QueueJob{}).Count(&jobs).Error
+	_ = db.Model(&models.ScanResult{}).Where("id = ?", scan.ID).Count(&scans).Error
+	if jobs != 0 || scans != 1 {
+		t.Fatalf("accept side effects: jobs=%d scans=%d", jobs, scans)
+	}
+	if _, err := handler.syncAssetInventory(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&record, record.ID).Error; err != nil || record.Status != "accepted" {
+		t.Fatalf("sync did not preserve accepted status: record=%#v err=%v", record, err)
+	}
+	inventory, err := handler.assetInventoryFromDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Accepted) != 1 || len(inventory.Unverified) != 0 || inventory.Reports.AcceptedFiles != 1 || inventory.Reports.UnverifiedFiles != 0 {
+		t.Fatalf("accepted inventory classification=%#v reports=%#v", inventory.Accepted, inventory.Reports)
+	}
+
+	requestDecision("/api/assets/reconsider")
+	if err := db.First(&record, record.ID).Error; err != nil || record.Status != "unverified" {
+		t.Fatalf("reconsidered record=%#v err=%v", record, err)
+	}
+	_ = db.Model(&models.QueueJob{}).Count(&jobs).Error
+	_ = db.Model(&models.ScanResult{}).Where("id = ?", scan.ID).Count(&scans).Error
+	if jobs != 0 || scans != 1 {
+		t.Fatalf("reconsider side effects: jobs=%d scans=%d", jobs, scans)
+	}
+	if err := db.Create(&models.QueueJob{MediaPath: mediaPath, Status: JobStatusQueued}).Error; err != nil {
+		t.Fatal(err)
+	}
+	blocked := httptest.NewRecorder()
+	router.ServeHTTP(blocked, httptest.NewRequest(http.MethodPost, "/api/assets/accept-as-is?path="+url.QueryEscape(mediaPath), strings.NewReader(`{}`)))
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("open job accept status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	if err := db.First(&record, record.ID).Error; err != nil || record.Status != "unverified" {
+		t.Fatalf("blocked accept changed status: record=%#v err=%v", record, err)
+	}
+}
+
 func TestDestinationLibraryForMediaPathPrefersSpecificOrMatchingLibrary(t *testing.T) {
 	libraries := []models.Library{
 		{ID: 1, Name: "Cartoons", DestinationPath: "/media/library"},
@@ -1051,6 +1161,89 @@ func TestExtractSubtitlesFromArchivePublishesBesideActiveConvertedAsset(t *testi
 	}
 }
 
+func TestExtractSubtitlesFromArchiveRequiresActiveConvertedPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-subtitle-no-publication?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "orphan.mkv")
+	writeTestFile(t, archivePath, "archived original")
+	if err := db.Create(&models.AssetRecord{Path: archivePath, RootPath: filepath.Dir(archivePath), RelativePath: filepath.Base(archivePath), FileName: filepath.Base(archivePath), Status: "archive"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(archivePath), strings.NewReader(`{"streamIndex":2,"format":"srt"}`)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no active validated converted publication") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(strings.TrimSuffix(archivePath, filepath.Ext(archivePath)) + ".eng.2.srt"); !os.IsNotExist(err) {
+		t.Fatalf("sidecar was created without a publication: %v", err)
+	}
+}
+
+func TestExtractBitmapSubtitlesFromArchivePublishesOCRBesideConvertedAsset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-subtitle-ocr?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRoot, libraryRoot := t.TempDir(), t.TempDir()
+	archivePath := filepath.Join(archiveRoot, "DVD.original.mkv")
+	convertedPath := filepath.Join(libraryRoot, "DVD.mkv")
+	writeTestFile(t, archivePath, "archived dvd")
+	writeTestFile(t, convertedPath, "converted dvd")
+	if err := db.Create(&models.Library{Name: "Anime", DestinationPath: libraryRoot}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: "DVD.original.mkv", FileName: "DVD.original.mkv", Status: "archive"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now()
+	if err := db.Create(&models.QueueJob{MediaPath: "/raw/DVD.mkv", Status: JobStatusCompleted, ValidationStatus: ValidationStatusPassed, OriginalArchivedPath: archivePath, PublishedPath: convertedPath, PublishedAt: &publishedAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	scripts := map[string]string{
+		"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"id\":\"0x7\",\"codec_type\":\"subtitle\",\"codec_name\":\"dvd_subtitle\",\"tags\":{\"language\":\"spa\"}}]}'\n",
+		"seconv":    "#!/bin/sh\nfor argument do case \"$argument\" in --output-filename:*) output_filename=\"${argument#--output-filename:}\" ;; esac; done\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola desde Archive' > \"$output_filename\"\n",
+		"tesseract": "#!/bin/sh\nexit 0\n",
+	}
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	router := gin.New()
+	router.POST("/api/assets/extract-subtitles", NewAssetHandler(db).ExtractSubtitles)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(archivePath), strings.NewReader(`{"streamIndex":4,"format":"srt","ocrLanguage":"spa"}`)))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var started subtitleExtractionStartedResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	result := waitForSubtitleExtractionOperation(t, started.OperationID)
+	expected := strings.TrimSuffix(convertedPath, filepath.Ext(convertedPath)) + ".spa.4.srt"
+	content, err := os.ReadFile(expected)
+	if err != nil || !strings.Contains(string(content), "Hola desde Archive") || !containsString(result.Created, expected) {
+		t.Fatalf("OCR destination content=%q result=%#v err=%v", content, result, err)
+	}
+	archiveSidecar := strings.TrimSuffix(archivePath, filepath.Ext(archivePath)) + ".spa.4.srt"
+	if _, err := os.Stat(archiveSidecar); !os.IsNotExist(err) {
+		t.Fatalf("OCR sidecar was created in Archive: %v", err)
+	}
+}
+
 type subtitleExtractionStartedResponse struct {
 	OperationID string `json:"operationId"`
 	Status      string `json:"status"`
@@ -1768,6 +1961,140 @@ func TestRecoverArchiveAssetMovesOriginalBackToRaw(t *testing.T) {
 		t.Fatalf("archived snapshot history was not preserved: count=%d err=%v", archivedSnapshotCount, err)
 	}
 	assertRecoveredAssetOverridesReset(t, db, unrelatedPath, archivePath, rawPath)
+}
+
+func TestDeleteArchiveRequiresConfirmationAndPreservesProvenance(t *testing.T) {
+	db, _, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive")
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(archiveRoot, "processed-originals", "movies", "movie.mkv")
+	publishedPath := filepath.Join(libraryRoot, "movies", "movie.mkv")
+	writeTestFile(t, archivePath, "protected original")
+	writeTestFile(t, publishedPath, "published media")
+	record := models.AssetRecord{Path: archivePath, RootPath: archiveRoot, RelativePath: "movies/movie.mkv", FileName: "movie.mkv", Status: "archive", LibraryName: "Original Archive"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", Status: JobStatusCompleted, PublishedPath: publishedPath, OriginalArchivedPath: archivePath}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan := models.ScanResult{Path: archivePath, FileName: record.FileName, VideoCodec: "h264"}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/archive", NewAssetHandler(db).DeleteArchive)
+	endpoint := "/api/assets/archive?path=" + url.QueryEscape(archivePath)
+	unconfirmed := httptest.NewRecorder()
+	router.ServeHTTP(unconfirmed, httptest.NewRequest(http.MethodDelete, endpoint, strings.NewReader(`{"confirmed":false}`)))
+	if unconfirmed.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed status=%d body=%s", unconfirmed.Code, unconfirmed.Body.String())
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("unconfirmed request modified archive: %v", err)
+	}
+	outsidePath := filepath.Join(filepath.Dir(archiveRoot), "outside.mkv")
+	writeTestFile(t, outsidePath, "outside archive")
+	outsideRecord := models.AssetRecord{Path: outsidePath, RootPath: archiveRoot, RelativePath: "outside.mkv", FileName: "outside.mkv", Status: "archive"}
+	if err := db.Create(&outsideRecord).Error; err != nil {
+		t.Fatal(err)
+	}
+	outsideResponse := httptest.NewRecorder()
+	router.ServeHTTP(outsideResponse, httptest.NewRequest(http.MethodDelete, "/api/assets/archive?path="+url.QueryEscape(outsidePath), strings.NewReader(`{"confirmed":true}`)))
+	if outsideResponse.Code != http.StatusForbidden {
+		t.Fatalf("outside status=%d body=%s", outsideResponse.Code, outsideResponse.Body.String())
+	}
+	if _, err := os.Stat(outsidePath); err != nil {
+		t.Fatalf("outside file was modified: %v", err)
+	}
+
+	confirmed := httptest.NewRecorder()
+	router.ServeHTTP(confirmed, httptest.NewRequest(http.MethodDelete, endpoint, strings.NewReader(`{"confirmed":true}`)))
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirmed status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archive asset still exists: %v", err)
+	}
+	if _, err := os.Stat(publishedPath); err != nil {
+		t.Fatalf("published asset was modified: %v", err)
+	}
+	if err := db.First(&record, record.ID).Error; err != nil || !record.Missing {
+		t.Fatalf("archive inventory was not marked missing: record=%#v err=%v", record, err)
+	}
+	var jobs, scans int64
+	_ = db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Count(&jobs).Error
+	_ = db.Model(&models.ScanResult{}).Where("id = ?", scan.ID).Count(&scans).Error
+	if jobs != 1 || scans != 1 {
+		t.Fatalf("provenance was removed: jobs=%d scans=%d", jobs, scans)
+	}
+}
+
+func TestDeleteArchiveBatchReportsPartialFailureAndSupportsRetry(t *testing.T) {
+	db, _, _, archiveRoot := safeDeleteTestDB(t, "delete-archive-batch")
+	readyPath := filepath.Join(archiveRoot, "show", "ready.mkv")
+	retryPath := filepath.Join(archiveRoot, "show", "retry.mkv")
+	writeTestFile(t, readyPath, "ready")
+	records := []models.AssetRecord{
+		{Path: readyPath, RootPath: archiveRoot, RelativePath: "show/ready.mkv", FileName: "ready.mkv", Status: "archive"},
+		{Path: retryPath, RootPath: archiveRoot, RelativePath: "show/retry.mkv", FileName: "retry.mkv", Status: "archive"},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.DELETE("/api/assets/archive/batch", NewAssetHandler(db).DeleteArchiveBatch)
+	requestBatch := func(paths []string) struct {
+		Completed int `json:"completed"`
+		Failures  []struct {
+			Path   string `json:"path"`
+			Status int    `json:"status"`
+			Error  string `json:"error"`
+		} `json:"failures"`
+	} {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"paths": paths, "confirmed": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/assets/archive/batch", strings.NewReader(string(body))))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var result struct {
+			Completed int `json:"completed"`
+			Failures  []struct {
+				Path   string `json:"path"`
+				Status int    `json:"status"`
+				Error  string `json:"error"`
+			} `json:"failures"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	first := requestBatch([]string{readyPath, retryPath, readyPath})
+	if first.Completed != 1 || len(first.Failures) != 1 || first.Failures[0].Path != retryPath || first.Failures[0].Status != http.StatusNotFound {
+		t.Fatalf("unexpected partial result: %#v", first)
+	}
+	if _, err := os.Stat(readyPath); !os.IsNotExist(err) {
+		t.Fatalf("ready asset was not deleted: %v", err)
+	}
+	writeTestFile(t, retryPath, "now available")
+	retry := requestBatch([]string{retryPath})
+	if retry.Completed != 1 || len(retry.Failures) != 0 {
+		t.Fatalf("unexpected retry result: %#v", retry)
+	}
+	if _, err := os.Stat(retryPath); !os.IsNotExist(err) {
+		t.Fatalf("retried asset was not deleted: %v", err)
+	}
 }
 
 func seedRecoveredAssetOverrides(t *testing.T, db *gorm.DB, paths ...string) {

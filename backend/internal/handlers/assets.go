@@ -139,12 +139,14 @@ type AssetInventory struct {
 	Library           []Asset       `json:"library"`
 	Converted         []Asset       `json:"converted"`
 	Unverified        []Asset       `json:"unverified"`
+	Accepted          []Asset       `json:"accepted"`
 	Archive           []Asset       `json:"archive"`
 	Missing           []Asset       `json:"missing"`
 	UnprocessedGroups []AssetGroup  `json:"unprocessedGroups"`
 	LibraryGroups     []AssetGroup  `json:"libraryGroups"`
 	ConvertedGroups   []AssetGroup  `json:"convertedGroups"`
 	UnverifiedGroups  []AssetGroup  `json:"unverifiedGroups"`
+	AcceptedGroups    []AssetGroup  `json:"acceptedGroups"`
 	ArchiveGroups     []AssetGroup  `json:"archiveGroups"`
 	Reports           AssetReports  `json:"reports"`
 	Sync              AssetSyncInfo `json:"sync"`
@@ -163,6 +165,7 @@ type AssetReports struct {
 	LibraryFiles             int   `json:"libraryFiles"`
 	ConvertedFiles           int   `json:"convertedFiles"`
 	UnverifiedFiles          int   `json:"unverifiedFiles"`
+	AcceptedFiles            int   `json:"acceptedFiles"`
 	ArchiveFiles             int   `json:"archiveFiles"`
 	ArchiveBytes             int64 `json:"archiveBytes"`
 	ExpiredArchive           int   `json:"expiredArchive"`
@@ -428,6 +431,83 @@ func (h AssetHandler) Sync(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (h AssetHandler) AcceptAsIs(c *gin.Context) {
+	h.transitionLibraryDecision(c, "accepted", []string{"unverified", "library", "converted"})
+}
+
+func (h AssetHandler) Reconsider(c *gin.Context) {
+	h.transitionLibraryDecision(c, "unverified", []string{"accepted"})
+}
+
+func (h AssetHandler) transitionLibraryDecision(c *gin.Context, targetStatus string, allowedStatuses []string) {
+	mediaPath := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if mediaPath == "." || mediaPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", mediaPath).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "asset not found in inventory"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if record.Missing {
+		c.JSON(http.StatusConflict, gin.H{"error": "missing assets cannot change review decision"})
+		return
+	}
+	allowed, err := h.pathBelongsToLibrary(mediaPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "asset is outside configured libraries"})
+		return
+	}
+	if info, statErr := os.Stat(mediaPath); statErr != nil || info.IsDir() {
+		c.JSON(http.StatusConflict, gin.H{"error": "library asset is not readable from the backend container"})
+		return
+	}
+	if !containsString(allowedStatuses, record.Status) {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("asset status %q cannot transition to %s", record.Status, targetStatus)})
+		return
+	}
+	if targetStatus == "accepted" {
+		cleanPath := filepath.Clean(record.Path)
+		if mvForgeOutputPaths(h.db)[cleanPath] || directPublicationPaths(h.db)[cleanPath] {
+			c.JSON(http.StatusConflict, gin.H{"error": "published assets cannot be accepted as an unconverted library decision"})
+			return
+		}
+		if h.db.Migrator().HasTable(&models.QueueJob{}) {
+			var openJobs int64
+			if err := h.db.Model(&models.QueueJob{}).
+				Where("media_path = ? AND status <> ? AND published_at IS NULL", mediaPath, JobStatusCanceled).
+				Count(&openJobs).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if openJobs > 0 {
+				c.JSON(http.StatusConflict, gin.H{"error": "asset has an open Queue job and cannot be accepted as-is"})
+				return
+			}
+		}
+	}
+
+	if err := h.db.Model(&models.AssetRecord{}).Where("id = ? AND status IN ?", record.ID, allowedStatuses).Update("status", targetStatus).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.First(&record, record.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, assetFromRecord(record))
+}
+
 // RemoveMissing dismisses a stale inventory entry after verifying that its
 // media path is still absent. It intentionally preserves scan snapshots, job
 // history, logs, reports and publication provenance.
@@ -620,6 +700,128 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		"recoveredPath": destination,
 		"message":       "Archive asset recovered. Converted files were not deleted.",
 	})
+}
+
+func (h AssetHandler) DeleteArchive(c *gin.Context) {
+	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
+	if path == "." || path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	var input struct {
+		Confirmed bool `json:"confirmed"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !input.Confirmed {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permanent archive deletion requires explicit confirmation"})
+		return
+	}
+
+	if status, err := h.permanentlyDeleteArchiveAsset(path); err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "deleted", "path": path,
+		"message": "Archive asset permanently deleted. Jobs, reports, logs, snapshots, and publication provenance were preserved.",
+	})
+}
+
+func (h AssetHandler) DeleteArchiveBatch(c *gin.Context) {
+	var input struct {
+		Paths     []string `json:"paths"`
+		Confirmed bool     `json:"confirmed"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !input.Confirmed {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permanent archive deletion requires explicit confirmation"})
+		return
+	}
+	paths := normalizedUniquePaths(input.Paths)
+	if len(paths) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one path is required"})
+		return
+	}
+	completed := 0
+	failures := make([]gin.H, 0)
+	for _, path := range paths {
+		if status, err := h.permanentlyDeleteArchiveAsset(path); err != nil {
+			failures = append(failures, gin.H{"path": path, "status": status, "error": err.Error()})
+			continue
+		}
+		completed++
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "completed", "completed": completed, "failures": failures})
+}
+
+func (h AssetHandler) permanentlyDeleteArchiveAsset(path string) (int, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || path == "" {
+		return http.StatusBadRequest, fmt.Errorf("path is required")
+	}
+	var record models.AssetRecord
+	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return http.StatusNotFound, fmt.Errorf("archive asset not found")
+		}
+		return http.StatusInternalServerError, err
+	}
+	if record.Status != "archive" {
+		return http.StatusConflict, fmt.Errorf("only Archive assets can use permanent archive deletion")
+	}
+	if record.Missing {
+		return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
+	}
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	archiveRoot = filepath.Clean(archiveRoot)
+	if path == archiveRoot || !pathIsInside(path, archiveRoot) {
+		return http.StatusForbidden, fmt.Errorf("archive asset is outside the configured Original Archive path")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
+		}
+		return http.StatusInternalServerError, fmt.Errorf("%s", mediaPathReadError(err))
+	}
+	if !info.Mode().IsRegular() {
+		return http.StatusConflict, fmt.Errorf("only regular Archive media files can be permanently deleted")
+	}
+	if err := os.Remove(path); err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("archive asset could not be deleted: %w", err)
+	}
+	now := time.Now()
+	if err := h.db.Model(&models.AssetRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
+		"missing": true, "synced_at": now, "updated_at": now,
+	}).Error; err != nil {
+		appendSystemLog(h.db, "archive_asset_deleted_inventory_update_failed", map[string]string{"path": path}, err)
+		return http.StatusInternalServerError, fmt.Errorf("archive file was deleted, but inventory could not be updated: %w", err)
+	}
+	appendSystemLog(h.db, "archive_asset_permanently_deleted", map[string]string{"path": path, "fileName": record.FileName, "library": record.LibraryName}, nil)
+	return http.StatusOK, nil
+}
+
+func normalizedUniquePaths(values []string) []string {
+	paths := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		path := filepath.Clean(strings.TrimSpace(value))
+		if path == "." || path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func (h AssetHandler) DeleteConverted(c *gin.Context) {
@@ -1790,7 +1992,7 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 	}
 	migrating := make([]models.AssetRecord, 0)
 	for _, record := range records {
-		if pathIsInside(record.Path, sourcePath) && (record.Status == "library" || record.Status == "unverified" || record.Status == "converted") {
+		if pathIsInside(record.Path, sourcePath) && (record.Status == "library" || record.Status == "unverified" || record.Status == "accepted" || record.Status == "converted") {
 			migrating = append(migrating, record)
 		}
 	}
@@ -3738,6 +3940,7 @@ func joinPreviewFilters(filters ...string) string {
 type previewVideoCharacteristics struct {
 	Codec              string `json:"codec"`
 	Profile            string `json:"profile,omitempty"`
+	Level              int    `json:"level,omitempty"`
 	PixelFormat        string `json:"pixelFormat,omitempty"`
 	BitDepth           int    `json:"bitDepth,omitempty"`
 	Width              int    `json:"width"`
@@ -3758,7 +3961,7 @@ func probePreviewCharacteristics(path string) (previewVideoCharacteristics, erro
 		"ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=codec_name,profile,pix_fmt,bits_per_raw_sample,width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate,field_order,color_range,color_space,color_transfer,color_primaries,chroma_location",
+		"-show_entries", "stream=codec_name,profile,level,pix_fmt,bits_per_raw_sample,width,height,sample_aspect_ratio,display_aspect_ratio,avg_frame_rate,field_order,color_range,color_space,color_transfer,color_primaries,chroma_location",
 		"-of", "json",
 		path,
 	)
@@ -3777,6 +3980,7 @@ func probePreviewCharacteristics(path string) (previewVideoCharacteristics, erro
 		Streams []struct {
 			CodecName          string `json:"codec_name"`
 			Profile            string `json:"profile"`
+			Level              int    `json:"level"`
 			PixFmt             string `json:"pix_fmt"`
 			BitsPerRawSample   string `json:"bits_per_raw_sample"`
 			Width              int    `json:"width"`
@@ -3804,7 +4008,7 @@ func probePreviewCharacteristics(path string) (previewVideoCharacteristics, erro
 		bitDepth = pixelFormatBitDepth(stream.PixFmt)
 	}
 	return previewVideoCharacteristics{
-		Codec: stream.CodecName, Profile: stream.Profile, PixelFormat: stream.PixFmt, BitDepth: bitDepth,
+		Codec: stream.CodecName, Profile: stream.Profile, Level: stream.Level, PixelFormat: stream.PixFmt, BitDepth: bitDepth,
 		Width: stream.Width, Height: stream.Height, SampleAspectRatio: stream.SampleAspectRatio,
 		DisplayAspectRatio: stream.DisplayAspectRatio, FrameRate: stream.AverageFrameRate,
 		FieldOrder: stream.FieldOrder, ColorRange: stream.ColorRange, ColorSpace: stream.ColorSpace,
@@ -4569,12 +4773,14 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		Library:           []Asset{},
 		Converted:         []Asset{},
 		Unverified:        []Asset{},
+		Accepted:          []Asset{},
 		Archive:           []Asset{},
 		Missing:           []Asset{},
 		UnprocessedGroups: []AssetGroup{},
 		LibraryGroups:     []AssetGroup{},
 		ConvertedGroups:   []AssetGroup{},
 		UnverifiedGroups:  []AssetGroup{},
+		AcceptedGroups:    []AssetGroup{},
 		ArchiveGroups:     []AssetGroup{},
 	}
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
@@ -4605,6 +4811,9 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 			}
 		case "archive":
 			inventory.Archive = append(inventory.Archive, asset)
+		case "accepted":
+			inventory.Accepted = append(inventory.Accepted, asset)
+			inventory.Library = append(inventory.Library, asset)
 		default:
 			if !record.Missing {
 				inventory.Unprocessed = append(inventory.Unprocessed, asset)
@@ -4619,31 +4828,37 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	applyAssetReviews(inventory.Library, reviews)
 	applyAssetReviews(inventory.Converted, reviews)
 	applyAssetReviews(inventory.Unverified, reviews)
+	applyAssetReviews(inventory.Accepted, reviews)
 	applyAssetReviews(inventory.Archive, reviews)
 	applyAssetMetadata(inventory.Unprocessed, metadata)
 	applyAssetMetadata(inventory.Library, metadata)
 	applyAssetMetadata(inventory.Converted, metadata)
 	applyAssetMetadata(inventory.Unverified, metadata)
+	applyAssetMetadata(inventory.Accepted, metadata)
 	applyAssetMetadata(inventory.Archive, metadata)
 	applyAssetConversionOverrides(inventory.Unprocessed, conversion)
 	applyAssetConversionOverrides(inventory.Library, conversion)
 	applyAssetConversionOverrides(inventory.Converted, conversion)
 	applyAssetConversionOverrides(inventory.Unverified, conversion)
+	applyAssetConversionOverrides(inventory.Accepted, conversion)
 	applyAssetConversionOverrides(inventory.Archive, conversion)
 	sortAssets(inventory.Unprocessed)
 	sortAssets(inventory.Library)
 	sortAssets(inventory.Converted)
 	sortAssets(inventory.Unverified)
+	sortAssets(inventory.Accepted)
 	sortAssets(inventory.Archive)
 	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
 	inventory.LibraryGroups = groupAssets(inventory.Library, reviews, metadata)
 	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
 	inventory.UnverifiedGroups = groupAssets(inventory.Unverified, reviews, metadata)
+	inventory.AcceptedGroups = groupAssets(inventory.Accepted, reviews, metadata)
 	inventory.ArchiveGroups = groupAssets(inventory.Archive, reviews, metadata)
 	sortAssetGroups(inventory.UnprocessedGroups)
 	sortAssetGroups(inventory.LibraryGroups)
 	sortAssetGroups(inventory.ConvertedGroups)
 	sortAssetGroups(inventory.UnverifiedGroups)
+	sortAssetGroups(inventory.AcceptedGroups)
 	sortAssetGroups(inventory.ArchiveGroups)
 	for _, record := range records {
 		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
@@ -4730,6 +4945,14 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 
 	libraryRecords := []models.AssetRecord{}
+	acceptedPaths := map[string]bool{}
+	var acceptedRecords []models.AssetRecord
+	if err := h.db.Where("status = ? AND missing = ?", "accepted", false).Find(&acceptedRecords).Error; err != nil {
+		return result, err
+	}
+	for _, accepted := range acceptedRecords {
+		acceptedPaths[filepath.Clean(accepted.Path)] = true
+	}
 	for _, library := range libraries {
 		destinationPath := strings.TrimSpace(library.DestinationPath)
 		if destinationPath == "" {
@@ -4750,11 +4973,16 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	for _, record := range libraryRecords {
+		if acceptedPaths[filepath.Clean(record.Path)] {
+			record.Status = "accepted"
+		}
 		if err := upsertAssetRecord(h.db, record); err != nil {
 			return result, err
 		}
 		result.LibraryFiles++
-		if mvForgeOutputs[filepath.Clean(record.Path)] {
+		if record.Status == "accepted" {
+			continue
+		} else if mvForgeOutputs[filepath.Clean(record.Path)] {
 			result.ConvertedFiles++
 		} else {
 			result.UnverifiedFiles++
@@ -5249,6 +5477,7 @@ func assetReports(db *gorm.DB, inventory AssetInventory, missing MissingClassifi
 		LibraryFiles:      len(inventory.Library),
 		ConvertedFiles:    len(inventory.Converted),
 		UnverifiedFiles:   len(inventory.Unverified),
+		AcceptedFiles:     len(inventory.Accepted),
 		ArchiveFiles:      len(inventory.Archive),
 		MissingFiles:      missing.Total,
 		MissingActionable: missing.Actionable,

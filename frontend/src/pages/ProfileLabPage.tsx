@@ -69,6 +69,8 @@ import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { HEVCLevelControls } from '../components/HEVCLevelControls';
+import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
@@ -123,6 +125,9 @@ type LabFidelityInspection = {
   qsvFeatureStatus: QSVFeatureStatus;
   frameRecommendation: { targetGopFrames: number; targetGopSeconds: number; maxBFrames: number; confidence: string; reasons: string[] };
   frameValidation: { verdict: 'safe' | 'review' | 'reject'; confidence: string; reasons: string[] };
+  requestedHEVCLevel?: string;
+  measuredHEVCLevel?: string;
+  hevcLevelValidation: { verdict: 'safe' | 'review' | 'reject'; reason: string };
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -1019,6 +1024,9 @@ export function ProfileLabPage() {
       const sourceFrameStructure = selectedAssetSnapshot?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
       const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, selectedAssetSnapshot, conversion.profile);
       const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, conversion.profile ?? videoDraft, conversionInspection.qsvFeatureStatus);
+      const requestedHEVCLevel = hevcLevelForLab(conversion.profile ?? videoDraft, selectedAssetSnapshot, conversionInspection.effectiveEncoder);
+      const measuredHEVCLevel = conversionInspection.output.codec === 'hevc' ? formatHEVCLevel(conversionInspection.output.level) : undefined;
+      const hevcLevelValidation = validateHEVCLevelForLab(requestedHEVCLevel, measuredHEVCLevel, conversionInspection.output.codec);
       return {
         assetPath: conversion.path,
         draftSignature: JSON.stringify(conversion.profile ?? null),
@@ -1038,6 +1046,9 @@ export function ProfileLabPage() {
         qsvFeatureStatus: conversionInspection.qsvFeatureStatus,
         frameRecommendation,
         frameValidation,
+        requestedHEVCLevel,
+        measuredHEVCLevel,
+        hevcLevelValidation,
         requestedEncoder: conversionInspection.requestedEncoder,
         effectiveEncoder: conversionInspection.effectiveEncoder,
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
@@ -1638,6 +1649,8 @@ export function ProfileLabPage() {
           derivedFromAsset: selectedAsset?.path ?? '',
           frameStructureRecommendation: validatedFidelityInspection?.frameRecommendation ?? sourceRecommendation,
           frameStructureValidation: validatedFidelityInspection?.frameValidation,
+          hevcLevelRecommendation: selectedAssetSnapshot?.hevcLevelRecommendation,
+          hevcLevelValidation: validatedFidelityInspection?.hevcLevelValidation,
         },
       },
     });
@@ -2839,6 +2852,19 @@ export function ProfileLabPage() {
                               compact
                             />
                           </Grid>
+                          {isHEVCEncoder(videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)) ? (
+                            <Grid size={{ xs: 12 }}>
+                              <HEVCLevelControls
+                                config={videoDraft.workerConfig ?? {}}
+                                recommendation={selectedAssetSnapshot?.hevcLevelRecommendation}
+                                onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
+                                onChangeMany={(patch) => setVideoDraft((current) => ({ ...current, workerConfig: { ...current.workerConfig, ...patch } }))}
+                                encoder={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)}
+                                disabled={videoDraft.videoCodec === 'copy'}
+                                compact
+                              />
+                            </Grid>
+                          ) : null}
                           {videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' && hardwareUsesGlobalQuality(selectedHardwareEncoder) ? <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                             <TextField
                               label={selectedHardwareEncoder === 'hevc_qsv' ? 'QSV quality (ICQ)' : 'Hardware quality'}
@@ -4048,6 +4074,25 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
   return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined && source ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || `No source frame-structure sample is stored; using a conservative ${mode} time baseline of ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).`, source ? `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.` : `No source B-run is stored; using conservative maximum B depth ${maxBFrames}.`, encoderReason] };
 }
 
+function hevcLevelForLab(profile: ProfileInput | undefined, scan: ScanResult | undefined, encoder: string) {
+  if (encoder !== 'libx265' && encoder !== 'hevc_qsv') return undefined;
+  const mode = profile ? videoWorkerValue(profile, 'hevcLevelMode', 'auto') : 'auto';
+  if (mode === 'recommended') return scan?.hevcLevelRecommendation?.recommendedLevel;
+  if (mode === 'custom') {
+    const level = profile ? videoWorkerValue(profile, 'hevcLevel', '') : '';
+    return level || undefined;
+  }
+  return undefined;
+}
+
+function validateHEVCLevelForLab(requested: string | undefined, measured: string | undefined, codec: string) {
+  if (codec !== 'hevc') return { verdict: 'review' as const, reason: 'The selected output is not HEVC, so HEVC Level does not apply.' };
+  if (!requested) return { verdict: 'review' as const, reason: measured ? `Encoder Auto produced Level ${measured}; no explicit compatibility target was requested.` : 'The output did not report an HEVC Level.' };
+  if (!measured) return { verdict: 'review' as const, reason: `Level ${requested} was requested, but FFprobe did not report the output Level.` };
+  if (requested !== measured) return { verdict: 'reject' as const, reason: `Level ${requested} was requested, but the output signaled Level ${measured}.` };
+  return { verdict: 'safe' as const, reason: `The output verified the requested HEVC Level ${requested}.` };
+}
+
 function frameStructureGopFramesByMode(
   source: QSVFrameStructureAnalysis | undefined,
   scan?: ScanResult,
@@ -4350,6 +4395,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
   }> = [
     { label: 'Codec', value: (item) => item.codec || 'Unknown', expectedToChange: true },
     { label: 'Profile', value: (item) => item.profile || 'Unknown', expectedToChange: true },
+    { label: 'HEVC Level', value: (item) => item.codec === 'hevc' ? formatHEVCLevel(item.level) : 'Not applicable', expectedToChange: true },
     { label: 'Pixel format', value: (item) => item.pixelFormat || 'Unknown', expectedToChange: true },
     { label: 'Bit depth', value: (item) => item.bitDepth ? `${item.bitDepth}-bit` : 'Unknown', expectedToChange: true },
     { label: 'Frame size', value: (item) => item.width && item.height ? `${item.width}×${item.height}` : 'Unknown' },
@@ -4408,6 +4454,9 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
       ) : (
         <Alert severity="success">No unexpected geometry or color metadata differences were detected in the generated profile preview.</Alert>
       )}
+      {inspection.conversion.codec === 'hevc' || inspection.requestedHEVCLevel ? <Alert severity={inspection.hevcLevelValidation.verdict === 'safe' ? 'success' : inspection.hevcLevelValidation.verdict === 'reject' ? 'error' : 'warning'}>
+        <strong>HEVC Level:</strong> requested {inspection.requestedHEVCLevel ?? 'Auto'} · measured {inspection.measuredHEVCLevel ?? 'not reported'}. {inspection.hevcLevelValidation.reason}
+      </Alert> : null}
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small" aria-label="Preview fidelity characteristics">
           <TableHead>
@@ -6905,6 +6954,11 @@ function softwareEncoderForLabCodec(codec: string) {
   if (normalized.includes('264')) return 'libx264';
   if (normalized.includes('av1')) return 'libsvtav1';
   return 'libx265';
+}
+
+function isHEVCEncoder(encoder: string) {
+  const normalized = encoder.toLowerCase();
+  return normalized === 'libx265' || normalized.startsWith('hevc_');
 }
 
 function terminalAudioCodec(codec: string) {

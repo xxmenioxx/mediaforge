@@ -44,6 +44,7 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
@@ -73,6 +74,7 @@ const VIDEO_PROFILE_AUDIO_ONLY = -2;
 
 export function AssetsPage() {
   const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
+  const [libraryDecision, setLibraryDecision] = useState<'' | 'unverified' | 'accepted'>('');
   const [assetQuery, setAssetQuery] = useState('');
   const [mediaArea, setMediaArea] = useState('');
   const jobs = useQuery({
@@ -107,6 +109,7 @@ export function AssetsPage() {
   const unprocessedCount = safeArray(assets.data?.unprocessed).length;
   const libraryCount = safeArray(assets.data?.library).length;
   const convertedCount = safeArray(assets.data?.converted).length;
+  const acceptedCount = safeArray(assets.data?.accepted).length;
   const archiveCount = safeArray(assets.data?.archive).length;
   const currentGroups = safeArray(
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
@@ -116,7 +119,10 @@ export function AssetsPage() {
     ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
   ];
   const mediaAreas = [...new Set(allInventoryGroups.map((group) => mediaAreaForGroup(group, settings.data)).filter(Boolean))].sort();
-  const areaGroups = mediaArea ? currentGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : currentGroups;
+  const decisionGroups = tab === 'library' && libraryDecision
+    ? currentGroups.filter((group) => group.status === libraryDecision)
+    : currentGroups;
+  const areaGroups = mediaArea ? decisionGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : decisionGroups;
   const filteredGroups = filterAssetGroups(areaGroups, assetQuery);
   const filteredArchiveAssets = tab === 'archive' ? archiveAssetsFromGroups(areaGroups, assetQuery) : [];
   const runningSnapshotPaths = new Set(
@@ -129,7 +135,7 @@ export function AssetsPage() {
     <>
       <PageHeader title="Assets" eyebrow="Media inventory">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Library assets come from destination paths. Only outputs with MVForge job provenance are marked Converted; the rest remain Unverified.
+          Library assets come from destination paths. Files without publication provenance remain Unverified until they are queued or explicitly Accepted as-is.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
@@ -148,6 +154,7 @@ export function AssetsPage() {
                 onChange={(_, value) => {
                   setTab(value);
                   setAssetQuery('');
+                  setLibraryDecision('');
                 }}
                 variant="scrollable"
                 scrollButtons="auto"
@@ -165,6 +172,22 @@ export function AssetsPage() {
                   <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
                     Sync
                   </Button>
+                  {tab !== 'reports' ? (
+                    tab === 'library' ? (
+                      <TextField
+                        select
+                        value={libraryDecision}
+                        onChange={(event) => setLibraryDecision(event.target.value as '' | 'unverified' | 'accepted')}
+                        label="Decision"
+                        size="small"
+                        sx={{ width: { xs: '100%', sm: 180 } }}
+                      >
+                        <MenuItem value="">All decisions</MenuItem>
+                        <MenuItem value="unverified">Unverified</MenuItem>
+                        <MenuItem value="accepted">Accepted ({acceptedCount})</MenuItem>
+                      </TextField>
+                    ) : null
+                  ) : null}
                   {tab !== 'reports' ? (
                     <TextField
                       select
@@ -223,7 +246,7 @@ export function AssetsPage() {
             ) : null}
             {tab === 'archive' ? (
               <Alert severity="info" sx={{ mt: 1 }}>
-                Archived originals are protected here. Recovering an original will not delete converted files.
+                Archived originals are protected here. Recovery keeps converted files; permanent deletion requires an explicit irreversible-action confirmation.
               </Alert>
             ) : null}
           </CardContent>
@@ -303,7 +326,7 @@ function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
           <ReportTile label="Unprocessed" value={String(reports.unprocessedFiles)} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <ReportTile label="Library assets" value={String(reports.libraryFiles)} helper={`${reports.unverifiedFiles} unverified`} />
+          <ReportTile label="Library assets" value={String(reports.libraryFiles)} helper={`${reports.unverifiedFiles} unverified · ${reports.acceptedFiles ?? 0} accepted`} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <ReportTile label="Converted by MVForge" value={String(reports.convertedFiles)} />
@@ -429,6 +452,50 @@ const actionIconSx = {
   width: 38,
   height: 38,
 };
+
+export function ArchiveDeleteConfirmationDialog({
+  paths,
+  pathLabel,
+  accepted,
+  pending,
+  onAcceptedChange,
+  onCancel,
+  onConfirm,
+}: {
+  paths: string[];
+  pathLabel: string;
+  accepted: boolean;
+  pending: boolean;
+  onAcceptedChange: (accepted: boolean) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={paths.length > 0} onClose={pending ? undefined : onCancel} disableEscapeKeyDown={pending} maxWidth="sm" fullWidth>
+      <DialogTitle>Permanently delete from Archive?</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          <Alert severity="error">
+            These {paths.length} Archive asset(s) cannot be recovered after deletion. Converted Library assets, job history, reports, logs, and snapshots will remain, but the archived originals will be permanently lost.
+          </Alert>
+          <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
+            {paths.length === 1 ? paths[0] : `${pathLabel || 'Archive path'} · ${paths.length} assets`}
+          </Typography>
+          <FormControlLabel
+            control={<Checkbox checked={accepted} onChange={(event) => onAcceptedChange(event.target.checked)} disabled={pending} />}
+            label="I understand that these Archive assets cannot be recovered."
+          />
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onCancel} disabled={pending}>Cancel</Button>
+        <Button color="error" variant="contained" startIcon={<DeleteForeverIcon />} disabled={!accepted || pending} onClick={onConfirm}>
+          {pending ? 'Deleting…' : 'Continue'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 
 class AssetsErrorBoundary extends Component<
   { boundaryKey: string; children: ReactNode },
@@ -641,7 +708,7 @@ function ArchivedAssetTable({
               <TableCell sx={{ width: 190 }}>Status</TableCell>
               <TableCell sx={{ width: 110 }}>Size</TableCell>
               <TableCell sx={{ width: 150 }}>Modified</TableCell>
-              <TableCell align="center" sx={{ width: 180 }}>Actions</TableCell>
+              <TableCell align="center" sx={{ width: 260 }}>Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -668,6 +735,7 @@ function ArchivedAssetTable({
                 bulkSelectionEnabled={false}
                 bulkSelectionDisabled
                 onBulkSelectionChange={() => undefined}
+                archivePathAssets={safeArray(group.assets).filter((candidate) => !candidate.missing)}
               />
             )) : (
               <TableRow>
@@ -756,11 +824,12 @@ function AssetGroupRow({
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const isConvertedGroup = group.status === 'converted';
   const isPublishedAsIsGroup = group.status === 'published_as_is' || (groupAssets.length > 0 && groupAssets.every((asset) => asset.publicationMode === 'as_is'));
-  const isLibraryGroup = group.status === 'unverified' || group.status === 'library' || group.status === 'published_as_is';
+  const isAcceptedGroup = group.status === 'accepted';
+  const isLibraryGroup = group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
-  const isReadOnlyGroup = isConvertedGroup || isPublishedAsIsGroup || isArchiveGroup;
+  const isReadOnlyGroup = isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup || isArchiveGroup;
   const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
-  const bulkSelectableAssets = isReadOnlyGroup ? groupAssets.filter((asset) => !asset.missing) : [];
+  const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
   const allBulkAssetsSelected = bulkSelectableAssets.length > 0 && bulkSelectableAssets.every((asset) => selectedAssetPaths.includes(asset.path));
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
@@ -1123,6 +1192,10 @@ function AssetGroupRow({
                   <Alert severity="info">
                     Published as-is assets must be returned to Raw before they can be queued for conversion.
                   </Alert>
+                ) : isAcceptedGroup ? (
+                  <Alert severity="success">
+                    These assets were explicitly accepted as-is. Reconsider an asset before queueing it for conversion.
+                  </Alert>
                 ) : (
                   <Grid container spacing={2} alignItems="stretch">
                     <Grid size={{ xs: 12, md: 2 }}>
@@ -1482,6 +1555,7 @@ function AssetRow({
   bulkSelectionEnabled,
   bulkSelectionDisabled,
   onBulkSelectionChange,
+  archivePathAssets = [],
 }: {
   asset: Asset;
   libraries: Library[];
@@ -1504,6 +1578,7 @@ function AssetRow({
   bulkSelectionEnabled: boolean;
   bulkSelectionDisabled: boolean;
   onBulkSelectionChange: (path: string, selected: boolean) => void;
+  archivePathAssets?: Asset[];
 }) {
   const queryClient = useQueryClient();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
@@ -1535,6 +1610,8 @@ function AssetRow({
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
+  const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
+  const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const reconciliationJobId = reconciliationJobIdFromReview(assetReview);
@@ -1562,7 +1639,7 @@ function AssetRow({
       return operation.result;
     },
     onSuccess: async (scan) => {
-      if (asset.status !== 'converted' && asset.status !== 'archive') {
+      if (asset.status !== 'converted' && asset.status !== 'archive' && asset.status !== 'accepted') {
         profileSuggestion.mutate(scan.path);
       }
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
@@ -1577,7 +1654,7 @@ function AssetRow({
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
-    enabled: showAdvisorDialog && mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && confidenceEnabled && effectiveProfileId > 0,
+    enabled: showAdvisorDialog && mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && asset.status !== 'accepted' && confidenceEnabled && effectiveProfileId > 0,
   });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
@@ -1652,6 +1729,14 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+  const deleteArchiveAssets = useMutation({
+    mutationFn: api.deleteArchiveAssets,
+    onSuccess: async () => {
+      setArchiveDeletePaths([]);
+      setArchiveDeleteAccepted(false);
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
   const deleteConvertedAsset = useMutation({
     mutationFn: api.deleteConvertedAsset,
     onSuccess: async () => {
@@ -1668,6 +1753,13 @@ function AssetRow({
         queryClient.invalidateQueries({ queryKey: ['assets'] }),
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
       ]);
+    },
+  });
+  const updateAssetDecision = useMutation({
+    mutationFn: ({ path, action }: { path: string; action: 'accept' | 'reconsider' }) =>
+      action === 'accept' ? api.acceptAssetAsIs(path) : api.reconsiderAsset(path),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
   const loadSubtitleContent = useMutation({
@@ -1699,15 +1791,16 @@ function AssetRow({
   const isBlockedByReview = assetReview.requiresReview;
   const isConverted = asset.status === 'converted';
   const isPublishedAsIs = asset.status === 'published_as_is';
+  const isAccepted = asset.status === 'accepted';
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const rowColumnCount = isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isArchive
       ? bulkSelectionEnabled ? 7 : 6
-      : 10;
+      : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
-  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs;
+  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const isOverrideOnly =
     selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
@@ -2132,6 +2225,13 @@ async function generateExternalSubtitle(
     }
   }
 
+  function requestArchiveDeletion(event: MouseEvent<HTMLButtonElement>, paths: string[]) {
+    event.stopPropagation();
+    setArchiveDeleteAccepted(false);
+    setArchiveDeletePaths(paths);
+    deleteArchiveAssets.reset();
+  }
+
   function safelyDeleteConvertedAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     const confirmed = window.confirm('Delete this converted Library asset? MVForge will proceed only if its archived original exists and can be restored to the original Raw path. Reports, logs, and job history will be preserved.');
@@ -2193,7 +2293,7 @@ async function generateExternalSubtitle(
             ) : null}
           </Stack>
         </TableCell>
-        {!isArchive && !isConverted && !isPublishedAsIs ? (
+        {!isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
           <TableCell>
             <Button
               size="small"
@@ -2229,7 +2329,7 @@ async function generateExternalSubtitle(
             <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={asset.missing || updateMetadata.isPending} />
           </TableCell>
         ) : null}
-        {!isArchive && !isConverted && !isPublishedAsIs ? (
+        {!isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
               <ProfileAutocomplete
@@ -2272,19 +2372,49 @@ async function generateExternalSubtitle(
               </span>
             </Tooltip>
             {isArchive ? (
-              <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
-                <span>
-                  <IconButton
-                    color="primary"
-                    onClick={recoverArchivedAsset}
-                    disabled={asset.missing || recoverAsset.isPending}
-                    aria-label={`Recover ${asset.fileName}`}
-                    sx={actionIconSx}
-                  >
-                    <TaskAltIcon />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              <>
+                <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
+                  <span>
+                    <IconButton
+                      color="primary"
+                      onClick={recoverArchivedAsset}
+                      disabled={asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}
+                      aria-label={`Recover ${asset.fileName}`}
+                      sx={actionIconSx}
+                    >
+                      <TaskAltIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Permanently delete this Archive asset">
+                  <span>
+                    <IconButton
+                      color="error"
+                      onClick={(event) => requestArchiveDeletion(event, [asset.path])}
+                      disabled={asset.missing || deleteArchiveAssets.isPending}
+                      aria-label={`Permanently delete ${asset.fileName}`}
+                      sx={actionIconSx}
+                    >
+                      <DeleteForeverIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                {archivePathAssets.length > 1 ? (
+                  <Tooltip title={`Permanently delete all ${archivePathAssets.length} Archive assets in this path`}>
+                    <span>
+                      <IconButton
+                        color="error"
+                        onClick={(event) => requestArchiveDeletion(event, archivePathAssets.map((candidate) => candidate.path))}
+                        disabled={deleteArchiveAssets.isPending}
+                        aria-label={`Permanently delete Archive path ${groupRelativePath}`}
+                        sx={actionIconSx}
+                      >
+                        <DeleteSweepIcon />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                ) : null}
+              </>
             ) : reconciliationJobId > 0 ? (
               <Tooltip title="Confirm that this asset is the relocated output for its MVForge job">
                 <span onClick={(event) => event.stopPropagation()}>
@@ -2296,6 +2426,20 @@ async function generateExternalSubtitle(
                     sx={actionIconSx}
                   >
                     <TaskAltIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : isAccepted ? (
+              <Tooltip title="Return this asset to Unverified for another decision">
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton
+                    color="primary"
+                    onClick={() => updateAssetDecision.mutate({ path: asset.path, action: 'reconsider' })}
+                    disabled={updateAssetDecision.isPending}
+                    aria-label={`Reconsider ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <RefreshIcon />
                   </IconButton>
                 </span>
               </Tooltip>
@@ -2354,6 +2498,21 @@ async function generateExternalSubtitle(
                 </IconButton>
               </Tooltip>
             ) : null}
+            {asset.status === 'unverified' ? (
+              <Tooltip title="Accept as-is without converting, moving, or archiving this asset">
+                <span onClick={(event) => event.stopPropagation()}>
+                  <IconButton
+                    color="success"
+                    onClick={() => updateAssetDecision.mutate({ path: asset.path, action: 'accept' })}
+                    disabled={updateAssetDecision.isPending || hasOpenJob}
+                    aria-label={`Accept as-is ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <TaskAltIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
           </Stack>
           <Snackbar
             open={createJob.isSuccess || createJob.isError}
@@ -2374,8 +2533,50 @@ async function generateExternalSubtitle(
                 : 'Asset queued individually.'}
             </Alert>
           </Snackbar>
+          <Snackbar
+            open={deleteArchiveAssets.isSuccess || deleteArchiveAssets.isError}
+            autoHideDuration={7000}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            onClose={(_, reason) => {
+              if (reason !== 'clickaway') deleteArchiveAssets.reset();
+            }}
+          >
+            <Alert
+              severity={deleteArchiveAssets.isError || deleteArchiveAssets.data?.failures.length ? 'warning' : 'success'}
+              variant="filled"
+              onClose={() => deleteArchiveAssets.reset()}
+            >
+              {deleteArchiveAssets.isError
+                ? deleteArchiveAssets.error instanceof Error ? deleteArchiveAssets.error.message : 'Archive deletion failed.'
+                : `${deleteArchiveAssets.data?.completed ?? 0} Archive asset(s) permanently deleted.${deleteArchiveAssets.data?.failures.length ? ` ${deleteArchiveAssets.data.failures.length} failed.` : ''}`}
+            </Alert>
+          </Snackbar>
+          <Snackbar
+            open={updateAssetDecision.isError}
+            autoHideDuration={7000}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            onClose={(_, reason) => {
+              if (reason !== 'clickaway') updateAssetDecision.reset();
+            }}
+          >
+            <Alert severity="warning" variant="filled" onClose={() => updateAssetDecision.reset()}>
+              {updateAssetDecision.error instanceof Error ? updateAssetDecision.error.message : 'The asset decision could not be updated.'}
+            </Alert>
+          </Snackbar>
         </TableCell>
       </TableRow>
+      <ArchiveDeleteConfirmationDialog
+        paths={archiveDeletePaths}
+        pathLabel={groupRelativePath}
+        accepted={archiveDeleteAccepted}
+        pending={deleteArchiveAssets.isPending}
+        onAcceptedChange={setArchiveDeleteAccepted}
+        onCancel={() => {
+          setArchiveDeletePaths([]);
+          setArchiveDeleteAccepted(false);
+        }}
+        onConfirm={() => deleteArchiveAssets.mutate(archiveDeletePaths)}
+      />
       {deleteConvertedAsset.isSuccess ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
@@ -4474,6 +4675,8 @@ function statusLabel(status: Asset['status']) {
       return 'Published as-is';
     case 'unverified':
       return 'Unverified';
+    case 'accepted':
+      return 'Accepted';
     case 'archive':
       return 'Archive';
     default:
@@ -4491,6 +4694,8 @@ function statusColor(status: Asset['status']): 'default' | 'success' | 'warning'
       return 'success';
     case 'unverified':
       return 'warning';
+    case 'accepted':
+      return 'success';
     case 'archive':
       return 'default';
     default:
@@ -4530,7 +4735,7 @@ function relativeAssetPath(asset: Asset, libraries: Library[]) {
   }
 
   const library = libraries.find((candidate) => candidate.id === asset.libraryId);
-  const basePath = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is' ? library?.destinationPath : library?.sourcePath;
+  const basePath = asset.status === 'converted' || asset.status === 'unverified' || asset.status === 'accepted' || asset.status === 'library' || asset.status === 'published_as_is' ? library?.destinationPath : library?.sourcePath;
 
   if (!basePath) {
     return asset.fileName;
@@ -4657,6 +4862,9 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   }
   if (asset.status === 'converted') {
     return { label: 'Converted', color: 'success' };
+  }
+  if (asset.status === 'accepted') {
+    return { label: 'Accepted', color: 'success' };
   }
   if (asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is') {
     return { label: 'Unverified', color: 'warning' };

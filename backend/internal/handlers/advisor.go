@@ -606,6 +606,9 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 		if ensureFrameStructureRecommendation(&existing) {
 			_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
 		}
+		if ensureHEVCLevelRecommendation(&existing) {
+			_ = h.db.Model(&existing).Update("hevc_level_recommendation", existing.HEVCLevelRecommendation).Error
+		}
 		return existing, nil
 	}
 

@@ -92,6 +92,7 @@ type FFProbeStream struct {
 	SideDataList       []map[string]any  `json:"side_data_list"`
 	BitsPerRawSample   string            `json:"bits_per_raw_sample"`
 	Profile            string            `json:"profile"`
+	Level              int               `json:"level"`
 	ChannelLayout      string            `json:"channel_layout"`
 	Channels           int               `json:"channels"`
 	Duration           string            `json:"duration"`
@@ -197,6 +198,9 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 				if ensureFrameStructureRecommendation(&existing) {
 					_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
 				}
+				if ensureHEVCLevelRecommendation(&existing) {
+					_ = h.db.Model(&existing).Update("hevc_level_recommendation", existing.HEVCLevelRecommendation).Error
+				}
 				report("completed", 100, "Using the existing asset snapshot")
 				return existing, true, nil
 			}
@@ -245,6 +249,7 @@ func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo
 		source.RawProbe = models.JSONMap{}
 	}
 	ensureFrameStructureRecommendation(&source)
+	ensureHEVCLevelRecommendation(&source)
 	source.RawProbe["snapshotProvenance"] = models.JSONMap{
 		"source": "raw_asset", "sourcePath": filepath.Clean(job.MediaPath), "archivePath": filepath.Clean(archivePath), "jobId": job.ID,
 	}
@@ -581,6 +586,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	}
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
 	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
+	result.HEVCLevelRecommendation = hevcLevelRecommendationMap(result)
 	return result
 }
 
@@ -718,6 +724,7 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 			summary["displayAspectRatio"] = stream.DisplayAspectRatio
 			summary["hdr"] = isHDR(stream)
 			summary["fieldOrder"] = normalizeFieldOrder(stream.FieldOrder)
+			summary["level"] = stream.Level
 		}
 		if sizeBytes := streamSizeBytes(stream); sizeBytes > 0 {
 			summary["sizeBytes"] = sizeBytes

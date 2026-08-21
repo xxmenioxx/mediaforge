@@ -309,15 +309,51 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 	fields["pixelFormat"] = frameFidelityValue(source, output, "pixelFormat", true)
 	fields["bitDepth"] = frameFidelityValue(source, output, "bitDepth", true)
 	fields["frameSize"] = frameFidelityValue(source, output, "frameSize", strings.Contains(filters, "crop=") || strings.Contains(filters, "scale="))
+	fields["hevcLevel"] = validateHEVCLevelField(worker, source, output)
 
 	status := "passed"
 	for _, raw := range fields {
-		if value, ok := raw.(models.JSONMap); ok && value["status"] == "changed_unexpectedly" {
+		if value, ok := raw.(models.JSONMap); ok && (value["status"] == "changed_unexpectedly" || value["status"] == "mismatch" || value["status"] == "unverified") {
 			status = "warning"
 			break
 		}
 	}
 	return models.JSONMap{"status": status, "source": source, "output": output, "fields": fields}
+}
+
+func validateHEVCLevelField(worker map[string]interface{}, source, output models.JSONMap) models.JSONMap {
+	if !strings.EqualFold(stringFromUnknown(output["codec"]), "hevc") {
+		return models.JSONMap{"status": "not_applicable"}
+	}
+	mode := ""
+	if worker != nil {
+		mode = normalizedHEVCLevelMode(stringFromUnknown(worker["hevcLevelMode"]))
+	}
+	if mode == "" || mode == "auto" {
+		return models.JSONMap{"mode": "auto", "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected"}
+	}
+	configuredEncoder := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoEncoder"])))
+	if configuredEncoder != "" && configuredEncoder != "auto" && configuredEncoder != "libx265" && configuredEncoder != "hevc_qsv" {
+		return models.JSONMap{"mode": mode, "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected", "reason": "the selected encoder has no validated explicit-Level mapping"}
+	}
+	expected := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
+	if mode == "recommended" {
+		recommendation := recommendHEVCLevel(
+			workerIntValue(source["width"], 0),
+			workerIntValue(source["height"], 0),
+			parseFrameRateValue(stringFromUnknown(source["frameRate"])),
+			parseInt(stringFromUnknown(source["bitrate"])),
+		)
+		expected = recommendation.RecommendedLevel
+	}
+	observed := stringFromUnknown(output["hevcLevel"])
+	status := "validated"
+	if expected == "" || observed == "" {
+		status = "unverified"
+	} else if expected != observed {
+		status = "mismatch"
+	}
+	return models.JSONMap{"mode": mode, "requested": expected, "output": observed, "status": status}
 }
 
 func frameFidelityValue(source, output models.JSONMap, key string, allowedChange bool) models.JSONMap {
@@ -366,6 +402,8 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 			continue
 		}
 		result := models.JSONMap{
+			"codec":              strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["codec_name"]))),
+			"profile":            strings.TrimSpace(stringFromUnknown(stream["profile"])),
 			"colorSpace":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_space"]))),
 			"colorTransfer":      strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_transfer"]))),
 			"colorPrimaries":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_primaries"]))),
@@ -376,9 +414,15 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 			"sampleAspectRatio":  strings.TrimSpace(stringFromUnknown(stream["sample_aspect_ratio"])),
 			"displayAspectRatio": strings.TrimSpace(stringFromUnknown(stream["display_aspect_ratio"])),
 			"frameRate":          strings.TrimSpace(stringFromUnknown(stream["avg_frame_rate"])),
+			"width":              stream["width"],
+			"height":             stream["height"],
+			"bitrate":            stream["bit_rate"],
 			"fieldOrder":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["field_order"]))),
 			"chromaLocation":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["chroma_location"]))),
 		}
+		levelIDC := workerIntValue(stream["level"], 0)
+		result["hevcLevelIdc"] = levelIDC
+		result["hevcLevel"] = hevcLevelFromIDC(levelIDC)
 		return result
 	}
 	return nil

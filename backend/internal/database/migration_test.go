@@ -167,7 +167,7 @@ func TestMigrateBackfillsLegacyTrackPathAssignments(t *testing.T) {
 	}
 }
 
-func TestMigrateAddsDraftIntentAndSnapshotFrameRecommendationColumns(t *testing.T) {
+func TestMigrateAddsDraftIntentAndSnapshotRecommendationColumns(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "recommendation-columns.db")), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +180,9 @@ func TestMigrateAddsDraftIntentAndSnapshotFrameRecommendationColumns(t *testing.
 	}
 	if !db.Migrator().HasColumn(&models.ScanResult{}, "frame_structure_recommendation") {
 		t.Fatal("scan_results.frame_structure_recommendation was not migrated")
+	}
+	if !db.Migrator().HasColumn(&models.ScanResult{}, "hevc_level_recommendation") {
+		t.Fatal("scan_results.hevc_level_recommendation was not migrated")
 	}
 }
 

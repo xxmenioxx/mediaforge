@@ -83,6 +83,20 @@ func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	assertContains(t, command, "-crf 20")
 }
 
+func TestFFmpegCommandBuilderEmitsEffectiveHEVCLevelForX265(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/job-1/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+			WorkerConfig: models.JSONMap{"hevcLevelMode": "recommended", "hevcLevelEffective": "4.0"},
+		},
+		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-x265-params level-idc=4.0:high-tier=0")
+}
+
 func TestFFmpegCommandBuilderUsesSoftwareAndCodecDefaultWhenHardwareIsDisabled(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,

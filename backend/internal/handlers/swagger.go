@@ -688,7 +688,7 @@ func openAPIComponents() gin.H {
 			},
 			"AssetInventory": gin.H{
 				"type":     "object",
-				"required": []string{"unprocessed", "library", "converted", "unverified", "unprocessedGroups", "libraryGroups", "convertedGroups"},
+				"required": []string{"unprocessed", "library", "converted", "unverified", "accepted", "unprocessedGroups", "libraryGroups", "convertedGroups", "acceptedGroups"},
 				"properties": gin.H{
 					"unprocessed": gin.H{
 						"type":  "array",
@@ -706,6 +706,10 @@ func openAPIComponents() gin.H {
 						"type":  "array",
 						"items": ref("Asset"),
 					},
+					"accepted": gin.H{
+						"type":  "array",
+						"items": ref("Asset"),
+					},
 					"unprocessedGroups": gin.H{
 						"type":  "array",
 						"items": ref("AssetGroup"),
@@ -715,6 +719,10 @@ func openAPIComponents() gin.H {
 						"items": ref("AssetGroup"),
 					},
 					"libraryGroups": gin.H{
+						"type":  "array",
+						"items": ref("AssetGroup"),
+					},
+					"acceptedGroups": gin.H{
 						"type":  "array",
 						"items": ref("AssetGroup"),
 					},
@@ -732,7 +740,7 @@ func openAPIComponents() gin.H {
 					"extension":    gin.H{"type": "string", "example": ".mkv"},
 					"sizeBytes":    gin.H{"type": "integer", "format": "int64", "example": 7340032000},
 					"modifiedAt":   gin.H{"type": "string", "format": "date-time"},
-					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "converted", "archive"}},
+					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "accepted", "converted", "archive"}},
 				},
 			},
 			"AssetGroup": gin.H{
@@ -743,7 +751,7 @@ func openAPIComponents() gin.H {
 					"libraryName":  gin.H{"type": "string", "example": "Movies"},
 					"path":         gin.H{"type": "string", "example": "/media/raw/movies/The Matrix"},
 					"relativePath": gin.H{"type": "string", "example": "The Matrix"},
-					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "converted", "archive"}},
+					"status":       gin.H{"type": "string", "enum": []string{"unprocessed", "unverified", "accepted", "converted", "archive"}},
 					"fileCount":    gin.H{"type": "integer", "example": 3},
 					"sizeBytes":    gin.H{"type": "integer", "format": "int64", "example": 7340032000},
 					"modifiedAt":   gin.H{"type": "string", "format": "date-time"},
@@ -1140,6 +1148,7 @@ func openAPIComponents() gin.H {
 					"channelLayout":      gin.H{"type": "string"},
 					"sampleRate":         gin.H{"type": "integer"},
 					"bitDepth":           gin.H{"type": "integer"},
+					"level":              gin.H{"type": "integer", "description": "Codec level identifier reported by FFprobe (for example, HEVC Level 5.0 is 150)."},
 				},
 			},
 			"ScanResult": gin.H{
@@ -1167,6 +1176,7 @@ func openAPIComponents() gin.H {
 					"cropAnalysis":                 gin.H{"type": "object", "additionalProperties": true},
 					"frameStructureAnalysis":       gin.H{"type": "object", "additionalProperties": true},
 					"frameStructureRecommendation": gin.H{"type": "object", "description": "Encoder-neutral compatible, balanced, and maximum-compression GOP/B-frame recommendations derived from the source snapshot.", "additionalProperties": true},
+					"hevcLevelRecommendation":      gin.H{"type": "object", "description": "Minimum HEVC Main Tier Level derived from picture size, sample rate, and available bitrate evidence.", "additionalProperties": true},
 					"rawProbe":                     gin.H{"type": "object", "additionalProperties": true},
 					"createdAt":                    gin.H{"type": "string", "format": "date-time"},
 					"updatedAt":                    gin.H{"type": "string", "format": "date-time"},

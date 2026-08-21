@@ -559,6 +559,7 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	intent := qualityIntentForMedia(profile, qualityAnalysisPath, streams)
 	profile = applyVideoToolboxQualityRecommendation(profile, intent)
 	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
+	profile = resolveHEVCLevel(profile, streams)
 	return MediaJobPlan{
 		InputPath:       inputPath,
 		SourceAssetPath: inputPath,
@@ -1382,6 +1383,7 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 	if isTenBitVideoCodec(profile.VideoCodec) && encoder == "libx265" {
 		args = append(args, "-pix_fmt", "yuv420p10le")
 	}
+	args = append(args, hevcLevelArgs(profile, encoder)...)
 	args = append(args, commonFrameStructureArgs(profile, encoder)...)
 	return args
 }
@@ -1416,7 +1418,7 @@ func normalizedFrameStructureBFrameMode(value string) string {
 func effectiveX265Params(profile models.Profile) string {
 	raw := strings.TrimSpace(workerStringValue(profile.WorkerConfig["x265Params"]))
 	if raw == "" {
-		return ""
+		return x265ParamsWithHEVCLevel(profile, "")
 	}
 	gopMode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"]))
 	bFrameMode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"]))
@@ -1445,7 +1447,7 @@ func effectiveX265Params(profile models.Profile) string {
 		}
 		result = append(result, part)
 	}
-	return strings.Join(result, ":")
+	return x265ParamsWithHEVCLevel(profile, strings.Join(result, ":"))
 }
 
 func commonFrameStructureArgs(profile models.Profile, encoder string) []string {

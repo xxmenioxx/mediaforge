@@ -227,8 +227,11 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
 		t.Fatalf("cached snapshot was not enriched from stored source facts: %#v", result.FrameStructureRecommendation)
 	}
+	if workerIntValue(result.HEVCLevelRecommendation["version"], 0) != 1 {
+		t.Fatalf("cached snapshot was not enriched with an HEVC Level recommendation: %#v", result.HEVCLevelRecommendation)
+	}
 	var stored models.ScanResult
-	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 1 {
+	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 1 || workerIntValue(stored.HEVCLevelRecommendation["version"], 0) != 1 {
 		t.Fatalf("enriched recommendation was not persisted: %#v err=%v", stored.FrameStructureRecommendation, err)
 	}
 }
@@ -360,6 +363,9 @@ func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	}
 	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
 		t.Fatalf("archive did not inherit the derived frame recommendation: %#v", result.FrameStructureRecommendation)
+	}
+	if workerIntValue(result.HEVCLevelRecommendation["version"], 0) != 1 {
+		t.Fatalf("archive did not inherit the HEVC Level recommendation: %#v", result.HEVCLevelRecommendation)
 	}
 }
 

@@ -19,3 +19,18 @@ func TestFrameFidelityAllowsIntentionalAspectChange(t *testing.T) {
 		t.Fatalf("status=%v", result["status"])
 	}
 }
+
+func TestHEVCLevelValidationChecksRecommendedOutputLevel(t *testing.T) {
+	worker := map[string]interface{}{"hevcLevelMode": "recommended"}
+	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1", "bitrate": "6418000"}
+
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.0"})
+	if validated["status"] != "validated" || validated["requested"] != "4.0" {
+		t.Fatalf("validated result=%#v", validated)
+	}
+
+	mismatch := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "5.0"})
+	if mismatch["status"] != "mismatch" || mismatch["output"] != "5.0" {
+		t.Fatalf("mismatch result=%#v", mismatch)
+	}
+}

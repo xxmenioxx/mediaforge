@@ -1,5 +1,6 @@
 import { Box, Card, CardContent, Checkbox, Chip, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
+import { formatHEVCLevel } from '../utils/hevcLevel';
 
 type MediaSnapshotDetailsProps = {
   scan: ScanResult;
@@ -42,6 +43,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Resolution', scan.width && scan.height ? `${scan.width}×${scan.height}` : 'Unknown'],
           ['Pixel format', video?.pixFmt || 'Unknown'],
           ['Bit depth', video?.bitDepth ? `${video.bitDepth}-bit` : video?.bitsPerRawSample || 'Unknown'],
+          ['HEVC Level', scan.videoCodec === 'hevc' ? formatHEVCLevel(video?.level) : 'Not applicable'],
+          ['Recommended HEVC Level', scan.hevcLevelRecommendation?.recommendedLevel ? `${scan.hevcLevelRecommendation.recommendedLevel} · Main Tier` : 'Unavailable'],
           ['Frame rate', video?.avgFrameRate || video?.realFrameRate || 'Unknown'],
           ['Dynamic range', scan.hdr ? 'HDR' : 'SDR'],
           ['Video bitrate', formatBitrate(video?.bitrate || scan.bitrate)],

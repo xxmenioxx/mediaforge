@@ -6,6 +6,7 @@ import type {
   MWPImportSummary,
   AnalysisBackfillResponse,
   AppSetting,
+  Asset,
   AssetReviewUpdateInput,
   AssetMetadataUpdateInput,
   AssetConversionUpdateInput,
@@ -153,6 +154,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  deleteArchiveAsset: (path: string) =>
+    request<{ status: string; path: string; message: string }>(`/api/assets/archive?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmed: true }),
+    }),
+  deleteArchiveAssets: (paths: string[]) =>
+    request<{ status: string; completed: number; failures: Array<{ path: string; status: number; error: string }> }>('/api/assets/archive/batch', {
+      method: 'DELETE',
+      body: JSON.stringify({ paths, confirmed: true }),
+    }),
   deleteConvertedAsset: (path: string) =>
     request<{ status: string; convertedPath: string; archivedOriginalPath: string; restoredPath: string; jobId: number; message: string }>(`/api/assets/delete-converted?path=${encodeURIComponent(path)}`, {
       method: 'POST',
@@ -160,6 +171,16 @@ export const api = {
     }),
   returnPublishedAsIsAsset: (path: string) =>
     request<{ status: string; publishedPath: string; restoredPath: string; message: string }>(`/api/assets/return-published-as-is?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  acceptAssetAsIs: (path: string) =>
+    request<Asset>(`/api/assets/accept-as-is?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  reconsiderAsset: (path: string) =>
+    request<Asset>(`/api/assets/reconsider?path=${encodeURIComponent(path)}`, {
       method: 'POST',
       body: JSON.stringify({}),
     }),

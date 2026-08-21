@@ -67,7 +67,7 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive';
   missing: boolean;
   expiresAt?: string;
   review: AssetReviewState;
@@ -91,7 +91,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;
@@ -227,12 +227,14 @@ export type AssetInventory = {
   library: Asset[];
   converted: Asset[];
   unverified: Asset[];
+  accepted: Asset[];
   archive: Asset[];
   missing: Asset[];
   unprocessedGroups: AssetGroup[];
   libraryGroups: AssetGroup[];
   convertedGroups: AssetGroup[];
   unverifiedGroups: AssetGroup[];
+  acceptedGroups: AssetGroup[];
   archiveGroups: AssetGroup[];
   reports: AssetReports;
   sync: AssetSyncInfo;
@@ -243,6 +245,7 @@ export type AssetReports = {
   libraryFiles: number;
   convertedFiles: number;
   unverifiedFiles: number;
+  acceptedFiles: number;
   archiveFiles: number;
   archiveBytes: number;
   expiredArchive: number;
@@ -733,6 +736,7 @@ export type MediaStreamInfo = {
   codec: string;
   codecLong: string;
   profile: string;
+  level?: number;
   language: string;
   title: string;
   duration: number;
@@ -857,6 +861,7 @@ export type ScanResult = {
   };
   frameStructureAnalysis?: QSVFrameStructureAnalysis;
   frameStructureRecommendation?: FrameStructureRecommendationSet;
+  hevcLevelRecommendation?: HEVCLevelRecommendation;
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -881,6 +886,25 @@ export type FrameStructureRecommendationSet = {
   warnings?: string[];
 };
 
+export type HEVCLevelRecommendation = {
+  version: number;
+  recommendedLevel?: string;
+  levelIdc?: number;
+  tier: 'main';
+  width: number;
+  height: number;
+  fps: number;
+  bitrate?: number;
+  lumaPictureSize: number;
+  lumaSampleRate: number;
+  sourceLevel?: string;
+  sourceLevelIdc?: number;
+  confidence: string;
+  limitingFactor?: 'picture_size' | 'sample_rate' | 'bitrate' | string;
+  reasons: string[];
+  warnings?: string[];
+};
+
 export type QSVFrameStructureRecommendation = {
   targetGopFrames: number;
   targetGopSeconds: number;
@@ -898,6 +922,7 @@ export type QSVFrameStructureRecommendation = {
 export type PreviewVideoCharacteristics = {
   codec: string;
   profile?: string;
+  level?: number;
   pixelFormat?: string;
   bitDepth?: number;
   width: number;
