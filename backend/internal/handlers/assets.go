@@ -403,6 +403,7 @@ type AssetConversionUpdateInput struct {
 }
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
+	recoverInterruptedTrackMaintenance(db)
 	return AssetHandler{db: db}
 }
 

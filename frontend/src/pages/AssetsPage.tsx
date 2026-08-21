@@ -45,6 +45,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
+import PlaylistRemoveIcon from '@mui/icons-material/PlaylistRemove';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
@@ -54,6 +55,7 @@ import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { RemoveTracksDialog } from '../components/RemoveTracksDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
@@ -1610,6 +1612,7 @@ function AssetRow({
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
+  const [showRemoveTracksDialog, setShowRemoveTracksDialog] = useState(false);
   const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
   const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
@@ -2371,6 +2374,15 @@ async function generateExternalSubtitle(
                 </IconButton>
               </span>
             </Tooltip>
+            {!isArchive && mode !== 'unprocessed' ? (
+              <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : asset.missing ? 'Asset is not physically available' : 'Remove tracks without re-encoding'}>
+                <span>
+                  <IconButton color="warning" onClick={() => setShowRemoveTracksDialog(true)} disabled={hasOpenJob || asset.missing || !asset.fileName.toLowerCase().endsWith('.mkv')} aria-label={`Remove tracks from ${asset.fileName}`} sx={actionIconSx}>
+                    <PlaylistRemoveIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
             {isArchive ? (
               <>
                 <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
@@ -2577,6 +2589,7 @@ async function generateExternalSubtitle(
         }}
         onConfirm={() => deleteArchiveAssets.mutate(archiveDeletePaths)}
       />
+      <RemoveTracksDialog open={showRemoveTracksDialog} path={asset.path} onClose={() => setShowRemoveTracksDialog(false)} />
       {deleteConvertedAsset.isSuccess ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>

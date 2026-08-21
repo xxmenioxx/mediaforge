@@ -112,14 +112,17 @@ func NewScannerHandler(db *gorm.DB) ScannerHandler {
 }
 
 func (h ScannerHandler) Scan(c *gin.Context) {
+	assetMutationMu.Lock()
 	var request ScanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		assetMutationMu.Unlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	path := strings.TrimSpace(request.Path)
 	if path == "" {
+		assetMutationMu.Unlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
 	}
@@ -127,14 +130,28 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 
 	info, err := os.Stat(path)
 	if err != nil {
+		assetMutationMu.Unlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": mediaPathReadError(err)})
 		return
 	}
 
 	if info.IsDir() {
+		assetMutationMu.Unlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "media path must point to a file"})
 		return
 	}
+	if active, maintenanceErr := activeAssetMaintenance(h.db, path); maintenanceErr != nil {
+		assetMutationMu.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": maintenanceErr.Error()})
+		return
+	} else if active {
+		assetMutationMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has an active maintenance operation and cannot be scanned"})
+		return
+	}
+	markSynchronousScan(path, 1)
+	assetMutationMu.Unlock()
+	defer markSynchronousScan(path, -1)
 	result, cached, scanErr := h.scanResolvedFile(path, info, request, nil)
 	if scanErr != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": scanErr.Error()})
@@ -260,6 +277,8 @@ func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo
 }
 
 func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
 	var request ScanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -273,6 +292,13 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "media path must point to a file"})
 		}
+		return
+	}
+	if active, maintenanceErr := activeAssetMaintenance(h.db, path); maintenanceErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": maintenanceErr.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has an active maintenance operation and cannot be scanned"})
 		return
 	}
 

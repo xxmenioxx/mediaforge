@@ -410,6 +410,11 @@ func (h QueueHandler) prepareBatchQueueJob(
 			http.StatusConflict,
 			fmt.Errorf("asset already has an open queue job")
 	}
+	if active, err := activeAssetMaintenance(h.db, input.MediaPath); err != nil {
+		return models.QueueJob{}, http.StatusInternalServerError, err
+	} else if active {
+		return models.QueueJob{}, http.StatusConflict, fmt.Errorf("asset has an active maintenance operation")
+	}
 
 	profileResolution := models.JSONMap{}
 
@@ -537,6 +542,8 @@ func (h QueueHandler) prepareBatchQueueJob(
 }
 
 func (h QueueHandler) CreateBatch(c *gin.Context) {
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
 	var input QueueBatchInput
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -712,6 +719,8 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 }
 
 func (h QueueHandler) Create(c *gin.Context) {
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
 	var input QueueJobInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -729,6 +738,13 @@ func (h QueueHandler) Create(c *gin.Context) {
 		return
 	} else if active {
 		c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
+		return
+	}
+	if active, err := activeAssetMaintenance(h.db, input.MediaPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has an active maintenance operation"})
 		return
 	}
 	profileResolution := models.JSONMap{}

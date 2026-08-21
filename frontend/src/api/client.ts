@@ -130,6 +130,10 @@ function compatiblePreviewPath({
 }
 
 export const api = {
+	trackMaintenanceInventory: (path: string) => request<import('./types').TrackMaintenanceInventory>(`/api/assets/track-maintenance/inventory?path=${encodeURIComponent(path)}`),
+	startTrackRemoval: (input: { path: string; streamIndexes: number[]; expectedFingerprint: string; confirmed: boolean }) =>
+		request<import('./types').AssetMaintenanceOperation>('/api/assets/track-maintenance/remove', { method: 'POST', body: JSON.stringify(input) }),
+	maintenanceOperation: (id: string) => request<import('./types').AssetMaintenanceOperation>(`/api/assets/track-maintenance/operations/${encodeURIComponent(id)}`),
   libraries: () => request<Library[]>('/api/libraries'),
   logFiles: () => request<LogFile[]>('/api/logs/files'),
   logFile: (name: string) => request<LogFileContent>(`/api/logs/files/${encodeURIComponent(name)}`),

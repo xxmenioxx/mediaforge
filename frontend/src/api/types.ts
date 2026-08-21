@@ -1016,6 +1016,42 @@ export type SnapshotOperation = {
   updatedAt: string;
 };
 
+export type TrackMaintenanceStream = {
+  index: number;
+  type: 'video' | 'audio' | 'subtitle' | 'attachment' | 'data' | string;
+  codec: string;
+  language?: string;
+  title?: string;
+  fileName?: string;
+  profile?: string;
+  width?: number;
+  height?: number;
+  channels?: number;
+  layout?: string;
+  default: boolean;
+  forced: boolean;
+  attachedPic: boolean;
+  stillImage: boolean;
+};
+
+export type TrackMaintenanceInventory = {
+  path: string;
+  fingerprint: string;
+  streams: TrackMaintenanceStream[];
+  chapters: number;
+};
+
+export type AssetMaintenanceOperation = {
+  id: string;
+  operationType: string;
+  assetPath: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | string;
+  phase: string;
+  progress: number;
+  errorMessage?: string;
+  warning?: string;
+};
+
 export type QSVFeatureStatus = {
   requestedGopFrames?: number;
   requestedBFrames?: number;
