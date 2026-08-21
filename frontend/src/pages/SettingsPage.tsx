@@ -69,7 +69,7 @@ type WorkingHoursValue = {
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
 type FrameStructureSamplingValue = { adaptive: boolean; windows: number; windowSeconds: number; positions: number[] };
-type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number };
+type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number; testEncodeRetentionHours: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
 type SettingsForm = {
@@ -1282,6 +1282,7 @@ function housekeepingValue(value: Record<string, unknown> | undefined): Housekee
     autoEnabled: booleanValue(value?.autoEnabled, true), intervalHours: numberValue(value?.intervalHours, 24),
     failedRetentionDays: numberValue(value?.failedRetentionDays, 7), canceledRetentionDays: numberValue(value?.canceledRetentionDays, 3),
     orphanRetentionDays: numberValue(value?.orphanRetentionDays, 7),
+    testEncodeRetentionHours: numberValue(value?.testEncodeRetentionHours, 24),
   };
 }
 
@@ -1341,6 +1342,7 @@ function HousekeepingCard({ value, saving, preview, result, busy, onSave, onPrev
       <Grid size={{ xs: 12, md: 3 }}>{daysField('failedRetentionDays', 'Failed retention (days)')}</Grid>
       <Grid size={{ xs: 12, md: 3 }}>{daysField('canceledRetentionDays', 'Canceled retention (days)')}</Grid>
       <Grid size={{ xs: 12, md: 3 }}>{daysField('orphanRetentionDays', 'Orphan retention (days)')}</Grid>
+      <Grid size={{ xs: 12, md: 3 }}><TextField type="number" label="Test Encode retention (hours)" value={draft.testEncodeRetentionHours} inputProps={{ min: 1, max: 8760 }} onChange={(event) => setDraft({ ...draft, testEncodeRetentionHours: Math.min(8760, Math.max(1, Number(event.target.value))) })} fullWidth /></Grid>
     </Grid>
     <Alert severity="info">Completed but unpublished outputs and running/queued jobs are never housekeeping candidates. Use Preview before manual cleanup.</Alert>
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

@@ -39,6 +39,7 @@ import SaveIcon from '@mui/icons-material/Save';
 import TuneIcon from '@mui/icons-material/Tune';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -68,6 +69,7 @@ import type {
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
+import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
@@ -616,6 +618,7 @@ export function ProfileLabPage() {
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const labAssets = useMemo(
@@ -685,6 +688,7 @@ export function ProfileLabPage() {
   const [videoSaveReviewOpen, setVideoSaveReviewOpen] = useState(false);
   const [audioSaveReviewOpen, setAudioSaveReviewOpen] = useState(false);
   const [trackSaveReviewOpen, setTrackSaveReviewOpen] = useState(false);
+  const [testEncodeOpen, setTestEncodeOpen] = useState(false);
   const [pendingTrackProfileSave, setPendingTrackProfileSave] = useState<TrackProfile | null>(null);
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const previewsRef = useRef<HTMLDivElement | null>(null);
@@ -2079,6 +2083,19 @@ export function ProfileLabPage() {
                     </Button>
                   ) : null}
                 </Stack>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 7, lg: 2 }}>
+                <Button
+                  startIcon={<ScienceIcon />}
+                  variant="contained"
+                  size="small"
+                  disabled={!selectedAsset || !libraries.data?.length}
+                  onClick={() => setTestEncodeOpen(true)}
+                  fullWidth
+                  sx={{ minHeight: 40 }}
+                >
+                  Test Encode
+                </Button>
               </Grid>
             </Grid>
             {selectedAssetSnapshot ? (
@@ -3899,6 +3916,26 @@ export function ProfileLabPage() {
           ) : null}
         </Stack>
       </Box>
+      {selectedAsset ? (
+        <TestEncodeDialog
+          open={testEncodeOpen}
+          onClose={() => setTestEncodeOpen(false)}
+          sourcePath={selectedAsset.path}
+          libraries={libraries.data ?? []}
+          defaultLibraryId={selectedAsset.libraryId || libraries.data?.[0]?.id || 0}
+          request={{
+            configurationSource: 'lab_draft',
+            labProfile: videoDraft,
+            labAudioProfile: normalizedAudioProfileForSave(
+              audioDraft,
+              audioFilterChainEdited,
+              previewAudioFilters,
+            ) as unknown as Record<string, unknown>,
+            labTrackOverride: cleanTrackConversionOverride(trackConversionDraft),
+            processingMode: 'full_encode',
+          }}
+        />
+      ) : null}
     </>
   );
 }

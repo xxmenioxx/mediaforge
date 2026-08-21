@@ -83,6 +83,37 @@ func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	assertContains(t, command, "-crf 20")
 }
 
+func TestFFmpegCommandBuilderAddsTestWindowAndSortedProvenanceMetadata(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/library/.movie.partial.mkv", Overwrite: true,
+		ProcessingMode:      ProcessingModeFullEncode,
+		Profile:             models.Profile{VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20},
+		Streams:             MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
+		SegmentStartSeconds: 125.5, SegmentDurationSeconds: 20,
+		OutputMetadata: map[string]string{"MVFORGE_TEST_ID": "42", "MVFORGE_CONFIG_HASH": "abc"},
+	}
+	args := FFmpegCommandBuilder{}.Build(plan)
+	command := shellJoin(args)
+	assertContains(t, command, "-ss 125.5 -i /media/raw/movie.mkv -t 20")
+	assertContains(t, command, "-metadata MVFORGE_CONFIG_HASH=abc -metadata MVFORGE_TEST_ID=42")
+	if strings.Index(command, "-ss 125.5") > strings.Index(command, "-i /media/raw/movie.mkv") {
+		t.Fatalf("input seek must precede the input: %s", command)
+	}
+}
+
+func TestFFmpegCommandBuilderLeavesNormalJobsUnsegmented(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv",
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20},
+		Streams:        MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-ss")
+	assertNotContains(t, command, "-t 20")
+	assertNotContains(t, command, "MVFORGE_TEST")
+}
+
 func TestFFmpegCommandBuilderEmitsEffectiveHEVCLevelForX265(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/job-1/movie.mkv", Overwrite: true,

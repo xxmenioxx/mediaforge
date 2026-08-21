@@ -53,6 +53,8 @@ func Migrate(db *gorm.DB) error {
 		&models.AssetRecord{},
 		&models.DirectPublication{},
 		&models.AssetMaintenanceOperation{},
+		&models.TestEncode{},
+		&models.TaskReservation{},
 		&models.AppSetting{},
 	); err != nil {
 		return err

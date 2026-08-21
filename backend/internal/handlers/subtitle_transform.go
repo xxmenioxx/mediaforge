@@ -35,6 +35,15 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 	usedPaths := map[string]struct{}{}
 	usedExistingSidecars := map[string]struct{}{}
 	artifacts := make([]SubtitleArtifact, 0, len(plan.Override.SubtitleTransforms))
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		for _, artifact := range artifacts {
+			_ = os.Remove(artifact.StagedPath)
+		}
+	}()
 	var bitmapStreams map[int]FFProbeStream
 	for _, transform := range plan.Override.SubtitleTransforms {
 		stream, exists := streams[transform.StreamIndex]
@@ -48,7 +57,7 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 		if language == "" {
 			language = "und"
 		}
-		if existingSubtitleTransformSidecar(plan.SourceAssetPath, transform, language, usedExistingSidecars) {
+		if !plan.IndependentSubtitleArtifacts && existingSubtitleTransformSidecar(plan.SourceAssetPath, transform, language, usedExistingSidecars) {
 			continue
 		}
 		suffix := "." + language
@@ -80,21 +89,13 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 			if strings.TrimSpace(ocrLanguage) == "" {
 				ocrLanguage = transform.Language
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath); err != nil {
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
 				return nil, err
 			}
 		} else if !subtitleCanConvertText(stream.Codec) {
 			return nil, fmt.Errorf("subtitle stream %d (%s) cannot be converted to %s", stream.Index, stream.Codec, strings.ToUpper(transform.Format))
 		} else {
-			args := []string{
-				"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-				"-i", plan.InputPath,
-				"-map", fmt.Sprintf("0:%d", stream.Index),
-				"-vn", "-an",
-				"-c:s", transform.Format,
-				"-f", transform.Format,
-				stagedPath,
-			}
+			args := textSubtitleExtractionArgs(plan, stream.Index, transform.Format, stagedPath)
 			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
@@ -118,7 +119,23 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 			Language: language, Default: transform.MakeDefault, StagedPath: stagedPath, SizeBytes: info.Size(),
 		})
 	}
+	completed = true
 	return artifacts, nil
+}
+
+func textSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, format, outputPath string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
+	if plan.SegmentStartSeconds > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", plan.SegmentStartSeconds))
+	}
+	args = append(args, "-i", plan.InputPath)
+	if plan.SegmentDurationSeconds > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", plan.SegmentDurationSeconds))
+	}
+	return append(args,
+		"-map", fmt.Sprintf("0:%d", streamIndex),
+		"-vn", "-an", "-c:s", format, "-f", format, outputPath,
+	)
 }
 
 func existingSubtitleTransformSidecar(mediaPath string, transform SubtitleTransform, language string, used map[string]struct{}) bool {

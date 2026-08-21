@@ -32,6 +32,13 @@ func EvaluateWorkerAvailability(db *gorm.DB, plan models.ExecutionPlan, now time
 		if err := db.Model(&models.SchedulerReservation{}).Where("state = ? AND worker_name = ?", ReservationStateActive, worker.Name).Count(&active).Error; err != nil {
 			return WorkerAvailabilityDecision{}, err
 		}
+		if db.Migrator().HasTable(&models.TaskReservation{}) {
+			var tasks int64
+			if err := db.Model(&models.TaskReservation{}).Where("state = ? AND worker_name = ?", ReservationStateActive, worker.Name).Count(&tasks).Error; err != nil {
+				return WorkerAvailabilityDecision{}, err
+			}
+			active += tasks
+		}
 		if worker.MaxConcurrentJobs > 0 && active >= int64(worker.MaxConcurrentJobs) {
 			continue
 		}

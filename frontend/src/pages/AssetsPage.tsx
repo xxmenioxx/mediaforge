@@ -49,6 +49,7 @@ import PlaylistRemoveIcon from '@mui/icons-material/PlaylistRemove';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
+import ScienceIcon from '@mui/icons-material/Science';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -56,6 +57,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { RemoveTracksDialog } from '../components/RemoveTracksDialog';
+import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
@@ -71,6 +73,7 @@ import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../util
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
+import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
@@ -1263,7 +1266,7 @@ function AssetGroupRow({
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
                   </Alert>
                 ) : null}
-                {!isReadOnlyGroup ? (
+                {!isReadOnlyGroup && mode !== 'unprocessed' ? (
                   <Stack direction="row" justifyContent="flex-end">
                     <Button
                       variant="outlined"
@@ -1295,20 +1298,32 @@ function AssetGroupRow({
                     <Typography color="text.secondary" variant="body2">
                       No conversion required: validate and move these original files directly to the selected Library.
                     </Typography>
-                    <Button
-                      variant="outlined"
-                      color="success"
-                      size="small"
-                      disabled={!selectedLibraryId || publishAsIs.isPending || groupAssets.length === 0 || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
-                      onClick={() => {
-                        const destination = libraries.find((library) => library.id === selectedLibraryId);
-                        if (!destination || !window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
-                        publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: selectedLibraryId });
-                      }}
-                      sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
-                    >
-                      {publishAsIs.isPending ? 'Publishing...' : 'Publish as-is'}
-                    </Button>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<InfoOutlinedIcon />}
+                        onClick={startPathAdvisor}
+                        disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                      >
+                        Run Advisor on path
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        color="success"
+                        size="small"
+                        disabled={!selectedLibraryId || publishAsIs.isPending || groupAssets.length === 0 || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                        onClick={() => {
+                          const destination = libraries.find((library) => library.id === selectedLibraryId);
+                          if (!destination || !window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
+                          publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: selectedLibraryId });
+                        }}
+                        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                      >
+                        {publishAsIs.isPending ? 'Publishing...' : 'Publish as-is'}
+                      </Button>
+                    </Stack>
                   </Stack>
                 ) : null}
                 {publishAsIs.isSuccess ? <Alert severity="success">{publishAsIs.data.message}</Alert> : null}
@@ -1619,6 +1634,7 @@ function AssetRow({
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [showRemoveTracksDialog, setShowRemoveTracksDialog] = useState(false);
+  const [showTestEncodeDialog, setShowTestEncodeDialog] = useState(false);
   const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
   const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
@@ -1804,6 +1820,7 @@ function AssetRow({
   const isAccepted = asset.status === 'accepted';
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
+  const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const rowColumnCount = isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isArchive
@@ -2588,6 +2605,21 @@ async function generateExternalSubtitle(
         onConfirm={() => deleteArchiveAssets.mutate(archiveDeletePaths)}
       />
       <RemoveTracksDialog open={showRemoveTracksDialog} path={asset.path} onClose={() => setShowRemoveTracksDialog(false)} />
+      <TestEncodeDialog
+        open={showTestEncodeDialog}
+        onClose={() => setShowTestEncodeDialog(false)}
+        sourcePath={asset.path}
+        libraries={libraries}
+        defaultLibraryId={selectedLibraryId}
+        request={{
+          configurationSource: 'effective_asset',
+          profileId: effectiveProfileId,
+          audioProfileKey: effectiveAudioProfileKey,
+          trackProfileKey: selectedTrackProfile?.key ?? '',
+          processingMode: isAudioOnly ? 'audio_only' : 'full_encode',
+          resolveAssignments: true,
+        }}
+      />
       {deleteConvertedAsset.isSuccess ? (
         <TableRow>
           <TableCell colSpan={rowColumnCount} sx={{ maxWidth: 0 }}><Alert severity="success" sx={{ overflowWrap: 'anywhere' }}>{deleteConvertedAsset.data.message} Restored to: {deleteConvertedAsset.data.restoredPath}</Alert></TableCell>
@@ -2773,6 +2805,7 @@ async function generateExternalSubtitle(
                   <Tab label="Job Information" />
                   <Tab label="MVForge Suggestions" />
                   <Tab label="Quick Asset Overrides" />
+                  <Tab label="Test Encode" />
                 </Tabs>
                 <Box hidden={snapshotTab !== 1}>
                   <Box sx={{ pt: 1.5 }}>
@@ -2934,6 +2967,49 @@ async function generateExternalSubtitle(
                         readOnly={isConverted}
                       />
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
+                  </Stack>
+                </Box>
+                <Box hidden={snapshotTab !== 6}>
+                  <Stack spacing={2} sx={{ pt: 1.5 }}>
+                    <Stack spacing={0.5}>
+                      <Typography variant="h3">Test Encode</Typography>
+                      <Typography color="text.secondary" variant="body2">
+                        Generate a short real encode with the same effective pipeline that this asset would use in Queue. The original is not archived or modified.
+                      </Typography>
+                    </Stack>
+                    <Grid container spacing={1.5}>
+                      <Grid size={{ xs: 12, sm: 6 }}>
+                        <ProfileAutocomplete
+                          profiles={assetVideoProfiles}
+                          value={selectedProfileId}
+                          onChange={selectAssetVideoProfile}
+                          label="Video profile"
+                          size="small"
+                          disabled={asset.missing || hasOpenJob || updateProfileAssignment.isPending}
+                          allowInherit
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Audio profile</Typography><Typography>{effectiveAudioProfileKey || 'None'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Tracks profile</Typography><Typography>{selectedTrackProfile?.name || selectedTrackProfile?.key || conversionDraft.trackProfileKey || 'None'}</Typography></Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Destination Library</Typography><Typography>{libraries.find((library) => library.id === selectedLibraryId)?.name || 'Choose when generating'}</Typography></Grid>
+                    </Grid>
+                    {!canGenerateTestEncode ? (
+                      <Alert severity="info">Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.</Alert>
+                    ) : (
+                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : 'Generate a short real encode for playback testing'}>
+                        <span style={{ alignSelf: 'flex-start' }}>
+                          <Button
+                            startIcon={<ScienceIcon />}
+                            variant="contained"
+                            color="secondary"
+                            onClick={() => setShowTestEncodeDialog(true)}
+                            disabled={asset.missing || hasOpenJob || !effectiveProfileId}
+                          >
+                            Generate Test Encode
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    )}
                   </Stack>
                 </Box>
               </>

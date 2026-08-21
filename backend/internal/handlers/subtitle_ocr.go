@@ -155,7 +155,7 @@ func generateBitmapSubtitleSidecar(
 	return result, nil
 }
 
-func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string) error {
+func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int) error {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format != "srt" && format != "ass" {
 		return fmt.Errorf("OCR output format must be srt or ass")
@@ -177,11 +177,30 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	defer os.RemoveAll(tempDir)
 	tempPath := filepath.Join(tempDir, "ocr."+format)
 	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
+	ocrMediaPath := mediaPath
+	ocrStream := stream
+	if segmentDuration > 0 {
+		segmentPath := filepath.Join(tempDir, "subtitle-segment.mkv")
+		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
+		if segmentStart > 0 {
+			args = append(args, "-ss", strconv.FormatFloat(segmentStart, 'f', -1, 64))
+		}
+		args = append(args, "-i", mediaPath, "-t", strconv.Itoa(segmentDuration), "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "copy", segmentPath)
+		output, runErr := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+		if runErr != nil {
+			return fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", stream.Index, fallback(strings.TrimSpace(string(output)), runErr.Error()))
+		}
+		windowStreams, probeErr := probeSubtitleStreams(ctx, segmentPath)
+		if probeErr != nil || len(windowStreams) == 0 {
+			return fmt.Errorf("subtitle test window for stream %d has no readable subtitle track", stream.Index)
+		}
+		ocrMediaPath, ocrStream = segmentPath, windowStreams[0]
+	}
 
 	message, runErr := runBitmapOCR(
 		ctx,
-		mediaPath,
-		stream,
+		ocrMediaPath,
+		ocrStream,
 		format,
 		language,
 		ocrMode,

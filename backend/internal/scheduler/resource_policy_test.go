@@ -17,6 +17,51 @@ func TestBuildReservationClassifiesEncoders(t *testing.T) {
 	}
 }
 
+func TestBuildReservationPreservesTestEncodeClassification(t *testing.T) {
+	reservation := BuildReservation(models.ExecutionPlan{
+		SelectedEncoder: "hevc_qsv",
+		Reservation:     models.JSONMap{"jobType": string(JobTypeTestEncode)},
+	})
+	if reservation["jobType"] != string(JobTypeTestEncode) || reservation["weight"] != string(JobWeightHeavy) {
+		t.Fatalf("unexpected Test Encode reservation: %#v", reservation)
+	}
+}
+
+func TestTaskReservationConsumesWorkerCapacity(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:test-encode-worker-capacity?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.SchedulerReservation{}, &models.TaskReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	worker := models.WorkerNode{Name: "local", Status: "online", MaxConcurrentJobs: 1, Encoders: models.JSONList{"libx265"}, LastSeenAt: now}
+	if err := db.Create(&worker).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateTaskReservation(db, "test_encode", 7, "/raw/a.mkv", models.ExecutionPlan{SelectedEncoder: "libx265", Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)}}, worker.Name); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := EvaluateWorkerAvailability(db, models.ExecutionPlan{SelectedEncoder: "libx265"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Available {
+		t.Fatalf("worker accepted another job despite active Test Encode: %#v", decision)
+	}
+	if err := ReleaseTaskReservation(db, "test_encode", 7); err != nil {
+		t.Fatal(err)
+	}
+	decision, err = EvaluateWorkerAvailability(db, models.ExecutionPlan{SelectedEncoder: "libx265"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Available {
+		t.Fatalf("worker did not recover capacity: %#v", decision)
+	}
+}
+
 func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:resource-limit?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

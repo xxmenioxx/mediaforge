@@ -186,6 +186,69 @@ func TestMigrateAddsDraftIntentAndSnapshotRecommendationColumns(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsTestEncodeLifecycleTables(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-tables.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TaskReservation{}) {
+		t.Fatal("Test Encode lifecycle tables were not migrated")
+	}
+	for _, column := range []string{"requested_configuration", "effective_configuration", "configuration_hash", "ffmpeg_command", "temporary_path", "expires_at"} {
+		if !db.Migrator().HasColumn(&models.TestEncode{}, column) {
+			t.Fatalf("test_encodes.%s was not migrated", column)
+		}
+	}
+}
+
+func TestMigrateRestoresMissingTestEncodeFFmpegCommandColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-command-column.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+
+	testEncode := models.TestEncode{
+		SourcePath:          "/media/source.mkv",
+		LibraryID:           1,
+		ConfigurationSource: "profile",
+		ConfigurationHash:   "legacy-hash",
+		Status:              "queued",
+		Phase:               "queued",
+	}
+	if err := db.Create(&testEncode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropColumn(&models.TestEncode{}, "FFmpegCommand"); err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasColumn(&models.TestEncode{}, "ffmpeg_command") {
+		t.Fatal("test setup did not remove test_encodes.ffmpeg_command")
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasColumn(&models.TestEncode{}, "ffmpeg_command") {
+		t.Fatal("migration did not restore test_encodes.ffmpeg_command")
+	}
+	if err := db.Model(&models.TestEncode{}).Where("id = ?", testEncode.ID).Update("ffmpeg_command", "ffmpeg -i source.mkv output.mkv").Error; err != nil {
+		t.Fatal(err)
+	}
+	var migrated models.TestEncode
+	if err := db.First(&migrated, testEncode.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated.SourcePath != testEncode.SourcePath || migrated.FFmpegCommand == "" {
+		t.Fatalf("existing Test Encode was not preserved and upgraded: %#v", migrated)
+	}
+}
+
 func settingValuesForTest(value any) []any {
 	switch values := value.(type) {
 	case []any:

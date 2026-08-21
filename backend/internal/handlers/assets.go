@@ -405,6 +405,7 @@ type AssetConversionUpdateInput struct {
 
 func NewAssetHandler(db *gorm.DB) AssetHandler {
 	recoverInterruptedTrackMaintenance(db)
+	recoverInterruptedTestEncodes(db)
 	return AssetHandler{db: db}
 }
 
@@ -4991,6 +4992,7 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	}
 	keepDays, autoDeleteArchive := originalRetentionPolicy(h.db)
 	archiveJobs := activeArchivedOriginalJobs(h.db)
+	testEncodeFiles := activeTestEncodePaths(h.db)
 
 	foundPaths := map[string]struct{}{}
 	rawRecords := collectAssetRecords(models.Library{Name: "Originals", SourcePath: rawRoot}, rawRoot, "unprocessed", now)
@@ -5017,6 +5019,9 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 			continue
 		}
 		for _, record := range collectAssetRecords(library, destinationPath, "converted", now) {
+			if testEncodeFiles[filepath.Clean(record.Path)] || strings.Contains(filepath.Base(record.Path), " - MVForge Test T") || strings.HasSuffix(record.Path, ".partial") {
+				continue
+			}
 			owner, owned := destinationLibraryForMediaPath(record.Path, libraries)
 			if !owned || owner.ID != library.ID {
 				continue
@@ -5087,6 +5092,23 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func activeTestEncodePaths(db *gorm.DB) map[string]bool {
+	paths := map[string]bool{}
+	if db == nil || !db.Migrator().HasTable(&models.TestEncode{}) {
+		return paths
+	}
+	var tests []models.TestEncode
+	_ = db.Where("deleted_at IS NULL").Find(&tests).Error
+	for _, test := range tests {
+		for _, value := range append([]string{test.OutputPath, test.TemporaryPath}, subtitleArtifactPaths(test.SubtitleArtifacts)...) {
+			if clean := filepath.Clean(strings.TrimSpace(value)); clean != "." && clean != "" {
+				paths[clean] = true
+			}
+		}
+	}
+	return paths
 }
 
 func backfillInheritedAssetCategories(db *gorm.DB) error {

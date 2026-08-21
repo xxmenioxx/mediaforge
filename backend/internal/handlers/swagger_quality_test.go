@@ -26,3 +26,18 @@ func TestOpenAPIDocumentsQualityRecommendationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAPIDocumentsTestEncodeLifecycle(t *testing.T) {
+	paths := openAPIPaths()
+	for _, name := range []string{"/api/test-encodes", "/api/test-encodes/{id}", "/api/test-encodes/{id}/cancel", "/api/test-encodes/{id}/keep"} {
+		if _, ok := paths[name]; !ok {
+			t.Fatalf("OpenAPI path %s is missing", name)
+		}
+	}
+	components := openAPIComponents()["schemas"].(gin.H)
+	for _, name := range []string{"TestEncode", "TestEncodeInput"} {
+		if _, ok := components[name]; !ok {
+			t.Fatalf("OpenAPI schema %s is missing", name)
+		}
+	}
+}

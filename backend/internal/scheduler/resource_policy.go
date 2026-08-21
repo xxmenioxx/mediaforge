@@ -61,7 +61,14 @@ func BuildReservation(plan models.ExecutionPlan) models.JSONMap {
 	if class == "hardware" {
 		memory = 2 << 30
 	}
-	classification, _ := ClassifyJob(JobTypeVideoConversion)
+	jobType := JobType(jsonString(plan.Reservation, "jobType"))
+	if jobType == "" {
+		jobType = JobTypeVideoConversion
+	}
+	classification, err := ClassifyJob(jobType)
+	if err != nil {
+		classification, _ = ClassifyJob(JobTypeVideoConversion)
+	}
 	return models.JSONMap{
 		"jobType": string(classification.Type), "weight": string(classification.Weight), "requiresWorkingWindow": classification.RequiresWorkingWindow, "encoder": plan.SelectedEncoder,
 		"encoderClass": class, "memoryBytes": memory, "workspaceBytes": plan.EstimatedWorkspaceBytes,
@@ -94,6 +101,20 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	var activeReservations []models.SchedulerReservation
 	if err := db.Where("state = ?", ReservationStateActive).Find(&activeReservations).Error; err != nil {
 		return ResourceDecision{}, err
+	}
+	if db.Migrator().HasTable(&models.TaskReservation{}) {
+		var taskReservations []models.TaskReservation
+		if err := db.Where("state = ?", ReservationStateActive).Find(&taskReservations).Error; err != nil {
+			return ResourceDecision{}, err
+		}
+		for _, item := range taskReservations {
+			activeReservations = append(activeReservations, models.SchedulerReservation{
+				AssetKey: item.AssetKey, State: item.State, WorkerName: item.WorkerName,
+				JobType: item.JobType, Encoder: item.Encoder, EncoderClass: item.EncoderClass,
+				MemoryBytes: item.MemoryBytes, WorkspaceBytes: item.WorkspaceBytes,
+				LibraryBytes: item.LibraryBytes, AcquiredAt: item.AcquiredAt,
+			})
+		}
 	}
 	running := int64(len(activeReservations))
 	if int(running) >= limits.MaxRunningJobs {

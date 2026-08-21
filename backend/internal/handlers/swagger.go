@@ -47,6 +47,10 @@ func openAPITags() []gin.H {
 			"description": "Filesystem inventory, grouped assets, and browser preview streams.",
 		},
 		{
+			"name":        "Test Encodes",
+			"description": "Short real-pipeline encodes for physical playback testing, independent from Queue and Publisher.",
+		},
+		{
 			"name":        "Scanner",
 			"description": "Media probing, snapshots, streams, codecs, tracks, and metadata.",
 		},
@@ -175,6 +179,28 @@ func openAPIPaths() gin.H {
 					"200": jsonResponse("Asset inventory", ref("AssetInventory")),
 				},
 			},
+		},
+		"/api/test-encodes": gin.H{
+			"get": gin.H{
+				"tags": []string{"Test Encodes"}, "summary": "List Test Encodes", "operationId": "listTestEncodes",
+				"parameters": []gin.H{{"name": "sourcePath", "in": "query", "required": false, "schema": gin.H{"type": "string"}}},
+				"responses":  gin.H{"200": jsonResponse("Test Encodes", gin.H{"type": "array", "items": ref("TestEncode")})},
+			},
+			"post": gin.H{
+				"tags": []string{"Test Encodes"}, "summary": "Generate a new Test Encode", "operationId": "createTestEncode",
+				"requestBody": requestBody(ref("TestEncodeInput")),
+				"responses":   gin.H{"202": jsonResponse("Test Encode accepted", ref("TestEncode")), "422": jsonResponse("Configuration cannot be resolved", ref("Error"))},
+			},
+		},
+		"/api/test-encodes/{id}": gin.H{
+			"get":    gin.H{"tags": []string{"Test Encodes"}, "summary": "Get Test Encode details", "operationId": "getTestEncode", "parameters": []gin.H{pathIDParameter()}, "responses": gin.H{"200": jsonResponse("Test Encode", ref("TestEncode")), "404": jsonResponse("Not found", ref("Error"))}},
+			"delete": gin.H{"tags": []string{"Test Encodes"}, "summary": "Delete a completed Test Encode and its registered files", "operationId": "deleteTestEncode", "parameters": []gin.H{pathIDParameter()}, "responses": gin.H{"200": jsonResponse("Deleted", gin.H{"type": "object"}), "409": jsonResponse("Active Test Encode", ref("Error"))}},
+		},
+		"/api/test-encodes/{id}/cancel": gin.H{
+			"post": gin.H{"tags": []string{"Test Encodes"}, "summary": "Cancel an active Test Encode", "operationId": "cancelTestEncode", "parameters": []gin.H{pathIDParameter()}, "responses": gin.H{"202": jsonResponse("Cancellation accepted", gin.H{"type": "object"}), "409": jsonResponse("Test Encode is not active", ref("Error"))}},
+		},
+		"/api/test-encodes/{id}/keep": gin.H{
+			"post": gin.H{"tags": []string{"Test Encodes"}, "summary": "Enable or disable automatic expiration", "operationId": "keepTestEncode", "parameters": []gin.H{pathIDParameter()}, "requestBody": requestBody(gin.H{"type": "object", "required": []string{"keep"}, "properties": gin.H{"keep": gin.H{"type": "boolean"}}}), "responses": gin.H{"200": jsonResponse("Updated Test Encode", ref("TestEncode"))}},
 		},
 		"/api/assets/preview": gin.H{
 			"get": gin.H{
@@ -634,6 +660,29 @@ func openAPIComponents() gin.H {
 				"required": []string{"error"},
 				"properties": gin.H{
 					"error": gin.H{"type": "string"},
+				},
+			},
+			"TestEncodeInput": gin.H{
+				"type": "object", "required": []string{"sourcePath", "libraryId", "configurationSource", "startMode", "durationSeconds"},
+				"properties": gin.H{
+					"sourcePath": gin.H{"type": "string"}, "libraryId": gin.H{"type": "integer"},
+					"configurationSource": gin.H{"type": "string", "enum": []string{"effective_asset", "lab_draft"}},
+					"profileId":           gin.H{"type": "integer"}, "audioProfileKey": gin.H{"type": "string"}, "trackProfileKey": gin.H{"type": "string"},
+					"processingMode": gin.H{"type": "string", "enum": []string{"full_encode", "audio_only"}}, "resolveAssignments": gin.H{"type": "boolean"},
+					"labProfile": gin.H{"type": "object", "additionalProperties": true}, "labAudioProfile": gin.H{"type": "object", "additionalProperties": true}, "labTrackOverride": gin.H{"type": "object", "additionalProperties": true},
+					"startMode": gin.H{"type": "string", "enum": []string{"representative", "beginning", "middle", "custom"}}, "startSeconds": gin.H{"type": "number"}, "durationSeconds": gin.H{"type": "integer", "minimum": 5, "maximum": 120},
+				},
+			},
+			"TestEncode": gin.H{
+				"type": "object", "required": []string{"id", "sourcePath", "configurationSource", "status", "durationSeconds", "keep", "stale"},
+				"properties": gin.H{
+					"id": gin.H{"type": "integer"}, "sourceAssetId": gin.H{"type": "integer"}, "sourcePath": gin.H{"type": "string"}, "libraryId": gin.H{"type": "integer"},
+					"configurationSource": gin.H{"type": "string"}, "requestedConfiguration": gin.H{"type": "object", "additionalProperties": true}, "effectiveConfiguration": gin.H{"type": "object", "additionalProperties": true}, "configurationHash": gin.H{"type": "string"},
+					"startSeconds": gin.H{"type": "number"}, "durationSeconds": gin.H{"type": "integer"}, "status": gin.H{"type": "string"}, "phase": gin.H{"type": "string"}, "progress": gin.H{"type": "integer"},
+					"workerName": gin.H{"type": "string"}, "effectiveEncoder": gin.H{"type": "string"}, "ffmpegCommand": gin.H{"type": "string"}, "outputPath": gin.H{"type": "string"}, "outputSizeBytes": gin.H{"type": "integer", "format": "int64"},
+					"subtitleArtifacts": gin.H{"type": "array", "items": gin.H{"type": "object"}}, "validationReport": gin.H{"type": "object", "additionalProperties": true},
+					"keep": gin.H{"type": "boolean"}, "expiresAt": gin.H{"type": "string", "format": "date-time", "nullable": true}, "stale": gin.H{"type": "boolean"}, "staleReason": gin.H{"type": "string"}, "errorMessage": gin.H{"type": "string"},
+					"createdAt": gin.H{"type": "string", "format": "date-time"}, "completedAt": gin.H{"type": "string", "format": "date-time", "nullable": true},
 				},
 			},
 			"Library": mergeSchema(ref("LibraryInput"), gin.H{

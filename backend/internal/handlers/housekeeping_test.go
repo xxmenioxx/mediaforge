@@ -110,3 +110,50 @@ func TestCanceledRetentionUsesTerminalJobTimeNotWorkspaceModification(t *testing
 		t.Fatalf("recent workspace metadata incorrectly extended retention: eligible=%v candidate=%#v", eligible, candidate)
 	}
 }
+
+func TestHousekeepingExpiresTestEncodeEvenWhenWorkRootDoesNotExist(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:housekeeping-test-encode?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}, &models.Library{}, &models.TestEncode{}); err != nil {
+		t.Fatal(err)
+	}
+	libraryRoot := t.TempDir()
+	missingWorkRoot := filepath.Join(t.TempDir(), "missing-work")
+	library := models.Library{Name: "TV", DestinationPath: libraryRoot}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(libraryRoot, "Episode - MVForge Test T1.mkv")
+	if err := os.WriteFile(output, []byte("sample"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expired := time.Now().Add(-time.Hour)
+	test := models.TestEncode{
+		SourcePath: "/raw/episode.mkv", LibraryID: library.ID, ConfigurationSource: "effective_asset",
+		Status: testEncodeReady, Phase: "ready", OutputPath: output, OutputSizeBytes: 6, ExpiresAt: &expired,
+	}
+	if err := db.Create(&test).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "storageRoles", Value: models.JSONMap{"work": models.JSONMap{"path": missingWorkRoot}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := RunHousekeeping(db, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.RemovedPaths) != 1 || report.RemovedPaths[0] != output || report.RecoveredBytes != 6 {
+		t.Fatalf("unexpected Test Encode cleanup report: %#v", report)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("expired output remains: %v", err)
+	}
+	if err := db.Unscoped().First(&test, test.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if test.Status != "expired" || test.DeletedAt == nil || test.OutputPath != "" {
+		t.Fatalf("unexpected Test Encode tombstone: %#v", test)
+	}
+}

@@ -25,11 +25,12 @@ type HousekeepingPolicy struct {
 }
 
 type HousekeepingCandidate struct {
-	Path       string `json:"path"`
-	JobID      uint   `json:"jobId,omitempty"`
-	Reason     string `json:"reason"`
-	SizeBytes  int64  `json:"sizeBytes"`
-	ModifiedAt string `json:"modifiedAt"`
+	Path         string `json:"path"`
+	JobID        uint   `json:"jobId,omitempty"`
+	TestEncodeID uint   `json:"testEncodeId,omitempty"`
+	Reason       string `json:"reason"`
+	SizeBytes    int64  `json:"sizeBytes"`
+	ModifiedAt   string `json:"modifiedAt"`
 }
 
 type HousekeepingReport struct {
@@ -109,9 +110,8 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 	}
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
-		return report, persistHousekeepingReport(db, report)
-	}
-	if err != nil {
+		entries = nil
+	} else if err != nil {
 		return report, err
 	}
 	for _, entry := range entries {
@@ -149,6 +149,28 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 		}
 		report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
 		report.RecoveredBytes += candidate.SizeBytes
+	}
+	if db.Migrator().HasTable(&models.TestEncode{}) {
+		var tests []models.TestEncode
+		if err := db.Where("deleted_at IS NULL AND keep = ? AND expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ?", false, report.RanAt, []string{testEncodeWaiting, testEncodeRunning}).Find(&tests).Error; err != nil {
+			report.Errors = append(report.Errors, err.Error())
+		} else {
+			for _, test := range tests {
+				candidate := HousekeepingCandidate{Path: test.OutputPath, TestEncodeID: test.ID, Reason: "Test Encode retention expired", ModifiedAt: test.UpdatedAt.UTC().Format(time.RFC3339), SizeBytes: test.OutputSizeBytes}
+				report.Candidates = append(report.Candidates, candidate)
+				if dryRun {
+					continue
+				}
+				if err := (AssetHandler{db: db}).removeTestEncodeFiles(test); err != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, err))
+					continue
+				}
+				now := report.RanAt
+				_ = db.Model(&test).Updates(map[string]any{"status": "expired", "phase": "expired", "deleted_at": &now, "output_path": "", "temporary_path": "", "updated_at": now}).Error
+				report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
+				report.RecoveredBytes += candidate.SizeBytes
+			}
+		}
 	}
 	if err := persistHousekeepingReport(db, report); err != nil {
 		return report, err
@@ -214,7 +236,7 @@ func directorySize(root string) (int64, error) {
 func persistHousekeepingReport(db *gorm.DB, report HousekeepingReport) error {
 	candidates := make([]models.JSONMap, 0, len(report.Candidates))
 	for _, item := range report.Candidates {
-		candidates = append(candidates, models.JSONMap{"path": item.Path, "jobId": item.JobID, "reason": item.Reason, "sizeBytes": item.SizeBytes, "modifiedAt": item.ModifiedAt})
+		candidates = append(candidates, models.JSONMap{"path": item.Path, "jobId": item.JobID, "testEncodeId": item.TestEncodeID, "reason": item.Reason, "sizeBytes": item.SizeBytes, "modifiedAt": item.ModifiedAt})
 	}
 	value := models.JSONMap{"ranAt": report.RanAt.UTC().Format(time.RFC3339), "dryRun": report.DryRun, "candidates": candidates, "removedPaths": report.RemovedPaths, "recoveredBytes": report.RecoveredBytes, "errors": report.Errors}
 	setting := models.AppSetting{Key: "housekeepingLastRun", Value: value}

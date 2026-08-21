@@ -186,6 +186,62 @@ export type AssetConversionOverrideState = {
   updatedAt?: string;
 };
 
+export type TestEncode = {
+  id: number;
+  sourceAssetId: number;
+  sourcePath: string;
+  sourceFingerprint: string;
+  sourceSizeBytes: number;
+  sourceModifiedAt?: string;
+  libraryId: number;
+  configurationSource: 'effective_asset' | 'lab_draft';
+  requestedConfiguration: Record<string, unknown>;
+  effectiveConfiguration: Record<string, unknown>;
+  configurationHash: string;
+  profileId: number;
+  profileVersion: number;
+  runtimeSnapshotId?: number;
+  workerName: string;
+  effectiveEncoder: string;
+  startSeconds: number;
+  durationSeconds: number;
+  status: 'waiting' | 'generating' | 'ready' | 'failed' | 'canceled' | 'deleted' | 'expired';
+  phase: string;
+  progress: number;
+  ffmpegCommand: string;
+  outputPath: string;
+  outputSizeBytes: number;
+  subtitleArtifacts: Array<Record<string, unknown>>;
+  validationReport: Record<string, unknown>;
+  keep: boolean;
+  expiresAt?: string;
+  errorMessage: string;
+  stale: boolean;
+  staleReason?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TestEncodeInput = {
+  sourcePath: string;
+  libraryId: number;
+  configurationSource: 'effective_asset' | 'lab_draft';
+  profileId?: number;
+  audioProfileKey?: string;
+  trackProfileKey?: string;
+  processingMode?: 'full_encode' | 'audio_only';
+  resolveAssignments?: boolean;
+  labProfile?: ProfileInput;
+  labAudioProfile?: Record<string, unknown>;
+  labTrackOverride?: AssetConversionOverrideState;
+  startMode: 'representative' | 'beginning' | 'middle' | 'custom';
+  startSeconds?: number;
+  durationSeconds: number;
+  configurationToken?: string;
+};
+
 export type ExternalSubtitle = {
   path: string;
   fileName: string;

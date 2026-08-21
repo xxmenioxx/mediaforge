@@ -21,17 +21,21 @@ const (
 )
 
 type MediaJobPlan struct {
-	InputPath                string
-	SourceAssetPath          string
-	OutputPath               string
-	Profile                  models.Profile
-	AudioProfile             *audioEnhancementProfile
-	Overwrite                bool
-	ProcessingMode           string
-	Streams                  MediaStreamInventory
-	Override                 AssetConversionOverrideState
-	StreamValidationWarnings []string
-	Interlace                InterlaceAnalysis
+	InputPath                    string
+	SourceAssetPath              string
+	OutputPath                   string
+	Profile                      models.Profile
+	AudioProfile                 *audioEnhancementProfile
+	Overwrite                    bool
+	ProcessingMode               string
+	Streams                      MediaStreamInventory
+	Override                     AssetConversionOverrideState
+	StreamValidationWarnings     []string
+	Interlace                    InterlaceAnalysis
+	SegmentStartSeconds          float64
+	SegmentDurationSeconds       int
+	OutputMetadata               map[string]string
+	IndependentSubtitleArtifacts bool
 }
 
 type MediaStreamInventory struct {
@@ -140,7 +144,13 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = append(args, "-n")
 	}
 
+	if plan.SegmentStartSeconds > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(plan.SegmentStartSeconds, 'f', -1, 64))
+	}
 	args = append(args, "-i", plan.InputPath)
+	if plan.SegmentDurationSeconds > 0 {
+		args = append(args, "-t", strconv.Itoa(plan.SegmentDurationSeconds))
+	}
 	selectedAudioStreams := selectedAudioStreams(plan.Streams.Audio, plan.Override)
 	addAACStereoTrack := effectiveAACOption(plan, plan.Override.AddAACStereoTrack, "addAacStereoTrack", "addAacStereoDefault", false)
 	aacStereoDefault := effectiveAACOption(plan, plan.Override.AACStereoDefault, "aacStereoDefault", "", false)
@@ -225,6 +235,16 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = appendAudioCodecArgs(args, plan.Profile)
 	}
 	args = appendClearInheritedStreamStatistics(args, streamPlan)
+	if len(plan.OutputMetadata) > 0 {
+		keys := make([]string, 0, len(plan.OutputMetadata))
+		for key := range plan.OutputMetadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			args = append(args, "-metadata", key+"="+plan.OutputMetadata[key])
+		}
+	}
 
 	for index, stream := range selectedVideoStreamsForPlan(plan) {
 		metadata := metadataOverrideFor(plan.Override.VideoMetadata, stream.Index)
