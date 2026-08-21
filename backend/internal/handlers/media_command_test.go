@@ -316,7 +316,7 @@ func TestQSVWorkerArgsApplyOnlyProbedFeatures(t *testing.T) {
 	assertContains(t, command, "-look_ahead_depth 40")
 }
 
-func TestQSVBFramesOffKeepsAdaptiveBAndSupportsPyramidPStrategy(t *testing.T) {
+func TestQSVBFramesOffDisablesAdaptiveBAndSupportsPyramidPStrategy(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265", BitDepth: 10, WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "qsvRateControl": "icq",
 		"qsvAdaptiveB": true, "qsvPStrategy": 2, "frameStructureBFrameMode": "off",
@@ -324,7 +324,7 @@ func TestQSVBFramesOffKeepsAdaptiveBAndSupportsPyramidPStrategy(t *testing.T) {
 	capability := capabilities.EncoderCapability{QSVAdaptiveBMain10: true, TestedModes: map[string]bool{"qsvPStrategyPyramidMain10": true}}
 	command := strings.Join(append(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"), qsvWorkerArgsForCapability(profile, capability)...), " ")
 	assertContains(t, command, "-bf 0")
-	assertContains(t, command, "-adaptive_b 1")
+	assertNotContains(t, command, "-adaptive_b")
 	assertContains(t, command, "-p_strategy 2")
 }
 
@@ -1491,7 +1491,7 @@ func TestAssetFrameStructureOverrideTakesPriorityOverProfile(t *testing.T) {
 	}{
 		{name: "explicit auto restores encoder defaults", override: AssetConversionOverrideState{FrameStructureGOPMode: "auto", FrameStructureBFrameMode: "auto"}, notContain: []string{"-g", "-bf"}},
 		{name: "custom replaces profile values", override: AssetConversionOverrideState{FrameStructureGOPMode: "custom", FrameStructureGOPFrames: 90, FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 2}, contains: []string{"-g 90", "-bf 2"}, notContain: []string{"-g 120", "-bf 3"}},
-		{name: "off keeps adaptive B independent", override: AssetConversionOverrideState{FrameStructureBFrameMode: "off"}, contains: []string{"-bf 0", "-adaptive_b 1"}},
+		{name: "qsv bf0 normalizes adaptive B off", override: AssetConversionOverrideState{FrameStructureBFrameMode: "off"}, contains: []string{"-bf 0"}, notContain: []string{"-adaptive_b"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

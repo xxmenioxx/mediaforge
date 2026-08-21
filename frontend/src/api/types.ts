@@ -980,6 +980,8 @@ export type SnapshotOperation = {
 };
 
 export type QSVFeatureStatus = {
+  requestedGopFrames?: number;
+  requestedBFrames?: number;
   adaptiveIRequested: boolean;
   adaptiveIEffective: boolean;
   adaptiveBRequested: boolean;
@@ -992,6 +994,11 @@ export type QSVFeatureStatus = {
   pRefType?: string;
   rateControlMethod?: string;
   targetUsage?: number;
+  measuredKnown: boolean;
+  reorderFrames?: number;
+  dpbFrames?: number;
+  estimatedDpbMiB?: number;
+  temporalLayers?: number;
   interpretationMode?: 'qsv_gpb' | 'qsv_mixed_b_gpb';
   contextSource?: 'preview_encode' | 'worker_capability';
 };

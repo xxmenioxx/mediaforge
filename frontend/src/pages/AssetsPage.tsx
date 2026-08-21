@@ -3469,10 +3469,11 @@ function AssetConversionOverridePanel({
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvBFramesDisabled = String(draft.frameStructureBFrameMode ?? profile?.workerConfig?.frameStructureBFrameMode ?? 'auto') === 'off';
   const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
     extendedBRC: draft.qsvExtendedBrc ?? profile?.workerConfig?.qsvExtendedBRC === true,
     adaptiveI: draft.qsvAdaptiveI ?? profile?.workerConfig?.qsvAdaptiveI === true,
-    adaptiveB: draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true,
+    adaptiveB: !qsvBFramesDisabled && (draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true),
   });
 
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
@@ -3945,12 +3946,12 @@ function AssetConversionOverridePanel({
                       } label="Adaptive I" />
                       <FormControlLabel control={
                         <Checkbox
-                          disabled={!qsvFeatures.adaptiveB && !(draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true)}
-                          checked={draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true} 
+                          disabled={qsvBFramesDisabled || (!qsvFeatures.adaptiveB && !(draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true))}
+                          checked={!qsvBFramesDisabled && (draft.qsvAdaptiveB ?? profile?.workerConfig?.qsvAdaptiveB === true)}
                           onChange={(event) => onChange('qsvAdaptiveB', event.target.checked)
                         }
                         />
-                      } label="Adaptive B" />
+                      } label={qsvBFramesDisabled ? 'Adaptive B · disabled by BF0' : 'Adaptive B'} />
                     </Stack>
                   </Grid>
                   <Grid size={{ xs: 12 }}>

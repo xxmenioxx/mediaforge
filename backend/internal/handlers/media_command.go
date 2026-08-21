@@ -1881,7 +1881,11 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	if frameStructureEnabled && profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {
 		args = append(args, "-adaptive_i", "1")
 	}
-	if frameStructureEnabled && profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
+	// GopRefDist=1 (-bf 0) has no regular B-frame placement for Adaptive B to
+	// manage. Keep the requested profile intact for provenance, but normalize
+	// the effective QSV command by omitting Adaptive B.
+	bFramesDisabled := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"])) == "off"
+	if frameStructureEnabled && !bFramesDisabled && profileWorkerBool(profile, "qsvAdaptiveB", false) && features.AdaptiveB {
 		args = append(args, "-adaptive_b", "1")
 	}
 	pStrategy := min(2, max(0, workerIntValue(profile.WorkerConfig["qsvPStrategy"], 0)))

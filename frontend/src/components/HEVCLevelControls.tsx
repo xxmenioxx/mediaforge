@@ -48,7 +48,7 @@ export function HEVCLevelControls({ config, recommendation, onChange, onChangeMa
                 const next = event.target.value as HEVCLevelMode;
                 commit({ hevcLevelMode: next, ...(next === 'recommended' && recommendedLevel ? { hevcLevel: recommendedLevel } : {}) });
               }}
-              helperText={mode === 'auto' ? 'Encoder selects and signals the Level.' : mode === 'recommended' ? 'Resolved from this asset and verified on output.' : 'Explicit compatibility target.'}
+              helperText={mode === 'auto' ? 'Encoder selects and signals the Level.' : mode === 'recommended' ? 'Minimum appropriate Level calculated from this asset and verified on output.' : 'Explicit stream constraint.'}
               size={compact ? 'small' : 'medium'}
               fullWidth
             >

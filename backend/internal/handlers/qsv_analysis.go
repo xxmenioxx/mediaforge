@@ -8,6 +8,7 @@ import (
 	"math"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -94,20 +95,65 @@ func frameStructureSamplingPolicy(db *gorm.DB) FrameStructureSamplingPolicy {
 }
 
 type QSVFeatureStatus struct {
-	AdaptiveIRequested bool   `json:"adaptiveIRequested"`
-	AdaptiveIEffective bool   `json:"adaptiveIEffective"`
-	AdaptiveBRequested bool   `json:"adaptiveBRequested"`
-	AdaptiveBEffective bool   `json:"adaptiveBEffective"`
-	GPBKnown           bool   `json:"gpbKnown"`
-	GPBEffective       bool   `json:"gpbEffective"`
-	GopRefDist         int    `json:"gopRefDist,omitempty"`
-	GopPicSize         int    `json:"gopPicSize,omitempty"`
-	BRefType           string `json:"bRefType,omitempty"`
-	PRefType           string `json:"pRefType,omitempty"`
-	RateControlMethod  string `json:"rateControlMethod,omitempty"`
-	TargetUsage        int    `json:"targetUsage,omitempty"`
-	InterpretationMode string `json:"interpretationMode,omitempty"`
-	ContextSource      string `json:"contextSource,omitempty"`
+	RequestedGopFrames int     `json:"requestedGopFrames,omitempty"`
+	RequestedBFrames   *int    `json:"requestedBFrames,omitempty"`
+	AdaptiveIRequested bool    `json:"adaptiveIRequested"`
+	AdaptiveIEffective bool    `json:"adaptiveIEffective"`
+	AdaptiveBRequested bool    `json:"adaptiveBRequested"`
+	AdaptiveBEffective bool    `json:"adaptiveBEffective"`
+	GPBKnown           bool    `json:"gpbKnown"`
+	GPBEffective       bool    `json:"gpbEffective"`
+	GopRefDist         int     `json:"gopRefDist,omitempty"`
+	GopPicSize         int     `json:"gopPicSize,omitempty"`
+	BRefType           string  `json:"bRefType,omitempty"`
+	PRefType           string  `json:"pRefType,omitempty"`
+	RateControlMethod  string  `json:"rateControlMethod,omitempty"`
+	TargetUsage        int     `json:"targetUsage,omitempty"`
+	MeasuredKnown      bool    `json:"measuredKnown"`
+	ReorderFrames      int     `json:"reorderFrames,omitempty"`
+	DPBFrames          int     `json:"dpbFrames,omitempty"`
+	EstimatedDPBMiB    float64 `json:"estimatedDpbMiB,omitempty"`
+	TemporalLayers     int     `json:"temporalLayers,omitempty"`
+	InterpretationMode string  `json:"interpretationMode,omitempty"`
+	ContextSource      string  `json:"contextSource,omitempty"`
+}
+
+type HEVCBitstreamStructure struct {
+	Known          bool
+	ReorderFrames  int
+	DPBFrames      int
+	TemporalLayers int
+}
+
+func parseHEVCTraceHeaders(output string) HEVCBitstreamStructure {
+	result := HEVCBitstreamStructure{}
+	for _, line := range strings.Split(output, "\n") {
+		value, ok := traceHeaderInt(line)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "sps_max_num_reorder_pics"):
+			result.Known = true
+			result.ReorderFrames = max(result.ReorderFrames, value)
+		case strings.Contains(line, "sps_max_dec_pic_buffering_minus1"):
+			result.Known = true
+			result.DPBFrames = max(result.DPBFrames, value+1)
+		case strings.Contains(line, "sps_max_sub_layers_minus1"):
+			result.Known = true
+			result.TemporalLayers = max(result.TemporalLayers, value+1)
+		}
+	}
+	return result
+}
+
+func traceHeaderInt(line string) (int, bool) {
+	separator := strings.LastIndex(line, "=")
+	if separator < 0 {
+		return 0, false
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(line[separator+1:]))
+	return value, err == nil
 }
 
 type FrameStructureRecommendation struct {

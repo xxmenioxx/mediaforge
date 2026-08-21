@@ -741,10 +741,11 @@ export function ProfileLabPage() {
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvBFramesDisabled = videoWorkerValue(videoDraft, 'frameStructureBFrameMode', 'auto') === 'off';
   const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
     extendedBRC: videoWorkerBool(videoDraft, 'qsvExtendedBRC'),
     adaptiveI: videoWorkerBool(videoDraft, 'qsvAdaptiveI'),
-    adaptiveB: videoWorkerBool(videoDraft, 'qsvAdaptiveB'),
+    adaptiveB: !qsvBFramesDisabled && videoWorkerBool(videoDraft, 'qsvAdaptiveB'),
   });
   
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
@@ -2931,8 +2932,8 @@ export function ProfileLabPage() {
                                   />
                                   <FormControlLabel
                                     control={<Checkbox
-                                        disabled={!qsvFeatures.adaptiveB && !videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
-                                      checked={videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
+                                        disabled={qsvBFramesDisabled || (!qsvFeatures.adaptiveB && !videoWorkerBool(videoDraft, 'qsvAdaptiveB'))}
+                                      checked={!qsvBFramesDisabled && videoWorkerBool(videoDraft, 'qsvAdaptiveB')}
                                       onChange={(event) =>
                                         updateVideoWorkerConfig(
                                           setVideoDraft,
@@ -2942,7 +2943,7 @@ export function ProfileLabPage() {
                                       }
                                     />
                                     }
-                                    label="Adaptive B"
+                                    label={qsvBFramesDisabled ? 'Adaptive B · disabled by BF0' : 'Adaptive B'}
                                   />
                                 </Stack>
                               </Grid>
@@ -3948,7 +3949,11 @@ function LabWarningsAndGuidance({
         <Stack spacing={1.5}>
           <Typography fontWeight={700}>Processed video result</Typography>
           {isQSVGpbInterpretation(inspection.qsvFeatureStatus) ? <Alert severity="info"><Typography fontWeight={700}>{inspection.qsvFeatureStatus.interpretationMode === 'qsv_mixed_b_gpb' ? 'QSV mixed B / GPB structure detected' : 'QSV GPB structure detected'}</Typography><Typography variant="body2">FFprobe reports generalized P/B pictures as B frames. Effective GopRefDist={inspection.qsvFeatureStatus.gopRefDist}{inspection.qsvFeatureStatus.bRefType ? ` and BRefType=${inspection.qsvFeatureStatus.bRefType}` : ''}; this is interpreted using the QSV runtime context, not as a conventional continuous B-frame chain.</Typography><Typography variant="caption">Evidence: {inspection.qsvFeatureStatus.contextSource === 'preview_encode' ? 'effective preview encoder log' : 'matching worker capability probe'}.</Typography></Alert> : null}
-          {inspection.qsvFeatureStatus.contextSource ? <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700} sx={{ mb: 0.75 }}>Effective QSV Structure</Typography><Typography variant="body2">GOP size: {inspection.qsvFeatureStatus.gopPicSize ?? 'not reported'} · Reference distance: {inspection.qsvFeatureStatus.gopRefDist ?? 'not reported'} · Adaptive I: {inspection.qsvFeatureStatus.adaptiveIEffective ? 'ON' : 'OFF'} · Adaptive B: {inspection.qsvFeatureStatus.adaptiveBEffective ? 'ON' : 'OFF'}</Typography><Typography variant="body2">B reference type: {inspection.qsvFeatureStatus.bRefType || 'not reported'} · P reference type: {inspection.qsvFeatureStatus.pRefType || 'not reported'} · GPB: {inspection.qsvFeatureStatus.gpbKnown ? inspection.qsvFeatureStatus.gpbEffective ? 'ON' : 'OFF' : 'not reported'} · Rate control: {inspection.qsvFeatureStatus.rateControlMethod || inspection.effectiveQSVRateControl || 'not reported'} · Target usage: {inspection.qsvFeatureStatus.targetUsage ?? 'not reported'}</Typography></Box> : null}
+          {inspection.qsvFeatureStatus.contextSource ? <Grid container spacing={1.5}>
+            <Grid size={{ xs: 12, md: 4 }}><Box sx={{ p: 1.5, height: '100%', border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700} sx={{ mb: 0.75 }}>Requested encoder configuration</Typography><Typography variant="body2">GOP: {inspection.qsvFeatureStatus.requestedGopFrames ?? 'Auto'} · B-frames: {inspection.qsvFeatureStatus.requestedBFrames ?? 'Auto'}</Typography><Typography variant="body2">Adaptive I: {inspection.qsvFeatureStatus.adaptiveIRequested ? 'ON' : 'OFF'} · Adaptive B: {inspection.qsvFeatureStatus.adaptiveBRequested ? 'ON' : 'OFF'}</Typography></Box></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><Box sx={{ p: 1.5, height: '100%', border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700} sx={{ mb: 0.75 }}>Effective QSV configuration</Typography><Typography variant="body2">GopPicSize: {inspection.qsvFeatureStatus.gopPicSize ?? 'not reported'} · GopRefDist: {inspection.qsvFeatureStatus.gopRefDist ?? 'not reported'}</Typography><Typography variant="body2">GPB: {inspection.qsvFeatureStatus.gpbKnown ? inspection.qsvFeatureStatus.gpbEffective ? 'ON' : 'OFF' : 'not reported'} · BRefType: {inspection.qsvFeatureStatus.bRefType || 'not reported'} · PRefType: {inspection.qsvFeatureStatus.pRefType || 'not reported'}</Typography><Typography variant="body2">Adaptive I: {inspection.qsvFeatureStatus.adaptiveIEffective ? 'ON' : 'OFF'} · Adaptive B: {inspection.qsvFeatureStatus.adaptiveBEffective ? 'ON' : 'OFF'} · Rate control: {inspection.qsvFeatureStatus.rateControlMethod || inspection.effectiveQSVRateControl || 'not reported'}</Typography></Box></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><Box sx={{ p: 1.5, height: '100%', border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700} sx={{ mb: 0.75 }}>Measured bitstream characteristics</Typography>{inspection.qsvFeatureStatus.measuredKnown ? <><Typography variant="body2">Reorder: {inspection.qsvFeatureStatus.reorderFrames ?? 0} frames · DPB: {inspection.qsvFeatureStatus.dpbFrames ?? 'not reported'} frames</Typography><Typography variant="body2">Estimated DPB memory: {inspection.qsvFeatureStatus.estimatedDpbMiB != null ? `${inspection.qsvFeatureStatus.estimatedDpbMiB.toFixed(1)} MiB` : 'not reported'} · Temporal layers: {inspection.qsvFeatureStatus.temporalLayers ?? 'not reported'}</Typography><Typography variant="caption" color="text.secondary">Measured from HEVC headers; memory estimates decoded 4:2:0 surfaces only.</Typography></> : <Typography variant="body2">HEVC header measurements were not available for this preview.</Typography>}</Box></Grid>
+          </Grid> : null}
           <Alert severity={inspection.frameValidation.verdict === 'safe' ? 'success' : inspection.frameValidation.verdict === 'review' ? 'warning' : 'error'}>
             <Typography fontWeight={700}>{inspection.frameValidation.verdict === 'safe' ? 'Recommended configuration validated' : inspection.frameValidation.verdict === 'review' ? 'Recommendation requires review' : 'Recommendation not validated'}</Typography>
             <Typography variant="body2">Recommended GOP {inspection.frameRecommendation.targetGopFrames} (~{inspection.frameRecommendation.targetGopSeconds.toFixed(1)}s) · recommended B max {inspection.frameRecommendation.maxBFrames} · validation confidence {inspection.frameValidation.confidence}.</Typography>
@@ -4087,7 +4092,7 @@ function hevcLevelForLab(profile: ProfileInput | undefined, scan: ScanResult | u
 
 function validateHEVCLevelForLab(requested: string | undefined, measured: string | undefined, codec: string) {
   if (codec !== 'hevc') return { verdict: 'review' as const, reason: 'The selected output is not HEVC, so HEVC Level does not apply.' };
-  if (!requested) return { verdict: 'review' as const, reason: measured ? `Encoder Auto produced Level ${measured}; no explicit compatibility target was requested.` : 'The output did not report an HEVC Level.' };
+  if (!requested) return { verdict: 'review' as const, reason: measured ? `Encoder Auto produced Level ${measured}; no explicit Level constraint was requested.` : 'The output did not report an HEVC Level.' };
   if (!measured) return { verdict: 'review' as const, reason: `Level ${requested} was requested, but FFprobe did not report the output Level.` };
   if (requested !== measured) return { verdict: 'reject' as const, reason: `Level ${requested} was requested, but the output signaled Level ${measured}.` };
   return { verdict: 'safe' as const, reason: `The output verified the requested HEVC Level ${requested}.` };

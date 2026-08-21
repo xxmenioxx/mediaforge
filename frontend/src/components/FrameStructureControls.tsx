@@ -113,8 +113,11 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
           16,
         );
   const commit = (patch: Record<string, unknown>) => {
-    if (onChangeMany) onChangeMany(patch);
-    else Object.entries(patch).forEach(([key, value]) => onChange(key, value));
+    const normalized = encoder === 'hevc_qsv' && patch.frameStructureBFrameMode === 'off'
+      ? { ...patch, qsvAdaptiveB: false }
+      : patch;
+    if (onChangeMany) onChangeMany(normalized);
+    else Object.entries(normalized).forEach(([key, value]) => onChange(key, value));
   };
   const x265Params = parseX265Params(String(config.x265Params ?? ''));
   const updateX265Param = (key: string, value: string) => {

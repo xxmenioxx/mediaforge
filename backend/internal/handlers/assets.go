@@ -3340,6 +3340,10 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		qsvFeatureStatus := QSVFeatureStatus{}
 
 		if effectiveVideoEncoder == "hevc_qsv" && effectivePreviewProfile != nil {
+			requestedProfile := effectivePreviewProfile
+			if previewProfile != nil {
+				requestedProfile = previewProfile
+			}
 			capability := capabilities.CheckEncoder("hevc_qsv")
 			format := "Main8"
 			if profileUsesTenBit(*effectivePreviewProfile) {
@@ -3367,9 +3371,11 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				}
 			}
 			qsvFeatureStatus = QSVFeatureStatus{
-				AdaptiveIRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveI"], false),
+				RequestedGopFrames: requestedFrameStructureGop(*requestedProfile),
+				RequestedBFrames:   requestedFrameStructureBFrames(*requestedProfile),
+				AdaptiveIRequested: boolSetting(requestedProfile.WorkerConfig["qsvAdaptiveI"], false),
 				AdaptiveIEffective: map[bool]bool{true: actualContext.AdaptiveI}[actualContext.AdaptiveIKnown] || (!actualContext.AdaptiveIKnown && argumentValue(videoCodecArguments, "-adaptive_i") == "1"),
-				AdaptiveBRequested: boolSetting(effectivePreviewProfile.WorkerConfig["qsvAdaptiveB"], false),
+				AdaptiveBRequested: boolSetting(requestedProfile.WorkerConfig["qsvAdaptiveB"], false),
 				AdaptiveBEffective: map[bool]bool{true: actualContext.AdaptiveB}[actualContext.AdaptiveBKnown] || (!actualContext.AdaptiveBKnown && argumentValue(videoCodecArguments, "-adaptive_b") == "1"),
 				GPBKnown:           gpbKnown,
 				GPBEffective:       gpbEffective,
@@ -3380,6 +3386,13 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				RateControlMethod:  actualContext.RateControlMethod,
 				TargetUsage:        actualContext.TargetUsage,
 				ContextSource:      contextSource,
+			}
+			if measured, measureErr := measureHEVCBitstreamStructure(c.Request.Context(), cachePath); measureErr == nil && measured.Known {
+				qsvFeatureStatus.MeasuredKnown = true
+				qsvFeatureStatus.ReorderFrames = measured.ReorderFrames
+				qsvFeatureStatus.DPBFrames = measured.DPBFrames
+				qsvFeatureStatus.TemporalLayers = measured.TemporalLayers
+				qsvFeatureStatus.EstimatedDPBMiB = estimatedDPBMiB(output.Width, output.Height, output.BitDepth, measured.DPBFrames)
 			}
 			if qsvFeatureStatus.GPBEffective && qsvFeatureStatus.GopRefDist == 1 {
 				qsvFeatureStatus.InterpretationMode = "qsv_gpb"
@@ -4129,6 +4142,49 @@ type qsvEffectiveFrameContext struct {
 	PRefType          string
 	RateControlMethod string
 	TargetUsage       int
+}
+
+func requestedFrameStructureGop(profile models.Profile) int {
+	mode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"]))
+	if mode == "recommended" || mode == "custom" {
+		return workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0)
+	}
+	return 0
+}
+
+func requestedFrameStructureBFrames(profile models.Profile) *int {
+	mode := normalizedFrameStructureBFrameMode(workerStringValue(profile.WorkerConfig["frameStructureBFrameMode"]))
+	if mode == "off" {
+		value := 0
+		return &value
+	}
+	if mode == "recommended" || mode == "custom" {
+		value := min(16, max(1, workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 3)))
+		return &value
+	}
+	return nil
+}
+
+func measureHEVCBitstreamStructure(ctx context.Context, path string) (HEVCBitstreamStructure, error) {
+	args := []string{"-hide_banner", "-loglevel", "info", "-i", path, "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers", "-f", "null", "-"}
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return HEVCBitstreamStructure{}, fmt.Errorf("inspect HEVC headers: %w", err)
+	}
+	return parseHEVCTraceHeaders(stderr.String()), nil
+}
+
+func estimatedDPBMiB(width, height, bitDepth, frames int) float64 {
+	if width <= 0 || height <= 0 || frames <= 0 {
+		return 0
+	}
+	bytesPerSample := 1.0
+	if bitDepth > 8 {
+		bytesPerSample = 2
+	}
+	return float64(width*height*frames) * 1.5 * bytesPerSample / (1024 * 1024)
 }
 
 func parseQSVEffectiveFrameContext(output string) qsvEffectiveFrameContext {

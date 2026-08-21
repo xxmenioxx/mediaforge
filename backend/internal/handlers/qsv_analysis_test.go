@@ -214,6 +214,28 @@ func TestParseQSVEffectiveFrameContext(t *testing.T) {
 	}
 }
 
+func TestParseQSVBF0EffectiveContext(t *testing.T) {
+	context := parseQSVEffectiveFrameContext("[hevc_qsv] GopPicSize: 82; GopRefDist: 1; BRefType: off; PRefType: simple; GPB: ON; AdaptiveB: OFF\n")
+	if context.GopRefDist != 1 || !context.GPBEffective || context.BRefType != "off" || !context.AdaptiveBKnown || context.AdaptiveB {
+		t.Fatalf("BF0 must be observed as GopRefDist=1 with Adaptive B disabled: %#v", context)
+	}
+}
+
+func TestParseHEVCTraceHeaders(t *testing.T) {
+	trace := `
+[trace_headers] sps_max_sub_layers_minus1  u(3) = 0
+[trace_headers] sps_max_dec_pic_buffering_minus1[0] ue(v) = 6
+[trace_headers] sps_max_num_reorder_pics[0] ue(v) = 1
+`
+	measured := parseHEVCTraceHeaders(trace)
+	if !measured.Known || measured.TemporalLayers != 1 || measured.DPBFrames != 7 || measured.ReorderFrames != 1 {
+		t.Fatalf("unexpected measured HEVC structure: %#v", measured)
+	}
+	if memory := estimatedDPBMiB(1920, 1080, 10, measured.DPBFrames); math.Abs(memory-41.53) > 0.1 {
+		t.Fatalf("unexpected DPB estimate %.2f MiB", memory)
+	}
+}
+
 func TestFrameStructureRecommendationAndValidation(t *testing.T) {
 	source := QSVFrameStructureAnalysis{AverageGOPLength: 82.7, MaxConsecutiveBFrames: 3, BFrameRatio: .58, Confidence: "high"}
 	recommendation := recommendFrameStructure(source, 29.97, "anime", "balanced", true, true, false)

@@ -170,10 +170,11 @@ export function ProfilesPage() {
     main10: qsvMain10Selected,
     rateControl: qsvRateControl,
   });
+  const qsvBFramesDisabled = workerConfigString(form, 'frameStructureBFrameMode', 'auto') === 'off';
   const qsvWarnings = qsvSelectionWarnings(qsvFeatures, {
     extendedBRC: workerConfigBool(form, 'qsvExtendedBRC'),
     adaptiveI: workerConfigBool(form, 'qsvAdaptiveI'),
-    adaptiveB: workerConfigBool(form, 'qsvAdaptiveB'),
+    adaptiveB: !qsvBFramesDisabled && workerConfigBool(form, 'qsvAdaptiveB'),
   });
  
   const videoToolboxCapability = runtimeSnapshot.data?.encoders?.hevc_videotoolbox;
@@ -965,8 +966,8 @@ export function ProfilesPage() {
                                 <FormControlLabel
                                   control={
                                     <Checkbox
-                                      disabled={!qsvFeatures.adaptiveB && !workerConfigBool(form, 'qsvAdaptiveB')}
-                                      checked={workerConfigBool(form, 'qsvAdaptiveB')}
+                                      disabled={qsvBFramesDisabled || (!qsvFeatures.adaptiveB && !workerConfigBool(form, 'qsvAdaptiveB'))}
+                                      checked={!qsvBFramesDisabled && workerConfigBool(form, 'qsvAdaptiveB')}
                                       onChange={(event) =>
                                         updateWorkerConfig(
                                           'qsvAdaptiveB',
@@ -975,7 +976,7 @@ export function ProfilesPage() {
                                       }
                                     />
                                   }
-                                  label="QSV Adaptive B"
+                                  label={qsvBFramesDisabled ? 'QSV Adaptive B · disabled by BF0' : 'QSV Adaptive B'}
                                 />
                               </Stack>
                             </Grid>
