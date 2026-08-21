@@ -407,6 +407,24 @@ export type UpdateSettingInput = {
   value: Record<string, unknown>;
 };
 
+export type TrackProfilePreviewDecision = {
+  index: number;
+  type: 'video' | 'audio' | 'subtitle';
+  kept: boolean;
+  reason: string;
+};
+
+export type TrackProfileResolutionPreview = {
+  assetPath: string;
+  keepVideoStreams: number[];
+  keepAudioStreams: number[];
+  keepSubtitleStreams: number[];
+  video: TrackProfilePreviewDecision[];
+  audio: TrackProfilePreviewDecision[];
+  subtitle: TrackProfilePreviewDecision[];
+  warnings: string[];
+};
+
 export type MWPImportSummary = {
   profilesCreated: number;
   profilesUpdated: number;

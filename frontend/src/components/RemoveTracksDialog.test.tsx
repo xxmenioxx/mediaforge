@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import { RemoveTracksDialog } from './RemoveTracksDialog';
 
@@ -22,10 +22,16 @@ const inventory = {
 
 function renderDialog() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><RemoveTracksDialog open path={inventory.path} onClose={() => undefined} /></QueryClientProvider>);
+  const rendered = render(<QueryClientProvider client={client}><RemoveTracksDialog open path={inventory.path} onClose={() => undefined} /></QueryClientProvider>);
+  return { ...rendered, client };
 }
 
 describe('RemoveTracksDialog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
   it('requires a track selection and irreversible-action confirmation', async () => {
     vi.mocked(api.trackMaintenanceInventory).mockResolvedValue(inventory);
     const user = userEvent.setup();
@@ -45,5 +51,38 @@ describe('RemoveTracksDialog', () => {
     renderDialog();
     await user.click(await screen.findByRole('checkbox', { name: /#0 · video/i }));
     expect(screen.getByText(/at least one playable video stream must remain/i)).toBeTruthy();
+  });
+
+  it('sends absolute stream indexes and refreshes assets after completion', async () => {
+    vi.mocked(api.trackMaintenanceInventory).mockResolvedValue(inventory);
+    vi.mocked(api.startTrackRemoval).mockResolvedValue({
+      id: 'maintenance-1', operationType: 'remove_tracks', assetPath: inventory.path,
+      status: 'queued', phase: 'queued', progress: 0,
+    });
+    vi.mocked(api.maintenanceOperation).mockResolvedValue({
+      id: 'maintenance-1', operationType: 'remove_tracks', assetPath: inventory.path,
+      status: 'completed', phase: 'completed', progress: 100,
+    });
+    const user = userEvent.setup();
+    const { client } = renderDialog();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+
+    await user.click(await screen.findByRole('checkbox', { name: /#2 · subtitle/i }));
+    await user.click(screen.getByRole('checkbox', { name: /cannot be recovered/i }));
+    await user.click(screen.getByRole('button', { name: /remove 1 track/i }));
+
+    await waitFor(() => expect(api.startTrackRemoval).toHaveBeenCalledWith({
+      path: inventory.path,
+      streamIndexes: [2],
+      expectedFingerprint: inventory.fingerprint,
+      confirmed: true,
+    }));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 1100));
+    });
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['assets'] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['trackMaintenanceInventory', inventory.path] });
+    });
   });
 });

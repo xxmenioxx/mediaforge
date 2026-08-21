@@ -75,6 +75,48 @@ func TestSettingsRejectsDisablingAssignedAudioProfile(t *testing.T) {
 	}
 }
 
+func TestSettingsNormalizesPathTrackProfilesButPreservesAssetSelections(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-track-profile-scope?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+	body := `{"value":{"profiles":[{"key":"path-rules","scope":"path","audioMode":"languages","keepAudioStreams":[1],"audioMetadata":{"1":{"default":true}},"subtitleTransforms":[{"streamIndex":4,"format":"srt"}]},{"key":"asset-exact","scope":"asset","keepAudioStreams":[2],"keepSubtitleStreams":[]}]}}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/trackProfiles", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", "trackProfiles").Error; err != nil {
+		t.Fatal(err)
+	}
+	profiles := settingProfileValues(setting.Value["profiles"])
+	if len(profiles) != 2 {
+		t.Fatalf("profiles=%#v", setting.Value["profiles"])
+	}
+	pathProfile := settingProfileObject(profiles[0])
+	for _, key := range []string{"keepAudioStreams", "audioMetadata", "subtitleTransforms"} {
+		if _, exists := pathProfile[key]; exists {
+			t.Fatalf("Path profile persisted asset-only field %q: %#v", key, pathProfile)
+		}
+	}
+	assetProfile := settingProfileObject(profiles[1])
+	if indexes := workerSliceValue(assetProfile["keepAudioStreams"]); len(indexes) != 1 || streamIndexValue(indexes[0]) != 2 {
+		t.Fatalf("Asset audio selection was lost: %#v", assetProfile)
+	}
+	if indexes, exists := assetProfile["keepSubtitleStreams"]; !exists || len(workerSliceValue(indexes)) != 0 {
+		t.Fatalf("Asset remove-all selection was lost: %#v", assetProfile)
+	}
+}
+
 func TestMVForgePreferencesValidationRequiresDraftOnlyPreferenceFields(t *testing.T) {
 	valid := models.JSONMap{
 		"qualityGoal": "balanced", "executionPreference": "hardware", "preferredVideoEncoder": "hevc_qsv",

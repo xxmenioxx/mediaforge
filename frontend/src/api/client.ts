@@ -55,6 +55,7 @@ import type {
   SubtitleExtractionResult,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
+  TrackProfileResolutionPreview,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -340,6 +341,11 @@ export const api = {
     request<ProfileAssignment | { status: string }>('/api/profile-assignments', {
       method: 'POST',
       body: JSON.stringify(assignment),
+    }),
+  resolveTrackProfilePreview: (input: { assetPath: string; profile: Record<string, unknown> }) =>
+    request<TrackProfileResolutionPreview>('/api/track-profiles/resolve-preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
   queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
   createQueueJob: (job: QueueJobInput) =>

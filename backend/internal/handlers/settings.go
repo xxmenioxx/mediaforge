@@ -71,6 +71,9 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
+		if key == "trackProfiles" {
+			input.Value = normalizeTrackProfilesForStorage(input.Value)
+		}
 	}
 	setting := models.AppSetting{Key: key, Value: input.Value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := h.db.Clauses(clause.OnConflict{
@@ -114,6 +117,34 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, setting)
+}
+
+func normalizeTrackProfilesForStorage(value models.JSONMap) models.JSONMap {
+	result := models.JSONMap{}
+	for key, item := range value {
+		result[key] = item
+	}
+	profiles := settingProfileValues(value["profiles"])
+	normalized := make(models.JSONList, 0, len(profiles))
+	for _, raw := range profiles {
+		profile := settingProfileObject(raw)
+		if profile == nil {
+			normalized = append(normalized, raw)
+			continue
+		}
+		copy := map[string]any{}
+		for key, item := range profile {
+			copy[key] = item
+		}
+		if storedSettingProfileScope(copy) == "path" {
+			for _, key := range []string{"keepVideoStreams", "keepAudioStreams", "keepSubtitleStreams", "videoMetadata", "audioMetadata", "subtitleMetadata", "subtitleTransforms"} {
+				delete(copy, key)
+			}
+		}
+		normalized = append(normalized, copy)
+	}
+	result["profiles"] = normalized
+	return result
 }
 
 func validateOriginalRetentionPolicy(value models.JSONMap) error {

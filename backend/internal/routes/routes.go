@@ -114,6 +114,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.DELETE("/profiles/:id", profiles.Delete)
 		api.GET("/profile-assignments", profileAssignments.List)
 		api.POST("/profile-assignments", profileAssignments.Upsert)
+		api.POST("/track-profiles/resolve-preview", queue.PreviewTrackProfileResolution)
 		api.POST("/publisher/jobs/:id/publish", publisher.PublishJob)
 		api.DELETE("/publisher/jobs/:id", publisher.DiscardJob)
 		api.GET("/queue/jobs", queue.List)

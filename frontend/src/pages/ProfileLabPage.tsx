@@ -67,13 +67,14 @@ import type {
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
+import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, materializeAssetTrackSelection, trackProfileOverride, trackProfileWithConversion, type TrackProfile } from '../trackProfiles';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
@@ -670,6 +671,7 @@ export function ProfileLabPage() {
   const [trackDraft, setTrackDraft] = useState<TrackProfile>(emptyTrackDraft);
   const [savedTrackProfileKey, setSavedTrackProfileKey] = useState<string | null>(null);
   const [trackConversionDraft, setTrackConversionDraft] = useState<AssetConversionOverrideState>({});
+  const [assetTrackRulesOpen, setAssetTrackRulesOpen] = useState(false);
   const [terminalCommandOpen, setTerminalCommandOpen] = useState(false);
   const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
   const [fidelityOpen, setFidelityOpen] = useState(true);
@@ -964,6 +966,11 @@ export function ProfileLabPage() {
     },
   });
   const selectedAssetSnapshot = trackSnapshot.data?.path === assetPath ? trackSnapshot.data : undefined;
+  const pathTrackPreview = useQuery({
+    queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft],
+    queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: { ...trackDraft, scope: 'path' } }),
+    enabled: labSection === 'tracks' && activeProfileScope === 'path' && Boolean(assetPath) && Boolean(selectedAssetSnapshot),
+  });
   const autoRecommendation = useMutation({
     mutationFn: async (path: string) => {
       await trackSnapshot.mutateAsync({ path });
@@ -1694,28 +1701,21 @@ export function ProfileLabPage() {
   }
 
   function normalizedTrackProfileDraft(): TrackProfile {
-    const conversion = cleanTrackConversionOverride(trackConversionDraft);
-	const pathScope = (trackDraft.scope ?? 'asset') === 'path';
-    return {
+    let conversion = cleanTrackConversionOverride(trackConversionDraft);
+    if ((trackDraft.scope ?? 'asset') === 'asset' && selectedAssetSnapshot) {
+      conversion = materializeAssetTrackSelection(conversion, selectedAssetSnapshot);
+    }
+    return trackProfileWithConversion({
       ...trackDraft,
       scope: trackDraft.scope ?? 'asset',
       key: slugify(trackDraft.key || trackDraft.name),
       sourceAssetPath: selectedAsset?.path ?? trackDraft.sourceAssetPath ?? '',
       sourceAssetName: selectedAsset?.fileName ?? trackDraft.sourceAssetName ?? '',
-	  // Stream indexes belong to one file. Path profiles preserve semantic
-	  // policy and resolve concrete indexes independently for every asset.
-      keepVideoStreams: pathScope ? undefined : conversion.keepVideoStreams ?? undefined,
-      keepAudioStreams: pathScope ? undefined : conversion.keepAudioStreams ?? undefined,
-      keepSubtitleStreams: pathScope ? undefined : conversion.keepSubtitleStreams ?? undefined,
-      videoMetadata: pathScope ? undefined : conversion.videoMetadata,
-      audioMetadata: pathScope ? undefined : conversion.audioMetadata,
-      subtitleMetadata: pathScope ? undefined : conversion.subtitleMetadata,
-      subtitleTransforms: pathScope ? undefined : conversion.subtitleTransforms,
       audioLanguages: normalizeStringList(trackDraft.audioLanguages),
       subtitleLanguages: normalizeStringList(trackDraft.subtitleLanguages),
       defaultAudioLanguage: trackDraft.defaultAudioLanguage.trim().toLowerCase(),
       defaultSubtitleLanguage: trackDraft.defaultSubtitleLanguage.trim().toLowerCase(),
-    };
+    }, conversion);
   }
 
   function scanTrackAsset(force = false) {
@@ -3713,7 +3713,7 @@ export function ProfileLabPage() {
                   </Alert>
 				  {activeProfileScope === 'path' ? (
 					<Alert severity="info">
-					  Path profiles save language, default/forced, commentary, and validation rules. Stream indexes, per-track metadata, and subtitle transforms remain asset-specific and are resolved or omitted per file.
+					  Path profiles save language, default/forced, commentary, and validation rules. To remove a specific stream from this asset, change “Profile applies to” to Asset.
 					</Alert>
 				  ) : null}
                   <Grid container spacing={2}>
@@ -3748,18 +3748,29 @@ export function ProfileLabPage() {
                       </TextField>
                     </Grid>
 
-                    <Grid size={{ xs: 12 }}>
+                    <Grid size={{ xs: 12 }} sx={{ order: activeProfileScope === 'path' ? 2 : 1 }}>
                       <Stack spacing={1.5}>
                         <Stack sx={{ minWidth: 0 }}>
-                          <Typography fontWeight={700}>Current asset tracks</Typography>
+                          <Typography fontWeight={700}>{activeProfileScope === 'path' ? 'Resolved Path preview' : 'Asset track selection'}</Typography>
                           <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-                            {selectedAsset?.relativePath || selectedAsset?.path || 'Select an asset in the Lab header to inspect its tracks.'}
+                            {activeProfileScope === 'path'
+                              ? 'The current Path rules are resolved read-only against the selected asset. Preview indexes are never saved into the Path profile.'
+                              : 'Track selections and per-stream settings apply only to this asset.'}
                           </Typography>
+                          {selectedAsset ? <Typography color="text.secondary" variant="caption" sx={{ wordBreak: 'break-all' }}>{selectedAsset.relativePath || selectedAsset.path}</Typography> : null}
                         </Stack>
                         {!assetPath ? <Alert severity="warning">Choose an asset first so the Lab can show real video, audio, and subtitle tracks.</Alert> : null}
                         {trackSnapshot.isPending ? <Alert severity="info">Reading track snapshot...</Alert> : null}
                         {trackSnapshot.isError ? <Alert severity="warning">Could not scan this asset. It may not be readable from the backend.</Alert> : null}
-                        {selectedAssetSnapshot ? (
+                        {activeProfileScope === 'path' && selectedAssetSnapshot ? (
+                          <TrackProfileResolutionPreview
+                            scan={selectedAssetSnapshot}
+                            preview={pathTrackPreview.data?.assetPath === assetPath ? pathTrackPreview.data : undefined}
+                            loading={pathTrackPreview.isLoading || pathTrackPreview.isFetching}
+                            error={pathTrackPreview.error}
+                          />
+                        ) : null}
+                        {activeProfileScope === 'asset' && selectedAssetSnapshot ? (
                           <MediaSnapshotDetails
                             scan={selectedAssetSnapshot}
                             streamControls={{
@@ -3798,7 +3809,7 @@ export function ProfileLabPage() {
                             }}
                           />
                         ) : null}
-                        {selectedAssetSnapshot?.subtitleStreams.length ? (
+                        {activeProfileScope === 'asset' && selectedAssetSnapshot?.subtitleStreams.length ? (
                           <Stack spacing={1.25}>
                             <Stack>
                               <Typography fontWeight={700}>External subtitle transformations</Typography>
@@ -3811,11 +3822,11 @@ export function ProfileLabPage() {
                                 <Stack spacing={1.25}>
                                   <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
                                   <Grid container spacing={1.25}>
-                                    <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField select fullWidth label="Subtitle action" value={transform?.format ?? ''} onChange={(event) => updateTrackSubtitleTransform(stream, event.target.value as '' | 'srt' | 'ass')}><MenuItem value="">Keep embedded track</MenuItem><MenuItem value="srt">Create SRT and remove embedded</MenuItem><MenuItem value="ass">Create ASS and remove embedded</MenuItem></TextField></Grid>
-                                    {transform ? <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField fullWidth label="Sidecar language" value={transform.language} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { language: event.target.value.toLowerCase() })} /></Grid> : null}
+                                    <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField select fullWidth disabled={updateSetting.isPending} label="Subtitle action" value={transform?.format ?? ''} onChange={(event) => updateTrackSubtitleTransform(stream, event.target.value as '' | 'srt' | 'ass')}><MenuItem value="">Keep embedded track</MenuItem><MenuItem value="srt">Create SRT and remove embedded</MenuItem><MenuItem value="ass">Create ASS and remove embedded</MenuItem></TextField></Grid>
+                                    {transform ? <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField fullWidth disabled={updateSetting.isPending} label="Sidecar language" value={transform.language} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { language: event.target.value.toLowerCase() })} /></Grid> : null}
                                     {transform && bitmap ? <>
-                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth label="OCR quality" value={transform.ocrMode || 'accurate'} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrMode: event.target.value as 'raw' | 'clean' | 'accurate' })}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField></Grid>
-                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth label="OCR language" value={transform.ocrLanguage || defaultTrackOCRLanguage(stream.language)} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value })}><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem></TextField></Grid>
+                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth disabled={updateSetting.isPending} label="OCR quality" value={transform.ocrMode || 'accurate'} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrMode: event.target.value as 'raw' | 'clean' | 'accurate' })}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField></Grid>
+                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth disabled={updateSetting.isPending} label="OCR language" value={transform.ocrLanguage || defaultTrackOCRLanguage(stream.language)} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value })}><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem></TextField></Grid>
                                     </> : null}
                                   </Grid>
                                 </Stack>
@@ -3825,10 +3836,19 @@ export function ProfileLabPage() {
                         ) : null}
                       </Stack>
                     </Grid>
-                    <Grid size={{ xs: 12 }}>
+                    <Grid size={{ xs: 12 }} sx={{ order: activeProfileScope === 'path' ? 1 : 2 }}>
                       <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
                         <Stack spacing={2}>
-                          <Stack><Typography fontWeight={700}>Reusable selection rules</Typography><Typography color="text.secondary" variant="body2">Saved fallback rules used when stream indexes differ on another asset.</Typography></Stack>
+                          <Stack>
+                            <Typography fontWeight={700}>{activeProfileScope === 'path' ? 'Path track rules' : 'Advanced semantic rules'}</Typography>
+                            <Typography color="text.secondary" variant="body2">
+                              {activeProfileScope === 'path'
+                                ? 'These rules are applied independently to every asset in this path. MVForge resolves matching stream indexes when each asset is queued.'
+                                : 'The exact Asset selections above are authoritative. These semantic values remain available for legacy profiles and validation.'}
+                            </Typography>
+                          </Stack>
+                          {activeProfileScope === 'asset' ? <Button size="small" variant="text" onClick={() => setAssetTrackRulesOpen((current) => !current)} sx={{ alignSelf: 'flex-start' }}>{assetTrackRulesOpen ? 'Hide advanced rules' : 'Show advanced rules'}</Button> : null}
+                          <Collapse in={activeProfileScope === 'path' || assetTrackRulesOpen}>
                           <Grid container spacing={1.5}>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Video rule" value={trackDraft.videoMode} onChange={(event) => setTrackDraft({ ...trackDraft, videoMode: event.target.value as TrackProfile['videoMode'] })}><MenuItem value="first">Keep first video</MenuItem><MenuItem value="all">Keep all video</MenuItem><MenuItem value="require-one">Require one video</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Audio rule" value={trackDraft.audioMode} onChange={(event) => setTrackDraft({ ...trackDraft, audioMode: event.target.value as TrackProfile['audioMode'] })}><MenuItem value="all">Keep all audio</MenuItem><MenuItem value="default">Keep default audio</MenuItem><MenuItem value="languages">Keep selected languages</MenuItem><MenuItem value="none">Remove all audio</MenuItem></TextField></Grid>
@@ -3839,6 +3859,7 @@ export function ProfileLabPage() {
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={trackDraft.defaultSubtitleLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultSubtitleLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12 }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap><FormControlLabel control={<Checkbox checked={trackDraft.audioRequired} onChange={(event) => setTrackDraft({ ...trackDraft, audioRequired: event.target.checked })} />} label="Require matching audio" /><FormControlLabel control={<Checkbox checked={trackDraft.subtitlesRequired} onChange={(event) => setTrackDraft({ ...trackDraft, subtitlesRequired: event.target.checked })} />} label="Require matching subtitles" /><FormControlLabel control={<Checkbox checked={trackDraft.dropCommentary} onChange={(event) => setTrackDraft({ ...trackDraft, dropCommentary: event.target.checked })} />} label="Remove commentary tracks" /></Stack></Grid>
                           </Grid>
+                          </Collapse>
                         </Stack>
                       </Box>
                     </Grid>

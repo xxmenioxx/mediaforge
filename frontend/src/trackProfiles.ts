@@ -66,6 +66,37 @@ export function trackProfileOverride(profile: TrackProfile): AssetConversionOver
   };
 }
 
+export function trackProfileWithConversion(profile: TrackProfile, conversion: AssetConversionOverrideState): TrackProfile {
+  const assetScope = (profile.scope ?? 'asset') === 'asset';
+  return {
+    ...profile,
+    scope: profile.scope ?? 'asset',
+    keepVideoStreams: assetScope ? normalizedOptionalIndexes(conversion.keepVideoStreams) : undefined,
+    keepAudioStreams: assetScope ? normalizedOptionalIndexes(conversion.keepAudioStreams) : undefined,
+    keepSubtitleStreams: assetScope ? normalizedOptionalIndexes(conversion.keepSubtitleStreams) : undefined,
+    videoMetadata: assetScope ? conversion.videoMetadata : undefined,
+    audioMetadata: assetScope ? conversion.audioMetadata : undefined,
+    subtitleMetadata: assetScope ? conversion.subtitleMetadata : undefined,
+    subtitleTransforms: assetScope ? conversion.subtitleTransforms : undefined,
+  };
+}
+
+export function materializeAssetTrackSelection(conversion: AssetConversionOverrideState, scan: { videoStreams: Array<{ index: number }>; audioStreams: Array<{ index: number }>; subtitleStreams: Array<{ index: number }> }): AssetConversionOverrideState {
+  const exact = (selected: number[] | null | undefined, streams: Array<{ index: number }>) =>
+    normalizedOptionalIndexes(Array.isArray(selected) ? selected : streams.map((stream) => stream.index)) ?? [];
+  return {
+    ...conversion,
+    keepVideoStreams: exact(conversion.keepVideoStreams, scan.videoStreams),
+    keepAudioStreams: exact(conversion.keepAudioStreams, scan.audioStreams),
+    keepSubtitleStreams: exact(conversion.keepSubtitleStreams, scan.subtitleStreams),
+  };
+}
+
+function normalizedOptionalIndexes(value?: number[] | null) {
+  if (!Array.isArray(value)) return undefined;
+  return Array.from(new Set(value.filter((index) => Number.isInteger(index) && index >= 0))).sort((left, right) => left - right);
+}
+
 function normalizeTrackProfile(value: unknown): TrackProfile | null {
   if (!value || typeof value !== 'object') return null;
   const item = value as Record<string, unknown>;

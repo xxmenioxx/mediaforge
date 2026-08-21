@@ -188,6 +188,157 @@ func TestPathTrackProfileResolvesSemanticRulesPerAsset(t *testing.T) {
 	}
 }
 
+func TestQueueFreezesAssetTrackProfileRemovedStreams(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-track-profile-removals?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.Profile{}, &models.ProfileAssignment{}, &models.AppSetting{}, &models.ScanResult{},
+		&models.AssetRecord{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	assetPath := filepath.Clean("/media/raw/anime/episode-03.mkv")
+	videoProfile := models.Profile{Name: "Asset video", Scope: "asset", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 22, WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}}
+	if err := db.Create(&videoProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: assetPath, RootPath: "/media/raw/anime", FileName: "episode-03.mkv"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{
+		Path: assetPath, VideoStreams: models.JSONList{map[string]any{"index": 0}},
+		AudioStreams:    models.JSONList{map[string]any{"index": 1}, map[string]any{"index": 2}},
+		SubtitleStreams: models.JSONList{map[string]any{"index": 3}},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "asset-tracks", "scope": "asset", "keepVideoStreams": models.JSONList{0}, "keepAudioStreams": models.JSONList{2}, "keepSubtitleStreams": models.JSONList{}},
+	}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: "asset", TargetPath: assetPath, MediaType: "tracks", Selection: "profile", ProfileKey: "asset-tracks"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	body := `{"mediaPath":"` + assetPath + `","libraryId":1,"profileId":` + strconv.FormatUint(uint64(videoProfile.ID), 10) + `,"resolveProfileAssignments":true}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job models.QueueJob
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.TrackProfileKey != "asset-tracks" {
+		t.Fatalf("asset track assignment was not selected: %#v", job)
+	}
+	assertSnapshotIndexes := func(key string, want []float64) {
+		t.Helper()
+		got, ok := job.TrackProfileSnapshot[key].([]any)
+		if !ok || len(got) != len(want) {
+			t.Fatalf("%s=%#v want=%#v snapshot=%#v", key, job.TrackProfileSnapshot[key], want, job.TrackProfileSnapshot)
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("%s=%#v want=%#v", key, got, want)
+			}
+		}
+	}
+	assertSnapshotIndexes("keepVideoStreams", []float64{0})
+	assertSnapshotIndexes("keepAudioStreams", []float64{2})
+	assertSnapshotIndexes("keepSubtitleStreams", []float64{})
+}
+
+func TestBatchFreezesPathTrackProfilePerAsset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:path-track-profile-batch?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.Profile{}, &models.ProfileAssignment{}, &models.AppSetting{}, &models.ScanResult{},
+		&models.AssetRecord{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	videoProfile := models.Profile{Name: "Batch video", Scope: "asset", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 22, WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}}
+	if err := db.Create(&videoProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	group := filepath.Clean("/media/series/Season1")
+	assets := []struct {
+		path  string
+		audio models.JSONList
+		want  []float64
+	}{
+		{filepath.Join(group, "Episode01.mkv"), models.JSONList{map[string]any{"index": 1, "language": "jpn"}, map[string]any{"index": 2, "language": "eng", "title": "Commentary"}, map[string]any{"index": 3, "language": "spa"}}, []float64{1, 3}},
+		{filepath.Join(group, "Episode02.mkv"), models.JSONList{map[string]any{"index": 2, "language": "spa"}, map[string]any{"index": 4, "language": "jpn"}, map[string]any{"index": 7, "language": "fre"}}, []float64{2, 4}},
+		{filepath.Join(group, "Episode03.mkv"), models.JSONList{map[string]any{"index": 1, "language": "spa"}, map[string]any{"index": 5, "language": "jpn"}}, []float64{1, 5}},
+	}
+	for _, asset := range assets {
+		if err := db.Create(&models.AssetRecord{Path: asset.path, RootPath: "/media/series", GroupPath: "Season1", FileName: filepath.Base(asset.path)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&models.ScanResult{Path: asset.path, VideoStreams: models.JSONList{map[string]any{"index": 0}}, AudioStreams: asset.audio}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "season-tracks", "scope": "path", "videoMode": "first", "audioMode": "languages", "audioLanguages": models.JSONList{"jpn", "spa"}, "dropCommentary": true, "subtitleMode": "none"},
+	}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: "path", TargetPath: group, MediaType: "tracks", Selection: "profile", ProfileKey: "season-tracks"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	jobs := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		jobs = append(jobs, `{"mediaPath":"`+asset.path+`","libraryId":1,"profileId":`+strconv.FormatUint(uint64(videoProfile.ID), 10)+`,"resolveProfileAssignments":true}`)
+	}
+	body := `{"batchId":"season-1","batchName":"Season 1","jobs":[` + strings.Join(jobs, ",") + `]}`
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/batches", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Jobs []models.QueueJob `json:"jobs"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != len(assets) {
+		t.Fatalf("jobs=%d want=%d", len(result.Jobs), len(assets))
+	}
+	for index, job := range result.Jobs {
+		got, ok := job.TrackProfileSnapshot["keepAudioStreams"].([]any)
+		if !ok || len(got) != len(assets[index].want) {
+			t.Fatalf("job %s audio=%#v want=%#v", job.MediaPath, job.TrackProfileSnapshot["keepAudioStreams"], assets[index].want)
+		}
+		for item := range got {
+			if got[item] != assets[index].want[item] {
+				t.Fatalf("job %s audio=%#v want=%#v", job.MediaPath, got, assets[index].want)
+			}
+		}
+		if job.TrackProfileSnapshot["resolvedForAsset"] != job.MediaPath {
+			t.Fatalf("job snapshot was resolved for another asset: %#v", job.TrackProfileSnapshot)
+		}
+	}
+}
+
 func TestTrackProfileMergesBelowManualAssetOverride(t *testing.T) {
 	profile := AssetConversionOverrideState{KeepAudioStreams: []int{1}, KeepSubtitleStreams: []int{3}}
 	asset := AssetConversionOverrideState{KeepAudioStreams: []int{2}}

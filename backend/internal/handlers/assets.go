@@ -31,7 +31,8 @@ import (
 )
 
 type AssetHandler struct {
-	db *gorm.DB
+	db                      *gorm.DB
+	trackMaintenanceRuntime *trackMaintenanceRuntime
 }
 
 type SubtitleExtractionResult struct {

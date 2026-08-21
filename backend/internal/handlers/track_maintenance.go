@@ -58,6 +58,55 @@ type TrackMaintenanceInventory struct {
 	Chapters    int                      `json:"chapters"`
 }
 
+type trackMaintenanceRuntime struct {
+	probeInventory func(context.Context, string) (TrackMaintenanceInventory, error)
+	remux          func(context.Context, []string) error
+	analyze        func(string) (models.ScanResult, error)
+	stat           func(string) (os.FileInfo, error)
+	rename         func(string, string) error
+	remove         func(string) error
+	fingerprint    func(string) (string, error)
+	persist        func(AssetHandler, string, string, string, models.ScanResult, time.Time) error
+}
+
+func defaultTrackMaintenanceRuntime() *trackMaintenanceRuntime {
+	return &trackMaintenanceRuntime{
+		probeInventory: probeTrackMaintenanceInventory,
+		remux: func(ctx context.Context, args []string) error {
+			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("ffmpeg remux failed: %s", strings.TrimSpace(stderr.String()))
+			}
+			return nil
+		},
+		analyze: func(path string) (models.ScanResult, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return models.ScanResult{}, err
+			}
+			probe, raw, err := runFFProbe(path, 20)
+			if err != nil {
+				return models.ScanResult{}, err
+			}
+			return buildScanResult(path, info.Size(), probe, raw), nil
+		},
+		stat:        os.Stat,
+		rename:      os.Rename,
+		remove:      os.Remove,
+		fingerprint: mediaFileFingerprint,
+		persist:     persistTrackMaintenanceResult,
+	}
+}
+
+func (h AssetHandler) maintenanceRuntime() *trackMaintenanceRuntime {
+	if h.trackMaintenanceRuntime != nil {
+		return h.trackMaintenanceRuntime
+	}
+	return defaultTrackMaintenanceRuntime()
+}
+
 type trackProbeResponse struct {
 	Streams []struct {
 		Index         int               `json:"index"`
@@ -213,7 +262,7 @@ func (h AssetHandler) TrackMaintenanceInventory(c *gin.Context) {
 		trackMaintenanceHTTPError(c, err)
 		return
 	}
-	inventory, err := probeTrackMaintenanceInventory(c.Request.Context(), path)
+	inventory, err := h.maintenanceRuntime().probeInventory(c.Request.Context(), path)
 	if err != nil {
 		c.JSON(422, gin.H{"error": err.Error()})
 		return
@@ -256,7 +305,7 @@ func (h AssetHandler) StartTrackRemoval(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "asset has an active Queue job and cannot be modified"})
 		return
 	}
-	inventory, err := probeTrackMaintenanceInventory(c.Request.Context(), path)
+	inventory, err := h.maintenanceRuntime().probeInventory(c.Request.Context(), path)
 	if err != nil {
 		c.JSON(422, gin.H{"error": err.Error()})
 		return
@@ -419,22 +468,20 @@ func (h AssetHandler) updateMaintenance(id, status, phase string, progress int, 
 }
 
 func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceInventory, remaining []TrackMaintenanceStream) {
+	runtime := h.maintenanceRuntime()
 	path := inventory.Path
 	extension := filepath.Ext(path)
 	temporary := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+id+".tmp"+extension)
 	backup := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+id+".backup"+extension)
 	h.updateMaintenance(id, maintenanceStatusRunning, "remuxing", 10, map[string]any{"started_at": time.Now(), "temporary_path": temporary, "backup_path": backup})
-	defer func() { _ = os.Remove(temporary) }()
+	defer func() { _ = runtime.remove(temporary) }()
 	args := buildRemoveTracksFFmpegArgs(path, temporary, remaining)
-	cmd := exec.CommandContext(context.Background(), "ffmpeg", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		h.failMaintenance(id, "remuxing", fmt.Errorf("ffmpeg remux failed: %s", strings.TrimSpace(stderr.String())))
+	if err := runtime.remux(context.Background(), args); err != nil {
+		h.failMaintenance(id, "remuxing", err)
 		return
 	}
 	h.updateMaintenance(id, maintenanceStatusRunning, "validating", 55, nil)
-	actual, err := probeTrackMaintenanceInventory(context.Background(), temporary)
+	actual, err := runtime.probeInventory(context.Background(), temporary)
 	if err != nil || validateRemuxedTrackInventory(remaining, actual) != nil || actual.Chapters != inventory.Chapters {
 		if err == nil {
 			err = validateRemuxedTrackInventory(remaining, actual)
@@ -445,37 +492,50 @@ func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceI
 		h.failMaintenance(id, "validating", err)
 		return
 	}
-	info, err := os.Stat(temporary)
+	info, err := runtime.stat(temporary)
 	if err != nil || info.Size() <= 0 {
 		h.failMaintenance(id, "validating", fmt.Errorf("remux output is empty or unavailable"))
 		return
 	}
-	probe, raw, err := runFFProbe(temporary, 20)
+	snapshot, err := runtime.analyze(temporary)
 	if err != nil {
 		h.failMaintenance(id, "analyzing", fmt.Errorf("analyze remux candidate: %w", err))
 		return
 	}
-	snapshot := buildScanResult(path, info.Size(), probe, raw)
+	snapshot.Path = path
+	snapshot.FileName = filepath.Base(path)
+	snapshot.SizeBytes = info.Size()
 	applySnapshotDirectPlay(h.db, &snapshot)
 	h.updateMaintenance(id, maintenanceStatusRunning, "committing", 85, nil)
-	if err := os.Rename(path, backup); err != nil {
+	if err := runtime.rename(path, backup); err != nil {
 		h.failMaintenance(id, "committing", fmt.Errorf("prepare recoverable backup: %w", err))
 		return
 	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Rename(backup, path)
+	if err := runtime.rename(temporary, path); err != nil {
+		_ = runtime.rename(backup, path)
 		h.failMaintenance(id, "committing", fmt.Errorf("replace asset: %w", err))
 		return
 	}
-	rollback := func() { _ = os.Remove(path); _ = os.Rename(backup, path) }
-	finalFingerprint, err := mediaFileFingerprint(path)
+	rollback := func() { _ = runtime.remove(path); _ = runtime.rename(backup, path) }
+	finalFingerprint, err := runtime.fingerprint(path)
 	if err != nil {
 		rollback()
 		h.failMaintenance(id, "committing", fmt.Errorf("verify replaced asset: %w", err))
 		return
 	}
 	finished := time.Now()
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
+	if err := runtime.persist(h, id, path, finalFingerprint, snapshot, finished); err != nil {
+		rollback()
+		h.failMaintenance(id, "committing", fmt.Errorf("persist maintenance result: %w", err))
+		return
+	}
+	if err := runtime.remove(backup); err != nil && !os.IsNotExist(err) {
+		h.updateMaintenance(id, maintenanceStatusComplete, "completed", 100, map[string]any{"warning": "maintenance completed, but the temporary recovery backup could not be removed: " + err.Error()})
+	}
+}
+
+func persistTrackMaintenanceResult(h AssetHandler, id, path, finalFingerprint string, snapshot models.ScanResult, finished time.Time) error {
+	return h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("path = ?", path).Delete(&models.ScanResult{}).Error; err != nil {
 			return err
 		}
@@ -493,14 +553,7 @@ func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceI
 			"status": maintenanceStatusComplete, "phase": "completed", "progress": 100,
 			"result_fingerprint": finalFingerprint, "finished_at": finished, "updated_at": finished,
 		}).Error
-	}); err != nil {
-		rollback()
-		h.failMaintenance(id, "committing", fmt.Errorf("persist maintenance result: %w", err))
-		return
-	}
-	if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
-		h.updateMaintenance(id, maintenanceStatusComplete, "completed", 100, map[string]any{"warning": "maintenance completed, but the temporary recovery backup could not be removed: " + err.Error()})
-	}
+	})
 }
 
 func snapshotAssetRecordID(db *gorm.DB, path string) uint {
