@@ -525,7 +525,11 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 	}
 	video := firstStream(probe.Streams, "video")
 	report("interlace", 30, "Analyzing motion and interlace samples")
-	raw["interlaceAnalysis"] = detectInterlaceContext(ctx, path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	interlaceAnalysis := detectInterlaceContext(ctx, path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	interlaceAnalysis.Codec = video.CodecName
+	interlaceAnalysis.AverageFrameRate = video.AverageFrameRate
+	interlaceAnalysis.RealFrameRate = video.RealBaseFrameRate
+	raw["interlaceAnalysis"] = interlaceAnalysis
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}

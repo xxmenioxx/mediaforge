@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -12,42 +13,96 @@ import (
 )
 
 type InterlaceAnalysis struct {
-	Version                      int             `json:"version"`
-	Status                       string          `json:"status"`
-	FieldOrder                   string          `json:"fieldOrder"`
-	ContainerFieldOrder          string          `json:"containerFieldOrder"`
-	DetectedFieldOrder           string          `json:"detectedFieldOrder,omitempty"`
-	FieldOrderMismatch           bool            `json:"fieldOrderMismatch"`
-	Source                       string          `json:"source"`
-	Confidence                   float64         `json:"confidence"`
-	TFF                          int             `json:"tff"`
-	BFF                          int             `json:"bff"`
-	Progressive                  int             `json:"progressive"`
-	Undetermined                 int             `json:"undetermined"`
-	RepeatedTop                  int             `json:"repeatedTop"`
-	RepeatedBottom               int             `json:"repeatedBottom"`
-	SampledFrames                int             `json:"sampledFrames"`
-	WindowStart                  float64         `json:"windowStart"`
-	WindowSeconds                int             `json:"windowSeconds"`
-	SampleCount                  int             `json:"sampleCount"`
-	SampledAt                    []float64       `json:"sampledAt,omitempty"`
-	RecommendedMode              string          `json:"recommendedMode,omitempty"`
-	RecommendedFieldMetadataMode string          `json:"recommendedFieldMetadataMode,omitempty"`
-	RecommendedFilter            string          `json:"recommendedFilter,omitempty"`
-	IVTCValidation               *IVTCValidation `json:"ivtcValidation,omitempty"`
+	Version                      int               `json:"version"`
+	Codec                        string            `json:"codec,omitempty"`
+	AverageFrameRate             string            `json:"averageFrameRate,omitempty"`
+	RealFrameRate                string            `json:"realFrameRate,omitempty"`
+	Status                       string            `json:"status"`
+	FieldOrder                   string            `json:"fieldOrder"`
+	ContainerFieldOrder          string            `json:"containerFieldOrder"`
+	DetectedFieldOrder           string            `json:"detectedFieldOrder,omitempty"`
+	FieldOrderMismatch           bool              `json:"fieldOrderMismatch"`
+	Source                       string            `json:"source"`
+	Confidence                   float64           `json:"confidence"`
+	TFF                          int               `json:"tff"`
+	BFF                          int               `json:"bff"`
+	Progressive                  int               `json:"progressive"`
+	Undetermined                 int               `json:"undetermined"`
+	RepeatedTop                  int               `json:"repeatedTop"`
+	RepeatedBottom               int               `json:"repeatedBottom"`
+	SampledFrames                int               `json:"sampledFrames"`
+	WindowStart                  float64           `json:"windowStart"`
+	WindowSeconds                int               `json:"windowSeconds"`
+	SampleCount                  int               `json:"sampleCount"`
+	FrameSignalSampleCount       int               `json:"frameSignalSampleCount"`
+	SampledAt                    []float64         `json:"sampledAt,omitempty"`
+	RecommendedMode              string            `json:"recommendedMode,omitempty"`
+	RecommendedFieldMetadataMode string            `json:"recommendedFieldMetadataMode,omitempty"`
+	RecommendedFilter            string            `json:"recommendedFilter,omitempty"`
+	IVTCValidation               *IVTCValidation   `json:"ivtcValidation,omitempty"`
+	Windows                      []InterlaceWindow `json:"windows,omitempty"`
+	RecommendedAction            string            `json:"recommendedAction,omitempty"`
+	DecisionReason               string            `json:"decisionReason,omitempty"`
+	AutomaticFilter              string            `json:"automaticFilter,omitempty"`
 }
 
-const interlaceAnalysisVersion = 2
+const (
+	interlaceAnalysisVersion     = 3
+	interlaceAnalysisSnapshotKey = "interlaceAnalysisSnapshot"
+)
+
+type InterlaceWindow struct {
+	Start          float64            `json:"start"`
+	Seconds        int                `json:"seconds"`
+	Status         string             `json:"status"`
+	Confidence     float64            `json:"confidence"`
+	TFF            int                `json:"tff"`
+	BFF            int                `json:"bff"`
+	Progressive    int                `json:"progressive"`
+	Undetermined   int                `json:"undetermined"`
+	RepeatedTop    int                `json:"repeatedTop"`
+	RepeatedBottom int                `json:"repeatedBottom"`
+	SampledFrames  int                `json:"sampledFrames"`
+	FrameSignals   FrameSignalSummary `json:"frameSignals"`
+}
+
+type FrameSignalSummary struct {
+	DecodedFrames       int    `json:"decodedFrames"`
+	InterlacedFrames    int    `json:"interlacedFrames"`
+	ProgressiveFrames   int    `json:"progressiveFrames"`
+	TopFieldFirstFrames int    `json:"topFieldFirstFrames"`
+	BottomFirstFrames   int    `json:"bottomFirstFrames"`
+	RepeatPictFrames    int    `json:"repeatPictFrames"`
+	Cadence             string `json:"cadence,omitempty"`
+}
 
 type IVTCValidation struct {
-	TFFProgressive      int     `json:"tffProgressive"`
-	TFFClassified       int     `json:"tffClassified"`
+	TFFProgressive      int                    `json:"tffProgressive"`
+	TFFClassified       int                    `json:"tffClassified"`
+	TFFProgressiveRatio float64                `json:"tffProgressiveRatio"`
+	BFFProgressive      int                    `json:"bffProgressive"`
+	BFFClassified       int                    `json:"bffClassified"`
+	BFFProgressiveRatio float64                `json:"bffProgressiveRatio"`
+	SelectedOrder       string                 `json:"selectedOrder,omitempty"`
+	Confidence          float64                `json:"confidence"`
+	ValidatedWindows    int                    `json:"validatedWindows"`
+	Windows             []IVTCWindowValidation `json:"windows,omitempty"`
+}
+
+type IVTCWindowValidation struct {
+	Start               float64 `json:"start"`
 	TFFProgressiveRatio float64 `json:"tffProgressiveRatio"`
-	BFFProgressive      int     `json:"bffProgressive"`
-	BFFClassified       int     `json:"bffClassified"`
 	BFFProgressiveRatio float64 `json:"bffProgressiveRatio"`
 	SelectedOrder       string  `json:"selectedOrder,omitempty"`
 	Confidence          float64 `json:"confidence"`
+}
+
+type ffprobeFrameResponse struct {
+	Frames []struct {
+		InterlacedFrame int `json:"interlaced_frame"`
+		TopFieldFirst   int `json:"top_field_first"`
+		RepeatPict      int `json:"repeat_pict"`
+	} `json:"frames"`
 }
 
 var (
@@ -80,6 +135,13 @@ func detectInterlaceContext(ctx context.Context, path, fieldOrder string, durati
 		analysis.RepeatedBottom += sample.RepeatedBottom
 		analysis.SampledFrames += sample.SampledFrames
 		analysis.SampledAt = append(analysis.SampledAt, start)
+		window := interlaceWindowFromSample(start, windowSeconds, sample)
+		if signals, signalsOK := runFrameSignalsContext(ctx, path, start, windowSeconds); signalsOK {
+			window.FrameSignals = signals
+			analysis.FrameSignalSampleCount++
+		}
+		classifyInterlaceWindow(&window)
+		analysis.Windows = append(analysis.Windows, window)
 	}
 	analysis.SampleCount = len(analysis.SampledAt)
 	if analysis.SampleCount == 0 {
@@ -87,6 +149,9 @@ func detectInterlaceContext(ctx context.Context, path, fieldOrder string, durati
 	}
 	analysis.WindowStart = analysis.SampledAt[0]
 	analysis.Source = "idet_multi_sample"
+	if analysis.FrameSignalSampleCount > 0 {
+		analysis.Source = "idet_and_ffprobe_multi_sample"
+	}
 	analysis.DetectedFieldOrder = dominantFieldOrder(analysis.TFF, analysis.BFF)
 	if analysis.DetectedFieldOrder != "" {
 		analysis.FieldOrder = analysis.DetectedFieldOrder
@@ -99,6 +164,79 @@ func detectInterlaceContext(ctx context.Context, path, fieldOrder string, durati
 		validateIVTCContext(ctx, path, duration, windowSeconds, &analysis)
 	}
 	return analysis
+}
+
+func decodeInterlaceAnalysis(value any) (InterlaceAnalysis, bool) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return InterlaceAnalysis{}, false
+	}
+	var analysis InterlaceAnalysis
+	if json.Unmarshal(encoded, &analysis) != nil || analysis.Version < interlaceAnalysisVersion || strings.TrimSpace(analysis.Status) == "" {
+		return InterlaceAnalysis{}, false
+	}
+	return analysis, true
+}
+
+func interlaceWindowFromSample(start float64, seconds int, sample InterlaceAnalysis) InterlaceWindow {
+	return InterlaceWindow{
+		Start: start, Seconds: seconds, TFF: sample.TFF, BFF: sample.BFF,
+		Progressive: sample.Progressive, Undetermined: sample.Undetermined,
+		RepeatedTop: sample.RepeatedTop, RepeatedBottom: sample.RepeatedBottom,
+		SampledFrames: sample.SampledFrames,
+	}
+}
+
+func runFrameSignalsContext(parent context.Context, path string, start float64, seconds int) (FrameSignalSummary, bool) {
+	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds+30)*time.Second)
+	defer cancel()
+	interval := fmt.Sprintf("%.3f%%+%d", start, seconds)
+	args := []string{"-v", "error", "-select_streams", "v:0", "-read_intervals", interval,
+		"-show_frames", "-show_entries", "frame=interlaced_frame,top_field_first,repeat_pict", "-of", "json", path}
+	output, err := exec.CommandContext(ctx, "ffprobe", args...).Output()
+	if err != nil {
+		return FrameSignalSummary{}, false
+	}
+	var response ffprobeFrameResponse
+	if json.Unmarshal(output, &response) != nil || len(response.Frames) == 0 {
+		return FrameSignalSummary{}, false
+	}
+	result := FrameSignalSummary{DecodedFrames: len(response.Frames)}
+	repeatPositions := make([]int, 0)
+	for index, frame := range response.Frames {
+		if frame.InterlacedFrame != 0 {
+			result.InterlacedFrames++
+			if frame.TopFieldFirst != 0 {
+				result.TopFieldFirstFrames++
+			} else {
+				result.BottomFirstFrames++
+			}
+		} else {
+			result.ProgressiveFrames++
+		}
+		if frame.RepeatPict > 0 {
+			result.RepeatPictFrames++
+			repeatPositions = append(repeatPositions, index)
+		}
+	}
+	result.Cadence = describeRepeatCadence(repeatPositions)
+	return result, true
+}
+
+func describeRepeatCadence(positions []int) string {
+	if len(positions) < 3 {
+		return "none_or_insufficient"
+	}
+	minGap, maxGap := positions[1]-positions[0], positions[1]-positions[0]
+	for index := 2; index < len(positions); index++ {
+		gap := positions[index] - positions[index-1]
+		minGap = min(minGap, gap)
+		maxGap = max(maxGap, gap)
+	}
+	if maxGap-minGap <= 1 {
+		return fmt.Sprintf("stable_every_%d_frames", max(1, (minGap+maxGap)/2))
+	}
+	return "irregular"
 }
 
 func finalizeFieldMetadataAnalysis(analysis *InterlaceAnalysis) {
@@ -200,8 +338,7 @@ func fieldOrderFamily(value string) string {
 
 func shouldValidateIVTC(analysis InterlaceAnalysis) bool {
 	classified := analysis.TFF + analysis.BFF + analysis.Progressive
-	return classified > 0 && (analysis.Status == "telecine_suspected" ||
-		float64(analysis.TFF+analysis.BFF)/float64(classified) >= 0.50)
+	return classified > 0 && analysis.Status == "telecine_suspected"
 }
 
 func validateIVTC(path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
@@ -209,46 +346,101 @@ func validateIVTC(path string, duration float64, seconds int, analysis *Interlac
 }
 
 func validateIVTCContext(ctx context.Context, path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
-	start := max(0, duration/2-float64(seconds)/2)
-	tff, tffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=tff,idet")
-	bff, bffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=bff,idet")
-	if !tffOK || !bffOK {
+	starts := validationStarts(analysis.SampledAt, duration, seconds)
+	validation := &IVTCValidation{}
+	for _, start := range starts {
+		tff, tffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=tff,decimate,idet")
+		bff, bffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=bff,decimate,idet")
+		if !tffOK || !bffOK {
+			continue
+		}
+		tffClassified := tff.TFF + tff.BFF + tff.Progressive
+		bffClassified := bff.TFF + bff.BFF + bff.Progressive
+		window := IVTCWindowValidation{Start: start}
+		if tffClassified > 0 {
+			window.TFFProgressiveRatio = float64(tff.Progressive) / float64(tffClassified)
+		}
+		if bffClassified > 0 {
+			window.BFFProgressiveRatio = float64(bff.Progressive) / float64(bffClassified)
+		}
+		window.SelectedOrder, window.Confidence = validatedIVTCOrder(window.TFFProgressiveRatio, window.BFFProgressiveRatio)
+		validation.Windows = append(validation.Windows, window)
+		validation.TFFProgressive += tff.Progressive
+		validation.TFFClassified += tffClassified
+		validation.BFFProgressive += bff.Progressive
+		validation.BFFClassified += bffClassified
+	}
+	if validation.TFFClassified == 0 || validation.BFFClassified == 0 {
 		return
 	}
-	tffClassified := tff.TFF + tff.BFF + tff.Progressive
-	bffClassified := bff.TFF + bff.BFF + bff.Progressive
-	validation := &IVTCValidation{
-		TFFProgressive: tff.Progressive, TFFClassified: tffClassified,
-		BFFProgressive: bff.Progressive, BFFClassified: bffClassified,
-	}
-	if tffClassified > 0 {
-		validation.TFFProgressiveRatio = float64(tff.Progressive) / float64(tffClassified)
-	}
-	if bffClassified > 0 {
-		validation.BFFProgressiveRatio = float64(bff.Progressive) / float64(bffClassified)
+	validation.TFFProgressiveRatio = float64(validation.TFFProgressive) / float64(validation.TFFClassified)
+	validation.BFFProgressiveRatio = float64(validation.BFFProgressive) / float64(validation.BFFClassified)
+	for _, window := range validation.Windows {
+		if window.SelectedOrder != "" {
+			validation.ValidatedWindows++
+		}
 	}
 	applyIVTCValidation(analysis, validation)
 	analysis.IVTCValidation = validation
 }
 
-func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation) {
-	selected, best, other := "tff", validation.TFFProgressiveRatio, validation.BFFProgressiveRatio
-	if validation.BFFProgressiveRatio > validation.TFFProgressiveRatio {
-		selected, best, other = "bff", validation.BFFProgressiveRatio, validation.TFFProgressiveRatio
+func validationStarts(sampled []float64, duration float64, seconds int) []float64 {
+	if len(sampled) <= 3 {
+		if len(sampled) > 0 {
+			return sampled
+		}
+		return []float64{max(0, duration/2-float64(seconds)/2)}
 	}
-	validation.Confidence = best
+	return []float64{sampled[0], sampled[len(sampled)/2], sampled[len(sampled)-1]}
+}
+
+func validatedIVTCOrder(tffRatio, bffRatio float64) (string, float64) {
+	selected, best, other := "tff", tffRatio, bffRatio
+	if bffRatio > tffRatio {
+		selected, best, other = "bff", bffRatio, tffRatio
+	}
 	if best >= 0.85 && best-other >= 0.15 {
+		return selected, best
+	}
+	return "", best
+}
+
+func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation) {
+	selected, best := validatedIVTCOrder(validation.TFFProgressiveRatio, validation.BFFProgressiveRatio)
+	validation.Confidence = best
+	if selected != "" && ivtcWindowsAgree(validation, selected) {
 		validation.SelectedOrder = selected
-		analysis.Status = "telecine_suspected"
+		analysis.Status = "telecine"
 		analysis.Confidence = best
 		analysis.DetectedFieldOrder = selected
 		analysis.FieldOrder = selected
 		analysis.FieldOrderMismatch = fieldOrderFamily(analysis.ContainerFieldOrder) != "" &&
 			fieldOrderFamily(analysis.ContainerFieldOrder) != selected
 		analysis.RecommendedMode = "ivtc_" + selected
+		analysis.RecommendedAction = "ivtc"
+		analysis.DecisionReason = "inverse telecine was validated in distributed samples"
 		analysis.RecommendedFieldMetadataMode = "progressive"
 		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ",decimate"
+		analysis.AutomaticFilter = analysis.RecommendedFilter
 	}
+}
+
+func ivtcWindowsAgree(validation *IVTCValidation, selected string) bool {
+	if len(validation.Windows) == 0 {
+		// Compatibility for v2 fixtures and persisted validation blocks.
+		return true
+	}
+	required := 2
+	if len(validation.Windows) == 1 {
+		required = 1
+	}
+	agree := 0
+	for _, window := range validation.Windows {
+		if window.SelectedOrder == selected {
+			agree++
+		}
+	}
+	return agree >= required && agree*2 > len(validation.Windows)
 }
 
 func classifyInterlace(analysis *InterlaceAnalysis) {
@@ -256,8 +448,15 @@ func classifyInterlace(analysis *InterlaceAnalysis) {
 	if analysis.DetectedFieldOrder == "" {
 		analysis.DetectedFieldOrder = dominantFieldOrder(analysis.TFF, analysis.BFF)
 	}
+	if len(analysis.Windows) > 0 {
+		classifyDistributedInterlace(analysis)
+		return
+	}
 	classified := analysis.TFF + analysis.BFF + analysis.Progressive
 	if classified == 0 {
+		analysis.Status = "unknown"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "no classified frames were available"
 		return
 	}
 	interlaced := analysis.TFF + analysis.BFF
@@ -267,17 +466,130 @@ func classifyInterlace(analysis *InterlaceAnalysis) {
 	case repeatedRatio >= 0.15 && interlacedRatio >= 0.20:
 		analysis.Status = "telecine_suspected"
 		analysis.Confidence = repeatedRatio
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "repeated fields suggest cadence, but inverse telecine is not validated"
 	case interlacedRatio >= 0.70:
 		analysis.Status = "interlaced"
 		analysis.Confidence = interlacedRatio
 		analysis.RecommendedMode = "force"
+		analysis.RecommendedAction = "deinterlace"
+		analysis.DecisionReason = "interlacing is consistent in the sampled frames"
 		analysis.RecommendedFilter = bwdifFilter(*analysis)
+		analysis.AutomaticFilter = analysis.RecommendedFilter
 	case interlacedRatio >= 0.10:
-		analysis.Status = "mixed"
+		analysis.Status = "hybrid"
 		analysis.Confidence = max(interlacedRatio, 1-interlacedRatio)
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "progressive and interlaced evidence is mixed"
 	case interlacedRatio < 0.10:
 		analysis.Status = "progressive"
 		analysis.Confidence = 1 - interlacedRatio
+		analysis.RecommendedAction = "none"
+		analysis.DecisionReason = "sampled frames are consistently progressive"
+	}
+}
+
+func classifyInterlaceWindow(window *InterlaceWindow) {
+	classified := window.TFF + window.BFF + window.Progressive
+	if classified == 0 {
+		classifyWindowFromFrameSignals(window)
+		return
+	}
+	interlacedRatio := float64(window.TFF+window.BFF) / float64(classified)
+	repeatedRatio := float64(window.RepeatedTop+window.RepeatedBottom) / float64(max(window.SampledFrames, 1))
+	if window.FrameSignals.DecodedFrames > 0 {
+		signalRatio := float64(window.FrameSignals.InterlacedFrames) / float64(window.FrameSignals.DecodedFrames)
+		if (interlacedRatio >= 0.70 && signalRatio < 0.10) || (interlacedRatio < 0.10 && signalRatio >= 0.70) {
+			window.Status = "unknown"
+			window.Confidence = max(interlacedRatio, signalRatio)
+			return
+		}
+	}
+	switch {
+	case repeatedRatio >= 0.15 && interlacedRatio >= 0.20:
+		window.Status, window.Confidence = "telecine_suspected", max(repeatedRatio, interlacedRatio)
+	case interlacedRatio >= 0.70:
+		window.Status, window.Confidence = "interlaced", interlacedRatio
+	case interlacedRatio >= 0.10:
+		window.Status, window.Confidence = "hybrid", max(interlacedRatio, 1-interlacedRatio)
+	default:
+		window.Status, window.Confidence = "progressive", 1-interlacedRatio
+	}
+}
+
+func classifyWindowFromFrameSignals(window *InterlaceWindow) {
+	signals := window.FrameSignals
+	if signals.DecodedFrames == 0 {
+		window.Status = "unknown"
+		return
+	}
+	interlacedRatio := float64(signals.InterlacedFrames) / float64(signals.DecodedFrames)
+	repeatedRatio := float64(signals.RepeatPictFrames) / float64(signals.DecodedFrames)
+	switch {
+	case strings.HasPrefix(signals.Cadence, "stable_") && repeatedRatio >= 0.15 && interlacedRatio >= 0.20:
+		window.Status, window.Confidence = "telecine_suspected", max(repeatedRatio, interlacedRatio)
+	case interlacedRatio >= 0.70:
+		window.Status, window.Confidence = "interlaced", interlacedRatio
+	case interlacedRatio >= 0.10:
+		window.Status, window.Confidence = "hybrid", max(interlacedRatio, 1-interlacedRatio)
+	default:
+		window.Status, window.Confidence = "progressive", 1-interlacedRatio
+	}
+}
+
+func classifyDistributedInterlace(analysis *InterlaceAnalysis) {
+	counts := map[string]int{}
+	confidenceTotal := 0.0
+	classifiedWindows := 0
+	for index := range analysis.Windows {
+		window := &analysis.Windows[index]
+		if window.Status == "" {
+			classifyInterlaceWindow(window)
+		}
+		if window.Status == "unknown" {
+			continue
+		}
+		counts[window.Status]++
+		confidenceTotal += window.Confidence
+		classifiedWindows++
+	}
+	if classifiedWindows == 0 {
+		analysis.Status = "unknown"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "no sample window contained enough classified frames"
+		return
+	}
+	analysis.Confidence = confidenceTotal / float64(classifiedWindows)
+	hasProgressive := counts["progressive"] > 0
+	hasMotion := counts["interlaced"]+counts["telecine_suspected"]+counts["hybrid"] > 0
+	switch {
+	case hasProgressive && hasMotion:
+		analysis.Status = "hybrid"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "distributed windows disagree between progressive and field-based content"
+	case counts["hybrid"] > 0:
+		analysis.Status = "hybrid"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "at least one sample window contains mixed frame evidence"
+	case counts["telecine_suspected"] > 0:
+		analysis.Status = "telecine_suspected"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "repeated-field cadence is suspected and requires distributed IVTC validation"
+	case counts["interlaced"] == classifiedWindows:
+		analysis.Status = "interlaced"
+		analysis.RecommendedMode = "force"
+		analysis.RecommendedAction = "deinterlace"
+		analysis.DecisionReason = "every classified window is consistently interlaced"
+		analysis.RecommendedFilter = bwdifFilter(*analysis)
+		analysis.AutomaticFilter = analysis.RecommendedFilter
+	case counts["progressive"] == classifiedWindows:
+		analysis.Status = "progressive"
+		analysis.RecommendedAction = "none"
+		analysis.DecisionReason = "every classified window is consistently progressive"
+	default:
+		analysis.Status = "unknown"
+		analysis.RecommendedAction = "review"
+		analysis.DecisionReason = "distributed evidence is insufficient or contradictory"
 	}
 }
 
@@ -316,12 +628,17 @@ func effectiveDeinterlaceFilter(profileMode string, analysis InterlaceAnalysis) 
 	case "force", "forced", "on":
 		return bwdifFilter(analysis)
 	default:
-		if analysis.Status == "telecine_suspected" && strings.TrimSpace(analysis.RecommendedFilter) != "" {
+		if automatic := strings.TrimSpace(analysis.AutomaticFilter); automatic != "" {
+			return automatic
+		}
+		if analysis.Status == "telecine" && strings.TrimSpace(analysis.RecommendedFilter) != "" {
 			return strings.TrimSpace(analysis.RecommendedFilter)
 		}
-		if analysis.Status == "interlaced" || analysis.Status == "telecine_suspected" {
+		if analysis.Status == "interlaced" {
 			return bwdifFilter(analysis)
 		}
+		// Hybrid, unknown, and unvalidated telecine are review states. Auto must
+		// not choose a destructive motion filter without conclusive evidence.
 		return ""
 	}
 }

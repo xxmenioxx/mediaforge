@@ -812,7 +812,10 @@ export type ScanResult = {
   };
   interlaceAnalysis: {
     version?: number;
-    status?: 'progressive' | 'interlaced' | 'mixed' | 'telecine_suspected' | 'unknown';
+    codec?: string;
+    averageFrameRate?: string;
+    realFrameRate?: string;
+    status?: 'progressive' | 'interlaced' | 'mixed' | 'hybrid' | 'telecine' | 'telecine_suspected' | 'unknown';
     fieldOrder?: string;
     containerFieldOrder?: string;
     detectedFieldOrder?: 'tff' | 'bff' | string;
@@ -825,10 +828,36 @@ export type ScanResult = {
     undetermined?: number;
     sampledFrames?: number;
     recommendedFilter?: string;
+    recommendedAction?: 'none' | 'deinterlace' | 'ivtc' | 'review' | string;
+    decisionReason?: string;
+    automaticFilter?: string;
     windowStart?: number;
     windowSeconds?: number;
     sampleCount?: number;
+    frameSignalSampleCount?: number;
     sampledAt?: number[];
+    windows?: Array<{
+      start: number;
+      seconds: number;
+      status: 'progressive' | 'interlaced' | 'hybrid' | 'telecine_suspected' | 'unknown' | string;
+      confidence: number;
+      tff: number;
+      bff: number;
+      progressive: number;
+      undetermined: number;
+      repeatedTop: number;
+      repeatedBottom: number;
+      sampledFrames: number;
+      frameSignals?: {
+        decodedFrames: number;
+        interlacedFrames: number;
+        progressiveFrames: number;
+        topFieldFirstFrames: number;
+        bottomFirstFrames: number;
+        repeatPictFrames: number;
+        cadence?: string;
+      };
+    }>;
     recommendedMode?: 'force' | 'ivtc_tff' | 'ivtc_bff' | string;
     recommendedFieldMetadataMode?: 'progressive' | 'tff' | 'bff' | string;
     ivtcValidation?: {
@@ -840,6 +869,14 @@ export type ScanResult = {
       bffProgressiveRatio?: number;
       selectedOrder?: 'tff' | 'bff' | string;
       confidence?: number;
+      validatedWindows?: number;
+      windows?: Array<{
+        start: number;
+        tffProgressiveRatio: number;
+        bffProgressiveRatio: number;
+        selectedOrder?: 'tff' | 'bff' | string;
+        confidence: number;
+      }>;
     };
   };
   cropAnalysis: {

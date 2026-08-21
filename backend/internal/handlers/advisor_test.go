@@ -191,3 +191,34 @@ func TestAdvisorFindingsKeepIncompleteColorMetadataInformational(t *testing.T) {
 		t.Fatalf("unexpected findings: %#v", findings)
 	}
 }
+
+func TestAdvisorRequiresRescanForLegacyMotionAnalysis(t *testing.T) {
+	scan := models.ScanResult{InterlaceAnalysis: models.JSONMap{"version": 2, "status": "interlaced", "confidence": .95}}
+	proposal := proposedProfileForScan(scan)
+	findings := advisorFindings(scan, proposal, MVForgePreferences{}, "", "")
+
+	foundRescan, foundForce := false, false
+	for _, finding := range findings {
+		foundRescan = foundRescan || finding.ID == "motion-rescan"
+		foundForce = foundForce || finding.ID == "motion-deinterlace"
+	}
+	if !foundRescan || foundForce {
+		t.Fatalf("legacy motion evidence must not produce an actionable correction: %#v", findings)
+	}
+}
+
+func TestAdvisorKeepsV3HybridAnalysisReviewOnly(t *testing.T) {
+	scan := models.ScanResult{InterlaceAnalysis: models.JSONMap{"version": 3, "status": "hybrid", "confidence": .82}}
+	proposal := proposedProfileForScan(scan)
+	findings := advisorFindings(scan, proposal, MVForgePreferences{}, "", "")
+
+	for _, finding := range findings {
+		if finding.ID == "motion-hybrid" {
+			if finding.Actionable || finding.DefaultSelected {
+				t.Fatalf("hybrid motion finding must remain review-only: %#v", finding)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing hybrid review finding: %#v", findings)
+}

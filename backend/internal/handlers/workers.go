@@ -773,6 +773,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		effectiveProfile.WorkerConfig = workerConfig
 	}
 	effectiveProfile.WorkerConfig["qsvAssetAnalysisPath"] = job.MediaPath
+	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
+		effectiveProfile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
+	}
 	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	if !overwrite {
 		if _, err := os.Stat(outputPath); err == nil {

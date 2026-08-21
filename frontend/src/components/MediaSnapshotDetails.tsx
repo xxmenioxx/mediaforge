@@ -69,8 +69,12 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
       <Grid size={{ xs: 12, md: 6 }}>
         <TechnicalFactGroup title="Motion & geometry" facts={[
           ['Scan type', interlaceLabel(scan)],
+          ['Analyzed codec / FPS', [interlace?.codec, interlace?.averageFrameRate || interlace?.realFrameRate].filter(Boolean).join(' · ') || 'Legacy analysis'],
           ['Field order', interlace?.detectedFieldOrder || interlace?.fieldOrder || 'Unknown'],
           ['Field-order match', interlace?.fieldOrderMismatch ? 'Mismatch · review' : 'No mismatch detected'],
+          ['Confidence', typeof interlace?.confidence === 'number' ? `${Math.round(interlace.confidence * 100)}%` : 'Unknown'],
+          ['Auto action', interlace?.recommendedAction || 'Review'],
+          ['Decision', interlace?.decisionReason || 'Legacy analysis; run Re-SCAN for regional evidence'],
           ['Crop status', crop?.status || 'Unknown'],
           ['Recommended crop', crop?.recommendedCrop || 'None'],
           ['Display aspect ratio', video?.displayAspectRatio || 'Unknown'],
@@ -96,6 +100,26 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                 {frames.windows.map((window, index) => (
                   <Chip key={`${window.position}-${window.startSeconds}`} size="small" variant="outlined" label={`Region ${index + 1} · ${Math.round(window.position * 100)}% · I ${window.analysis.iFrames} / P ${window.analysis.pFrames} / B ${window.analysis.bFrames} · GOP ${window.analysis.averageGopLength > 0 ? window.analysis.averageGopLength.toFixed(1) : 'n/a'} · B-run ${window.analysis.maxConsecutiveBFrames}`} />
+                ))}
+              </Stack>
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : null}
+      {interlace?.windows?.length ? (
+        <Card variant="outlined">
+          <CardContent>
+            <Stack spacing={1.25}>
+              <Typography fontWeight={700}>Motion analysis regions</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {interlace.windows.map((window, index) => (
+                  <Chip
+                    key={`${window.start}-${index}`}
+                    size="small"
+                    color={window.status === 'progressive' ? 'success' : window.status === 'unknown' ? 'default' : 'warning'}
+                    variant="outlined"
+                    label={`Region ${index + 1} · ${formatDuration(window.start)} · ${window.status} · TFF ${window.tff} / BFF ${window.bff} / P ${window.progressive}${window.frameSignals?.cadence ? ` · ${window.frameSignals.cadence.replaceAll('_', ' ')}` : ''}`}
+                  />
                 ))}
               </Stack>
             </Stack>
@@ -172,6 +196,8 @@ function interlaceLabel(scan: ScanResult) {
   switch (status) {
     case 'interlaced': return `Interlaced${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
     case 'mixed': return 'Mixed · review';
+    case 'hybrid': return 'Hybrid · review';
+    case 'telecine': return `Telecine validated${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
     case 'telecine_suspected': return `Telecine suspected${fieldOrder && fieldOrder !== 'unknown' ? ` · ${fieldOrder.toUpperCase()}` : ''}`;
     case 'progressive': return 'Progressive';
     default: return 'Unknown';

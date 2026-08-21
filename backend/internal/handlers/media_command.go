@@ -547,7 +547,16 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	processingMode := mediaProcessingMode(profile)
 	analysis := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
 	if processingMode == ProcessingModeFullEncode {
-		analysis = detectInterlace(inputPath, fieldOrder, streams.Duration, 20)
+		if frozen, ok := decodeInterlaceAnalysis(profile.WorkerConfig[interlaceAnalysisSnapshotKey]); ok {
+			analysis = frozen
+			analysis.Source = "queue_scan_snapshot"
+		} else {
+			analysis = detectInterlace(inputPath, fieldOrder, streams.Duration, 20)
+			if len(streams.Video) > 0 {
+				analysis.Codec = streams.Video[0].Codec
+				analysis.AverageFrameRate = streams.Video[0].FrameRate
+			}
+		}
 	}
 	qualityAnalysisPath := strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]))
 	if qualityAnalysisPath == "" {

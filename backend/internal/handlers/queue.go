@@ -1443,6 +1443,7 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 
 	snapshot[assetConversionOverrideSnapshotKey] = frozen
 	snapshot["overrideOnly"] = true
+	h.captureInterlaceSnapshot(job.MediaPath, snapshot)
 
 	job.ProfileID = 0
 	job.ProfileVersion = 1
@@ -1498,11 +1499,25 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 		}
 		snapshot[assetConversionOverrideSnapshotKey] = frozen
 	}
+	h.captureInterlaceSnapshot(job.MediaPath, snapshot)
 	job.ProfileID = profile.ID
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
 	return nil
+}
+
+func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSONMap) {
+	if h.db == nil || snapshot == nil || strings.TrimSpace(path) == "" || !h.db.Migrator().HasTable(&models.ScanResult{}) {
+		return
+	}
+	var scan models.ScanResult
+	if err := h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error; err != nil {
+		return
+	}
+	if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
+		snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
+	}
 }
 
 func (h QueueHandler) profileCaptureError(c *gin.Context, err error) {

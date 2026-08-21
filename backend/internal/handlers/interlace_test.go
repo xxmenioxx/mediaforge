@@ -32,11 +32,11 @@ func TestBWDIFRecoversParityFromLegacyFrameCounts(t *testing.T) {
 	}
 }
 
-func TestClassifyInterlaceKeepsMixedForReview(t *testing.T) {
+func TestClassifyInterlaceKeepsHybridForReview(t *testing.T) {
 	analysis := InterlaceAnalysis{TFF: 100, BFF: 0, Progressive: 300, SampledFrames: 500}
 	classifyInterlace(&analysis)
-	if analysis.Status != "mixed" || analysis.RecommendedFilter != "" {
-		t.Fatalf("expected mixed review result, got %#v", analysis)
+	if analysis.Status != "hybrid" || analysis.RecommendedAction != "review" || analysis.RecommendedFilter != "" {
+		t.Fatalf("expected hybrid review result, got %#v", analysis)
 	}
 }
 
@@ -55,11 +55,12 @@ func TestEffectiveDeinterlaceFilterDoesNotPrefixIVTC(t *testing.T) {
 	}
 }
 
-func TestAutomaticDeinterlaceFallsBackForUnvalidatedTelecine(t *testing.T) {
+func TestAutomaticDeinterlaceDoesNotFilterUnvalidatedTelecine(t *testing.T) {
 	analysis := InterlaceAnalysis{Status: "telecine_suspected", DetectedFieldOrder: "bff"}
-	if filter := effectiveDeinterlaceFilter("auto", analysis); filter != "bwdif=mode=send_frame:parity=bff:deint=all" {
-		t.Fatalf("expected safe BWDIF fallback for unvalidated telecine, got %q", filter)
+	if filter := effectiveDeinterlaceFilter("auto", analysis); filter != "" {
+		t.Fatalf("expected unvalidated telecine to remain review-only, got %q", filter)
 	}
+	analysis.Status = "telecine"
 	analysis.RecommendedFilter = "fieldmatch=order=bff,decimate"
 	if filter := effectiveDeinterlaceFilter("auto", analysis); filter != analysis.RecommendedFilter {
 		t.Fatalf("expected validated IVTC recommendation, got %q", filter)
@@ -90,7 +91,7 @@ func TestApplyIVTCValidationSelectsTFFForTerramarLikeEvidence(t *testing.T) {
 
 	applyIVTCValidation(&analysis, validation)
 
-	if analysis.Status != "telecine_suspected" || analysis.RecommendedMode != "ivtc_tff" {
+	if analysis.Status != "telecine" || analysis.RecommendedMode != "ivtc_tff" {
 		t.Fatalf("expected IVTC TFF recommendation, got %#v", analysis)
 	}
 	if analysis.RecommendedFilter != "fieldmatch=order=tff,decimate" {
@@ -98,6 +99,96 @@ func TestApplyIVTCValidationSelectsTFFForTerramarLikeEvidence(t *testing.T) {
 	}
 	if !analysis.FieldOrderMismatch {
 		t.Fatal("expected BFF metadata versus TFF content mismatch")
+	}
+}
+
+func TestDistributedClassificationDetectsHybridWindows(t *testing.T) {
+	analysis := InterlaceAnalysis{Windows: []InterlaceWindow{
+		{TFF: 5, Progressive: 95, SampledFrames: 100},
+		{TFF: 95, Progressive: 5, SampledFrames: 100},
+	}}
+
+	classifyInterlace(&analysis)
+
+	if analysis.Status != "hybrid" || analysis.RecommendedAction != "review" || analysis.AutomaticFilter != "" {
+		t.Fatalf("expected divergent windows to remain review-only, got %#v", analysis)
+	}
+}
+
+func TestDistributedClassificationDeinterlacesOnlyConsistentInterlace(t *testing.T) {
+	analysis := InterlaceAnalysis{DetectedFieldOrder: "tff", Windows: []InterlaceWindow{
+		{TFF: 95, Progressive: 5, SampledFrames: 100},
+		{TFF: 90, Progressive: 10, SampledFrames: 100},
+		{TFF: 98, Progressive: 2, SampledFrames: 100},
+	}}
+
+	classifyInterlace(&analysis)
+
+	if analysis.Status != "interlaced" || analysis.RecommendedAction != "deinterlace" {
+		t.Fatalf("expected consistent interlacing, got %#v", analysis)
+	}
+	if analysis.AutomaticFilter != "bwdif=mode=send_frame:parity=tff:deint=all" {
+		t.Fatalf("unexpected automatic filter %q", analysis.AutomaticFilter)
+	}
+}
+
+func TestWindowClassificationUsesDecodedFrameSignalsWhenIDETIsUnavailable(t *testing.T) {
+	window := InterlaceWindow{FrameSignals: FrameSignalSummary{
+		DecodedFrames: 100, InterlacedFrames: 90, ProgressiveFrames: 10,
+	}}
+
+	classifyInterlaceWindow(&window)
+
+	if window.Status != "interlaced" || window.Confidence != .9 {
+		t.Fatalf("expected decoded frame evidence to classify the window, got %#v", window)
+	}
+}
+
+func TestWindowClassificationMarksContradictoryDetectorsUnknown(t *testing.T) {
+	window := InterlaceWindow{
+		TFF: 95, Progressive: 5, SampledFrames: 100,
+		FrameSignals: FrameSignalSummary{DecodedFrames: 100, InterlacedFrames: 2, ProgressiveFrames: 98},
+	}
+
+	classifyInterlaceWindow(&window)
+
+	if window.Status != "unknown" {
+		t.Fatalf("expected contradictory IDET and decoded-frame evidence to remain unknown, got %#v", window)
+	}
+}
+
+func TestDistributedClassificationIsIndependentOfWindowOrder(t *testing.T) {
+	windows := []InterlaceWindow{
+		{TFF: 95, Progressive: 5, SampledFrames: 100},
+		{TFF: 5, Progressive: 95, SampledFrames: 100},
+		{TFF: 90, Progressive: 10, SampledFrames: 100},
+	}
+	forward := InterlaceAnalysis{Windows: append([]InterlaceWindow(nil), windows...)}
+	reverse := InterlaceAnalysis{Windows: []InterlaceWindow{windows[2], windows[1], windows[0]}}
+
+	classifyInterlace(&forward)
+	classifyInterlace(&reverse)
+
+	if forward.Status != "hybrid" || reverse.Status != forward.Status || reverse.RecommendedAction != forward.RecommendedAction {
+		t.Fatalf("window position/order changed the decision: forward=%#v reverse=%#v", forward, reverse)
+	}
+}
+
+func TestIVTCRequiresDistributedWindowAgreement(t *testing.T) {
+	analysis := InterlaceAnalysis{ContainerFieldOrder: "tt"}
+	validation := &IVTCValidation{
+		TFFProgressiveRatio: .95, BFFProgressiveRatio: .50,
+		Windows: []IVTCWindowValidation{
+			{SelectedOrder: "tff", Confidence: .96},
+			{SelectedOrder: "", Confidence: .70},
+			{SelectedOrder: "bff", Confidence: .93},
+		},
+	}
+
+	applyIVTCValidation(&analysis, validation)
+
+	if analysis.Status == "telecine" || analysis.RecommendedFilter != "" {
+		t.Fatalf("expected conflicting IVTC windows to remain unvalidated, got %#v", analysis)
 	}
 }
 

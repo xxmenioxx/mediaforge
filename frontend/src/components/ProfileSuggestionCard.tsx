@@ -26,7 +26,7 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendat
   const existing = suggestion.suggestedProfile;
   const proposed = suggestion.proposedProfile;
   const motion = motionDiagnosis(suggestion);
-  const staleMotionAnalysis = (suggestion.scan.interlaceAnalysis?.version ?? 0) < 2;
+  const staleMotionAnalysis = (suggestion.scan.interlaceAnalysis?.version ?? 0) < 3;
   const motionDetail = staleMotionAnalysis
     ? 'This motion analysis was created by an older detector and must be analyzed again before its correction can be applied.'
     : motion.detail;
@@ -148,7 +148,15 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
     case 'interlaced':
       return { title: `Interlaced${confidence}`, detail: `${analysis.recommendedFilter ? `Recommended filter: ${analysis.recommendedFilter}.` : 'Deinterlacing is recommended.'}${window}`, severity: 'warning', action: 'Apply bwdif' };
     case 'mixed':
-      return { title: `Mixed progressive/interlaced${confidence}`, detail: `Review a motion-heavy preview before conversion; automatic correction should not be assumed safe${window}.`, severity: 'warning', action: 'Mark for review' };
+    case 'hybrid':
+      return { title: `Hybrid progressive/interlaced${confidence}`, detail: `${analysis.decisionReason || 'Distributed regions contain different frame evidence.'} Auto will not apply a destructive motion filter${window}.`, severity: 'warning', action: 'Mark for review' };
+    case 'telecine':
+      return {
+        title: `Telecine validated${confidence}`,
+        detail: `Distributed cadence validation recommends ${analysis.recommendedFilter || 'inverse telecine'}${window}.`,
+        severity: 'warning',
+        action: analysis.recommendedMode ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Review in LAB',
+      };
     case 'telecine_suspected':
       return {
         title: `Telecine suspected${confidence}`,
@@ -156,7 +164,7 @@ function motionDiagnosis(suggestion: ProfileSuggestion): { title: string; detail
           ? `${analysis.fieldOrderMismatch ? `Container field order ${(analysis.containerFieldOrder || 'unknown').toUpperCase()} conflicts with detected ${(analysis.detectedFieldOrder || 'unknown').toUpperCase()}. ` : ''}Recommended filter: ${analysis.recommendedFilter}${window}.`
           : `Validate cadence in LAB before choosing deinterlacing or IVTC${window}.`,
         severity: 'warning',
-        action: analysis.recommendedMode && analysis.recommendedFilter ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Apply automatic BWDIF fallback',
+        action: analysis.recommendedMode && analysis.recommendedFilter ? `Apply ${analysis.recommendedMode.toUpperCase()}` : 'Mark for review',
       };
     default:
       return { title: 'Scan type unknown', detail: `MVForge could not classify motion structure reliably; inspect a preview before conversion${window}.`, severity: 'info', action: 'Mark for review' };

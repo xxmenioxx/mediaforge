@@ -31,7 +31,7 @@ func buildPlaybackCompatibilityAnalysis(scan models.ScanResult) models.JSONMap {
 	}
 	declaredFieldOrder := strings.ToLower(jsonString(video, "fieldOrder"))
 	detectedScan := strings.ToLower(jsonMapString(scan.InterlaceAnalysis, "status"))
-	if detectedScan == "interlaced" || detectedScan == "mixed" || detectedScan == "telecine_suspected" ||
+	if detectedScan == "interlaced" || detectedScan == "mixed" || detectedScan == "hybrid" || detectedScan == "telecine" || detectedScan == "telecine_suspected" ||
 		(declaredFieldOrder != "" && declaredFieldOrder != "unknown" && declaredFieldOrder != "progressive") {
 		score -= 20
 		videoStatus = "transcode_likely"

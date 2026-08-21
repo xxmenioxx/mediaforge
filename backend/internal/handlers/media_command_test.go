@@ -609,7 +609,7 @@ func TestFFmpegCommandBuilderCorrectsProgressiveFieldMetadataWithoutDeinterlacin
 	assertNotContains(t, command, "bwdif")
 }
 
-func TestFFmpegCommandBuilderAutomaticallyFallsBackForUnvalidatedTelecine(t *testing.T) {
+func TestFFmpegCommandBuilderLeavesUnvalidatedTelecineForReview(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
 		ProcessingMode: ProcessingModeFullEncode,
@@ -621,7 +621,27 @@ func TestFFmpegCommandBuilderAutomaticallyFallsBackForUnvalidatedTelecine(t *tes
 	}
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertContains(t, command, "bwdif=mode=send_frame:parity=bff:deint=all")
+	assertNotContains(t, command, "bwdif=")
+	assertNotContains(t, command, "fieldmatch=")
+}
+
+func TestFFmpegCommandBuilderAppliesOnlyValidatedAutomaticIVTC(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile: models.Profile{
+			VideoCodec: "x265_10bit", AudioCodec: "copy",
+			WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"},
+		},
+		Interlace: InterlaceAnalysis{
+			Version: interlaceAnalysisVersion, Status: "telecine", RecommendedAction: "ivtc",
+			RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate",
+		},
+	}
+
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-vf fieldmatch=order=tff,decimate,setfield=prog")
+	assertNotContains(t, command, "bwdif=")
 }
 
 func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {

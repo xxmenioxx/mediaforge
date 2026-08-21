@@ -280,14 +280,19 @@ func analysisInsights(scan models.ScanResult, crf int) AnalysisInsights {
 	if codecFamily(scan.VideoCodec) == "hevc" {
 		recommendations = append(recommendations, "The source is already HEVC. Re-encoding may lose detail and may not reduce size; prefer video copy unless there is a verified correction goal.")
 	}
-	if status, _ := scan.InterlaceAnalysis["status"].(string); status == "progressive" {
+	interlaceVersion := int(jsonFloat64(scan.InterlaceAnalysis["version"]))
+	if interlaceVersion < interlaceAnalysisVersion {
+		recommendations = append(recommendations, "Motion analysis predates the regional classifier. Run Re-SCAN before applying automatic motion correction.")
+	} else if status, _ := scan.InterlaceAnalysis["status"].(string); status == "progressive" {
 		recommendations = append(recommendations, "The analyzed window is progressive; no deinterlacing filter is recommended.")
 	} else if status == "interlaced" {
 		recommendations = append(recommendations, "Interlacing was detected. Apply bwdif before encoding and inspect motion in a preview.")
-	} else if status == "mixed" {
-		recommendations = append(recommendations, "Mixed progressive/interlaced frames were detected. Validate a motion-heavy preview before deciding whether to force deinterlacing.")
+	} else if status == "mixed" || status == "hybrid" {
+		recommendations = append(recommendations, "Distributed windows contain different progressive and field-based evidence. Keep automatic filtering review-only until representative previews confirm the correct treatment.")
+	} else if status == "telecine" {
+		recommendations = append(recommendations, "Telecine cadence was validated across distributed samples. Preview the recommended fieldmatch/decimate chain before saving the profile.")
 	} else if status == "telecine_suspected" {
-		recommendations = append(recommendations, "Telecine cadence is suspected. Validate fieldmatch/decimate in LAB instead of applying ordinary deinterlacing blindly.")
+		recommendations = append(recommendations, "Telecine cadence is suspected but not validated. Auto leaves motion filtering disabled pending LAB review.")
 	} else {
 		recommendations = append(recommendations, "Motion structure could not be classified reliably; inspect a preview before conversion.")
 	}
@@ -425,7 +430,7 @@ func profileFitWithPreferences(profile models.Profile, proposal ProfileInput, sc
 	}
 	interlaceStatus, _ := scan.InterlaceAnalysis["status"].(string)
 	deinterlaceMode, _ := profile.WorkerConfig["deinterlaceMode"].(string)
-	if (interlaceStatus == "interlaced" || interlaceStatus == "mixed" || interlaceStatus == "telecine_suspected") && deinterlaceMode == "off" {
+	if int(jsonFloat64(scan.InterlaceAnalysis["version"])) >= interlaceAnalysisVersion && (interlaceStatus == "interlaced" || interlaceStatus == "telecine") && deinterlaceMode == "off" {
 		score -= 25
 		reasons = append(reasons, "Interlacing was detected but this profile explicitly disables correction.")
 	}
@@ -443,19 +448,33 @@ func advisorFindings(scan models.ScanResult, proposal ProfileInput, preferences 
 		Patch: models.JSONMap{"videoCodec": proposal.VideoCodec, "qualityMode": proposal.QualityMode, "qualityValue": proposal.QualityValue, "optimizationIntent": proposal.OptimizationIntent},
 	}}
 	interlaceStatus := strings.TrimSpace(stringFromUnknown(scan.InterlaceAnalysis["status"]))
-	switch interlaceStatus {
-	case "progressive":
-		findings = append(findings, AdvisorFinding{ID: "motion-progressive", Category: "video", Title: "Keep deinterlacing disabled", Detail: "The distributed motion analysis classified the source as progressive.", Severity: "recommended", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "off"}})
-	case "interlaced":
-		findings = append(findings, AdvisorFinding{ID: "motion-deinterlace", Category: "video", Title: "Enable deinterlacing", Detail: "Interlaced frames were detected; use the validated field-aware deinterlacing path and review motion in LAB.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "force"}})
-	case "telecine_suspected":
-		mode := strings.TrimSpace(stringFromUnknown(scan.InterlaceAnalysis["recommendedMode"]))
-		actionable := mode == "ivtc_tff" || mode == "ivtc_bff"
-		finding := AdvisorFinding{ID: "motion-telecine", Category: "video", Title: "Review suspected telecine cadence", Detail: "Inverse telecine must be previewed before it becomes part of a profile.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: actionable, DefaultSelected: false}
-		if actionable {
-			finding.Patch = models.JSONMap{"deinterlaceMode": mode}
+	if int(jsonFloat64(scan.InterlaceAnalysis["version"])) < interlaceAnalysisVersion {
+		findings = append(findings, AdvisorFinding{ID: "motion-rescan", Category: "video", Title: "Re-scan motion structure", Detail: "This snapshot predates distributed regional evidence and cannot drive the current Auto policy.", Severity: "review", Confidence: "low", Actionable: false, DefaultSelected: false})
+	} else {
+		switch interlaceStatus {
+		case "progressive":
+			findings = append(findings, AdvisorFinding{ID: "motion-progressive", Category: "video", Title: "Keep deinterlacing disabled", Detail: "The distributed motion analysis classified the source as progressive.", Severity: "recommended", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "off"}})
+		case "interlaced":
+			findings = append(findings, AdvisorFinding{ID: "motion-deinterlace", Category: "video", Title: "Enable deinterlacing", Detail: "Interlaced frames were detected; use the validated field-aware deinterlacing path and review motion in LAB.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: true, DefaultSelected: true, Patch: models.JSONMap{"deinterlaceMode": "force"}})
+		case "telecine", "telecine_suspected":
+			mode := strings.TrimSpace(stringFromUnknown(scan.InterlaceAnalysis["recommendedMode"]))
+			actionable := mode == "ivtc_tff" || mode == "ivtc_bff"
+			title := "Review suspected telecine cadence"
+			detail := "Cadence is not validated; Auto will not apply BWDIF or IVTC."
+			if interlaceStatus == "telecine" {
+				title = "Review validated telecine cadence"
+				detail = "Distributed samples validated inverse telecine; preview it before adding the recommendation to a profile."
+			}
+			finding := AdvisorFinding{ID: "motion-telecine", Category: "video", Title: title, Detail: detail, Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: actionable, DefaultSelected: false}
+			if actionable {
+				finding.Patch = models.JSONMap{"deinterlaceMode": mode}
+			}
+			findings = append(findings, finding)
+		case "mixed", "hybrid":
+			findings = append(findings, AdvisorFinding{ID: "motion-hybrid", Category: "video", Title: "Review hybrid motion structure", Detail: "Distributed windows disagree; Auto will not apply BWDIF or IVTC until representative previews establish the correct treatment.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: false, DefaultSelected: false})
+		case "unknown":
+			findings = append(findings, AdvisorFinding{ID: "motion-unknown", Category: "video", Title: "Review unknown motion structure", Detail: "The scan did not collect enough consistent evidence to choose a motion filter safely.", Severity: "review", Confidence: confidenceLabel(scan.InterlaceAnalysis["confidence"]), Actionable: false, DefaultSelected: false})
 		}
-		findings = append(findings, finding)
 	}
 	if status := strings.TrimSpace(stringFromUnknown(scan.CropAnalysis["status"])); status == "detected" {
 		crop := strings.TrimSpace(stringFromUnknown(scan.CropAnalysis["recommendedCrop"]))

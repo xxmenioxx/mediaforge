@@ -318,6 +318,41 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	}
 }
 
+func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-interlace-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/hybrid.mkv"
+	analysis := models.JSONMap{
+		"version": float64(interlaceAnalysisVersion), "status": "hybrid",
+		"recommendedAction": "review", "automaticFilter": "",
+		"windows": models.JSONList{
+			models.JSONMap{"start": 10.0, "status": "progressive"},
+			models.JSONMap{"start": 50.0, "status": "interlaced"},
+		},
+	}
+	if err := db.Create(&models.ScanResult{Path: path, FileName: "hybrid.mkv", InterlaceAnalysis: analysis}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozen, ok := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	if !ok || frozen.Status != "hybrid" || len(frozen.Windows) != 2 {
+		t.Fatalf("expected immutable v3 motion snapshot, got %#v", job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	}
+}
+
 func TestQueueProfileSnapshotIgnoresGlobalDraftPreferences(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-ignores-draft-preferences?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

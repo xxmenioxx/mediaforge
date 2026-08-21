@@ -1355,7 +1355,7 @@ export function ProfileLabPage() {
     const cropSuggestionSafe = cropSuggestionAvailable && bitmapSubtitleStreams.length === 0;
     const sourceIsHEVC = ['hevc', 'h265', 'x265'].some((codec) => scan.videoCodec.toLowerCase().includes(codec));
     const needsVideoCorrection = interlaceStatus === 'interlaced' ||
-      interlaceStatus === 'telecine_suspected' ||
+      interlaceStatus === 'telecine' ||
       scan.interlaceAnalysis.fieldOrderMismatch === true;
     const targetVideoCodec = sourceIsHEVC && !needsVideoCorrection ? 'copy' : proposed.videoCodec;
     const videoReasons = targetVideoCodec === 'copy'
@@ -1373,22 +1373,20 @@ export function ProfileLabPage() {
     } else if (interlaceStatus === 'interlaced') {
       deinterlaceMode = 'force';
       videoReasons.push('Interlacing was detected, so bwdif was enabled for the video draft.');
-    } else if (interlaceStatus === 'telecine_suspected') {
+    } else if (interlaceStatus === 'telecine') {
       const detectedOrder = scan.interlaceAnalysis.detectedFieldOrder?.toLowerCase()
         || scan.interlaceAnalysis.fieldOrder?.toLowerCase()
         || '';
       const validatedIVTC = Boolean(scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter);
       deinterlaceMode = validatedIVTC ? scan.interlaceAnalysis.recommendedMode! : 'auto';
-      videoReasons.push(validatedIVTC
-        ? `Telecine cadence was validated; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with ${scan.interlaceAnalysis.recommendedFilter}.`
-        : `Telecine is suspected but IVTC was not validated; Auto will use a safe BWDIF ${detectedOrder.startsWith('b') ? 'BFF' : 'TFF'} fallback.`);
+      videoReasons.push(`Telecine cadence was validated; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with ${scan.interlaceAnalysis.recommendedFilter}.`);
       if (scan.interlaceAnalysis.fieldOrderMismatch) {
         videoReasons.push(
           `The container reports ${(scan.interlaceAnalysis.containerFieldOrder || 'unknown').toUpperCase()}, but distributed samples detected ${detectedOrder.toUpperCase()}; the measured content order was used.`,
         );
       }
     } else {
-      videoReasons.push('Motion classification is not definitive, so conversion-time automatic analysis remains enabled.');
+      videoReasons.push(`${scan.interlaceAnalysis.decisionReason || 'Motion classification is not definitive.'} Auto remains enabled but will not apply a destructive motion filter without conclusive evidence.`);
     }
     if (scan.hdr) {
       videoReasons.push('HDR and 10-bit output are preserved because HDR metadata was detected.');
@@ -6121,10 +6119,12 @@ function previewRecommendationReport(suggestion: ProfileSuggestion): LabRecommen
       ? 'Enable bwdif because interlacing was detected.'
       : interlace === 'progressive'
         ? 'Keep deinterlacing disabled because the analyzed window is progressive.'
-        : interlace === 'telecine_suspected'
+        : interlace === 'telecine'
           ? scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter
             ? `Enable validated ${scan.interlaceAnalysis.recommendedMode.toUpperCase()} with ${scan.interlaceAnalysis.recommendedFilter}.`
-            : 'Use automatic BWDIF fallback because telecine is suspected but inverse telecine was not validated.'
+            : 'Keep motion filtering disabled until inverse telecine is validated.'
+        : interlace === 'telecine_suspected'
+          ? 'Keep motion filtering review-only because telecine cadence is suspected but not validated.'
         : `Keep conversion-time motion analysis enabled because the source was classified as ${interlace}.`,
     crop === 'detected' && scan.subtitleStreams.some(isBitmapSubtitleStream)
       ? 'Keep crop disabled because bitmap subtitles may be positioned inside the detected black bars.'
@@ -6905,26 +6905,12 @@ function adaptiveVideoToolboxPreviewRates(
 
 function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
   if (videoFilterControlValue(profile, 'deinterlaceMode', 'auto') !== 'auto') return [];
-  const status = scan.interlaceAnalysis.status;
-  if (status === 'interlaced') {
-    const detected = (scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder || '').toLowerCase();
-    const parity = detected.startsWith('b') ? 'bff' : detected.startsWith('t') ? 'tff' : 'auto';
-    return [`bwdif=mode=send_frame:parity=${parity}:deint=all`, 'setfield=prog'];
+  const filters = (scan.interlaceAnalysis.automaticFilter || '').split(',').map((filter) => filter.trim()).filter(Boolean);
+  const emitsProgressiveFrames = filters.some((filter) => filter.startsWith('bwdif=') || filter.startsWith('fieldmatch=') || filter === 'decimate');
+  if ((emitsProgressiveFrames || (scan.interlaceAnalysis.status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch)) && !filters.some((filter) => filter.startsWith('setfield='))) {
+    filters.push('setfield=prog');
   }
-  if (status === 'telecine_suspected') {
-    const mode = scan.interlaceAnalysis.recommendedMode;
-    if (mode && scan.interlaceAnalysis.recommendedFilter) {
-      const order = mode === 'ivtc_bff' ? 'bff' : 'tff';
-      return [`fieldmatch=order=${order}`, 'decimate', 'setfield=prog'];
-    }
-    const detected = (scan.interlaceAnalysis.detectedFieldOrder || scan.interlaceAnalysis.fieldOrder || '').toLowerCase();
-    const parity = detected.startsWith('b') ? 'bff' : detected.startsWith('t') ? 'tff' : 'auto';
-    return [`bwdif=mode=send_frame:parity=${parity}:deint=all`, 'setfield=prog'];
-  }
-  if (status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch) {
-    return ['setfield=prog'];
-  }
-  return [];
+  return filters;
 }
 
 function combinedVideoToolboxColorConversion(scan: ScanResult): {
