@@ -2328,15 +2328,17 @@ async function generateExternalSubtitle(
           <TableCell>
             <Tooltip title="Click para evaluar">
               <span>
-                <IconButton
+                <Button
                   size="small"
+                  variant="outlined"
+                  startIcon={<InfoOutlinedIcon />}
                   aria-label="Click para evaluar"
                   disabled={!confidenceEnabled || effectiveProfileId <= 0}
                   onClick={() => setShowAdvisorDialog(true)}
-                  sx={{ width: 32, height: 32, border: 1, borderColor: 'divider', fontWeight: 800 }}
+                  sx={{ minWidth: 64 }}
                 >
-                  ?
-                </IconButton>
+                  {confidenceEnabled ? advisor.data ? advisor.data.score : '?' : 'Off'}
+                </Button>
               </span>
             </Tooltip>
           </TableCell>
