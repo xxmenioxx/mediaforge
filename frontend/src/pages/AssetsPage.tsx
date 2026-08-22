@@ -175,7 +175,6 @@ export function AssetsPage() {
               </Tabs>
               <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
-                  <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
                   <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
                     Sync
                   </Button>
@@ -234,6 +233,7 @@ export function AssetsPage() {
                     )}
                     <Chip label={`${tab === 'archive' ? filteredArchiveAssets.length : sumGroupFiles(filteredGroups)} files`} size="small" />
                     <Chip label={formatBytes(tab === 'archive' ? sumAssetBytes(filteredArchiveAssets) : sumGroupBytes(filteredGroups))} size="small" />
+                    <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
                     {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
                     {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
                   </Stack>
@@ -1267,7 +1267,7 @@ function AssetGroupRow({
                     Confidence is off for this path. Advisor checks and any future confidence-based automation will be skipped here; manual queueing still works.
                   </Alert>
                 ) : null}
-                {!isReadOnlyGroup && mode !== 'unprocessed' ? (
+                {!isReadOnlyGroup && mode !== 'unprocessed' && !isLibraryGroup ? (
                   <Stack direction="row" justifyContent="flex-end">
                     <Button
                       variant="outlined"
@@ -1330,7 +1330,19 @@ function AssetGroupRow({
                 {publishAsIs.isSuccess ? <Alert severity="success">{publishAsIs.data.message}</Alert> : null}
                 {publishAsIs.isError ? <Alert severity="warning">{publishAsIs.error instanceof Error ? publishAsIs.error.message : 'Direct publication failed.'}</Alert> : null}
                 {isLibraryGroup ? (
-                  <Stack direction="row" justifyContent="flex-end">
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    {!isReadOnlyGroup ? (
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<InfoOutlinedIcon />}
+                        onClick={startPathAdvisor}
+                        disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                      >
+                        Run Advisor on path
+                      </Button>
+                    ) : null}
                     {migrationControls}
                   </Stack>
                 ) : null}
@@ -2314,16 +2326,19 @@ async function generateExternalSubtitle(
         </TableCell>
         {!isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
           <TableCell>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<InfoOutlinedIcon />}
-              disabled={!confidenceEnabled || effectiveProfileId <= 0}
-              onClick={() => setShowAdvisorDialog(true)}
-              sx={{ minWidth: 96 }}
-            >
-              {confidenceEnabled ? advisor.data ? advisor.data.score : 'Evaluate' : 'Off'}
-            </Button>
+            <Tooltip title="Click para evaluar">
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label="Click para evaluar"
+                  disabled={!confidenceEnabled || effectiveProfileId <= 0}
+                  onClick={() => setShowAdvisorDialog(true)}
+                  sx={{ width: 32, height: 32, border: 1, borderColor: 'divider', fontWeight: 800 }}
+                >
+                  ?
+                </IconButton>
+              </span>
+            </Tooltip>
           </TableCell>
         ) : null}
         {isConverted ? (
