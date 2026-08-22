@@ -294,6 +294,20 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 		return models.JSONMap{"status": "unverified", "source": source, "output": output}
 	}
 	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	if worker == nil {
+		worker = map[string]interface{}{}
+	}
+	if override := conversionOverrideForJob(job, nil); normalizedHEVCLevelMode(override.HEVCLevelMode) != "" {
+		workerCopy := make(map[string]interface{}, len(worker)+2)
+		for key, value := range worker {
+			workerCopy[key] = value
+		}
+		worker = workerCopy
+		worker["hevcLevelMode"] = normalizedHEVCLevelMode(override.HEVCLevelMode)
+		if level := normalizedHEVCLevel(override.HEVCLevel); level != "" {
+			worker["hevcLevel"] = level
+		}
+	}
 	filters := ""
 	if worker != nil {
 		filters = strings.ToLower(stringFromUnknown(worker["videoFilters"]))
@@ -329,31 +343,67 @@ func validateHEVCLevelField(worker map[string]interface{}, source, output models
 	if worker != nil {
 		mode = normalizedHEVCLevelMode(stringFromUnknown(worker["hevcLevelMode"]))
 	}
-	if mode == "" || mode == "auto" {
-		return models.JSONMap{"mode": "auto", "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected"}
+	if mode == "" {
+		mode = "auto"
 	}
 	configuredEncoder := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoEncoder"])))
 	if configuredEncoder != "" && configuredEncoder != "auto" && configuredEncoder != "libx265" && configuredEncoder != "hevc_qsv" {
 		return models.JSONMap{"mode": mode, "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected", "reason": "the selected encoder has no validated explicit-Level mapping"}
 	}
 	expected := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
-	if mode == "recommended" {
+	if mode == "auto" {
 		recommendation := recommendHEVCLevel(
 			workerIntValue(source["width"], 0),
 			workerIntValue(source["height"], 0),
 			parseFrameRateValue(stringFromUnknown(source["frameRate"])),
-			parseInt(stringFromUnknown(source["bitrate"])),
+			0,
 		)
 		expected = recommendation.RecommendedLevel
 	}
 	observed := stringFromUnknown(output["hevcLevel"])
+	effectiveTier := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["hevcLevelTier"])))
+	if effectiveTier == "" {
+		effectiveTier = "main"
+	}
 	status := "validated"
 	if expected == "" || observed == "" {
 		status = "unverified"
 	} else if expected != observed {
 		status = "mismatch"
 	}
-	return models.JSONMap{"mode": mode, "requested": expected, "output": observed, "status": status}
+	observedBitrate := int64(workerIntValue(output["bitrate"], 0))
+	bitrateStatus := "unverified"
+	requirementsStatus := "unverified"
+	maxBitrate := int64(0)
+	if limit, ok := hevcLevelLimitFor(observed); ok {
+		maxBitrate = limit.MaxBitrateKbps * 1000
+		width := workerIntValue(output["width"], 0)
+		height := workerIntValue(output["height"], 0)
+		fps := parseFrameRateValue(stringFromUnknown(output["frameRate"]))
+		if width > 0 && height > 0 && fps > 0 {
+			requirementsStatus = "validated"
+			pictureSize := int64(width) * int64(height)
+			if pictureSize > limit.MaxLumaPicture || float64(pictureSize)*fps > limit.MaxLumaRate {
+				requirementsStatus = "exceeds_level_limits"
+				status = "mismatch"
+			}
+		}
+		if observedBitrate > 0 {
+			bitrateStatus = "validated"
+			if observedBitrate > maxBitrate {
+				bitrateStatus = "exceeds_main_tier"
+				status = "mismatch"
+			}
+		}
+		if requirementsStatus == "exceeds_level_limits" {
+			status = "mismatch"
+		}
+	}
+	return models.JSONMap{
+		"mode": mode, "requested": expected, "effective": expected, "output": observed, "status": status,
+		"effectiveTier": effectiveTier, "observedTier": "not_reported",
+		"observedBitrate": observedBitrate, "maxMainTierBitrate": maxBitrate, "bitrateStatus": bitrateStatus, "requirementsStatus": requirementsStatus,
+	}
 }
 
 func frameFidelityValue(source, output models.JSONMap, key string, allowedChange bool) models.JSONMap {

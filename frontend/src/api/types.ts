@@ -151,6 +151,8 @@ export type AssetConversionOverrideState = {
   frameStructureGopFrames?: number;
   frameStructureBFrameMode?: 'auto' | 'recommended' | 'custom' | 'off';
   frameStructureMaxBFrames?: number;
+  hevcLevelMode?: 'auto' | 'recommended' | 'custom';
+  hevcLevel?: string;
   preserveHdr?: boolean;
   preserveSubtitles?: boolean;
   preserveChapters?: boolean;

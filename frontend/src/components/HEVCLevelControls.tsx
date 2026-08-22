@@ -20,7 +20,7 @@ export function HEVCLevelControls({ config, recommendation, onChange, onChangeMa
   const mode: HEVCLevelMode = configuredMode === 'recommended' || configuredMode === 'custom' ? configuredMode : 'auto';
   const recommendedLevel = recommendation?.recommendedLevel;
   const configuredLevel = normalizeHEVCLevel(config.hevcLevel) ?? recommendedLevel ?? '4.0';
-  const selectedLevel = mode === 'recommended' && recommendedLevel ? recommendedLevel : configuredLevel;
+  const selectedLevel = configuredLevel;
   const sourceLevel = recommendation?.sourceLevel;
   const explicitLevelSupported = encoder === 'libx265' || encoder === 'hevc_qsv';
   const commit = (patch: Record<string, unknown>) => {
@@ -48,12 +48,12 @@ export function HEVCLevelControls({ config, recommendation, onChange, onChangeMa
                 const next = event.target.value as HEVCLevelMode;
                 commit({ hevcLevelMode: next, ...(next === 'recommended' && recommendedLevel ? { hevcLevel: recommendedLevel } : {}) });
               }}
-              helperText={mode === 'auto' ? 'Encoder selects and signals the Level.' : mode === 'recommended' ? 'Minimum appropriate Level calculated from this asset and verified on output.' : 'Explicit stream constraint.'}
+              helperText={mode === 'auto' ? 'MVForge calculates and sends the minimum Level for each asset.' : mode === 'recommended' ? 'Freezes the current Snapshot recommendation and verifies it on output.' : 'Explicit stream constraint.'}
               size={compact ? 'small' : 'medium'}
               fullWidth
             >
-              <MenuItem value="auto">Auto · encoder decides</MenuItem>
-              <MenuItem value="recommended" disabled={!recommendedLevel}>Recommended · MVForge</MenuItem>
+              <MenuItem value="auto">Auto · MVForge per asset</MenuItem>
+              <MenuItem value="recommended" disabled={!recommendedLevel}>Recommended · freeze Snapshot</MenuItem>
               <MenuItem value="custom">Custom</MenuItem>
             </TextField>
           </Grid>
@@ -64,7 +64,7 @@ export function HEVCLevelControls({ config, recommendation, onChange, onChangeMa
               value={selectedLevel}
               disabled={disabled || !explicitLevelSupported || mode !== 'custom'}
               onChange={(event) => onChange('hevcLevel', event.target.value)}
-              helperText={mode === 'auto' ? 'No Level is sent to the encoder.' : `Main Tier · Level ${selectedLevel}`}
+              helperText={mode === 'auto' ? recommendedLevel ? `Effective at execution · currently Level ${selectedLevel}` : 'Calculated from each asset at execution.' : `Main Tier · Level ${selectedLevel}`}
               size={compact ? 'small' : 'medium'}
               fullWidth
             >

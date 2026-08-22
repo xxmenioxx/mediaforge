@@ -40,8 +40,8 @@ func TestRecommendHEVCLevelKeepsGeometryRecommendationWhenBitrateUnknown(t *test
 
 func TestSnapshotHEVCLevelRecommendationRecordsObservedLevel(t *testing.T) {
 	scan := models.ScanResult{
-		Width: 1920, Height: 1080, Bitrate: 6_418_000,
-		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24/1", "level": 150}},
+		Width: 1920, Height: 1080, Bitrate: 35_000_000,
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24/1", "bitrate": 35_000_000, "level": 150}},
 	}
 	got := buildHEVCLevelRecommendation(scan)
 	if got.RecommendedLevel != "4.0" || got.SourceLevel != "5.0" || got.SourceLevelIDC != 150 {
@@ -65,10 +65,68 @@ func TestResolveHEVCLevelAndEncoderArguments(t *testing.T) {
 	}
 }
 
-func TestHEVCLevelAutoLeavesEncoderDefaults(t *testing.T) {
+func TestHEVCLevelSemanticAdaptersKeepRepresentationsSeparate(t *testing.T) {
+	tests := []struct {
+		semantic string
+		qsv      string
+		ffprobe  int
+	}{
+		{semantic: "4.0", qsv: "40", ffprobe: 120},
+		{semantic: "4.1", qsv: "41", ffprobe: 123},
+		{semantic: "5.0", qsv: "50", ffprobe: 150},
+		{semantic: "5.1", qsv: "51", ffprobe: 153},
+	}
+	for _, test := range tests {
+		if got := hevcQSVLevelValue(test.semantic); got != test.qsv {
+			t.Errorf("semantic %s mapped to QSV %s, want %s", test.semantic, got, test.qsv)
+		}
+		if got := hevcLevelFromIDC(test.ffprobe); got != test.semantic {
+			t.Errorf("FFprobe %d normalized to %s, want %s", test.ffprobe, got, test.semantic)
+		}
+	}
+}
+
+func TestHEVCLevelAutoRecalculatesWhileRecommendedKeepsStoredValue(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "60/1", Bitrate: 40_000_000}}}
+	auto := resolveHEVCLevel(models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "hevcLevel": "4.0"}}, streams)
+	recommended := resolveHEVCLevel(models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "recommended", "hevcLevel": "4.0"}}, streams)
+	if auto.WorkerConfig["hevcLevelEffective"] != "4.1" {
+		t.Fatalf("Auto did not recalculate for 1080p60: %#v", auto.WorkerConfig)
+	}
+	if recommended.WorkerConfig["hevcLevelEffective"] != "4.0" {
+		t.Fatalf("Recommended did not keep the stored snapshot value: %#v", recommended.WorkerConfig)
+	}
+}
+
+func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
+	profile := applyAssetConversionOverrideToProfile(
+		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}},
+		AssetConversionOverrideState{HEVCLevelMode: "custom", HEVCLevel: "4.1"},
+	)
+	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
+	if resolved.WorkerConfig["hevcLevelMode"] != "custom" || resolved.WorkerConfig["hevcLevelEffective"] != "4.1" {
+		t.Fatalf("asset Custom Level did not win: %#v", resolved.WorkerConfig)
+	}
+}
+
+func TestCustomHEVCLevelResolvesWithoutProbeForLabCommandDisplay(t *testing.T) {
+	profile := resolveHEVCLevel(models.Profile{
+		VideoCodec: "hevc",
+		WorkerConfig: models.JSONMap{
+			"videoEncoder": "hevc_qsv", "preferredEncoder": "hardware", "useHardwareIfAvailable": true,
+			"hevcLevelMode": "custom", "hevcLevel": "4.0",
+		},
+	}, MediaStreamInventory{})
+	command := shellJoin(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"))
+	if !strings.Contains(command, "-level:v 40 -tier main") {
+		t.Fatalf("LAB Custom Level missing from displayed command: %s", command)
+	}
+}
+
+func TestHEVCLevelAutoEmitsMinimumLevelForAsset(t *testing.T) {
 	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}}
 	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
-	if len(hevcLevelArgs(resolved, "hevc_qsv")) != 0 || effectiveX265Params(resolved) != "" {
-		t.Fatalf("auto mode emitted an explicit level: %#v", resolved.WorkerConfig)
+	if args := strings.Join(hevcLevelArgs(resolved, "hevc_qsv"), " "); args != "-level:v 40 -tier main" {
+		t.Fatalf("auto mode did not emit the asset recommendation: args=%q config=%#v", args, resolved.WorkerConfig)
 	}
 }

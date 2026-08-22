@@ -59,6 +59,7 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { RemoveTracksDialog, RemoveTracksPanel } from '../components/RemoveTracksDialog';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
@@ -4021,6 +4022,19 @@ function AssetConversionOverridePanel({
                     compact
                   />
                 </Grid>
+                {['libx265', 'hevc_qsv'].includes(hardwareSelected ? effectiveVideoEncoder : softwareEncoderForAssetCodec(draft.videoCodec ?? profile?.videoCodec ?? 'x265')) ? (
+                  <Grid size={{ xs: 12 }}>
+                    <HEVCLevelControls
+                      config={{ ...(profile?.workerConfig ?? {}), ...draft }}
+                      recommendation={scan?.hevcLevelRecommendation}
+                      onChange={(key, value) => onChange(key as keyof AssetConversionOverrideState, value as never)}
+                      onChangeMany={(patch) => onChangeMany(patch as Partial<AssetConversionOverrideState>)}
+                      encoder={hardwareSelected ? effectiveVideoEncoder : softwareEncoderForAssetCodec(draft.videoCodec ?? profile?.videoCodec ?? 'x265')}
+                      disabled={readOnly || (draft.videoCodec ?? profile?.videoCodec) === 'copy'}
+                      compact
+                    />
+                  </Grid>
+                ) : null}
                 {hardwareSelected && effectiveVideoEncoder !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
                   <TextField
                     label={qsvSelected ? 'QSV quality (ICQ)' : 'Hardware quality'}
@@ -5261,6 +5275,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
     'videoFilters',
     'x265Params',
     'videoEncoder',
+	'hevcLevel',
   ] as const).forEach((key) => {
     const text = value[key]?.trim();
     if (text) {
@@ -5286,6 +5301,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.frameStructureGopMode === 'auto' || value.frameStructureGopMode === 'recommended' || value.frameStructureGopMode === 'custom') clean.frameStructureGopMode = value.frameStructureGopMode;
   if (typeof value.frameStructureGopFrames === 'number' && Number.isFinite(value.frameStructureGopFrames) && value.frameStructureGopFrames > 0) clean.frameStructureGopFrames = Math.min(1000, Math.round(value.frameStructureGopFrames));
   if (value.frameStructureBFrameMode === 'auto' || value.frameStructureBFrameMode === 'recommended' || value.frameStructureBFrameMode === 'custom' || value.frameStructureBFrameMode === 'off') clean.frameStructureBFrameMode = value.frameStructureBFrameMode;
+  if (value.hevcLevelMode === 'auto' || value.hevcLevelMode === 'recommended' || value.hevcLevelMode === 'custom') clean.hevcLevelMode = value.hevcLevelMode;
   if (typeof value.frameStructureMaxBFrames === 'number' && Number.isFinite(value.frameStructureMaxBFrames) && value.frameStructureMaxBFrames >= 0) clean.frameStructureMaxBFrames = Math.min(16, Math.round(value.frameStructureMaxBFrames));
   if (value.qsvRateControl === 'icq' || value.qsvRateControl === 'la_icq') {
     clean.qsvRateControl = value.qsvRateControl;

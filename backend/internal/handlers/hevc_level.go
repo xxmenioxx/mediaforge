@@ -117,8 +117,9 @@ func hevcLimitingFactor(rec HEVCLevelRecommendation, bitrateKbps int64, limit he
 }
 
 func buildHEVCLevelRecommendation(scan models.ScanResult) HEVCLevelRecommendation {
-	bitrate := scanVideoBitrate(scan)
-	result := recommendHEVCLevel(scan.Width, scan.Height, scanFrameRate(scan), bitrate)
+	// Source bitrate is not an output constraint for CRF/ICQ encodes. Using it
+	// here can incorrectly promote high-bitrate 1080p sources to Level 5.x.
+	result := recommendHEVCLevel(scan.Width, scan.Height, scanFrameRate(scan), 0)
 	result.SourceLevelIDC = scanObservedHEVCLevelIDC(scan)
 	result.SourceLevel = hevcLevelFromIDC(result.SourceLevelIDC)
 	return result
@@ -218,8 +219,18 @@ func hevcQSVLevelValue(level string) string {
 	return strings.ReplaceAll(level, ".", "")
 }
 
+func hevcLevelLimitFor(level string) (hevcLevelLimit, bool) {
+	level = normalizedHEVCLevel(level)
+	for _, limit := range hevcMainTierLevelLimits {
+		if limit.Level == level {
+			return limit, true
+		}
+	}
+	return hevcLevelLimit{}, false
+}
+
 func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) models.Profile {
-	if profile.VideoCodec == "copy" || videoCodecFamily(profile.VideoCodec) != "hevc" || len(streams.Video) == 0 {
+	if profile.VideoCodec == "copy" || videoCodecFamily(profile.VideoCodec) != "hevc" {
 		return profile
 	}
 	encoder := resolvedVideoEncoder(profile)
@@ -227,20 +238,31 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 		return profile
 	}
 	mode := normalizedHEVCLevelMode(workerStringValue(profile.WorkerConfig["hevcLevelMode"]))
-	if mode == "" || mode == "auto" {
-		return profile
+	if mode == "" {
+		mode = "auto"
 	}
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["hevcLevelMode"] = mode
 	requested := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevel"]))
-	if mode == "recommended" {
-		source := streams.Video[0]
-		bitrate := source.Bitrate
-		if bitrate <= 0 {
-			bitrate = estimatedVideoBitrate(streams)
+	if mode == "auto" {
+		if len(streams.Video) == 0 {
+			return profile
 		}
-		recommendation := recommendHEVCLevel(source.Width, source.Height, parseFrameRateValue(source.FrameRate), bitrate)
+		source := streams.Video[0]
+		// CRF and ICQ do not provide a target output bitrate up front. The source
+		// bitrate must not be treated as an output requirement.
+		recommendation := recommendHEVCLevel(source.Width, source.Height, parseFrameRateValue(source.FrameRate), 0)
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
+	} else if mode == "recommended" && requested == "" {
+		if len(streams.Video) == 0 {
+			return profile
+		}
+		source := streams.Video[0]
+		recommendation := recommendHEVCLevel(source.Width, source.Height, parseFrameRateValue(source.FrameRate), 0)
+		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
+		requested = recommendation.RecommendedLevel
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Stored Recommended Level was unavailable; MVForge recalculated it from the current asset."
 	}
 	if requested == "" {
 		return profile

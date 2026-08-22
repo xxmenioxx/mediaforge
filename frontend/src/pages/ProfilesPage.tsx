@@ -39,6 +39,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
@@ -904,6 +905,17 @@ export function ProfilesPage() {
                             disabled={form.videoCodec === 'copy'}
                           />
                         </Grid>
+                        {['libx265', 'hevc_qsv'].includes(workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) : softwareEncoderForVideoCodec(form.videoCodec)) ? (
+                          <Grid size={{ xs: 12 }}>
+                            <HEVCLevelControls
+                              config={form.workerConfig ?? {}}
+                              onChange={updateWorkerConfig}
+                              encoder={workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) : softwareEncoderForVideoCodec(form.videoCodec)}
+                              disabled={form.videoCodec === 'copy'}
+                              compact
+                            />
+                          </Grid>
+                        ) : null}
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' && workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) !== 'hevc_videotoolbox' ? <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label={workerConfigString(form, 'videoEncoder', defaultHardwareEncoder) === 'hevc_qsv' ? 'QSV quality (ICQ)' : 'Hardware quality'}

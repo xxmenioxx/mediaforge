@@ -125,6 +125,7 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	profile = resolveHEVCLevel(profile, streams)
 	args := videoCodecArgsForResolvedEncoder(profile, firstVideoStream(streams), encoder)
 	if encoder == "hevc_qsv" {
 		args = append(args, qsvWorkerArgsForCapability(profile, capability)...)

@@ -4138,7 +4138,11 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
 function hevcLevelForLab(profile: ProfileInput | undefined, scan: ScanResult | undefined, encoder: string) {
   if (encoder !== 'libx265' && encoder !== 'hevc_qsv') return undefined;
   const mode = profile ? videoWorkerValue(profile, 'hevcLevelMode', 'auto') : 'auto';
-  if (mode === 'recommended') return scan?.hevcLevelRecommendation?.recommendedLevel;
+  if (mode === 'auto') return scan?.hevcLevelRecommendation?.recommendedLevel;
+  if (mode === 'recommended') {
+    const level = profile ? videoWorkerValue(profile, 'hevcLevel', '') : '';
+    return level || scan?.hevcLevelRecommendation?.recommendedLevel;
+  }
   if (mode === 'custom') {
     const level = profile ? videoWorkerValue(profile, 'hevcLevel', '') : '';
     return level || undefined;

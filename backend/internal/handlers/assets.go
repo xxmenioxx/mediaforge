@@ -231,6 +231,8 @@ type AssetConversionOverrideState struct {
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames,omitempty"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode,omitempty"`
 	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames,omitempty"`
+	HEVCLevelMode                    string                         `json:"hevcLevelMode,omitempty"`
+	HEVCLevel                        string                         `json:"hevcLevel,omitempty"`
 	ProcessingMode                   string                         `json:"processingMode,omitempty"`
 	PreserveHDR                      *bool                          `json:"preserveHdr,omitempty"`
 	PreserveSubtitles                *bool                          `json:"preserveSubtitles,omitempty"`
@@ -3145,6 +3147,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				qualityIntent,
 				capabilities.CheckEncoder("hevc_qsv"),
 			)
+			profile = resolveHEVCLevel(profile, streams)
 			profile = profileWithAutomaticDeinterlace(profile, h.previewInterlaceAnalysis(path, streams))
 			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
@@ -3156,6 +3159,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				videoWorkerArgsForSource(profile, &streams.Video[0])...,
 			)
 		} else {
+			profile = resolveHEVCLevel(profile, MediaStreamInventory{})
 			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
 			effectivePreviewProfile = &profile
@@ -3502,6 +3506,7 @@ func (h AssetHandler) SampleEstimate(c *gin.Context) {
 	qualityIntent := qualityIntentForMedia(profile, resolvedPath, streams)
 	profile = applyVideoToolboxQualityRecommendation(profile, qualityIntent)
 	profile = applyQSVQualityRecommendation(profile, qualityIntent, capabilities.CheckEncoder("hevc_qsv"))
+	profile = resolveHEVCLevel(profile, streams)
 	profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
 	codecArgs := videoCodecArgsForSource(profile, &streams.Video[0])
 	workerArgs := videoWorkerArgsForSource(profile, &streams.Video[0])

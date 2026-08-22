@@ -345,7 +345,7 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	if err != nil {
 		return resolvedTestEncode{}, err
 	}
-	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
+	override := testEncodeConversionOverride(source, job, input.LabTrackOverride, assetConversionOverrides(h.db))
 	profile = applyAssetConversionOverrideToProfile(profile, override)
 	profile, err = resolveAutomaticFrameStructure(h.db, path, profile)
 	if err != nil {
@@ -364,6 +364,17 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution,
 	})
 	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested}, nil
+}
+
+func testEncodeConversionOverride(source string, job models.QueueJob, labOverride AssetConversionOverrideState, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+	if source == "lab_draft" {
+		// The LAB draft is the authoritative video configuration for this kind of
+		// Test Encode. Only the track choices submitted with that same draft may
+		// supplement it; persisted asset overrides must not replace unsaved LAB
+		// Frame Structure or HEVC Level values.
+		return applyJobSelectionsToConversionOverride(job, labOverride)
+	}
+	return conversionOverrideForJob(job, entries)
 }
 
 func (h AssetHandler) decorateTestEncode(test *models.TestEncode) {

@@ -161,6 +161,8 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		QSVExtendedBRC:          &enabled,
 		QSVAdaptiveI:            &enabled,
 		QSVAdaptiveB:            &disabled,
+		HEVCLevelMode:           "custom",
+		HEVCLevel:               "4.1",
 		VideoToolboxBitrateMbps: 6,
 		VideoToolboxMaxrateMbps: 8,
 		VideoToolboxBufferMbps:  12,
@@ -176,6 +178,8 @@ func TestAssetOverrideAppliesHardwareEncoderAndQuality(t *testing.T) {
 		profile.WorkerConfig["qsvExtendedBRC"] != true ||
 		profile.WorkerConfig["qsvAdaptiveI"] != true ||
 		profile.WorkerConfig["qsvAdaptiveB"] != false ||
+		profile.WorkerConfig["hevcLevelMode"] != "custom" ||
+		profile.WorkerConfig["hevcLevel"] != "4.1" ||
 		profile.WorkerConfig["videoToolboxBitrateMbps"] != float64(6) ||
 		profile.WorkerConfig["videoToolboxMaxrateMbps"] != float64(8) ||
 		profile.WorkerConfig["videoToolboxBufferMbps"] != float64(12) {

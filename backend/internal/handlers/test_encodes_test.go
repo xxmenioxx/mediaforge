@@ -71,6 +71,51 @@ func TestConfigurationHashIsStableAndSensitive(t *testing.T) {
 	}
 }
 
+func TestLabDraftTestEncodeDoesNotApplyPersistedAssetVideoOverrides(t *testing.T) {
+	path := "/media/video/asset.mkv"
+	job := models.QueueJob{MediaPath: path, ProcessingMode: ProcessingModeFullEncode}
+	labTracks := AssetConversionOverrideState{KeepAudioStreams: []int{1}}
+	persisted := map[string]AssetConversionOverrideState{
+		path: {
+			FrameStructureBFrameMode: "custom",
+			FrameStructureMaxBFrames: 1,
+			HEVCLevelMode:            "custom",
+			HEVCLevel:                "5.0",
+		},
+	}
+
+	override := testEncodeConversionOverride("lab_draft", job, labTracks, persisted)
+	if override.FrameStructureBFrameMode != "" || override.FrameStructureMaxBFrames != 0 || override.HEVCLevelMode != "" || override.HEVCLevel != "" {
+		t.Fatalf("persisted asset video override leaked into LAB Test Encode: %#v", override)
+	}
+	if len(override.KeepAudioStreams) != 1 || override.KeepAudioStreams[0] != 1 {
+		t.Fatalf("LAB track override was not preserved: %#v", override)
+	}
+
+	labProfile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "frameStructureMode": "custom",
+		"frameStructureBFrameMode": "custom", "frameStructureMaxBFrames": 3,
+		"hevcLevelMode": "custom", "hevcLevel": "4.1",
+	}}
+	effective := applyAssetConversionOverrideToProfile(labProfile, override)
+	effective = resolveHEVCLevel(effective, MediaStreamInventory{})
+	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
+	assertContains(t, command, "-bf 3")
+	assertContains(t, command, "-level:v 41 -tier main")
+	assertNotContains(t, command, "-bf 1")
+}
+
+func TestEffectiveAssetTestEncodeKeepsPersistedVideoOverridePrecedence(t *testing.T) {
+	path := "/media/video/asset.mkv"
+	job := models.QueueJob{MediaPath: path, ProcessingMode: ProcessingModeFullEncode}
+	override := testEncodeConversionOverride("effective_asset", job, AssetConversionOverrideState{}, map[string]AssetConversionOverrideState{
+		path: {FrameStructureBFrameMode: "custom", FrameStructureMaxBFrames: 2, HEVCLevelMode: "custom", HEVCLevel: "4.0"},
+	})
+	if override.FrameStructureBFrameMode != "custom" || override.FrameStructureMaxBFrames != 2 || override.HEVCLevel != "4.0" {
+		t.Fatalf("effective asset override was not preserved: %#v", override)
+	}
+}
+
 func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {
 	db := testEncodeTestDB(t, "test-encode-ffmpeg-command-column")
 	test := models.TestEncode{SourcePath: "/raw/a.mkv", LibraryID: 1, ConfigurationSource: "effective_asset", Status: testEncodeWaiting, Phase: "waiting"}

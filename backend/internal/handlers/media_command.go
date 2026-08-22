@@ -848,6 +848,12 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 			workerConfig["frameStructureMaxBFrames"] = 0
 		}
 	}
+	if value := normalizedHEVCLevelMode(override.HEVCLevelMode); value != "" {
+		workerConfig["hevcLevelMode"] = value
+	}
+	if value := normalizedHEVCLevel(override.HEVCLevel); value != "" {
+		workerConfig["hevcLevel"] = value
+	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
 	}

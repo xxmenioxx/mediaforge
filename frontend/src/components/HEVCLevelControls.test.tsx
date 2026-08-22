@@ -26,6 +26,12 @@ const recommendation = {
 afterEach(cleanup);
 
 describe('HEVCLevelControls', () => {
+  it('describes Auto as an MVForge per-asset decision', () => {
+    render(<HEVCLevelControls config={{}} recommendation={recommendation} encoder="hevc_qsv" onChange={vi.fn()} />);
+    expect(screen.getByText(/mvforge calculates and sends the minimum level/i)).toBeTruthy();
+    expect(screen.getByText(/currently level 4.0/i)).toBeTruthy();
+  });
+
   it('commits the recommended mode and calculated Level atomically', async () => {
     const user = userEvent.setup();
     const onChangeMany = vi.fn();
