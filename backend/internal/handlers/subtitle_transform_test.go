@@ -21,6 +21,21 @@ func TestTextSubtitleExtractionUsesTestEncodeWindowOnlyWhenRequested(t *testing.
 	assertNotContains(t, normal, "-t 20")
 }
 
+func TestEmptySubtitleArtifactPolicyIsLimitedToSegmentedTestEncodes(t *testing.T) {
+	segmentedTest := MediaJobPlan{SegmentDurationSeconds: 20, AllowEmptySubtitleArtifacts: true}
+	if !emptySubtitleArtifactCanBeSkipped(segmentedTest) {
+		t.Fatal("segmented Test Encode should skip a subtitle track with no cues in its window")
+	}
+	for _, plan := range []MediaJobPlan{
+		{AllowEmptySubtitleArtifacts: true},
+		{SegmentDurationSeconds: 20},
+	} {
+		if emptySubtitleArtifactCanBeSkipped(plan) {
+			t.Fatal("full publication and ordinary segmented jobs must reject empty subtitle artifacts")
+		}
+	}
+}
+
 func TestValidSubtitleSidecar(t *testing.T) {
 	if !validSubtitleSidecar("srt", []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n")) {
 		t.Fatal("valid SRT was rejected")

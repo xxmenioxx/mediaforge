@@ -478,7 +478,7 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	if test.Status != testEncodeWaiting {
 		return
 	}
-	planned := plannedOutputPathForJob(h.db, resolved.job, resolved.library, resolved.profile)
+	planned := plannedTestEncodeOutputPath(h.db, resolved.job, resolved.library, resolved.profile)
 	ext := filepath.Ext(planned)
 	base := strings.TrimSuffix(filepath.Base(planned), ext)
 	output := filepath.Join(filepath.Dir(planned), fmt.Sprintf("%s - MVForge Test T%d%s", base, id, ext))
@@ -509,6 +509,7 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	applyEpisodeVideoTrackTitle(h.db, &plan, resolved.job, resolved.library)
 	plan.SegmentStartSeconds, plan.SegmentDurationSeconds = test.StartSeconds, test.DurationSeconds
 	plan.IndependentSubtitleArtifacts = true
+	plan.AllowEmptySubtitleArtifacts = true
 	plan.OutputMetadata = map[string]string{
 		"MVFORGE_TEST": "1", "MVFORGE_TEST_ID": strconv.FormatUint(uint64(id), 10),
 		"MVFORGE_SOURCE_ASSET_ID": strconv.FormatUint(uint64(test.SourceAssetID), 10),
@@ -630,6 +631,14 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
 		"validation_report": report, "temporary_path": "", "updated_at": completed,
 	}).Error
+}
+
+func plannedTestEncodeOutputPath(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile) string {
+	if pathIsInside(job.MediaPath, library.DestinationPath) {
+		extension := "." + strings.TrimPrefix(profile.Container, ".")
+		return strings.TrimSuffix(job.MediaPath, filepath.Ext(job.MediaPath)) + extension
+	}
+	return plannedOutputPathForJob(db, job, library, profile)
 }
 
 func testEncodeValidationReport(plan MediaJobPlan, streams MediaStreamInventory, expectedDuration int) models.JSONMap {

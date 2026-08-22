@@ -36,6 +36,7 @@ type MediaJobPlan struct {
 	SegmentDurationSeconds       int
 	OutputMetadata               map[string]string
 	IndependentSubtitleArtifacts bool
+	AllowEmptySubtitleArtifacts  bool
 }
 
 type MediaStreamInventory struct {

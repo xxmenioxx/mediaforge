@@ -107,6 +107,9 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 		info, err := os.Stat(stagedPath)
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			_ = os.Remove(stagedPath)
+			if emptySubtitleArtifactCanBeSkipped(plan) {
+				continue
+			}
 			return nil, fmt.Errorf("subtitle stream %d produced an empty sidecar", stream.Index)
 		}
 		content, err := os.ReadFile(stagedPath)
@@ -121,6 +124,10 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 	}
 	completed = true
 	return artifacts, nil
+}
+
+func emptySubtitleArtifactCanBeSkipped(plan MediaJobPlan) bool {
+	return plan.AllowEmptySubtitleArtifacts && plan.SegmentDurationSeconds > 0
 }
 
 func textSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, format, outputPath string) []string {

@@ -6,7 +6,25 @@ import type { AssetMaintenanceOperation, TrackMaintenanceStream } from '../api/t
 
 type Props = { open: boolean; path: string; onClose: () => void };
 
+type PanelProps = {
+  path: string;
+  active?: boolean;
+  disabledReason?: string;
+  onClose?: () => void;
+  onBusyChange?: (busy: boolean) => void;
+};
+
 export function RemoveTracksDialog({ open, path, onClose }: Props) {
+  const [busy, setBusy] = useState(false);
+  return <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="md" fullWidth disableEscapeKeyDown={busy}>
+    <DialogTitle>Remove tracks</DialogTitle>
+    <DialogContent dividers>
+      <RemoveTracksPanel path={path} active={open} onClose={onClose} onBusyChange={setBusy} />
+    </DialogContent>
+  </Dialog>;
+}
+
+export function RemoveTracksPanel({ path, active = true, disabledReason, onClose, onBusyChange }: PanelProps) {
   const client = useQueryClient();
   const [selected, setSelected] = useState<number[]>([]);
   const [confirmed, setConfirmed] = useState(false);
@@ -14,7 +32,7 @@ export function RemoveTracksDialog({ open, path, onClose }: Props) {
   const inventory = useQuery({
     queryKey: ['trackMaintenanceInventory', path],
     queryFn: () => api.trackMaintenanceInventory(path),
-    enabled: open && Boolean(path) && !operation,
+    enabled: active && Boolean(path) && !disabledReason && !operation,
   });
   const removal = useMutation({
     mutationFn: () => api.startTrackRemoval({ path, streamIndexes: selected, expectedFingerprint: inventory.data!.fingerprint, confirmed }),
@@ -38,16 +56,18 @@ export function RemoveTracksDialog({ open, path, onClose }: Props) {
   const playableVideo = inventory.data?.streams.filter((stream) => stream.type === 'video' && !stream.attachedPic && !stream.stillImage) ?? [];
   const removesAllVideo = playableVideo.length > 0 && playableVideo.every((stream) => selected.includes(stream.index));
   const busy = removal.isPending || operation?.status === 'queued' || operation?.status === 'running';
+  useEffect(() => {
+    onBusyChange?.(Boolean(busy));
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
 
   function close() {
     if (busy) return;
-    setSelected([]); setConfirmed(false); setOperation(null); removal.reset(); onClose();
+    setSelected([]); setConfirmed(false); setOperation(null); removal.reset(); onClose?.();
   }
 
-  return <Dialog open={open} onClose={close} maxWidth="md" fullWidth disableEscapeKeyDown={busy}>
-    <DialogTitle>Remove tracks</DialogTitle>
-    <DialogContent dividers>
-      <Stack spacing={2}>
+  return <Stack spacing={2}>
+        {disabledReason ? <Alert severity="info">{disabledReason}</Alert> : null}
         <Alert severity="warning">Removed tracks cannot be recovered after this operation completes. MVForge will remux the MKV without re-encoding video or audio.</Alert>
         {inventory.isLoading ? <LinearProgress /> : null}
         {inventory.error ? <Alert severity="error">{inventory.error.message}</Alert> : null}
@@ -58,13 +78,11 @@ export function RemoveTracksDialog({ open, path, onClose }: Props) {
         {removesAllVideo ? <Alert severity="error">At least one playable video stream must remain.</Alert> : null}
         {operation ? <Stack spacing={1}><LinearProgress variant="determinate" value={operation.progress} /><Typography variant="body2">{operation.phase} · {operation.progress}%</Typography>{operation.status === 'completed' ? <Alert severity="success">Tracks removed, asset validated, and snapshot refreshed.</Alert> : null}{operation.errorMessage ? <Alert severity="error">{operation.errorMessage}</Alert> : null}{operation.warning ? <Alert severity="warning">{operation.warning}</Alert> : null}</Stack> : null}
         {!operation ? <FormControlLabel control={<Checkbox checked={confirmed} disabled={busy} onChange={(_, checked) => setConfirmed(checked)} />} label={`I understand that ${selected.length || 'the selected'} track(s) cannot be recovered.`} /> : null}
-      </Stack>
-    </DialogContent>
-    <DialogActions>
-      <Button onClick={close} disabled={busy}>{operation?.status === 'completed' || operation?.status === 'failed' ? 'Close' : 'Cancel'}</Button>
-      {!operation ? <Button variant="contained" color="error" disabled={!inventory.data || selected.length === 0 || !confirmed || removesAllVideo || removal.isPending} onClick={() => removal.mutate()}>Remove {selected.length} track{selected.length === 1 ? '' : 's'}</Button> : null}
-    </DialogActions>
-  </Dialog>;
+        <DialogActions sx={{ px: 0, pb: 0 }}>
+          {onClose ? <Button onClick={close} disabled={busy}>{operation?.status === 'completed' || operation?.status === 'failed' ? 'Close' : 'Cancel'}</Button> : null}
+          {!operation ? <Button variant="contained" color="error" disabled={!inventory.data || selected.length === 0 || !confirmed || removesAllVideo || removal.isPending} onClick={() => removal.mutate()}>Remove {selected.length} track{selected.length === 1 ? '' : 's'}</Button> : null}
+        </DialogActions>
+  </Stack>;
 }
 
 function streamLabel(stream: TrackMaintenanceStream) {

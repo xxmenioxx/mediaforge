@@ -104,6 +104,39 @@ func TestTestEncodeValidationReportsTrackAndDurationMismatch(t *testing.T) {
 	}
 }
 
+func TestPlannedTestEncodeOutputKeepsLibraryAssetDirectory(t *testing.T) {
+	db := queueJobTestDB(t)
+	library := models.Library{
+		ID:              1,
+		Name:            "Anime",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/anime",
+	}
+	profile := models.Profile{Container: "mkv"}
+	job := models.QueueJob{
+		MediaPath: "/media/library/anime/Gurren laggan/asset.mkv",
+		LibraryID: library.ID,
+		ProfileID: 1,
+	}
+	retiredAt := time.Now()
+	if err := db.Create(&models.QueueJob{
+		MediaPath:            job.MediaPath,
+		LibraryID:            library.ID,
+		ProfileID:            1,
+		Status:               JobStatusCompleted,
+		PublishedPath:        "/media/library/anime/Your Name/Your Name.mkv",
+		PublicationRetiredAt: &retiredAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got := plannedTestEncodeOutputPath(db, job, library, profile)
+	want := "/media/library/anime/Gurren laggan/asset.mkv"
+	if got != want {
+		t.Fatalf("Test Encode planned output=%q want=%q", got, want)
+	}
+}
+
 func TestRecoverInterruptedTestEncodesFailsOnlyActiveWorkAndReleasesReservations(t *testing.T) {
 	db := testEncodeTestDB(t, "test-encode-recovery")
 	root := t.TempDir()

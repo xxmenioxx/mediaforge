@@ -56,7 +56,7 @@ import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
-import { RemoveTracksDialog } from '../components/RemoveTracksDialog';
+import { RemoveTracksDialog, RemoveTracksPanel } from '../components/RemoveTracksDialog';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { PageHeader } from '../components/PageHeader';
@@ -2389,7 +2389,7 @@ async function generateExternalSubtitle(
                 </IconButton>
               </span>
             </Tooltip>
-            {!isArchive && mode !== 'unprocessed' ? (
+            {!isArchive && mode !== 'unprocessed' && mode !== 'library' ? (
               <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : asset.missing ? 'Asset is not physically available' : 'Remove tracks without re-encoding'}>
                 <span>
                   <IconButton color="warning" onClick={() => setShowRemoveTracksDialog(true)} disabled={hasOpenJob || asset.missing || !asset.fileName.toLowerCase().endsWith('.mkv')} aria-label={`Remove tracks from ${asset.fileName}`} sx={actionIconSx}>
@@ -2806,6 +2806,7 @@ async function generateExternalSubtitle(
                   <Tab label="MVForge Suggestions" />
                   <Tab label="Quick Asset Overrides" />
                   <Tab label="Test Encode" />
+                  {mode === 'library' ? <Tab label="Remove tracks" /> : null}
                 </Tabs>
                 <Box hidden={snapshotTab !== 1}>
                   <Box sx={{ pt: 1.5 }}>
@@ -3012,6 +3013,31 @@ async function generateExternalSubtitle(
                     )}
                   </Stack>
                 </Box>
+                {mode === 'library' ? (
+                  <Box hidden={snapshotTab !== 7}>
+                    <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                      <Stack spacing={0.5}>
+                        <Typography variant="h3">Remove tracks</Typography>
+                        <Typography color="text.secondary" variant="body2">
+                          Select embedded tracks to remove from this Library asset without re-encoding its video or audio.
+                        </Typography>
+                      </Stack>
+                      <RemoveTracksPanel
+                        path={asset.path}
+                        active={showSnapshotDialog && snapshotTab === 7}
+                        disabledReason={
+                          hasOpenJob
+                            ? 'This asset has an active Queue job. Wait for it to finish before removing tracks.'
+                            : asset.missing
+                              ? 'This asset is not physically available.'
+                              : !asset.fileName.toLowerCase().endsWith('.mkv')
+                                ? 'Track removal is available only for MKV assets.'
+                                : undefined
+                        }
+                      />
+                    </Stack>
+                  </Box>
+                ) : null}
               </>
             ) : null}
             {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}
