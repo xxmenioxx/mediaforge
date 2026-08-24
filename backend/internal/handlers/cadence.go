@@ -243,6 +243,19 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 	if len(recommendations) > 0 && recommendations[0].Operation != "" {
 		recommendation = recommendations[0]
 	}
+	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+	if strings.Contains(strings.ToLower(existing), "fps=") {
+		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+		delete(profile.WorkerConfig, "effectiveOutputFrameRate")
+		profile.WorkerConfig["effectiveCadenceOperation"] = "explicit_fps_filter"
+		if explicit, ok := simpleFPSFilterRate(existing); ok {
+			profile.WorkerConfig["effectiveOutputFrameRate"] = explicit
+			delete(profile.WorkerConfig, "cadenceResolutionWarning")
+		} else {
+			profile.WorkerConfig["cadenceResolutionWarning"] = "explicit fps filter won over automatic cadence, but its effective output rate could not be parsed safely"
+		}
+		return profile
+	}
 	mode := normalizedCadenceMode(workerStringValue(profile.WorkerConfig["cadenceMode"]))
 	if mode == "" {
 		mode = legacyCadenceMode(profile)
@@ -261,10 +274,6 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 	if recommendation.Operation != "remove_soft_telecine" || recommendation.Confidence < 0.95 || (mode != "auto" && mode != "remove_soft_telecine") {
 		return profile
 	}
-	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
-	if strings.Contains(strings.ToLower(existing), "fps=") {
-		return profile
-	}
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	target := recommendation.OutputFrameRate
 	if target == "" {
@@ -277,6 +286,24 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 	profile.WorkerConfig["effectiveOutputFrameRate"] = target
 	profile.WorkerConfig["effectiveCadenceOperation"] = recommendation.Operation
 	return profile
+}
+
+func simpleFPSFilterRate(filters string) (string, bool) {
+	for _, filter := range strings.Split(filters, ",") {
+		parts := strings.SplitN(strings.TrimSpace(filter), "=", 2)
+		if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "fps") {
+			continue
+		}
+		value := strings.TrimSpace(parts[1])
+		if parseFrameRateValue(value) <= 0 {
+			return "", false
+		}
+		if !strings.Contains(value, "/") && !strings.Contains(value, ".") {
+			value += "/1"
+		}
+		return value, true
+	}
+	return "", false
 }
 
 func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {

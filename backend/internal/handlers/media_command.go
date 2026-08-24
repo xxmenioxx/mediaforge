@@ -98,21 +98,23 @@ type MediaStream struct {
 	RealFrameRate      string
 	DecodedFrames      int64
 	StartTime          float64
+	StartTimeValid     bool
 	SampleAspectRatio  string
 	DisplayAspectRatio string
 }
 
 type MediaAudioStream struct {
-	Index         int
-	Codec         string
-	Channels      int
-	ChannelLayout string
-	Language      string
-	Title         string
-	Default       bool
-	Forced        bool
-	Bitrate       int64
-	StartTime     float64
+	Index          int
+	Codec          string
+	Channels       int
+	ChannelLayout  string
+	Language       string
+	Title          string
+	Default        bool
+	Forced         bool
+	Bitrate        int64
+	StartTime      float64
+	StartTimeValid bool
 }
 
 type AudioProcessor interface {
@@ -2259,6 +2261,7 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 			RealFrameRate:      stream.RealFrameRate,
 			DecodedFrames:      parseInt(stream.DecodedFrames),
 			StartTime:          parseFloat(stream.StartTime),
+			StartTimeValid:     optionalSeconds(stream.StartTime) != nil,
 			SampleAspectRatio:  stream.SampleAspectRatio,
 			DisplayAspectRatio: stream.DisplayAspectRatio,
 		}
@@ -2267,16 +2270,17 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 			inventory.Video = append(inventory.Video, common)
 		case "audio":
 			inventory.Audio = append(inventory.Audio, MediaAudioStream{
-				Index:         stream.Index,
-				Codec:         stream.CodecName,
-				Channels:      stream.Channels,
-				ChannelLayout: stream.ChannelLayout,
-				Language:      stream.Tags["language"],
-				Title:         stream.Tags["title"],
-				Default:       stream.Disposition.Default == 1,
-				Forced:        stream.Disposition.Forced == 1,
-				Bitrate:       parseInt(stream.Bitrate),
-				StartTime:     parseFloat(stream.StartTime),
+				Index:          stream.Index,
+				Codec:          stream.CodecName,
+				Channels:       stream.Channels,
+				ChannelLayout:  stream.ChannelLayout,
+				Language:       stream.Tags["language"],
+				Title:          stream.Tags["title"],
+				Default:        stream.Disposition.Default == 1,
+				Forced:         stream.Disposition.Forced == 1,
+				Bitrate:        parseInt(stream.Bitrate),
+				StartTime:      parseFloat(stream.StartTime),
+				StartTimeValid: optionalSeconds(stream.StartTime) != nil,
 			})
 		case "subtitle":
 			inventory.Subtitle = append(inventory.Subtitle, common)

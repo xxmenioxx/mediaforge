@@ -218,9 +218,9 @@ func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {
 func TestTestEncodeValidationReportsTrackAndDurationMismatch(t *testing.T) {
 	plan := MediaJobPlan{
 		Profile: models.Profile{VideoCodec: "x265", AudioCodec: "copy"},
-		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Audio: []MediaAudioStream{{Index: 1}}},
+		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0, FrameRate: "24/1", StartTimeValid: true}}, Audio: []MediaAudioStream{{Index: 1, StartTimeValid: true}}},
 	}
-	passed := testEncodeValidationReport(plan, MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Audio: []MediaAudioStream{{Index: 1}}, Duration: 20}, 20)
+	passed := testEncodeValidationReport(plan, MediaStreamInventory{Video: []MediaStream{{Index: 0, FrameRate: "24/1", StartTimeValid: true}}, Audio: []MediaAudioStream{{Index: 1, StartTimeValid: true}}, Duration: 20}, 20)
 	if passed["passed"] != true {
 		t.Fatalf("equivalent sample did not validate: %#v", passed)
 	}
@@ -260,13 +260,13 @@ func TestTestEncodeValidationRejectsLargeIntroducedAVOffset(t *testing.T) {
 	plan := MediaJobPlan{
 		Profile: models.Profile{VideoCodec: "hevc"},
 		Streams: MediaStreamInventory{
-			Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: 0}},
-			Audio: []MediaAudioStream{{Index: 1, StartTime: 0}},
+			Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: 0, StartTimeValid: true}},
+			Audio: []MediaAudioStream{{Index: 1, StartTime: 0, StartTimeValid: true}},
 		},
 	}
 	report := testEncodeValidationReport(plan, MediaStreamInventory{
-		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: .563}},
-		Audio: []MediaAudioStream{{Index: 1, StartTime: 0}}, Duration: 20,
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: .563, StartTimeValid: true}},
+		Audio: []MediaAudioStream{{Index: 1, StartTime: 0, StartTimeValid: true}}, Duration: 20,
 	}, 20)
 	if report["passed"] != false {
 		t.Fatalf("large introduced A/V offset passed validation: %#v", report)
@@ -274,6 +274,27 @@ func TestTestEncodeValidationRejectsLargeIntroducedAVOffset(t *testing.T) {
 	timing, ok := report["avTiming"].(models.JSONMap)
 	if !ok || timing["status"] != "mismatch" {
 		t.Fatalf("large A/V offset evidence missing: %#v", report)
+	}
+}
+
+func TestTestEncodeValidationWarnsWhenAVTimingIsUnverified(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{VideoCodec: "hevc"},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{{Index: 0, FrameRate: "24000/1001"}},
+			Audio: []MediaAudioStream{{Index: 1}},
+		},
+	}
+	report := testEncodeValidationReport(plan, MediaStreamInventory{
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001"}},
+		Audio: []MediaAudioStream{{Index: 1}}, Duration: 20,
+	}, 20)
+	if report["passed"] != false {
+		t.Fatalf("missing expected A/V evidence silently passed: %#v", report)
+	}
+	timing := report["avTiming"].(models.JSONMap)
+	if timing["status"] != "unverified" || len(workerStringSlice(report["warnings"])) == 0 {
+		t.Fatalf("unverified A/V policy was not visible: %#v", report)
 	}
 }
 

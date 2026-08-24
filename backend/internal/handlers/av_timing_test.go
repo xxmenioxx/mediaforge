@@ -10,8 +10,8 @@ import (
 
 func timingEvidence(videoStart, audioStart float64) avTimingEvidence {
 	return avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: videoStart},
-		Audio: []avStreamTiming{{Index: 1, StartSeconds: audioStart}}, FrameRate: "24000/1001",
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(videoStart)},
+		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(audioStart)}}, FrameRate: "24000/1001",
 	}
 }
 
@@ -114,12 +114,93 @@ func TestValidateAVTimingReportsDriftAsNotMeasured(t *testing.T) {
 	}
 }
 
+func TestValidateAVTimingSeverityIsOrderIndependent(t *testing.T) {
+	statuses := func(frameOffsets ...float64) string {
+		source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
+		output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
+		for index, frames := range frameOffsets {
+			source.Audio = append(source.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(0)})
+			output.Audio = append(output.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(frames * 1001.0 / 24000.0)})
+		}
+		return validateAVTiming(source, output)["status"].(string)
+	}
+	for _, test := range []struct {
+		name    string
+		offsets []float64
+		want    string
+	}{
+		{name: "mismatch then warning", offsets: []float64{3, 1.5}, want: "mismatch"},
+		{name: "warning then validated", offsets: []float64{1.5, .5}, want: "warning"},
+		{name: "validated mismatch warning", offsets: []float64{.5, 3, 1.5}, want: "mismatch"},
+		{name: "reversed", offsets: []float64{1.5, 3, .5}, want: "mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := statuses(test.offsets...); got != test.want {
+				t.Fatalf("aggregate=%s want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateAVTimingDistinguishesMissingEvidenceFromZero(t *testing.T) {
+	missingVideo := timingEvidence(0, 0)
+	missingVideo.Video.StartSeconds = nil
+	if report := validateAVTiming(missingVideo, timingEvidence(0, 0)); report["status"] != "unverified" {
+		t.Fatalf("missing video evidence must be unverified: %#v", report)
+	}
+	missingAudio := timingEvidence(0, 0)
+	missingAudio.Audio[0].StartSeconds = nil
+	if report := validateAVTiming(timingEvidence(0, 0), missingAudio); report["status"] != "unverified" {
+		t.Fatalf("missing audio evidence must be unverified: %#v", report)
+	}
+	if report := validateAVTiming(timingEvidence(0, 0), timingEvidence(0, 0)); report["status"] != "validated" {
+		t.Fatalf("explicit zero timestamps must remain valid evidence: %#v", report)
+	}
+}
+
+func TestValidateAVTimingDoesNotHidePartiallyMissingAudioEvidence(t *testing.T) {
+	source := avTimingEvidence{
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Audio: []avStreamTiming{
+			{Index: 1, StartSeconds: secondsPointer(0)},
+			{Index: 2},
+		},
+	}
+	output := avTimingEvidence{
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Audio: []avStreamTiming{
+			{Index: 1, StartSeconds: secondsPointer(0)},
+			{Index: 2},
+		},
+	}
+	report := validateAVTiming(source, output)
+	if report["status"] != "unverified" {
+		t.Fatalf("a validated track hid missing evidence on another track: %#v", report)
+	}
+	tracks := report["tracks"].([]models.JSONMap)
+	if tracks[0]["status"] != "validated" || tracks[1]["status"] != "unverified" {
+		t.Fatalf("per-track evidence status was lost: %#v", tracks)
+	}
+}
+
+func TestFirstPacketPTSandDTSAreCapturedIndependently(t *testing.T) {
+	timing := avStreamTiming{}
+	captureFirstPacketTimes(&timing, "N/A", "-0.042")
+	captureFirstPacketTimes(&timing, "0.000", "0.000")
+	if timing.FirstPacketPTSSeconds == nil || *timing.FirstPacketPTSSeconds != 0 {
+		t.Fatalf("first valid PTS was not captured: %#v", timing)
+	}
+	if timing.FirstPacketDTSSeconds == nil || *timing.FirstPacketDTSSeconds != -.042 {
+		t.Fatalf("first valid DTS was overwritten: %#v", timing)
+	}
+}
+
 func TestAVTimingFromProbeParsesFFprobeStringTimestamps(t *testing.T) {
 	evidence := avTimingFromProbe(map[string]any{"streams": []interface{}{
 		map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.042000", "avg_frame_rate": "24000/1001"},
 		map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000"},
 	}})
-	if evidence.Video == nil || math.Abs(evidence.Video.StartSeconds-.042) > .0001 || len(evidence.Audio) != 1 {
+	if evidence.Video == nil || evidence.Video.StartSeconds == nil || math.Abs(*evidence.Video.StartSeconds-.042) > .0001 || len(evidence.Audio) != 1 {
 		t.Fatalf("FFprobe timing strings were not parsed: %#v", evidence)
 	}
 }
@@ -135,19 +216,19 @@ func TestAVTimingForSelectedAudioMatchesAbsoluteInputIndex(t *testing.T) {
 
 func TestAVTimingForStreamPlanDoesNotPairRemovedAudioByArrayPosition(t *testing.T) {
 	source := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0},
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)},
 		Audio: []avStreamTiming{
-			{Index: 1, Language: "spa", Title: "Spanish", StartSeconds: 0},
-			{Index: 2, Language: "eng", Title: "English", StartSeconds: .080},
-			{Index: 3, Language: "eng", Title: "Commentary", StartSeconds: .160},
+			{Index: 1, Language: "spa", Title: "Spanish", StartSeconds: secondsPointer(0)},
+			{Index: 2, Language: "eng", Title: "English", StartSeconds: secondsPointer(.080)},
+			{Index: 3, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.160)},
 		},
 		FrameRate: "24000/1001",
 	}
 	output := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: .042},
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042)},
 		Audio: []avStreamTiming{
-			{Index: 1, Language: "eng", Title: "English", StartSeconds: .122},
-			{Index: 2, Language: "eng", Title: "Commentary", StartSeconds: .202},
+			{Index: 1, Language: "eng", Title: "English", StartSeconds: secondsPointer(.122)},
+			{Index: 2, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.202)},
 		},
 		FrameRate: "24000/1001",
 	}
@@ -166,5 +247,39 @@ func TestAVTimingForStreamPlanDoesNotPairRemovedAudioByArrayPosition(t *testing.
 	tracks := report["tracks"].([]models.JSONMap)
 	if tracks[0]["sourceAudioIndex"] != 2 || tracks[1]["sourceAudioIndex"] != 3 {
 		t.Fatalf("report lost absolute source track identity: %#v", tracks)
+	}
+}
+
+func TestAVTimingForStreamPlanSkipsDerivedWhenOriginalExists(t *testing.T) {
+	source := timingEvidence(0, 0)
+	output := avTimingEvidence{
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Audio: []avStreamTiming{
+			{Index: 1, StartSeconds: secondsPointer(0)},
+			{Index: 2, StartSeconds: secondsPointer(.5)},
+		},
+	}
+	duplicate := 1
+	plan := ResolvedStreamPlan{Audio: []PlannedStream{
+		{InputIndex: 1, OutputTypeIndex: 0, Action: "copy"},
+		{InputIndex: 1, OutputTypeIndex: 1, Action: "derive", DuplicateOf: &duplicate},
+	}}
+	selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
+	if len(selectedSource.Audio) != 1 || len(selectedOutput.Audio) != 1 || selectedOutput.Audio[0].Index != 1 {
+		t.Fatalf("derived audio replaced canonical comparison: source=%#v output=%#v", selectedSource, selectedOutput)
+	}
+}
+
+func TestAVTimingForStreamPlanUsesDerivedWhenOriginalIsNotPreserved(t *testing.T) {
+	source := timingEvidence(0, .080)
+	output := avTimingEvidence{
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042)}, FrameRate: "24000/1001",
+		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(.122)}},
+	}
+	duplicate := 1
+	plan := ResolvedStreamPlan{Audio: []PlannedStream{{InputIndex: 1, OutputTypeIndex: 0, Action: "derive", DuplicateOf: &duplicate}}}
+	selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
+	if report := validateAVTiming(selectedSource, selectedOutput); report["status"] != "validated" {
+		t.Fatalf("derived-only replacement did not preserve timing identity: %#v", report)
 	}
 }

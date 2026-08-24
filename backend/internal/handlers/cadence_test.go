@@ -191,8 +191,30 @@ func TestExplicitFPSFilterWinsOverAutomaticCadence(t *testing.T) {
 	if got := workerStringValue(resolved.WorkerConfig["videoFilters"]); got != "fps=25" {
 		t.Fatalf("expected explicit filter to win, got %q", got)
 	}
+	if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "25/1" {
+		t.Fatalf("explicit FPS was not recorded as effective output rate: %q", got)
+	}
+	if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]); got != "explicit_fps_filter" {
+		t.Fatalf("explicit FPS operation was not recorded: %q", got)
+	}
+}
+
+func TestUnparseableExplicitFPSFilterDoesNotKeepStaleEffectiveRate(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"videoFilters": "fps=fps*2", "effectiveOutputFrameRate": "30000/1001"}}
+	resolved := profileWithAutomaticCadence(profile, CadenceAnalysis{Type: "soft_telecine", Confidence: .99})
 	if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "" {
-		t.Fatalf("unexpected automatic output rate %q", got)
+		t.Fatalf("unparseable explicit FPS retained stale rate %q", got)
+	}
+	if workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) == "" {
+		t.Fatalf("unparseable explicit FPS did not record a warning: %#v", resolved.WorkerConfig)
+	}
+}
+
+func TestExplicitFPSIsEffectiveWithoutAutomaticCadenceDecision(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "preserve", "videoFilters": "scale=1280:720,fps=25"}}
+	resolved := profileWithAutomaticCadence(profile, CadenceAnalysis{Type: "unknown"})
+	if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "25/1" {
+		t.Fatalf("explicit FPS depended on automatic Cadence analysis: %#v", resolved.WorkerConfig)
 	}
 }
 

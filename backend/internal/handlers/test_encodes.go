@@ -710,7 +710,9 @@ func testEncodeValidationReportWithTiming(plan MediaJobPlan, streams MediaStream
 	frameCountValidation := models.JSONMap{"status": "not_applicable"}
 	timingSource, timingOutput := avTimingForStreamPlan(sourceTiming, outputTiming, streamPlan)
 	timingValidation := validateAVTiming(timingSource, timingOutput)
-	if timingValidation["status"] == "warning" || timingValidation["status"] == "mismatch" {
+	if timingValidation["status"] == "unverified" {
+		warnings = append(warnings, "Output A/V timestamp alignment could not be verified from available evidence")
+	} else if timingValidation["status"] == "warning" || timingValidation["status"] == "mismatch" {
 		warnings = append(warnings, fmt.Sprintf("Output A/V timestamp alignment is %s", timingValidation["status"]))
 	}
 	if len(streams.Video) > 0 {

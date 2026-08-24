@@ -14,10 +14,10 @@ export function AVTimingSummary({ report }: { report: unknown }) {
           <TimingValue label="Audio track" value={`${track.sourceAudioIndex} → ${track.outputAudioIndex}`} />
           <TimingValue label="Source offset" value={formatMilliseconds(track.sourceOffsetMs)} />
           <TimingValue label="Output offset" value={formatMilliseconds(track.outputOffsetMs)} />
-          <TimingValue label="Introduced" value={`${formatMilliseconds(track.introducedOffsetMs)} (${track.introducedOffsetFrames.toFixed(2)} frames)`} />
+          <TimingValue label="Introduced" value={track.introducedOffsetMs === null || track.introducedOffsetFrames === null ? 'Unavailable' : `${formatMilliseconds(track.introducedOffsetMs)} (${track.introducedOffsetFrames.toFixed(2)} frames)`} />
         </Box>
       ))}
-      <Typography variant="caption" color="text.secondary">Tolerance: ±{timing.toleranceFrames.toFixed(0)} frame ({timing.toleranceMs.toFixed(1)} ms at {timing.frameRateUsed || 'unknown FPS'}) · Drift: {timing.driftStatus.replaceAll('_', ' ')}</Typography>
+      <Typography variant="caption" color="text.secondary">{timing.toleranceFrames === null || timing.toleranceMs === null || !timing.frameRateUsed ? 'Tolerance unavailable — Output FPS could not be verified' : `Tolerance: ±${timing.toleranceFrames.toFixed(0)} frame (${timing.toleranceMs.toFixed(1)} ms at ${timing.frameRateUsed})`} · Drift: {timing.driftStatus.replaceAll('_', ' ')}</Typography>
     </Stack>
   );
 }
@@ -26,9 +26,9 @@ function TimingValue({ label, value }: { label: string; value: string }) {
   return <Box><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="body2">{value}</Typography></Box>;
 }
 
-function formatMilliseconds(value: number) { return `${value >= 0 ? '+' : ''}${value.toFixed(1)} ms`; }
+function formatMilliseconds(value: number | null) { return value === null ? 'Unavailable' : `${value >= 0 ? '+' : ''}${value.toFixed(1)} ms`; }
 
-function statusLabel(status: string, withinTolerance: boolean, toleranceFrames: number) {
-  if (status === 'validated' && withinTolerance) return `validated · within ${toleranceFrames.toFixed(0)}-frame tolerance`;
+function statusLabel(status: string, withinTolerance: boolean, toleranceFrames: number | null) {
+  if (status === 'validated' && withinTolerance && toleranceFrames !== null) return `validated · within ${toleranceFrames.toFixed(0)}-frame tolerance`;
   return status.replaceAll('_', ' ');
 }

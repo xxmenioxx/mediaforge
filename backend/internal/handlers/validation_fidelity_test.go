@@ -44,6 +44,27 @@ func TestHEVCLevelValidationChecksAutoOutputAgainstAssetRecommendation(t *testin
 	}
 }
 
+func TestHEVCLevelValidationUsesFrozenEffectiveLevel(t *testing.T) {
+	worker := map[string]interface{}{
+		"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv",
+		"hevcLevel": "4.0", "hevcLevelEffective": "4.1", "effectiveOutputFrameRate": "60/1",
+	}
+	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.1"})
+	if validated["status"] != "validated" || validated["requested"] != "4.1" {
+		t.Fatalf("validation ignored frozen effective Level: %#v", validated)
+	}
+}
+
+func TestHEVCLevelValidationFallbackUsesEffectiveOutputFPS(t *testing.T) {
+	worker := map[string]interface{}{"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv", "effectiveOutputFrameRate": "60/1"}
+	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.1"})
+	if validated["status"] != "validated" || validated["requested"] != "4.1" {
+		t.Fatalf("validation fallback used stale source FPS: %#v", validated)
+	}
+}
+
 func TestHEVCLevelValidationChecksObservedMainTierBitrate(t *testing.T) {
 	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}

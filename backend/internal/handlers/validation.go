@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -190,10 +191,16 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			if measured, timingErr := probeAVTiming(job.OutputPath, 0); timingErr == nil {
 				outputTiming = measured
 			}
-			selected := conversionOverrideForJob(job, nil).KeepAudioStreams
-			sourceTiming, outputTiming = avTimingForSelectedAudio(sourceTiming, outputTiming, selected)
+			if streamPlan, ok := resolvedStreamPlanForJobValidation(db, job); ok {
+				sourceTiming, outputTiming = avTimingForStreamPlan(sourceTiming, outputTiming, streamPlan)
+			} else {
+				selected := conversionOverrideForJob(job, nil).KeepAudioStreams
+				sourceTiming, outputTiming = avTimingForSelectedAudio(sourceTiming, outputTiming, selected)
+			}
 			timingReport = validateAVTiming(sourceTiming, outputTiming)
-			if timingReport["status"] == "warning" || timingReport["status"] == "mismatch" {
+			if timingReport["status"] == "unverified" {
+				warnings = append(warnings, "Final output A/V timestamp alignment could not be verified from available evidence.")
+			} else if timingReport["status"] == "warning" || timingReport["status"] == "mismatch" {
 				warnings = append(warnings, "Final output did not preserve source A/V timestamp alignment within one output frame.")
 			}
 		}
@@ -246,6 +253,26 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		Warnings: warnings,
 		Report:   report,
 	}
+}
+
+func resolvedStreamPlanForJobValidation(db *gorm.DB, job models.QueueJob) (ResolvedStreamPlan, bool) {
+	artifact, _, err := readLatestJobArtifact(db, job, "as-is")
+	if err != nil {
+		return ResolvedStreamPlan{}, false
+	}
+	raw, ok := artifact["streamPlan"]
+	if !ok {
+		return ResolvedStreamPlan{}, false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return ResolvedStreamPlan{}, false
+	}
+	var plan ResolvedStreamPlan
+	if json.Unmarshal(encoded, &plan) != nil || len(plan.Audio) == 0 {
+		return ResolvedStreamPlan{}, false
+	}
+	return plan, true
 }
 
 func checksToJSON(checks []CheckResult) []models.JSONMap {
@@ -342,6 +369,17 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 	filters := ""
 	if worker != nil {
 		filters = strings.ToLower(stringFromUnknown(worker["videoFilters"]))
+		if strings.TrimSpace(stringFromUnknown(worker["effectiveOutputFrameRate"])) == "" {
+			if explicitFPS, ok := simpleFPSFilterRate(filters); ok {
+				workerCopy := make(map[string]interface{}, len(worker)+2)
+				for key, value := range worker {
+					workerCopy[key] = value
+				}
+				workerCopy["effectiveOutputFrameRate"] = explicitFPS
+				workerCopy["effectiveCadenceOperation"] = "explicit_fps_filter"
+				worker = workerCopy
+			}
+		}
 	}
 	effectiveCommand := strings.ToLower(job.Notes)
 	filters += "," + effectiveCommand
@@ -401,12 +439,19 @@ func validateHEVCLevelField(worker map[string]interface{}, source, output models
 	if configuredEncoder != "" && configuredEncoder != "auto" && configuredEncoder != "libx265" && configuredEncoder != "hevc_qsv" {
 		return models.JSONMap{"mode": mode, "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected", "reason": "the selected encoder has no validated explicit-Level mapping"}
 	}
-	expected := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
-	if mode == "auto" {
+	expected := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevelEffective"]))
+	if expected == "" {
+		expected = normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
+	}
+	if mode == "auto" && expected == "" {
+		fps := parseFrameRateValue(stringFromUnknown(worker["effectiveOutputFrameRate"]))
+		if fps <= 0 {
+			fps = parseFrameRateValue(stringFromUnknown(source["frameRate"]))
+		}
 		recommendation := recommendHEVCLevel(
 			workerIntValue(source["width"], 0),
 			workerIntValue(source["height"], 0),
-			parseFrameRateValue(stringFromUnknown(source["frameRate"])),
+			fps,
 			0,
 		)
 		expected = recommendation.RecommendedLevel
