@@ -1106,6 +1106,14 @@ func resolveAutomaticFrameStructure(
 	workerConfig["qsvAdaptiveB"] = true
 	workerConfig["frameStructureAutoResolved"] = true
 	workerConfig["frameStructureAutoConfidence"] = recommendation.Confidence
+	if previous, exists := workerConfig["frameStructureRecommendation"]; exists {
+		workerConfig["sourceFrameStructureRecommendation"] = previous
+	}
+	workerConfig["frameStructureRecommendation"] = models.JSONMap{
+		"fps": fps, "targetGopFrames": recommendation.TargetGOPFrames,
+		"targetGopSeconds": recommendation.TargetGOPSeconds, "maxBFrames": recommendation.MaxBFrames,
+		"confidence": recommendation.Confidence, "reasons": recommendation.Reasons, "warnings": recommendation.Warnings,
+	}
 
 	return profile, nil
 }

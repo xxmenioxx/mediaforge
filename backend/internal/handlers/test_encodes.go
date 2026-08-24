@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -350,21 +351,9 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	}
 	labTrackOverride := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
 	override := testEncodeConversionOverride(source, job, labTrackOverride, assetConversionOverrides(h.db))
-	profile = applyAssetConversionOverrideToProfile(profile, override)
-	profile, err = resolveAutomaticFrameStructure(h.db, path, profile)
+	profile, err = resolveTestEncodeVideoProfile(h.db, path, job, profile, override)
 	if err != nil {
 		return resolvedTestEncode{}, err
-	}
-	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-	profile.WorkerConfig["qsvAssetAnalysisPath"] = path
-	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
-		profile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
-	}
-	if frozen, ok := job.ProfileSnapshot[cadenceAnalysisSnapshotKey]; ok {
-		profile.WorkerConfig[cadenceAnalysisSnapshotKey] = frozen
-	}
-	if frozen, ok := job.ProfileSnapshot[cadenceRecommendationSnapshotKey]; ok {
-		profile.WorkerConfig[cadenceRecommendationSnapshotKey] = frozen
 	}
 	audio, err := worker.audioProfileForJob(job)
 	if err != nil {
@@ -374,6 +363,21 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution,
 	})
 	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested}, nil
+}
+
+func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState) (models.Profile, error) {
+	profile = applyAssetConversionOverrideToProfile(profile, override)
+	profile = applyFrozenCadenceResolution(job, profile)
+	profile, err := resolveAutomaticFrameStructure(db, path, profile)
+	if err != nil {
+		return models.Profile{}, err
+	}
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["qsvAssetAnalysisPath"] = path
+	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
+		profile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
+	}
+	return profile, nil
 }
 
 func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONMap, explicit AssetConversionOverrideState) AssetConversionOverrideState {
@@ -652,12 +656,19 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		h.failTestEncode(id, fmt.Errorf("test output validation failed: output is missing or empty"))
 		return
 	}
-	streams, err := probeMediaStreams(output)
+	streams, err := probeMediaStreamsWithFrameCount(output, true)
 	if err != nil {
 		h.failTestEncode(id, fmt.Errorf("probe test output: %w", err))
 		return
 	}
-	report := testEncodeValidationReport(plan, streams, test.DurationSeconds)
+	sourceTiming, outputTiming := avTimingFromInventory(plan.Streams), avTimingFromInventory(streams)
+	if measured, timingErr := probeAVTiming(plan.InputPath, plan.SegmentStartSeconds); timingErr == nil {
+		sourceTiming = measured
+	}
+	if measured, timingErr := probeAVTiming(output, 0); timingErr == nil {
+		outputTiming = measured
+	}
+	report := testEncodeValidationReportWithTiming(plan, streams, test.DurationSeconds, sourceTiming, outputTiming)
 	completed := time.Now()
 	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Updates(map[string]any{
 		"status": testEncodeReady, "phase": "ready", "progress": 100, "completed_at": &completed,
@@ -675,6 +686,10 @@ func plannedTestEncodeOutputPath(db *gorm.DB, job models.QueueJob, library model
 }
 
 func testEncodeValidationReport(plan MediaJobPlan, streams MediaStreamInventory, expectedDuration int) models.JSONMap {
+	return testEncodeValidationReportWithTiming(plan, streams, expectedDuration, avTimingFromInventory(plan.Streams), avTimingFromInventory(streams))
+}
+
+func testEncodeValidationReportWithTiming(plan MediaJobPlan, streams MediaStreamInventory, expectedDuration int, sourceTiming, outputTiming avTimingEvidence) models.JSONMap {
 	streamPlan := resolveEffectiveStreamPlan(plan)
 	warnings := append([]string{}, plan.StreamValidationWarnings...)
 	if len(streams.Video) != len(streamPlan.Video) {
@@ -691,12 +706,43 @@ func testEncodeValidationReport(plan MediaJobPlan, streams MediaStreamInventory,
 	if !durationValid {
 		warnings = append(warnings, fmt.Sprintf("Measured duration %.3fs is outside the Test Encode window", streams.Duration))
 	}
+	cadenceValidation := models.JSONMap{"status": "not_applicable"}
+	frameCountValidation := models.JSONMap{"status": "not_applicable"}
+	timingSource, timingOutput := avTimingForStreamPlan(sourceTiming, outputTiming, streamPlan)
+	timingValidation := validateAVTiming(timingSource, timingOutput)
+	if timingValidation["status"] == "warning" || timingValidation["status"] == "mismatch" {
+		warnings = append(warnings, fmt.Sprintf("Output A/V timestamp alignment is %s", timingValidation["status"]))
+	}
+	if len(streams.Video) > 0 {
+		video := streams.Video[0]
+		cadenceValidation = validateCadenceOutputFrameRate(map[string]interface{}(plan.Profile.WorkerConfig), models.JSONMap{
+			"frameRate": video.FrameRate, "realFrameRate": video.RealFrameRate,
+		})
+		if cadenceValidation["status"] == "mismatch" || cadenceValidation["status"] == "unverified" {
+			warnings = append(warnings, fmt.Sprintf("Output cadence validation is %s", cadenceValidation["status"]))
+		}
+		expectedFPS := parseFrameRateValue(workerStringValue(plan.Profile.WorkerConfig["effectiveOutputFrameRate"]))
+		if expectedFPS > 0 {
+			expectedFrames := int64(math.Round(expectedFPS * float64(expectedDuration)))
+			frameStatus := "validated"
+			if video.DecodedFrames <= 0 {
+				frameStatus = "unverified"
+			} else if frameAbsInt(int(video.DecodedFrames-expectedFrames)) > 1 {
+				frameStatus = "mismatch"
+			}
+			frameCountValidation = models.JSONMap{"status": frameStatus, "expected": expectedFrames, "observed": video.DecodedFrames, "toleranceFrames": 1}
+			if frameStatus != "validated" {
+				warnings = append(warnings, fmt.Sprintf("Output frame-count validation is %s", frameStatus))
+			}
+		}
+	}
 	return models.JSONMap{
 		"passed":          len(warnings) == len(plan.StreamValidationWarnings) && durationValid,
 		"durationSeconds": streams.Duration, "expectedDurationSeconds": expectedDuration,
 		"videoTracks": len(streams.Video), "expectedVideoTracks": len(streamPlan.Video),
 		"audioTracks": len(streams.Audio), "expectedAudioTracks": len(streamPlan.Audio),
 		"subtitleTracks": len(streams.Subtitle), "expectedSubtitleTracks": len(streamPlan.Subtitles),
+		"cadence": cadenceValidation, "frameCount": frameCountValidation, "avTiming": timingValidation,
 		"streamPlan": streamPlan, "warnings": warnings,
 	}
 }

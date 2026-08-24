@@ -73,6 +73,11 @@ Una aprobación no garantiza ejecución inmediata. El plan todavía debe satisfa
 
 Los estados de espera son condiciones recuperables. El planner vuelve a evaluarlos cuando cambia el entorno.
 
+Test Encode no participa en `WAITING_PROFILE_LIMIT`: no se bloquea por los
+límites de cantidad de conversiones del runtime profile y sus reservas activas
+no consumen esos contadores. Sigue respetando RAM, espacio, energía y la
+capacidad concurrente real del worker.
+
 ## Runtime snapshot y encoder
 
 El runtime detector registra CPU, memoria, discos, energía y capacidades de encoders. El planner usa ese snapshot persistido para que una decisión siga siendo explicable aunque el host cambie después.

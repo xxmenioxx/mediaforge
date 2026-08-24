@@ -195,6 +195,45 @@ func TestBuildRemoveTracksFFmpegArgsUsesAbsoluteMapsAndCopy(t *testing.T) {
 	}
 }
 
+func TestBuildEditTrackFFmpegArgsCopiesStreamsAndUpdatesMetadata(t *testing.T) {
+	inventory := maintenanceFixture()
+	edited := inventory.Streams[2]
+	edited.Title, edited.Language, edited.Default = "English dub", "eng", true
+	args := buildEditTrackFFmpegArgs("/library/input.mkv", "/library/output.mkv", inventory, edited)
+	command := strings.Join(args, " ")
+	for _, expected := range []string{"-map 0", "-c copy", "-metadata:s:a:1 title=English dub", "-metadata:s:a:1 language=eng", "-disposition:a:1 default"} {
+		if !strings.Contains(command, expected) {
+			t.Fatalf("command missing %q: %s", expected, command)
+		}
+	}
+}
+
+func TestBuildAddAACTrackFFmpegArgsCopiesOriginalsAndEncodesOnlyDerivedAudio(t *testing.T) {
+	request := addAACTrackInput{SourceStreamIndex: 1, BitrateKbps: 192, Channels: "stereo", Title: "AAC Stereo", Language: "jpn"}
+	args := buildAddAACTrackFFmpegArgs("/library/input.mkv", "/library/output.mkv", maintenanceFixture(), request)
+	command := strings.Join(args, " ")
+	for _, expected := range []string{"-map 0 -map 0:1", "-c copy", "-c:a:2 aac", "-b:a:2 192k", "-ac:a:2 2", "-metadata:s:a:2 title=AAC Stereo", "-metadata:s:a:2 language=jpn"} {
+		if !strings.Contains(command, expected) {
+			t.Fatalf("command missing %q: %s", expected, command)
+		}
+	}
+}
+
+func TestTrackMaintenanceAvailabilityProtectsOriginals(t *testing.T) {
+	if allowed, _ := trackMaintenanceAvailability("/raw/movie.mkv", models.AssetRecord{Status: "unprocessed"}); allowed {
+		t.Fatal("Raw original was allowed to enter track maintenance")
+	}
+	if allowed, _ := trackMaintenanceAvailability("/archive/movie.mkv", models.AssetRecord{LibraryID: 1, Status: "archive"}); allowed {
+		t.Fatal("Archive original was allowed to enter track maintenance")
+	}
+	if allowed, reason := trackMaintenanceAvailability("/library/movie.mp4", models.AssetRecord{LibraryID: 1, Status: "converted"}); allowed || !strings.Contains(reason, "MKV") {
+		t.Fatalf("non-MKV availability=%v reason=%q", allowed, reason)
+	}
+	if allowed, reason := trackMaintenanceAvailability("/library/movie.mkv", models.AssetRecord{LibraryID: 1, Status: "converted"}); !allowed || reason != "" {
+		t.Fatalf("converted MKV availability=%v reason=%q", allowed, reason)
+	}
+}
+
 func TestValidateRemuxedInventoryComparesIdentityNotAbsoluteIndex(t *testing.T) {
 	expected, err := validateTrackRemoval(maintenanceFixture(), []int{2, 4})
 	if err != nil {

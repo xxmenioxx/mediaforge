@@ -160,8 +160,10 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	var sourceDirectPlayReport scheduler.DirectPlayReport
 	sourceDirectPlayAvailable := false
 	colorReport := models.JSONMap{}
+	timingReport := models.JSONMap{"status": "unverified"}
+	var sourceProbe map[string]any
 	if strings.TrimSpace(job.MediaPath) != "" {
-		sourceProbe := ffprobeJSON(job.MediaPath)
+		sourceProbe = ffprobeJSON(job.MediaPath)
 		if _, failed := sourceProbe["error"].(string); !failed {
 			if report, directPlayErr := scheduler.EvaluateActualDirectPlay(db, models.JSONMap(sourceProbe)); directPlayErr == nil {
 				sourceDirectPlayReport, sourceDirectPlayAvailable = report, true
@@ -178,6 +180,21 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			directPlayReport, directPlayEvaluated = report, report.Enabled
 			if report.Enabled && report.Risk != "low" {
 				warnings = append(warnings, "Final DirectPlay risk is "+report.Risk+" for at least one target client.")
+			}
+		}
+		if sourceProbe != nil {
+			sourceTiming, outputTiming := avTimingFromProbe(sourceProbe), avTimingFromProbe(probe)
+			if measured, timingErr := probeAVTiming(job.MediaPath, 0); timingErr == nil {
+				sourceTiming = measured
+			}
+			if measured, timingErr := probeAVTiming(job.OutputPath, 0); timingErr == nil {
+				outputTiming = measured
+			}
+			selected := conversionOverrideForJob(job, nil).KeepAudioStreams
+			sourceTiming, outputTiming = avTimingForSelectedAudio(sourceTiming, outputTiming, selected)
+			timingReport = validateAVTiming(sourceTiming, outputTiming)
+			if timingReport["status"] == "warning" || timingReport["status"] == "mismatch" {
+				warnings = append(warnings, "Final output did not preserve source A/V timestamp alignment within one output frame.")
 			}
 		}
 	}
@@ -219,6 +236,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	if len(colorReport) > 0 {
 		report["colorPolicy"] = colorReport
 	}
+	report["avTiming"] = timingReport
 
 	return ValidationResult{
 		JobID:    job.ID,

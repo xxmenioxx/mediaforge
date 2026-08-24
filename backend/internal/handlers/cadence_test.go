@@ -131,7 +131,8 @@ func TestFFmpegCommandBuilderNormalizesConfirmedSoftTelecine(t *testing.T) {
 	}
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf fps=24000/1001")
-	assertContains(t, command, "-r 24000/1001 -fps_mode cfr")
+	assertContains(t, command, "-fps_mode cfr")
+	assertNotContains(t, command, "-r 24000/1001")
 	assertNotContains(t, command, "fieldmatch")
 	assertNotContains(t, command, "decimate")
 	assertNotContains(t, command, "bwdif")

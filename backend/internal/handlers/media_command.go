@@ -95,6 +95,9 @@ type MediaStream struct {
 	Height             int
 	Bitrate            int64
 	FrameRate          string
+	RealFrameRate      string
+	DecodedFrames      int64
+	StartTime          float64
 	SampleAspectRatio  string
 	DisplayAspectRatio string
 }
@@ -109,6 +112,7 @@ type MediaAudioStream struct {
 	Default       bool
 	Forced        bool
 	Bitrate       int64
+	StartTime     float64
 }
 
 type AudioProcessor interface {
@@ -139,6 +143,8 @@ func (p AudioFilterProcessor) Validate() error {
 
 type FFmpegCommandBuilder struct{}
 
+const testEncodeSeekPrerollSeconds = 5.0
+
 func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	args := []string{"-hide_banner"}
 	if plan.Overwrite {
@@ -147,10 +153,14 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = append(args, "-n")
 	}
 
-	if plan.SegmentStartSeconds > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(plan.SegmentStartSeconds, 'f', -1, 64))
+	inputSeek, outputTrim := segmentedSeekWindow(plan.SegmentStartSeconds)
+	if inputSeek > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(inputSeek, 'f', -1, 64))
 	}
 	args = append(args, "-i", plan.InputPath)
+	if outputTrim > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(outputTrim, 'f', -1, 64))
+	}
 	if plan.SegmentDurationSeconds > 0 {
 		args = append(args, "-t", strconv.Itoa(plan.SegmentDurationSeconds))
 	}
@@ -319,6 +329,14 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 
 	args = append(args, plan.OutputPath)
 	return args
+}
+
+func segmentedSeekWindow(start float64) (float64, float64) {
+	if start <= 0 {
+		return 0, 0
+	}
+	inputSeek := math.Max(0, start-testEncodeSeekPrerollSeconds)
+	return inputSeek, start - inputSeek
 }
 
 func resolveEffectiveStreamPlan(plan MediaJobPlan) ResolvedStreamPlan {
@@ -2146,14 +2164,23 @@ func audioProcessorChain(processors []AudioProcessor) string {
 }
 
 func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
-	cmd := exec.Command(
-		"ffprobe",
+	return probeMediaStreamsWithFrameCount(inputPath, false)
+}
+
+func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaStreamInventory, error) {
+	args := []string{
 		"-v", "error",
-		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,attached_pic,still_image",
+	}
+	if countFrames {
+		args = append(args, "-count_frames")
+	}
+	args = append(args,
+		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,r_frame_rate,nb_read_frames,start_time,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,attached_pic,still_image",
 		"-show_chapters",
 		"-of", "json",
 		inputPath,
 	)
+	cmd := exec.Command("ffprobe", args...)
 	var output bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &output
@@ -2187,6 +2214,9 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			Height             int               `json:"height"`
 			Bitrate            string            `json:"bit_rate"`
 			FrameRate          string            `json:"avg_frame_rate"`
+			RealFrameRate      string            `json:"r_frame_rate"`
+			DecodedFrames      string            `json:"nb_read_frames"`
+			StartTime          string            `json:"start_time"`
 			SampleAspectRatio  string            `json:"sample_aspect_ratio"`
 			DisplayAspectRatio string            `json:"display_aspect_ratio"`
 			Tags               map[string]string `json:"tags"`
@@ -2226,6 +2256,9 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 			Height:             stream.Height,
 			Bitrate:            parseInt(stream.Bitrate),
 			FrameRate:          stream.FrameRate,
+			RealFrameRate:      stream.RealFrameRate,
+			DecodedFrames:      parseInt(stream.DecodedFrames),
+			StartTime:          parseFloat(stream.StartTime),
 			SampleAspectRatio:  stream.SampleAspectRatio,
 			DisplayAspectRatio: stream.DisplayAspectRatio,
 		}
@@ -2243,6 +2276,7 @@ func probeMediaStreams(inputPath string) (MediaStreamInventory, error) {
 				Default:       stream.Disposition.Default == 1,
 				Forced:        stream.Disposition.Forced == 1,
 				Bitrate:       parseInt(stream.Bitrate),
+				StartTime:     parseFloat(stream.StartTime),
 			})
 		case "subtitle":
 			inventory.Subtitle = append(inventory.Subtitle, common)

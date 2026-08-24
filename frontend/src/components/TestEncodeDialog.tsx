@@ -22,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { Library, TestEncode, TestEncodeInput } from '../api/types';
+import { AVTimingSummary } from './AVTimingSummary';
 
 type Props = {
   open: boolean;
@@ -193,6 +194,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
             </Stack>
           ) : (
             <Stack spacing={2} role="tabpanel" aria-label="Validation">
+              <AVTimingSummary report={details?.validationReport} />
               <TextField label="Validation report" value={JSON.stringify(details?.validationReport ?? {}, null, 2)} multiline minRows={8} inputProps={{ readOnly: true }} />
               <TextField label="Subtitle artifacts" value={JSON.stringify(details?.subtitleArtifacts ?? [], null, 2)} multiline minRows={5} inputProps={{ readOnly: true }} />
             </Stack>

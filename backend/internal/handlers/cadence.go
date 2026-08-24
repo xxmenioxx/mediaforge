@@ -380,9 +380,8 @@ func profileWithResolvedFieldAndCadenceModes(profile models.Profile, analysis In
 }
 
 func cadenceOutputArgs(profile models.Profile) []string {
-	target := strings.TrimSpace(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
-	if target == "" {
+	if strings.TrimSpace(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"])) == "" {
 		return nil
 	}
-	return []string{"-r", target, "-fps_mode", "cfr"}
+	return []string{"-fps_mode", "cfr"}
 }

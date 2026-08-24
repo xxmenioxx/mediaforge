@@ -1165,6 +1165,8 @@ export type TrackMaintenanceInventory = {
   fingerprint: string;
   streams: TrackMaintenanceStream[];
   chapters: number;
+  maintenanceAllowed?: boolean;
+  maintenanceDisabledReason?: string;
 };
 
 export type AssetMaintenanceOperation = {

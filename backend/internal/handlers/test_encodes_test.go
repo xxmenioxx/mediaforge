@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -148,6 +150,53 @@ func TestEffectiveAssetTestEncodeKeepsPersistedVideoOverridePrecedence(t *testin
 	}
 }
 
+func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-cadence-before-gop")
+	path := filepath.Clean("/media/raw/soft-telecine.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path:         path,
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "30000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{
+			"averageGopLength": 72.0, "maxConsecutiveBFrames": 2, "confidence": "high",
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	analysis := CadenceAnalysis{
+		Version: cadenceAnalysisVersion, Type: "soft_telecine", DeclaredFrameRate: "30000/1001",
+		DeclaredFPS: 30000.0 / 1001.0, EffectivePictureRate: "24000/1001", EffectiveFPS: 24000.0 / 1001.0,
+		Confidence: .99,
+	}
+	recommendation := CadenceRecommendation{
+		Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99,
+	}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{
+		cadenceAnalysisSnapshotKey:       cadenceAnalysisMap(analysis),
+		cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "cadenceMode": "auto", "frameStructureMode": "auto",
+	}}
+	effective, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerStringValue(effective.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" {
+		t.Fatalf("effective FPS=%q want 24000/1001", got)
+	}
+	recommendationEvidence := unknownRecord(effective.WorkerConfig["frameStructureRecommendation"])
+	if recommendationEvidence == nil || !nearFPS(workerNumberValue(recommendationEvidence["fps"], 0), 24000.0/1001.0, .001) {
+		t.Fatalf("Test Encode GOP used declared source FPS: %#v", effective.WorkerConfig)
+	}
+	gopFrames := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0)
+	gopSeconds := workerNumberValue(recommendationEvidence["targetGopSeconds"], 0)
+	if gopFrames <= 0 || math.Abs(gopSeconds-float64(gopFrames)/(24000.0/1001.0)) > .001 {
+		t.Fatalf("GOP evidence is inconsistent: frames=%d recommendation=%#v", gopFrames, recommendationEvidence)
+	}
+	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
+	assertContains(t, command, fmt.Sprintf("-g %d", gopFrames))
+}
+
 func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {
 	db := testEncodeTestDB(t, "test-encode-ffmpeg-command-column")
 	test := models.TestEncode{SourcePath: "/raw/a.mkv", LibraryID: 1, ConfigurationSource: "effective_asset", Status: testEncodeWaiting, Phase: "waiting"}
@@ -178,6 +227,53 @@ func TestTestEncodeValidationReportsTrackAndDurationMismatch(t *testing.T) {
 	failed := testEncodeValidationReport(plan, MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Duration: 45}, 20)
 	if failed["passed"] != false || len(workerStringSlice(failed["warnings"])) < 2 {
 		t.Fatalf("mismatched sample was not reported: %#v", failed)
+	}
+}
+
+func TestTestEncodeValidationReportsCadenceAndDecodedFrames(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"effectiveOutputFrameRate": "24000/1001"}},
+		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
+	}
+	passed := testEncodeValidationReport(plan, MediaStreamInventory{
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", RealFrameRate: "24000/1001", DecodedFrames: 480}}, Duration: 20,
+	}, 20)
+	if passed["passed"] != true {
+		t.Fatalf("matching cadence did not validate: %#v", passed)
+	}
+	if cadence, ok := passed["cadence"].(models.JSONMap); !ok || cadence["status"] != "validated" {
+		t.Fatalf("cadence evidence was not persisted: %#v", passed)
+	}
+	if frames, ok := passed["frameCount"].(models.JSONMap); !ok || frames["status"] != "validated" || frames["observed"] != int64(480) {
+		t.Fatalf("frame-count evidence was not persisted: %#v", passed)
+	}
+
+	failed := testEncodeValidationReport(plan, MediaStreamInventory{
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", RealFrameRate: "30000/1001", DecodedFrames: 600}}, Duration: 20,
+	}, 20)
+	if failed["passed"] != false {
+		t.Fatalf("incorrect cadence and frame count passed: %#v", failed)
+	}
+}
+
+func TestTestEncodeValidationRejectsLargeIntroducedAVOffset(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{VideoCodec: "hevc"},
+		Streams: MediaStreamInventory{
+			Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: 0}},
+			Audio: []MediaAudioStream{{Index: 1, StartTime: 0}},
+		},
+	}
+	report := testEncodeValidationReport(plan, MediaStreamInventory{
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: .563}},
+		Audio: []MediaAudioStream{{Index: 1, StartTime: 0}}, Duration: 20,
+	}, 20)
+	if report["passed"] != false {
+		t.Fatalf("large introduced A/V offset passed validation: %#v", report)
+	}
+	timing, ok := report["avTiming"].(models.JSONMap)
+	if !ok || timing["status"] != "mismatch" {
+		t.Fatalf("large A/V offset evidence missing: %#v", report)
 	}
 }
 

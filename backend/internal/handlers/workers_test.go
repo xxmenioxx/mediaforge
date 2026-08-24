@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -103,13 +104,24 @@ func TestResolveAutomaticFrameStructureUsesResolvedCadenceFPS(t *testing.T) {
 	if err := db.Create(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
-	profile := models.Profile{WorkerConfig: models.JSONMap{"frameStructureMode": "auto", "effectiveOutputFrameRate": "24000/1001"}}
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "frameStructureMode": "auto", "effectiveOutputFrameRate": "24000/1001"}}
 	effective, err := resolveAutomaticFrameStructure(db, mediaPath, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 90 {
 		t.Fatalf("GOP used declared FPS instead of resolved 23.976: %d", got)
+	}
+	recommendation := unknownRecord(effective.WorkerConfig["frameStructureRecommendation"])
+	if recommendation == nil || !nearFPS(workerNumberValue(recommendation["fps"], 0), 24000.0/1001.0, .001) {
+		t.Fatalf("effective GOP evidence did not use resolved cadence FPS: %#v", effective.WorkerConfig)
+	}
+	if seconds := workerNumberValue(recommendation["targetGopSeconds"], 0); math.Abs(seconds-(90/(24000.0/1001.0))) > .001 {
+		t.Fatalf("effective GOP seconds=%f are inconsistent with frames and FPS", seconds)
+	}
+	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
+	if !strings.Contains(command, "-g 90") {
+		t.Fatalf("effective GOP was not emitted: %s", command)
 	}
 }
 

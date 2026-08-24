@@ -83,6 +83,7 @@ import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from 
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
+import { labAudioProfileForTestEncode } from '../utils/testEncodeDraft';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
@@ -3921,11 +3922,14 @@ export function ProfileLabPage() {
           request={{
             configurationSource: 'lab_draft',
             labProfile: videoDraft,
-            labAudioProfile: normalizedAudioProfileForSave(
-              audioDraft,
-              audioFilterChainEdited,
-              previewAudioFilters,
-            ) as unknown as Record<string, unknown>,
+            labAudioProfile: labAudioProfileForTestEncode(
+              labSection,
+              normalizedAudioProfileForSave(
+                audioDraft,
+                audioFilterChainEdited,
+                previewAudioFilters,
+              ) as unknown as Record<string, unknown>,
+            ),
             labTrackProfile: normalizedTrackProfileDraft() as unknown as Record<string, unknown>,
             labTrackOverride: cleanTrackConversionOverride(trackConversionDraft),
             processingMode: 'full_encode',

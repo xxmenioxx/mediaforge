@@ -94,10 +94,21 @@ func TestFFmpegCommandBuilderAddsTestWindowAndSortedProvenanceMetadata(t *testin
 	}
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := shellJoin(args)
-	assertContains(t, command, "-ss 125.5 -i /media/raw/movie.mkv -t 20")
+	assertContains(t, command, "-ss 120.5 -i /media/raw/movie.mkv -ss 5 -t 20")
 	assertContains(t, command, "-metadata MVFORGE_CONFIG_HASH=abc -metadata MVFORGE_TEST_ID=42")
-	if strings.Index(command, "-ss 125.5") > strings.Index(command, "-i /media/raw/movie.mkv") {
+	if strings.Index(command, "-ss 120.5") > strings.Index(command, "-i /media/raw/movie.mkv") {
 		t.Fatalf("input seek must precede the input: %s", command)
+	}
+}
+
+func TestSegmentedSeekUsesAccurateTrimAfterBoundedPreroll(t *testing.T) {
+	inputSeek, outputTrim := segmentedSeekWindow(3)
+	if inputSeek != 0 || outputTrim != 3 {
+		t.Fatalf("short seek=(%g,%g), want (0,3)", inputSeek, outputTrim)
+	}
+	inputSeek, outputTrim = segmentedSeekWindow(1380.3385)
+	if inputSeek != 1375.3385 || outputTrim != 5 {
+		t.Fatalf("long seek=(%g,%g), want bounded five-second preroll", inputSeek, outputTrim)
 	}
 }
 

@@ -180,6 +180,18 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/assets/track-maintenance/inventory": gin.H{
+			"get": gin.H{"tags": []string{"Assets"}, "summary": "Inspect embedded tracks and maintenance availability", "operationId": "trackMaintenanceInventory", "parameters": []gin.H{{"name": "path", "in": "query", "required": true, "schema": gin.H{"type": "string"}}}, "responses": gin.H{"200": jsonResponse("Track inventory", gin.H{"type": "object"})}},
+		},
+		"/api/assets/track-maintenance/remove": gin.H{
+			"post": gin.H{"tags": []string{"Assets"}, "summary": "Safely remove selected MKV tracks", "operationId": "removeAssetTracks", "requestBody": requestBody(gin.H{"type": "object"}), "responses": gin.H{"202": jsonResponse("Maintenance accepted", gin.H{"type": "object"})}},
+		},
+		"/api/assets/track-maintenance/edit": gin.H{
+			"post": gin.H{"tags": []string{"Assets"}, "summary": "Edit MKV track metadata and dispositions", "operationId": "editAssetTrack", "requestBody": requestBody(gin.H{"type": "object"}), "responses": gin.H{"202": jsonResponse("Maintenance accepted", gin.H{"type": "object"})}},
+		},
+		"/api/assets/track-maintenance/add-aac": gin.H{
+			"post": gin.H{"tags": []string{"Assets"}, "summary": "Create an additional AAC audio track", "operationId": "addAssetAACTrack", "requestBody": requestBody(gin.H{"type": "object"}), "responses": gin.H{"202": jsonResponse("Maintenance accepted", gin.H{"type": "object"})}},
+		},
 		"/api/test-encodes": gin.H{
 			"get": gin.H{
 				"tags": []string{"Test Encodes"}, "summary": "List Test Encodes", "operationId": "listTestEncodes",

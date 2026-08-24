@@ -52,10 +52,12 @@ type TrackMaintenanceStream struct {
 }
 
 type TrackMaintenanceInventory struct {
-	Path        string                   `json:"path"`
-	Fingerprint string                   `json:"fingerprint"`
-	Streams     []TrackMaintenanceStream `json:"streams"`
-	Chapters    int                      `json:"chapters"`
+	Path                      string                   `json:"path"`
+	Fingerprint               string                   `json:"fingerprint"`
+	Streams                   []TrackMaintenanceStream `json:"streams"`
+	Chapters                  int                      `json:"chapters"`
+	MaintenanceAllowed        bool                     `json:"maintenanceAllowed"`
+	MaintenanceDisabledReason string                   `json:"maintenanceDisabledReason,omitempty"`
 }
 
 type trackMaintenanceRuntime struct {
@@ -208,6 +210,80 @@ func buildRemoveTracksFFmpegArgs(input, output string, remaining []TrackMaintena
 	return append(args, "-map_metadata", "0", "-map_chapters", "0", "-c", "copy", output)
 }
 
+func streamTypeOutputIndex(streams []TrackMaintenanceStream, target TrackMaintenanceStream) int {
+	result := 0
+	for _, stream := range streams {
+		if stream.Index == target.Index {
+			return result
+		}
+		if stream.Type == target.Type {
+			result++
+		}
+	}
+	return -1
+}
+
+func buildEditTrackFFmpegArgs(input, output string, inventory TrackMaintenanceInventory, edited TrackMaintenanceStream) []string {
+	args := []string{"-hide_banner", "-nostdin", "-y", "-i", input, "-map", "0", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy"}
+	typeIndex := streamTypeOutputIndex(inventory.Streams, edited)
+	typeCode := map[string]string{"video": "v", "audio": "a", "subtitle": "s"}[edited.Type]
+	specifier := fmt.Sprintf("%s:%d", typeCode, typeIndex)
+	args = append(args,
+		"-metadata:s:"+specifier, "title="+edited.Title,
+		"-metadata:s:"+specifier, "language="+edited.Language,
+	)
+	if edited.Default && (edited.Type == "audio" || edited.Type == "subtitle") {
+		for _, stream := range inventory.Streams {
+			if stream.Type != edited.Type || stream.Index == edited.Index {
+				continue
+			}
+			otherIndex := streamTypeOutputIndex(inventory.Streams, stream)
+			otherDisposition := "0"
+			if stream.Type == "subtitle" && stream.Forced {
+				otherDisposition = "forced"
+			}
+			args = append(args, fmt.Sprintf("-disposition:%s:%d", typeCode, otherIndex), otherDisposition)
+		}
+	}
+	disposition := "0"
+	if edited.Default {
+		disposition = "default"
+	}
+	if edited.Forced {
+		if disposition == "0" {
+			disposition = "forced"
+		} else {
+			disposition += "+forced"
+		}
+	}
+	return append(args, "-disposition:"+specifier, disposition, output)
+}
+
+func buildAddAACTrackFFmpegArgs(input, output string, inventory TrackMaintenanceInventory, request addAACTrackInput) []string {
+	audioIndex := 0
+	for _, stream := range inventory.Streams {
+		if stream.Type == "audio" {
+			audioIndex++
+		}
+	}
+	args := []string{"-hide_banner", "-nostdin", "-y", "-i", input, "-map", "0", "-map", fmt.Sprintf("0:%d", request.SourceStreamIndex), "-map_metadata", "0", "-map_chapters", "0", "-c", "copy",
+		fmt.Sprintf("-c:a:%d", audioIndex), "aac", fmt.Sprintf("-b:a:%d", audioIndex), fmt.Sprintf("%dk", request.BitrateKbps),
+		fmt.Sprintf("-metadata:s:a:%d", audioIndex), "title=" + request.Title, fmt.Sprintf("-metadata:s:a:%d", audioIndex), "language=" + request.Language,
+	}
+	if request.Channels == "stereo" {
+		args = append(args, fmt.Sprintf("-ac:a:%d", audioIndex), "2")
+	}
+	if request.Default {
+		for index := 0; index < audioIndex; index++ {
+			args = append(args, fmt.Sprintf("-disposition:a:%d", index), "0")
+		}
+		args = append(args, fmt.Sprintf("-disposition:a:%d", audioIndex), "default")
+	} else {
+		args = append(args, fmt.Sprintf("-disposition:a:%d", audioIndex), "0")
+	}
+	return append(args, output)
+}
+
 func trackStreamSignature(stream TrackMaintenanceStream) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d|%d|%d|%s|%t|%t|%t|%t",
 		stream.Type, stream.Codec, stream.Profile, stream.Language, stream.Title, stream.FileName,
@@ -256,8 +332,29 @@ type removeTracksInput struct {
 	Confirmed           bool   `json:"confirmed"`
 }
 
+type editTrackInput struct {
+	Path                string `json:"path" binding:"required"`
+	StreamIndex         int    `json:"streamIndex"`
+	ExpectedFingerprint string `json:"expectedFingerprint" binding:"required"`
+	Title               string `json:"title"`
+	Language            string `json:"language"`
+	Default             bool   `json:"default"`
+	Forced              bool   `json:"forced"`
+}
+
+type addAACTrackInput struct {
+	Path                string `json:"path" binding:"required"`
+	SourceStreamIndex   int    `json:"sourceStreamIndex"`
+	ExpectedFingerprint string `json:"expectedFingerprint" binding:"required"`
+	BitrateKbps         int    `json:"bitrateKbps"`
+	Channels            string `json:"channels"`
+	Title               string `json:"title"`
+	Language            string `json:"language"`
+	Default             bool   `json:"default"`
+}
+
 func (h AssetHandler) TrackMaintenanceInventory(c *gin.Context) {
-	path, _, err := h.resolveTrackMaintenanceAsset(c.Query("path"))
+	path, record, err := h.resolveTrackInventoryAsset(c.Query("path"))
 	if err != nil {
 		trackMaintenanceHTTPError(c, err)
 		return
@@ -267,6 +364,7 @@ func (h AssetHandler) TrackMaintenanceInventory(c *gin.Context) {
 		c.JSON(422, gin.H{"error": err.Error()})
 		return
 	}
+	inventory.MaintenanceAllowed, inventory.MaintenanceDisabledReason = trackMaintenanceAvailability(path, record)
 	c.JSON(200, inventory)
 }
 
@@ -332,6 +430,167 @@ func (h AssetHandler) StartTrackRemoval(c *gin.Context) {
 	}
 	go h.executeTrackRemoval(operation.ID, inventory, remaining)
 	c.JSON(202, operation)
+}
+
+func (h AssetHandler) StartTrackEdit(c *gin.Context) {
+	var input editTrackInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
+	path, record, inventory, ok := h.prepareTrackMutation(c, input.Path, input.ExpectedFingerprint)
+	if !ok {
+		return
+	}
+	editedIndex := -1
+	for index := range inventory.Streams {
+		if inventory.Streams[index].Index == input.StreamIndex {
+			editedIndex = index
+			break
+		}
+	}
+	if editedIndex < 0 {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("stream index %d no longer exists", input.StreamIndex)})
+		return
+	}
+	edited := inventory.Streams[editedIndex]
+	if edited.Type != "audio" && edited.Type != "subtitle" && edited.Type != "video" {
+		c.JSON(400, gin.H{"error": "metadata editing is supported for video, audio, and subtitle tracks"})
+		return
+	}
+	edited.Title = strings.TrimSpace(input.Title)
+	edited.Language = strings.ToLower(strings.TrimSpace(input.Language))
+	edited.Default = input.Default
+	edited.Forced = input.Forced && edited.Type == "subtitle"
+	expected := append([]TrackMaintenanceStream(nil), inventory.Streams...)
+	if edited.Default && (edited.Type == "audio" || edited.Type == "subtitle") {
+		for index := range expected {
+			if expected[index].Type == edited.Type {
+				expected[index].Default = false
+			}
+		}
+	}
+	expected[editedIndex] = edited
+	operation := newTrackMaintenanceOperation("edit_track", record, path, inventory.Fingerprint, []int{input.StreamIndex})
+	if err := h.db.Create(&operation).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	go h.executeTrackMutation(operation.ID, inventory, expected,
+		func(output string) []string { return buildEditTrackFFmpegArgs(path, output, inventory, edited) },
+		func(actual TrackMaintenanceInventory) error { return validateRemuxedTrackInventory(expected, actual) })
+	c.JSON(202, operation)
+}
+
+func (h AssetHandler) StartAddAACTrack(c *gin.Context) {
+	var input addAACTrackInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if input.BitrateKbps != 128 && input.BitrateKbps != 160 && input.BitrateKbps != 192 && input.BitrateKbps != 256 && input.BitrateKbps != 320 {
+		c.JSON(400, gin.H{"error": "AAC bitrate must be 128, 160, 192, 256, or 320 kbps"})
+		return
+	}
+	if input.Channels != "source" && input.Channels != "stereo" {
+		c.JSON(400, gin.H{"error": "AAC channels must be source or stereo"})
+		return
+	}
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
+	path, record, inventory, ok := h.prepareTrackMutation(c, input.Path, input.ExpectedFingerprint)
+	if !ok {
+		return
+	}
+	var source *TrackMaintenanceStream
+	for index := range inventory.Streams {
+		if inventory.Streams[index].Index == input.SourceStreamIndex && inventory.Streams[index].Type == "audio" {
+			source = &inventory.Streams[index]
+			break
+		}
+	}
+	if source == nil {
+		c.JSON(400, gin.H{"error": "selected AAC source audio track no longer exists"})
+		return
+	}
+	input.Language = strings.ToLower(strings.TrimSpace(input.Language))
+	if input.Language == "" {
+		input.Language = source.Language
+	}
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
+		input.Title = "AAC Stereo (MVForge)"
+	}
+	expected := append([]TrackMaintenanceStream(nil), inventory.Streams...)
+	if input.Default {
+		for index := range expected {
+			if expected[index].Type == "audio" {
+				expected[index].Default = false
+			}
+		}
+	}
+	derived := TrackMaintenanceStream{Type: "audio", Codec: "aac", Language: input.Language, Title: input.Title, Default: input.Default, Channels: source.Channels, Layout: source.Layout}
+	if input.Channels == "stereo" {
+		derived.Channels, derived.Layout = 2, "stereo"
+	}
+	expected = append(expected, derived)
+	operation := newTrackMaintenanceOperation("add_aac_track", record, path, inventory.Fingerprint, []int{input.SourceStreamIndex})
+	if err := h.db.Create(&operation).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	go h.executeTrackMutation(operation.ID, inventory, expected,
+		func(output string) []string { return buildAddAACTrackFFmpegArgs(path, output, inventory, input) },
+		func(actual TrackMaintenanceInventory) error { return validateAddedAACInventory(expected, actual) })
+	c.JSON(202, operation)
+}
+
+func newTrackMaintenanceOperation(operationType string, record models.AssetRecord, path, fingerprint string, indexes []int) models.AssetMaintenanceOperation {
+	now := time.Now()
+	return models.AssetMaintenanceOperation{
+		ID: "maintenance-" + strconv.FormatInt(now.UnixNano(), 10), OperationType: operationType,
+		AssetRecordID: record.ID, AssetPath: path, AssetStatus: record.Status,
+		RequestedIndexes: intListToJSON(indexes), OriginalFingerprint: fingerprint,
+		Status: maintenanceStatusQueued, Phase: "queued", Progress: 0, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func (h AssetHandler) prepareTrackMutation(c *gin.Context, requestedPath, expectedFingerprint string) (string, models.AssetRecord, TrackMaintenanceInventory, bool) {
+	path, record, err := h.resolveTrackMaintenanceAsset(requestedPath)
+	if err != nil {
+		trackMaintenanceHTTPError(c, err)
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	if synchronousScanActive(path) || snapshotOperationActive(path) {
+		c.JSON(409, gin.H{"error": "asset has an active scan and cannot be modified"})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	if active, err := activeAssetMaintenance(h.db, path); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	} else if active {
+		c.JSON(409, gin.H{"error": "asset already has an active maintenance operation"})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	if active, err := (QueueHandler{db: h.db}).assetHasOpenJob(path, 0); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	} else if active {
+		c.JSON(409, gin.H{"error": "asset has an active Queue job and cannot be modified"})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	inventory, err := h.maintenanceRuntime().probeInventory(c.Request.Context(), path)
+	if err != nil {
+		c.JSON(422, gin.H{"error": err.Error()})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	if inventory.Fingerprint != strings.TrimSpace(expectedFingerprint) {
+		c.JSON(409, gin.H{"error": "asset changed after the track inventory was loaded; review the current streams and try again"})
+		return "", models.AssetRecord{}, TrackMaintenanceInventory{}, false
+	}
+	return path, record, inventory, true
 }
 
 func synchronousScanActive(path string) bool {
@@ -422,6 +681,18 @@ func (h AssetHandler) GetMaintenanceOperation(c *gin.Context) {
 }
 
 func (h AssetHandler) resolveTrackMaintenanceAsset(value string) (string, models.AssetRecord, error) {
+	path, record, err := h.resolveTrackInventoryAsset(value)
+	if err != nil {
+		return "", models.AssetRecord{}, err
+	}
+	allowed, reason := trackMaintenanceAvailability(path, record)
+	if !allowed {
+		return "", models.AssetRecord{}, fmt.Errorf("%s", reason)
+	}
+	return path, record, nil
+}
+
+func (h AssetHandler) resolveTrackInventoryAsset(value string) (string, models.AssetRecord, error) {
 	path := filepath.Clean(strings.TrimSpace(value))
 	if path == "." || !filepath.IsAbs(path) {
 		return "", models.AssetRecord{}, fmt.Errorf("asset path must be absolute")
@@ -430,17 +701,21 @@ func (h AssetHandler) resolveTrackMaintenanceAsset(value string) (string, models
 	if err := h.db.Where("path = ? AND missing = ?", path, false).First(&record).Error; err != nil {
 		return "", models.AssetRecord{}, err
 	}
-	if record.LibraryID == 0 || record.Status == "archive" || record.Status == "unprocessed" || record.Status == "missing" {
-		return "", models.AssetRecord{}, fmt.Errorf("track maintenance is limited to available Library assets")
-	}
-	if strings.ToLower(filepath.Ext(path)) != ".mkv" {
-		return "", models.AssetRecord{}, fmt.Errorf("the first track-maintenance release supports MKV assets only")
-	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		return "", models.AssetRecord{}, fmt.Errorf("library asset is not physically available")
+		return "", models.AssetRecord{}, fmt.Errorf("asset is not physically available")
 	}
 	return path, record, nil
+}
+
+func trackMaintenanceAvailability(path string, record models.AssetRecord) (bool, string) {
+	if record.LibraryID == 0 || record.Status == "archive" || record.Status == "unprocessed" || record.Status == "missing" {
+		return false, "Original Raw and Archive assets are protected; track changes are applied during conversion."
+	}
+	if strings.ToLower(filepath.Ext(path)) != ".mkv" {
+		return false, "Track editing currently supports active Library/Converted MKV assets only."
+	}
+	return true, ""
 }
 
 func trackMaintenanceHTTPError(c *gin.Context, err error) {
@@ -468,6 +743,12 @@ func (h AssetHandler) updateMaintenance(id, status, phase string, progress int, 
 }
 
 func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceInventory, remaining []TrackMaintenanceStream) {
+	h.executeTrackMutation(id, inventory, remaining,
+		func(output string) []string { return buildRemoveTracksFFmpegArgs(inventory.Path, output, remaining) },
+		func(actual TrackMaintenanceInventory) error { return validateRemuxedTrackInventory(remaining, actual) })
+}
+
+func (h AssetHandler) executeTrackMutation(id string, inventory TrackMaintenanceInventory, _ []TrackMaintenanceStream, buildArgs func(string) []string, validate func(TrackMaintenanceInventory) error) {
 	runtime := h.maintenanceRuntime()
 	path := inventory.Path
 	extension := filepath.Ext(path)
@@ -475,16 +756,16 @@ func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceI
 	backup := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+id+".backup"+extension)
 	h.updateMaintenance(id, maintenanceStatusRunning, "remuxing", 10, map[string]any{"started_at": time.Now(), "temporary_path": temporary, "backup_path": backup})
 	defer func() { _ = runtime.remove(temporary) }()
-	args := buildRemoveTracksFFmpegArgs(path, temporary, remaining)
+	args := buildArgs(temporary)
 	if err := runtime.remux(context.Background(), args); err != nil {
 		h.failMaintenance(id, "remuxing", err)
 		return
 	}
 	h.updateMaintenance(id, maintenanceStatusRunning, "validating", 55, nil)
 	actual, err := runtime.probeInventory(context.Background(), temporary)
-	if err != nil || validateRemuxedTrackInventory(remaining, actual) != nil || actual.Chapters != inventory.Chapters {
+	if err != nil || validate(actual) != nil || actual.Chapters != inventory.Chapters {
 		if err == nil {
-			err = validateRemuxedTrackInventory(remaining, actual)
+			err = validate(actual)
 		}
 		if err == nil && actual.Chapters != inventory.Chapters {
 			err = fmt.Errorf("chapter count changed unexpectedly: got %d want %d", actual.Chapters, inventory.Chapters)
@@ -532,6 +813,26 @@ func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceI
 	if err := runtime.remove(backup); err != nil && !os.IsNotExist(err) {
 		h.updateMaintenance(id, maintenanceStatusComplete, "completed", 100, map[string]any{"warning": "maintenance completed, but the temporary recovery backup could not be removed: " + err.Error()})
 	}
+}
+
+func validateAddedAACInventory(expected []TrackMaintenanceStream, actual TrackMaintenanceInventory) error {
+	if len(actual.Streams) != len(expected) {
+		return fmt.Errorf("AAC remux stream count changed unexpectedly: got %d want %d", len(actual.Streams), len(expected))
+	}
+	last := len(expected) - 1
+	for index := 0; index < last; index++ {
+		if trackStreamSignature(expected[index]) != trackStreamSignature(actual.Streams[index]) {
+			return fmt.Errorf("AAC remux changed original stream %d", index)
+		}
+	}
+	want, got := expected[last], actual.Streams[last]
+	if got.Type != "audio" || got.Codec != "aac" || got.Language != want.Language || got.Title != want.Title || got.Default != want.Default {
+		return fmt.Errorf("derived AAC track metadata or codec does not match the request")
+	}
+	if want.Channels > 0 && got.Channels != want.Channels {
+		return fmt.Errorf("derived AAC channel count=%d want=%d", got.Channels, want.Channels)
+	}
+	return nil
 }
 
 func persistTrackMaintenanceResult(h AssetHandler, id, path, finalFingerprint string, snapshot models.ScanResult, finished time.Time) error {

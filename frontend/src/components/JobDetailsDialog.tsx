@@ -22,6 +22,7 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
+import { AVTimingSummary } from './AVTimingSummary';
 
 type JobDetailsDialogProps = {
   job: QueueJob | null;
@@ -142,6 +143,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   ['Automation', automationSummary(resultPayload)],
                 ]}
               />
+              <AVTimingSummary report={job.validationReport} />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
               {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
               <ArtifactBlock title="Lifecycle history" value={{ currentStage: job.stage || job.status, stageUpdatedAt: job.stageUpdatedAt, history: job.stageHistory ?? [] }} />

@@ -45,7 +45,6 @@ import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
-import PlaylistRemoveIcon from '@mui/icons-material/PlaylistRemove';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
@@ -56,7 +55,7 @@ import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
-import { RemoveTracksDialog, RemoveTracksPanel } from '../components/RemoveTracksDialog';
+import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
@@ -1648,7 +1647,6 @@ function AssetRow({
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
-  const [showRemoveTracksDialog, setShowRemoveTracksDialog] = useState(false);
   const [showTestEncodeDialog, setShowTestEncodeDialog] = useState(false);
   const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
   const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
@@ -2419,15 +2417,6 @@ async function generateExternalSubtitle(
                 </IconButton>
               </span>
             </Tooltip>
-            {!isArchive && mode !== 'unprocessed' && mode !== 'library' ? (
-              <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : asset.missing ? 'Asset is not physically available' : 'Remove tracks without re-encoding'}>
-                <span>
-                  <IconButton color="warning" onClick={() => setShowRemoveTracksDialog(true)} disabled={hasOpenJob || asset.missing || !asset.fileName.toLowerCase().endsWith('.mkv')} aria-label={`Remove tracks from ${asset.fileName}`} sx={actionIconSx}>
-                    <PlaylistRemoveIcon />
-                  </IconButton>
-                </span>
-              </Tooltip>
-            ) : null}
             {isArchive ? (
               <>
                 <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
@@ -2634,7 +2623,6 @@ async function generateExternalSubtitle(
         }}
         onConfirm={() => deleteArchiveAssets.mutate(archiveDeletePaths)}
       />
-      <RemoveTracksDialog open={showRemoveTracksDialog} path={asset.path} onClose={() => setShowRemoveTracksDialog(false)} />
       <TestEncodeDialog
         open={showTestEncodeDialog}
         onClose={() => setShowTestEncodeDialog(false)}
@@ -2836,7 +2824,6 @@ async function generateExternalSubtitle(
                   <Tab label="MVForge Suggestions" />
                   <Tab label="Quick Asset Overrides" />
                   <Tab label="Test Encode" />
-                  {mode === 'library' ? <Tab label="Remove tracks" /> : null}
                 </Tabs>
                 <Box hidden={snapshotTab !== 1}>
                   <Box sx={{ pt: 1.5 }}>
@@ -2846,8 +2833,8 @@ async function generateExternalSubtitle(
                 </Box>
                 <Box hidden={snapshotTab !== 2}>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
-                    <Typography variant="h3">Embedded tracks</Typography>
-                    <MediaSnapshotDetails
+                    <TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 2} hasOpenJob={hasOpenJob} />
+                    {!isConverted && !isArchive ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
                       scan={snapshot.data}
                       section="tracks"
                       streamControls={
@@ -2892,7 +2879,7 @@ async function generateExternalSubtitle(
                               },
                             }
                       }
-                    />
+                    /></> : null}
                     {isArchive ? (
                       <Alert severity="info">
                         The archived original is used as the subtitle source. Generated files are saved beside its active converted asset.
@@ -3043,31 +3030,6 @@ async function generateExternalSubtitle(
                     )}
                   </Stack>
                 </Box>
-                {mode === 'library' ? (
-                  <Box hidden={snapshotTab !== 7}>
-                    <Stack spacing={1.5} sx={{ pt: 1.5 }}>
-                      <Stack spacing={0.5}>
-                        <Typography variant="h3">Remove tracks</Typography>
-                        <Typography color="text.secondary" variant="body2">
-                          Select embedded tracks to remove from this Library asset without re-encoding its video or audio.
-                        </Typography>
-                      </Stack>
-                      <RemoveTracksPanel
-                        path={asset.path}
-                        active={showSnapshotDialog && snapshotTab === 7}
-                        disabledReason={
-                          hasOpenJob
-                            ? 'This asset has an active Queue job. Wait for it to finish before removing tracks.'
-                            : asset.missing
-                              ? 'This asset is not physically available.'
-                              : !asset.fileName.toLowerCase().endsWith('.mkv')
-                                ? 'Track removal is available only for MKV assets.'
-                                : undefined
-                        }
-                      />
-                    </Stack>
-                  </Box>
-                ) : null}
               </>
             ) : null}
             {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}

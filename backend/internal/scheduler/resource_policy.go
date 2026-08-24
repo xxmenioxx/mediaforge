@@ -97,6 +97,8 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	plan.RuntimeProfile = snapshot.SelectedProfile
 	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
+	jobType := JobType(jsonString(plan.Reservation, "jobType"))
+	usesProfileLimits := jobType != JobTypeTestEncode
 	reasons := []string{}
 	var activeReservations []models.SchedulerReservation
 	if err := db.Where("state = ?", ReservationStateActive).Find(&activeReservations).Error; err != nil {
@@ -116,13 +118,19 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 			})
 		}
 	}
-	running := int64(len(activeReservations))
-	if int(running) >= limits.MaxRunningJobs {
+	profileReservations := make([]models.SchedulerReservation, 0, len(activeReservations))
+	for _, item := range activeReservations {
+		if item.JobType != string(JobTypeTestEncode) {
+			profileReservations = append(profileReservations, item)
+		}
+	}
+	running := int64(len(profileReservations))
+	if usesProfileLimits && int(running) >= limits.MaxRunningJobs {
 		reasons = append(reasons, fmt.Sprintf("Running job limit reached (%d/%d)", running, limits.MaxRunningJobs))
 	}
 
 	video, software, hardware, audio, lab := 0, 0, 0, 0, 0
-	for _, item := range activeReservations {
+	for _, item := range profileReservations {
 		if item.JobType == string(JobTypeAudioRestoration) {
 			audio++
 		}
@@ -140,20 +148,19 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 			hardware++
 		}
 	}
-	if video >= limits.MaxVideoJobs {
+	if usesProfileLimits && video >= limits.MaxVideoJobs {
 		reasons = append(reasons, fmt.Sprintf("Video job limit reached (%d/%d)", video, limits.MaxVideoJobs))
 	}
-	if plan.SelectedEncoder == "libx265" && software >= limits.MaxSoftwareX265Jobs {
+	if usesProfileLimits && plan.SelectedEncoder == "libx265" && software >= limits.MaxSoftwareX265Jobs {
 		reasons = append(reasons, fmt.Sprintf("Software x265 limit reached (%d/%d)", software, limits.MaxSoftwareX265Jobs))
 	}
-	if isHardwareEncoder(plan.SelectedEncoder) && hardware >= limits.MaxHardwareEncodeJobs {
+	if usesProfileLimits && isHardwareEncoder(plan.SelectedEncoder) && hardware >= limits.MaxHardwareEncodeJobs {
 		reasons = append(reasons, fmt.Sprintf("Hardware encoder limit reached (%d/%d)", hardware, limits.MaxHardwareEncodeJobs))
 	}
-	jobType := jsonString(plan.Reservation, "jobType")
-	if jobType == string(JobTypeAudioRestoration) && audio >= limits.MaxAudioJobs {
+	if jobType == JobTypeAudioRestoration && audio >= limits.MaxAudioJobs {
 		reasons = append(reasons, fmt.Sprintf("Audio job limit reached (%d/%d)", audio, limits.MaxAudioJobs))
 	}
-	if jobType == string(JobTypeLabPreview) && lab >= limits.MaxLabJobs {
+	if jobType == JobTypeLabPreview && lab >= limits.MaxLabJobs {
 		reasons = append(reasons, fmt.Sprintf("Lab job limit reached (%d/%d)", lab, limits.MaxLabJobs))
 	}
 	if snapshot.AvailableMemoryBytes > 0 && snapshot.AvailableMemoryBytes < limits.MinFreeRAMBytes {

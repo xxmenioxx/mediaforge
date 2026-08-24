@@ -136,6 +136,10 @@ export const api = {
 	trackMaintenanceInventory: (path: string) => request<import('./types').TrackMaintenanceInventory>(`/api/assets/track-maintenance/inventory?path=${encodeURIComponent(path)}`),
 	startTrackRemoval: (input: { path: string; streamIndexes: number[]; expectedFingerprint: string; confirmed: boolean }) =>
 		request<import('./types').AssetMaintenanceOperation>('/api/assets/track-maintenance/remove', { method: 'POST', body: JSON.stringify(input) }),
+	editTrack: (input: { path: string; streamIndex: number; expectedFingerprint: string; title: string; language: string; default: boolean; forced: boolean }) =>
+		request<import('./types').AssetMaintenanceOperation>('/api/assets/track-maintenance/edit', { method: 'POST', body: JSON.stringify(input) }),
+	addAACTrack: (input: { path: string; sourceStreamIndex: number; expectedFingerprint: string; bitrateKbps: number; channels: 'source' | 'stereo'; title: string; language: string; default: boolean }) =>
+		request<import('./types').AssetMaintenanceOperation>('/api/assets/track-maintenance/add-aac', { method: 'POST', body: JSON.stringify(input) }),
 	maintenanceOperation: (id: string) => request<import('./types').AssetMaintenanceOperation>(`/api/assets/track-maintenance/operations/${encodeURIComponent(id)}`),
   libraries: () => request<Library[]>('/api/libraries'),
   logFiles: () => request<LogFile[]>('/api/logs/files'),

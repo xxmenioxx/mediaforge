@@ -99,6 +99,50 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	if candidate.SelectedEncoder != "libx265" {
 		t.Fatalf("resource saturation must not replace a locked encoder: %#v", candidate)
 	}
+
+	testEncode := models.ExecutionPlan{
+		SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 1 << 30, EstimatedOutputMaxBytes: 1 << 30,
+		Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)},
+	}
+	decision, err := EvaluateResources(db, &testEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Allowed || decision.WaitingState == "WAITING_PROFILE_LIMIT" {
+		t.Fatalf("Test Encode was blocked by conversion profile limits: %#v", decision)
+	}
+}
+
+func TestActiveTestEncodeDoesNotConsumeProfileLimitCounters(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:test-encode-profile-limit-exclusion?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.TaskReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	worker := models.WorkerNode{Name: "local", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265"}, LastSeenAt: time.Now()}
+	if err := db.Create(&worker).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateTaskReservation(db, "test_encode", 9, "/raw/test.mkv", models.ExecutionPlan{
+		SelectedEncoder: "libx265", Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)},
+	}, worker.Name); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := EvaluateResources(db, &models.ExecutionPlan{
+		SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 1 << 30, EstimatedOutputMaxBytes: 1 << 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Allowed || decision.WaitingState == "WAITING_PROFILE_LIMIT" {
+		t.Fatalf("active Test Encode consumed conversion profile limits: %#v", decision)
+	}
 }
 
 func TestMachineProfilesHaveSafeLimits(t *testing.T) {
