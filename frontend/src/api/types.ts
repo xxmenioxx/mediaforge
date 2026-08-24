@@ -145,6 +145,9 @@ export type AssetConversionOverrideState = {
   videoFilters?: string;
   cropAspectPolicy?: 'source_sar' | 'preserve_dar';
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
+  fieldStructureMode?: 'preserve' | 'auto' | 'deinterlace';
+  cadenceMode?: 'preserve' | 'auto' | 'remove_soft_telecine' | 'inverse_telecine';
+  cadenceFieldOrder?: 'auto' | 'tff' | 'bff';
   x265Params?: string;
   frameStructureMode?: 'auto' | 'off' | 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   frameStructureGopMode?: 'auto' | 'recommended' | 'custom';
@@ -237,6 +240,7 @@ export type TestEncodeInput = {
   resolveAssignments?: boolean;
   labProfile?: ProfileInput;
   labAudioProfile?: Record<string, unknown>;
+  labTrackProfile?: Record<string, unknown>;
   labTrackOverride?: AssetConversionOverrideState;
   startMode: 'representative' | 'beginning' | 'middle' | 'custom';
   startSeconds?: number;
@@ -910,6 +914,10 @@ export type ScanResult = {
     windowStart?: number;
     windowSeconds?: number;
     sampleCount?: number;
+    regionCount?: number;
+    ambiguousSampleCount?: number;
+    contradictorySampleCount?: number;
+    softTelecineSampleCount?: number;
     frameSignalSampleCount?: number;
     sampledAt?: number[];
     windows?: Array<{
@@ -954,6 +962,34 @@ export type ScanResult = {
         confidence: number;
       }>;
     };
+  };
+  cadenceAnalysis?: {
+    version?: number;
+    type?: 'native_progressive' | 'soft_telecine' | 'hard_telecine' | 'interlaced' | 'mixed' | 'unknown' | string;
+    pattern?: string;
+    declaredFrameRate?: string;
+    declaredFps?: number;
+    effectivePictureRate?: string;
+    effectiveFps?: number;
+    frameRateMismatch?: boolean;
+    frameRateRatio?: number;
+    repeatPictDetected?: boolean;
+    confidence?: number;
+    sampleCount?: number;
+    regionCount?: number;
+    ambiguousSampleCount?: number;
+    contradictorySampleCount?: number;
+    softTelecineSampleCount?: number;
+    consistentSampleCount?: number;
+    sampleEffectiveFps?: number[];
+    decisionReason?: string;
+  };
+  cadenceRecommendation?: {
+    version?: number;
+    operation?: 'preserve' | 'remove_soft_telecine' | 'inverse_telecine' | 'review' | string;
+    outputFrameRate?: string;
+    confidence?: number;
+    reason?: string;
   };
   cropAnalysis: {
     version?: number;
@@ -1074,9 +1110,23 @@ export type QSVFrameStructureAnalysis = {
   positions?: number[];
   variability?: 'low' | 'medium' | 'high' | 'unknown' | string;
   confidence?: 'high' | 'medium' | 'low' | string;
-  windows?: Array<{ position: number; startSeconds: number; durationSeconds: number; analysis: QSVFrameStructureAnalysis }>;
+  frameSignals?: FrameSignalSummary;
+  windows?: Array<{ position: number; startSeconds: number; durationSeconds: number; analysis: QSVFrameStructureAnalysis; frameSignals?: FrameSignalSummary }>;
   assessment: string;
   source: string;
+};
+
+export type FrameSignalSummary = {
+  decodedFrames: number;
+  interlacedFrames: number;
+  progressiveFrames: number;
+  topFieldFirstFrames: number;
+  bottomFirstFrames: number;
+  repeatPictFrames: number;
+  cadence?: string;
+  actualTimespan?: number;
+  effectiveFps?: number;
+  timestampDeltas?: { count: number; minimum?: number; maximum?: number; dominant?: number[] };
 };
 
 export type SnapshotOperation = {

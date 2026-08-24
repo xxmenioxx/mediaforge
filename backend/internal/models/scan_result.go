@@ -21,6 +21,8 @@ type ScanResult struct {
 	AudioStreams                 JSONList  `json:"audioStreams" gorm:"type:json"`
 	SubtitleStreams              JSONList  `json:"subtitleStreams" gorm:"type:json"`
 	InterlaceAnalysis            JSONMap   `json:"interlaceAnalysis" gorm:"type:json"`
+	CadenceAnalysis              JSONMap   `json:"cadenceAnalysis" gorm:"type:json"`
+	CadenceRecommendation        JSONMap   `json:"cadenceRecommendation" gorm:"type:json"`
 	CropAnalysis                 JSONMap   `json:"cropAnalysis" gorm:"type:json"`
 	FrameStructureAnalysis       JSONMap   `json:"frameStructureAnalysis" gorm:"type:json"`
 	FrameStructureRecommendation JSONMap   `json:"frameStructureRecommendation" gorm:"type:json"`

@@ -218,6 +218,9 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 				if ensureHEVCLevelRecommendation(&existing) {
 					_ = h.db.Model(&existing).Update("hevc_level_recommendation", existing.HEVCLevelRecommendation).Error
 				}
+				if ensureCadenceRecommendation(&existing) {
+					_ = h.db.Model(&existing).Update("cadence_recommendation", existing.CadenceRecommendation).Error
+				}
 				report("completed", 100, "Using the existing asset snapshot")
 				return existing, true, nil
 			}
@@ -551,7 +554,7 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 	}
 	video := firstStream(probe.Streams, "video")
 	report("interlace", 30, "Analyzing motion and interlace samples")
-	interlaceAnalysis := detectInterlaceContext(ctx, path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds)
+	interlaceAnalysis := detectInterlaceWithFrameSignalsContext(ctx, path, video.FieldOrder, parseFloat(probe.Format.Duration), analysisSeconds, false)
 	interlaceAnalysis.Codec = video.CodecName
 	interlaceAnalysis.AverageFrameRate = video.AverageFrameRate
 	interlaceAnalysis.RealFrameRate = video.RealBaseFrameRate
@@ -576,8 +579,14 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 		frameMap := models.JSONMap{}
 		_ = json.Unmarshal(encoded, &frameMap)
 		raw["frameStructureAnalysis"] = frameMap
+		cadence := analyzeCadence(video.CodecName, firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate), interlaceAnalysis, frameAnalysis)
+		raw["cadenceAnalysis"] = cadence
+		raw["cadenceRecommendation"] = recommendCadence(cadence)
 	} else {
 		raw["frameStructureAnalysis"] = models.JSONMap{"version": 1, "status": "unverified", "error": frameErr.Error()}
+		cadence := analyzeCadence(video.CodecName, firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate), interlaceAnalysis)
+		raw["cadenceAnalysis"] = cadence
+		raw["cadenceRecommendation"] = recommendCadence(cadence)
 	}
 	report("persisting", 95, "Saving the asset snapshot")
 
@@ -611,6 +620,8 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		SubtitleStreams:        streamSummaries(probe.Streams, "subtitle"),
 		RawProbe:               raw,
 		InterlaceAnalysis:      interlaceAnalysisFromRaw(raw),
+		CadenceAnalysis:        analysisMapFromRaw(raw, "cadenceAnalysis"),
+		CadenceRecommendation:  analysisMapFromRaw(raw, "cadenceRecommendation"),
 		CropAnalysis:           analysisMapFromRaw(raw, "cropAnalysis"),
 		FrameStructureAnalysis: analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}

@@ -59,6 +59,8 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { RemoveTracksDialog, RemoveTracksPanel } from '../components/RemoveTracksDialog';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { FrameCadenceControls } from '../components/FrameCadenceControls';
+import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
@@ -2003,6 +2005,16 @@ function AssetRow({
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
   }
 
+  async function openAssetTestEncode() {
+    try {
+      await updateConversion.mutateAsync({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
+      setShowTestEncodeDialog(true);
+    } catch {
+      // The existing mutation alert reports the save error. Do not generate a
+      // sample from a stale persisted override.
+    }
+  }
+
   function delay(ms: number) {
     return new Promise<void>((resolve) => {
       window.setTimeout(resolve, ms);
@@ -2993,7 +3005,7 @@ async function generateExternalSubtitle(
                     <Stack spacing={0.5}>
                       <Typography variant="h3">Test Encode</Typography>
                       <Typography color="text.secondary" variant="body2">
-                        Generate a short real encode with the same effective pipeline that this asset would use in Queue. The original is not archived or modified.
+                        Generate a short real encode with the same effective pipeline that this asset would use in Queue. Current Asset Overrides are saved before the test snapshot is created. The original is not archived or modified.
                       </Typography>
                     </Stack>
                     <Grid container spacing={1.5}>
@@ -3015,16 +3027,16 @@ async function generateExternalSubtitle(
                     {!canGenerateTestEncode ? (
                       <Alert severity="info">Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.</Alert>
                     ) : (
-                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : 'Generate a short real encode for playback testing'}>
+                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateConversion.isPending || updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Save current overrides and generate a short real encode for playback testing'}>
                         <span style={{ alignSelf: 'flex-start' }}>
                           <Button
                             startIcon={<ScienceIcon />}
                             variant="contained"
                             color="secondary"
-                            onClick={() => setShowTestEncodeDialog(true)}
-                            disabled={asset.missing || hasOpenJob || !effectiveProfileId}
+                            onClick={openAssetTestEncode}
+                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateConversion.isPending || updateProfileAssignment.isPending}
                           >
-                            Generate Test Encode
+                            {updateConversion.isPending ? 'Saving overrides…' : 'Generate Test Encode'}
                           </Button>
                         </span>
                       </Tooltip>
@@ -3450,21 +3462,10 @@ const colorDepthOptions: SelectOption[] = [
 
 const imageCleanupOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
-  { value: 'bwdif=mode=send_frame', label: 'Fix interlacing' },
   { value: 'hqdn3d=1.5:1.5:6:6', label: 'Light noise cleanup' },
   { value: 'hqdn3d=2:2:7:7', label: 'Medium noise cleanup' },
   { value: 'deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018', label: 'Light banding cleanup' },
-  { value: 'bwdif=mode=send_frame,hqdn3d=1.5:1.5:6:6', label: 'DVD cleanup' },
   { value: 'hqdn3d=1.5:1.5:6:6,deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018', label: 'Anime cleanup' },
-];
-
-const deinterlaceOptions: SelectOption[] = [
-  { value: '', label: 'Profile default' },
-  { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
-  { value: 'off', label: 'Never deinterlace' },
-  { value: 'force', label: 'Force · bwdif (single-rate)' },
-  { value: 'ivtc_tff', label: 'IVTC · fieldmatch + decimate (TFF)' },
-  { value: 'ivtc_bff', label: 'IVTC · fieldmatch + decimate (BFF)' },
 ];
 
 const assetEncoderOptions: SelectOption[] = [
@@ -3526,6 +3527,9 @@ function AssetConversionOverridePanel({
   const currentCropFilter = cropFilterFromChain(draft.videoFilters);
   const suggestedCropFilter = recommendedCrop ? `crop=${recommendedCrop}` : '';
   const suggestedCropEnabled = Boolean(suggestedCropFilter) && currentCropFilter === suggestedCropFilter;
+  const assetMotionModes = draft.fieldStructureMode || draft.cadenceMode || draft.deinterlaceMode
+    ? semanticMotionModes(draft as Record<string, unknown>)
+    : { fieldStructureMode: '', cadenceMode: '', cadenceFieldOrder: '' };
   const bitmapSubtitleCount = scan?.subtitleStreams.filter((stream) => isBitmapSubtitleCodec(stream.codec)).length ?? 0;
   const processingPreference = draft.preferredEncoder ?? '';
   const assetWorker = resolveSelectedWorker(workerNodes.data, draft.targetWorkerName ?? String(profile?.workerConfig?.targetWorkerName ?? ''));
@@ -3859,23 +3863,14 @@ function AssetConversionOverridePanel({
               ))}
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField
-              select
-              label="Deinterlacing"
-              value={draft.deinterlaceMode ?? ''}
-              onChange={(event) => onChange('deinterlaceMode', event.target.value as AssetConversionOverrideState['deinterlaceMode'])}
-              helperText={draft.deinterlaceMode === 'force'
-                ? 'bwdif=mode=send_frame:parity=auto:deint=all · output is marked progressive automatically.'
-                : 'Field metadata is updated automatically when Analysis applies a correction.'}
-              size="small"
-              fullWidth
-            >
-              {optionItems(deinterlaceOptions, draft.deinterlaceMode).map((option) => (
-                <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
-              ))}
-            </TextField>
-          </Grid>
+          <FrameCadenceControls
+            {...assetMotionModes}
+            scan={scan}
+            allowProfileDefault
+            onFieldStructureChange={(value) => onChange('fieldStructureMode', value || undefined)}
+            onCadenceChange={(value) => onChange('cadenceMode', value || undefined)}
+            onCadenceFieldOrderChange={(value) => onChange('cadenceFieldOrder', value || undefined)}
+          />
           <Grid size={{ xs: 12 }}>
             <Box sx={{ border: 1, borderColor: suggestedCropEnabled ? 'primary.main' : 'divider', borderRadius: 1, p: 1.5, bgcolor: suggestedCropEnabled ? 'rgba(79,179,255,0.055)' : 'rgba(255,255,255,0.02)' }}>
               <Stack spacing={1}>
@@ -4942,7 +4937,14 @@ function firstAssetForGroup(assets: Asset[]) {
 }
 
 function assetHasOpenJob(asset: Asset, jobs: QueueJob[]) {
-  return safeArray(jobs).some((job) => job.mediaPath === asset.path && job.status !== 'canceled' && !job.publishedAt);
+  const assetPath = normalizePath(asset.path);
+  return safeArray(jobs).some((job) =>
+    normalizePath(job.mediaPath) === assetPath && queueJobIsActive(job),
+  );
+}
+
+function queueJobIsActive(job: QueueJob) {
+  return job.status === 'queued' || job.status === 'running' || (job.status === 'completed' && !job.publishedAt);
 }
 
 function assetReviewApproved(asset: Asset) {
@@ -5314,6 +5316,9 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.deinterlaceMode === 'auto' || value.deinterlaceMode === 'off' || value.deinterlaceMode === 'force' || value.deinterlaceMode === 'ivtc_tff' || value.deinterlaceMode === 'ivtc_bff') {
     clean.deinterlaceMode = value.deinterlaceMode;
   }
+  if (value.fieldStructureMode === 'preserve' || value.fieldStructureMode === 'auto' || value.fieldStructureMode === 'deinterlace') clean.fieldStructureMode = value.fieldStructureMode;
+  if (value.cadenceMode === 'preserve' || value.cadenceMode === 'auto' || value.cadenceMode === 'remove_soft_telecine' || value.cadenceMode === 'inverse_telecine') clean.cadenceMode = value.cadenceMode;
+  if (value.cadenceFieldOrder === 'auto' || value.cadenceFieldOrder === 'tff' || value.cadenceFieldOrder === 'bff') clean.cadenceFieldOrder = value.cadenceFieldOrder;
   if (value.frameStructureMode === 'auto' || value.frameStructureMode === 'off' || value.frameStructureMode === 'compatible' || value.frameStructureMode === 'balanced' || value.frameStructureMode === 'maximum_compression' || value.frameStructureMode === 'custom') clean.frameStructureMode = value.frameStructureMode;
   if (value.frameStructureGopMode === 'auto' || value.frameStructureGopMode === 'recommended' || value.frameStructureGopMode === 'custom') clean.frameStructureGopMode = value.frameStructureGopMode;
   if (typeof value.frameStructureGopFrames === 'number' && Number.isFinite(value.frameStructureGopFrames) && value.frameStructureGopFrames > 0) clean.frameStructureGopFrames = Math.min(1000, Math.round(value.frameStructureGopFrames));

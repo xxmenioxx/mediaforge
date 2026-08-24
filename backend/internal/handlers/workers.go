@@ -554,6 +554,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
+	effectiveProfile = applyFrozenCadenceResolution(job, effectiveProfile)
 	effectiveProfile, err = resolveAutomaticFrameStructure(
 		h.db,
 		job.MediaPath,
@@ -754,6 +755,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
 	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
 	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
+	effectiveProfile = applyFrozenCadenceResolution(job, effectiveProfile)
 
 	effectiveProfile, err = resolveAutomaticFrameStructure(
 		h.db,
@@ -775,6 +777,12 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	effectiveProfile.WorkerConfig["qsvAssetAnalysisPath"] = job.MediaPath
 	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
 		effectiveProfile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
+	}
+	if frozen, ok := job.ProfileSnapshot[cadenceAnalysisSnapshotKey]; ok {
+		effectiveProfile.WorkerConfig[cadenceAnalysisSnapshotKey] = frozen
+	}
+	if frozen, ok := job.ProfileSnapshot[cadenceRecommendationSnapshotKey]; ok {
+		effectiveProfile.WorkerConfig[cadenceRecommendationSnapshotKey] = frozen
 	}
 	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	if !overwrite {
@@ -890,6 +898,27 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	return job, http.StatusAccepted, nil
+}
+
+func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	if frozen, ok := job.ProfileSnapshot[cadenceAnalysisSnapshotKey]; ok {
+		profile.WorkerConfig[cadenceAnalysisSnapshotKey] = frozen
+	}
+	if frozen, ok := job.ProfileSnapshot[cadenceRecommendationSnapshotKey]; ok {
+		profile.WorkerConfig[cadenceRecommendationSnapshotKey] = frozen
+	}
+	analysis, analysisOK := decodeCadenceAnalysis(profile.WorkerConfig[cadenceAnalysisSnapshotKey])
+	recommendation, recommendationOK := decodeCadenceRecommendation(profile.WorkerConfig[cadenceRecommendationSnapshotKey])
+	interlace, _ := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
+	if analysisOK {
+		if !recommendationOK {
+			recommendation = recommendCadence(analysis)
+		}
+		profile = profileWithCadenceOutputDecision(profile, analysis, recommendation)
+	}
+	return profile
 }
 
 func refreshSnapshotBeforeExecution(
@@ -1044,7 +1073,11 @@ func resolveAutomaticFrameStructure(
 		)
 	}
 
-	recommendationSet := buildFrameStructureRecommendationSet(scan)
+	fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+	if fps <= 0 {
+		fps = scanFrameRate(scan)
+	}
+	recommendationSet := buildFrameStructureRecommendationSetForFPS(scan, fps)
 
 	recommendation, ok := recommendationSet.ByMode["balanced"]
 	if !ok {

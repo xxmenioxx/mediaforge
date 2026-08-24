@@ -33,6 +33,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
   const frameRecommendation = scan.frameStructureRecommendation;
   const crop = scan.cropAnalysis;
   const interlace = scan.interlaceAnalysis;
+  const cadence = scan.cadenceAnalysis;
+  const cadenceRecommendation = scan.cadenceRecommendation;
 
   return (
     <Stack spacing={1.5}>
@@ -45,7 +47,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Bit depth', video?.bitDepth ? `${video.bitDepth}-bit` : video?.bitsPerRawSample || 'Unknown'],
           ['HEVC Level', scan.videoCodec === 'hevc' ? formatHEVCLevel(video?.level) : 'Not applicable'],
           ['Recommended HEVC Level', scan.hevcLevelRecommendation?.recommendedLevel ? `${scan.hevcLevelRecommendation.recommendedLevel} · Main Tier` : 'Unavailable'],
-          ['Frame rate', video?.avgFrameRate || video?.realFrameRate || 'Unknown'],
+          ['Declared frame rate', cadence?.declaredFrameRate || video?.avgFrameRate || video?.realFrameRate || 'Unknown'],
+          ['Effective picture rate', cadence?.effectivePictureRate || (cadence?.effectiveFps ? `${cadence.effectiveFps.toFixed(3)} fps` : 'Not measured')],
           ['Dynamic range', scan.hdr ? 'HDR' : 'SDR'],
           ['Video bitrate', formatBitrate(video?.bitrate || scan.bitrate)],
         ]} />
@@ -75,6 +78,12 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Confidence', typeof interlace?.confidence === 'number' ? `${Math.round(interlace.confidence * 100)}%` : 'Unknown'],
           ['Auto action', interlace?.recommendedAction || 'Review'],
           ['Decision', interlace?.decisionReason || 'Legacy analysis; run Re-SCAN for regional evidence'],
+          ['Cadence', cadenceLabel(scan)],
+          ['Cadence confidence', typeof cadence?.confidence === 'number' ? `${Math.round(cadence.confidence * 100)}%` : 'Unknown'],
+          ['Cadence sample agreement', cadence?.regionCount ? `${cadence.softTelecineSampleCount ?? cadence.consistentSampleCount ?? 0}/${cadence.regionCount}${cadence.ambiguousSampleCount ? ` · ${cadence.ambiguousSampleCount} ambiguous` : ''}` : 'Not measured'],
+          ['Timestamp pattern', cadenceTimestampPattern(scan)],
+          ['Recommended output', cadenceRecommendation?.outputFrameRate ? `${cadenceRecommendation.outputFrameRate}p` : cadenceRecommendation?.operation === 'preserve' ? 'Preserve source rate' : 'Review'],
+          ['Cadence decision', cadence?.decisionReason || 'Run Re-SCAN for cadence evidence'],
           ['Crop status', crop?.status || 'Unknown'],
           ['Recommended crop', crop?.recommendedCrop || 'None'],
           ['Display aspect ratio', video?.displayAspectRatio || 'Unknown'],
@@ -99,7 +108,7 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
               <Typography fontWeight={700}>Frame structure regions</Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                 {frames.windows.map((window, index) => (
-                  <Chip key={`${window.position}-${window.startSeconds}`} size="small" variant="outlined" label={`Region ${index + 1} · ${Math.round(window.position * 100)}% · I ${window.analysis.iFrames} / P ${window.analysis.pFrames} / B ${window.analysis.bFrames} · GOP ${window.analysis.averageGopLength > 0 ? window.analysis.averageGopLength.toFixed(1) : 'n/a'} · B-run ${window.analysis.maxConsecutiveBFrames}`} />
+                  <Chip key={`${window.position}-${window.startSeconds}`} size="small" variant="outlined" label={`Region ${index + 1} · ${Math.round(window.position * 100)}% · I ${window.analysis.iFrames} / P ${window.analysis.pFrames} / B ${window.analysis.bFrames} · GOP ${window.analysis.averageGopLength > 0 ? window.analysis.averageGopLength.toFixed(1) : 'n/a'} · B-run ${window.analysis.maxConsecutiveBFrames}${window.frameSignals?.effectiveFps ? ` · ${window.frameSignals.effectiveFps.toFixed(3)} fps` : ''}${window.frameSignals?.repeatPictFrames ? ` · repeat ${window.frameSignals.repeatPictFrames}` : ''}`} />
                 ))}
               </Stack>
             </Stack>
@@ -202,6 +211,24 @@ function interlaceLabel(scan: ScanResult) {
     case 'progressive': return 'Progressive';
     default: return 'Unknown';
   }
+}
+
+function cadenceLabel(scan: ScanResult) {
+  const cadence = scan.cadenceAnalysis;
+  switch (cadence?.type) {
+    case 'soft_telecine': return `${cadence.pattern || '2:3'} soft telecine`;
+    case 'hard_telecine': return 'Hard telecine · IVTC review';
+    case 'native_progressive': return 'Native progressive';
+    case 'interlaced': return 'Interlaced presentation';
+    case 'mixed': return 'Mixed cadence · review';
+    default: return 'Unknown';
+  }
+}
+
+function cadenceTimestampPattern(scan: ScanResult) {
+  const dominant = scan.frameStructureAnalysis?.windows?.flatMap((window) => window.frameSignals?.timestampDeltas?.dominant ?? []) ?? [];
+  const unique = [...new Set(dominant.map((value) => Math.round(value * 1000)))].sort((a, b) => a - b);
+  return unique.length ? unique.map((value) => `${value} ms`).join(' / ') : 'Not measured';
 }
 
 function StreamSection({

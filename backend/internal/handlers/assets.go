@@ -225,6 +225,9 @@ type AssetConversionOverrideState struct {
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
 	CropAspectPolicy                 string                         `json:"cropAspectPolicy,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
+	FieldStructureMode               string                         `json:"fieldStructureMode,omitempty"`
+	CadenceMode                      string                         `json:"cadenceMode,omitempty"`
+	CadenceFieldOrder                string                         `json:"cadenceFieldOrder,omitempty"`
 	X265Params                       string                         `json:"x265Params,omitempty"`
 	FrameStructureMode               string                         `json:"frameStructureMode,omitempty"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode,omitempty"`
@@ -364,6 +367,9 @@ type AssetConversionUpdateInput struct {
 	PixFmt                           string                         `json:"pixFmt"`
 	VideoFilters                     string                         `json:"videoFilters"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
+	FieldStructureMode               string                         `json:"fieldStructureMode"`
+	CadenceMode                      string                         `json:"cadenceMode"`
+	CadenceFieldOrder                string                         `json:"cadenceFieldOrder"`
 	X265Params                       string                         `json:"x265Params"`
 	FrameStructureMode               string                         `json:"frameStructureMode"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode"`
@@ -2688,6 +2694,9 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		PixFmt:                         strings.TrimSpace(input.PixFmt),
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
+		FieldStructureMode:             normalizedFieldStructureMode(input.FieldStructureMode),
+		CadenceMode:                    normalizedCadenceMode(input.CadenceMode),
+		CadenceFieldOrder:              normalizedCadenceFieldOrder(input.CadenceFieldOrder),
 		X265Params:                     strings.TrimSpace(input.X265Params),
 		FrameStructureMode:             normalizedFrameStructureMode(input.FrameStructureMode),
 		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
@@ -3148,7 +3157,11 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				capabilities.CheckEncoder("hevc_qsv"),
 			)
 			profile = resolveHEVCLevel(profile, streams)
-			profile = profileWithAutomaticDeinterlace(profile, h.previewInterlaceAnalysis(path, streams))
+			interlace := h.previewInterlaceAnalysis(path, streams)
+			profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
+			profile = profileWithAutomaticDeinterlace(profile, interlace)
+			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
+			profile = profileWithCadenceOutputDecision(profile, cadence, cadenceRecommendation)
 			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
 
@@ -3158,6 +3171,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				videoCodecArgsForSource(profile, &streams.Video[0]),
 				videoWorkerArgsForSource(profile, &streams.Video[0])...,
 			)
+			videoCodecArguments = append(videoCodecArguments, cadenceOutputArgs(profile)...)
 		} else {
 			profile = resolveHEVCLevel(profile, MediaStreamInventory{})
 			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
@@ -3700,6 +3714,25 @@ func (h AssetHandler) previewInterlaceAnalysis(path string, streams MediaStreamI
 		return fallback
 	}
 	return analysis
+}
+
+func (h AssetHandler) previewCadenceResolution(path string) (CadenceAnalysis, CadenceRecommendation) {
+	fallback := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "unknown"}
+	fallbackRecommendation := recommendCadence(fallback)
+	if h.db == nil || !h.db.Migrator().HasTable(&models.ScanResult{}) {
+		return fallback, fallbackRecommendation
+	}
+	var scan models.ScanResult
+	if err := h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error; err != nil {
+		return fallback, fallbackRecommendation
+	}
+	if analysis, ok := decodeCadenceAnalysis(scan.CadenceAnalysis); ok {
+		if recommendation, recommendationOK := decodeCadenceRecommendation(scan.CadenceRecommendation); recommendationOK {
+			return analysis, recommendation
+		}
+		return analysis, recommendCadence(analysis)
+	}
+	return fallback, fallbackRecommendation
 }
 
 func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string) (float64, error) {
@@ -6067,6 +6100,9 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.PixFmt) == "" &&
 		strings.TrimSpace(override.VideoFilters) == "" &&
 		strings.TrimSpace(override.DeinterlaceMode) == "" &&
+		strings.TrimSpace(override.FieldStructureMode) == "" &&
+		strings.TrimSpace(override.CadenceMode) == "" &&
+		strings.TrimSpace(override.CadenceFieldOrder) == "" &&
 		strings.TrimSpace(override.X265Params) == "" &&
 		strings.TrimSpace(override.FrameStructureGOPMode) == "" &&
 		strings.TrimSpace(override.FrameStructureMode) == "" &&

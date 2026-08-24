@@ -39,6 +39,8 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { FrameCadenceControls } from '../components/FrameCadenceControls';
+import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import type { Profile, ProfileInput } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -94,6 +96,9 @@ const initialProfile: ProfileInput = {
     frameStructureMode: 'auto',
     frameStructureGopMode: 'recommended',
     frameStructureBFrameMode: 'recommended',
+    fieldStructureMode: 'auto',
+    cadenceMode: 'auto',
+    cadenceFieldOrder: 'auto',
   },
 };
 
@@ -1167,23 +1172,12 @@ export function ProfilesPage() {
                               ))}
                             </TextField>
                           </Grid>
-                          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                            <TextField
-                              label="Deinterlacing"
-                              value={workerConfigString(form, 'deinterlaceMode', 'auto')}
-                              onChange={(event) => updateWorkerConfig('deinterlaceMode', event.target.value)}
-                              helperText={workerConfigString(form, 'deinterlaceMode', 'auto') === 'force'
-                                ? 'bwdif=mode=send_frame:parity=auto:deint=all; output is marked progressive automatically.'
-                                : 'Auto analyzes the asset before encoding and updates output field metadata when a correction is applied.'}
-                              disabled={form.videoCodec === 'copy'}
-                              select
-                              fullWidth
-                            >
-                              <MenuItem value="auto">Auto at conversion (uses Analysis)</MenuItem>
-                              <MenuItem value="off">Off</MenuItem>
-                              <MenuItem value="force">Force · bwdif (single-rate)</MenuItem>
-                            </TextField>
-                          </Grid>
+                          <FrameCadenceControls
+                            {...semanticMotionModes(form.workerConfig)}
+                            onFieldStructureChange={(value) => updateWorkerConfig('fieldStructureMode', value)}
+                            onCadenceChange={(value) => updateWorkerConfig('cadenceMode', value)}
+                            onCadenceFieldOrderChange={(value) => updateWorkerConfig('cadenceFieldOrder', value)}
+                          />
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
                               label="Tune"

@@ -39,6 +39,7 @@ type QSVFrameStructureAnalysis struct {
 	Windows               []FrameStructureWindow `json:"windows,omitempty"`
 	Variability           string                 `json:"variability,omitempty"`
 	Confidence            string                 `json:"confidence,omitempty"`
+	FrameSignals          FrameSignalSummary     `json:"frameSignals,omitempty"`
 	Assessment            string                 `json:"assessment"`
 	Source                string                 `json:"source"`
 }
@@ -48,6 +49,7 @@ type FrameStructureWindow struct {
 	StartSeconds    float64                   `json:"startSeconds"`
 	DurationSeconds float64                   `json:"durationSeconds"`
 	Analysis        QSVFrameStructureAnalysis `json:"analysis"`
+	FrameSignals    FrameSignalSummary        `json:"frameSignals"`
 }
 
 type FrameStructureSamplingPolicy struct {
@@ -191,6 +193,10 @@ type FrameStructureRecommendationSet struct {
 }
 
 func buildFrameStructureRecommendationSet(scan models.ScanResult) FrameStructureRecommendationSet {
+	return buildFrameStructureRecommendationSetForFPS(scan, scanFrameRate(scan))
+}
+
+func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps float64) FrameStructureRecommendationSet {
 	analysis := scan.FrameStructureAnalysis
 	source := QSVFrameStructureAnalysis{
 		Version:               workerIntValue(analysis["version"], 0),
@@ -200,7 +206,6 @@ func buildFrameStructureRecommendationSet(scan models.ScanResult) FrameStructure
 		BFrameRatio:           workerNumberValue(analysis["bFrameRatio"], 0),
 		Confidence:            strings.TrimSpace(stringFromUnknown(analysis["confidence"])),
 	}
-	fps := scanFrameRate(scan)
 	result := FrameStructureRecommendationSet{
 		Version:               1,
 		SourceAnalysisVersion: source.Version,
@@ -481,7 +486,7 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 		"-v", "error",
 		"-select_streams", "v:0",
 		"-read_intervals", interval,
-		"-show_entries", "frame=pict_type,key_frame",
+		"-show_entries", "frame=pict_type,key_frame,best_effort_timestamp_time,pkt_duration_time,interlaced_frame,top_field_first,repeat_pict",
 		"-of", "json",
 		path,
 	}
@@ -508,8 +513,13 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 
 	var probe struct {
 		Frames []struct {
-			PictureType string `json:"pict_type"`
-			KeyFrame    int    `json:"key_frame"`
+			PictureType         string `json:"pict_type"`
+			KeyFrame            int    `json:"key_frame"`
+			InterlacedFrame     int    `json:"interlaced_frame"`
+			TopFieldFirst       int    `json:"top_field_first"`
+			RepeatPict          int    `json:"repeat_pict"`
+			BestEffortTimestamp string `json:"best_effort_timestamp_time"`
+			PacketDuration      string `json:"pkt_duration_time"`
 		} `json:"frames"`
 	}
 
@@ -521,6 +531,7 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 	}
 
 	result := QSVFrameStructureAnalysis{Version: 2, Source: "ffprobe_frames"}
+	result.FrameSignals = frameSignalsFromStructureProbe(probe.Frames)
 
 	consecutiveBFrames := 0
 	lastKeyFrameIndex := -1
@@ -586,6 +597,56 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 	return result, nil
 }
 
+func frameSignalsFromStructureProbe(frames []struct {
+	PictureType         string `json:"pict_type"`
+	KeyFrame            int    `json:"key_frame"`
+	InterlacedFrame     int    `json:"interlaced_frame"`
+	TopFieldFirst       int    `json:"top_field_first"`
+	RepeatPict          int    `json:"repeat_pict"`
+	BestEffortTimestamp string `json:"best_effort_timestamp_time"`
+	PacketDuration      string `json:"pkt_duration_time"`
+}) FrameSignalSummary {
+	result := FrameSignalSummary{DecodedFrames: len(frames)}
+	firstTimestamp, lastTimestamp, previousTimestamp := -1.0, -1.0, -1.0
+	deltas := []float64{}
+	repeatPositions := []int{}
+	for index, frame := range frames {
+		if timestamp := parseFloat(frame.BestEffortTimestamp); timestamp >= 0 {
+			if firstTimestamp < 0 {
+				firstTimestamp = timestamp
+			}
+			lastTimestamp = timestamp
+			if previousTimestamp >= 0 && timestamp > previousTimestamp {
+				deltas = append(deltas, timestamp-previousTimestamp)
+			}
+			previousTimestamp = timestamp
+		}
+		if frame.InterlacedFrame != 0 {
+			result.InterlacedFrames++
+			if frame.TopFieldFirst != 0 {
+				result.TopFieldFirstFrames++
+			} else {
+				result.BottomFirstFrames++
+			}
+		} else {
+			result.ProgressiveFrames++
+		}
+		if frame.RepeatPict > 0 {
+			result.RepeatPictFrames++
+			repeatPositions = append(repeatPositions, index)
+		}
+	}
+	result.Cadence = describeRepeatCadence(repeatPositions)
+	if firstTimestamp >= 0 && lastTimestamp >= firstTimestamp {
+		result.ActualTimespan = lastTimestamp - firstTimestamp
+		if result.ActualTimespan > 0 {
+			result.EffectiveFPS = float64(max(0, result.DecodedFrames-1)) / result.ActualTimespan
+		}
+	}
+	result.TimestampDeltas = summarizeTimestampDeltas(deltas)
+	return result
+}
+
 func analyzeVideoFrameStructureDistributed(ctx context.Context, path string, duration float64, policy FrameStructureSamplingPolicy) (QSVFrameStructureAnalysis, error) {
 	if duration <= 0 {
 		result, err := analyzeVideoFrameStructure(ctx, path, 500)
@@ -634,7 +695,9 @@ func analyzeVideoFrameStructureDistributed(ctx context.Context, path string, dur
 			return QSVFrameStructureAnalysis{}, err
 		}
 		analysis.SampledSeconds = actualDuration
-		result.Windows = append(result.Windows, FrameStructureWindow{Position: position, StartSeconds: start, DurationSeconds: actualDuration, Analysis: analysis})
+		frameSignals := analysis.FrameSignals
+		analysis.FrameSignals = FrameSignalSummary{}
+		result.Windows = append(result.Windows, FrameStructureWindow{Position: position, StartSeconds: start, DurationSeconds: actualDuration, Analysis: analysis, FrameSignals: frameSignals})
 		result.FramesAnalyzed += analysis.FramesAnalyzed
 		result.IFrames += analysis.IFrames
 		result.PFrames += analysis.PFrames

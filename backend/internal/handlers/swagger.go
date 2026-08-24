@@ -1222,6 +1222,8 @@ func openAPIComponents() gin.H {
 					"audioStreams":                 gin.H{"type": "array", "items": ref("MediaStream")},
 					"subtitleStreams":              gin.H{"type": "array", "items": ref("MediaStream")},
 					"interlaceAnalysis":            gin.H{"type": "object", "additionalProperties": true},
+					"cadenceAnalysis":              gin.H{"type": "object", "description": "Presentation cadence, declared versus effective picture rate, confidence, and conservative output recommendation.", "additionalProperties": true},
+					"cadenceRecommendation":        gin.H{"type": "object", "description": "Semantic cadence operation and resolved output frame-rate recommendation derived from cadence analysis.", "additionalProperties": true},
 					"cropAnalysis":                 gin.H{"type": "object", "additionalProperties": true},
 					"frameStructureAnalysis":       gin.H{"type": "object", "additionalProperties": true},
 					"frameStructureRecommendation": gin.H{"type": "object", "description": "Encoder-neutral compatible, balanced, and maximum-compression GOP/B-frame recommendations derived from the source snapshot.", "additionalProperties": true},

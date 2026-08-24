@@ -46,6 +46,7 @@ type testEncodeRequest struct {
 	ResolveAssignments  bool                         `json:"resolveAssignments"`
 	LabProfile          *models.Profile              `json:"labProfile"`
 	LabAudioProfile     models.JSONMap               `json:"labAudioProfile"`
+	LabTrackProfile     models.JSONMap               `json:"labTrackProfile"`
 	LabTrackOverride    AssetConversionOverrideState `json:"labTrackOverride"`
 	StartMode           string                       `json:"startMode"`
 	StartSeconds        float64                      `json:"startSeconds"`
@@ -301,7 +302,8 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		if len(job.AudioProfileSnapshot) > 0 {
 			job.AudioProfileKey = "lab-draft"
 		}
-		if encoded, err := json.Marshal(input.LabTrackOverride); err == nil {
+		labTrackOverride := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+		if encoded, err := json.Marshal(labTrackOverride); err == nil {
 			_ = json.Unmarshal(encoded, &job.TrackProfileSnapshot)
 		}
 		if len(job.TrackProfileSnapshot) > 0 {
@@ -310,6 +312,7 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		queue.captureInterlaceSnapshot(path, job.ProfileSnapshot)
 		requested["labProfile"] = profile
 		requested["labAudioProfile"] = input.LabAudioProfile
+		requested["labTrackProfile"] = input.LabTrackProfile
 		requested["labTrackOverride"] = input.LabTrackOverride
 	} else {
 		queueInput := QueueJobInput{
@@ -345,7 +348,8 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	if err != nil {
 		return resolvedTestEncode{}, err
 	}
-	override := testEncodeConversionOverride(source, job, input.LabTrackOverride, assetConversionOverrides(h.db))
+	labTrackOverride := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+	override := testEncodeConversionOverride(source, job, labTrackOverride, assetConversionOverrides(h.db))
 	profile = applyAssetConversionOverrideToProfile(profile, override)
 	profile, err = resolveAutomaticFrameStructure(h.db, path, profile)
 	if err != nil {
@@ -356,6 +360,12 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
 		profile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
 	}
+	if frozen, ok := job.ProfileSnapshot[cadenceAnalysisSnapshotKey]; ok {
+		profile.WorkerConfig[cadenceAnalysisSnapshotKey] = frozen
+	}
+	if frozen, ok := job.ProfileSnapshot[cadenceRecommendationSnapshotKey]; ok {
+		profile.WorkerConfig[cadenceRecommendationSnapshotKey] = frozen
+	}
 	audio, err := worker.audioProfileForJob(job)
 	if err != nil {
 		return resolvedTestEncode{}, err
@@ -364,6 +374,18 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution,
 	})
 	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested}, nil
+}
+
+func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONMap, explicit AssetConversionOverrideState) AssetConversionOverrideState {
+	if len(profile) == 0 {
+		return explicit
+	}
+	resolved := resolveTrackProfileForAsset(db, mediaPath, cloneTestEncodeJSONMap(profile))
+	var semantic AssetConversionOverrideState
+	if encoded, err := json.Marshal(resolved); err != nil || json.Unmarshal(encoded, &semantic) != nil {
+		return explicit
+	}
+	return mergeTrackProfileBelowAssetOverride(semantic, explicit)
 }
 
 func testEncodeConversionOverride(source string, job models.QueueJob, labOverride AssetConversionOverrideState, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {

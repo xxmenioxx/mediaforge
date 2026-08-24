@@ -1534,6 +1534,15 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 	if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
 		snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
 	}
+	if analysis, ok := decodeCadenceAnalysis(scan.CadenceAnalysis); ok {
+		snapshot[cadenceAnalysisSnapshotKey] = scan.CadenceAnalysis
+		if _, recommendationOK := decodeCadenceRecommendation(scan.CadenceRecommendation); !recommendationOK {
+			snapshot[cadenceRecommendationSnapshotKey] = cadenceRecommendationMap(recommendCadence(analysis))
+		}
+	}
+	if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
+		snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
+	}
 }
 
 func (h QueueHandler) profileCaptureError(c *gin.Context, err error) {
@@ -1567,7 +1576,7 @@ func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, e
 	var jobs []models.QueueJob
 	query := h.db.
 		Where("dismissed_at IS NULL").
-		Where("status <> ?", JobStatusCanceled).
+		Where("status IN ?", []string{JobStatusQueued, JobStatusRunning, JobStatusCompleted}).
 		Where("published_at IS NULL")
 	if excludeID != 0 {
 		query = query.Where("id <> ?", excludeID)

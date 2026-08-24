@@ -32,6 +32,8 @@ type MediaJobPlan struct {
 	Override                     AssetConversionOverrideState
 	StreamValidationWarnings     []string
 	Interlace                    InterlaceAnalysis
+	Cadence                      CadenceAnalysis
+	CadenceRecommendation        CadenceRecommendation
 	SegmentStartSeconds          float64
 	SegmentDurationSeconds       int
 	OutputMetadata               map[string]string
@@ -181,7 +183,9 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	}
 
 	if plan.ProcessingMode == ProcessingModeFullEncode {
-		effectiveProfile := profileWithAutomaticDeinterlace(plan.Profile, plan.Interlace)
+		effectiveProfile := profileWithResolvedFieldAndCadenceModes(plan.Profile, plan.Interlace)
+		effectiveProfile = profileWithAutomaticDeinterlace(effectiveProfile, plan.Interlace)
+		effectiveProfile = profileWithCadenceOutputDecision(effectiveProfile, plan.Cadence, plan.CadenceRecommendation)
 		if len(plan.Streams.Video) > 0 {
 			effectiveProfile = profileWithFinalColorPolicy(effectiveProfile, plan.Streams.Video[0], resolvedVideoEncoder(effectiveProfile))
 		}
@@ -191,6 +195,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		}
 		args = append(args, videoCodecArgsForSource(effectiveProfile, source)...)
 		args = append(args, videoWorkerArgsForSource(effectiveProfile, source)...)
+		args = append(args, cadenceOutputArgs(effectiveProfile)...)
 		args = append(args, videoColorMetadataArgs(effectiveProfile)...)
 	} else {
 		args = append(args, "-c:v", "copy")
@@ -349,7 +354,8 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 	}
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
-	if existing != "" && !strings.Contains(existing, "bwdif=") && !strings.Contains(existing, "yadif=") {
+	hasMotionFilter := strings.Contains(existing, "bwdif=") || strings.Contains(existing, "yadif=") || strings.Contains(existing, "fieldmatch") || strings.Contains(existing, "decimate")
+	if existing != "" && !hasMotionFilter {
 		if filter != "" {
 			filter += ","
 		}
@@ -567,6 +573,8 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	}
 	processingMode := mediaProcessingMode(profile)
 	analysis := InterlaceAnalysis{Status: interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: normalizeFieldOrder(fieldOrder), Source: "ffprobe"}
+	cadence := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "unknown"}
+	cadenceRecommendation := CadenceRecommendation{Version: 1, Operation: "review"}
 	if processingMode == ProcessingModeFullEncode {
 		if frozen, ok := decodeInterlaceAnalysis(profile.WorkerConfig[interlaceAnalysisSnapshotKey]); ok {
 			analysis = frozen
@@ -578,6 +586,17 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 				analysis.AverageFrameRate = streams.Video[0].FrameRate
 			}
 		}
+		if frozen, ok := decodeCadenceAnalysis(profile.WorkerConfig[cadenceAnalysisSnapshotKey]); ok {
+			cadence = frozen
+		} else if len(streams.Video) > 0 {
+			cadence = analyzeCadence(streams.Video[0].Codec, streams.Video[0].FrameRate, analysis)
+		}
+		if frozen, ok := decodeCadenceRecommendation(profile.WorkerConfig[cadenceRecommendationSnapshotKey]); ok {
+			cadenceRecommendation = frozen
+		} else {
+			cadenceRecommendation = recommendCadence(cadence)
+		}
+		profile = profileWithCadenceOutputDecision(profile, cadence, cadenceRecommendation)
 	}
 	qualityAnalysisPath := strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]))
 	if qualityAnalysisPath == "" {
@@ -591,15 +610,17 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
 	profile = resolveHEVCLevel(profile, streams)
 	return MediaJobPlan{
-		InputPath:       inputPath,
-		SourceAssetPath: inputPath,
-		OutputPath:      outputPath,
-		Profile:         profile,
-		AudioProfile:    audioProfile,
-		Overwrite:       overwrite,
-		ProcessingMode:  processingMode,
-		Streams:         streams,
-		Interlace:       analysis,
+		InputPath:             inputPath,
+		SourceAssetPath:       inputPath,
+		OutputPath:            outputPath,
+		Profile:               profile,
+		AudioProfile:          audioProfile,
+		Overwrite:             overwrite,
+		ProcessingMode:        processingMode,
+		Streams:               streams,
+		Interlace:             analysis,
+		Cadence:               cadence,
+		CadenceRecommendation: cadenceRecommendation,
 	}, nil
 }
 
@@ -856,6 +877,15 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
+	}
+	if value := normalizedFieldStructureMode(override.FieldStructureMode); value != "" {
+		workerConfig["fieldStructureMode"] = value
+	}
+	if value := normalizedCadenceMode(override.CadenceMode); value != "" {
+		workerConfig["cadenceMode"] = value
+	}
+	if value := normalizedCadenceFieldOrder(override.CadenceFieldOrder); value != "" {
+		workerConfig["cadenceFieldOrder"] = value
 	}
 	if override.UseHardwareIfAvailable != nil {
 		workerConfig["useHardwareIfAvailable"] = *override.UseHardwareIfAvailable

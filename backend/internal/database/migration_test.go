@@ -184,6 +184,12 @@ func TestMigrateAddsDraftIntentAndSnapshotRecommendationColumns(t *testing.T) {
 	if !db.Migrator().HasColumn(&models.ScanResult{}, "hevc_level_recommendation") {
 		t.Fatal("scan_results.hevc_level_recommendation was not migrated")
 	}
+	if !db.Migrator().HasColumn(&models.ScanResult{}, "cadence_analysis") {
+		t.Fatal("expected cadence_analysis scan column")
+	}
+	if !db.Migrator().HasColumn(&models.ScanResult{}, "cadence_recommendation") {
+		t.Fatal("expected cadence_recommendation scan column")
+	}
 }
 
 func TestMigrateAddsTestEncodeLifecycleTables(t *testing.T) {

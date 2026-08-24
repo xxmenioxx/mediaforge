@@ -72,6 +72,8 @@ import { TrackProfileResolutionPreview } from '../components/TrackProfileResolut
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
+import { FrameCadenceControls } from '../components/FrameCadenceControls';
+import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -210,14 +212,6 @@ const videoEncoderOptions = [
   { value: 'hevc_videotoolbox', label: 'Apple VideoToolbox', description: 'HEVC hardware encoding on supported Apple Silicon and Intel Macs.' },
   { value: 'hevc_amf', label: 'AMD AMF', description: 'Fast HEVC hardware encoding on supported AMD GPUs.' },
   { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
-] as const;
-
-const deinterlaceOptions = [
-  { value: 'off', label: 'Off' },
-  { value: 'auto', label: 'Auto at conversion (uses Analysis)' },
-  { value: 'force', label: 'Force · bwdif (single-rate)' },
-  { value: 'ivtc_tff', label: 'Inverse telecine · fieldmatch + decimate (TFF)' },
-  { value: 'ivtc_bff', label: 'Inverse telecine · fieldmatch + decimate (BFF)' },
 ] as const;
 
 const denoiseOptions = [
@@ -1373,8 +1367,12 @@ export function ProfileLabPage() {
       ? ['The source is already HEVC and no definite filter correction was detected, so video copy avoids generational loss.']
       : [`CRF ${suggestion.insights.recommendedCrf} was selected from the detected ${scan.width}×${scan.height} source.`];
     let deinterlaceMode = 'auto';
+    let fieldStructureMode = 'auto';
+    let cadenceMode = 'auto';
+    let cadenceFieldOrder = 'auto';
     if (interlaceStatus === 'progressive') {
       deinterlaceMode = 'off';
+      fieldStructureMode = 'preserve';
       videoReasons.push('The analyzed motion window is progressive, so deinterlacing was disabled.');
       if (scan.interlaceAnalysis.fieldOrderMismatch) {
         videoReasons.push(
@@ -1383,6 +1381,8 @@ export function ProfileLabPage() {
       }
     } else if (interlaceStatus === 'interlaced') {
       deinterlaceMode = 'force';
+      fieldStructureMode = 'deinterlace';
+      cadenceMode = 'preserve';
       videoReasons.push('Interlacing was detected, so bwdif was enabled for the video draft.');
     } else if (interlaceStatus === 'telecine') {
       const detectedOrder = scan.interlaceAnalysis.detectedFieldOrder?.toLowerCase()
@@ -1390,6 +1390,9 @@ export function ProfileLabPage() {
         || '';
       const validatedIVTC = Boolean(scan.interlaceAnalysis.recommendedMode && scan.interlaceAnalysis.recommendedFilter);
       deinterlaceMode = validatedIVTC ? scan.interlaceAnalysis.recommendedMode! : 'auto';
+      fieldStructureMode = 'preserve';
+      cadenceMode = validatedIVTC ? 'inverse_telecine' : 'auto';
+      cadenceFieldOrder = detectedOrder === 'bff' ? 'bff' : detectedOrder === 'tff' ? 'tff' : 'auto';
       videoReasons.push(`Telecine cadence was validated; inverse telecine ${deinterlaceMode === 'ivtc_bff' ? 'BFF' : 'TFF'} was enabled with ${scan.interlaceAnalysis.recommendedFilter}.`);
       if (scan.interlaceAnalysis.fieldOrderMismatch) {
         videoReasons.push(
@@ -1418,6 +1421,9 @@ export function ProfileLabPage() {
     const workerConfig = {
       ...proposed.workerConfig,
       deinterlaceMode,
+      fieldStructureMode,
+      cadenceMode,
+      cadenceFieldOrder,
       correctProgressiveFieldMetadata: scan.interlaceAnalysis.fieldOrderMismatch === true,
       denoise: 'off',
       deflicker: 'off',
@@ -3005,24 +3011,13 @@ export function ProfileLabPage() {
                                   <Stack spacing={1.5}>
                                     <Typography fontWeight={700} variant="body2">Cleanup filters</Typography>
                                     <Grid container spacing={1.5}>
-                                <Grid size={{ xs: 12, sm: 6 }}>
-                                  <TextField
-                                    label="Deinterlace"
-                                    value={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deinterlaceMode', event.target.value)}
-                                    helperText={videoFilterControlValue(videoDraft, 'deinterlaceMode', 'auto') === 'force'
-                                      ? 'FFmpeg: bwdif=mode=send_frame:parity=auto:deint=all · output metadata becomes progressive automatically.'
-                                      : 'Output field metadata follows the analyzed correction automatically.'}
-                                    select
-                                    fullWidth
-                                  >
-                                    {deinterlaceOptions.map((option) => (
-                                      <MenuItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
-                                </Grid>
+                                <FrameCadenceControls
+                                  {...semanticMotionModes(videoDraft.workerConfig)}
+                                  scan={selectedAssetSnapshot}
+                                  onFieldStructureChange={(value) => updateVideoFilterControl(setVideoDraft, 'fieldStructureMode', value)}
+                                  onCadenceChange={(value) => updateVideoFilterControl(setVideoDraft, 'cadenceMode', value)}
+                                  onCadenceFieldOrderChange={(value) => updateVideoFilterControl(setVideoDraft, 'cadenceFieldOrder', value)}
+                                />
                                 <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
                                     label="Denoise"
@@ -3931,6 +3926,7 @@ export function ProfileLabPage() {
               audioFilterChainEdited,
               previewAudioFilters,
             ) as unknown as Record<string, unknown>,
+            labTrackProfile: normalizedTrackProfileDraft() as unknown as Record<string, unknown>,
             labTrackOverride: cleanTrackConversionOverride(trackConversionDraft),
             processingMode: 'full_encode',
           }}
@@ -5403,6 +5399,10 @@ function hardwareEncodingSupportedForCodec(codec: string) {
 
 function synchronizeLabAuthoritativeContract(profile: ProfileInput): ProfileInput {
   const workerConfig = { ...profile.workerConfig };
+  const motion = semanticMotionModes(workerConfig);
+  workerConfig.fieldStructureMode = motion.fieldStructureMode;
+  workerConfig.cadenceMode = motion.cadenceMode;
+  workerConfig.cadenceFieldOrder = motion.cadenceFieldOrder;
   delete workerConfig.processingMode;
   profile = { ...profile, workerConfig };
   const codec = profile.videoCodec.toLowerCase();
@@ -5520,7 +5520,6 @@ function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<Pro
 
 function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
-  const deinterlaceMode = stringValue(workerConfig.deinterlaceMode, 'auto');
   const correctProgressiveFieldMetadata = workerConfig.correctProgressiveFieldMetadata === true;
   const denoise = stringValue(workerConfig.denoise, 'off');
   const deflicker = stringValue(workerConfig.deflicker, 'off');
@@ -5540,16 +5539,7 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const blackPoint = numericWorkerConfigValue(workerConfig, 'blackPoint', 0);
   const whitePoint = numericWorkerConfigValue(workerConfig, 'whitePoint', 100);
 
-  if (deinterlaceMode === 'force') {
-    filters.push('bwdif=mode=send_frame:parity=auto:deint=all');
-    filters.push('setfield=prog');
-  } else if (deinterlaceMode === 'ivtc_tff') {
-    filters.push('fieldmatch=order=tff,decimate');
-    filters.push('setfield=prog');
-  } else if (deinterlaceMode === 'ivtc_bff') {
-    filters.push('fieldmatch=order=bff,decimate');
-    filters.push('setfield=prog');
-  } else if (correctProgressiveFieldMetadata) {
+  if (correctProgressiveFieldMetadata) {
     filters.push('setfield=prog');
   }
   if (deflicker === 'light') {

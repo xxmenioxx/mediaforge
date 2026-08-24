@@ -297,6 +297,19 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 	if worker == nil {
 		worker = map[string]interface{}{}
 	}
+	if cadence, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey]); ok &&
+		cadence.Operation == "remove_soft_telecine" && cadence.Confidence >= 0.95 {
+		mode := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["cadenceMode"])))
+		filters := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoFilters"])))
+		if mode != "preserve" && mode != "off" && !strings.Contains(filters, "fps=") {
+			workerCopy := make(map[string]interface{}, len(worker)+1)
+			for key, value := range worker {
+				workerCopy[key] = value
+			}
+			workerCopy["effectiveOutputFrameRate"] = cadence.OutputFrameRate
+			worker = workerCopy
+		}
+	}
 	if override := conversionOverrideForJob(job, nil); normalizedHEVCLevelMode(override.HEVCLevelMode) != "" {
 		workerCopy := make(map[string]interface{}, len(worker)+2)
 		for key, value := range worker {
@@ -318,8 +331,9 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 	fields["sampleAspectRatio"] = frameFidelityValue(source, output, "sampleAspectRatio", strings.Contains(filters, "crop=") || strings.Contains(filters, "setsar="))
 	fields["displayAspectRatio"] = frameFidelityValue(source, output, "displayAspectRatio", strings.Contains(filters, "setdar="))
 	fields["frameRate"] = frameFidelityValue(source, output, "frameRate", strings.Contains(filters, "decimate") || strings.Contains(filters, "fps="))
+	fields["cadenceOutputFrameRate"] = validateCadenceOutputFrameRate(worker, output)
 	fields["chromaLocation"] = frameFidelityValue(source, output, "chromaLocation", false)
-	fields["fieldOrder"] = frameFidelityValue(source, output, "fieldOrder", strings.Contains(filters, "bwdif") || strings.Contains(filters, "yadif") || strings.Contains(filters, "deinterlace"))
+	fields["fieldOrder"] = frameFidelityValue(source, output, "fieldOrder", strings.Contains(filters, "bwdif") || strings.Contains(filters, "yadif") || strings.Contains(filters, "deinterlace") || strings.Contains(filters, "fieldmatch") || strings.Contains(filters, "decimate"))
 	fields["pixelFormat"] = frameFidelityValue(source, output, "pixelFormat", true)
 	fields["bitDepth"] = frameFidelityValue(source, output, "bitDepth", true)
 	fields["frameSize"] = frameFidelityValue(source, output, "frameSize", strings.Contains(filters, "crop=") || strings.Contains(filters, "scale="))
@@ -333,6 +347,25 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 		}
 	}
 	return models.JSONMap{"status": status, "source": source, "output": output, "fields": fields}
+}
+
+func validateCadenceOutputFrameRate(worker map[string]interface{}, output models.JSONMap) models.JSONMap {
+	if worker == nil {
+		return models.JSONMap{"status": "not_applicable"}
+	}
+	expected := strings.TrimSpace(stringFromUnknown(worker["effectiveOutputFrameRate"]))
+	if expected == "" {
+		return models.JSONMap{"status": "not_applicable"}
+	}
+	observed := strings.TrimSpace(stringFromUnknown(output["frameRate"]))
+	realObserved := strings.TrimSpace(stringFromUnknown(output["realFrameRate"]))
+	status := "validated"
+	if parseFrameRateValue(observed) <= 0 {
+		status = "unverified"
+	} else if !nearFPS(parseFrameRateValue(observed), parseFrameRateValue(expected), 0.01) || realObserved != "" && !nearFPS(parseFrameRateValue(realObserved), parseFrameRateValue(expected), 0.01) {
+		status = "mismatch"
+	}
+	return models.JSONMap{"expected": expected, "avgFrameRate": observed, "realFrameRate": realObserved, "status": status}
 }
 
 func validateHEVCLevelField(worker map[string]interface{}, source, output models.JSONMap) models.JSONMap {
@@ -464,6 +497,7 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 			"sampleAspectRatio":  strings.TrimSpace(stringFromUnknown(stream["sample_aspect_ratio"])),
 			"displayAspectRatio": strings.TrimSpace(stringFromUnknown(stream["display_aspect_ratio"])),
 			"frameRate":          strings.TrimSpace(stringFromUnknown(stream["avg_frame_rate"])),
+			"realFrameRate":      strings.TrimSpace(stringFromUnknown(stream["r_frame_rate"])),
 			"width":              stream["width"],
 			"height":             stream["height"],
 			"bitrate":            stream["bit_rate"],

@@ -96,6 +96,23 @@ func TestResolveAutomaticFrameStructureUsesAssetSnapshot(t *testing.T) {
 	}
 }
 
+func TestResolveAutomaticFrameStructureUsesResolvedCadenceFPS(t *testing.T) {
+	db := queueJobTestDB(t)
+	mediaPath := "/media/raw/dvd.mkv"
+	scan := models.ScanResult{Path: mediaPath, VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "30000/1001"}}, FrameStructureAnalysis: models.JSONMap{"averageGopLength": 72.0, "maxConsecutiveBFrames": 2, "confidence": "high"}}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{WorkerConfig: models.JSONMap{"frameStructureMode": "auto", "effectiveOutputFrameRate": "24000/1001"}}
+	effective, err := resolveAutomaticFrameStructure(db, mediaPath, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 90 {
+		t.Fatalf("GOP used declared FPS instead of resolved 23.976: %d", got)
+	}
+}
+
 func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

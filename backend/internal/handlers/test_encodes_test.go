@@ -105,6 +105,38 @@ func TestLabDraftTestEncodeDoesNotApplyPersistedAssetVideoOverrides(t *testing.T
 	assertNotContains(t, command, "-bf 1")
 }
 
+func TestLabDraftTrackProfileResolvesLanguageRulesForTestEncode(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-lab-track-language-rules")
+	path := filepath.Clean("/media/raw/movie.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path:         path,
+		VideoStreams: models.JSONList{map[string]any{"index": 0}},
+		AudioStreams: models.JSONList{
+			map[string]any{"index": 1, "language": "spa", "default": true},
+			map[string]any{"index": 2, "language": "eng"},
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	override := resolveLabTrackOverride(db, path, models.JSONMap{
+		"scope": "path", "videoMode": "first", "audioMode": "languages",
+		"audioLanguages": models.JSONList{"spa"}, "dropCommentary": true,
+	}, AssetConversionOverrideState{})
+	if len(override.KeepAudioStreams) != 1 || override.KeepAudioStreams[0] != 1 {
+		t.Fatalf("LAB Test Encode kept audio streams %#v, want only Spanish stream 1", override.KeepAudioStreams)
+	}
+
+	plan := MediaJobPlan{
+		Profile:  models.Profile{VideoCodec: "x265", AudioCodec: "copy"},
+		Streams:  MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Audio: []MediaAudioStream{{Index: 1}, {Index: 2}}},
+		Override: override,
+	}
+	command := shellJoin(appendSelectedStreamMaps(nil, plan))
+	assertContains(t, command, "-map 0:1")
+	assertNotContains(t, command, "-map 0:2")
+}
+
 func TestEffectiveAssetTestEncodeKeepsPersistedVideoOverridePrecedence(t *testing.T) {
 	path := "/media/video/asset.mkv"
 	job := models.QueueJob{MediaPath: path, ProcessingMode: ProcessingModeFullEncode}

@@ -19,6 +19,49 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestAssetHasOpenJobBlocksOnlyActiveLifecycle(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-open-job-status?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewQueueHandler(db)
+	tests := []struct {
+		status      string
+		publishedAt *time.Time
+		want        bool
+	}{
+		{status: JobStatusQueued, want: true},
+		{status: JobStatusRunning, want: true},
+		{status: JobStatusCompleted, want: true},
+		{status: JobStatusFailed, want: false},
+		{status: JobStatusCanceled, want: false},
+	}
+	for index, test := range tests {
+		path := fmt.Sprintf("/media/asset-%d.mkv", index)
+		if err := db.Create(&models.QueueJob{MediaPath: path, Status: test.status, PublishedAt: test.publishedAt}).Error; err != nil {
+			t.Fatal(err)
+		}
+		got, err := handler.assetHasOpenJob(path, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Errorf("status %s open=%v, want %v", test.status, got, test.want)
+		}
+	}
+	publishedAt := time.Now()
+	path := "/media/published.mkv"
+	if err := db.Create(&models.QueueJob{MediaPath: path, Status: JobStatusCompleted, PublishedAt: &publishedAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := handler.assetHasOpenJob(path, 0); err != nil || got {
+		t.Fatalf("published job open=%v err=%v", got, err)
+	}
+}
+
 func TestQueueLibraryReplacementRejectsAliasOfActivePublication(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-library-alias?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -339,7 +382,9 @@ func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
 			models.JSONMap{"start": 50.0, "status": "interlaced"},
 		},
 	}
-	if err := db.Create(&models.ScanResult{Path: path, FileName: "hybrid.mkv", InterlaceAnalysis: analysis}).Error; err != nil {
+	cadence := models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "mixed", "recommendedAction": "review"}
+	cadenceRecommendation := models.JSONMap{"version": 1.0, "operation": "review", "confidence": .75, "reason": "mixed samples"}
+	if err := db.Create(&models.ScanResult{Path: path, FileName: "hybrid.mkv", InterlaceAnalysis: analysis, CadenceAnalysis: cadence, CadenceRecommendation: cadenceRecommendation}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,6 +395,13 @@ func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
 	frozen, ok := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
 	if !ok || frozen.Status != "hybrid" || len(frozen.Windows) != 2 {
 		t.Fatalf("expected immutable v3 motion snapshot, got %#v", job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	}
+	frozenCadence, ok := decodeCadenceAnalysis(job.ProfileSnapshot[cadenceAnalysisSnapshotKey])
+	if !ok || frozenCadence.Type != "mixed" {
+		t.Fatalf("expected immutable cadence snapshot, got %#v", job.ProfileSnapshot[cadenceAnalysisSnapshotKey])
+	}
+	if frozenRecommendation, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey]); !ok || frozenRecommendation.Operation != "review" {
+		t.Fatalf("expected immutable cadence recommendation, got %#v", job.ProfileSnapshot[cadenceRecommendationSnapshotKey])
 	}
 }
 

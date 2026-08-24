@@ -98,6 +98,15 @@ func TestHEVCLevelAutoRecalculatesWhileRecommendedKeepsStoredValue(t *testing.T)
 	}
 }
 
+func TestHEVCLevelAutoUsesResolvedCadenceFPS(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "effectiveOutputFrameRate": "24000/1001"}}
+	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1280, Height: 720, FrameRate: "60/1"}}})
+	recommendation, ok := resolved.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	if !ok || !nearFPS(recommendation.FPS, 24000.0/1001.0, .001) {
+		t.Fatalf("Level recommendation ignored resolved cadence FPS: %#v", resolved.WorkerConfig)
+	}
+}
+
 func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
 	profile := applyAssetConversionOverrideToProfile(
 		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}},

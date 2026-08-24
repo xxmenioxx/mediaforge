@@ -251,7 +251,11 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 		source := streams.Video[0]
 		// CRF and ICQ do not provide a target output bitrate up front. The source
 		// bitrate must not be treated as an output requirement.
-		recommendation := recommendHEVCLevel(source.Width, source.Height, parseFrameRateValue(source.FrameRate), 0)
+		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+		if fps <= 0 {
+			fps = parseFrameRateValue(source.FrameRate)
+		}
+		recommendation := recommendHEVCLevel(source.Width, source.Height, fps, 0)
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
 	} else if mode == "recommended" && requested == "" {
@@ -259,7 +263,11 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 			return profile
 		}
 		source := streams.Video[0]
-		recommendation := recommendHEVCLevel(source.Width, source.Height, parseFrameRateValue(source.FrameRate), 0)
+		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+		if fps <= 0 {
+			fps = parseFrameRateValue(source.FrameRate)
+		}
+		recommendation := recommendHEVCLevel(source.Width, source.Height, fps, 0)
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
 		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Stored Recommended Level was unavailable; MVForge recalculated it from the current asset."

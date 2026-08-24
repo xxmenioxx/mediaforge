@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -67,13 +69,23 @@ type InterlaceWindow struct {
 }
 
 type FrameSignalSummary struct {
-	DecodedFrames       int    `json:"decodedFrames"`
-	InterlacedFrames    int    `json:"interlacedFrames"`
-	ProgressiveFrames   int    `json:"progressiveFrames"`
-	TopFieldFirstFrames int    `json:"topFieldFirstFrames"`
-	BottomFirstFrames   int    `json:"bottomFirstFrames"`
-	RepeatPictFrames    int    `json:"repeatPictFrames"`
-	Cadence             string `json:"cadence,omitempty"`
+	DecodedFrames       int                   `json:"decodedFrames"`
+	InterlacedFrames    int                   `json:"interlacedFrames"`
+	ProgressiveFrames   int                   `json:"progressiveFrames"`
+	TopFieldFirstFrames int                   `json:"topFieldFirstFrames"`
+	BottomFirstFrames   int                   `json:"bottomFirstFrames"`
+	RepeatPictFrames    int                   `json:"repeatPictFrames"`
+	Cadence             string                `json:"cadence,omitempty"`
+	ActualTimespan      float64               `json:"actualTimespan,omitempty"`
+	EffectiveFPS        float64               `json:"effectiveFps,omitempty"`
+	TimestampDeltas     TimestampDeltaSummary `json:"timestampDeltas,omitempty"`
+}
+
+type TimestampDeltaSummary struct {
+	Count    int       `json:"count"`
+	Minimum  float64   `json:"minimum,omitempty"`
+	Maximum  float64   `json:"maximum,omitempty"`
+	Dominant []float64 `json:"dominant,omitempty"`
 }
 
 type IVTCValidation struct {
@@ -99,9 +111,11 @@ type IVTCWindowValidation struct {
 
 type ffprobeFrameResponse struct {
 	Frames []struct {
-		InterlacedFrame int `json:"interlaced_frame"`
-		TopFieldFirst   int `json:"top_field_first"`
-		RepeatPict      int `json:"repeat_pict"`
+		InterlacedFrame     int    `json:"interlaced_frame"`
+		TopFieldFirst       int    `json:"top_field_first"`
+		RepeatPict          int    `json:"repeat_pict"`
+		BestEffortTimestamp string `json:"best_effort_timestamp_time"`
+		PacketDuration      string `json:"pkt_duration_time"`
 	} `json:"frames"`
 }
 
@@ -115,6 +129,10 @@ func detectInterlace(path, fieldOrder string, duration float64, windowSeconds in
 }
 
 func detectInterlaceContext(ctx context.Context, path, fieldOrder string, duration float64, windowSeconds int) InterlaceAnalysis {
+	return detectInterlaceWithFrameSignalsContext(ctx, path, fieldOrder, duration, windowSeconds, true)
+}
+
+func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrder string, duration float64, windowSeconds int, collectFrameSignals bool) InterlaceAnalysis {
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
 	containerOrder := normalizeFieldOrder(fieldOrder)
 	analysis := InterlaceAnalysis{
@@ -136,9 +154,11 @@ func detectInterlaceContext(ctx context.Context, path, fieldOrder string, durati
 		analysis.SampledFrames += sample.SampledFrames
 		analysis.SampledAt = append(analysis.SampledAt, start)
 		window := interlaceWindowFromSample(start, windowSeconds, sample)
-		if signals, signalsOK := runFrameSignalsContext(ctx, path, start, windowSeconds); signalsOK {
-			window.FrameSignals = signals
-			analysis.FrameSignalSampleCount++
+		if collectFrameSignals {
+			if signals, signalsOK := runFrameSignalsContext(ctx, path, start, windowSeconds); signalsOK {
+				window.FrameSignals = signals
+				analysis.FrameSignalSampleCount++
+			}
 		}
 		classifyInterlaceWindow(&window)
 		analysis.Windows = append(analysis.Windows, window)
@@ -192,7 +212,7 @@ func runFrameSignalsContext(parent context.Context, path string, start float64, 
 	defer cancel()
 	interval := fmt.Sprintf("%.3f%%+%d", start, seconds)
 	args := []string{"-v", "error", "-select_streams", "v:0", "-read_intervals", interval,
-		"-show_frames", "-show_entries", "frame=interlaced_frame,top_field_first,repeat_pict", "-of", "json", path}
+		"-show_frames", "-show_entries", "frame=best_effort_timestamp_time,pkt_duration_time,interlaced_frame,top_field_first,repeat_pict", "-of", "json", path}
 	output, err := exec.CommandContext(ctx, "ffprobe", args...).Output()
 	if err != nil {
 		return FrameSignalSummary{}, false
@@ -202,8 +222,21 @@ func runFrameSignalsContext(parent context.Context, path string, start float64, 
 		return FrameSignalSummary{}, false
 	}
 	result := FrameSignalSummary{DecodedFrames: len(response.Frames)}
+	firstTimestamp, lastTimestamp := -1.0, -1.0
+	previousTimestamp := -1.0
+	deltas := []float64{}
 	repeatPositions := make([]int, 0)
 	for index, frame := range response.Frames {
+		if timestamp := parseFloat(frame.BestEffortTimestamp); timestamp >= 0 {
+			if firstTimestamp < 0 {
+				firstTimestamp = timestamp
+			}
+			lastTimestamp = timestamp
+			if previousTimestamp >= 0 && timestamp > previousTimestamp {
+				deltas = append(deltas, timestamp-previousTimestamp)
+			}
+			previousTimestamp = timestamp
+		}
 		if frame.InterlacedFrame != 0 {
 			result.InterlacedFrames++
 			if frame.TopFieldFirst != 0 {
@@ -220,7 +253,44 @@ func runFrameSignalsContext(parent context.Context, path string, start float64, 
 		}
 	}
 	result.Cadence = describeRepeatCadence(repeatPositions)
+	if firstTimestamp >= 0 && lastTimestamp >= firstTimestamp {
+		result.ActualTimespan = lastTimestamp - firstTimestamp
+		if result.ActualTimespan > 0 {
+			result.EffectiveFPS = float64(max(0, result.DecodedFrames-1)) / result.ActualTimespan
+		}
+	}
+	result.TimestampDeltas = summarizeTimestampDeltas(deltas)
 	return result, true
+}
+
+func summarizeTimestampDeltas(deltas []float64) TimestampDeltaSummary {
+	result := TimestampDeltaSummary{Count: len(deltas)}
+	if len(deltas) == 0 {
+		return result
+	}
+	result.Minimum, result.Maximum = deltas[0], deltas[0]
+	buckets := map[int]int{}
+	for _, delta := range deltas {
+		result.Minimum = math.Min(result.Minimum, delta)
+		result.Maximum = math.Max(result.Maximum, delta)
+		buckets[int(math.Round(delta*1000))]++
+	}
+	type bucketCount struct{ ms, count int }
+	ranked := []bucketCount{}
+	for ms, count := range buckets {
+		ranked = append(ranked, bucketCount{ms: ms, count: count})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].count == ranked[j].count {
+			return ranked[i].ms < ranked[j].ms
+		}
+		return ranked[i].count > ranked[j].count
+	})
+	for index := 0; index < min(2, len(ranked)); index++ {
+		result.Dominant = append(result.Dominant, float64(ranked[index].ms)/1000)
+	}
+	sort.Float64s(result.Dominant)
+	return result
 }
 
 func describeRepeatCadence(positions []int) string {
