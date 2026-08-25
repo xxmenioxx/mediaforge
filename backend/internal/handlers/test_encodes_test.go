@@ -318,6 +318,74 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 	}
 }
 
+func TestMediaJobPlanWithOverridePreservesResolvedVideoDecisionThroughRender(t *testing.T) {
+	db := testEncodeTestDB(t, "media-job-plan-override-parity")
+	path := filepath.Clean("/media/raw/soft-telecine.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path: path, VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "30000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{"averageGopLength": 72.0, "maxConsecutiveBFrames": 2, "confidence": "high"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeJSON := `{"format":{"duration":"120.0","bit_rate":"5000000"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","field_order":"progressive","pix_fmt":"yuv420p","width":720,"height":480,"avg_frame_rate":"30000/1001","r_frame_rate":"30000/1001","sample_aspect_ratio":"1:1","display_aspect_ratio":"3:2"}]}`
+	probeScript := "#!/bin/sh\nprintf '%s\\n' '" + probeJSON + "'\n"
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	analysis := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "soft_telecine", DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0, EffectivePictureRate: "24000/1001", EffectiveFPS: 24000.0 / 1001.0, Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+	interlace := InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", RecommendedAction: "preserve"}
+	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "cadenceMode": "auto", "frameStructureMode": "auto", "hevcLevelMode": "auto", "pixFmt": "p010le", "finalColorPolicy": "preserve",
+		interlaceAnalysisSnapshotKey: interlace, cadenceAnalysisSnapshotKey: cadenceAnalysisMap(analysis), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	override := AssetConversionOverrideState{VideoFilters: "scale=1280:720"}
+	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Codec: "h264", FieldOrder: "progressive", PixelFormat: "yuv420p", Width: 720, Height: 480, FrameRate: "30000/1001"}}, Duration: 120, TotalBitrate: 5_000_000}
+	job := models.QueueJob{MediaPath: path, ProfileSnapshot: models.JSONMap{
+		interlaceAnalysisSnapshotKey: interlace, cadenceAnalysisSnapshotKey: cadenceAnalysisMap(analysis), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+
+	effective, err := resolveQueueVideoProfile(db, path, job, requested, override, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective = resolveMediaJobVideoProfile(effective, streams, path, interlace, analysis, recommendation)
+	before := effectiveVideoDecision(effective)
+	if workerStringValue(before["effectiveFrameRate"]) != "24000/1001" || workerIntValue(before["effectiveWidth"], 0) != 1280 || workerIntValue(before["effectiveHeight"], 0) != 720 || workerStringValue(before["hevcLevel"]) != "3.1" {
+		t.Fatalf("pre-plan effective decision is incomplete: %#v", before)
+	}
+	if workerIntValue(before["gopFrames"], 0) <= 0 {
+		t.Fatalf("pre-plan effective decision has no automatic GOP: %#v", before)
+	}
+
+	plan, err := buildMediaJobPlanWithOverride(path, "/tmp/test.mkv", effective, nil, true, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := effectiveVideoDecision(plan.Profile)
+	if configurationHash(after) != configurationHash(before) {
+		t.Fatalf("final MediaJobPlan changed the resolved video decision: before=%#v after=%#v", before, after)
+	}
+	if got := workerStringValue(plan.Profile.WorkerConfig["videoFilters"]); !strings.Contains(got, "scale=1280:720") {
+		t.Fatalf("asset override was not retained in final plan: videoFilters=%q", got)
+	}
+
+	decisionBeforeRender := configurationHash(after)
+	command := shellJoin((FFmpegCommandBuilder{}).Build(plan))
+	if decisionAfterRender := configurationHash(effectiveVideoDecision(plan.Profile)); decisionAfterRender != decisionBeforeRender {
+		t.Fatalf("rendering mutated final MediaJobPlan: before=%s after=%s", decisionBeforeRender, decisionAfterRender)
+	}
+	assertContains(t, command, "-vf fps=24000/1001,scale=1280:720")
+	assertContains(t, command, fmt.Sprintf("-g %d", workerIntValue(after["gopFrames"], 0)))
+	if !strings.Contains(command, "-level:v 31") && !strings.Contains(command, "level-idc=3.1") {
+		t.Fatalf("command did not render the effective HEVC Level 3.1: %s", command)
+	}
+}
+
 func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {
 	db := testEncodeTestDB(t, "test-encode-ffmpeg-command-column")
 	test := models.TestEncode{SourcePath: "/raw/a.mkv", LibraryID: 1, ConfigurationSource: "effective_asset", Status: testEncodeWaiting, Phase: "waiting"}
