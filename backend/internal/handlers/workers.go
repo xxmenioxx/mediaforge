@@ -553,13 +553,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 	}
 
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
-	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
-	effectiveProfile = applyFrozenCadenceResolution(job, effectiveProfile)
-	effectiveProfile, err = resolveAutomaticFrameStructure(
-		h.db,
-		job.MediaPath,
-		effectiveProfile,
-	)
+	effectiveProfile, err := resolveQueueVideoProfile(h.db, job.MediaPath, job, profile, override, "")
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error": err.Error(),
@@ -753,36 +747,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	override := conversionOverrideForJob(job, assetConversionOverrides(h.db))
-	effectiveProfile := applyAssetConversionOverrideToProfile(profile, override)
-	effectiveProfile = applySelectedEncoder(effectiveProfile, selectedEncoder)
-	effectiveProfile = applyFrozenCadenceResolution(job, effectiveProfile)
-
-	effectiveProfile, err = resolveAutomaticFrameStructure(
-		h.db,
-		job.MediaPath,
-		effectiveProfile,
-	)
+	effectiveProfile, err := resolveQueueVideoProfile(h.db, job.MediaPath, job, profile, override, selectedEncoder)
 	if err != nil {
 		return job, http.StatusUnprocessableEntity, err
-	}
-	if effectiveProfile.WorkerConfig == nil {
-		effectiveProfile.WorkerConfig = models.JSONMap{}
-	} else {
-		workerConfig := models.JSONMap{}
-		for key, value := range effectiveProfile.WorkerConfig {
-			workerConfig[key] = value
-		}
-		effectiveProfile.WorkerConfig = workerConfig
-	}
-	effectiveProfile.WorkerConfig["qsvAssetAnalysisPath"] = job.MediaPath
-	if frozen, ok := job.ProfileSnapshot[interlaceAnalysisSnapshotKey]; ok {
-		effectiveProfile.WorkerConfig[interlaceAnalysisSnapshotKey] = frozen
-	}
-	if frozen, ok := job.ProfileSnapshot[cadenceAnalysisSnapshotKey]; ok {
-		effectiveProfile.WorkerConfig[cadenceAnalysisSnapshotKey] = frozen
-	}
-	if frozen, ok := job.ProfileSnapshot[cadenceRecommendationSnapshotKey]; ok {
-		effectiveProfile.WorkerConfig[cadenceRecommendationSnapshotKey] = frozen
 	}
 	outputPath := plannedStagingOutputPath(job, effectiveProfile, paths)
 	if !overwrite {
@@ -919,6 +886,24 @@ func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) m
 		profile = profileWithCadenceOutputDecision(profile, analysis, recommendation)
 	}
 	return profile
+}
+
+func resolveQueueVideoProfile(db *gorm.DB, mediaPath string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState, selectedEncoder string) (models.Profile, error) {
+	profile = applyAssetConversionOverrideToProfile(profile, override)
+	profile = applySelectedEncoder(profile, selectedEncoder)
+	profile = applyFrozenCadenceResolution(job, profile)
+	profile, err := resolveAutomaticFrameStructure(db, mediaPath, profile)
+	if err != nil {
+		return models.Profile{}, err
+	}
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["qsvAssetAnalysisPath"] = mediaPath
+	for _, key := range []string{interlaceAnalysisSnapshotKey, cadenceAnalysisSnapshotKey, cadenceRecommendationSnapshotKey} {
+		if frozen, ok := job.ProfileSnapshot[key]; ok {
+			profile.WorkerConfig[key] = frozen
+		}
+	}
+	return profile, nil
 }
 
 func refreshSnapshotBeforeExecution(

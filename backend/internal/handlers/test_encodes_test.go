@@ -249,29 +249,49 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 	}
 	analysis := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "soft_telecine", DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0, EffectivePictureRate: "24000/1001", EffectiveFPS: 24000.0 / 1001.0, Confidence: .99}
 	recommendation := CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
-	job := models.QueueJob{ProfileSnapshot: models.JSONMap{
-		cadenceAnalysisSnapshotKey: cadenceAnalysisMap(analysis), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	interlace := InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", RecommendedAction: "preserve"}
+	job := models.QueueJob{MediaPath: path, ProfileSnapshot: models.JSONMap{
+		interlaceAnalysisSnapshotKey: interlace, cadenceAnalysisSnapshotKey: cadenceAnalysisMap(analysis), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
 	}}
 	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
-		"videoEncoder": "hevc_qsv", "cadenceMode": "auto", "frameStructureMode": "auto", "hevcLevelMode": "auto", "videoFilters": "scale=1280:720",
+		"videoEncoder": "hevc_qsv", "cadenceMode": "auto", "frameStructureMode": "auto", "hevcLevelMode": "auto", "videoFilters": "scale=1280:720", "pixFmt": "p010le", "finalColorPolicy": "preserve",
 	}}
-	effective, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	streams := MediaStreamInventory{Video: []MediaStream{{
+		Index: 0, Width: 720, Height: 480, FrameRate: "30000/1001", PixelFormat: "yuv420p",
+		ColorSpace: "bt709", ColorTransfer: "bt709", ColorPrimaries: "bt709", ColorRange: "tv",
+	}}}
+	previewProfile, err := resolvePreviewVideoProfile(db, path, requested, streams, interlace, analysis, recommendation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 1920, Height: 1080, FrameRate: "30000/1001"}}}
-	effective = resolveEffectiveVideoEncodingProfile(effective, streams, path)
-	canonicalDecision := effectiveVideoDecision(effective)
-	for _, target := range []string{"preview", "test_encode", "queue"} {
-		resolved := resolveEffectiveVideoEncodingProfile(effective, streams, path)
-		if configurationHash(effectiveVideoDecision(resolved)) != configurationHash(canonicalDecision) {
-			t.Fatalf("%s effective video decision diverged: canonical=%#v target=%#v", target, canonicalDecision, effectiveVideoDecision(resolved))
+	testProfile, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testProfile = resolveMediaJobVideoProfile(testProfile, streams, path, interlace, analysis, recommendation)
+	queueProfile, err := resolveQueueVideoProfile(db, path, job, requested, AssetConversionOverrideState{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueProfile = resolveMediaJobVideoProfile(queueProfile, streams, path, interlace, analysis, recommendation)
+
+	decisions := map[string]models.JSONMap{
+		"preview": effectiveVideoDecision(previewProfile), "test_encode": effectiveVideoDecision(testProfile), "queue": effectiveVideoDecision(queueProfile),
+	}
+	canonicalHash := configurationHash(decisions["queue"])
+	for target, decision := range decisions {
+		if configurationHash(decision) != canonicalHash {
+			t.Fatalf("%s production entrypoint diverged: queue=%#v target=%#v", target, decisions["queue"], decision)
+		}
+		if workerIntValue(decision["gopFrames"], 0) <= 0 || workerIntValue(decision["maxBFrames"], 0) <= 0 {
+			t.Fatalf("%s reached rendering without frozen automatic frame structure: %#v", target, decision)
 		}
 	}
+	effective := queueProfile
 	if workerStringValue(effective.WorkerConfig["effectiveOutputFrameRate"]) != "24000/1001" || workerIntValue(effective.WorkerConfig["effectiveOutputWidth"], 0) != 1280 || workerIntValue(effective.WorkerConfig["effectiveOutputHeight"], 0) != 720 || workerStringValue(effective.WorkerConfig["hevcLevelEffective"]) != "3.1" {
 		t.Fatalf("effective snapshot is inconsistent: %#v", effective.WorkerConfig)
 	}
-	plan := MediaJobPlan{InputPath: path, OutputPath: "/tmp/test.mkv", Profile: effective, ProcessingMode: ProcessingModeFullEncode, Streams: streams, Cadence: analysis, CadenceRecommendation: recommendation, Overwrite: true}
+	plan := MediaJobPlan{InputPath: path, OutputPath: "/tmp/test.mkv", Profile: effective, ProcessingMode: ProcessingModeFullEncode, Streams: streams, Interlace: interlace, Cadence: analysis, CadenceRecommendation: recommendation, Overwrite: true}
 	decisionBeforeRender := configurationHash(effectiveVideoDecision(plan.Profile))
 	command := shellJoin((FFmpegCommandBuilder{}).Build(plan))
 	if decisionAfterRender := configurationHash(effectiveVideoDecision(plan.Profile)); decisionAfterRender != decisionBeforeRender {
@@ -282,8 +302,15 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 		t.Fatalf("command did not emit HEVC Level 3.1: %s", command)
 	}
 	assertContains(t, command, fmt.Sprintf("-g %d", workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0)))
+	previewRendered := profileWithPreviewDisplayNormalization(previewProfile, "colorspace=space=bt709:primaries=bt709:trc=bt709")
+	if configurationHash(effectiveVideoDecision(previewRendered)) != configurationHash(effectiveVideoDecision(previewProfile)) {
+		t.Fatalf("Preview display normalization changed the shared effective decision: core=%#v rendered=%#v", effectiveVideoDecision(previewProfile), effectiveVideoDecision(previewRendered))
+	}
+	assertContains(t, workerStringValue(previewRendered.WorkerConfig["videoFilters"]), "colorspace=")
+	assertNotContains(t, workerStringValue(testProfile.WorkerConfig["videoFilters"]), "colorspace=")
+	assertNotContains(t, workerStringValue(queueProfile.WorkerConfig["videoFilters"]), "colorspace=")
 	if level := validateHEVCLevelField(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
-		"width": 1920, "height": 1080, "frameRate": "30000/1001",
+		"width": 720, "height": 480, "frameRate": "30000/1001",
 	}, models.JSONMap{
 		"codec": "hevc", "hevcLevel": "3.1", "width": 1280, "height": 720, "frameRate": "24000/1001",
 	}); level["status"] != "validated" {

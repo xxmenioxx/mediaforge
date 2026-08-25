@@ -3152,22 +3152,13 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 
 			interlace := h.previewInterlaceAnalysis(path, streams)
 			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
-			profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, cadenceRecommendation)
-			profile, probeErr = resolveAutomaticFrameStructure(h.db, path, profile)
+			profile, probeErr = resolvePreviewVideoProfile(h.db, path, profile, streams, interlace, cadence, cadenceRecommendation)
 			if probeErr != nil {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": probeErr.Error()})
 				return
 			}
-			profile = resolveEffectiveVideoEncodingProfile(profile, streams, path)
 			resolvedVideoDecision = effectiveVideoDecision(profile)
-			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-			// Browser/display normalization belongs only to Preview rendering and
-			// is deliberately applied after the shared effective video decision.
-			previewDisplayFilter := normalization.Filter
-			if workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]) == "normalize_bt709" {
-				previewDisplayFilter = ""
-			}
-			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(previewDisplayFilter, existingVideoFilters(profile))
+			profile = profileWithPreviewDisplayNormalization(profile, normalization.Filter)
 
 			effectivePreviewProfile = &profile
 
@@ -3469,6 +3460,26 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	c.Header("X-MVForge-Requested-Encoder", requestedVideoEncoder)
 	c.Header("X-MVForge-Effective-Encoder", effectiveVideoEncoder)
 	c.File(cachePath)
+}
+
+func resolvePreviewVideoProfile(db *gorm.DB, path string, profile models.Profile, streams MediaStreamInventory, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) (models.Profile, error) {
+	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
+	profile, err := resolveAutomaticFrameStructure(db, path, profile)
+	if err != nil {
+		return models.Profile{}, err
+	}
+	return resolveEffectiveVideoEncodingProfile(profile, streams, path), nil
+}
+
+func profileWithPreviewDisplayNormalization(profile models.Profile, displayFilter string) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	// Browser/display normalization belongs only to Preview rendering and is
+	// deliberately applied after the shared effective video decision.
+	if workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]) == "normalize_bt709" {
+		displayFilter = ""
+	}
+	profile.WorkerConfig["videoFilters"] = joinPreviewFilters(displayFilter, existingVideoFilters(profile))
+	return profile
 }
 
 // SampleEstimate deliberately runs only when requested from LAB. It encodes

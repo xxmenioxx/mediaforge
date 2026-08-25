@@ -611,7 +611,6 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 		} else {
 			cadenceRecommendation = recommendCadence(cadence)
 		}
-		profile = resolveEffectiveVideoMotionProfile(profile, analysis, cadence, cadenceRecommendation)
 	}
 	qualityAnalysisPath := strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]))
 	if qualityAnalysisPath == "" {
@@ -620,7 +619,11 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	if qualityAnalysisPath == "" {
 		qualityAnalysisPath = inputPath
 	}
-	profile = resolveEffectiveVideoEncodingProfile(profile, streams, qualityAnalysisPath)
+	if processingMode == ProcessingModeFullEncode {
+		profile = resolveMediaJobVideoProfile(profile, streams, qualityAnalysisPath, analysis, cadence, cadenceRecommendation)
+	} else {
+		profile = resolveEffectiveVideoEncodingProfile(profile, streams, qualityAnalysisPath)
+	}
 	return MediaJobPlan{
 		InputPath:             inputPath,
 		SourceAssetPath:       inputPath,
@@ -634,6 +637,11 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 		Cadence:               cadence,
 		CadenceRecommendation: cadenceRecommendation,
 	}, nil
+}
+
+func resolveMediaJobVideoProfile(profile models.Profile, streams MediaStreamInventory, analysisPath string, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
+	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
+	return resolveEffectiveVideoEncodingProfile(profile, streams, analysisPath)
 }
 
 func resolveEffectiveVideoMotionProfile(profile models.Profile, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
