@@ -1220,6 +1220,7 @@ export type PreviewInspection = {
   effectiveEncoder: string;
   requestedQSVRateControl: string;
   effectiveQSVRateControl: string;
+  effectiveVideoDecision?: EffectiveVideoDecision;
   ffmpegArgs: string[];
   normalization: {
     mode: 'preserve' | 'normalize_bt709';
@@ -1231,6 +1232,26 @@ export type PreviewInspection = {
     sarPreserved: boolean;
     aliasWarnings?: string[];
   };
+};
+
+export type EffectiveVideoDecision = {
+  encoder?: string;
+  codec?: string;
+  profile?: string;
+  pixelFormat?: string;
+  frameStructureMode?: string;
+  cadenceOperation?: string;
+  effectiveFrameRate?: string;
+  effectiveWidth?: number;
+  effectiveHeight?: number;
+  geometryUnknown?: boolean;
+  gopFrames?: number;
+  gopSeconds?: number;
+  maxBFrames?: number;
+  hevcLevel?: string;
+  hevcTier?: string;
+  hevcLevelWarning?: string;
+  effectiveFinalColorPolicy?: string;
 };
 
 export type PreviewFrameMetrics = {

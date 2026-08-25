@@ -195,12 +195,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	}
 
 	if plan.ProcessingMode == ProcessingModeFullEncode {
-		effectiveProfile := profileWithResolvedFieldAndCadenceModes(plan.Profile, plan.Interlace)
-		effectiveProfile = profileWithAutomaticDeinterlace(effectiveProfile, plan.Interlace)
-		effectiveProfile = profileWithCadenceOutputDecision(effectiveProfile, plan.Cadence, plan.CadenceRecommendation)
-		if len(plan.Streams.Video) > 0 {
-			effectiveProfile = profileWithFinalColorPolicy(effectiveProfile, plan.Streams.Video[0], resolvedVideoEncoder(effectiveProfile))
-		}
+		effectiveProfile := plan.Profile
 		var source *MediaStream
 		if len(plan.Streams.Video) > 0 {
 			source = &plan.Streams.Video[0]
@@ -616,7 +611,7 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 		} else {
 			cadenceRecommendation = recommendCadence(cadence)
 		}
-		profile = profileWithCadenceOutputDecision(profile, cadence, cadenceRecommendation)
+		profile = resolveEffectiveVideoMotionProfile(profile, analysis, cadence, cadenceRecommendation)
 	}
 	qualityAnalysisPath := strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvAssetAnalysisPath"]))
 	if qualityAnalysisPath == "" {
@@ -625,10 +620,7 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	if qualityAnalysisPath == "" {
 		qualityAnalysisPath = inputPath
 	}
-	intent := qualityIntentForMedia(profile, qualityAnalysisPath, streams)
-	profile = applyVideoToolboxQualityRecommendation(profile, intent)
-	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
-	profile = resolveHEVCLevel(profile, streams)
+	profile = resolveEffectiveVideoEncodingProfile(profile, streams, qualityAnalysisPath)
 	return MediaJobPlan{
 		InputPath:             inputPath,
 		SourceAssetPath:       inputPath,
@@ -642,6 +634,50 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 		Cadence:               cadence,
 		CadenceRecommendation: cadenceRecommendation,
 	}, nil
+}
+
+func resolveEffectiveVideoMotionProfile(profile models.Profile, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
+	profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
+	profile = profileWithAutomaticDeinterlace(profile, interlace)
+	return profileWithCadenceOutputDecision(profile, cadence, recommendation)
+}
+
+func resolveEffectiveVideoEncodingProfile(profile models.Profile, streams MediaStreamInventory, analysisPath string) models.Profile {
+	intent := qualityIntentForMedia(profile, analysisPath, streams)
+	profile = applyVideoToolboxQualityRecommendation(profile, intent)
+	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
+	if len(streams.Video) > 0 {
+		profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
+	}
+	return resolveHEVCLevel(profile, streams)
+}
+
+func effectiveVideoDecision(profile models.Profile) models.JSONMap {
+	fps := workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"])
+	gopFrames := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0)
+	gopSeconds := 0.0
+	if parsedFPS := parseFrameRateValue(fps); parsedFPS > 0 && gopFrames > 0 {
+		gopSeconds = float64(gopFrames) / parsedFPS
+	}
+	return models.JSONMap{
+		"encoder":                   resolvedVideoEncoder(profile),
+		"codec":                     profile.VideoCodec,
+		"profile":                   map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
+		"pixelFormat":               workerStringValue(profile.WorkerConfig["pixFmt"]),
+		"frameStructureMode":        workerStringValue(profile.WorkerConfig["frameStructureMode"]),
+		"cadenceOperation":          workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]),
+		"effectiveFrameRate":        fps,
+		"effectiveWidth":            workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
+		"effectiveHeight":           workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], 0),
+		"geometryUnknown":           profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false),
+		"gopFrames":                 gopFrames,
+		"gopSeconds":                gopSeconds,
+		"maxBFrames":                workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 0),
+		"hevcLevel":                 workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
+		"hevcTier":                  workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
+		"hevcLevelWarning":          workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
+		"effectiveFinalColorPolicy": workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
+	}
 }
 
 func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile models.Profile, audioProfile *audioEnhancementProfile, overwrite bool, override AssetConversionOverrideState) (MediaJobPlan, error) {

@@ -3138,6 +3138,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	}
 
 	var effectivePreviewProfile *models.Profile
+	var resolvedVideoDecision models.JSONMap
 
 	var videoCodecArguments []string
 
@@ -3149,21 +3150,24 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 				streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
 			}
 
-			qualityIntent := qualityIntentForMedia(profile, path, streams)
-
-			profile = applyQSVQualityRecommendation(
-				profile,
-				qualityIntent,
-				capabilities.CheckEncoder("hevc_qsv"),
-			)
-			profile = resolveHEVCLevel(profile, streams)
 			interlace := h.previewInterlaceAnalysis(path, streams)
-			profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
-			profile = profileWithAutomaticDeinterlace(profile, interlace)
 			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
-			profile = profileWithCadenceOutputDecision(profile, cadence, cadenceRecommendation)
+			profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, cadenceRecommendation)
+			profile, probeErr = resolveAutomaticFrameStructure(h.db, path, profile)
+			if probeErr != nil {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": probeErr.Error()})
+				return
+			}
+			profile = resolveEffectiveVideoEncodingProfile(profile, streams, path)
+			resolvedVideoDecision = effectiveVideoDecision(profile)
 			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
+			// Browser/display normalization belongs only to Preview rendering and
+			// is deliberately applied after the shared effective video decision.
+			previewDisplayFilter := normalization.Filter
+			if workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]) == "normalize_bt709" {
+				previewDisplayFilter = ""
+			}
+			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(previewDisplayFilter, existingVideoFilters(profile))
 
 			effectivePreviewProfile = &profile
 
@@ -3448,6 +3452,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 			"effectiveEncoder":        effectiveVideoEncoder,
 			"requestedQSVRateControl": requestedQSVRateControl,
 			"effectiveQSVRateControl": effectiveQSVRateControl,
+			"effectiveVideoDecision":  resolvedVideoDecision,
 			"ffmpegArgs":              args,
 		})
 		return

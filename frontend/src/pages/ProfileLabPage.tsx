@@ -59,6 +59,7 @@ import type {
   QualityRecommendationResponse,
   PreviewVideoCharacteristics,
   PreviewInspection,
+  EffectiveVideoDecision,
   PreviewFrameMetrics,
   ScanResult,
   SnapshotOperation,
@@ -138,6 +139,7 @@ type LabFidelityInspection = {
   effectiveEncoder: string;
   requestedQSVRateControl: string;
   effectiveQSVRateControl: string;
+  effectiveVideoDecision?: PreviewInspection['effectiveVideoDecision'];
   referenceEncoder: string;
   ffmpegArgs: string[];
   normalization: {
@@ -1060,6 +1062,7 @@ export function ProfileLabPage() {
         effectiveEncoder: conversionInspection.effectiveEncoder,
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
         effectiveQSVRateControl: conversionInspection.effectiveQSVRateControl,
+        effectiveVideoDecision: conversionInspection.effectiveVideoDecision,
         referenceEncoder: referenceInspection.effectiveEncoder,
         ffmpegArgs: conversionInspection.ffmpegArgs,
         normalization: referenceInspection.normalization,
@@ -2164,9 +2167,9 @@ export function ProfileLabPage() {
             <Stack spacing={1.25}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                 <Stack spacing={0.25}>
-                  <Typography fontWeight={700}>Combined FFmpeg terminal command</Typography>
+                  <Typography fontWeight={700}>Portable FFmpeg command</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Uses the current {seconds}s range and combines the Video, Audio, and Tracks drafts in one output.
+                    Diagnostic approximation combining the current Video, Audio, and Tracks drafts. Worker capabilities and backend effective decisions may differ.
                   </Typography>
                   <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ pt: 0.5 }}>
                     <Chip size="small" label={`Video: ${videoDraft.name || 'Draft'}`} />
@@ -2231,6 +2234,13 @@ export function ProfileLabPage() {
                       </pre>
                     </section>
                   )}
+                  {currentFidelityInspection?.effectiveVideoDecision ? (
+                    <Alert severity="info" icon={false}>
+                      <strong>Effective video decision</strong>
+                      <br />
+                      {formatEffectiveVideoDecision(currentFidelityInspection.effectiveVideoDecision)}
+                    </Alert>
+                  ) : null}
                   <Alert severity="info">
                     The command uses the media path visible to the MVForge backend and writes a temporary MKV/MP4 under <code>/tmp</code>. Run it in an environment where that input path and FFmpeg are available. Hardware Auto uses the matching software encoder as a portable terminal fallback.
                   </Alert>
@@ -7230,4 +7240,27 @@ function formatBytes(value: number) {
     index += 1;
   }
   return `${size.toFixed(index > 1 ? 2 : 0)} ${units[index]}`;
+}
+
+function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
+  const geometry = decision.geometryUnknown
+    ? 'geometry unknown'
+    : decision.effectiveWidth && decision.effectiveHeight
+      ? `${decision.effectiveWidth}×${decision.effectiveHeight}`
+      : '';
+  const gop = decision.gopFrames
+    ? `GOP ${decision.gopFrames}${decision.gopSeconds ? ` (${decision.gopSeconds.toFixed(3)} s)` : ''}`
+    : '';
+  const level = decision.hevcLevel
+    ? `Level ${decision.hevcLevel}${decision.hevcTier ? ` ${decision.hevcTier}` : ''}`
+    : decision.hevcLevelWarning || '';
+  return [
+    decision.encoder,
+    decision.profile,
+    decision.effectiveFrameRate,
+    geometry,
+    gop,
+    level,
+    decision.cadenceOperation,
+  ].filter(Boolean).join(' · ');
 }

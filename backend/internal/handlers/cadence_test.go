@@ -129,6 +129,7 @@ func TestFFmpegCommandBuilderNormalizesConfirmedSoftTelecine(t *testing.T) {
 		Cadence:               CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "soft_telecine", Confidence: .98},
 		CadenceRecommendation: CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .98},
 	}
+	plan.Profile = resolveEffectiveVideoMotionProfile(plan.Profile, plan.Interlace, plan.Cadence, plan.CadenceRecommendation)
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf fps=24000/1001")
 	assertContains(t, command, "-fps_mode cfr")

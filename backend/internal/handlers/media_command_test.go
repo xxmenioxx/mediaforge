@@ -631,6 +631,7 @@ func TestFFmpegCommandBuilderAutomaticallyDeinterlacesDetectedVideo(t *testing.T
 		},
 		Interlace: InterlaceAnalysis{Status: "interlaced", FieldOrder: "tt"},
 	}
+	plan.Profile = resolveEffectiveVideoMotionProfile(plan.Profile, plan.Interlace, plan.Cadence, plan.CadenceRecommendation)
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf bwdif=mode=send_frame:parity=auto:deint=all")
@@ -649,6 +650,7 @@ func TestFFmpegCommandBuilderCorrectsProgressiveFieldMetadataWithoutDeinterlacin
 		},
 		Interlace: InterlaceAnalysis{Status: "progressive", ContainerFieldOrder: "tt", FieldOrderMismatch: true},
 	}
+	plan.Profile = resolveEffectiveVideoMotionProfile(plan.Profile, plan.Interlace, plan.Cadence, plan.CadenceRecommendation)
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf hqdn3d=1.5:1.5:6:6,setfield=prog")
@@ -684,6 +686,7 @@ func TestFFmpegCommandBuilderAppliesOnlyValidatedAutomaticIVTC(t *testing.T) {
 			RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate",
 		},
 	}
+	plan.Profile = resolveEffectiveVideoMotionProfile(plan.Profile, plan.Interlace, plan.Cadence, plan.CadenceRecommendation)
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-vf fieldmatch=order=tff,decimate,setfield=prog")

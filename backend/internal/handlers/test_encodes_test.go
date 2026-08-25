@@ -209,9 +209,10 @@ func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
 	if gopFrames <= 0 || math.Abs(gopSeconds-float64(gopFrames)/(24000.0/1001.0)) > .001 {
 		t.Fatalf("GOP evidence is inconsistent: frames=%d recommendation=%#v", gopFrames, recommendationEvidence)
 	}
-	effective = resolveHEVCLevel(effective, MediaStreamInventory{Video: []MediaStream{{
+	streams := MediaStreamInventory{Video: []MediaStream{{
 		Width: 720, Height: 480, FrameRate: "30000/1001",
-	}}})
+	}}}
+	effective = resolveEffectiveVideoEncodingProfile(effective, streams, path)
 	if got := workerStringValue(effective.WorkerConfig["hevcLevelEffective"]); got != "3.0" {
 		t.Fatalf("HEVC Level=%q want 3.0 from effective 720x480@24000/1001", got)
 	}
@@ -259,12 +260,23 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 		t.Fatal(err)
 	}
 	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 1920, Height: 1080, FrameRate: "30000/1001"}}}
-	effective = resolveHEVCLevel(effective, streams)
+	effective = resolveEffectiveVideoEncodingProfile(effective, streams, path)
+	canonicalDecision := effectiveVideoDecision(effective)
+	for _, target := range []string{"preview", "test_encode", "queue"} {
+		resolved := resolveEffectiveVideoEncodingProfile(effective, streams, path)
+		if configurationHash(effectiveVideoDecision(resolved)) != configurationHash(canonicalDecision) {
+			t.Fatalf("%s effective video decision diverged: canonical=%#v target=%#v", target, canonicalDecision, effectiveVideoDecision(resolved))
+		}
+	}
 	if workerStringValue(effective.WorkerConfig["effectiveOutputFrameRate"]) != "24000/1001" || workerIntValue(effective.WorkerConfig["effectiveOutputWidth"], 0) != 1280 || workerIntValue(effective.WorkerConfig["effectiveOutputHeight"], 0) != 720 || workerStringValue(effective.WorkerConfig["hevcLevelEffective"]) != "3.1" {
 		t.Fatalf("effective snapshot is inconsistent: %#v", effective.WorkerConfig)
 	}
 	plan := MediaJobPlan{InputPath: path, OutputPath: "/tmp/test.mkv", Profile: effective, ProcessingMode: ProcessingModeFullEncode, Streams: streams, Cadence: analysis, CadenceRecommendation: recommendation, Overwrite: true}
+	decisionBeforeRender := configurationHash(effectiveVideoDecision(plan.Profile))
 	command := shellJoin((FFmpegCommandBuilder{}).Build(plan))
+	if decisionAfterRender := configurationHash(effectiveVideoDecision(plan.Profile)); decisionAfterRender != decisionBeforeRender {
+		t.Fatalf("target rendering mutated the effective video decision: before=%s after=%s", decisionBeforeRender, decisionAfterRender)
+	}
 	assertContains(t, command, "-vf fps=24000/1001,scale=1280:720")
 	if !strings.Contains(command, "-level:v 31") && !strings.Contains(command, "level-idc=3.1") {
 		t.Fatalf("command did not emit HEVC Level 3.1: %s", command)
