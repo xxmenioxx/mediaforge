@@ -265,6 +265,67 @@ func TestEmbeddedEpisodeMetadataWinsOverBatchPosition(t *testing.T) {
 	}
 }
 
+func TestRepeatedLeadingTitleNumberUsesAssetGroupPosition(t *testing.T) {
+	db := queueJobTestDB(t)
+	paths := []string{
+		"/media/raw/31 Minutos/31_MINUTOS_DVD_01_t00.mkv",
+		"/media/raw/31 Minutos/31_MINUTOS_DVD_01_t01.mkv",
+		"/media/raw/31 Minutos/31_MINUTOS_DVD_01_t02.mkv",
+	}
+	for _, mediaPath := range paths {
+		record := models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "31 Minutos",
+			FileName:     filepath.Base(mediaPath),
+			Status:       "unprocessed",
+		}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for index, mediaPath := range paths {
+		spec, ok := multiEpisodeNameSpecForJob(db, models.QueueJob{
+			MediaPath: mediaPath,
+			BatchName: "31 Minutos",
+		})
+		if !ok || spec.Season != 1 || spec.Episode != index+1 {
+			t.Fatalf("asset %q spec=%#v ok=%t, want S01E%02d", mediaPath, spec, ok, index+1)
+		}
+	}
+}
+
+func TestUniqueLeadingEpisodeNumberRemainsAuthoritative(t *testing.T) {
+	db := queueJobTestDB(t)
+	paths := []string{
+		"/media/raw/My Show/12_Episode.mkv",
+		"/media/raw/My Show/13_Episode.mkv",
+	}
+	for _, mediaPath := range paths {
+		record := models.AssetRecord{
+			Path:         mediaPath,
+			RootPath:     "/media/raw",
+			RelativePath: strings.TrimPrefix(mediaPath, "/media/raw/"),
+			GroupPath:    "My Show",
+			FileName:     filepath.Base(mediaPath),
+			Status:       "unprocessed",
+		}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	spec, ok := multiEpisodeNameSpecForJob(db, models.QueueJob{
+		MediaPath: paths[0],
+		BatchName: "My Show",
+	})
+	if !ok || spec.Season != 1 || spec.Episode != 12 {
+		t.Fatalf("unique leading episode spec=%#v ok=%t, want S01E12", spec, ok)
+	}
+}
+
 func TestEpisodeVideoTrackTitleUsesOriginalAssetName(t *testing.T) {
 	db := queueJobTestDB(t)
 	mediaPath := "/media/raw/Series/Season 01/original_episode_03.mkv"

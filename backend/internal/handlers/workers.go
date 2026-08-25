@@ -1953,6 +1953,19 @@ func multiEpisodeNameSpecForJob(
 		}, true
 	}
 
+	// A repeated numeric prefix within the same asset group is part of the
+	// series title rather than an episode identifier. For example,
+	// 31_MINUTOS_DVD_01_t00 and 31_MINUTOS_DVD_01_t01 are episodes 1 and 2,
+	// not two copies of episode 31. Use their stable inventory order instead.
+	if episode := episodePositionForSharedLeadingNumber(db, job.MediaPath); episode > 0 {
+		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+		if title == "" {
+			return multiEpisodeNameSpec{}, false
+		}
+		season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
+	}
+
 	if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
 		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
 		if title == "" {
@@ -2112,6 +2125,40 @@ func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
 		}
 	}
 	return 0
+}
+
+func episodePositionForSharedLeadingNumber(db *gorm.DB, mediaPath string) int {
+	leading, ok := leadingEpisodeNumberFromName(filepath.Base(mediaPath))
+	if !ok || db == nil || strings.TrimSpace(mediaPath) == "" {
+		return 0
+	}
+
+	cleanPath := filepath.Clean(mediaPath)
+	var asset models.AssetRecord
+	if err := db.Where("path = ?", cleanPath).First(&asset).Error; err != nil || strings.TrimSpace(asset.GroupPath) == "" {
+		return 0
+	}
+
+	var siblings []models.AssetRecord
+	if err := db.Where("root_path = ? AND group_path = ?", asset.RootPath, asset.GroupPath).Find(&siblings).Error; err != nil {
+		return 0
+	}
+
+	shared := false
+	for _, sibling := range siblings {
+		if filepath.Clean(sibling.Path) == cleanPath {
+			continue
+		}
+		if siblingLeading, siblingOK := leadingEpisodeNumberFromName(sibling.FileName); siblingOK && siblingLeading == leading {
+			shared = true
+			break
+		}
+	}
+	if !shared {
+		return 0
+	}
+
+	return episodeNumberFromAssetGroup(db, mediaPath)
 }
 
 func naturalLess(left, right string) bool {
