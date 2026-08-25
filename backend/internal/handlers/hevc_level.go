@@ -314,11 +314,15 @@ func resolveEffectiveVideoGeometry(profile models.Profile, source MediaStream) (
 	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
 	for _, raw := range strings.Split(filters, ",") {
 		filter := strings.TrimSpace(raw)
-		name, value, found := strings.Cut(filter, "=")
-		if !found {
+		if filter == "" {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(name)) {
+		name, value, found := strings.Cut(filter, "=")
+		filterName := strings.ToLower(strings.TrimSpace(name))
+		if !found {
+			filterName = strings.ToLower(filter)
+		}
+		switch filterName {
 		case "crop":
 			values := strings.Split(value, ":")
 			if len(values) < 2 {
@@ -352,6 +356,12 @@ func resolveEffectiveVideoGeometry(profile models.Profile, source MediaStream) (
 			default:
 				return 0, 0, false
 			}
+		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "eq", "hqdn3d", "unsharp", "format", "colorspace", "setfield", "setsar", "setdar", "null":
+			// These filters preserve pixel dimensions in MVForge's current use.
+		default:
+			// An advanced/custom filter may change geometry. Unknown is safer
+			// than deriving Auto Level from the source dimensions.
+			return 0, 0, false
 		}
 	}
 	return width, height, true

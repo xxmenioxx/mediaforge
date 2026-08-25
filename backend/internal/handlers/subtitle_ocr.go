@@ -181,11 +181,7 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	ocrStream := stream
 	if segmentDuration > 0 {
 		segmentPath := filepath.Join(tempDir, "subtitle-segment.mkv")
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
-		if segmentStart > 0 {
-			args = append(args, "-ss", strconv.FormatFloat(segmentStart, 'f', -1, 64))
-		}
-		args = append(args, "-i", mediaPath, "-t", strconv.Itoa(segmentDuration), "-map", fmt.Sprintf("0:%d", stream.Index), "-c:s", "copy", segmentPath)
+		args := bitmapSubtitleSegmentArgs(mediaPath, stream.Index, segmentPath, segmentStart, segmentDuration)
 		output, runErr := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 		if runErr != nil {
 			return fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", stream.Index, fallback(strings.TrimSpace(string(output)), runErr.Error()))
@@ -227,6 +223,22 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 		return fmt.Errorf("cannot stage OCR subtitle: %w", err)
 	}
 	return nil
+}
+
+func bitmapSubtitleSegmentArgs(mediaPath string, streamIndex int, outputPath string, segmentStart float64, segmentDuration int) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
+	inputSeek, outputTrim := segmentedSeekWindow(segmentStart)
+	if inputSeek > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(inputSeek, 'f', -1, 64))
+	}
+	args = append(args, "-i", mediaPath)
+	if outputTrim > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(outputTrim, 'f', -1, 64))
+	}
+	if segmentDuration > 0 {
+		args = append(args, "-t", strconv.Itoa(segmentDuration))
+	}
+	return append(args, "-map", fmt.Sprintf("0:%d", streamIndex), "-c:s", "copy", outputPath)
 }
 
 func normalizedOCRMode(value string) string {

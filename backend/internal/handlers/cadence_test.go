@@ -239,3 +239,42 @@ func TestCadencePreserveModeDisablesAutomaticNormalization(t *testing.T) {
 		t.Fatalf("preserve mode emitted output args %#v", args)
 	}
 }
+
+func TestCadenceResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
+	analysis := CadenceAnalysis{Type: "soft_telecine", Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+	resolved := profileWithCadenceOutputDecision(models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto"}}, analysis, recommendation)
+	if workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]) != "24000/1001" {
+		t.Fatalf("first pass did not resolve cadence: %#v", resolved.WorkerConfig)
+	}
+	resolved.WorkerConfig["cadenceMode"] = "preserve"
+	resolved = profileWithCadenceOutputDecision(resolved, CadenceAnalysis{Type: "unknown"}, CadenceRecommendation{Version: 1, Operation: "review"})
+	if workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]) != "" || workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]) != "" || workerStringValue(resolved.WorkerConfig["videoFilters"]) != "" {
+		t.Fatalf("Preserve retained stale automatic cadence state: %#v", resolved.WorkerConfig)
+	}
+
+	resolved.WorkerConfig["videoFilters"] = "fps=fps*2"
+	resolved = profileWithCadenceOutputDecision(resolved, analysis, recommendation)
+	if !profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("unknown custom FPS was not recorded: %#v", resolved.WorkerConfig)
+	}
+	resolved.WorkerConfig["videoFilters"] = ""
+	resolved = profileWithCadenceOutputDecision(resolved, CadenceAnalysis{Type: "unknown"}, CadenceRecommendation{Version: 1, Operation: "review"})
+	if profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false) || workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) != "" {
+		t.Fatalf("stale unknown FPS state survived a later pass: %#v", resolved.WorkerConfig)
+	}
+}
+
+func TestCadenceResolutionIsIdempotent(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto", "videoFilters": "hqdn3d=1.5:1.5:6:6"}}
+	analysis := CadenceAnalysis{Type: "soft_telecine", Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+	first := profileWithCadenceOutputDecision(profile, analysis, recommendation)
+	second := profileWithCadenceOutputDecision(first, analysis, recommendation)
+	if got := workerStringValue(second.WorkerConfig["videoFilters"]); got != "fps=24000/1001,hqdn3d=1.5:1.5:6:6" {
+		t.Fatalf("repeated resolution accumulated or lost filters: %q", got)
+	}
+	if workerStringValue(second.WorkerConfig["effectiveCadenceOperation"]) != "remove_soft_telecine" {
+		t.Fatalf("repeated resolution changed the effective operation: %#v", second.WorkerConfig)
+	}
+}

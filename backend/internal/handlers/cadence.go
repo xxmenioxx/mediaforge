@@ -239,6 +239,7 @@ func firstReliableFrameRate(values ...string) string {
 }
 
 func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysis, recommendations ...CadenceRecommendation) models.Profile {
+	profile = profileWithoutStaleCadenceDecision(profile)
 	recommendation := recommendCadence(analysis)
 	if len(recommendations) > 0 && recommendations[0].Operation != "" {
 		recommendation = recommendations[0]
@@ -288,6 +289,25 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 	profile.WorkerConfig["effectiveOutputFrameRate"] = target
 	delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
 	profile.WorkerConfig["effectiveCadenceOperation"] = recommendation.Operation
+	return profile
+}
+
+func profileWithoutStaleCadenceDecision(profile models.Profile) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	operation := workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"])
+	rate := workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"])
+	if operation != "" && operation != "explicit_fps_filter" && rate != "" {
+		filters := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+		generated := "fps=" + rate
+		if filters == generated {
+			profile.WorkerConfig["videoFilters"] = ""
+		} else if strings.HasPrefix(filters, generated+",") {
+			profile.WorkerConfig["videoFilters"] = strings.TrimPrefix(filters, generated+",")
+		}
+	}
+	for _, key := range []string{"effectiveOutputFrameRate", "effectiveCadenceOperation", "effectiveOutputFrameRateUnknown", "cadenceResolutionWarning"} {
+		delete(profile.WorkerConfig, key)
+	}
 	return profile
 }
 

@@ -152,6 +152,42 @@ func TestHEVCLevelUnknownCustomFPSDoesNotFallbackToSource(t *testing.T) {
 	}
 }
 
+func TestHEVCLevelGeometryClassificationIsConservative(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24000/1001"}}}
+	for _, test := range []struct {
+		name, filters         string
+		wantWidth, wantHeight int
+		wantKnown             bool
+	}{
+		{name: "structured scale", filters: "scale=1280:720", wantWidth: 1280, wantHeight: 720, wantKnown: true},
+		{name: "structured crop", filters: "crop=1280:720:320:180", wantWidth: 1280, wantHeight: 720, wantKnown: true},
+		{name: "preserving chain", filters: "fps=24000/1001,hqdn3d=1.5:1.5:6:6,format=p010le", wantWidth: 1920, wantHeight: 1080, wantKnown: true},
+		{name: "advanced zscale", filters: "zscale=w=1280:h=720", wantKnown: false},
+		{name: "hardware scale", filters: "scale_qsv=1280:720", wantKnown: false},
+		{name: "pad", filters: "pad=1920:1200", wantKnown: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+				"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "videoFilters": test.filters, "effectiveOutputFrameRate": "24000/1001",
+			}}
+			resolved := resolveHEVCLevel(profile, streams)
+			known := !profileWorkerBool(resolved, "effectiveOutputGeometryUnknown", false)
+			if known != test.wantKnown {
+				t.Fatalf("geometry known=%v want %v: %#v", known, test.wantKnown, resolved.WorkerConfig)
+			}
+			if !test.wantKnown {
+				if workerStringValue(resolved.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(resolved.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+					t.Fatalf("Auto Level silently resolved unknown geometry: %#v", resolved.WorkerConfig)
+				}
+				return
+			}
+			if workerIntValue(resolved.WorkerConfig["effectiveOutputWidth"], 0) != test.wantWidth || workerIntValue(resolved.WorkerConfig["effectiveOutputHeight"], 0) != test.wantHeight {
+				t.Fatalf("effective geometry mismatch: %#v", resolved.WorkerConfig)
+			}
+		})
+	}
+}
+
 func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
 	profile := applyAssetConversionOverrideToProfile(
 		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}},

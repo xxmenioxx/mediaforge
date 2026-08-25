@@ -21,6 +21,26 @@ func TestTextSubtitleExtractionUsesTestEncodeWindowOnlyWhenRequested(t *testing.
 	assertNotContains(t, normal, "-t 20")
 }
 
+func TestBitmapSubtitleExtractionUsesSameAccurateTestEncodeWindow(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		start      float64
+		want, omit string
+	}{
+		{name: "ordinary sample", start: 42.5, want: "-ss 37.5 -i /raw/movie.mkv -ss 5 -t 20 -map 0:3"},
+		{name: "near beginning", start: 3, want: "-i /raw/movie.mkv -ss 3 -t 20 -map 0:3", omit: "-ss 0"},
+		{name: "starts at zero", start: 0, want: "-i /raw/movie.mkv -t 20 -map 0:3", omit: "-ss"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := shellJoin(bitmapSubtitleSegmentArgs("/raw/movie.mkv", 3, "/tmp/subtitle-segment.mkv", test.start, 20))
+			assertContains(t, command, test.want)
+			if test.omit != "" {
+				assertNotContains(t, command, test.omit)
+			}
+		})
+	}
+}
+
 func TestEmptySubtitleArtifactPolicyIsLimitedToSegmentedTestEncodes(t *testing.T) {
 	segmentedTest := MediaJobPlan{SegmentDurationSeconds: 20, AllowEmptySubtitleArtifacts: true}
 	if !emptySubtitleArtifactCanBeSkipped(segmentedTest) {

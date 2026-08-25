@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,6 +234,48 @@ func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
 		"codec": "hevc", "hevcLevel": "3.0", "width": 720, "height": 480, "frameRate": "24000/1001",
 	}); level["status"] != "validated" {
 		t.Fatalf("HEVC Level validation=%#v want validated", level)
+	}
+}
+
+func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testing.T) {
+	db := testEncodeTestDB(t, "effective-decision-consistency")
+	path := filepath.Clean("/media/raw/soft-telecine-hd.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path: path, VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "30000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{"averageGopLength": 72.0, "maxConsecutiveBFrames": 2, "confidence": "high"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	analysis := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "soft_telecine", DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0, EffectivePictureRate: "24000/1001", EffectiveFPS: 24000.0 / 1001.0, Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{
+		cadenceAnalysisSnapshotKey: cadenceAnalysisMap(analysis), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "cadenceMode": "auto", "frameStructureMode": "auto", "hevcLevelMode": "auto", "videoFilters": "scale=1280:720",
+	}}
+	effective, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 1920, Height: 1080, FrameRate: "30000/1001"}}}
+	effective = resolveHEVCLevel(effective, streams)
+	if workerStringValue(effective.WorkerConfig["effectiveOutputFrameRate"]) != "24000/1001" || workerIntValue(effective.WorkerConfig["effectiveOutputWidth"], 0) != 1280 || workerIntValue(effective.WorkerConfig["effectiveOutputHeight"], 0) != 720 || workerStringValue(effective.WorkerConfig["hevcLevelEffective"]) != "3.1" {
+		t.Fatalf("effective snapshot is inconsistent: %#v", effective.WorkerConfig)
+	}
+	plan := MediaJobPlan{InputPath: path, OutputPath: "/tmp/test.mkv", Profile: effective, ProcessingMode: ProcessingModeFullEncode, Streams: streams, Cadence: analysis, CadenceRecommendation: recommendation, Overwrite: true}
+	command := shellJoin((FFmpegCommandBuilder{}).Build(plan))
+	assertContains(t, command, "-vf fps=24000/1001,scale=1280:720")
+	if !strings.Contains(command, "-level:v 31") && !strings.Contains(command, "level-idc=3.1") {
+		t.Fatalf("command did not emit HEVC Level 3.1: %s", command)
+	}
+	assertContains(t, command, fmt.Sprintf("-g %d", workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0)))
+	if level := validateHEVCLevelField(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
+		"width": 1920, "height": 1080, "frameRate": "30000/1001",
+	}, models.JSONMap{
+		"codec": "hevc", "hevcLevel": "3.1", "width": 1280, "height": 720, "frameRate": "24000/1001",
+	}); level["status"] != "validated" {
+		t.Fatalf("validation disagrees with effective snapshot and command: %#v", level)
 	}
 }
 
