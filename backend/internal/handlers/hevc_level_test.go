@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -185,6 +186,91 @@ func TestHEVCLevelGeometryClassificationIsConservative(t *testing.T) {
 				t.Fatalf("effective geometry mismatch: %#v", resolved.WorkerConfig)
 			}
 		})
+	}
+}
+
+func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24000/1001"}}}
+	base := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "effectiveOutputFrameRate": "24000/1001",
+	}}
+
+	t.Run("unknown geometry to known geometry", func(t *testing.T) {
+		profile := base
+		profile.WorkerConfig = cloneWorkerConfig(base.WorkerConfig)
+		profile.WorkerConfig["videoFilters"] = "zscale=w=1280:h=720"
+		profile = resolveHEVCLevel(profile, streams)
+		if !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+			t.Fatalf("first pass did not remain unresolved: %#v", profile.WorkerConfig)
+		}
+		profile.WorkerConfig["videoFilters"] = "scale=1280:720"
+		profile = resolveHEVCLevel(profile, streams)
+		if profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" || workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "3.1" {
+			t.Fatalf("known geometry retained stale unresolved state: %#v", profile.WorkerConfig)
+		}
+	})
+
+	t.Run("known geometry to unknown geometry", func(t *testing.T) {
+		profile := base
+		profile.WorkerConfig = cloneWorkerConfig(base.WorkerConfig)
+		profile.WorkerConfig["videoFilters"] = "scale=1280:720"
+		profile = resolveHEVCLevel(profile, streams)
+		profile.WorkerConfig["videoFilters"] = "scale_qsv=1280:720"
+		profile = resolveHEVCLevel(profile, streams)
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelTier"]) != "" || !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+			t.Fatalf("unknown geometry retained stale successful state: %#v", profile.WorkerConfig)
+		}
+	})
+
+	t.Run("auto and manual transitions", func(t *testing.T) {
+		profile := resolveHEVCLevel(base, streams)
+		profile.WorkerConfig["hevcLevelMode"] = "custom"
+		profile.WorkerConfig["hevcLevel"] = "4.1"
+		profile = resolveHEVCLevel(profile, streams)
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.1" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
+			t.Fatalf("manual pass retained Auto state: %#v", profile.WorkerConfig)
+		}
+		profile.WorkerConfig["hevcLevelMode"] = "auto"
+		profile = resolveHEVCLevel(profile, streams)
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.0" || profile.WorkerConfig["hevcLevelRecommendation"] == nil {
+			t.Fatalf("Auto did not recompute after manual mode: %#v", profile.WorkerConfig)
+		}
+	})
+
+	t.Run("unknown and known FPS transitions", func(t *testing.T) {
+		profile := base
+		profile.WorkerConfig = cloneWorkerConfig(base.WorkerConfig)
+		profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
+		profile = resolveHEVCLevel(profile, streams)
+		delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
+		profile = resolveHEVCLevel(profile, streams)
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.0" || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
+			t.Fatalf("known FPS retained stale unresolved state: %#v", profile.WorkerConfig)
+		}
+		profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
+		profile = resolveHEVCLevel(profile, streams)
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+			t.Fatalf("unknown FPS retained stale successful state: %#v", profile.WorkerConfig)
+		}
+	})
+}
+
+func TestHEVCLevelResolutionIsIdempotent(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "effectiveOutputFrameRate": "24000/1001", "videoFilters": "scale=1280:720",
+	}}
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "30000/1001"}}}
+	first := resolveHEVCLevel(profile, streams)
+	second := resolveHEVCLevel(first, streams)
+	for _, key := range []string{"hevcLevelEffective", "hevcLevelTier", "effectiveOutputWidth", "effectiveOutputHeight", "effectiveOutputGeometryUnknown", "hevcLevelResolutionWarning"} {
+		if !reflect.DeepEqual(first.WorkerConfig[key], second.WorkerConfig[key]) {
+			t.Fatalf("repeated resolution changed %s: first=%#v second=%#v", key, first.WorkerConfig, second.WorkerConfig)
+		}
+	}
+	firstRecommendation, firstOK := first.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	secondRecommendation, secondOK := second.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	if !firstOK || !secondOK || !reflect.DeepEqual(firstRecommendation, secondRecommendation) {
+		t.Fatalf("repeated resolution changed its recommendation: first=%#v second=%#v", first.WorkerConfig, second.WorkerConfig)
 	}
 }
 

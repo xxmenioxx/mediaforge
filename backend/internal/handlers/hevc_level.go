@@ -231,6 +231,7 @@ func hevcLevelLimitFor(level string) (hevcLevelLimit, bool) {
 }
 
 func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) models.Profile {
+	profile = profileWithoutStaleHEVCLevelDecision(profile)
 	if profile.VideoCodec == "copy" || videoCodecFamily(profile.VideoCodec) != "hevc" {
 		return profile
 	}
@@ -242,7 +243,6 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 	if mode == "" {
 		mode = "auto"
 	}
-	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	profile.WorkerConfig["hevcLevelMode"] = mode
 	requested := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevel"]))
 	var source MediaStream
@@ -303,6 +303,22 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 	}
 	profile.WorkerConfig["hevcLevelEffective"] = requested
 	profile.WorkerConfig["hevcLevelTier"] = "main"
+	return profile
+}
+
+func profileWithoutStaleHEVCLevelDecision(profile models.Profile) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	for _, key := range []string{
+		"hevcLevelEffective",
+		"hevcLevelTier",
+		"hevcLevelRecommendation",
+		"hevcLevelResolutionWarning",
+		"effectiveOutputWidth",
+		"effectiveOutputHeight",
+		"effectiveOutputGeometryUnknown",
+	} {
+		delete(profile.WorkerConfig, key)
+	}
 	return profile
 }
 
