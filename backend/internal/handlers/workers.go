@@ -1953,21 +1953,19 @@ func multiEpisodeNameSpecForJob(
 		}, true
 	}
 
-	// A repeated numeric prefix within the same asset group is part of the
-	// series title rather than an episode identifier. For example,
-	// 31_MINUTOS_DVD_01_t00 and 31_MINUTOS_DVD_01_t01 are episodes 1 and 2,
-	// not two copies of episode 31. Use their stable inventory order instead.
-	if episode := episodePositionForSharedLeadingNumber(db, job.MediaPath); episode > 0 {
-		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
-		if title == "" {
-			return multiEpisodeNameSpec{}, false
+	title := episodeSeriesTitle(job.BatchName, job.MediaPath)
+
+	// A numeric prefix matching the canonical series title belongs to the
+	// title, not the episode identity. For example, 31_MINUTOS_DVD_01_t00
+	// under "31 Minutos" is the first inventory item rather than episode 31.
+	if leadingNumberBelongsToSeriesTitle(path.Base(job.MediaPath), title) {
+		if episode := episodeNumberFromAssetGroupIncludingSingle(db, job.MediaPath); episode > 0 {
+			season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
+			return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
 		}
-		season := firstPositiveInt(seasonNumberFromPath(job.BatchName), seasonNumberFromPath(job.MediaPath), 1)
-		return multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}, true
 	}
 
 	if episode, ok := leadingEpisodeNumberFromName(path.Base(job.MediaPath)); ok {
-		title := episodeSeriesTitle(job.BatchName, job.MediaPath)
 		if title == "" {
 			return multiEpisodeNameSpec{}, false
 		}
@@ -2006,7 +2004,6 @@ func multiEpisodeNameSpecForJob(
 		return multiEpisodeNameSpec{}, false
 	}
 
-	title := episodeSeriesTitle(job.BatchName, job.MediaPath)
 	if title == "" {
 		return multiEpisodeNameSpec{}, false
 	}
@@ -2127,9 +2124,14 @@ func episodeNumberFromAssetGroup(db *gorm.DB, mediaPath string) int {
 	return 0
 }
 
-func episodePositionForSharedLeadingNumber(db *gorm.DB, mediaPath string) int {
-	leading, ok := leadingEpisodeNumberFromName(filepath.Base(mediaPath))
-	if !ok || db == nil || strings.TrimSpace(mediaPath) == "" {
+func leadingNumberBelongsToSeriesTitle(fileName, seriesTitle string) bool {
+	fileLeading, fileOK := leadingEpisodeNumberFromName(fileName)
+	titleLeading, titleOK := leadingEpisodeNumberFromName(seriesTitle)
+	return fileOK && titleOK && fileLeading == titleLeading
+}
+
+func episodeNumberFromAssetGroupIncludingSingle(db *gorm.DB, mediaPath string) int {
+	if db == nil || strings.TrimSpace(mediaPath) == "" {
 		return 0
 	}
 
@@ -2144,21 +2146,15 @@ func episodePositionForSharedLeadingNumber(db *gorm.DB, mediaPath string) int {
 		return 0
 	}
 
-	shared := false
-	for _, sibling := range siblings {
-		if filepath.Clean(sibling.Path) == cleanPath {
-			continue
-		}
-		if siblingLeading, siblingOK := leadingEpisodeNumberFromName(sibling.FileName); siblingOK && siblingLeading == leading {
-			shared = true
-			break
+	sort.SliceStable(siblings, func(i, j int) bool {
+		return naturalLess(siblings[i].RelativePath, siblings[j].RelativePath)
+	})
+	for index := range siblings {
+		if filepath.Clean(siblings[index].Path) == cleanPath {
+			return index + 1
 		}
 	}
-	if !shared {
-		return 0
-	}
-
-	return episodeNumberFromAssetGroup(db, mediaPath)
+	return 0
 }
 
 func naturalLess(left, right string) bool {
