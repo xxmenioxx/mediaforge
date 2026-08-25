@@ -183,6 +183,26 @@ func TestValidateAVTimingDoesNotHidePartiallyMissingAudioEvidence(t *testing.T) 
 	}
 }
 
+func TestValidateAVTimingDoesNotValidateOnlyCommonTrackPrefix(t *testing.T) {
+	source := timingEvidence(0, 0)
+	source.Audio = append(source.Audio, avStreamTiming{Index: 2, StartSeconds: secondsPointer(0)})
+	report := validateAVTiming(source, timingEvidence(0, 0))
+	if report["status"] != "unverified" {
+		t.Fatalf("missing output track was ignored after validating common prefix: %#v", report)
+	}
+}
+
+func TestOptionalSecondsRejectsInvalidAndNonFiniteValues(t *testing.T) {
+	for _, value := range []string{"", "N/A", "invalid", "NaN", "+Inf", "-Inf"} {
+		if got := optionalSeconds(value); got != nil {
+			t.Fatalf("optionalSeconds(%q)=%v want unavailable", value, *got)
+		}
+	}
+	if got := optionalSeconds("0.000"); got == nil || *got != 0 {
+		t.Fatalf("explicit zero was not retained: %v", got)
+	}
+}
+
 func TestFirstPacketPTSandDTSAreCapturedIndependently(t *testing.T) {
 	timing := avStreamTiming{}
 	captureFirstPacketTimes(&timing, "N/A", "-0.042")
@@ -233,8 +253,8 @@ func TestAVTimingForStreamPlanDoesNotPairRemovedAudioByArrayPosition(t *testing.
 		FrameRate: "24000/1001",
 	}
 	plan := ResolvedStreamPlan{Audio: []PlannedStream{
-		{InputIndex: 2, Action: "copy", OutputTypeIndex: 0},
-		{InputIndex: 3, Action: "copy", OutputTypeIndex: 1},
+		{InputIndex: 2, Action: "copy", OutputIndex: 1, OutputTypeIndex: 0},
+		{InputIndex: 3, Action: "copy", OutputIndex: 2, OutputTypeIndex: 1},
 	}}
 	selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
 	if len(selectedSource.Audio) != 2 || selectedSource.Audio[0].Index != 2 || selectedSource.Audio[1].Index != 3 {
@@ -261,8 +281,8 @@ func TestAVTimingForStreamPlanSkipsDerivedWhenOriginalExists(t *testing.T) {
 	}
 	duplicate := 1
 	plan := ResolvedStreamPlan{Audio: []PlannedStream{
-		{InputIndex: 1, OutputTypeIndex: 0, Action: "copy"},
-		{InputIndex: 1, OutputTypeIndex: 1, Action: "derive", DuplicateOf: &duplicate},
+		{InputIndex: 1, OutputIndex: 1, OutputTypeIndex: 0, Action: "copy"},
+		{InputIndex: 1, OutputIndex: 2, OutputTypeIndex: 1, Action: "derive", DuplicateOf: &duplicate},
 	}}
 	selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
 	if len(selectedSource.Audio) != 1 || len(selectedOutput.Audio) != 1 || selectedOutput.Audio[0].Index != 1 {
@@ -277,9 +297,51 @@ func TestAVTimingForStreamPlanUsesDerivedWhenOriginalIsNotPreserved(t *testing.T
 		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(.122)}},
 	}
 	duplicate := 1
-	plan := ResolvedStreamPlan{Audio: []PlannedStream{{InputIndex: 1, OutputTypeIndex: 0, Action: "derive", DuplicateOf: &duplicate}}}
+	plan := ResolvedStreamPlan{Audio: []PlannedStream{{InputIndex: 1, OutputIndex: 1, OutputTypeIndex: 0, Action: "derive", DuplicateOf: &duplicate}}}
 	selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
 	if report := validateAVTiming(selectedSource, selectedOutput); report["status"] != "validated" {
 		t.Fatalf("derived-only replacement did not preserve timing identity: %#v", report)
+	}
+}
+
+func TestAVTimingForStreamPlanMissingOutputDoesNotShiftLaterPairs(t *testing.T) {
+	for _, missingOutput := range []int{1, 2} {
+		t.Run(fmt.Sprintf("missing_output_%d", missingOutput), func(t *testing.T) {
+			source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24/1"}
+			output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24/1"}
+			plan := ResolvedStreamPlan{}
+			for index := 1; index <= 3; index++ {
+				source.Audio = append(source.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10)})
+				plan.Audio = append(plan.Audio, PlannedStream{InputIndex: index, OutputIndex: index, OutputTypeIndex: index - 1, Action: "copy"})
+				if index != missingOutput {
+					output.Audio = append(output.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10)})
+				}
+			}
+			selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)
+			report := validateAVTiming(selectedSource, selectedOutput)
+			tracks := report["tracks"].([]models.JSONMap)
+			if report["status"] != "unverified" || len(tracks) != 3 {
+				t.Fatalf("missing planned output was not represented atomically: %#v", report)
+			}
+			for index, track := range tracks {
+				want := "validated"
+				if index+1 == missingOutput {
+					want = "unverified"
+				}
+				if track["status"] != want || track["sourceAudioIndex"] != index+1 || track["outputAudioIndex"] != index+1 {
+					t.Fatalf("track %d shifted after missing output: %#v", index+1, tracks)
+				}
+			}
+		})
+	}
+}
+
+func TestAVTimingForQueueValidationFailsClosedWithoutFrozenPlan(t *testing.T) {
+	source := timingEvidence(0, 0)
+	output := timingEvidence(0, 0)
+	selectedSource, selectedOutput := avTimingForQueueValidation(source, output, ResolvedStreamPlan{}, false)
+	report := validateAVTiming(selectedSource, selectedOutput)
+	if report["status"] != "unverified" || len(selectedSource.Audio) != 0 || len(selectedOutput.Audio) != 1 {
+		t.Fatalf("Queue revived positional A/V matching without the AS-IS stream plan: %#v", report)
 	}
 }

@@ -244,14 +244,16 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 		recommendation = recommendations[0]
 	}
 	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
-	if strings.Contains(strings.ToLower(existing), "fps=") {
+	if explicit, found, known := explicitFPSFilterRate(existing); found {
 		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 		delete(profile.WorkerConfig, "effectiveOutputFrameRate")
 		profile.WorkerConfig["effectiveCadenceOperation"] = "explicit_fps_filter"
-		if explicit, ok := simpleFPSFilterRate(existing); ok {
+		if known {
 			profile.WorkerConfig["effectiveOutputFrameRate"] = explicit
+			delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
 			delete(profile.WorkerConfig, "cadenceResolutionWarning")
 		} else {
+			profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
 			profile.WorkerConfig["cadenceResolutionWarning"] = "explicit fps filter won over automatic cadence, but its effective output rate could not be parsed safely"
 		}
 		return profile
@@ -284,11 +286,12 @@ func profileWithAutomaticCadence(profile models.Profile, analysis CadenceAnalysi
 	}
 	profile.WorkerConfig["videoFilters"] = "fps=" + target + existing
 	profile.WorkerConfig["effectiveOutputFrameRate"] = target
+	delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
 	profile.WorkerConfig["effectiveCadenceOperation"] = recommendation.Operation
 	return profile
 }
 
-func simpleFPSFilterRate(filters string) (string, bool) {
+func explicitFPSFilterRate(filters string) (string, bool, bool) {
 	for _, filter := range strings.Split(filters, ",") {
 		parts := strings.SplitN(strings.TrimSpace(filter), "=", 2)
 		if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "fps") {
@@ -296,14 +299,19 @@ func simpleFPSFilterRate(filters string) (string, bool) {
 		}
 		value := strings.TrimSpace(parts[1])
 		if parseFrameRateValue(value) <= 0 {
-			return "", false
+			return "", true, false
 		}
 		if !strings.Contains(value, "/") && !strings.Contains(value, ".") {
 			value += "/1"
 		}
-		return value, true
+		return value, true, true
 	}
-	return "", false
+	return "", false, false
+}
+
+func simpleFPSFilterRate(filters string) (string, bool) {
+	value, found, known := explicitFPSFilterRate(filters)
+	return value, found && known
 }
 
 func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
@@ -317,6 +325,7 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 		}
 		profile.WorkerConfig["effectiveCadenceOperation"] = "inverse_telecine"
 		profile.WorkerConfig["effectiveOutputFrameRate"] = target
+		delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
 	}
 	return profile
 }

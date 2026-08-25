@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -244,30 +245,55 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	profile.WorkerConfig["hevcLevelMode"] = mode
 	requested := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevel"]))
+	var source MediaStream
+	if len(streams.Video) > 0 {
+		source = streams.Video[0]
+		width, height, geometryKnown := resolveEffectiveVideoGeometry(profile, source)
+		if geometryKnown {
+			profile.WorkerConfig["effectiveOutputWidth"] = width
+			profile.WorkerConfig["effectiveOutputHeight"] = height
+			delete(profile.WorkerConfig, "effectiveOutputGeometryUnknown")
+		} else {
+			delete(profile.WorkerConfig, "effectiveOutputWidth")
+			delete(profile.WorkerConfig, "effectiveOutputHeight")
+			profile.WorkerConfig["effectiveOutputGeometryUnknown"] = true
+		}
+	}
 	if mode == "auto" {
 		if len(streams.Video) == 0 {
 			return profile
 		}
-		source := streams.Video[0]
+		if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) || profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) {
+			profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level Auto is unresolved because effective output FPS or geometry is unknown"
+			delete(profile.WorkerConfig, "hevcLevelEffective")
+			return profile
+		}
 		// CRF and ICQ do not provide a target output bitrate up front. The source
 		// bitrate must not be treated as an output requirement.
 		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
 		if fps <= 0 {
 			fps = parseFrameRateValue(source.FrameRate)
 		}
-		recommendation := recommendHEVCLevel(source.Width, source.Height, fps, 0)
+		width := workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], source.Width)
+		height := workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], source.Height)
+		recommendation := recommendHEVCLevel(width, height, fps, 0)
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
 	} else if mode == "recommended" && requested == "" {
 		if len(streams.Video) == 0 {
 			return profile
 		}
-		source := streams.Video[0]
+		if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) || profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) {
+			profile.WorkerConfig["hevcLevelResolutionWarning"] = "Recommended HEVC Level is unresolved because effective output FPS or geometry is unknown"
+			return profile
+		}
 		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
 		if fps <= 0 {
 			fps = parseFrameRateValue(source.FrameRate)
 		}
-		recommendation := recommendHEVCLevel(source.Width, source.Height, fps, 0)
+		width := workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], source.Width)
+		height := workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], source.Height)
+		recommendation := recommendHEVCLevel(width, height, fps, 0)
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
 		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Stored Recommended Level was unavailable; MVForge recalculated it from the current asset."
@@ -278,6 +304,65 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 	profile.WorkerConfig["hevcLevelEffective"] = requested
 	profile.WorkerConfig["hevcLevelTier"] = "main"
 	return profile
+}
+
+func resolveEffectiveVideoGeometry(profile models.Profile, source MediaStream) (int, int, bool) {
+	width, height := source.Width, source.Height
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
+	for _, raw := range strings.Split(filters, ",") {
+		filter := strings.TrimSpace(raw)
+		name, value, found := strings.Cut(filter, "=")
+		if !found {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "crop":
+			values := strings.Split(value, ":")
+			if len(values) < 2 {
+				return 0, 0, false
+			}
+			cropWidth, widthErr := strconv.Atoi(strings.TrimSpace(values[0]))
+			cropHeight, heightErr := strconv.Atoi(strings.TrimSpace(values[1]))
+			if widthErr != nil || heightErr != nil || cropWidth <= 0 || cropHeight <= 0 {
+				return 0, 0, false
+			}
+			width, height = cropWidth, cropHeight
+		case "scale":
+			values := strings.Split(value, ":")
+			if len(values) < 2 {
+				return 0, 0, false
+			}
+			scaleWidth, widthErr := strconv.Atoi(strings.Trim(strings.TrimSpace(values[0]), "'\""))
+			scaleHeight, heightErr := strconv.Atoi(strings.Trim(strings.TrimSpace(values[1]), "'\""))
+			if widthErr != nil || heightErr != nil || scaleWidth == 0 || scaleHeight == 0 {
+				return 0, 0, false
+			}
+			switch {
+			case scaleWidth > 0 && scaleHeight > 0:
+				width, height = scaleWidth, scaleHeight
+			case scaleWidth > 0 && (scaleHeight == -1 || scaleHeight == -2):
+				height = scaledDimension(height, width, scaleWidth, scaleHeight == -2)
+				width = scaleWidth
+			case scaleHeight > 0 && (scaleWidth == -1 || scaleWidth == -2):
+				width = scaledDimension(width, height, scaleHeight, scaleWidth == -2)
+				height = scaleHeight
+			default:
+				return 0, 0, false
+			}
+		}
+	}
+	return width, height, true
+}
+
+func scaledDimension(value, reference, target int, even bool) int {
+	result := int(math.Round(float64(value) * float64(target) / float64(reference)))
+	if even && result%2 != 0 {
+		result--
+	}
+	return max(1, result)
 }
 
 func hevcLevelArgs(profile models.Profile, encoder string) []string {

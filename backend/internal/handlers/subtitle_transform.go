@@ -132,10 +132,14 @@ func emptySubtitleArtifactCanBeSkipped(plan MediaJobPlan) bool {
 
 func textSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, format, outputPath string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
-	if plan.SegmentStartSeconds > 0 {
-		args = append(args, "-ss", fmt.Sprintf("%g", plan.SegmentStartSeconds))
+	inputSeek, outputTrim := segmentedSeekWindow(plan.SegmentStartSeconds)
+	if inputSeek > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", inputSeek))
 	}
 	args = append(args, "-i", plan.InputPath)
+	if outputTrim > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", outputTrim))
+	}
 	if plan.SegmentDurationSeconds > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", plan.SegmentDurationSeconds))
 	}

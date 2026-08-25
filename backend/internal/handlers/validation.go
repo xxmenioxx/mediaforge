@@ -191,12 +191,8 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			if measured, timingErr := probeAVTiming(job.OutputPath, 0); timingErr == nil {
 				outputTiming = measured
 			}
-			if streamPlan, ok := resolvedStreamPlanForJobValidation(db, job); ok {
-				sourceTiming, outputTiming = avTimingForStreamPlan(sourceTiming, outputTiming, streamPlan)
-			} else {
-				selected := conversionOverrideForJob(job, nil).KeepAudioStreams
-				sourceTiming, outputTiming = avTimingForSelectedAudio(sourceTiming, outputTiming, selected)
-			}
+			streamPlan, planAvailable := resolvedStreamPlanForJobValidation(db, job)
+			sourceTiming, outputTiming = avTimingForQueueValidation(sourceTiming, outputTiming, streamPlan, planAvailable)
 			timingReport = validateAVTiming(sourceTiming, outputTiming)
 			if timingReport["status"] == "unverified" {
 				warnings = append(warnings, "Final output A/V timestamp alignment could not be verified from available evidence.")
@@ -211,7 +207,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		if colorWarning != "" {
 			warnings = append(warnings, colorWarning)
 		}
-		if fidelity := validateJobFrameFidelity(job); len(fidelity) > 0 {
+		if fidelity := validateJobFrameFidelity(db, job); len(fidelity) > 0 {
 			colorReport["frameFidelity"] = fidelity
 		}
 	}
@@ -332,7 +328,7 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, s
 // color policy: frame geometry, aspect, fields, chroma siting and output bit
 // depth. It is informational by design; codec, depth and field order can be
 // deliberate profile changes and must not make an otherwise valid job fail.
-func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
+func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob) models.JSONMap {
 	source := firstVideoFrameCharacteristics(ffprobeJSON(job.MediaPath))
 	output := firstVideoFrameCharacteristics(ffprobeJSON(job.OutputPath))
 	if len(source) == 0 || len(output) == 0 {
@@ -341,6 +337,13 @@ func validateJobFrameFidelity(job models.QueueJob) models.JSONMap {
 	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
 	if worker == nil {
 		worker = map[string]interface{}{}
+	}
+	if artifact, _, err := readLatestJobArtifact(db, job, "as-is"); err == nil {
+		if effectiveProfile := unknownRecord(artifact["profile"]); effectiveProfile != nil {
+			if effectiveWorker := unknownRecord(effectiveProfile["workerConfig"]); effectiveWorker != nil {
+				worker = effectiveWorker
+			}
+		}
 	}
 	if cadence, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey]); ok &&
 		cadence.Operation == "remove_soft_telecine" && cadence.Confidence >= 0.95 {
@@ -416,10 +419,13 @@ func validateCadenceOutputFrameRate(worker map[string]interface{}, output models
 	observed := strings.TrimSpace(stringFromUnknown(output["frameRate"]))
 	realObserved := strings.TrimSpace(stringFromUnknown(output["realFrameRate"]))
 	status := "validated"
-	if parseFrameRateValue(observed) <= 0 {
-		status = "unverified"
-	} else if !nearFPS(parseFrameRateValue(observed), parseFrameRateValue(expected), 0.01) || realObserved != "" && !nearFPS(parseFrameRateValue(realObserved), parseFrameRateValue(expected), 0.01) {
+	expectedFPS := parseFrameRateValue(expected)
+	avgFPS := parseFrameRateValue(observed)
+	realFPS := parseFrameRateValue(realObserved)
+	if expectedFPS > 0 && (avgFPS > 0 && !nearFPS(avgFPS, expectedFPS, 0.01) || realFPS > 0 && !nearFPS(realFPS, expectedFPS, 0.01)) {
 		status = "mismatch"
+	} else if expectedFPS <= 0 || avgFPS <= 0 || realFPS <= 0 {
+		status = "unverified"
 	}
 	return models.JSONMap{"expected": expected, "avgFrameRate": observed, "realFrameRate": realObserved, "status": status}
 }
@@ -443,14 +449,15 @@ func validateHEVCLevelField(worker map[string]interface{}, source, output models
 	if expected == "" {
 		expected = normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
 	}
-	if mode == "auto" && expected == "" {
+	unknownEffectiveInputs := boolSetting(worker["effectiveOutputFrameRateUnknown"], false) || boolSetting(worker["effectiveOutputGeometryUnknown"], false)
+	if mode == "auto" && expected == "" && !unknownEffectiveInputs {
 		fps := parseFrameRateValue(stringFromUnknown(worker["effectiveOutputFrameRate"]))
 		if fps <= 0 {
 			fps = parseFrameRateValue(stringFromUnknown(source["frameRate"]))
 		}
 		recommendation := recommendHEVCLevel(
-			workerIntValue(source["width"], 0),
-			workerIntValue(source["height"], 0),
+			workerIntValue(worker["effectiveOutputWidth"], workerIntValue(source["width"], 0)),
+			workerIntValue(worker["effectiveOutputHeight"], workerIntValue(source["height"], 0)),
 			fps,
 			0,
 		)

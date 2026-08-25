@@ -781,15 +781,7 @@ func generateTestExternalSubtitleArtifacts(ctx context.Context, plan MediaJobPla
 		if used[filepath.Clean(outputPath)] {
 			continue
 		}
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
-		if plan.SegmentStartSeconds > 0 {
-			args = append(args, "-ss", strconv.FormatFloat(plan.SegmentStartSeconds, 'f', -1, 64))
-		}
-		args = append(args, "-i", sidecar.Path)
-		if plan.SegmentDurationSeconds > 0 {
-			args = append(args, "-t", strconv.Itoa(plan.SegmentDurationSeconds))
-		}
-		args = append(args, "-c:s", sidecar.Format, "-f", sidecar.Format, outputPath)
+		args := externalSubtitleSampleArgs(plan, sidecar, outputPath)
 		commandOutput, runErr := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 		content, readErr := os.ReadFile(outputPath)
 		if runErr != nil || readErr != nil || !validSubtitleSidecar(sidecar.Format, content) {
@@ -810,6 +802,22 @@ func generateTestExternalSubtitleArtifacts(ctx context.Context, plan MediaJobPla
 	}
 	completed = true
 	return artifacts, nil
+}
+
+func externalSubtitleSampleArgs(plan MediaJobPlan, sidecar ExternalSubtitle, outputPath string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
+	inputSeek, outputTrim := segmentedSeekWindow(plan.SegmentStartSeconds)
+	if inputSeek > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(inputSeek, 'f', -1, 64))
+	}
+	args = append(args, "-i", sidecar.Path)
+	if outputTrim > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(outputTrim, 'f', -1, 64))
+	}
+	if plan.SegmentDurationSeconds > 0 {
+		args = append(args, "-t", strconv.Itoa(plan.SegmentDurationSeconds))
+	}
+	return append(args, "-c:s", sidecar.Format, "-f", sidecar.Format, outputPath)
 }
 
 func (h AssetHandler) runTestEncodeFFmpeg(ctx context.Context, id uint, args []string, duration float64) error {

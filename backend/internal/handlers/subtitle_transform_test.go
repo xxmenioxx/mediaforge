@@ -15,7 +15,7 @@ func TestTextSubtitleExtractionUsesTestEncodeWindowOnlyWhenRequested(t *testing.
 	segmented := shellJoin(textSubtitleExtractionArgs(MediaJobPlan{
 		InputPath: "/raw/movie.mkv", SegmentStartSeconds: 42.5, SegmentDurationSeconds: 20,
 	}, 3, "srt", "/library/test.srt"))
-	assertContains(t, segmented, "-ss 42.5 -i /raw/movie.mkv -t 20 -map 0:3")
+	assertContains(t, segmented, "-ss 37.5 -i /raw/movie.mkv -ss 5 -t 20 -map 0:3")
 	normal := shellJoin(textSubtitleExtractionArgs(MediaJobPlan{InputPath: "/raw/movie.mkv"}, 3, "srt", "/staging/full.srt"))
 	assertNotContains(t, normal, "-ss")
 	assertNotContains(t, normal, "-t 20")

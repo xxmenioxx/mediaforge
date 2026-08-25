@@ -175,13 +175,21 @@ func TestForceDeinterlacePreventsContradictorySoftCadenceNormalization(t *testin
 
 func TestCadenceValidationRequiresAverageAndRealFrameRates(t *testing.T) {
 	worker := map[string]interface{}{"effectiveOutputFrameRate": "24000/1001"}
-	valid := validateCadenceOutputFrameRate(worker, models.JSONMap{"frameRate": "24000/1001", "realFrameRate": "24000/1001"})
-	if valid["status"] != "validated" {
-		t.Fatalf("expected validated output, got %#v", valid)
-	}
-	mismatch := validateCadenceOutputFrameRate(worker, models.JSONMap{"frameRate": "24000/1001", "realFrameRate": "30000/1001"})
-	if mismatch["status"] != "mismatch" {
-		t.Fatalf("expected r_frame_rate mismatch, got %#v", mismatch)
+	for _, test := range []struct {
+		name, avg, real, want string
+	}{
+		{name: "both match", avg: "24000/1001", real: "24000/1001", want: "validated"},
+		{name: "average only", avg: "24000/1001", want: "unverified"},
+		{name: "real only", real: "24000/1001", want: "unverified"},
+		{name: "real mismatch", avg: "24000/1001", real: "30000/1001", want: "mismatch"},
+		{name: "average mismatch", avg: "30000/1001", real: "24000/1001", want: "mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := validateCadenceOutputFrameRate(worker, models.JSONMap{"frameRate": test.avg, "realFrameRate": test.real})
+			if result["status"] != test.want {
+				t.Fatalf("status=%v want %s: %#v", result["status"], test.want, result)
+			}
+		})
 	}
 }
 
@@ -207,6 +215,9 @@ func TestUnparseableExplicitFPSFilterDoesNotKeepStaleEffectiveRate(t *testing.T)
 	}
 	if workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) == "" {
 		t.Fatalf("unparseable explicit FPS did not record a warning: %#v", resolved.WorkerConfig)
+	}
+	if !profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("unparseable explicit FPS was not marked unknown: %#v", resolved.WorkerConfig)
 	}
 }
 

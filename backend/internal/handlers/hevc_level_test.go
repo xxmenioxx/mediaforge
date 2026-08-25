@@ -107,6 +107,51 @@ func TestHEVCLevelAutoUsesResolvedCadenceFPS(t *testing.T) {
 	}
 }
 
+func TestHEVCLevelAutoUsesEffectiveOutputGeometry(t *testing.T) {
+	tests := []struct {
+		name                      string
+		sourceWidth, sourceHeight int
+		filters                   string
+		wantWidth, wantHeight     int
+		wantLevel                 string
+	}{
+		{name: "downscale", sourceWidth: 3840, sourceHeight: 2160, filters: "scale=1920:1080", wantWidth: 1920, wantHeight: 1080, wantLevel: "4.0"},
+		{name: "upscale", sourceWidth: 1920, sourceHeight: 1080, filters: "scale=3840:2160", wantWidth: 3840, wantHeight: 2160, wantLevel: "5.0"},
+		{name: "crop", sourceWidth: 3840, sourceHeight: 2160, filters: "crop=1920:1080:960:540", wantWidth: 1920, wantHeight: 1080, wantLevel: "4.0"},
+		{name: "unchanged", sourceWidth: 1920, sourceHeight: 1080, wantWidth: 1920, wantHeight: 1080, wantLevel: "4.0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+				"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "videoFilters": test.filters, "effectiveOutputFrameRate": "24000/1001",
+			}}
+			resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: test.sourceWidth, Height: test.sourceHeight, FrameRate: "24000/1001"}}})
+			if workerIntValue(resolved.WorkerConfig["effectiveOutputWidth"], 0) != test.wantWidth || workerIntValue(resolved.WorkerConfig["effectiveOutputHeight"], 0) != test.wantHeight {
+				t.Fatalf("effective geometry mismatch: %#v", resolved.WorkerConfig)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["hevcLevelEffective"]); got != test.wantLevel {
+				t.Fatalf("effective Level=%q want %s: %#v", got, test.wantLevel, resolved.WorkerConfig)
+			}
+		})
+	}
+}
+
+func TestHEVCLevelUnknownCustomFPSDoesNotFallbackToSource(t *testing.T) {
+	base := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "effectiveOutputFrameRateUnknown": true,
+	}}
+	auto := resolveHEVCLevel(base, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
+	if workerStringValue(auto.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(auto.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+		t.Fatalf("Auto Level silently used source FPS: %#v", auto.WorkerConfig)
+	}
+	base.WorkerConfig["hevcLevelMode"] = "custom"
+	base.WorkerConfig["hevcLevel"] = "4.1"
+	manual := resolveHEVCLevel(base, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
+	if workerStringValue(manual.WorkerConfig["hevcLevelEffective"]) != "4.1" {
+		t.Fatalf("manual Level did not win with unknown FPS: %#v", manual.WorkerConfig)
+	}
+}
+
 func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
 	profile := applyAssetConversionOverrideToProfile(
 		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}},

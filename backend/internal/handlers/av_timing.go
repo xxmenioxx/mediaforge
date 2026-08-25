@@ -107,7 +107,10 @@ func optionalSeconds(value string) *float64 {
 	if value == "" || strings.EqualFold(value, "N/A") {
 		return nil
 	}
-	seconds := parseFloat(value)
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return nil
+	}
 	return &seconds
 }
 
@@ -190,17 +193,37 @@ func avTimingForStreamPlan(source, output avTimingEvidence, plan ResolvedStreamP
 		if stream.Action == "derive" && canonicalInputs[stream.InputIndex] {
 			continue
 		}
+		sourceTiming := avStreamTiming{Index: stream.InputIndex, Language: stream.Language, Title: stream.Title}
 		for _, audio := range source.Audio {
 			if audio.Index == stream.InputIndex {
-				selectedSource.Audio = append(selectedSource.Audio, audio)
+				sourceTiming = audio
 				break
 			}
 		}
-		if stream.OutputTypeIndex >= 0 && stream.OutputTypeIndex < len(output.Audio) {
-			selectedOutput.Audio = append(selectedOutput.Audio, output.Audio[stream.OutputTypeIndex])
+		outputTiming := avStreamTiming{Index: stream.OutputIndex, Language: stream.Language, Title: stream.Title}
+		for _, audio := range output.Audio {
+			if audio.Index == stream.OutputIndex {
+				outputTiming = audio
+				break
+			}
 		}
+		// Append the pair atomically so missing evidence for one planned stream
+		// cannot shift every comparison that follows it.
+		selectedSource.Audio = append(selectedSource.Audio, sourceTiming)
+		selectedOutput.Audio = append(selectedOutput.Audio, outputTiming)
 	}
 	return selectedSource, selectedOutput
+}
+
+func avTimingForQueueValidation(source, output avTimingEvidence, plan ResolvedStreamPlan, planAvailable bool) (avTimingEvidence, avTimingEvidence) {
+	if planAvailable {
+		return avTimingForStreamPlan(source, output, plan)
+	}
+	// Without the frozen AS-IS plan, output positions cannot be paired safely
+	// after removal, reordering, or derivation. Remove source audio evidence so
+	// validation fails closed instead of comparing the positional common prefix.
+	source.Audio = nil
+	return source, output
 }
 
 func avTimingForSelectedAudio(source, output avTimingEvidence, inputIndexes []int) (avTimingEvidence, avTimingEvidence) {
@@ -243,6 +266,9 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 	trackCount := min(len(source.Audio), len(output.Audio))
 	tracks := make([]models.JSONMap, 0, trackCount)
 	overall := "validated"
+	if len(source.Audio) != len(output.Audio) {
+		overall = "unverified"
+	}
 	for index := 0; index < trackCount; index++ {
 		sourceVideoStart, sourceVideoOK := videoPresentationStart(*source.Video)
 		outputVideoStart, outputVideoOK := videoPresentationStart(*output.Video)

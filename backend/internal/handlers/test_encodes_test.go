@@ -73,6 +73,21 @@ func TestConfigurationHashIsStableAndSensitive(t *testing.T) {
 	}
 }
 
+func TestExternalSubtitleSampleUsesSamePrerollWindowAsMedia(t *testing.T) {
+	args := externalSubtitleSampleArgs(MediaJobPlan{
+		SegmentStartSeconds: 42.5, SegmentDurationSeconds: 20,
+	}, ExternalSubtitle{Path: "/raw/movie.en.srt", Format: "srt"}, "/library/test.en.srt")
+	command := shellJoin(args)
+	assertContains(t, command, "-ss 37.5 -i /raw/movie.en.srt -ss 5 -t 20")
+	assertContains(t, command, "-c:s srt -f srt /library/test.en.srt")
+
+	early := shellJoin(externalSubtitleSampleArgs(MediaJobPlan{
+		SegmentStartSeconds: 3, SegmentDurationSeconds: 20,
+	}, ExternalSubtitle{Path: "/raw/movie.en.srt", Format: "srt"}, "/library/test.en.srt"))
+	assertContains(t, early, "-i /raw/movie.en.srt -ss 3 -t 20")
+	assertNotContains(t, early, "-ss 0")
+}
+
 func TestLabDraftTestEncodeDoesNotApplyPersistedAssetVideoOverrides(t *testing.T) {
 	path := "/media/video/asset.mkv"
 	job := models.QueueJob{MediaPath: path, ProcessingMode: ProcessingModeFullEncode}
@@ -193,8 +208,32 @@ func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
 	if gopFrames <= 0 || math.Abs(gopSeconds-float64(gopFrames)/(24000.0/1001.0)) > .001 {
 		t.Fatalf("GOP evidence is inconsistent: frames=%d recommendation=%#v", gopFrames, recommendationEvidence)
 	}
-	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
+	effective = resolveHEVCLevel(effective, MediaStreamInventory{Video: []MediaStream{{
+		Width: 720, Height: 480, FrameRate: "30000/1001",
+	}}})
+	if got := workerStringValue(effective.WorkerConfig["hevcLevelEffective"]); got != "3.0" {
+		t.Fatalf("HEVC Level=%q want 3.0 from effective 720x480@24000/1001", got)
+	}
+	if workerIntValue(effective.WorkerConfig["effectiveOutputWidth"], 0) != 720 || workerIntValue(effective.WorkerConfig["effectiveOutputHeight"], 0) != 480 {
+		t.Fatalf("effective geometry was not frozen: %#v", effective.WorkerConfig)
+	}
+	command := shellJoin(append(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"), cadenceOutputArgs(effective)...))
 	assertContains(t, command, fmt.Sprintf("-g %d", gopFrames))
+	assertContains(t, command, "-level:v 30")
+	assertContains(t, command, "-tier main")
+	assertContains(t, command, "-fps_mode cfr")
+	if cadence := validateCadenceOutputFrameRate(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
+		"frameRate": "24000/1001", "realFrameRate": "24000/1001",
+	}); cadence["status"] != "validated" {
+		t.Fatalf("cadence validation=%#v want validated", cadence)
+	}
+	if level := validateHEVCLevelField(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
+		"width": 720, "height": 480, "frameRate": "30000/1001",
+	}, models.JSONMap{
+		"codec": "hevc", "hevcLevel": "3.0", "width": 720, "height": 480, "frameRate": "24000/1001",
+	}); level["status"] != "validated" {
+		t.Fatalf("HEVC Level validation=%#v want validated", level)
+	}
 }
 
 func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {

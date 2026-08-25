@@ -125,6 +125,15 @@ func TestResolveAutomaticFrameStructureUsesResolvedCadenceFPS(t *testing.T) {
 	}
 }
 
+func TestResolveAutomaticFrameStructureRejectsUnknownCustomFPS(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"frameStructureMode": "auto", "effectiveOutputFrameRateUnknown": true,
+	}}
+	if _, err := resolveAutomaticFrameStructure(queueJobTestDB(t), "/media/raw/custom-fps.mkv", profile); err == nil || !strings.Contains(err.Error(), "known effective output frame rate") {
+		t.Fatalf("automatic GOP silently fell back to source FPS: %v", err)
+	}
+}
+
 func TestPlannedOutputPathForMultiEpisodeBatchNamesEpisodes(t *testing.T) {
 	db := queueJobTestDB(t)
 	library := models.Library{

@@ -1058,6 +1058,9 @@ func resolveAutomaticFrameStructure(
 	) != "auto" {
 		return profile, nil
 	}
+	if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+		return models.Profile{}, fmt.Errorf("automatic frame structure requires a known effective output frame rate after an explicit FPS transform")
+	}
 
 	workerConfig := models.JSONMap{}
 	for key, value := range profile.WorkerConfig {
