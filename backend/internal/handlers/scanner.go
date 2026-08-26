@@ -342,18 +342,17 @@ func stampInheritedSnapshotCacheMetadata(result *models.ScanResult, path string,
 	if result == nil {
 		return
 	}
-	var inheritedPolicy any
-	if cache, ok := snapshotCacheMap(result.RawProbe["snapshotCache"]); ok {
-		inheritedPolicy = cache["analysisPolicy"]
+	if result.RawProbe == nil {
+		result.RawProbe = models.JSONMap{}
 	}
-	stampSnapshotCacheMetadataWithRefresh(result, path, info, "inherited", snapshotComponentNames, nil)
-	if cache, ok := snapshotCacheMap(result.RawProbe["snapshotCache"]); ok {
-		if inheritedPolicy == nil {
-			delete(cache, "analysisPolicy")
-		} else {
-			cache["analysisPolicy"] = inheritedPolicy
-		}
+	cache, cacheOK := snapshotCacheMap(result.RawProbe["snapshotCache"])
+	_, componentsOK := snapshotCacheMap(cache["components"])
+	if !cacheOK || !componentsOK || workerIntValue(cache["schemaVersion"], 0) != snapshotCacheSchemaVersion {
+		migrateLegacySnapshotCache(result, path, info)
+		cache, _ = snapshotCacheMap(result.RawProbe["snapshotCache"])
 	}
+	cache["fingerprint"] = snapshotFingerprint(path, info)
+	cache["lastRefresh"] = models.JSONMap{"mode": "inherited", "reused": append([]string(nil), snapshotComponentNames...), "refreshed": []string{}}
 }
 
 func migrateLegacySnapshotCache(result *models.ScanResult, path string, info os.FileInfo) {

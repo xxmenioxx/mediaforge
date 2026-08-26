@@ -1515,6 +1515,124 @@ func TestArchivedOriginalInheritanceValidatesCurrentAnalysisPolicy(t *testing.T)
 	}
 }
 
+func TestArchivedOriginalInheritancePreservesStaleComponentProvenance(t *testing.T) {
+	for _, testCase := range []struct {
+		component     string
+		wantRefreshed []string
+		wantReused    []string
+	}{
+		{component: "interlace", wantRefreshed: []string{"cadence", "interlace"}, wantReused: []string{"metadata", "crop", "frameStructure"}},
+		{component: "crop", wantRefreshed: []string{"crop"}, wantReused: []string{"metadata", "interlace", "frameStructure", "cadence"}},
+	} {
+		t.Run(testCase.component, func(t *testing.T) {
+			binDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'unexpected frame probe' >&2\nexit 21\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			pixelScript := "#!/bin/sh\nprintf '%s\\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' 'crop=700:400:10:40' >&2\n"
+			if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(pixelScript), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			db, err := gorm.Open(sqlite.Open("file:archive-stale-"+testCase.component+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.ScanResult{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			rawPath := filepath.Join(root, "raw", "episode.mkv")
+			archivePath := filepath.Join(root, "archive", "episode.mkv")
+			if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(archivePath, []byte("original bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Stat(archivePath)
+			source := completeAnalysisSnapshot(rawPath, info)
+			stampSnapshotCacheMetadataWithPolicy(&source, rawPath, info, balancedAnalysisPolicy())
+			cache, _ := snapshotCacheMap(source.RawProbe["snapshotCache"])
+			components, _ := snapshotCacheMap(cache["components"])
+			entry, _ := snapshotCacheMap(components[testCase.component])
+			oldVersion := workerIntValue(entry["version"], 0) - 1
+			entry["version"] = oldVersion
+			if err := db.Create(&source).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.QueueJob{MediaPath: rawPath, OriginalArchivedPath: archivePath, Status: JobStatusCompleted}).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			inherited, ok := inheritedOriginalSnapshot(db, archivePath, info)
+			if !ok {
+				t.Fatal("expected Raw snapshot inheritance")
+			}
+			inheritedCache, _ := snapshotCacheMap(inherited.RawProbe["snapshotCache"])
+			inheritedComponents, _ := snapshotCacheMap(inheritedCache["components"])
+			inheritedEntry, _ := snapshotCacheMap(inheritedComponents[testCase.component])
+			if version := workerIntValue(inheritedEntry["version"], 0); version != oldVersion {
+				t.Fatalf("inherited %s version=%d want=%d", testCase.component, version, oldVersion)
+			}
+
+			var phases []string
+			result, cached, err := NewScannerHandler(db).scanResolvedFile(archivePath, info, ScanRequest{AnalysisSeconds: 20}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+			if err != nil || cached {
+				t.Fatalf("stale inherited refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
+			}
+			reused, refreshed, _ := snapshotRefreshDetails(result, false)
+			if slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") || !slices.Equal(refreshed, testCase.wantRefreshed) || !slices.Equal(reused, testCase.wantReused) {
+				t.Fatalf("unexpected inherited refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
+			}
+		})
+	}
+}
+
+func TestArchivedOriginalLegacyInheritanceDoesNotUpgradeKnownVersions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archive-legacy-provenance?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	rawPath := filepath.Join(root, "raw", "episode.mkv")
+	archivePath := filepath.Join(root, "archive", "episode.mkv")
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(archivePath)
+	interlace := models.JSONMap{"version": interlaceAnalysisCacheVersion - 1, "status": "progressive"}
+	source := completeAnalysisSnapshot(rawPath, info)
+	source.InterlaceAnalysis = interlace
+	source.RawProbe["interlaceAnalysis"] = interlace
+	delete(source.RawProbe, "snapshotCache")
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.QueueJob{MediaPath: rawPath, OriginalArchivedPath: archivePath, Status: JobStatusCompleted}).Error; err != nil {
+		t.Fatal(err)
+	}
+	inherited, ok := inheritedOriginalSnapshot(db, archivePath, info)
+	if !ok {
+		t.Fatal("expected legacy Raw snapshot inheritance")
+	}
+	cache, _ := snapshotCacheMap(inherited.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	entry, _ := snapshotCacheMap(components["interlace"])
+	if version := workerIntValue(entry["version"], 0); version != interlaceAnalysisCacheVersion-1 {
+		t.Fatalf("legacy interlace provenance was upgraded: version=%d", version)
+	}
+	if _, hasPolicy := cache["analysisPolicy"]; hasPolicy {
+		t.Fatalf("legacy inheritance invented analysis policy: %#v", cache["analysisPolicy"])
+	}
+}
+
 func TestSnapshotRequiresFrameStructureRefreshForLegacyVideo(t *testing.T) {
 	legacy := models.ScanResult{
 		Path:       "/media/raw/anime/legacy.mkv",
