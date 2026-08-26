@@ -294,7 +294,7 @@ func stampSnapshotCacheMetadata(result *models.ScanResult, path string, info os.
 }
 
 func stampSnapshotCacheMetadataWithPolicy(result *models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy) {
-	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result, path, info, "full", nil, snapshotComponentNames, "", policy)
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(result, path, info, "full", nil, snapshotComponentNames, "", policy, 20)
 }
 
 func stampSnapshotCacheMetadataWithRefresh(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string) {
@@ -306,6 +306,10 @@ func stampSnapshotCacheMetadataWithRefreshReason(result *models.ScanResult, path
 }
 
 func stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string, fallbackReason string, policy AnalysisPolicy) {
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(result, path, info, mode, reused, refreshed, fallbackReason, policy, 20)
+}
+
+func stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string, fallbackReason string, policy AnalysisPolicy, analysisSeconds int) {
 	if result == nil {
 		return
 	}
@@ -328,7 +332,7 @@ func stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result *models.ScanRes
 	result.RawProbe["snapshotCache"] = models.JSONMap{
 		"schemaVersion":  snapshotCacheSchemaVersion,
 		"fingerprint":    snapshotFingerprint(path, info),
-		"analysisPolicy": analysisPolicyEvidenceManifest(policy),
+		"analysisPolicy": analysisPolicyEvidenceManifest(policy, normalizedAnalysisSeconds(analysisSeconds)),
 		"components":     components,
 		"lastRefresh":    lastRefresh,
 	}
@@ -445,6 +449,10 @@ func snapshotCacheState(snapshot models.ScanResult, path string, info os.FileInf
 }
 
 func snapshotCacheStateWithPolicy(snapshot models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy) (fingerprintMatches bool, legacy bool, staleComponents []string) {
+	return snapshotCacheStateWithEvidence(snapshot, path, info, policy, 20)
+}
+
+func snapshotCacheStateWithEvidence(snapshot models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy, analysisSeconds int) (fingerprintMatches bool, legacy bool, staleComponents []string) {
 	cache, ok := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
 	if !ok {
 		return true, true, nil
@@ -473,13 +481,13 @@ func snapshotCacheStateWithPolicy(snapshot models.ScanResult, path string, info 
 			staleComponents = append(staleComponents, component)
 		}
 	}
-	staleComponents = append(staleComponents, staleComponentsForAnalysisPolicy(cache["analysisPolicy"], policy)...)
+	staleComponents = append(staleComponents, staleComponentsForAnalysisPolicy(cache["analysisPolicy"], policy, normalizedAnalysisSeconds(analysisSeconds))...)
 	staleComponents = uniqueStrings(staleComponents)
 	sort.Strings(staleComponents)
 	return true, false, staleComponents
 }
 
-func analysisPolicyEvidenceManifest(policy AnalysisPolicy) models.JSONMap {
+func analysisPolicyEvidenceManifest(policy AnalysisPolicy, analysisSeconds int) models.JSONMap {
 	policy = normalizedAnalysisPolicy(policy)
 	positions := make([]string, 0, len(policy.Positions))
 	for _, position := range policy.Positions {
@@ -487,7 +495,7 @@ func analysisPolicyEvidenceManifest(policy AnalysisPolicy) models.JSONMap {
 	}
 	positionSignature := strings.Join(positions, ",")
 	frame := fmt.Sprintf("adaptive=%t;early=%t;threshold=%.6f;initial=%d;maximum=%d;seconds=%.6f;positions=%s", policy.AdaptiveAnalysis, policy.EarlyConfidenceEnabled, policy.EarlyConfidenceThreshold, policy.InitialWindows, policy.MaximumWindows, policy.WindowSeconds, positionSignature)
-	interlace := fmt.Sprintf("validation=%s;adaptive=%t;maximum=%d;positions=%s", policy.InterlaceValidation, policy.AdaptiveAnalysis, policy.MaximumWindows, positionSignature)
+	interlace := fmt.Sprintf("validation=%s;adaptive=%t;maximum=%d;positions=%s;sampleSeconds=%d", policy.InterlaceValidation, policy.AdaptiveAnalysis, policy.MaximumWindows, positionSignature, normalizedAnalysisSeconds(analysisSeconds))
 	if policy.InterlaceValidation == "automatic" {
 		interlace += ";frame=" + frame
 	}
@@ -499,12 +507,12 @@ func analysisPolicyEvidenceManifest(policy AnalysisPolicy) models.JSONMap {
 	}
 }
 
-func staleComponentsForAnalysisPolicy(stored any, policy AnalysisPolicy) []string {
+func staleComponentsForAnalysisPolicy(stored any, policy AnalysisPolicy, analysisSeconds int) []string {
 	storedManifest, ok := snapshotCacheMap(stored)
 	if !ok {
 		return []string{"cadence", "crop", "frameStructure", "interlace"}
 	}
-	current := analysisPolicyEvidenceManifest(policy)
+	current := analysisPolicyEvidenceManifest(policy, analysisSeconds)
 	stale := []string{}
 	if stringFromUnknown(storedManifest["frameStructure"]) != stringFromUnknown(current["frameStructure"]) {
 		stale = append(stale, "frameStructure", "cadence")
@@ -583,6 +591,7 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	}
 
 	policy := analysisPolicy(h.db)
+	analysisSeconds := normalizedAnalysisSeconds(request.AnalysisSeconds)
 	fullRefreshMode := "full"
 	fallbackReason := ""
 	var existing models.ScanResult
@@ -590,12 +599,12 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	if !request.Force && policy.ReuseSnapshots {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			foundExisting = true
-			fingerprintMatches, legacyCache, staleComponents := snapshotCacheStateWithPolicy(existing, path, info, policy)
+			fingerprintMatches, legacyCache, staleComponents := snapshotCacheStateWithEvidence(existing, path, info, policy, analysisSeconds)
 			if legacyCache {
 				if legacySnapshotIdentityMatches(existing, info) {
 					migrateLegacySnapshotCache(&existing, path, info)
 					_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
-					fingerprintMatches, _, staleComponents = snapshotCacheStateWithPolicy(existing, path, info, policy)
+					fingerprintMatches, _, staleComponents = snapshotCacheStateWithEvidence(existing, path, info, policy, analysisSeconds)
 				} else {
 					fingerprintMatches = false
 					report("legacy_identity_mismatch", 8, "Legacy snapshot identity cannot be verified; starting a full analysis")
@@ -605,7 +614,7 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 			if snapshotRequiresFrameStructureRefresh(existing) || !cacheMatches {
 				if policy.IncrementalRefresh && fingerprintMatches && incrementalRefreshSupported(staleComponents) {
 					report("incremental_refresh", 10, "Refreshing stale analysis components while reusing valid evidence")
-					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, existing, path, info, normalizedAnalysisSeconds(request.AnalysisSeconds), staleComponents, report)
+					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, existing, path, info, analysisSeconds, staleComponents, report)
 					if refreshErr == nil {
 						return refreshed, false, nil
 					}
@@ -633,19 +642,35 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 		}
 		if !foundExisting {
 			if inherited, ok := inheritedOriginalSnapshot(h.db, path, info); ok {
-				report("completed", 100, "Using the Raw snapshot for this archived original")
-				return inherited, true, nil
+				fingerprintMatches, _, staleComponents := snapshotCacheStateWithEvidence(inherited, path, info, policy, analysisSeconds)
+				if fingerprintMatches && len(staleComponents) == 0 {
+					report("completed", 100, "Using the Raw snapshot for this archived original")
+					return inherited, true, nil
+				}
+				if policy.IncrementalRefresh && fingerprintMatches && incrementalRefreshSupported(staleComponents) {
+					report("incremental_refresh", 10, "Refreshing inherited analysis evidence for the current policy")
+					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, inherited, path, info, analysisSeconds, staleComponents, report)
+					if refreshErr == nil {
+						return refreshed, false, nil
+					}
+					if ctx.Err() != nil {
+						return models.ScanResult{}, false, ctx.Err()
+					}
+					fullRefreshMode = "full_fallback"
+					fallbackReason = incrementalFallbackReason(refreshErr)
+					report("incremental_fallback", 12, "Inherited evidence was unusable; starting a full analysis")
+				}
 			}
 		}
 	}
 
-	probe, raw, err := runFFProbeWithProgressContext(ctx, path, normalizedAnalysisSeconds(request.AnalysisSeconds), report, frameStructureSamplingPolicy(h.db))
+	probe, raw, err := runFFProbeWithProgressContext(ctx, path, analysisSeconds, report, frameStructureSamplingPolicy(h.db))
 	if err != nil {
 		return models.ScanResult{}, false, err
 	}
 
 	result := buildScanResult(path, info.Size(), probe, raw)
-	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(&result, path, info, fullRefreshMode, nil, snapshotComponentNames, fallbackReason, policy)
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(&result, path, info, fullRefreshMode, nil, snapshotComponentNames, fallbackReason, policy, analysisSeconds)
 	applySnapshotDirectPlay(h.db, &result)
 	if err := persistFinalAssetSnapshot(h.db, &result); err != nil {
 		return models.ScanResult{}, false, err
@@ -766,7 +791,7 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 	}
 	sort.Strings(refreshed)
 	reused := componentDifference(snapshotComponentNames, refreshed)
-	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(&existing, path, info, "incremental", reused, refreshed, "", analysisPolicy(h.db))
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(&existing, path, info, "incremental", reused, refreshed, "", analysisPolicy(h.db), analysisSeconds)
 	if err := persistFinalAssetSnapshot(h.db, &existing); err != nil {
 		return models.ScanResult{}, err
 	}

@@ -174,6 +174,124 @@ func TestSnapshotCacheInvalidatesComponentsByAnalysisPolicySemantics(t *testing.
 	}
 }
 
+func TestSnapshotCacheInvalidatesInterlaceWhenMotionSampleChanges(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "motion-cache.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	policy := balancedAnalysisPolicy()
+	snapshot := models.ScanResult{Path: mediaPath, RawProbe: models.JSONMap{}, VideoCodec: "h264", Duration: 1200, FrameStructureAnalysis: models.JSONMap{"version": 2}, InterlaceAnalysis: models.JSONMap{"version": interlaceAnalysisCacheVersion}, CropAnalysis: models.JSONMap{"version": 3}, CadenceAnalysis: models.JSONMap{"version": cadenceAnalysisVersion}}
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(&snapshot, mediaPath, info, "full", nil, snapshotComponentNames, "", policy, 10)
+
+	if matches, legacy, stale := snapshotCacheStateWithEvidence(snapshot, mediaPath, info, policy, 10); !matches || legacy || len(stale) != 0 {
+		t.Fatalf("same motion sample should remain valid: matches=%t legacy=%t stale=%v", matches, legacy, stale)
+	}
+	if matches, legacy, stale := snapshotCacheStateWithEvidence(snapshot, mediaPath, info, policy, 20); !matches || legacy || !slices.Equal(stale, []string{"cadence", "interlace"}) {
+		t.Fatalf("changed motion sample invalidation mismatch: matches=%t legacy=%t stale=%v", matches, legacy, stale)
+	}
+}
+
+func TestMotionSampleChangeRefreshesOnlyInterlaceAndCadence(t *testing.T) {
+	binDir := t.TempDir()
+	pixelScript := `#!/bin/sh
+printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' 'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(pixelScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'unexpected frame probe' >&2\nexit 19\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:motion-sample-incremental?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := completeAnalysisSnapshot(mediaPath, info)
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(&snapshot, mediaPath, info, "full", nil, snapshotComponentNames, "", balancedAnalysisPolicy(), 10)
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{AnalysisSeconds: 20}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if err != nil || cached {
+		t.Fatalf("motion refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
+	}
+	reused, refreshed, _ := snapshotRefreshDetails(result, false)
+	if slices.Contains(phases, "metadata") || slices.Contains(phases, "frame_structure") || slices.Contains(phases, "crop") || !slices.Contains(phases, "interlace") || !slices.Equal(refreshed, []string{"cadence", "interlace"}) || !slices.Equal(reused, []string{"metadata", "crop", "frameStructure"}) {
+		t.Fatalf("unexpected motion refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
+	}
+}
+
+func TestBalancedSnapshotRefreshesEndToEndUnderThoroughPolicy(t *testing.T) {
+	binDir := t.TempDir()
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"270.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"730.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	pixelScript := `#!/bin/sh
+printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' 'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(pixelScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:balanced-to-thorough-e2e?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := completeAnalysisSnapshot(mediaPath, info)
+	stampSnapshotCacheMetadataWithPolicy(&snapshot, mediaPath, info, balancedAnalysisPolicy())
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: analysisPolicySettingKey, Value: models.JSONMap{"mode": "thorough", "reuseSnapshots": true, "incrementalRefresh": true, "concurrentAssets": 1}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{AnalysisSeconds: 20}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if err != nil || cached {
+		t.Fatalf("Balanced to Thorough refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
+	}
+	reused, refreshed, _ := snapshotRefreshDetails(result, false)
+	if !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) || !slices.Equal(reused, []string{"metadata"}) || slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") {
+		t.Fatalf("unexpected Thorough refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
+	}
+}
+
+func completeAnalysisSnapshot(path string, info os.FileInfo) models.ScanResult {
+	interlace := models.JSONMap{"version": interlaceAnalysisCacheVersion, "status": "progressive", "confidence": 0.99}
+	crop := models.JSONMap{"version": 3, "status": "none", "reason": "cached-crop"}
+	frame := models.JSONMap{"version": 2, "status": "valid", "source": "cached-frame", "framesAnalyzed": 100, "confidenceScore": 0.99}
+	cadence := models.JSONMap{"version": cadenceAnalysisVersion, "status": "native", "recommendedAction": "preserve"}
+	return models.ScanResult{Path: path, FileName: filepath.Base(path), SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, CropAnalysis: crop, FrameStructureAnalysis: frame, CadenceAnalysis: cadence, RawProbe: models.JSONMap{"format": map[string]any{"duration": "1000"}, "streams": []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}}, "interlaceAnalysis": interlace, "cropAnalysis": crop, "frameStructureAnalysis": frame, "cadenceAnalysis": cadence}}
+}
+
 func TestSnapshotOperationRecordsStageTimings(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
 	operation := &SnapshotOperation{
@@ -1330,6 +1448,70 @@ func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	}
 	if workerIntValue(result.HEVCLevelRecommendation["version"], 0) != 1 {
 		t.Fatalf("archive did not inherit the HEVC Level recommendation: %#v", result.HEVCLevelRecommendation)
+	}
+}
+
+func TestArchivedOriginalInheritanceValidatesCurrentAnalysisPolicy(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		thorough   bool
+		wantCached bool
+	}{
+		{name: "same Balanced policy reuses inherited evidence", wantCached: true},
+		{name: "Thorough policy refreshes inherited evidence", thorough: true, wantCached: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'frame probe unavailable' >&2\nexit 20\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			pixelScript := "#!/bin/sh\nprintf '%s\\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' 'crop=700:400:10:40' >&2\n"
+			if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(pixelScript), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			db, err := gorm.Open(sqlite.Open("file:archive-policy-"+strings.ReplaceAll(testCase.name, " ", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.ScanResult{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			rawPath := filepath.Join(root, "raw", "episode.mkv")
+			archivePath := filepath.Join(root, "archive", "episode.mkv")
+			if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(archivePath, []byte("original bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Stat(archivePath)
+			source := completeAnalysisSnapshot(rawPath, info)
+			stampSnapshotCacheMetadataWithPolicy(&source, rawPath, info, balancedAnalysisPolicy())
+			if err := db.Create(&source).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.QueueJob{MediaPath: rawPath, OriginalArchivedPath: archivePath, Status: JobStatusCompleted}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if testCase.thorough {
+				if err := db.Create(&models.AppSetting{Key: analysisPolicySettingKey, Value: models.JSONMap{"mode": "thorough", "reuseSnapshots": true, "incrementalRefresh": true, "concurrentAssets": 1}}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var phases []string
+			result, cached, err := NewScannerHandler(db).scanResolvedFile(archivePath, info, ScanRequest{AnalysisSeconds: 20}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+			if err != nil || cached != testCase.wantCached {
+				t.Fatalf("inheritance policy validation failed: cached=%t err=%v phases=%v", cached, err, phases)
+			}
+			if testCase.thorough {
+				_, refreshed, _ := snapshotRefreshDetails(result, false)
+				if !slices.Contains(phases, "incremental_refresh") || slices.Contains(phases, "metadata") || !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) {
+					t.Fatalf("inherited evidence was not selectively refreshed: phases=%v refreshed=%v", phases, refreshed)
+				}
+			}
+		})
 	}
 }
 
