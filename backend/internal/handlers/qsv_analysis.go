@@ -39,6 +39,10 @@ type QSVFrameStructureAnalysis struct {
 	Windows               []FrameStructureWindow `json:"windows,omitempty"`
 	Variability           string                 `json:"variability,omitempty"`
 	Confidence            string                 `json:"confidence,omitempty"`
+	ProcessCount          int                    `json:"processCount,omitempty"`
+	WindowsRequested      int                    `json:"windowsRequested,omitempty"`
+	EarlyStopped          bool                   `json:"earlyStopped,omitempty"`
+	DeepAnalysisTriggered bool                   `json:"deepAnalysisTriggered,omitempty"`
 	FrameSignals          FrameSignalSummary     `json:"frameSignals,omitempty"`
 	Assessment            string                 `json:"assessment"`
 	Source                string                 `json:"source"`
@@ -50,6 +54,16 @@ type FrameStructureWindow struct {
 	DurationSeconds float64                   `json:"durationSeconds"`
 	Analysis        QSVFrameStructureAnalysis `json:"analysis"`
 	FrameSignals    FrameSignalSummary        `json:"frameSignals"`
+}
+
+type frameStructureProbeFrame struct {
+	PictureType         string `json:"pict_type"`
+	KeyFrame            int    `json:"key_frame"`
+	InterlacedFrame     int    `json:"interlaced_frame"`
+	TopFieldFirst       int    `json:"top_field_first"`
+	RepeatPict          int    `json:"repeat_pict"`
+	BestEffortTimestamp string `json:"best_effort_timestamp_time"`
+	PacketDuration      string `json:"pkt_duration_time"`
 }
 
 type FrameStructureSamplingPolicy struct {
@@ -478,6 +492,7 @@ func analyzeVideoFrameStructure(
 
 	result, err := analyzeVideoFrameStructureInterval(ctx, path, fmt.Sprintf("%%+#%d", maxFrames))
 	result.SampleLimit = maxFrames
+	result.ProcessCount = 1
 	return result, err
 }
 
@@ -512,15 +527,7 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 	}
 
 	var probe struct {
-		Frames []struct {
-			PictureType         string `json:"pict_type"`
-			KeyFrame            int    `json:"key_frame"`
-			InterlacedFrame     int    `json:"interlaced_frame"`
-			TopFieldFirst       int    `json:"top_field_first"`
-			RepeatPict          int    `json:"repeat_pict"`
-			BestEffortTimestamp string `json:"best_effort_timestamp_time"`
-			PacketDuration      string `json:"pkt_duration_time"`
-		} `json:"frames"`
+		Frames []frameStructureProbeFrame `json:"frames"`
 	}
 
 	if err := json.Unmarshal(stdout.Bytes(), &probe); err != nil {
@@ -530,14 +537,18 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 		)
 	}
 
+	return analyzeFrameStructureProbeFrames(probe.Frames), nil
+}
+
+func analyzeFrameStructureProbeFrames(frames []frameStructureProbeFrame) QSVFrameStructureAnalysis {
 	result := QSVFrameStructureAnalysis{Version: 2, Source: "ffprobe_frames"}
-	result.FrameSignals = frameSignalsFromStructureProbe(probe.Frames)
+	result.FrameSignals = frameSignalsFromStructureProbe(frames)
 
 	consecutiveBFrames := 0
 	lastKeyFrameIndex := -1
 	gopLengths := []int{}
 
-	for frameIndex, frame := range probe.Frames {
+	for frameIndex, frame := range frames {
 		result.FramesAnalyzed++
 
 		switch strings.ToUpper(strings.TrimSpace(frame.PictureType)) {
@@ -594,18 +605,10 @@ func analyzeVideoFrameStructureInterval(ctx context.Context, path, interval stri
 
 	applyQSVFrameStructureAssessment(&result)
 
-	return result, nil
+	return result
 }
 
-func frameSignalsFromStructureProbe(frames []struct {
-	PictureType         string `json:"pict_type"`
-	KeyFrame            int    `json:"key_frame"`
-	InterlacedFrame     int    `json:"interlaced_frame"`
-	TopFieldFirst       int    `json:"top_field_first"`
-	RepeatPict          int    `json:"repeat_pict"`
-	BestEffortTimestamp string `json:"best_effort_timestamp_time"`
-	PacketDuration      string `json:"pkt_duration_time"`
-}) FrameSignalSummary {
+func frameSignalsFromStructureProbe(frames []frameStructureProbeFrame) FrameSignalSummary {
 	result := FrameSignalSummary{DecodedFrames: len(frames)}
 	firstTimestamp, lastTimestamp, previousTimestamp := -1.0, -1.0, -1.0
 	deltas := []float64{}
@@ -647,6 +650,72 @@ func frameSignalsFromStructureProbe(frames []struct {
 	return result
 }
 
+func analyzeVideoFrameStructureIntervals(ctx context.Context, path string, windows []SamplingWindow) ([]QSVFrameStructureAnalysis, error) {
+	if len(windows) == 0 {
+		return nil, fmt.Errorf("frame structure analysis requires at least one sampling window")
+	}
+	intervals := make([]string, 0, len(windows))
+	for _, window := range windows {
+		intervals = append(intervals, fmt.Sprintf("%.3f%%+%.3f", window.StartSeconds, window.DurationSeconds))
+	}
+	args := []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-read_intervals", strings.Join(intervals, ","),
+		"-show_entries", "frame=pict_type,key_frame,best_effort_timestamp_time,pkt_duration_time,interlaced_frame,top_field_first,repeat_pict",
+		"-of", "json",
+		path,
+	}
+	cmd := exec.CommandContext(ctx, "ffprobe", args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("multi-interval frame structure analysis failed: %s", message)
+	}
+	var probe struct {
+		Frames []frameStructureProbeFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &probe); err != nil {
+		return nil, fmt.Errorf("decode multi-interval frame structure analysis: %w", err)
+	}
+	buckets := make([][]frameStructureProbeFrame, len(windows))
+	for _, frame := range probe.Frames {
+		timestamp, timestampErr := strconv.ParseFloat(strings.TrimSpace(frame.BestEffortTimestamp), 64)
+		if timestampErr != nil || timestamp < 0 {
+			return nil, fmt.Errorf("multi-interval frame structure output omitted an absolute frame timestamp")
+		}
+		selected := -1
+		selectedDistance := math.MaxFloat64
+		for index, window := range windows {
+			end := window.StartSeconds + window.DurationSeconds
+			if timestamp < window.StartSeconds-0.5 || timestamp > end+0.5 {
+				continue
+			}
+			distance := math.Abs(timestamp - (window.StartSeconds + window.DurationSeconds/2))
+			if distance < selectedDistance {
+				selected, selectedDistance = index, distance
+			}
+		}
+		if selected >= 0 {
+			buckets[selected] = append(buckets[selected], frame)
+		}
+	}
+	analyses := make([]QSVFrameStructureAnalysis, len(windows))
+	for index, frames := range buckets {
+		if len(frames) == 0 {
+			return nil, fmt.Errorf("multi-interval frame structure output did not contain frames for window %d", index+1)
+		}
+		analyses[index] = analyzeFrameStructureProbeFrames(frames)
+	}
+	return analyses, nil
+}
+
 func analyzeVideoFrameStructureDistributed(ctx context.Context, path string, duration float64, policy FrameStructureSamplingPolicy) (QSVFrameStructureAnalysis, error) {
 	if duration <= 0 {
 		result, err := analyzeVideoFrameStructure(ctx, path, 500)
@@ -657,43 +726,133 @@ func analyzeVideoFrameStructureDistributed(ctx context.Context, path string, dur
 		}
 		return result, err
 	}
-	if policy.Windows <= 0 {
-		policy = defaultFrameStructureSamplingPolicy()
-	}
-	windowSeconds := policy.WindowSeconds
-	if policy.Adaptive {
-		switch {
-		case duration <= 60:
-			windowSeconds = duration
-			policy.Windows = 1
-			policy.Positions = []float64{0.5}
-		case duration < 120:
-			windowSeconds = 10
-		case duration < 600:
-			windowSeconds = 15
-		default:
-			windowSeconds = 20
+	plan := canonicalSamplingPlan(duration, policy)
+	return analyzeVideoFrameStructureWithSamplingPlan(ctx, path, plan)
+}
+
+func analyzeSamplingWindowsWithFallback(ctx context.Context, path string, windows []SamplingWindow) ([]QSVFrameStructureAnalysis, int, bool, error) {
+	processCount := 0
+	if len(windows) > 1 {
+		processCount++
+		if analyses, err := analyzeVideoFrameStructureIntervals(ctx, path, windows); err == nil {
+			return analyses, processCount, true, nil
 		}
 	}
-	if windowSeconds <= 0 {
-		windowSeconds = 20
+	analyses := make([]QSVFrameStructureAnalysis, 0, len(windows))
+	for _, window := range windows {
+		analysis, err := analyzeVideoFrameStructureInterval(ctx, path, fmt.Sprintf("%.3f%%+%.3f", window.StartSeconds, window.DurationSeconds))
+		processCount++
+		if err != nil {
+			return nil, processCount, false, err
+		}
+		analyses = append(analyses, analysis)
 	}
-	positions := policy.Positions
-	if len(positions) < policy.Windows {
-		positions = defaultFrameStructureSamplingPolicy().Positions
+	return analyses, processCount, false, nil
+}
+
+func remainingSamplingWindows(all, selected []SamplingWindow) []SamplingWindow {
+	selectedPositions := map[int]bool{}
+	for _, window := range selected {
+		selectedPositions[samplingPositionKey(window.Position)] = true
 	}
-	result := QSVFrameStructureAnalysis{Version: 2, Source: "ffprobe_distributed_windows", AssetDurationSeconds: duration, WindowLengthSeconds: windowSeconds, Positions: append([]float64(nil), positions[:policy.Windows]...)}
+	remaining := make([]SamplingWindow, 0, len(all)-len(selected))
+	for _, window := range all {
+		if !selectedPositions[samplingPositionKey(window.Position)] {
+			remaining = append(remaining, window)
+		}
+	}
+	return remaining
+}
+
+func frameEvidenceRequiresAdditionalWindows(analyses []QSVFrameStructureAnalysis) bool {
+	if len(analyses) < 3 {
+		return true
+	}
+	minimumFPS, maximumFPS := 0.0, 0.0
+	completeGOPs := 0
+	gopAverages := []float64{}
+	for _, analysis := range analyses {
+		signals := analysis.FrameSignals
+		if signals.DecodedFrames == 0 || signals.EffectiveFPS <= 0 || signals.InterlacedFrames > 0 || signals.RepeatPictFrames > 0 {
+			return true
+		}
+		if minimumFPS == 0 || signals.EffectiveFPS < minimumFPS {
+			minimumFPS = signals.EffectiveFPS
+		}
+		if signals.EffectiveFPS > maximumFPS {
+			maximumFPS = signals.EffectiveFPS
+		}
+		completeGOPs += analysis.CompleteGOPs
+		if analysis.CompleteGOPs > 0 {
+			gopAverages = append(gopAverages, analysis.AverageGOPLength)
+		}
+	}
+	return maximumFPS-minimumFPS > 0.50 || completeGOPs < 2 || frameStructureVariability(gopAverages) == "high"
+}
+
+func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string, plan SamplingPlan) (QSVFrameStructureAnalysis, error) {
+	if plan.AssetDurationSeconds <= 0 {
+		result, err := analyzeVideoFrameStructure(ctx, path, 500)
+		if err == nil {
+			result.Confidence = "low"
+			result.Variability = "unknown"
+			result.Source = "ffprobe_frames_duration_unknown"
+		}
+		return result, err
+	}
+	result := QSVFrameStructureAnalysis{Version: 2, Source: "ffprobe_distributed_windows", AssetDurationSeconds: plan.AssetDurationSeconds, WindowLengthSeconds: plan.WindowSeconds, Positions: append([]float64(nil), plan.Positions...), WindowsRequested: len(plan.Positions)}
 	gopWeightedTotal := 0.0
 	windowGOPs := []float64{}
 	intervals := [][2]float64{}
-	for index := 0; index < policy.Windows; index++ {
-		position := positions[index]
-		start := math.Max(0, math.Min(duration-windowSeconds, duration*position-windowSeconds/2))
-		actualDuration := math.Min(windowSeconds, duration-start)
-		analysis, err := analyzeVideoFrameStructureInterval(ctx, path, fmt.Sprintf("%.3f%%+%.3f", start, actualDuration))
-		if err != nil {
-			return QSVFrameStructureAnalysis{}, err
+	windows := plan.windows(plan.WindowSeconds)
+	selectedWindows := windows
+	if plan.Adaptive && plan.InitialWindows > 0 && len(windows) > plan.InitialWindows {
+		selectedWindows = representativeSamplingWindows(SamplingPlan{AssetDurationSeconds: plan.AssetDurationSeconds, WindowSeconds: plan.WindowSeconds, Positions: plan.Positions}, plan.WindowSeconds, plan.InitialWindows)
+	}
+	analyses, processCount, multiInterval, err := analyzeSamplingWindowsWithFallback(ctx, path, selectedWindows)
+	if err != nil {
+		return QSVFrameStructureAnalysis{}, err
+	}
+	result.ProcessCount += processCount
+	if multiInterval {
+		result.Source = "ffprobe_multi_interval_windows"
+	}
+	if len(selectedWindows) < len(windows) {
+		if frameEvidenceRequiresAdditionalWindows(analyses) {
+			remaining := remainingSamplingWindows(windows, selectedWindows)
+			additional, additionalProcesses, additionalMulti, additionalErr := analyzeSamplingWindowsWithFallback(ctx, path, remaining)
+			if additionalErr != nil {
+				return QSVFrameStructureAnalysis{}, additionalErr
+			}
+			selectedWindows = append(selectedWindows, remaining...)
+			analyses = append(analyses, additional...)
+			result.ProcessCount += additionalProcesses
+			result.DeepAnalysisTriggered = true
+			if additionalMulti {
+				result.Source = "ffprobe_adaptive_multi_interval_windows"
+			}
+		} else {
+			result.EarlyStopped = true
+			result.Positions = make([]float64, 0, len(selectedWindows))
+			for _, window := range selectedWindows {
+				result.Positions = append(result.Positions, window.Position)
+			}
 		}
+	}
+	analysisByPosition := map[int]QSVFrameStructureAnalysis{}
+	for index, window := range selectedWindows {
+		analysisByPosition[samplingPositionKey(window.Position)] = analyses[index]
+	}
+	sort.SliceStable(selectedWindows, func(i, j int) bool { return selectedWindows[i].Position < selectedWindows[j].Position })
+	analyses = analyses[:0]
+	for _, window := range selectedWindows {
+		analyses = append(analyses, analysisByPosition[samplingPositionKey(window.Position)])
+	}
+	for index, samplingWindow := range selectedWindows {
+		position := samplingWindow.Position
+		start := samplingWindow.StartSeconds
+		actualDuration := samplingWindow.DurationSeconds
+		analysis := analyses[index]
 		analysis.SampledSeconds = actualDuration
 		frameSignals := analysis.FrameSignals
 		analysis.FrameSignals = FrameSignalSummary{}
@@ -728,8 +887,8 @@ func analyzeVideoFrameStructureDistributed(ctx context.Context, path string, dur
 	result.HasBFrames = result.BFrames > 0
 	result.WindowCount = len(result.Windows)
 	result.SampledSeconds = mergedIntervalSeconds(intervals)
-	if duration > 0 {
-		result.CoverageRatio = result.SampledSeconds / duration
+	if plan.AssetDurationSeconds > 0 {
+		result.CoverageRatio = result.SampledSeconds / plan.AssetDurationSeconds
 	}
 	result.Variability = frameStructureVariability(windowGOPs)
 	switch {

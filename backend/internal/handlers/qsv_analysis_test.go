@@ -1,11 +1,151 @@
 package handlers
 
 import (
+	"context"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
+
+func TestFrameStructureUsesSingleMultiIntervalProbe(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"100.0","pkt_duration_time":"0.04","interlaced_frame":0,"top_field_first":0,"repeat_pict":0},
+{"pict_type":"P","key_frame":0,"best_effort_timestamp_time":"500.0","pkt_duration_time":"0.04","interlaced_frame":0,"top_field_first":0,"repeat_pict":0},
+{"pict_type":"B","key_frame":0,"best_effort_timestamp_time":"900.0","pkt_duration_time":"0.04","interlaced_frame":0,"top_field_first":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := SamplingPlan{AssetDurationSeconds: 1000, WindowSeconds: 20, Positions: []float64{0.1, 0.5, 0.9}}
+	analysis, err := analyzeVideoFrameStructureWithSamplingPlan(context.Background(), "/fixture/movie.mkv", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.ProcessCount != 1 || analysis.Source != "ffprobe_multi_interval_windows" || analysis.WindowCount != 3 {
+		t.Fatalf("multi-interval analysis not used: %#v", analysis)
+	}
+	if analysis.FramesAnalyzed != 3 || analysis.IFrames != 1 || analysis.PFrames != 1 || analysis.BFrames != 1 {
+		t.Fatalf("shared frame evidence was not partitioned correctly: %#v", analysis)
+	}
+}
+
+func TestFrameStructureFallsBackWhenMultiIntervalTimestampsAreMissing(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[{"pict_type":"I","key_frame":1,"interlaced_frame":0,"top_field_first":0,"repeat_pict":0}]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := SamplingPlan{AssetDurationSeconds: 1000, WindowSeconds: 20, Positions: []float64{0.25, 0.75}}
+	analysis, err := analyzeVideoFrameStructureWithSamplingPlan(context.Background(), "/fixture/movie.mkv", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.ProcessCount != 3 || analysis.Source != "ffprobe_distributed_windows" || analysis.WindowCount != 2 {
+		t.Fatalf("safe per-window fallback not used: %#v", analysis)
+	}
+}
+
+func TestAdaptiveFrameStructureStopsAfterStableInitialWindows(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := canonicalSamplingPlan(1000, defaultFrameStructureSamplingPolicy())
+	analysis, err := analyzeVideoFrameStructureWithSamplingPlan(context.Background(), "/fixture/movie.mkv", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !analysis.EarlyStopped || analysis.DeepAnalysisTriggered || analysis.WindowCount != 3 || analysis.ProcessCount != 1 {
+		t.Fatalf("stable evidence did not stop early: %#v", analysis)
+	}
+	wantPositions := []float64{0.08, 0.50, 0.92}
+	for index, position := range wantPositions {
+		if analysis.Positions[index] != position {
+			t.Fatalf("positions=%v want=%v", analysis.Positions, wantPositions)
+		}
+	}
+}
+
+func TestSuspiciousFrameEvidenceRequiresAdditionalWindows(t *testing.T) {
+	stable := func(fps float64) QSVFrameStructureAnalysis {
+		return QSVFrameStructureAnalysis{CompleteGOPs: 1, AverageGOPLength: 24, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: fps}}
+	}
+	tests := []struct {
+		name     string
+		analyses []QSVFrameStructureAnalysis
+	}{
+		{name: "repeat pict", analyses: []QSVFrameStructureAnalysis{stable(24), stable(24), stable(24)}},
+		{name: "interlaced flag", analyses: []QSVFrameStructureAnalysis{stable(24), stable(24), stable(24)}},
+		{name: "unstable fps", analyses: []QSVFrameStructureAnalysis{stable(23.976), stable(25), stable(23.976)}},
+	}
+	tests[0].analyses[1].FrameSignals.RepeatPictFrames = 10
+	tests[1].analyses[2].FrameSignals.InterlacedFrames = 20
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if !frameEvidenceRequiresAdditionalWindows(test.analyses) {
+				t.Fatalf("suspicious evidence did not trigger deeper analysis: %#v", test.analyses)
+			}
+		})
+	}
+}
+
+func TestAdaptiveFrameStructureExpandsSuspiciousEvidenceToMaximumWindows(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.00","interlaced_frame":0,"repeat_pict":1},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"270.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"270.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"730.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"730.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.00","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	analysis, err := analyzeVideoFrameStructureWithSamplingPlan(context.Background(), "/fixture/movie.mkv", canonicalSamplingPlan(1000, defaultFrameStructureSamplingPolicy()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.EarlyStopped || !analysis.DeepAnalysisTriggered || analysis.WindowCount != 5 || analysis.ProcessCount != 2 {
+		t.Fatalf("suspicious evidence did not expand to maximum windows: %#v", analysis)
+	}
+}
 
 func TestSnapshotFrameStructureRecommendationStoresAllCommonModes(t *testing.T) {
 	scan := models.ScanResult{

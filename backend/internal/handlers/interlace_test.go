@@ -202,6 +202,22 @@ func TestDistributedInterlaceStartsSamplesLongAssets(t *testing.T) {
 	}
 }
 
+func TestSharedFrameSignalsMatchCanonicalPosition(t *testing.T) {
+	want := FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 23.976}
+	analysis := QSVFrameStructureAnalysis{Windows: []FrameStructureWindow{
+		{Position: 0.08, FrameSignals: FrameSignalSummary{DecodedFrames: 100}},
+		{Position: 0.50, FrameSignals: want},
+	}}
+
+	got, ok := sharedFrameSignalsForPosition(analysis, 0.50)
+	if !ok || got.DecodedFrames != want.DecodedFrames || got.EffectiveFPS != want.EffectiveFPS {
+		t.Fatalf("shared signals=%#v ok=%t want=%#v", got, ok, want)
+	}
+	if _, ok := sharedFrameSignalsForPosition(analysis, 0.73); ok {
+		t.Fatal("unexpected shared evidence for an unsampled position")
+	}
+}
+
 func TestProgressiveFramesRecommendMetadataCorrectionForInterlacedContainer(t *testing.T) {
 	analysis := InterlaceAnalysis{
 		Status:              "progressive",

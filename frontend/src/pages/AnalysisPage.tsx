@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogTitle,
   Grid,
+  LinearProgress,
   MenuItem,
   Stack,
   Table,
@@ -28,7 +29,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { AdvisorFinding, AppSetting, Asset, AssetConversionOverrideState, ScanResult } from '../api/types';
+import type { AdvisorFinding, AppSetting, Asset, AssetConversionOverrideState, ScanResult, SnapshotOperation } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { PageHeader } from '../components/PageHeader';
@@ -54,10 +55,12 @@ export function AnalysisPage() {
   const rawAssets = assets.data?.unprocessed ?? [];
   const queuedAssetPath = searchParams.get('asset') ?? '';
   const didBackfillReports = useRef(false);
+  const appliedSnapshotOperation = useRef('');
   const [assetPath, setAssetPath] = useState(queuedAssetPath);
   const [decision, setDecision] = useState('needs-profile-review');
   const [notes, setNotes] = useState('');
-  const [currentScan, setCurrentScan] = useState<ScanResult | null>(null);
+  const [savedScan, setSavedScan] = useState<ScanResult | null>(null);
+  const [snapshotOperationId, setSnapshotOperationId] = useState('');
   const [selectedProfileId, setSelectedProfileId] = useState(0);
   const [selectedLibraryId, setSelectedLibraryId] = useState(0);
   const [priority, setPriority] = useState(5);
@@ -81,13 +84,31 @@ export function AnalysisPage() {
       if (result.suggestedProfile) setSelectedProfileId(result.suggestedProfile.id);
     },
   });
-  const scanAsset = useMutation({
-    mutationFn: api.scan,
-    onSuccess: (scan) => {
-      setCurrentScan(scan);
-      suggestion.mutate(scan.path);
+  const startSnapshot = useMutation({
+    mutationFn: api.startSnapshotOperation,
+    onSuccess: (operation) => {
+      appliedSnapshotOperation.current = '';
+      setSnapshotOperationId(operation.id);
+      queryClient.setQueryData(['snapshotOperation', operation.id], operation);
     },
   });
+  const snapshotOperation = useQuery({
+    queryKey: ['snapshotOperation', snapshotOperationId],
+    queryFn: () => api.snapshotOperation(snapshotOperationId),
+    enabled: Boolean(snapshotOperationId),
+    refetchInterval: (query) => query.state.data?.status === 'running' ? 1000 : false,
+  });
+  const cancelSnapshot = useMutation({
+    mutationFn: api.cancelSnapshotOperation,
+    onSuccess: (operation) => {
+      queryClient.setQueryData(['snapshotOperation', operation.id], operation);
+    },
+  });
+  const activeSnapshotOperation = snapshotOperation.data;
+  const snapshotPending = startSnapshot.isPending || activeSnapshotOperation?.status === 'running';
+  const currentScan = activeSnapshotOperation?.status === 'completed' && activeSnapshotOperation.result
+    ? activeSnapshotOperation.result
+    : savedScan;
 
   const updateSetting = useMutation({
     mutationFn: api.updateSetting,
@@ -126,14 +147,23 @@ export function AnalysisPage() {
   }, [assetPath, queuedAssetPath]);
 
   useEffect(() => {
-    if (searchParams.get('autorun') !== '1' || !assetPath || scanAsset.isPending || currentScan?.path === assetPath) {
+    const operation = snapshotOperation.data;
+    if (operation?.status !== 'completed' || !operation.result || appliedSnapshotOperation.current === operation.id) {
       return;
     }
-    scanAsset.mutate({ path: assetPath, force: true, analysisSeconds });
+    appliedSnapshotOperation.current = operation.id;
+    suggestion.mutate(operation.result.path);
+  }, [snapshotOperation.data, suggestion]);
+
+  useEffect(() => {
+    if (searchParams.get('autorun') !== '1' || !assetPath || snapshotPending || currentScan?.path === assetPath) {
+      return;
+    }
+    startSnapshot.mutate({ path: assetPath, force: false, analysisSeconds });
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('autorun');
     setSearchParams(nextParams, { replace: true });
-  }, [analysisSeconds, assetPath, currentScan?.path, scanAsset, searchParams, setSearchParams]);
+  }, [analysisSeconds, assetPath, currentScan?.path, searchParams, setSearchParams, snapshotPending, startSnapshot]);
 
   useEffect(() => {
     setRecordPage(1);
@@ -166,7 +196,8 @@ export function AnalysisPage() {
     setAssetPath(record.assetPath);
     setDecision(record.decision);
     setNotes(record.notes);
-    setCurrentScan(record.scan);
+    setSnapshotOperationId('');
+    setSavedScan(record.scan);
     suggestion.mutate(record.assetPath);
     setSelectedRecord(null);
   }
@@ -176,7 +207,7 @@ export function AnalysisPage() {
     setDecision(record.decision);
     setNotes(record.notes);
     setSelectedRecord(null);
-    scanAsset.mutate({ path: record.assetPath, force: true, analysisSeconds });
+    startSnapshot.mutate({ path: record.assetPath, force: true, analysisSeconds });
   }
 
   async function applyRecommendations(findings: AdvisorFinding[]) {
@@ -223,16 +254,26 @@ export function AnalysisPage() {
                   </TextField>
                 </Grid>
                 <Grid size={{ xs: 12, md: 2 }}>
-                  <Button
-                    startIcon={<SearchIcon />}
-                    variant="contained"
-                    disabled={!assetPath || scanAsset.isPending}
-                    onClick={() => scanAsset.mutate({ path: assetPath, force: true, analysisSeconds })}
-                    fullWidth
-                    sx={{ height: '100%' }}
-                  >
-                    Analyze AS IS
-                  </Button>
+                  <Stack spacing={1} sx={{ height: '100%' }}>
+                    <Button
+                      startIcon={<SearchIcon />}
+                      variant="contained"
+                      disabled={!assetPath || snapshotPending}
+                      onClick={() => startSnapshot.mutate({ path: assetPath, force: false, analysisSeconds })}
+                      fullWidth
+                      sx={{ flex: 1 }}
+                    >
+                      Analyze AS IS
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      disabled={!assetPath || snapshotPending}
+                      onClick={() => startSnapshot.mutate({ path: assetPath, force: true, analysisSeconds })}
+                      fullWidth
+                    >
+                      Re-analyze from scratch
+                    </Button>
+                  </Stack>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                   <TextField
@@ -246,9 +287,24 @@ export function AnalysisPage() {
                   />
                 </Grid>
               </Grid>
-              {scanAsset.isError ? (
-                <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => scanAsset.mutate({ path: assetPath, force: true, analysisSeconds })}>Retry</Button>}>
-                  Analysis failed: {requestErrorMessage(scanAsset.error)}
+              {snapshotPending ? (
+                <SnapshotOperationProgress
+                  assetName={selectedAsset?.fileName ?? assetPath.split('/').pop() ?? assetPath}
+                  operation={activeSnapshotOperation}
+                  starting={startSnapshot.isPending}
+                  cancelling={cancelSnapshot.isPending}
+                  onCancel={() => activeSnapshotOperation && cancelSnapshot.mutate(activeSnapshotOperation.id)}
+                />
+              ) : null}
+              {startSnapshot.isError || snapshotOperation.isError || activeSnapshotOperation?.status === 'error' ? (
+                <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => startSnapshot.mutate({ path: assetPath, force: false, analysisSeconds })}>Retry</Button>}>
+                  Analysis failed: {activeSnapshotOperation?.error || requestErrorMessage(startSnapshot.error || snapshotOperation.error)}
+                </Alert>
+              ) : null}
+              {activeSnapshotOperation?.status === 'paused' ? <Alert severity="info">Analysis paused by user.</Alert> : null}
+              {activeSnapshotOperation?.status === 'completed' ? (
+                <Alert severity="success">
+                  {activeSnapshotOperation.cacheHit ? 'Existing snapshot reused' : 'Analysis completed'} in {formatOperationDuration(activeSnapshotOperation.durationMs)}.
                 </Alert>
               ) : null}
               {backfillAsIsReports.data?.imported ? (
@@ -411,10 +467,54 @@ export function AnalysisPage() {
         onClose={() => setSelectedRecord(null)}
         onLoad={loadRecord}
         onRescan={rescanRecord}
-        isScanning={scanAsset.isPending}
+        isScanning={snapshotPending}
       />
     </>
   );
+}
+
+function SnapshotOperationProgress({
+  assetName,
+  operation,
+  starting,
+  cancelling,
+  onCancel,
+}: {
+  assetName: string;
+  operation?: SnapshotOperation;
+  starting: boolean;
+  cancelling: boolean;
+  onCancel: () => void;
+}) {
+  const progress = operation?.progress ?? 0;
+  return (
+    <Alert severity="info">
+      <Stack spacing={1}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+            <Typography variant="body2" fontWeight={700}>{operation?.message || `Starting analysis for ${assetName}`}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {operation?.phase ? `Phase: ${operation.phase.replaceAll('_', ' ')}` : 'Creating snapshot operation'}
+            </Typography>
+          </Stack>
+          <Button size="small" color="inherit" disabled={starting || cancelling || operation?.status !== 'running'} onClick={onCancel}>
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </Button>
+        </Stack>
+        <LinearProgress variant={progress > 0 ? 'determinate' : 'indeterminate'} value={progress} />
+        <Typography variant="caption">
+          {progress > 0 ? `${Math.round(progress)}% · ` : ''}
+          {operation?.durationMs ? `${formatOperationDuration(operation.durationMs)} elapsed · ` : ''}
+          Only {assetName} is being analyzed.
+        </Typography>
+      </Stack>
+    </Alert>
+  );
+}
+
+function formatOperationDuration(durationMs: number) {
+  if (!Number.isFinite(durationMs) || durationMs < 1000) return `${Math.max(0, Math.round(durationMs))} ms`;
+  return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)} s`;
 }
 
 function requestErrorMessage(error: unknown) {

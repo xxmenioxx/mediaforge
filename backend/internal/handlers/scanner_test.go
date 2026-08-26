@@ -74,9 +74,32 @@ func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
 	if operation.Status != "completed" || operation.Result == nil || operation.Result.Path != selectedPath {
 		t.Fatalf("unexpected operation: %#v", operation)
 	}
+	if !operation.CacheHit || operation.DurationMs < 0 || operation.StageTimingsMs == nil {
+		t.Fatalf("cached operation observability missing: %#v", operation)
+	}
 	var untouched models.ScanResult
 	if err := db.Where("path = ?", other.Path).First(&untouched).Error; err != nil || untouched.SizeBytes != 99 {
 		t.Fatalf("unselected asset changed: %#v err=%v", untouched, err)
+	}
+}
+
+func TestSnapshotOperationRecordsStageTimings(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	operation := &SnapshotOperation{
+		Phase:          "preparing",
+		CreatedAt:      startedAt,
+		phaseStartedAt: startedAt,
+	}
+
+	transitionSnapshotOperationPhase(operation, "metadata", 10, "Reading metadata", startedAt.Add(125*time.Millisecond))
+	transitionSnapshotOperationPhase(operation, "crop", 55, "Checking crop", startedAt.Add(375*time.Millisecond))
+	finishSnapshotOperationTiming(operation, startedAt.Add(900*time.Millisecond))
+
+	if operation.StageTimingsMs["preparing"] != 125 || operation.StageTimingsMs["metadata"] != 250 || operation.StageTimingsMs["crop"] != 525 {
+		t.Fatalf("unexpected stage timings: %#v", operation.StageTimingsMs)
+	}
+	if operation.DurationMs != 900 {
+		t.Fatalf("duration=%d want=900", operation.DurationMs)
 	}
 }
 
@@ -233,6 +256,69 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	var stored models.ScanResult
 	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 1 || workerIntValue(stored.HEVCLevelRecommendation["version"], 0) != 1 {
 		t.Fatalf("enriched recommendation was not persisted: %#v err=%v", stored.FrameStructureRecommendation, err)
+	}
+	if matches, legacy := snapshotCacheMatches(stored, mediaPath, info); !matches || legacy {
+		t.Fatalf("legacy snapshot was not sealed with the observed fingerprint: matches=%t legacy=%t raw=%#v", matches, legacy, stored.RawProbe)
+	}
+}
+
+func TestSnapshotCacheFingerprintInvalidatesChangedFile(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := models.ScanResult{RawProbe: models.JSONMap{}}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, originalInfo)
+	if matches, legacy := snapshotCacheMatches(snapshot, mediaPath, originalInfo); !matches || legacy {
+		t.Fatalf("fresh fingerprint did not match: matches=%t legacy=%t", matches, legacy)
+	}
+
+	if err := os.WriteFile(mediaPath, []byte("replacement with a different size"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changedInfo, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := snapshotCacheMatches(snapshot, mediaPath, changedInfo); matches {
+		t.Fatal("changed file size did not invalidate the snapshot fingerprint")
+	}
+}
+
+func TestSnapshotCacheFingerprintInvalidatesChangedMtimeAndComponentVersion(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("same bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := models.ScanResult{RawProbe: models.JSONMap{}}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+
+	changedTime := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(mediaPath, changedTime, changedTime); err != nil {
+		t.Fatal(err)
+	}
+	changedInfo, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := snapshotCacheMatches(snapshot, mediaPath, changedInfo); matches {
+		t.Fatal("changed mtime did not invalidate the snapshot fingerprint")
+	}
+
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, changedInfo)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["crop"] = 0
+	if matches, _ := snapshotCacheMatches(snapshot, mediaPath, changedInfo); matches {
+		t.Fatal("stale component version did not invalidate the snapshot cache")
 	}
 }
 

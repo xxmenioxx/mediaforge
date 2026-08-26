@@ -1110,6 +1110,10 @@ export type QSVFrameStructureAnalysis = {
   positions?: number[];
   variability?: 'low' | 'medium' | 'high' | 'unknown' | string;
   confidence?: 'high' | 'medium' | 'low' | string;
+  processCount?: number;
+  windowsRequested?: number;
+  earlyStopped?: boolean;
+  deepAnalysisTriggered?: boolean;
   frameSignals?: FrameSignalSummary;
   windows?: Array<{ position: number; startSeconds: number; durationSeconds: number; analysis: QSVFrameStructureAnalysis; frameSignals?: FrameSignalSummary }>;
   assessment: string;
@@ -1136,6 +1140,9 @@ export type SnapshotOperation = {
   phase: string;
   progress: number;
   message: string;
+  stageTimingsMs?: Record<string, number>;
+  durationMs: number;
+  cacheHit: boolean;
   result?: ScanResult;
   error?: string;
   createdAt: string;

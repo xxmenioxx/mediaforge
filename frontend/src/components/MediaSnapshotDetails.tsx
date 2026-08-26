@@ -63,6 +63,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Average GOP', frames.averageGopLength > 0 ? frames.averageGopLength.toFixed(1) : 'Not enough keyframes'],
           ['Complete GOPs', String(frames.completeGops ?? 0)],
           ['Sampling', frames.windowCount ? `${frames.sampledSeconds?.toFixed(0) ?? 0}s across ${frames.windowCount} regions` : `${frames.framesAnalyzed} frames`],
+          ['Frame probes', frames.processCount ? `${frames.processCount} ffprobe process${frames.processCount === 1 ? '' : 'es'}` : 'Legacy snapshot'],
+          ['Adaptive depth', frames.earlyStopped ? `Early stop after ${frames.windowCount ?? 0}/${frames.windowsRequested ?? 0} regions` : frames.deepAnalysisTriggered ? `Deep analysis · ${frames.windowCount ?? 0}/${frames.windowsRequested ?? 0} regions` : 'Full configured sample'],
           ['Coverage', frames.coverageRatio !== undefined ? `${(frames.coverageRatio * 100).toFixed(1)}% · ${frames.confidence || 'unknown'} confidence` : 'Legacy sample'],
           ['Variability', frames.variability || 'Unknown'],
           ['Recommended GOP', frameRecommendation?.byMode?.balanced?.targetGopFrames ? `${frameRecommendation.byMode.balanced.targetGopFrames} frames · balanced` : 'Unavailable'],

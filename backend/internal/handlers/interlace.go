@@ -133,6 +133,19 @@ func detectInterlaceContext(ctx context.Context, path, fieldOrder string, durati
 }
 
 func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrder string, duration float64, windowSeconds int, collectFrameSignals bool) InterlaceAnalysis {
+	plan := canonicalSamplingPlan(duration, defaultFrameStructureSamplingPolicy())
+	return detectInterlaceWithSamplingPlanContext(ctx, path, fieldOrder, windowSeconds, collectFrameSignals, plan)
+}
+
+func detectInterlaceWithSamplingPlanContext(ctx context.Context, path, fieldOrder string, windowSeconds int, collectFrameSignals bool, plan SamplingPlan) InterlaceAnalysis {
+	return detectInterlaceWithSharedFrameEvidenceContext(ctx, path, fieldOrder, windowSeconds, collectFrameSignals, plan, QSVFrameStructureAnalysis{})
+}
+
+func detectInterlaceWithSharedFrameEvidenceContext(ctx context.Context, path, fieldOrder string, windowSeconds int, collectFrameSignals bool, plan SamplingPlan, frameStructure QSVFrameStructureAnalysis) InterlaceAnalysis {
+	return detectInterlaceWithSharedEvidenceContext(ctx, path, fieldOrder, windowSeconds, collectFrameSignals, plan, frameStructure, nil)
+}
+
+func detectInterlaceWithSharedEvidenceContext(ctx context.Context, path, fieldOrder string, windowSeconds int, collectFrameSignals bool, plan SamplingPlan, frameStructure QSVFrameStructureAnalysis, pixelSession *pixelSamplingSession) InterlaceAnalysis {
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
 	containerOrder := normalizeFieldOrder(fieldOrder)
 	analysis := InterlaceAnalysis{
@@ -140,8 +153,16 @@ func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrde
 		Status:  interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: containerOrder,
 		ContainerFieldOrder: containerOrder, Source: "ffprobe", WindowSeconds: windowSeconds,
 	}
-	for _, start := range distributedInterlaceStarts(duration, windowSeconds) {
-		sample, ok := runIDETContext(ctx, path, start, windowSeconds, "idet")
+	sharedFrameSignalSamples := 0
+	for _, samplingWindow := range plan.windows(float64(windowSeconds)) {
+		start := samplingWindow.StartSeconds
+		var sample InterlaceAnalysis
+		var ok bool
+		if pixelSession != nil {
+			sample, ok = pixelSession.interlaceSample(ctx, samplingWindow, windowSeconds)
+		} else {
+			sample, ok = runIDETContext(ctx, path, start, windowSeconds, "idet")
+		}
 		if !ok {
 			continue
 		}
@@ -154,7 +175,11 @@ func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrde
 		analysis.SampledFrames += sample.SampledFrames
 		analysis.SampledAt = append(analysis.SampledAt, start)
 		window := interlaceWindowFromSample(start, windowSeconds, sample)
-		if collectFrameSignals {
+		if signals, ok := sharedFrameSignalsForPosition(frameStructure, samplingWindow.Position); ok {
+			window.FrameSignals = signals
+			analysis.FrameSignalSampleCount++
+			sharedFrameSignalSamples++
+		} else if collectFrameSignals {
 			if signals, signalsOK := runFrameSignalsContext(ctx, path, start, windowSeconds); signalsOK {
 				window.FrameSignals = signals
 				analysis.FrameSignalSampleCount++
@@ -169,7 +194,13 @@ func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrde
 	}
 	analysis.WindowStart = analysis.SampledAt[0]
 	analysis.Source = "idet_multi_sample"
-	if analysis.FrameSignalSampleCount > 0 {
+	if pixelSession != nil && pixelSession.sharedDecodes > 0 && sharedFrameSignalSamples > 0 {
+		analysis.Source = "idet_shared_pixel_and_frame_probe"
+	} else if pixelSession != nil && pixelSession.sharedDecodes > 0 {
+		analysis.Source = "idet_shared_pixel_probe"
+	} else if sharedFrameSignalSamples > 0 {
+		analysis.Source = "idet_and_shared_frame_probe"
+	} else if analysis.FrameSignalSampleCount > 0 {
 		analysis.Source = "idet_and_ffprobe_multi_sample"
 	}
 	analysis.DetectedFieldOrder = dominantFieldOrder(analysis.TFF, analysis.BFF)
@@ -181,9 +212,18 @@ func detectInterlaceWithFrameSignalsContext(ctx context.Context, path, fieldOrde
 	classifyInterlace(&analysis)
 	finalizeFieldMetadataAnalysis(&analysis)
 	if shouldValidateIVTC(analysis) {
-		validateIVTCContext(ctx, path, duration, windowSeconds, &analysis)
+		validateIVTCContext(ctx, path, plan.AssetDurationSeconds, windowSeconds, &analysis)
 	}
 	return analysis
+}
+
+func sharedFrameSignalsForPosition(frameStructure QSVFrameStructureAnalysis, position float64) (FrameSignalSummary, bool) {
+	for _, window := range frameStructure.Windows {
+		if math.Abs(window.Position-position) < 0.000001 && window.FrameSignals.DecodedFrames > 0 {
+			return window.FrameSignals, true
+		}
+	}
+	return FrameSignalSummary{}, false
 }
 
 func decodeInterlaceAnalysis(value any) (InterlaceAnalysis, bool) {
@@ -326,19 +366,10 @@ func finalizeFieldMetadataAnalysis(analysis *InterlaceAnalysis) {
 }
 
 func distributedInterlaceStarts(duration float64, windowSeconds int) []float64 {
-	if duration <= float64(windowSeconds) || duration <= 0 {
-		return []float64{0}
-	}
-	maxStart := max(0, duration-float64(windowSeconds))
-	starts := []float64{}
-	seen := map[int]bool{}
-	for _, position := range []float64{0.05, 0.25, 0.50, 0.75, 0.90} {
-		start := min(maxStart, max(0, duration*position-float64(windowSeconds)/2))
-		key := int(start * 1000)
-		if !seen[key] {
-			seen[key] = true
-			starts = append(starts, start)
-		}
+	windows := canonicalSamplingPlan(duration, defaultFrameStructureSamplingPolicy()).windows(float64(windowSeconds))
+	starts := make([]float64, 0, len(windows))
+	for _, window := range windows {
+		starts = append(starts, window.StartSeconds)
 	}
 	return starts
 }
@@ -357,8 +388,11 @@ func runIDETContext(parent context.Context, path string, start float64, seconds 
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
 		return InterlaceAnalysis{}, false
 	}
+	return parseIDETOutput(stderr.String())
+}
 
-	multiMatches := idetMultiPattern.FindAllStringSubmatch(stderr.String(), -1)
+func parseIDETOutput(output string) (InterlaceAnalysis, bool) {
+	multiMatches := idetMultiPattern.FindAllStringSubmatch(output, -1)
 	if len(multiMatches) == 0 {
 		return InterlaceAnalysis{}, false
 	}
@@ -372,7 +406,7 @@ func runIDETContext(parent context.Context, path string, start float64, seconds 
 	analysis.Progressive = atoi(multi[3])
 	analysis.Undetermined = atoi(multi[4])
 	analysis.SampledFrames = analysis.TFF + analysis.BFF + analysis.Progressive + analysis.Undetermined
-	repeatedMatches := idetRepeatedPattern.FindAllStringSubmatch(stderr.String(), -1)
+	repeatedMatches := idetRepeatedPattern.FindAllStringSubmatch(output, -1)
 	if len(repeatedMatches) > 0 {
 		repeated := repeatedMatches[len(repeatedMatches)-1]
 		analysis.RepeatedTop = atoi(repeated[2])

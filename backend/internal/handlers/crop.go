@@ -43,6 +43,15 @@ func detectCrop(path string, width, height int, duration float64) CropAnalysis {
 }
 
 func detectCropContext(ctx context.Context, path string, width, height int, duration float64) CropAnalysis {
+	plan := canonicalSamplingPlan(duration, defaultFrameStructureSamplingPolicy())
+	return detectCropWithSamplingPlanContext(ctx, path, width, height, plan)
+}
+
+func detectCropWithSamplingPlanContext(ctx context.Context, path string, width, height int, plan SamplingPlan) CropAnalysis {
+	return detectCropWithSharedPixelEvidenceContext(ctx, path, width, height, plan, nil)
+}
+
+func detectCropWithSharedPixelEvidenceContext(ctx context.Context, path string, width, height int, plan SamplingPlan, pixelSession *pixelSamplingSession) CropAnalysis {
 	analysis := CropAnalysis{
 		Version: 3, Status: "unknown", Source: "cropdetect", OriginalWidth: width, OriginalHeight: height,
 		Reason: "Crop detection did not return enough stable samples.",
@@ -50,28 +59,44 @@ func detectCropContext(ctx context.Context, path string, width, height int, dura
 	if width <= 0 || height <= 0 {
 		return analysis
 	}
-	starts := cropSampleStarts(duration, 3)
+	windows := representativeSamplingWindows(plan, 3, 3)
+	starts := make([]float64, 0, len(windows))
+	for _, window := range windows {
+		starts = append(starts, window.StartSeconds)
+	}
 	analysis.Windows = len(starts)
 	analysis.SampledAt = starts
 	candidates := make([]cropCandidate, 0, len(starts))
-	for _, start := range starts {
-		if candidate, ok := cropCandidateAtContext(ctx, path, start, width, height); ok {
+	sharedSamples := 0
+	for index, start := range starts {
+		var candidate cropCandidate
+		var ok bool
+		if pixelSession != nil {
+			if pixelSession.hasSharedCrop(windows[index].Position) {
+				sharedSamples++
+			}
+			candidate, ok = pixelSession.cropCandidate(ctx, windows[index])
+		} else {
+			candidate, ok = cropCandidateAtContext(ctx, path, start, width, height)
+		}
+		if ok {
 			candidates = append(candidates, candidate)
 		}
+	}
+	if sharedSamples > 0 {
+		analysis.Source = "shared_idet_cropdetect"
 	}
 	return classifyCropCandidates(analysis, candidates)
 }
 
 func cropSampleStarts(duration float64, windowSeconds float64) []float64 {
-	if duration <= windowSeconds*2 {
-		return []float64{0}
+	plan := canonicalSamplingPlan(duration, defaultFrameStructureSamplingPolicy())
+	windows := representativeSamplingWindows(plan, windowSeconds, 3)
+	starts := make([]float64, 0, len(windows))
+	for _, window := range windows {
+		starts = append(starts, window.StartSeconds)
 	}
-	maxStart := max(0, duration-windowSeconds)
-	return []float64{
-		min(maxStart, max(0, duration*0.10)),
-		min(maxStart, max(0, duration*0.50-windowSeconds/2)),
-		min(maxStart, max(0, duration*0.90-windowSeconds)),
-	}
+	return starts
 }
 
 func cropCandidateAt(path string, start float64, width, height int) (cropCandidate, bool) {
@@ -110,7 +135,11 @@ func cropCandidateAtLimitContext(parent context.Context, path string, start floa
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	_ = cmd.Run()
-	matches := cropDetectPattern.FindAllStringSubmatch(stderr.String(), -1)
+	return parseCropCandidateOutput(stderr.String())
+}
+
+func parseCropCandidateOutput(output string) (cropCandidate, bool) {
+	matches := cropDetectPattern.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
 		return cropCandidate{}, false
 	}
