@@ -116,12 +116,43 @@ func TestMarkStaleSnapshotOperationAllowsRetry(t *testing.T) {
 	}
 	snapshotOperations.Unlock()
 
-	markStaleSnapshotOperations(time.Now())
+	timedOut := markStaleSnapshotOperations(time.Now())
 	snapshotOperations.RLock()
 	operation := *snapshotOperations.items["dbz-stuck"]
 	snapshotOperations.RUnlock()
-	if operation.Status != "error" || operation.Phase != "timeout" || operation.Error == "" {
+	if operation.Status != "error" || operation.Phase != "timeout" || operation.Error == "" || len(timedOut) != 1 || timedOut[0] != "dbz-stuck" {
 		t.Fatalf("stale operation was not released: %#v", operation)
+	}
+	if duplicate := markStaleSnapshotOperations(time.Now().Add(time.Second)); len(duplicate) != 0 {
+		t.Fatalf("stale timeout produced a duplicate terminal event: %v", duplicate)
+	}
+	if finishRunningSnapshotOperation("dbz-stuck", func(item *SnapshotOperation) { item.Status = "error" }) {
+		t.Fatal("worker timeout path overwrote stale-cleanup terminal outcome")
+	}
+}
+
+func TestWorkerTimeoutTransitionPreventsStaleCleanupDuplicate(t *testing.T) {
+	now := time.Now().Add(-snapshotOperationTimeout - time.Minute)
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"worker-timeout": {ID: "worker-timeout", Status: "running", Phase: "frame_structure", CreatedAt: now, UpdatedAt: now, phaseStartedAt: now},
+	}
+	snapshotOperations.cancels = map[string]context.CancelFunc{}
+	snapshotOperations.Unlock()
+	if !finishRunningSnapshotOperation("worker-timeout", func(operation *SnapshotOperation) {
+		finishSnapshotOperationTiming(operation, time.Now())
+		operation.Status, operation.Phase, operation.Error = "error", "timeout", "snapshot analysis exceeded 15 minutes"
+	}) {
+		t.Fatal("worker timeout transition was rejected")
+	}
+	if duplicate := markStaleSnapshotOperations(time.Now()); len(duplicate) != 0 {
+		t.Fatalf("stale cleanup duplicated worker timeout event: %v", duplicate)
+	}
+	snapshotOperations.RLock()
+	operation := *snapshotOperations.items["worker-timeout"]
+	snapshotOperations.RUnlock()
+	if operation.Status != "error" || operation.Phase != "timeout" || !operation.UpdatedAt.After(now) {
+		t.Fatalf("worker timeout terminal state is invalid: %#v", operation)
 	}
 }
 
@@ -157,7 +188,7 @@ func TestCancelSnapshotOperationTerminatesRunningAnalysis(t *testing.T) {
 }
 
 func TestSnapshotOperationAcceptsOnlyOneTerminalTransition(t *testing.T) {
-	now := time.Now()
+	now := time.Now().Add(-time.Hour)
 	snapshotOperations.Lock()
 	snapshotOperations.items = map[string]*SnapshotOperation{
 		"race": {ID: "race", Status: "running", Phase: "frame_structure", CreatedAt: now, UpdatedAt: now, phaseStartedAt: now},
@@ -169,6 +200,12 @@ func TestSnapshotOperationAcceptsOnlyOneTerminalTransition(t *testing.T) {
 	}) {
 		t.Fatal("first terminal transition was rejected")
 	}
+	snapshotOperations.RLock()
+	terminalUpdatedAt := snapshotOperations.items["race"].UpdatedAt
+	snapshotOperations.RUnlock()
+	if !terminalUpdatedAt.After(now) {
+		t.Fatalf("terminal transition did not advance UpdatedAt: before=%v after=%v", now, terminalUpdatedAt)
+	}
 	if finishRunningSnapshotOperation("race", func(operation *SnapshotOperation) {
 		operation.Status, operation.Phase = "error", "error"
 	}) {
@@ -176,9 +213,10 @@ func TestSnapshotOperationAcceptsOnlyOneTerminalTransition(t *testing.T) {
 	}
 	snapshotOperations.RLock()
 	status := snapshotOperations.items["race"].Status
+	updatedAt := snapshotOperations.items["race"].UpdatedAt
 	snapshotOperations.RUnlock()
-	if status != "cancelled" {
-		t.Fatalf("terminal status=%q want=cancelled", status)
+	if status != "cancelled" || !updatedAt.Equal(terminalUpdatedAt) {
+		t.Fatalf("terminal state was corrupted: status=%q firstUpdatedAt=%v updatedAt=%v", status, terminalUpdatedAt, updatedAt)
 	}
 }
 
@@ -665,6 +703,81 @@ func TestLegacySnapshotMigrationPreservesKnownVersionsAndMarksUnknownStale(t *te
 	}
 	if workerIntValue(metadata["version"], 0) != workerIntValue(snapshotAnalysisVersions["metadata"], 0) {
 		t.Fatalf("usable legacy metadata was not retained: %#v", metadata)
+	}
+}
+
+func TestLegacySnapshotIdentityRequiresMatchingHistoricalSize(t *testing.T) {
+	tests := []struct {
+		name       string
+		historical int64
+		wantMatch  bool
+	}{
+		{name: "matching size", historical: 7, wantMatch: true},
+		{name: "different size", historical: 10, wantMatch: false},
+		{name: "missing historical identity", historical: 0, wantMatch: false},
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := legacySnapshotIdentityMatches(models.ScanResult{SizeBytes: test.historical}, info); got != test.wantMatch {
+				t.Fatalf("identity match=%t want=%t historical=%d current=%d", got, test.wantMatch, test.historical, info.Size())
+			}
+		})
+	}
+}
+
+func TestLegacySnapshotIdentityMismatchSelectsFullMetadataRefresh(t *testing.T) {
+	tests := []struct {
+		name       string
+		historical int64
+	}{
+		{name: "size mismatch", historical: 999},
+		{name: "missing identity", historical: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'legacy full refresh attempted' >&2\nexit 19\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			db, err := gorm.Open(sqlite.Open("file:legacy-identity-"+strings.ReplaceAll(test.name, " ", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+				t.Fatal(err)
+			}
+			mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+			if err := os.WriteFile(mediaPath, []byte("current file"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			legacy := models.ScanResult{
+				Path: mediaPath, FileName: "episode.mkv", SizeBytes: test.historical, VideoCodec: "h264",
+				VideoStreams:           models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+				FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 100}, RawProbe: models.JSONMap{},
+			}
+			if err := db.Create(&legacy).Error; err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Stat(mediaPath)
+			var phases []string
+			_, cached, scanErr := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+			if cached || scanErr == nil || !slices.Contains(phases, "legacy_identity_mismatch") || !slices.Contains(phases, "metadata") || slices.Contains(phases, "incremental_refresh") {
+				t.Fatalf("unsafe legacy migration was not rejected: cached=%t err=%v phases=%v", cached, scanErr, phases)
+			}
+			var stored models.ScanResult
+			if err := db.First(&stored, legacy.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if _, migrated := stored.RawProbe["snapshotCache"]; migrated {
+				t.Fatalf("unsafe legacy snapshot received a cache fingerprint: %#v", stored.RawProbe)
+			}
+		})
 	}
 }
 

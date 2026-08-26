@@ -84,6 +84,7 @@ func finishRunningSnapshotOperation(id string, update func(*SnapshotOperation)) 
 		return false
 	}
 	update(operation)
+	operation.UpdatedAt = time.Now()
 	return true
 }
 
@@ -365,6 +366,10 @@ func legacyMetadataVersion(result models.ScanResult) int {
 	return workerIntValue(snapshotAnalysisVersions["metadata"], 0)
 }
 
+func legacySnapshotIdentityMatches(result models.ScanResult, info os.FileInfo) bool {
+	return info != nil && result.SizeBytes > 0 && result.SizeBytes == info.Size()
+}
+
 func snapshotComponentStatus(result models.ScanResult, component string) string {
 	var analysis models.JSONMap
 	switch component {
@@ -498,13 +503,20 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	fullRefreshMode := "full"
 	fallbackReason := ""
 	var existing models.ScanResult
+	foundExisting := false
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+			foundExisting = true
 			fingerprintMatches, legacyCache, staleComponents := snapshotCacheState(existing, path, info)
 			if legacyCache {
-				migrateLegacySnapshotCache(&existing, path, info)
-				_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
-				fingerprintMatches, _, staleComponents = snapshotCacheState(existing, path, info)
+				if legacySnapshotIdentityMatches(existing, info) {
+					migrateLegacySnapshotCache(&existing, path, info)
+					_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
+					fingerprintMatches, _, staleComponents = snapshotCacheState(existing, path, info)
+				} else {
+					fingerprintMatches = false
+					report("legacy_identity_mismatch", 8, "Legacy snapshot identity cannot be verified; starting a full analysis")
+				}
 			}
 			cacheMatches := fingerprintMatches && len(staleComponents) == 0
 			if snapshotRequiresFrameStructureRefresh(existing) || !cacheMatches {
@@ -536,9 +548,11 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 				return existing, true, nil
 			}
 		}
-		if inherited, ok := inheritedOriginalSnapshot(h.db, path, info); ok {
-			report("completed", 100, "Using the Raw snapshot for this archived original")
-			return inherited, true, nil
+		if !foundExisting {
+			if inherited, ok := inheritedOriginalSnapshot(h.db, path, info); ok {
+				report("completed", 100, "Using the Raw snapshot for this archived original")
+				return inherited, true, nil
+			}
 		}
 	}
 
@@ -756,7 +770,7 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		return
 	}
 
-	markStaleSnapshotOperations(time.Now())
+	h.markStaleSnapshotOperations(time.Now())
 
 	snapshotOperations.RLock()
 	for _, operation := range snapshotOperations.items {
@@ -904,7 +918,7 @@ func (h ScannerHandler) logSnapshotOperation(id, event string, operationErr erro
 }
 
 func (h ScannerHandler) GetSnapshotOperation(c *gin.Context) {
-	markStaleSnapshotOperations(time.Now())
+	h.markStaleSnapshotOperations(time.Now())
 	snapshotOperations.RLock()
 	operation := snapshotOperations.items[c.Param("id")]
 	if operation == nil {
@@ -922,7 +936,7 @@ func (h ScannerHandler) ListSnapshotOperations(c *gin.Context) {
 	if path != "" {
 		path = resolveMediaPath(h.db, path)
 	}
-	markStaleSnapshotOperations(time.Now())
+	h.markStaleSnapshotOperations(time.Now())
 	items := []SnapshotOperation{}
 	snapshotOperations.RLock()
 	for _, operation := range snapshotOperations.items {
@@ -934,10 +948,17 @@ func (h ScannerHandler) ListSnapshotOperations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"operations": items})
 }
 
-func markStaleSnapshotOperations(now time.Time) {
+func (h ScannerHandler) markStaleSnapshotOperations(now time.Time) {
+	for _, id := range markStaleSnapshotOperations(now) {
+		h.logSnapshotOperation(id, "snapshot_analysis_timeout", context.DeadlineExceeded)
+	}
+}
+
+func markStaleSnapshotOperations(now time.Time) []string {
 	snapshotOperations.Lock()
 	defer snapshotOperations.Unlock()
-	for _, operation := range snapshotOperations.items {
+	timedOut := []string{}
+	for id, operation := range snapshotOperations.items {
 		if operation.Status != "running" || now.Sub(operation.CreatedAt) <= snapshotOperationTimeout {
 			continue
 		}
@@ -947,8 +968,10 @@ func markStaleSnapshotOperations(now time.Time) {
 		operation.Error = "snapshot operation stopped reporting before completion"
 		operation.Message = "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
 		operation.UpdatedAt = now
+		timedOut = append(timedOut, id)
 	}
 	cleanupSnapshotOperationsLocked(now)
+	return timedOut
 }
 
 func cleanupSnapshotOperationsLocked(now time.Time) {
