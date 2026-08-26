@@ -60,3 +60,36 @@ func TestSharedPixelProbeParsesEvidenceIndependently(t *testing.T) {
 		t.Fatal("IDET output must not masquerade as crop evidence")
 	}
 }
+
+func TestQuickInterlaceAndCropPreserveSharedDecodePerSelectedWindow(t *testing.T) {
+	binDir := t.TempDir()
+	counterPath := filepath.Join(binDir, "calls")
+	ffmpegPath := filepath.Join(binDir, "ffmpeg")
+	script := `#!/bin/sh
+printf x >> "$PIXEL_COUNTER"
+printf '%s\n' \
+  'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' \
+  'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' \
+  'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIXEL_COUNTER", counterPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	plan := SamplingPlan{AssetDurationSeconds: 1000, WindowSeconds: 20, Positions: []float64{0.08, 0.92}}
+	frame := QSVFrameStructureAnalysis{Windows: []FrameStructureWindow{
+		{Position: 0.08, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{Position: 0.92, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+	}}
+	session := newPixelSamplingSession("/fixture/movie.mkv", 720, 480, plan)
+	interlace := detectInterlaceWithSharedEvidenceContext(context.Background(), "/fixture/movie.mkv", "progressive", 20, false, plan, frame, session)
+	crop := detectCropWithSharedPixelEvidenceContext(context.Background(), "/fixture/movie.mkv", 720, 480, plan, session)
+	calls, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "xx" || interlace.SampleCount != 2 || crop.Windows != 2 || crop.RecommendedCrop != "700:400:10:40" {
+		t.Fatalf("quick shared decode regressed: calls=%q interlace=%#v crop=%#v", calls, interlace, crop)
+	}
+}

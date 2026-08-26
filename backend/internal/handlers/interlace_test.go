@@ -218,6 +218,45 @@ func TestSharedFrameSignalsMatchCanonicalPosition(t *testing.T) {
 	}
 }
 
+func TestAdaptiveInterlaceSamplingPlanUsesQuickValidationOnlyForStrongProgressiveEvidence(t *testing.T) {
+	plan := canonicalSamplingPlan(1200, defaultFrameStructureSamplingPolicy())
+	stable := QSVFrameStructureAnalysis{ConfidenceScore: 0.995, WindowCount: 3, Windows: []FrameStructureWindow{
+		{Position: 0.08, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{Position: 0.50, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{Position: 0.92, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+	}}
+	quick, depth, reason := adaptiveInterlaceSamplingPlan(plan, stable, "progressive")
+	if depth != interlaceAnalysisDepthQuick || len(quick.Positions) != 2 || quick.Positions[0] != plan.Positions[0] || quick.Positions[1] != plan.Positions[len(plan.Positions)-1] || reason == "" {
+		t.Fatalf("strong progressive evidence did not select representative quick IDET: depth=%s reason=%q plan=%#v", depth, reason, quick)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*QSVFrameStructureAnalysis)
+		field  string
+	}{
+		{name: "repeat pict", mutate: func(value *QSVFrameStructureAnalysis) { value.Windows[1].FrameSignals.RepeatPictFrames = 1 }},
+		{name: "interlaced frame", mutate: func(value *QSVFrameStructureAnalysis) {
+			value.Windows[1].FrameSignals.InterlacedFrames = 1
+			value.Windows[1].FrameSignals.ProgressiveFrames = 239
+		}},
+		{name: "unstable fps", mutate: func(value *QSVFrameStructureAnalysis) { value.Windows[1].FrameSignals.EffectiveFPS = 29.97 }},
+		{name: "low confidence", mutate: func(value *QSVFrameStructureAnalysis) { value.ConfidenceScore = 0.80 }},
+		{name: "field order evidence", field: "tt", mutate: func(*QSVFrameStructureAnalysis) {}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := stable
+			candidate.Windows = append([]FrameStructureWindow(nil), stable.Windows...)
+			test.mutate(&candidate)
+			deep, depth, reason := adaptiveInterlaceSamplingPlan(plan, candidate, test.field)
+			if depth != interlaceAnalysisDepthDeep || len(deep.Positions) != len(plan.Positions) || reason == "" {
+				t.Fatalf("suspicious evidence did not retain deep IDET: depth=%s reason=%q plan=%#v", depth, reason, deep)
+			}
+		})
+	}
+}
+
 func TestProgressiveFramesRecommendMetadataCorrectionForInterlacedContainer(t *testing.T) {
 	analysis := InterlaceAnalysis{
 		Status:              "progressive",

@@ -919,6 +919,11 @@ export type ScanResult = {
     contradictorySampleCount?: number;
     softTelecineSampleCount?: number;
     frameSignalSampleCount?: number;
+    analysisDepth?: 'quick' | 'deep' | string;
+    windowsRequested?: number;
+    maximumWindows?: number;
+    deepAnalysisTriggered?: boolean;
+    depthReason?: string;
     sampledAt?: number[];
     windows?: Array<{
       start: number;

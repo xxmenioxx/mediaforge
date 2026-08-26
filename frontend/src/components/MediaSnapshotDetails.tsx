@@ -80,6 +80,8 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Field order', interlace?.detectedFieldOrder || interlace?.fieldOrder || 'Unknown'],
           ['Field-order match', interlace?.fieldOrderMismatch ? 'Mismatch · review' : 'No mismatch detected'],
           ['Confidence', typeof interlace?.confidence === 'number' ? `${Math.round(interlace.confidence * 100)}%` : 'Unknown'],
+          ['IDET depth', interlace?.analysisDepth ? `${interlace.analysisDepth} · ${interlace.sampleCount ?? 0}/${interlace.maximumWindows ?? interlace.windowsRequested ?? 0} regions` : 'Legacy analysis'],
+          ['IDET depth reason', interlace?.depthReason || 'Legacy analysis'],
           ['Auto action', interlace?.recommendedAction || 'Review'],
           ['Decision', interlace?.decisionReason || 'Legacy analysis; run Re-SCAN for regional evidence'],
           ['Cadence', cadenceLabel(scan)],

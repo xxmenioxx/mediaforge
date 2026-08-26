@@ -37,6 +37,11 @@ type InterlaceAnalysis struct {
 	WindowSeconds                int               `json:"windowSeconds"`
 	SampleCount                  int               `json:"sampleCount"`
 	FrameSignalSampleCount       int               `json:"frameSignalSampleCount"`
+	AnalysisDepth                string            `json:"analysisDepth,omitempty"`
+	WindowsRequested             int               `json:"windowsRequested,omitempty"`
+	MaximumWindows               int               `json:"maximumWindows,omitempty"`
+	DeepAnalysisTriggered        bool              `json:"deepAnalysisTriggered,omitempty"`
+	DepthReason                  string            `json:"depthReason,omitempty"`
 	SampledAt                    []float64         `json:"sampledAt,omitempty"`
 	RecommendedMode              string            `json:"recommendedMode,omitempty"`
 	RecommendedFieldMetadataMode string            `json:"recommendedFieldMetadataMode,omitempty"`
@@ -49,8 +54,14 @@ type InterlaceAnalysis struct {
 }
 
 const (
-	interlaceAnalysisVersion     = 3
-	interlaceAnalysisSnapshotKey = "interlaceAnalysisSnapshot"
+	interlaceAnalysisDepthQuick = "quick"
+	interlaceAnalysisDepthDeep  = "deep"
+)
+
+const (
+	interlaceAnalysisVersion      = 3
+	interlaceAnalysisCacheVersion = 4
+	interlaceAnalysisSnapshotKey  = "interlaceAnalysisSnapshot"
 )
 
 type InterlaceWindow struct {
@@ -145,6 +156,59 @@ func detectInterlaceWithSharedFrameEvidenceContext(ctx context.Context, path, fi
 	return detectInterlaceWithSharedEvidenceContext(ctx, path, fieldOrder, windowSeconds, collectFrameSignals, plan, frameStructure, nil)
 }
 
+func adaptiveInterlaceSamplingPlan(plan SamplingPlan, frameStructure QSVFrameStructureAnalysis, fieldOrder string) (SamplingPlan, string, string) {
+	deep := func(reason string) (SamplingPlan, string, string) {
+		return plan, interlaceAnalysisDepthDeep, reason
+	}
+	if len(plan.Positions) <= 2 {
+		return deep("canonical plan already requires two or fewer windows")
+	}
+	if frameStructure.ConfidenceScore < 0.98 {
+		return deep("shared frame confidence is below the quick-validation threshold")
+	}
+	if frameStructure.WindowCount < 3 || len(frameStructure.Windows) < 3 {
+		return deep("shared frame evidence has fewer than three regions")
+	}
+	if fieldOrderFamily(fieldOrder) != "" {
+		return deep("container field order requires deep validation")
+	}
+	minimumFPS, maximumFPS := 0.0, 0.0
+	for _, window := range frameStructure.Windows {
+		signals := window.FrameSignals
+		if signals.DecodedFrames <= 0 || signals.EffectiveFPS <= 0 {
+			return deep("shared frame evidence is incomplete")
+		}
+		if signals.InterlacedFrames > 0 || signals.ProgressiveFrames < signals.DecodedFrames {
+			return deep("shared frame flags are interlaced or mixed")
+		}
+		if signals.RepeatPictFrames > 0 {
+			return deep("repeat_pict requires telecine validation")
+		}
+		cadence := strings.ToLower(strings.TrimSpace(signals.Cadence))
+		if strings.Contains(cadence, "mixed") || strings.Contains(cadence, "telecine") || strings.Contains(cadence, "unstable") {
+			return deep("shared cadence evidence is suspicious")
+		}
+		if minimumFPS == 0 || signals.EffectiveFPS < minimumFPS {
+			minimumFPS = signals.EffectiveFPS
+		}
+		if signals.EffectiveFPS > maximumFPS {
+			maximumFPS = signals.EffectiveFPS
+		}
+	}
+	if maximumFPS-minimumFPS > 0.50 {
+		return deep("effective FPS varies across shared regions")
+	}
+	quickWindows := representativeSamplingWindows(plan, plan.WindowSeconds, 2)
+	quickPlan := plan
+	quickPlan.Positions = make([]float64, 0, len(quickWindows))
+	for _, window := range quickWindows {
+		quickPlan.Positions = append(quickPlan.Positions, window.Position)
+	}
+	quickPlan.Adaptive = false
+	quickPlan.InitialWindows = len(quickPlan.Positions)
+	return quickPlan, interlaceAnalysisDepthQuick, "high-confidence progressive shared evidence"
+}
+
 func detectInterlaceWithSharedEvidenceContext(ctx context.Context, path, fieldOrder string, windowSeconds int, collectFrameSignals bool, plan SamplingPlan, frameStructure QSVFrameStructureAnalysis, pixelSession *pixelSamplingSession) InterlaceAnalysis {
 	windowSeconds = normalizedAnalysisSeconds(windowSeconds)
 	containerOrder := normalizeFieldOrder(fieldOrder)
@@ -153,6 +217,7 @@ func detectInterlaceWithSharedEvidenceContext(ctx context.Context, path, fieldOr
 		Status:  interlaceStatusFromFieldOrder(fieldOrder), FieldOrder: containerOrder,
 		ContainerFieldOrder: containerOrder, Source: "ffprobe", WindowSeconds: windowSeconds,
 	}
+	analysis.WindowsRequested = len(plan.Positions)
 	sharedFrameSignalSamples := 0
 	for _, samplingWindow := range plan.windows(float64(windowSeconds)) {
 		start := samplingWindow.StartSeconds

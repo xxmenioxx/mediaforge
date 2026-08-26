@@ -272,7 +272,7 @@ const snapshotCacheSchemaVersion = 1
 
 var snapshotAnalysisVersions = models.JSONMap{
 	"metadata":       1,
-	"interlace":      interlaceAnalysisVersion,
+	"interlace":      interlaceAnalysisCacheVersion,
 	"crop":           3,
 	"frameStructure": 2,
 	"cadence":        cadenceAnalysisVersion,
@@ -630,6 +630,8 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 			pixelPlan.Adaptive = false
 			pixelPlan.InitialWindows = len(pixelPlan.Positions)
 		}
+		maximumInterlaceWindows := len(pixelPlan.Positions)
+		pixelPlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(pixelPlan, frameAnalysis, video.FieldOrder)
 		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, pixelPlan)
 		if interlaceStale {
 			report("interlace", 60, "Refreshing Interlace from shared frame and pixel evidence")
@@ -637,6 +639,11 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 			interlace.Codec = video.CodecName
 			interlace.AverageFrameRate = video.AverageFrameRate
 			interlace.RealFrameRate = video.RealBaseFrameRate
+			interlace.AnalysisDepth = interlaceDepth
+			interlace.WindowsRequested = len(pixelPlan.Positions)
+			interlace.MaximumWindows = maximumInterlaceWindows
+			interlace.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && maximumInterlaceWindows > 2
+			interlace.DepthReason = interlaceDepthReason
 			existing.RawProbe["interlaceAnalysis"] = interlace
 			existing.InterlaceAnalysis = structToJSONMap(interlace)
 		}
@@ -1126,11 +1133,18 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 		pixelPlan.Adaptive = false
 		pixelPlan.InitialWindows = len(pixelPlan.Positions)
 	}
+	maximumInterlaceWindows := len(pixelPlan.Positions)
+	pixelPlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(pixelPlan, frameAnalysis, video.FieldOrder)
 	pixelSession := newPixelSamplingSession(path, video.Width, video.Height, pixelPlan)
 	interlaceAnalysis := detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, pixelPlan, frameAnalysis, pixelSession)
 	interlaceAnalysis.Codec = video.CodecName
 	interlaceAnalysis.AverageFrameRate = video.AverageFrameRate
 	interlaceAnalysis.RealFrameRate = video.RealBaseFrameRate
+	interlaceAnalysis.AnalysisDepth = interlaceDepth
+	interlaceAnalysis.WindowsRequested = len(pixelPlan.Positions)
+	interlaceAnalysis.MaximumWindows = maximumInterlaceWindows
+	interlaceAnalysis.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && maximumInterlaceWindows > 2
+	interlaceAnalysis.DepthReason = interlaceDepthReason
 	raw["interlaceAnalysis"] = interlaceAnalysis
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
