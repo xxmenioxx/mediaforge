@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -786,6 +787,80 @@ printf '%s\n' \
 	}
 	if !slices.Contains(phases, "incremental_fallback") || !slices.Contains(phases, "metadata") || snapshotFallbackReason(result) != "cached_metadata_invalid" {
 		t.Fatalf("fallback was not observable: phases=%v reason=%q", phases, snapshotFallbackReason(result))
+	}
+}
+
+func TestInvalidIncrementalCacheReturnsFullRefreshFailure(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'full probe failed' >&2\nexit 17\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:incremental-fallback-fails?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), VideoCodec: "h264",
+		VideoStreams:           models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 10}, RawProbe: models.JSONMap{},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["frameStructure"] = 1
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	_, cached, scanErr := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if cached || scanErr == nil || !strings.Contains(scanErr.Error(), "full probe failed") || !slices.Contains(phases, "incremental_fallback") || !slices.Contains(phases, "metadata") {
+		t.Fatalf("full refresh failure was not returned: cached=%t err=%v phases=%v", cached, scanErr, phases)
+	}
+}
+
+func TestStaleMetadataComponentRequiresFullRefresh(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'metadata refresh attempted' >&2\nexit 18\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:metadata-component-stale?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), VideoCodec: "h264",
+		VideoStreams:           models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 10}, RawProbe: models.JSONMap{},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["metadata"] = 0
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	_, _, scanErr := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if scanErr == nil || !slices.Contains(phases, "metadata") || slices.Contains(phases, "incremental_refresh") {
+		t.Fatalf("stale metadata did not require full refresh: err=%v phases=%v", scanErr, phases)
 	}
 }
 

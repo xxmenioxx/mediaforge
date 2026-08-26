@@ -961,7 +961,7 @@ export function ProfileLabPage() {
         operation = await api.snapshotOperation(operation.id);
         if (requestID === snapshotRequestRef.current) setLabSnapshotOperation(operation);
       }
-      if (operation.status === 'paused') throw new Error('Asset snapshot paused by user');
+      if (operation.status === 'cancelled') throw new Error('Asset snapshot cancelled by user');
       if (operation.status === 'error' || !operation.result) throw new Error(operation.error || 'Asset snapshot did not return a result');
       return operation.result;
     },
