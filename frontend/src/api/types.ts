@@ -1143,6 +1143,7 @@ export type SnapshotOperation = {
   stageTimingsMs?: Record<string, number>;
   durationMs: number;
   cacheHit: boolean;
+  incrementalRefresh: boolean;
   result?: ScanResult;
   error?: string;
   createdAt: string;

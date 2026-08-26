@@ -304,7 +304,11 @@ export function AnalysisPage() {
               {activeSnapshotOperation?.status === 'paused' ? <Alert severity="info">Analysis paused by user.</Alert> : null}
               {activeSnapshotOperation?.status === 'completed' ? (
                 <Alert severity="success">
-                  {activeSnapshotOperation.cacheHit ? 'Existing snapshot reused' : 'Analysis completed'} in {formatOperationDuration(activeSnapshotOperation.durationMs)}.
+                  {activeSnapshotOperation.cacheHit
+                    ? 'Existing snapshot reused'
+                    : activeSnapshotOperation.incrementalRefresh
+                      ? 'Stale analysis components refreshed'
+                      : 'Analysis completed'} in {formatOperationDuration(activeSnapshotOperation.durationMs)}.
                 </Alert>
               ) : null}
               {backfillAsIsReports.data?.imported ? (

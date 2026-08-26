@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -319,6 +320,140 @@ func TestSnapshotCacheFingerprintInvalidatesChangedMtimeAndComponentVersion(t *t
 	components["crop"] = 0
 	if matches, _ := snapshotCacheMatches(snapshot, mediaPath, changedInfo); matches {
 		t.Fatal("stale component version did not invalidate the snapshot cache")
+	}
+}
+
+func TestScanResolvedFileIncrementallyRefreshesCadenceWithoutReplacingOtherEvidence(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:incremental-cadence-refresh?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("not decoded during cadence-only refresh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interlace := models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive", "confidence": 0.99}
+	frame := models.JSONMap{"version": 2, "source": "fixture", "framesAnalyzed": 500, "averageGopLength": 50.0, "positions": []any{0.08, 0.5, 0.92}}
+	crop := models.JSONMap{"version": 3, "status": "none", "reason": "preserve-me"}
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 1200, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams:      models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		InterlaceAnalysis: interlace, FrameStructureAnalysis: frame, CropAnalysis: crop,
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"duration": "1200"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 1920, "height": 1080}},
+			"interlaceAnalysis": interlace, "frameStructureAnalysis": frame, "cropAnalysis": crop,
+		},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["cadence"] = 0
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
+	if err != nil {
+		t.Fatalf("incremental cadence refresh failed: %v", err)
+	}
+	if cached {
+		t.Fatal("incremental refresh was incorrectly reported as a cache hit")
+	}
+	if stringFromUnknown(result.CropAnalysis["reason"]) != "preserve-me" || stringFromUnknown(result.FrameStructureAnalysis["source"]) != "fixture" {
+		t.Fatalf("incremental refresh replaced unrelated evidence: crop=%#v frame=%#v", result.CropAnalysis, result.FrameStructureAnalysis)
+	}
+	if workerIntValue(result.CadenceAnalysis["version"], 0) != cadenceAnalysisVersion {
+		t.Fatalf("cadence was not refreshed: %#v", result.CadenceAnalysis)
+	}
+	if matches, legacy := snapshotCacheMatches(result, mediaPath, info); !matches || legacy {
+		t.Fatalf("incrementally refreshed snapshot is not cacheable: matches=%t legacy=%t", matches, legacy)
+	}
+}
+
+func TestFrameRefreshOnlyRejectsUnrelatedStaleComponents(t *testing.T) {
+	if !frameRefreshOnly([]string{"cadence", "frameStructure"}) {
+		t.Fatal("Frame Structure and Cadence should use the incremental refresh path")
+	}
+	if frameRefreshOnly([]string{"crop", "frameStructure"}) {
+		t.Fatal("stale Crop evidence must require a broader refresh")
+	}
+}
+
+func TestScanResolvedFileRefreshesOnlyFrameStructureAndDependentCadence(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"P","key_frame":0,"best_effort_timestamp_time":"80.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"270.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"500.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"P","key_frame":0,"best_effort_timestamp_time":"500.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"730.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"920.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"P","key_frame":0,"best_effort_timestamp_time":"920.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:incremental-frame-refresh?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("frame fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	interlace := models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive", "confidence": 0.99}
+	crop := models.JSONMap{"version": 3, "status": "none", "reason": "preserve-me"}
+	oldFrame := models.JSONMap{"version": 2, "source": "old-frame", "framesAnalyzed": 10}
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams:      models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		InterlaceAnalysis: interlace, FrameStructureAnalysis: oldFrame, CropAnalysis: crop,
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"duration": "1000"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 1920, "height": 1080}},
+			"interlaceAnalysis": interlace, "frameStructureAnalysis": oldFrame, "cropAnalysis": crop,
+		},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["frameStructure"] = 1
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) {
+		phases = append(phases, phase)
+	})
+	if err != nil || cached {
+		t.Fatalf("incremental Frame Structure refresh failed: cached=%t err=%v", cached, err)
+	}
+	if stringFromUnknown(result.CropAnalysis["reason"]) != "preserve-me" || stringFromUnknown(result.InterlaceAnalysis["status"]) != "progressive" {
+		t.Fatalf("unrelated evidence was replaced: crop=%#v interlace=%#v", result.CropAnalysis, result.InterlaceAnalysis)
+	}
+	if stringFromUnknown(result.FrameStructureAnalysis["source"]) == "old-frame" || jsonMapInt(result.FrameStructureAnalysis, "framesAnalyzed") == 0 {
+		t.Fatalf("Frame Structure was not refreshed: %#v", result.FrameStructureAnalysis)
+	}
+	if !slices.Contains(phases, "incremental_refresh") || slices.Contains(phases, "metadata") || slices.Contains(phases, "crop") || slices.Contains(phases, "interlace") {
+		t.Fatalf("unexpected incremental phases: %v", phases)
 	}
 }
 
