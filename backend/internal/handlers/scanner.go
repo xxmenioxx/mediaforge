@@ -500,11 +500,12 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 		}
 	}
 
+	policy := analysisPolicy(h.db)
 	fullRefreshMode := "full"
 	fallbackReason := ""
 	var existing models.ScanResult
 	foundExisting := false
-	if !request.Force {
+	if !request.Force && policy.ReuseSnapshots {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			foundExisting = true
 			fingerprintMatches, legacyCache, staleComponents := snapshotCacheState(existing, path, info)
@@ -520,7 +521,7 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 			}
 			cacheMatches := fingerprintMatches && len(staleComponents) == 0
 			if snapshotRequiresFrameStructureRefresh(existing) || !cacheMatches {
-				if fingerprintMatches && incrementalRefreshSupported(staleComponents) {
+				if policy.IncrementalRefresh && fingerprintMatches && incrementalRefreshSupported(staleComponents) {
 					report("incremental_refresh", 10, "Refreshing stale analysis components while reusing valid evidence")
 					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, existing, path, info, normalizedAnalysisSeconds(request.AnalysisSeconds), staleComponents, report)
 					if refreshErr == nil {
@@ -792,6 +793,19 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		}
 	}
 	snapshotOperations.RUnlock()
+
+	runningOperations := 0
+	snapshotOperations.RLock()
+	for _, operation := range snapshotOperations.items {
+		if operation.Status == "running" {
+			runningOperations++
+		}
+	}
+	snapshotOperations.RUnlock()
+	if limit := analysisPolicy(h.db).ConcurrentAssets; runningOperations >= limit {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("analysis concurrency limit reached (%d active asset(s))", limit)})
+		return
+	}
 
 	now := time.Now()
 	id := fmt.Sprintf("snapshot-%d", now.UnixNano())

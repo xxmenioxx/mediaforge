@@ -87,6 +87,43 @@ func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
 	}
 }
 
+func TestSnapshotOperationEnforcesConfiguredAssetConcurrency(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:snapshot-operation-concurrency?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: analysisPolicySettingKey, Value: models.JSONMap{"mode": "balanced", "concurrentAssets": 1}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	selectedPath := filepath.Join(t.TempDir(), "selected.mkv")
+	if err := os.WriteFile(selectedPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{"active": {ID: "active", AssetPath: "/fixture/other.mkv", Status: "running", CreatedAt: now, UpdatedAt: now, phaseStartedAt: now}}
+	snapshotOperations.Unlock()
+	t.Cleanup(func() {
+		snapshotOperations.Lock()
+		snapshotOperations.items = map[string]*SnapshotOperation{}
+		snapshotOperations.Unlock()
+	})
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/scan/operations", NewScannerHandler(db).StartSnapshotOperation)
+	body, _ := json.Marshal(ScanRequest{Path: selectedPath})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/scan/operations", bytes.NewReader(body)))
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), "concurrency limit reached") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestSnapshotOperationRecordsStageTimings(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
 	operation := &SnapshotOperation{

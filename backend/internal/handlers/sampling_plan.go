@@ -3,11 +3,15 @@ package handlers
 import "math"
 
 type SamplingPlan struct {
-	AssetDurationSeconds float64
-	WindowSeconds        float64
-	Positions            []float64
-	Adaptive             bool
-	InitialWindows       int
+	AssetDurationSeconds     float64
+	WindowSeconds            float64
+	Positions                []float64
+	Adaptive                 bool
+	InitialWindows           int
+	EarlyConfidenceEnabled   bool
+	EarlyConfidenceThreshold float64
+	InterlaceValidation      string
+	CropDepth                string
 }
 
 type SamplingWindow struct {
@@ -28,6 +32,18 @@ func canonicalSamplingPlan(duration float64, policy FrameStructureSamplingPolicy
 	if policy.Windows > len(positions) {
 		policy.Windows = len(positions)
 	}
+	if policy.InitialWindows <= 0 {
+		policy.InitialWindows = min(3, policy.Windows)
+	}
+	if policy.EarlyConfidenceThreshold <= 0 {
+		policy.EarlyConfidenceThreshold = 0.98
+	}
+	if policy.InterlaceValidation == "" {
+		policy.InterlaceValidation = "automatic"
+	}
+	if policy.CropDepth == "" {
+		policy.CropDepth = "normal"
+	}
 	if policy.Adaptive {
 		switch {
 		case duration > 0 && duration <= 60:
@@ -46,11 +62,26 @@ func canonicalSamplingPlan(duration float64, policy FrameStructureSamplingPolicy
 		windowSeconds = 20
 	}
 	return SamplingPlan{
-		AssetDurationSeconds: duration,
-		WindowSeconds:        windowSeconds,
-		Positions:            append([]float64(nil), positions[:policy.Windows]...),
-		Adaptive:             policy.Adaptive,
-		InitialWindows:       min(3, policy.Windows),
+		AssetDurationSeconds:     duration,
+		WindowSeconds:            windowSeconds,
+		Positions:                append([]float64(nil), positions[:policy.Windows]...),
+		Adaptive:                 policy.Adaptive,
+		InitialWindows:           max(1, min(policy.InitialWindows, policy.Windows)),
+		EarlyConfidenceEnabled:   policy.EarlyConfidenceEnabled,
+		EarlyConfidenceThreshold: policy.EarlyConfidenceThreshold,
+		InterlaceValidation:      policy.InterlaceValidation,
+		CropDepth:                policy.CropDepth,
+	}
+}
+
+func (plan SamplingPlan) cropWindowMaximum() int {
+	switch plan.CropDepth {
+	case "reduced":
+		return 2
+	case "full":
+		return len(plan.Positions)
+	default:
+		return 3
 	}
 }
 

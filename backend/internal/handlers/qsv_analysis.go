@@ -68,17 +68,32 @@ type frameStructureProbeFrame struct {
 }
 
 type FrameStructureSamplingPolicy struct {
-	Windows       int       `json:"windows"`
-	WindowSeconds float64   `json:"windowSeconds"`
-	Positions     []float64 `json:"positions"`
-	Adaptive      bool      `json:"adaptive"`
+	Windows                  int       `json:"windows"`
+	InitialWindows           int       `json:"initialWindows"`
+	WindowSeconds            float64   `json:"windowSeconds"`
+	Positions                []float64 `json:"positions"`
+	Adaptive                 bool      `json:"adaptive"`
+	EarlyConfidenceEnabled   bool      `json:"earlyConfidenceEnabled"`
+	EarlyConfidenceThreshold float64   `json:"earlyConfidenceThreshold"`
+	InterlaceValidation      string    `json:"interlaceValidation"`
+	CropDepth                string    `json:"cropDepth"`
 }
 
 func defaultFrameStructureSamplingPolicy() FrameStructureSamplingPolicy {
-	return FrameStructureSamplingPolicy{Windows: 5, WindowSeconds: 20, Positions: []float64{0.08, 0.27, 0.50, 0.73, 0.92}, Adaptive: true}
+	return frameStructurePolicyFromAnalysis(balancedAnalysisPolicy())
+}
+
+func frameStructurePolicyFromAnalysis(policy AnalysisPolicy) FrameStructureSamplingPolicy {
+	return FrameStructureSamplingPolicy{Windows: policy.MaximumWindows, InitialWindows: policy.InitialWindows, WindowSeconds: policy.WindowSeconds, Positions: append([]float64(nil), policy.Positions...), Adaptive: policy.AdaptiveAnalysis, EarlyConfidenceEnabled: policy.EarlyConfidenceEnabled, EarlyConfidenceThreshold: policy.EarlyConfidenceThreshold, InterlaceValidation: policy.InterlaceValidation, CropDepth: policy.CropDepth}
 }
 
 func frameStructureSamplingPolicy(db *gorm.DB) FrameStructureSamplingPolicy {
+	if db != nil {
+		var setting models.AppSetting
+		if err := db.Where("key = ?", analysisPolicySettingKey).First(&setting).Error; err == nil {
+			return frameStructurePolicyFromAnalysis(analysisPolicy(db))
+		}
+	}
 	policy := defaultFrameStructureSamplingPolicy()
 	if db == nil {
 		return policy
@@ -92,6 +107,12 @@ func frameStructureSamplingPolicy(db *gorm.DB) FrameStructureSamplingPolicy {
 		return policy
 	}
 	_ = json.Unmarshal(data, &policy)
+	// Legacy frameStructureSampling settings predate configurable confidence.
+	policy.InitialWindows = min(3, policy.Windows)
+	policy.EarlyConfidenceEnabled = true
+	policy.EarlyConfidenceThreshold = 0.98
+	policy.InterlaceValidation = "automatic"
+	policy.CropDepth = "normal"
 	if policy.Windows < 1 {
 		policy.Windows = 1
 	}
@@ -871,7 +892,7 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 	}
 	if len(selectedWindows) < len(windows) {
 		initialConfidence := frameEvidenceConfidenceScore(analyses)
-		if frameEvidenceRequiresAdditionalWindows(analyses) || initialConfidence < 0.98 {
+		if !plan.EarlyConfidenceEnabled || frameEvidenceRequiresAdditionalWindows(analyses) || initialConfidence < plan.EarlyConfidenceThreshold {
 			remaining := remainingSamplingWindows(windows, selectedWindows)
 			additional, additionalProcesses, additionalMulti, additionalErr := analyzeSamplingWindowsWithFallback(ctx, path, remaining)
 			if additionalErr != nil {

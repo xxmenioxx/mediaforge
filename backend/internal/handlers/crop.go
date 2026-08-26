@@ -59,7 +59,7 @@ func detectCropWithSharedPixelEvidenceContext(ctx context.Context, path string, 
 	if width <= 0 || height <= 0 {
 		return analysis
 	}
-	windows := representativeSamplingWindows(plan, 3, 3)
+	windows := representativeSamplingWindows(plan, 3, plan.cropWindowMaximum())
 	starts := make([]float64, 0, len(windows))
 	for _, window := range windows {
 		starts = append(starts, window.StartSeconds)

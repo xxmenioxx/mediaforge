@@ -163,7 +163,10 @@ func adaptiveInterlaceSamplingPlan(plan SamplingPlan, frameStructure QSVFrameStr
 	if len(plan.Positions) <= 2 {
 		return deep("canonical plan already requires two or fewer windows")
 	}
-	if frameStructure.ConfidenceScore < 0.98 {
+	if plan.InterlaceValidation == "always" {
+		return deep("analysis policy requires full interlace validation")
+	}
+	if frameStructure.ConfidenceScore < plan.EarlyConfidenceThreshold {
 		return deep("shared frame confidence is below the quick-validation threshold")
 	}
 	if frameStructure.WindowCount < 3 || len(frameStructure.Windows) < 3 {

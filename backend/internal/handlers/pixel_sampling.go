@@ -30,7 +30,7 @@ func newPixelSamplingSession(path string, width, height int, plan SamplingPlan) 
 		path: path, width: width, height: height,
 		cropWindows: map[int]SamplingWindow{}, evidence: map[int]sharedPixelEvidence{},
 	}
-	for _, window := range representativeSamplingWindows(plan, 3, 3) {
+	for _, window := range representativeSamplingWindows(plan, 3, plan.cropWindowMaximum()) {
 		session.cropWindows[samplingPositionKey(window.Position)] = window
 	}
 	return session

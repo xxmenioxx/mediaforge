@@ -52,6 +52,26 @@ func TestSettingsUpdateUpsertsExistingKey(t *testing.T) {
 	}
 }
 
+func TestSettingsRejectsInvalidAnalysisPolicy(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-analysis-policy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/analysisPolicy", strings.NewReader(`{"value":{"mode":"balanced","concurrentAssets":8}}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "between 1 and 4") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestSettingsRejectsDisablingAssignedAudioProfile(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:settings-assigned-profile?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

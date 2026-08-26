@@ -68,7 +68,8 @@ type WorkingHoursValue = {
 };
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
-type FrameStructureSamplingValue = { adaptive: boolean; windows: number; windowSeconds: number; positions: number[] };
+type AnalysisMode = 'fast' | 'balanced' | 'thorough' | 'custom';
+type AnalysisPolicyValue = { mode: AnalysisMode; adaptiveAnalysis: boolean; earlyConfidenceEnabled: boolean; earlyConfidenceThreshold: number; initialWindows: number; maximumWindows: number; windowSeconds: number; positions: number[]; interlaceValidation: 'automatic' | 'always'; cropDepth: 'reduced' | 'normal' | 'full'; reuseSnapshots: boolean; incrementalRefresh: boolean; concurrentAssets: number };
 type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number; testEncodeRetentionHours: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
@@ -309,8 +310,8 @@ export function SettingsPage() {
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
-  const [section, setSection] = useState<'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'runtime', 'assets', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations' : 'overview');
-  const changeSection = (next: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
+  const [section, setSection] = useState<'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'analysis', 'runtime', 'assets', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations' : 'overview');
+  const changeSection = (next: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -856,8 +857,8 @@ export function SettingsPage() {
               />
             ) : null}
 
-            {section === 'pipeline' ? (
-              <FrameStructureSamplingCard key={JSON.stringify(frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value))} value={frameStructureSamplingValue(settings.data?.find((item) => item.key === 'frameStructureSampling')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'frameStructureSampling', value: value as unknown as Record<string, unknown> })} />
+            {section === 'analysis' ? (
+              <AnalysisPolicyCard key={JSON.stringify(analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value))} value={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })} />
             ) : null}
 
             {section === 'pipeline' ? (
@@ -1087,9 +1088,10 @@ export function SettingsPage() {
   );
 }
 
-function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations') => void }) {
+function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations') => void }) {
   const domains = [
     { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
+    { key: 'analysis' as const, title: 'Analysis', description: 'Snapshot analysis strategy, confidence, cache reuse and workload limits.', color: 'info.dark' },
     { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
     { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
     { key: 'archive' as const, title: 'Original Archive', description: 'Archive locations, retention period and safe automatic deletion policy.', color: 'secondary.main' },
@@ -1367,15 +1369,31 @@ function directPlayValue(value: Record<string, unknown> | undefined): DirectPlay
   };
 }
 
-function frameStructureSamplingValue(value: Record<string, unknown> | undefined): FrameStructureSamplingValue {
+function analysisPolicyValue(value: Record<string, unknown> | undefined): AnalysisPolicyValue {
+  const mode: AnalysisMode = ['fast', 'balanced', 'thorough', 'custom'].includes(String(value?.mode)) ? value?.mode as AnalysisMode : 'balanced';
   const positions = Array.isArray(value?.positions) ? value.positions.map(Number).filter((item) => Number.isFinite(item) && item > 0 && item < 1) : [];
-  return { adaptive: value?.adaptive !== false, windows: Math.max(1, Math.min(9, Number(value?.windows) || 5)), windowSeconds: Math.max(5, Math.min(60, Number(value?.windowSeconds) || 20)), positions: positions.length ? positions : [0.08, 0.27, 0.5, 0.73, 0.92] };
+  return { mode, adaptiveAnalysis: booleanValue(value?.adaptiveAnalysis, true), earlyConfidenceEnabled: booleanValue(value?.earlyConfidenceEnabled, true), earlyConfidenceThreshold: Math.max(0.5, Math.min(1, numberValue(value?.earlyConfidenceThreshold, 0.98))), initialWindows: Math.max(1, Math.min(5, numberValue(value?.initialWindows, 3))), maximumWindows: Math.max(1, Math.min(5, numberValue(value?.maximumWindows, 5))), windowSeconds: Math.max(5, Math.min(60, numberValue(value?.windowSeconds, 20))), positions: positions.length ? positions : [0.08, 0.27, 0.5, 0.73, 0.92], interlaceValidation: value?.interlaceValidation === 'always' ? 'always' : 'automatic', cropDepth: value?.cropDepth === 'reduced' || value?.cropDepth === 'full' ? value.cropDepth : 'normal', reuseSnapshots: booleanValue(value?.reuseSnapshots, true), incrementalRefresh: booleanValue(value?.incrementalRefresh, true), concurrentAssets: Math.max(1, Math.min(4, numberValue(value?.concurrentAssets, 1))) };
 }
 
-function FrameStructureSamplingCard({ value, saving, onSave }: { value: FrameStructureSamplingValue; saving: boolean; onSave: (value: FrameStructureSamplingValue) => void }) {
+function AnalysisPolicyCard({ value, saving, onSave }: { value: AnalysisPolicyValue; saving: boolean; onSave: (value: AnalysisPolicyValue) => void }) {
   const [draft, setDraft] = useState(value);
-  const total = draft.windows * draft.windowSeconds;
-  return <Card><CardContent><Stack spacing={2}><Box><Typography variant="h3">Frame Structure Sampling</Typography><Typography color="text.secondary" variant="body2">Distributed I/P/B and GOP analysis policy. Windows are analyzed independently.</Typography></Box><FormControlLabel control={<Switch checked={draft.adaptive} onChange={(event) => setDraft({ ...draft, adaptive: event.target.checked })} />} label="Adaptive sampling for short assets" /><Grid container spacing={1.5}><Grid size={{ xs: 12, sm: 4 }}><TextField label="Windows" type="number" size="small" value={draft.windows} onChange={(event) => setDraft({ ...draft, windows: Math.max(1, Math.min(9, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Window length (seconds)" type="number" size="small" value={draft.windowSeconds} onChange={(event) => setDraft({ ...draft, windowSeconds: Math.max(5, Math.min(60, Number(event.target.value))) })} fullWidth /></Grid><Grid size={{ xs: 12, sm: 4 }}><TextField label="Total sampled" value={`${total} seconds maximum`} size="small" disabled fullWidth /></Grid><Grid size={{ xs: 12 }}><TextField label="Positions (%)" size="small" value={draft.positions.map((position) => Math.round(position * 100)).join(', ')} onChange={(event) => setDraft({ ...draft, positions: event.target.value.split(',').map((item) => Number(item.trim()) / 100).filter((item) => Number.isFinite(item) && item > 0 && item < 1) })} helperText="Window centers, for example: 8, 27, 50, 73, 92" fullWidth /></Grid></Grid><Box><Button variant="contained" startIcon={<SaveIcon />} disabled={saving || draft.positions.length < draft.windows} onClick={() => onSave(draft)}>Save sampling policy</Button></Box></Stack></CardContent></Card>;
+  const custom = draft.mode === 'custom';
+  const summaries: Record<Exclude<AnalysisMode, 'custom'>, string> = { fast: 'Up to 3 windows, 95% early confidence, conditional IDET and reduced crop sampling.', balanced: 'Up to 5 windows, 98% early confidence, automatic IDET and normal crop sampling.', thorough: 'All 5 windows, no early stop, IDET always and full crop sampling.' };
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">Snapshot analysis policy</Typography><Typography color="text.secondary" variant="body2">Choose intent first. Low-level sampling controls are available only in Custom mode.</Typography></Stack>
+    <TextField select label="Analysis mode" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as AnalysisMode })} fullWidth><MenuItem value="fast">Fast</MenuItem><MenuItem value="balanced">Balanced (default)</MenuItem><MenuItem value="thorough">Thorough</MenuItem><MenuItem value="custom">Custom</MenuItem></TextField>
+    {!custom ? <Alert severity="info">{summaries[draft.mode as Exclude<AnalysisMode, 'custom'>]}</Alert> : null}
+    {custom ? <><Grid container spacing={1.5}>
+      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Initial windows" value={draft.initialWindows} inputProps={{ min: 1, max: 5 }} onChange={(event) => setDraft({ ...draft, initialWindows: Math.max(1, Math.min(5, Number(event.target.value))) })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Maximum windows" value={draft.maximumWindows} inputProps={{ min: draft.initialWindows, max: 5 }} onChange={(event) => setDraft({ ...draft, maximumWindows: Math.max(draft.initialWindows, Math.min(5, Number(event.target.value))) })} fullWidth /></Grid>
+      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Window length (seconds)" value={draft.windowSeconds} inputProps={{ min: 5, max: 60 }} onChange={(event) => setDraft({ ...draft, windowSeconds: Math.max(5, Math.min(60, Number(event.target.value))) })} fullWidth /></Grid>
+      <Grid size={{ xs: 12 }}><TextField label="Window centers (%)" value={draft.positions.map((position) => Math.round(position * 100)).join(', ')} onChange={(event) => setDraft({ ...draft, positions: event.target.value.split(',').map((item) => Number(item.trim()) / 100).filter((item) => Number.isFinite(item) && item > 0 && item < 1) })} helperText="At least one position per maximum window; for example 8, 27, 50, 73, 92." fullWidth /></Grid>
+      <Grid size={{ xs: 12, sm: 6 }}><TextField select label="Interlace validation" value={draft.interlaceValidation} onChange={(event) => setDraft({ ...draft, interlaceValidation: event.target.value as AnalysisPolicyValue['interlaceValidation'] })} fullWidth><MenuItem value="automatic">Automatic</MenuItem><MenuItem value="always">Always deep</MenuItem></TextField></Grid>
+      <Grid size={{ xs: 12, sm: 6 }}><TextField select label="Crop sampling" value={draft.cropDepth} onChange={(event) => setDraft({ ...draft, cropDepth: event.target.value as AnalysisPolicyValue['cropDepth'] })} fullWidth><MenuItem value="reduced">Reduced</MenuItem><MenuItem value="normal">Normal</MenuItem><MenuItem value="full">Full</MenuItem></TextField></Grid>
+    </Grid><FormControlLabel control={<Switch checked={draft.adaptiveAnalysis} onChange={(event) => setDraft({ ...draft, adaptiveAnalysis: event.target.checked })} />} label="Adapt window length for asset duration" /><FormControlLabel control={<Switch checked={draft.earlyConfidenceEnabled} onChange={(event) => setDraft({ ...draft, earlyConfidenceEnabled: event.target.checked })} />} label="Stop early when evidence is stable" />{draft.earlyConfidenceEnabled ? <TextField type="number" label="Early confidence threshold" value={draft.earlyConfidenceThreshold} inputProps={{ min: 0.5, max: 1, step: 0.01 }} onChange={(event) => setDraft({ ...draft, earlyConfidenceThreshold: Math.max(0.5, Math.min(1, Number(event.target.value))) })} /> : null}</> : null}
+    <Divider /><Typography variant="h4">Cache and workload</Typography><FormControlLabel control={<Switch checked={draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, reuseSnapshots: event.target.checked })} />} label="Reuse valid snapshots" /><FormControlLabel control={<Switch checked={draft.incrementalRefresh} disabled={!draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, incrementalRefresh: event.target.checked })} />} label="Refresh only stale analysis components" /><TextField type="number" label="Concurrent assets" value={draft.concurrentAssets} inputProps={{ min: 1, max: 4 }} onChange={(event) => setDraft({ ...draft, concurrentAssets: Math.max(1, Math.min(4, Number(event.target.value))) })} helperText="Applies to snapshot operations started from the API. Default: 1." />
+    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (custom && (draft.maximumWindows < draft.initialWindows || draft.positions.length < draft.maximumWindows))} onClick={() => onSave(draft)}>Save analysis policy</Button>
+  </Stack></CardContent></Card>;
 }
 
 function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {
