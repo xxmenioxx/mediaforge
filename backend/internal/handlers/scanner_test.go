@@ -378,12 +378,190 @@ func TestScanResolvedFileIncrementallyRefreshesCadenceWithoutReplacingOtherEvide
 	}
 }
 
-func TestFrameRefreshOnlyRejectsUnrelatedStaleComponents(t *testing.T) {
-	if !frameRefreshOnly([]string{"cadence", "frameStructure"}) {
-		t.Fatal("Frame Structure and Cadence should use the incremental refresh path")
+func TestIncrementalRefreshSupportsIndependentAnalysisComponents(t *testing.T) {
+	if !incrementalRefreshSupported([]string{"cadence", "crop", "frameStructure", "interlace"}) {
+		t.Fatal("analysis components should use the incremental refresh path")
 	}
-	if frameRefreshOnly([]string{"crop", "frameStructure"}) {
-		t.Fatal("stale Crop evidence must require a broader refresh")
+	if incrementalRefreshSupported([]string{"metadata", "frameStructure"}) {
+		t.Fatal("stale metadata must require a complete rebuild")
+	}
+}
+
+func TestScanResolvedFileIncrementallyRefreshesInterlaceAndCropWithSharedDecode(t *testing.T) {
+	binDir := t.TempDir()
+	counterPath := filepath.Join(binDir, "calls")
+	ffmpegPath := filepath.Join(binDir, "ffmpeg")
+	script := `#!/bin/sh
+printf x >> "$PIXEL_COUNTER"
+printf '%s\n' \
+  'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' \
+  'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' \
+  'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIXEL_COUNTER", counterPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:incremental-pixel-refresh?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("pixel fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	frame := models.JSONMap{"version": 2, "source": "preserve-frame", "framesAnalyzed": 100, "positions": []any{0.5}}
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 100, VideoCodec: "h264", Width: 720, Height: 480,
+		VideoStreams:      models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		InterlaceAnalysis: models.JSONMap{"version": interlaceAnalysisVersion, "status": "unknown"},
+		CropAnalysis:      models.JSONMap{"version": 3, "status": "unknown"}, FrameStructureAnalysis: frame,
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"duration": "100"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}},
+			"interlaceAnalysis": models.JSONMap{"version": interlaceAnalysisVersion, "status": "unknown"},
+			"cropAnalysis":      models.JSONMap{"version": 3, "status": "unknown"}, "frameStructureAnalysis": frame,
+		},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["interlace"] = 0
+	components["crop"] = 0
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
+	if err != nil || cached {
+		t.Fatalf("incremental pixel refresh failed: cached=%t err=%v", cached, err)
+	}
+	calls, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "x" {
+		t.Fatalf("Interlace and Crop did not share one decode: calls=%q", calls)
+	}
+	if stringFromUnknown(result.FrameStructureAnalysis["source"]) != "preserve-frame" {
+		t.Fatalf("Frame Structure was unexpectedly replaced: %#v", result.FrameStructureAnalysis)
+	}
+	if stringFromUnknown(result.InterlaceAnalysis["status"]) != "progressive" || stringFromUnknown(result.CropAnalysis["recommendedCrop"]) != "700:400:10:40" {
+		t.Fatalf("pixel evidence was not refreshed: interlace=%#v crop=%#v", result.InterlaceAnalysis, result.CropAnalysis)
+	}
+	reused, refreshed, statuses := snapshotRefreshDetails(result, false)
+	if !slices.Contains(reused, "metadata") || !slices.Contains(reused, "frameStructure") || !slices.Contains(refreshed, "interlace") || !slices.Contains(refreshed, "crop") || statuses["interlace"] != "valid" {
+		t.Fatalf("unexpected refresh details: reused=%v refreshed=%v statuses=%v", reused, refreshed, statuses)
+	}
+}
+
+func TestScanResolvedFileFingerprintAndForceBypassCacheEndToEnd(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(string, os.FileInfo) error
+		force  bool
+	}{
+		{name: "size", mutate: func(path string, _ os.FileInfo) error { return os.WriteFile(path, []byte("different size"), 0o644) }},
+		{name: "mtime", mutate: func(path string, info os.FileInfo) error {
+			changed := info.ModTime().Add(2 * time.Second)
+			return os.Chtimes(path, changed, changed)
+		}},
+		{name: "force", force: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open("file:"+test.name+"-cache-bypass?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+				t.Fatal(err)
+			}
+			mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+			if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Stat(mediaPath)
+			snapshot := models.ScanResult{
+				Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), VideoCodec: "h264",
+				VideoStreams:           models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+				FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 10}, RawProbe: models.JSONMap{},
+			}
+			stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+			if err := db.Create(&snapshot).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.mutate != nil {
+				if err := test.mutate(mediaPath, info); err != nil {
+					t.Fatal(err)
+				}
+				info, _ = os.Stat(mediaPath)
+			}
+			var phases []string
+			_, cached, scanErr := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{Force: test.force}, func(phase string, _ float64, _ string) {
+				phases = append(phases, phase)
+			})
+			if cached || scanErr == nil || !slices.Contains(phases, "metadata") {
+				t.Fatalf("cache was not bypassed: cached=%t err=%v phases=%v", cached, scanErr, phases)
+			}
+		})
+	}
+}
+
+func TestFailedIncrementalFrameAnalyzerPersistsReusablePartialSnapshot(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	if err := os.WriteFile(ffprobePath, []byte("#!/bin/sh\nexit 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:partial-frame-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	interlace := models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive"}
+	frame := models.JSONMap{"version": 2, "source": "old", "framesAnalyzed": 10}
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 100, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, FrameStructureAnalysis: frame,
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"duration": "100"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 1920, "height": 1080}},
+			"interlaceAnalysis": interlace, "frameStructureAnalysis": frame,
+		},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["frameStructure"] = 1
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	partial, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
+	if err != nil || cached || stringFromUnknown(partial.FrameStructureAnalysis["status"]) != "unverified" {
+		t.Fatalf("partial snapshot was not persisted: cached=%t err=%v frame=%#v", cached, err, partial.FrameStructureAnalysis)
+	}
+	_, _, statuses := snapshotRefreshDetails(partial, false)
+	if statuses["frameStructure"] != "unverified" || len(partial.VideoStreams) == 0 || partial.InterlaceAnalysis["status"] != "progressive" {
+		t.Fatalf("partial evidence/status was lost: statuses=%v snapshot=%#v", statuses, partial)
+	}
+	reused, cacheHit, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
+	if err != nil || !cacheHit || stringFromUnknown(reused.FrameStructureAnalysis["status"]) != "unverified" {
+		t.Fatalf("partial snapshot caused an automatic rebuild: cacheHit=%t err=%v frame=%#v", cacheHit, err, reused.FrameStructureAnalysis)
 	}
 }
 
@@ -599,7 +777,7 @@ func TestSnapshotRequiresFrameStructureRefreshForLegacyVideo(t *testing.T) {
 		Height:     1080,
 		VideoStreams: models.JSONList{
 			map[string]any{
-				"codec": "h264",
+				"codec": "h264", "avgFrameRate": "25/1",
 			},
 		},
 		FrameStructureAnalysis: models.JSONMap{},
@@ -657,18 +835,18 @@ func TestSnapshotRequiresFrameStructureRefreshWhenAnalysisIsUnverified(t *testin
 		Height:     1080,
 		VideoStreams: models.JSONList{
 			map[string]any{
-				"codec": "h264",
+				"codec": "h264", "avgFrameRate": "25/1",
 			},
 		},
 		FrameStructureAnalysis: models.JSONMap{
-			"version": 1,
+			"version": 2,
 			"status":  "unverified",
 			"error":   "frame structure analysis failed",
 		},
 	}
 
-	if !snapshotRequiresFrameStructureRefresh(snapshot) {
-		t.Fatal("video snapshot with unverified frame structure analysis must be refreshed")
+	if snapshotRequiresFrameStructureRefresh(snapshot) {
+		t.Fatal("versioned unverified frame evidence must remain a useful partial snapshot")
 	}
 }
 

@@ -1144,6 +1144,9 @@ export type SnapshotOperation = {
   durationMs: number;
   cacheHit: boolean;
   incrementalRefresh: boolean;
+  reusedComponents?: string[];
+  refreshedComponents?: string[];
+  componentStatuses?: Record<string, string>;
   result?: ScanResult;
   error?: string;
   createdAt: string;

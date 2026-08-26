@@ -35,6 +35,7 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
   const interlace = scan.interlaceAnalysis;
   const cadence = scan.cadenceAnalysis;
   const cadenceRecommendation = scan.cadenceRecommendation;
+  const snapshotCache = snapshotCacheDetails(scan.rawProbe);
 
   return (
     <Stack spacing={1.5}>
@@ -102,6 +103,17 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Chapters', String(scan.chapters)],
         ]} />
       </Grid>
+      {snapshotCache ? (
+        <Grid size={{ xs: 12 }}>
+          <TechnicalFactGroup title="Analysis cache" facts={[
+            ['Fingerprint', `${snapshotCache.sizeBytes ?? 'unknown'} bytes · mtime ${snapshotCache.mtimeNs || 'unknown'}`],
+            ['Last operation', snapshotCache.mode || 'Unknown'],
+            ['Refreshed components', snapshotCache.refreshed.length ? snapshotCache.refreshed.join(', ') : 'None'],
+            ['Reused components', snapshotCache.reused.length ? snapshotCache.reused.join(', ') : 'None'],
+            ['Component status', snapshotCache.statuses.length ? snapshotCache.statuses.join(' · ') : 'Legacy snapshot'],
+          ]} />
+        </Grid>
+      ) : null}
       </Grid>
       {frames?.windows?.length ? (
         <Card variant="outlined">
@@ -139,6 +151,45 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
       ) : null}
     </Stack>
   );
+}
+
+type SnapshotCacheDetails = {
+  sizeBytes?: number;
+  mtimeNs?: string;
+  mode?: string;
+  reused: string[];
+  refreshed: string[];
+  statuses: string[];
+};
+
+function snapshotCacheDetails(rawProbe: Record<string, unknown>): SnapshotCacheDetails | null {
+  const cache = asRecord(rawProbe?.snapshotCache);
+  if (!cache) return null;
+  const fingerprint = asRecord(cache.fingerprint);
+  const refresh = asRecord(cache.lastRefresh);
+  const components = asRecord(cache.components);
+  const statuses = components
+    ? Object.entries(components).map(([name, value]) => {
+        const component = asRecord(value);
+        return `${name}: ${component?.status || 'legacy'}${component?.version !== undefined ? ` (v${component.version})` : ''}`;
+      })
+    : [];
+  return {
+    sizeBytes: typeof fingerprint?.sizeBytes === 'number' ? fingerprint.sizeBytes : undefined,
+    mtimeNs: typeof fingerprint?.mtimeNs === 'string' ? fingerprint.mtimeNs : undefined,
+    mode: typeof refresh?.mode === 'string' ? refresh.mode : undefined,
+    reused: stringArray(refresh?.reused),
+    refreshed: stringArray(refresh?.refreshed),
+    statuses,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function TechnicalFactGroup({ title, facts }: { title: string; facts: string[][] }) {

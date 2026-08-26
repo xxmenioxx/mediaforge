@@ -309,6 +309,12 @@ export function AnalysisPage() {
                     : activeSnapshotOperation.incrementalRefresh
                       ? 'Stale analysis components refreshed'
                       : 'Analysis completed'} in {formatOperationDuration(activeSnapshotOperation.durationMs)}.
+                  {activeSnapshotOperation.refreshedComponents?.length
+                    ? ` Refreshed: ${activeSnapshotOperation.refreshedComponents.join(', ')}.`
+                    : ''}
+                  {activeSnapshotOperation.reusedComponents?.length
+                    ? ` Reused: ${activeSnapshotOperation.reusedComponents.join(', ')}.`
+                    : ''}
                 </Alert>
               ) : null}
               {backfillAsIsReports.data?.imported ? (

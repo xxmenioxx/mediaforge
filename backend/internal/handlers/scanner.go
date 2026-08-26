@@ -33,21 +33,24 @@ type ScanRequest struct {
 }
 
 type SnapshotOperation struct {
-	ID                 string             `json:"id"`
-	AssetPath          string             `json:"assetPath"`
-	Status             string             `json:"status"`
-	Phase              string             `json:"phase"`
-	Progress           float64            `json:"progress"`
-	Message            string             `json:"message"`
-	StageTimingsMs     map[string]int64   `json:"stageTimingsMs,omitempty"`
-	DurationMs         int64              `json:"durationMs"`
-	CacheHit           bool               `json:"cacheHit"`
-	IncrementalRefresh bool               `json:"incrementalRefresh"`
-	Result             *models.ScanResult `json:"result,omitempty"`
-	Error              string             `json:"error,omitempty"`
-	CreatedAt          time.Time          `json:"createdAt"`
-	UpdatedAt          time.Time          `json:"updatedAt"`
-	phaseStartedAt     time.Time
+	ID                  string             `json:"id"`
+	AssetPath           string             `json:"assetPath"`
+	Status              string             `json:"status"`
+	Phase               string             `json:"phase"`
+	Progress            float64            `json:"progress"`
+	Message             string             `json:"message"`
+	StageTimingsMs      map[string]int64   `json:"stageTimingsMs,omitempty"`
+	DurationMs          int64              `json:"durationMs"`
+	CacheHit            bool               `json:"cacheHit"`
+	IncrementalRefresh  bool               `json:"incrementalRefresh"`
+	ReusedComponents    []string           `json:"reusedComponents,omitempty"`
+	RefreshedComponents []string           `json:"refreshedComponents,omitempty"`
+	ComponentStatuses   map[string]string  `json:"componentStatuses,omitempty"`
+	Result              *models.ScanResult `json:"result,omitempty"`
+	Error               string             `json:"error,omitempty"`
+	CreatedAt           time.Time          `json:"createdAt"`
+	UpdatedAt           time.Time          `json:"updatedAt"`
+	phaseStartedAt      time.Time
 }
 
 var snapshotOperations = struct {
@@ -73,6 +76,14 @@ func snapshotOperationCopy(operation *SnapshotOperation) SnapshotOperation {
 		copy.StageTimingsMs = make(map[string]int64, len(operation.StageTimingsMs))
 		for phase, duration := range operation.StageTimingsMs {
 			copy.StageTimingsMs[phase] = duration
+		}
+	}
+	copy.ReusedComponents = append([]string(nil), operation.ReusedComponents...)
+	copy.RefreshedComponents = append([]string(nil), operation.RefreshedComponents...)
+	if operation.ComponentStatuses != nil {
+		copy.ComponentStatuses = make(map[string]string, len(operation.ComponentStatuses))
+		for component, status := range operation.ComponentStatuses {
+			copy.ComponentStatuses[component] = status
 		}
 	}
 	return copy
@@ -232,11 +243,6 @@ func snapshotRequiresFrameStructureRefresh(snapshot models.ScanResult) bool {
 		return true
 	}
 
-	status := strings.ToLower(strings.TrimSpace(stringFromUnknown(analysis["status"])))
-	if status == "unverified" {
-		return true
-	}
-
 	if scanFrameRate(snapshot) <= 0 {
 		return true
 	}
@@ -254,6 +260,8 @@ var snapshotAnalysisVersions = models.JSONMap{
 	"cadence":        cadenceAnalysisVersion,
 }
 
+var snapshotComponentNames = []string{"metadata", "interlace", "crop", "frameStructure", "cadence"}
+
 func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 	fingerprint := models.JSONMap{"path": filepath.Clean(path)}
 	if info != nil {
@@ -264,6 +272,10 @@ func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 }
 
 func stampSnapshotCacheMetadata(result *models.ScanResult, path string, info os.FileInfo) {
+	stampSnapshotCacheMetadataWithRefresh(result, path, info, "full", nil, snapshotComponentNames)
+}
+
+func stampSnapshotCacheMetadataWithRefresh(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string) {
 	if result == nil {
 		return
 	}
@@ -272,13 +284,46 @@ func stampSnapshotCacheMetadata(result *models.ScanResult, path string, info os.
 	}
 	components := models.JSONMap{}
 	for component, version := range snapshotAnalysisVersions {
-		components[component] = version
+		components[component] = models.JSONMap{
+			"version": version,
+			"status":  snapshotComponentStatus(*result, component),
+		}
 	}
 	result.RawProbe["snapshotCache"] = models.JSONMap{
 		"schemaVersion": snapshotCacheSchemaVersion,
 		"fingerprint":   snapshotFingerprint(path, info),
 		"components":    components,
+		"lastRefresh": models.JSONMap{
+			"mode": mode, "reused": append([]string(nil), reused...), "refreshed": append([]string(nil), refreshed...),
+		},
 	}
+}
+
+func snapshotComponentStatus(result models.ScanResult, component string) string {
+	var analysis models.JSONMap
+	switch component {
+	case "metadata":
+		if len(result.VideoStreams)+len(result.AudioStreams)+len(result.SubtitleStreams) > 0 || result.Duration > 0 || result.Container != "" {
+			return "valid"
+		}
+		return "missing"
+	case "interlace":
+		analysis = result.InterlaceAnalysis
+	case "crop":
+		analysis = result.CropAnalysis
+	case "frameStructure":
+		analysis = result.FrameStructureAnalysis
+	case "cadence":
+		analysis = result.CadenceAnalysis
+	}
+	if len(analysis) == 0 {
+		return "missing"
+	}
+	status := strings.ToLower(strings.TrimSpace(stringFromUnknown(analysis["status"])))
+	if status == "unverified" || status == "timeout" || analysis["error"] != nil {
+		return "unverified"
+	}
+	return "valid"
 }
 
 func snapshotCacheMap(value any) (map[string]any, bool) {
@@ -318,7 +363,11 @@ func snapshotCacheState(snapshot models.ScanResult, path string, info os.FileInf
 		return true, false, []string{"component_manifest"}
 	}
 	for component, version := range snapshotAnalysisVersions {
-		if workerIntValue(components[component], 0) != workerIntValue(version, 0) {
+		storedVersion := workerIntValue(components[component], 0)
+		if entry, entryOK := snapshotCacheMap(components[component]); entryOK {
+			storedVersion = workerIntValue(entry["version"], 0)
+		}
+		if storedVersion != workerIntValue(version, 0) {
 			staleComponents = append(staleComponents, component)
 		}
 	}
@@ -326,12 +375,35 @@ func snapshotCacheState(snapshot models.ScanResult, path string, info os.FileInf
 	return true, false, staleComponents
 }
 
-func frameRefreshOnly(staleComponents []string) bool {
+func snapshotRefreshDetails(snapshot models.ScanResult, cacheHit bool) (reused, refreshed []string, statuses map[string]string) {
+	statuses = map[string]string{}
+	cache, ok := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	if !ok {
+		return nil, nil, statuses
+	}
+	if components, componentsOK := snapshotCacheMap(cache["components"]); componentsOK {
+		for _, component := range snapshotComponentNames {
+			if entry, entryOK := snapshotCacheMap(components[component]); entryOK {
+				statuses[component] = stringFromUnknown(entry["status"])
+			}
+		}
+	}
+	if cacheHit {
+		return append([]string(nil), snapshotComponentNames...), nil, statuses
+	}
+	if lastRefresh, refreshOK := snapshotCacheMap(cache["lastRefresh"]); refreshOK {
+		_ = decodeJSONValue(lastRefresh["reused"], &reused)
+		_ = decodeJSONValue(lastRefresh["refreshed"], &refreshed)
+	}
+	return reused, refreshed, statuses
+}
+
+func incrementalRefreshSupported(staleComponents []string) bool {
 	if len(staleComponents) == 0 {
 		return false
 	}
 	for _, component := range staleComponents {
-		if component != "frameStructure" && component != "cadence" {
+		if component == "metadata" || component == "component_manifest" {
 			return false
 		}
 	}
@@ -351,15 +423,15 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 			fingerprintMatches, legacyCache, staleComponents := snapshotCacheState(existing, path, info)
 			cacheMatches := fingerprintMatches && len(staleComponents) == 0
 			if snapshotRequiresFrameStructureRefresh(existing) || !cacheMatches {
-				if fingerprintMatches && !snapshotRequiresFrameStructureRefresh(existing) && frameRefreshOnly(staleComponents) {
-					report("incremental_refresh", 10, "Refreshing stale Frame Structure evidence while reusing the remaining snapshot")
-					refreshed, refreshErr := h.refreshFrameStructureSnapshotContext(ctx, existing, path, info, staleComponents, report)
+				if fingerprintMatches && incrementalRefreshSupported(staleComponents) {
+					report("incremental_refresh", 10, "Refreshing stale analysis components while reusing valid evidence")
+					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, existing, path, info, normalizedAnalysisSeconds(request.AnalysisSeconds), staleComponents, report)
 					return refreshed, false, refreshErr
 				}
 				report("snapshot_refresh", 10, "Existing snapshot is incomplete or stale; rebuilding asset analysis")
 			} else {
 				if legacyCache {
-					stampSnapshotCacheMetadata(&existing, path, info)
+					stampSnapshotCacheMetadataWithRefresh(&existing, path, info, "legacy_seed", snapshotComponentNames, nil)
 					_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
 				}
 				if ensureFrameStructureRecommendation(&existing) {
@@ -396,22 +468,22 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	return result, false, nil
 }
 
-func (h ScannerHandler) refreshFrameStructureSnapshotContext(ctx context.Context, existing models.ScanResult, path string, info os.FileInfo, staleComponents []string, report func(string, float64, string)) (models.ScanResult, error) {
+func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, existing models.ScanResult, path string, info os.FileInfo, analysisSeconds int, staleComponents []string, report func(string, float64, string)) (models.ScanResult, error) {
 	var probe FFProbeResult
 	encodedRaw, err := json.Marshal(existing.RawProbe)
 	if err != nil || json.Unmarshal(encodedRaw, &probe) != nil {
 		return models.ScanResult{}, fmt.Errorf("cached metadata cannot be decoded for incremental refresh")
 	}
 	video := firstStream(probe.Streams, "video")
+	duration := existing.Duration
+	if duration <= 0 {
+		duration = parseFloat(probe.Format.Duration)
+	}
+	plan := canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
 	var frameAnalysis QSVFrameStructureAnalysis
 	frameStale := slices.Contains(staleComponents, "frameStructure")
 	if frameStale {
 		report("frame_structure", 35, "Refreshing Frame Structure evidence")
-		duration := existing.Duration
-		if duration <= 0 {
-			duration = parseFloat(probe.Format.Duration)
-		}
-		plan := canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
 		frameContext, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		frameAnalysis, err = analyzeVideoFrameStructureWithSamplingPlan(frameContext, path, plan)
 		cancel()
@@ -424,34 +496,84 @@ func (h ScannerHandler) refreshFrameStructureSnapshotContext(ctx context.Context
 			existing.RawProbe["frameStructureAnalysis"] = structToJSONMap(frameAnalysis)
 		}
 	} else if !decodeJSONValue(existing.FrameStructureAnalysis, &frameAnalysis) {
-		return models.ScanResult{}, fmt.Errorf("cached Frame Structure evidence cannot be decoded for cadence refresh")
+		frameAnalysis = QSVFrameStructureAnalysis{Version: 2, Source: "cached_unverified"}
 	}
 
 	var interlace InterlaceAnalysis
-	if !decodeJSONValue(existing.InterlaceAnalysis, &interlace) {
-		return models.ScanResult{}, fmt.Errorf("cached Interlace evidence cannot be decoded for cadence refresh")
+	_ = decodeJSONValue(existing.InterlaceAnalysis, &interlace)
+	interlaceStale := slices.Contains(staleComponents, "interlace")
+	cropStale := slices.Contains(staleComponents, "crop")
+	if interlaceStale || cropStale {
+		pixelPlan := plan
+		if len(frameAnalysis.Positions) > 0 {
+			pixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
+			pixelPlan.Adaptive = false
+			pixelPlan.InitialWindows = len(pixelPlan.Positions)
+		}
+		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, pixelPlan)
+		if interlaceStale {
+			report("interlace", 60, "Refreshing Interlace from shared frame and pixel evidence")
+			interlace = detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, pixelPlan, frameAnalysis, pixelSession)
+			interlace.Codec = video.CodecName
+			interlace.AverageFrameRate = video.AverageFrameRate
+			interlace.RealFrameRate = video.RealBaseFrameRate
+			existing.RawProbe["interlaceAnalysis"] = interlace
+			existing.InterlaceAnalysis = structToJSONMap(interlace)
+		}
+		if ctx.Err() != nil {
+			return models.ScanResult{}, ctx.Err()
+		}
+		if cropStale {
+			report("crop", 75, "Refreshing Crop from shared pixel evidence")
+			crop := detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, pixelPlan, pixelSession)
+			existing.RawProbe["cropAnalysis"] = crop
+			existing.CropAnalysis = structToJSONMap(crop)
+		}
+		if ctx.Err() != nil {
+			return models.ScanResult{}, ctx.Err()
+		}
 	}
-	report("cadence", 80, "Recomputing Cadence from refreshed frame evidence")
-	declaredRate := firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate)
-	var cadence CadenceAnalysis
-	if frameStale && err != nil {
-		cadence = analyzeCadence(video.CodecName, declaredRate, interlace)
-	} else {
-		cadence = analyzeCadence(video.CodecName, declaredRate, interlace, frameAnalysis)
+
+	refreshCadence := slices.Contains(staleComponents, "cadence") || frameStale || interlaceStale
+	if refreshCadence {
+		report("cadence", 85, "Recomputing Cadence from current shared evidence")
+		declaredRate := firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate)
+		var cadence CadenceAnalysis
+		if frameStale && err != nil {
+			cadence = analyzeCadence(video.CodecName, declaredRate, interlace)
+		} else {
+			cadence = analyzeCadence(video.CodecName, declaredRate, interlace, frameAnalysis)
+		}
+		existing.RawProbe["cadenceAnalysis"] = cadence
+		existing.RawProbe["cadenceRecommendation"] = recommendCadence(cadence)
+		existing.CadenceAnalysis = structToJSONMap(cadence)
+		existing.CadenceRecommendation = structToJSONMap(recommendCadence(cadence))
 	}
-	existing.RawProbe["cadenceAnalysis"] = cadence
-	existing.RawProbe["cadenceRecommendation"] = recommendCadence(cadence)
 	existing.FrameStructureAnalysis = analysisMapFromRaw(existing.RawProbe, "frameStructureAnalysis")
-	existing.CadenceAnalysis = analysisMapFromRaw(existing.RawProbe, "cadenceAnalysis")
-	existing.CadenceRecommendation = analysisMapFromRaw(existing.RawProbe, "cadenceRecommendation")
 	existing.FrameStructureRecommendation = frameStructureRecommendationMap(existing)
 	existing.HEVCLevelRecommendation = hevcLevelRecommendationMap(existing)
-	stampSnapshotCacheMetadata(&existing, path, info)
+	refreshed := append([]string(nil), staleComponents...)
+	if refreshCadence && !slices.Contains(refreshed, "cadence") {
+		refreshed = append(refreshed, "cadence")
+	}
+	sort.Strings(refreshed)
+	reused := componentDifference(snapshotComponentNames, refreshed)
+	stampSnapshotCacheMetadataWithRefresh(&existing, path, info, "incremental", reused, refreshed)
 	if err := persistFinalAssetSnapshot(h.db, &existing); err != nil {
 		return models.ScanResult{}, err
 	}
-	report("completed", 100, "Incremental Frame Structure refresh completed")
+	report("completed", 100, "Incremental snapshot refresh completed")
 	return existing, nil
+}
+
+func componentDifference(all, excluded []string) []string {
+	result := make([]string, 0, len(all))
+	for _, component := range all {
+		if !slices.Contains(excluded, component) {
+			result = append(result, component)
+		}
+	}
+	return result
 }
 
 func decodeJSONValue(value any, target any) bool {
@@ -490,7 +612,7 @@ func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo
 	if source.RawProbe == nil {
 		source.RawProbe = models.JSONMap{}
 	}
-	stampSnapshotCacheMetadata(&source, archivePath, info)
+	stampSnapshotCacheMetadataWithRefresh(&source, archivePath, info, "inherited", snapshotComponentNames, nil)
 	ensureFrameStructureRecommendation(&source)
 	ensureHEVCLevelRecommendation(&source)
 	source.RawProbe["snapshotProvenance"] = models.JSONMap{
@@ -607,6 +729,7 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 			}
 			finishSnapshotOperationTiming(item, time.Now())
 			item.CacheHit = outcome.cached
+			item.ReusedComponents, item.RefreshedComponents, item.ComponentStatuses = snapshotRefreshDetails(outcome.result, outcome.cached)
 			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &outcome.result
 		})
 		h.logSnapshotOperation(id, "snapshot_analysis_completed", nil)
@@ -651,14 +774,20 @@ func (h ScannerHandler) logSnapshotOperation(id, event string, operationErr erro
 		return
 	}
 	timings, _ := json.Marshal(operation.StageTimingsMs)
+	reused, _ := json.Marshal(operation.ReusedComponents)
+	refreshed, _ := json.Marshal(operation.RefreshedComponents)
+	statuses, _ := json.Marshal(operation.ComponentStatuses)
 	fields := map[string]string{
-		"operationId":        id,
-		"asset":              operation.AssetPath,
-		"phase":              operation.Phase,
-		"durationMs":         strconv.FormatInt(operation.DurationMs, 10),
-		"cacheHit":           strconv.FormatBool(operation.CacheHit),
-		"incrementalRefresh": strconv.FormatBool(operation.IncrementalRefresh),
-		"stageTimings":       string(timings),
+		"operationId":         id,
+		"asset":               operation.AssetPath,
+		"phase":               operation.Phase,
+		"durationMs":          strconv.FormatInt(operation.DurationMs, 10),
+		"cacheHit":            strconv.FormatBool(operation.CacheHit),
+		"incrementalRefresh":  strconv.FormatBool(operation.IncrementalRefresh),
+		"stageTimings":        string(timings),
+		"reusedComponents":    string(reused),
+		"refreshedComponents": string(refreshed),
+		"componentStatuses":   string(statuses),
 	}
 	snapshotOperations.RUnlock()
 	appendSystemLog(h.db, event, fields, operationErr)
