@@ -46,6 +46,7 @@ type SnapshotOperation struct {
 	ReusedComponents    []string           `json:"reusedComponents,omitempty"`
 	RefreshedComponents []string           `json:"refreshedComponents,omitempty"`
 	ComponentStatuses   map[string]string  `json:"componentStatuses,omitempty"`
+	FallbackReason      string             `json:"fallbackReason,omitempty"`
 	Result              *models.ScanResult `json:"result,omitempty"`
 	Error               string             `json:"error,omitempty"`
 	CreatedAt           time.Time          `json:"createdAt"`
@@ -61,6 +62,11 @@ var snapshotOperations = struct {
 
 const snapshotOperationTimeout = 15 * time.Minute
 
+const (
+	snapshotOperationRetention  = 24 * time.Hour
+	snapshotOperationMaxHistory = 500
+)
+
 func updateSnapshotOperation(id string, update func(*SnapshotOperation)) {
 	snapshotOperations.Lock()
 	defer snapshotOperations.Unlock()
@@ -68,6 +74,17 @@ func updateSnapshotOperation(id string, update func(*SnapshotOperation)) {
 		update(operation)
 		operation.UpdatedAt = time.Now()
 	}
+}
+
+func finishRunningSnapshotOperation(id string, update func(*SnapshotOperation)) bool {
+	snapshotOperations.Lock()
+	defer snapshotOperations.Unlock()
+	operation := snapshotOperations.items[id]
+	if operation == nil || operation.Status != "running" {
+		return false
+	}
+	update(operation)
+	return true
 }
 
 func snapshotOperationCopy(operation *SnapshotOperation) SnapshotOperation {
@@ -276,6 +293,10 @@ func stampSnapshotCacheMetadata(result *models.ScanResult, path string, info os.
 }
 
 func stampSnapshotCacheMetadataWithRefresh(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string) {
+	stampSnapshotCacheMetadataWithRefreshReason(result, path, info, mode, reused, refreshed, "")
+}
+
+func stampSnapshotCacheMetadataWithRefreshReason(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string, fallbackReason string) {
 	if result == nil {
 		return
 	}
@@ -289,14 +310,59 @@ func stampSnapshotCacheMetadataWithRefresh(result *models.ScanResult, path strin
 			"status":  snapshotComponentStatus(*result, component),
 		}
 	}
+	lastRefresh := models.JSONMap{
+		"mode": mode, "reused": append([]string(nil), reused...), "refreshed": append([]string(nil), refreshed...),
+	}
+	if fallbackReason != "" {
+		lastRefresh["fallbackReason"] = fallbackReason
+	}
 	result.RawProbe["snapshotCache"] = models.JSONMap{
 		"schemaVersion": snapshotCacheSchemaVersion,
 		"fingerprint":   snapshotFingerprint(path, info),
 		"components":    components,
-		"lastRefresh": models.JSONMap{
-			"mode": mode, "reused": append([]string(nil), reused...), "refreshed": append([]string(nil), refreshed...),
-		},
+		"lastRefresh":   lastRefresh,
 	}
+}
+
+func migrateLegacySnapshotCache(result *models.ScanResult, path string, info os.FileInfo) {
+	if result == nil {
+		return
+	}
+	if result.RawProbe == nil {
+		result.RawProbe = models.JSONMap{}
+	}
+	components := models.JSONMap{}
+	versions := map[string]int{
+		"metadata":       legacyMetadataVersion(*result),
+		"interlace":      jsonMapInt(result.InterlaceAnalysis, "version"),
+		"crop":           jsonMapInt(result.CropAnalysis, "version"),
+		"frameStructure": jsonMapInt(result.FrameStructureAnalysis, "version"),
+		"cadence":        jsonMapInt(result.CadenceAnalysis, "version"),
+	}
+	for _, component := range snapshotComponentNames {
+		status := snapshotComponentStatus(*result, component)
+		if versions[component] == 0 && status == "valid" {
+			status = "unknown"
+		}
+		components[component] = models.JSONMap{"version": versions[component], "status": status, "provenance": "legacy_inferred"}
+	}
+	result.RawProbe["snapshotCache"] = models.JSONMap{
+		"schemaVersion": snapshotCacheSchemaVersion,
+		"fingerprint":   snapshotFingerprint(path, info),
+		"components":    components,
+		"lastRefresh":   models.JSONMap{"mode": "legacy_migration", "reused": []string{}, "refreshed": []string{}},
+	}
+}
+
+func legacyMetadataVersion(result models.ScanResult) int {
+	var probe FFProbeResult
+	if len(result.RawProbe) == 0 || !decodeJSONValue(result.RawProbe, &probe) {
+		return 0
+	}
+	if len(probe.Streams) == 0 && strings.TrimSpace(probe.Format.FormatName) == "" && strings.TrimSpace(probe.Format.Duration) == "" {
+		return 0
+	}
+	return workerIntValue(snapshotAnalysisVersions["metadata"], 0)
 }
 
 func snapshotComponentStatus(result models.ScanResult, component string) string {
@@ -398,6 +464,18 @@ func snapshotRefreshDetails(snapshot models.ScanResult, cacheHit bool) (reused, 
 	return reused, refreshed, statuses
 }
 
+func snapshotFallbackReason(snapshot models.ScanResult) string {
+	cache, ok := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	if !ok {
+		return ""
+	}
+	lastRefresh, ok := snapshotCacheMap(cache["lastRefresh"])
+	if !ok {
+		return ""
+	}
+	return stringFromUnknown(lastRefresh["fallbackReason"])
+}
+
 func incrementalRefreshSupported(staleComponents []string) bool {
 	if len(staleComponents) == 0 {
 		return false
@@ -417,23 +495,34 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 		}
 	}
 
+	fullRefreshMode := "full"
+	fallbackReason := ""
 	var existing models.ScanResult
 	if !request.Force {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			fingerprintMatches, legacyCache, staleComponents := snapshotCacheState(existing, path, info)
+			if legacyCache {
+				migrateLegacySnapshotCache(&existing, path, info)
+				_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
+				fingerprintMatches, _, staleComponents = snapshotCacheState(existing, path, info)
+			}
 			cacheMatches := fingerprintMatches && len(staleComponents) == 0
 			if snapshotRequiresFrameStructureRefresh(existing) || !cacheMatches {
 				if fingerprintMatches && incrementalRefreshSupported(staleComponents) {
 					report("incremental_refresh", 10, "Refreshing stale analysis components while reusing valid evidence")
 					refreshed, refreshErr := h.refreshSnapshotComponentsContext(ctx, existing, path, info, normalizedAnalysisSeconds(request.AnalysisSeconds), staleComponents, report)
-					return refreshed, false, refreshErr
+					if refreshErr == nil {
+						return refreshed, false, nil
+					}
+					if ctx.Err() != nil {
+						return models.ScanResult{}, false, ctx.Err()
+					}
+					fullRefreshMode = "full_fallback"
+					fallbackReason = incrementalFallbackReason(refreshErr)
+					report("incremental_fallback", 12, "Cached evidence was unusable; starting a full analysis")
 				}
 				report("snapshot_refresh", 10, "Existing snapshot is incomplete or stale; rebuilding asset analysis")
 			} else {
-				if legacyCache {
-					stampSnapshotCacheMetadataWithRefresh(&existing, path, info, "legacy_seed", snapshotComponentNames, nil)
-					_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
-				}
 				if ensureFrameStructureRecommendation(&existing) {
 					_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
 				}
@@ -459,7 +548,7 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	}
 
 	result := buildScanResult(path, info.Size(), probe, raw)
-	stampSnapshotCacheMetadata(&result, path, info)
+	stampSnapshotCacheMetadataWithRefreshReason(&result, path, info, fullRefreshMode, nil, snapshotComponentNames, fallbackReason)
 	applySnapshotDirectPlay(h.db, &result)
 	if err := persistFinalAssetSnapshot(h.db, &result); err != nil {
 		return models.ScanResult{}, false, err
@@ -468,10 +557,27 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	return result, false, nil
 }
 
+func incrementalFallbackReason(err error) string {
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, "metadata") && strings.Contains(message, "decode"):
+		return "cached_metadata_invalid"
+	case strings.Contains(message, "frame structure"):
+		return "cached_frame_structure_invalid"
+	case strings.Contains(message, "interlace"):
+		return "cached_interlace_invalid"
+	default:
+		return "cached_dependency_invalid"
+	}
+}
+
 func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, existing models.ScanResult, path string, info os.FileInfo, analysisSeconds int, staleComponents []string, report func(string, float64, string)) (models.ScanResult, error) {
 	var probe FFProbeResult
 	encodedRaw, err := json.Marshal(existing.RawProbe)
 	if err != nil || json.Unmarshal(encodedRaw, &probe) != nil {
+		return models.ScanResult{}, fmt.Errorf("cached metadata cannot be decoded for incremental refresh")
+	}
+	if len(probe.Streams) == 0 || (strings.TrimSpace(probe.Format.FormatName) == "" && strings.TrimSpace(probe.Format.Duration) == "") {
 		return models.ScanResult{}, fmt.Errorf("cached metadata cannot be decoded for incremental refresh")
 	}
 	video := firstStream(probe.Streams, "video")
@@ -705,34 +811,35 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		case outcome = <-outcomes:
 		case <-time.After(snapshotOperationTimeout):
 			cancel()
-			updateSnapshotOperation(id, func(item *SnapshotOperation) {
+			transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 				finishSnapshotOperationTiming(item, time.Now())
 				item.Status, item.Phase, item.Error, item.Message = "error", "timeout", "snapshot analysis exceeded 15 minutes", "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
 			})
-			h.logSnapshotOperation(id, "snapshot_analysis_timeout", context.DeadlineExceeded)
+			if transitioned {
+				h.logSnapshotOperation(id, "snapshot_analysis_timeout", context.DeadlineExceeded)
+			}
 			return
 		}
 		if outcome.err != nil {
-			updateSnapshotOperation(id, func(item *SnapshotOperation) {
-				if item.Status == "paused" {
-					return
-				}
+			transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 				finishSnapshotOperationTiming(item, time.Now())
 				item.Status, item.Phase, item.Error, item.Message = "error", "error", outcome.err.Error(), "Asset snapshot failed"
 			})
-			h.logSnapshotOperation(id, "snapshot_analysis_failed", outcome.err)
+			if transitioned {
+				h.logSnapshotOperation(id, "snapshot_analysis_failed", outcome.err)
+			}
 			return
 		}
-		updateSnapshotOperation(id, func(item *SnapshotOperation) {
-			if item.Status == "paused" {
-				return
-			}
+		transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 			finishSnapshotOperationTiming(item, time.Now())
 			item.CacheHit = outcome.cached
 			item.ReusedComponents, item.RefreshedComponents, item.ComponentStatuses = snapshotRefreshDetails(outcome.result, outcome.cached)
+			item.FallbackReason = snapshotFallbackReason(outcome.result)
 			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &outcome.result
 		})
-		h.logSnapshotOperation(id, "snapshot_analysis_completed", nil)
+		if transitioned {
+			h.logSnapshotOperation(id, "snapshot_analysis_completed", nil)
+		}
 	}(info)
 	c.JSON(http.StatusAccepted, response)
 }
@@ -746,19 +853,21 @@ func (h ScannerHandler) CancelSnapshotOperation(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "snapshot operation not found"})
 		return
 	}
+	cancelled := false
 	if operation.Status == "running" {
 		if cancel := snapshotOperations.cancels[id]; cancel != nil {
 			cancel()
 		}
 		delete(snapshotOperations.cancels, id)
 		finishSnapshotOperationTiming(operation, time.Now())
-		operation.Status, operation.Phase, operation.Message = "paused", "paused", "Asset snapshot paused by user"
+		operation.Status, operation.Phase, operation.Message = "cancelled", "cancelled", "Analysis cancelled by user"
 		operation.UpdatedAt = time.Now()
+		cancelled = true
 	}
 	copy := snapshotOperationCopy(operation)
 	snapshotOperations.Unlock()
 	c.JSON(http.StatusOK, copy)
-	if copy.Status == "paused" {
+	if cancelled {
 		h.logSnapshotOperation(id, "snapshot_analysis_cancelled", nil)
 	}
 }
@@ -788,6 +897,7 @@ func (h ScannerHandler) logSnapshotOperation(id, event string, operationErr erro
 		"reusedComponents":    string(reused),
 		"refreshedComponents": string(refreshed),
 		"componentStatuses":   string(statuses),
+		"fallbackReason":      operation.FallbackReason,
 	}
 	snapshotOperations.RUnlock()
 	appendSystemLog(h.db, event, fields, operationErr)
@@ -837,6 +947,38 @@ func markStaleSnapshotOperations(now time.Time) {
 		operation.Error = "snapshot operation stopped reporting before completion"
 		operation.Message = "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
 		operation.UpdatedAt = now
+	}
+	cleanupSnapshotOperationsLocked(now)
+}
+
+func cleanupSnapshotOperationsLocked(now time.Time) {
+	type terminalOperation struct {
+		id        string
+		updatedAt time.Time
+	}
+	terminal := make([]terminalOperation, 0, len(snapshotOperations.items))
+	for id, operation := range snapshotOperations.items {
+		if operation == nil || operation.Status == "running" {
+			continue
+		}
+		updatedAt := operation.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = operation.CreatedAt
+		}
+		if !updatedAt.IsZero() && now.Sub(updatedAt) > snapshotOperationRetention {
+			delete(snapshotOperations.items, id)
+			delete(snapshotOperations.cancels, id)
+			continue
+		}
+		terminal = append(terminal, terminalOperation{id: id, updatedAt: updatedAt})
+	}
+	if len(terminal) <= snapshotOperationMaxHistory {
+		return
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].updatedAt.After(terminal[j].updatedAt) })
+	for _, operation := range terminal[snapshotOperationMaxHistory:] {
+		delete(snapshotOperations.items, operation.id)
+		delete(snapshotOperations.cancels, operation.id)
 	}
 }
 

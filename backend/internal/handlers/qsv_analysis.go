@@ -39,6 +39,7 @@ type QSVFrameStructureAnalysis struct {
 	Windows               []FrameStructureWindow `json:"windows,omitempty"`
 	Variability           string                 `json:"variability,omitempty"`
 	Confidence            string                 `json:"confidence,omitempty"`
+	ConfidenceScore       float64                `json:"confidenceScore,omitempty"`
 	ProcessCount          int                    `json:"processCount,omitempty"`
 	WindowsRequested      int                    `json:"windowsRequested,omitempty"`
 	EarlyStopped          bool                   `json:"earlyStopped,omitempty"`
@@ -790,11 +791,62 @@ func frameEvidenceRequiresAdditionalWindows(analyses []QSVFrameStructureAnalysis
 	return maximumFPS-minimumFPS > 0.50 || completeGOPs < 2 || frameStructureVariability(gopAverages) == "high"
 }
 
+// frameEvidenceConfidenceScore intentionally uses a small set of observable,
+// deterministic penalties. The score summarizes agreement; suspicious signals
+// remain independent hard blockers for adaptive early stopping.
+func frameEvidenceConfidenceScore(analyses []QSVFrameStructureAnalysis) float64 {
+	if len(analyses) == 0 {
+		return 0
+	}
+	score := 1.0
+	minimumFPS, maximumFPS := 0.0, 0.0
+	completeGOPs := 0
+	gopAverages := []float64{}
+	for _, analysis := range analyses {
+		signals := analysis.FrameSignals
+		if signals.DecodedFrames == 0 || signals.EffectiveFPS <= 0 {
+			score -= 0.20
+		}
+		if signals.InterlacedFrames > 0 {
+			score -= 0.30
+		}
+		if signals.RepeatPictFrames > 0 {
+			score -= 0.30
+		}
+		if signals.EffectiveFPS > 0 {
+			if minimumFPS == 0 || signals.EffectiveFPS < minimumFPS {
+				minimumFPS = signals.EffectiveFPS
+			}
+			if signals.EffectiveFPS > maximumFPS {
+				maximumFPS = signals.EffectiveFPS
+			}
+		}
+		completeGOPs += analysis.CompleteGOPs
+		if analysis.CompleteGOPs > 0 {
+			gopAverages = append(gopAverages, analysis.AverageGOPLength)
+		}
+	}
+	if maximumFPS-minimumFPS > 0.50 {
+		score -= 0.30
+	}
+	if completeGOPs < 2 {
+		score -= 0.20
+	}
+	switch frameStructureVariability(gopAverages) {
+	case "high":
+		score -= 0.25
+	case "medium":
+		score -= 0.10
+	}
+	return math.Round(max(0.0, min(1.0, score))*1000) / 1000
+}
+
 func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string, plan SamplingPlan) (QSVFrameStructureAnalysis, error) {
 	if plan.AssetDurationSeconds <= 0 {
 		result, err := analyzeVideoFrameStructure(ctx, path, 500)
 		if err == nil {
 			result.Confidence = "low"
+			result.ConfidenceScore = 0.25
 			result.Variability = "unknown"
 			result.Source = "ffprobe_frames_duration_unknown"
 		}
@@ -818,7 +870,8 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 		result.Source = "ffprobe_multi_interval_windows"
 	}
 	if len(selectedWindows) < len(windows) {
-		if frameEvidenceRequiresAdditionalWindows(analyses) {
+		initialConfidence := frameEvidenceConfidenceScore(analyses)
+		if frameEvidenceRequiresAdditionalWindows(analyses) || initialConfidence < 0.98 {
 			remaining := remainingSamplingWindows(windows, selectedWindows)
 			additional, additionalProcesses, additionalMulti, additionalErr := analyzeSamplingWindowsWithFallback(ctx, path, remaining)
 			if additionalErr != nil {
@@ -891,6 +944,7 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 		result.CoverageRatio = result.SampledSeconds / plan.AssetDurationSeconds
 	}
 	result.Variability = frameStructureVariability(windowGOPs)
+	result.ConfidenceScore = frameEvidenceConfidenceScore(analyses)
 	switch {
 	case result.WindowCount >= 4 && result.CompleteGOPs >= 5 && result.Variability == "low":
 		result.Confidence = "high"

@@ -1110,6 +1110,7 @@ export type QSVFrameStructureAnalysis = {
   positions?: number[];
   variability?: 'low' | 'medium' | 'high' | 'unknown' | string;
   confidence?: 'high' | 'medium' | 'low' | string;
+  confidenceScore?: number;
   processCount?: number;
   windowsRequested?: number;
   earlyStopped?: boolean;
@@ -1136,7 +1137,7 @@ export type FrameSignalSummary = {
 export type SnapshotOperation = {
   id: string;
   assetPath: string;
-  status: 'running' | 'completed' | 'error' | 'paused';
+  status: 'running' | 'completed' | 'error' | 'cancelled';
   phase: string;
   progress: number;
   message: string;
@@ -1147,6 +1148,7 @@ export type SnapshotOperation = {
   reusedComponents?: string[];
   refreshedComponents?: string[];
   componentStatuses?: Record<string, string>;
+  fallbackReason?: string;
   result?: ScanResult;
   error?: string;
   createdAt: string;

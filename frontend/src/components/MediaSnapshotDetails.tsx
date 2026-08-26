@@ -67,6 +67,7 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Frame probes', frames.processCount ? `${frames.processCount} ffprobe process${frames.processCount === 1 ? '' : 'es'}` : 'Legacy snapshot'],
           ['Adaptive depth', frames.earlyStopped ? `Early stop after ${frames.windowCount ?? 0}/${frames.windowsRequested ?? 0} regions` : frames.deepAnalysisTriggered ? `Deep analysis · ${frames.windowCount ?? 0}/${frames.windowsRequested ?? 0} regions` : 'Full configured sample'],
           ['Coverage', frames.coverageRatio !== undefined ? `${(frames.coverageRatio * 100).toFixed(1)}% · ${frames.confidence || 'unknown'} confidence` : 'Legacy sample'],
+          ['Evidence confidence', typeof frames.confidenceScore === 'number' ? `${(frames.confidenceScore * 100).toFixed(1)}%` : 'Legacy sample'],
           ['Variability', frames.variability || 'Unknown'],
           ['Recommended GOP', frameRecommendation?.byMode?.balanced?.targetGopFrames ? `${frameRecommendation.byMode.balanced.targetGopFrames} frames · balanced` : 'Unavailable'],
           ['Recommended B depth', frameRecommendation?.recommendedMaxBFrames !== undefined ? String(frameRecommendation.recommendedMaxBFrames) : 'Unavailable'],
@@ -108,6 +109,7 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           <TechnicalFactGroup title="Analysis cache" facts={[
             ['Fingerprint', `${snapshotCache.sizeBytes ?? 'unknown'} bytes · mtime ${snapshotCache.mtimeNs || 'unknown'}`],
             ['Last operation', snapshotCache.mode || 'Unknown'],
+            ['Fallback reason', snapshotCache.fallbackReason?.replaceAll('_', ' ') || 'None'],
             ['Refreshed components', snapshotCache.refreshed.length ? snapshotCache.refreshed.join(', ') : 'None'],
             ['Reused components', snapshotCache.reused.length ? snapshotCache.reused.join(', ') : 'None'],
             ['Component status', snapshotCache.statuses.length ? snapshotCache.statuses.join(' · ') : 'Legacy snapshot'],
@@ -157,6 +159,7 @@ type SnapshotCacheDetails = {
   sizeBytes?: number;
   mtimeNs?: string;
   mode?: string;
+  fallbackReason?: string;
   reused: string[];
   refreshed: string[];
   statuses: string[];
@@ -178,6 +181,7 @@ function snapshotCacheDetails(rawProbe: Record<string, unknown>): SnapshotCacheD
     sizeBytes: typeof fingerprint?.sizeBytes === 'number' ? fingerprint.sizeBytes : undefined,
     mtimeNs: typeof fingerprint?.mtimeNs === 'string' ? fingerprint.mtimeNs : undefined,
     mode: typeof refresh?.mode === 'string' ? refresh.mode : undefined,
+    fallbackReason: typeof refresh?.fallbackReason === 'string' ? refresh.fallbackReason : undefined,
     reused: stringArray(refresh?.reused),
     refreshed: stringArray(refresh?.refreshed),
     statuses,

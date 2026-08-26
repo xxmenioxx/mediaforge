@@ -301,7 +301,7 @@ export function AnalysisPage() {
                   Analysis failed: {activeSnapshotOperation?.error || requestErrorMessage(startSnapshot.error || snapshotOperation.error)}
                 </Alert>
               ) : null}
-              {activeSnapshotOperation?.status === 'paused' ? <Alert severity="info">Analysis paused by user.</Alert> : null}
+              {activeSnapshotOperation?.status === 'cancelled' ? <Alert severity="info">Analysis cancelled by user.</Alert> : null}
               {activeSnapshotOperation?.status === 'completed' ? (
                 <Alert severity="success">
                   {activeSnapshotOperation.cacheHit
@@ -314,6 +314,9 @@ export function AnalysisPage() {
                     : ''}
                   {activeSnapshotOperation.reusedComponents?.length
                     ? ` Reused: ${activeSnapshotOperation.reusedComponents.join(', ')}.`
+                    : ''}
+                  {activeSnapshotOperation.fallbackReason
+                    ? ` Full refresh fallback: ${activeSnapshotOperation.fallbackReason.replaceAll('_', ' ')}.`
                     : ''}
                 </Alert>
               ) : null}

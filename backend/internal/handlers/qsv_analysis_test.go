@@ -116,6 +116,28 @@ func TestSuspiciousFrameEvidenceRequiresAdditionalWindows(t *testing.T) {
 	}
 }
 
+func TestFrameEvidenceConfidenceScoreIsDeterministicAndConservative(t *testing.T) {
+	stable := []QSVFrameStructureAnalysis{
+		{CompleteGOPs: 1, AverageGOPLength: 24, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{CompleteGOPs: 1, AverageGOPLength: 24, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{CompleteGOPs: 1, AverageGOPLength: 24, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+	}
+	first := frameEvidenceConfidenceScore(stable)
+	if first < 0.98 || first != frameEvidenceConfidenceScore(stable) {
+		t.Fatalf("stable evidence score=%v must be high and deterministic", first)
+	}
+	contradictory := append([]QSVFrameStructureAnalysis(nil), stable...)
+	contradictory[1].FrameSignals.EffectiveFPS = 29.97
+	if score := frameEvidenceConfidenceScore(contradictory); score >= first {
+		t.Fatalf("contradictory score=%v must be below stable score=%v", score, first)
+	}
+	suspicious := append([]QSVFrameStructureAnalysis(nil), stable...)
+	suspicious[1].FrameSignals.RepeatPictFrames = 10
+	if score := frameEvidenceConfidenceScore(suspicious); score >= 0.98 || !frameEvidenceRequiresAdditionalWindows(suspicious) {
+		t.Fatalf("repeat_pict score=%v must block early stop", score)
+	}
+}
+
 func TestAdaptiveFrameStructureExpandsSuspiciousEvidenceToMaximumWindows(t *testing.T) {
 	binDir := t.TempDir()
 	ffprobePath := filepath.Join(binDir, "ffprobe")

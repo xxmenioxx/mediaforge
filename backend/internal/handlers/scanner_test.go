@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,6 +36,7 @@ func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
 		Path: selectedPath, FileName: filepath.Base(selectedPath), SizeBytes: info.Size(), CreatedAt: time.Now(),
 		RawProbe: models.JSONMap{}, FrameStructureAnalysis: models.JSONMap{"version": 1, "framesAnalyzed": 500},
 	}
+	stampSnapshotCacheMetadata(&selected, selectedPath, info)
 	other := models.ScanResult{Path: filepath.Join(t.TempDir(), "other.mkv"), FileName: "other.mkv", SizeBytes: 99, CreatedAt: time.Now()}
 	if err := db.Create(&selected).Error; err != nil {
 		t.Fatal(err)
@@ -122,12 +124,12 @@ func TestMarkStaleSnapshotOperationAllowsRetry(t *testing.T) {
 	}
 }
 
-func TestCancelSnapshotOperationPausesRunningAnalysis(t *testing.T) {
+func TestCancelSnapshotOperationTerminatesRunningAnalysis(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	canceled := false
 	snapshotOperations.Lock()
 	snapshotOperations.items = map[string]*SnapshotOperation{
-		"cancel-me": {ID: "cancel-me", AssetPath: "/media/raw/example.mkv", Status: "running", Phase: "crop"},
+		"cancel-me": {ID: "cancel-me", AssetPath: "/media/raw/example.mkv", Status: "running", Phase: "crop", CreatedAt: time.Now(), phaseStartedAt: time.Now()},
 	}
 	snapshotOperations.cancels = map[string]context.CancelFunc{
 		"cancel-me": func() { canceled = true },
@@ -148,8 +150,74 @@ func TestCancelSnapshotOperationPausesRunningAnalysis(t *testing.T) {
 	operation := *snapshotOperations.items["cancel-me"]
 	_, cancelRetained := snapshotOperations.cancels["cancel-me"]
 	snapshotOperations.RUnlock()
-	if operation.Status != "paused" || operation.Phase != "paused" || cancelRetained {
-		t.Fatalf("operation was not paused cleanly: %#v cancelRetained=%v", operation, cancelRetained)
+	if operation.Status != "cancelled" || operation.Phase != "cancelled" || cancelRetained {
+		t.Fatalf("operation was not cancelled cleanly: %#v cancelRetained=%v", operation, cancelRetained)
+	}
+}
+
+func TestSnapshotOperationAcceptsOnlyOneTerminalTransition(t *testing.T) {
+	now := time.Now()
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"race": {ID: "race", Status: "running", Phase: "frame_structure", CreatedAt: now, UpdatedAt: now, phaseStartedAt: now},
+	}
+	snapshotOperations.cancels = map[string]context.CancelFunc{}
+	snapshotOperations.Unlock()
+	if !finishRunningSnapshotOperation("race", func(operation *SnapshotOperation) {
+		operation.Status, operation.Phase = "cancelled", "cancelled"
+	}) {
+		t.Fatal("first terminal transition was rejected")
+	}
+	if finishRunningSnapshotOperation("race", func(operation *SnapshotOperation) {
+		operation.Status, operation.Phase = "error", "error"
+	}) {
+		t.Fatal("worker result overwrote an existing terminal state")
+	}
+	snapshotOperations.RLock()
+	status := snapshotOperations.items["race"].Status
+	snapshotOperations.RUnlock()
+	if status != "cancelled" {
+		t.Fatalf("terminal status=%q want=cancelled", status)
+	}
+}
+
+func TestSnapshotOperationRetentionRemovesOnlyOldTerminalHistory(t *testing.T) {
+	now := time.Now()
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"old":     {ID: "old", Status: "completed", UpdatedAt: now.Add(-snapshotOperationRetention - time.Minute)},
+		"recent":  {ID: "recent", Status: "error", UpdatedAt: now.Add(-time.Minute)},
+		"running": {ID: "running", Status: "running", CreatedAt: now, UpdatedAt: now},
+	}
+	snapshotOperations.cancels = map[string]context.CancelFunc{}
+	cleanupSnapshotOperationsLocked(now)
+	_, oldExists := snapshotOperations.items["old"]
+	_, recentExists := snapshotOperations.items["recent"]
+	_, runningExists := snapshotOperations.items["running"]
+	snapshotOperations.Unlock()
+	if oldExists || !recentExists || !runningExists {
+		t.Fatalf("unexpected retention result: old=%t recent=%t running=%t", oldExists, recentExists, runningExists)
+	}
+}
+
+func TestSnapshotOperationRetentionCapsNewestTerminalHistory(t *testing.T) {
+	now := time.Now()
+	snapshotOperations.Lock()
+	snapshotOperations.items = map[string]*SnapshotOperation{
+		"running": {ID: "running", Status: "running", CreatedAt: now, UpdatedAt: now},
+	}
+	for index := 0; index < snapshotOperationMaxHistory+2; index++ {
+		id := fmt.Sprintf("terminal-%03d", index)
+		snapshotOperations.items[id] = &SnapshotOperation{ID: id, Status: "completed", UpdatedAt: now.Add(time.Duration(index) * time.Millisecond)}
+	}
+	cleanupSnapshotOperationsLocked(now.Add(time.Second))
+	_, oldestExists := snapshotOperations.items["terminal-000"]
+	_, newestExists := snapshotOperations.items[fmt.Sprintf("terminal-%03d", snapshotOperationMaxHistory+1)]
+	_, runningExists := snapshotOperations.items["running"]
+	count := len(snapshotOperations.items)
+	snapshotOperations.Unlock()
+	if oldestExists || !newestExists || !runningExists || count != snapshotOperationMaxHistory+1 {
+		t.Fatalf("unexpected capped history: oldest=%t newest=%t running=%t count=%d", oldestExists, newestExists, runningExists, count)
 	}
 }
 
@@ -236,14 +304,16 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 		t.Fatal(err)
 	}
 	existing := models.ScanResult{
-		Path: mediaPath, FileName: "episode.mkv", SizeBytes: 3, VideoCodec: "cached-codec", CreatedAt: time.Now().Add(-time.Hour),
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: int64(len("replacement with different size")), VideoCodec: "cached-codec", CreatedAt: time.Now().Add(-time.Hour),
 		VideoStreams:           models.JSONList{map[string]any{"avgFrameRate": "25/1"}},
 		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 500, "averageGopLength": 75.0, "maxConsecutiveBFrames": 3, "confidence": "medium"},
+		RawProbe:               models.JSONMap{},
 	}
+	info, _ := os.Stat(mediaPath)
+	stampSnapshotCacheMetadata(&existing, mediaPath, info)
 	if err := db.Create(&existing).Error; err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(mediaPath)
 	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{Force: false}, nil)
 	if err != nil || !cached || result.VideoCodec != "cached-codec" {
 		t.Fatalf("snapshot was regenerated without Re-scan: cached=%t result=%#v err=%v", cached, result, err)
@@ -259,7 +329,7 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 		t.Fatalf("enriched recommendation was not persisted: %#v err=%v", stored.FrameStructureRecommendation, err)
 	}
 	if matches, legacy := snapshotCacheMatches(stored, mediaPath, info); !matches || legacy {
-		t.Fatalf("legacy snapshot was not sealed with the observed fingerprint: matches=%t legacy=%t raw=%#v", matches, legacy, stored.RawProbe)
+		t.Fatalf("snapshot cache metadata was not retained: matches=%t legacy=%t raw=%#v", matches, legacy, stored.RawProbe)
 	}
 }
 
@@ -562,6 +632,160 @@ func TestFailedIncrementalFrameAnalyzerPersistsReusablePartialSnapshot(t *testin
 	reused, cacheHit, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
 	if err != nil || !cacheHit || stringFromUnknown(reused.FrameStructureAnalysis["status"]) != "unverified" {
 		t.Fatalf("partial snapshot caused an automatic rebuild: cacheHit=%t err=%v frame=%#v", cacheHit, err, reused.FrameStructureAnalysis)
+	}
+}
+
+func TestLegacySnapshotMigrationPreservesKnownVersionsAndMarksUnknownStale(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := models.ScanResult{
+		Path: mediaPath, Duration: 100,
+		InterlaceAnalysis: models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive"},
+		CropAnalysis:      models.JSONMap{"status": "none"},
+		RawProbe: models.JSONMap{
+			"format":  map[string]any{"format_name": "matroska", "duration": "100"},
+			"streams": []any{map[string]any{"codec_type": "video", "codec_name": "h264"}},
+		},
+	}
+	migrateLegacySnapshotCache(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	interlace, _ := snapshotCacheMap(components["interlace"])
+	crop, _ := snapshotCacheMap(components["crop"])
+	metadata, _ := snapshotCacheMap(components["metadata"])
+	if workerIntValue(interlace["version"], 0) != interlaceAnalysisVersion || stringFromUnknown(interlace["provenance"]) != "legacy_inferred" {
+		t.Fatalf("known legacy Interlace version was not preserved: %#v", interlace)
+	}
+	if fmt.Sprint(crop["version"]) != "0" || stringFromUnknown(crop["status"]) != "unknown" {
+		t.Fatalf("unknown legacy Crop provenance was marked current: %#v", crop)
+	}
+	if workerIntValue(metadata["version"], 0) != workerIntValue(snapshotAnalysisVersions["metadata"], 0) {
+		t.Fatalf("usable legacy metadata was not retained: %#v", metadata)
+	}
+}
+
+func TestLegacySnapshotMissingFrameRefreshesIncrementallyWithoutMetadataProbe(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+case "$*" in
+  *-show_format*) exit 90 ;;
+esac
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"8.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"8.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"50.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"50.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"92.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"92.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:legacy-frame-incremental?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	interlace := models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive"}
+	crop := models.JSONMap{"version": 3, "status": "none", "reason": "legacy-crop"}
+	legacy := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 100, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, CropAnalysis: crop,
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"format_name": "matroska", "duration": "100"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 1920, "height": 1080}},
+			"interlaceAnalysis": interlace, "cropAnalysis": crop,
+		},
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if err != nil || cached {
+		t.Fatalf("legacy incremental refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
+	}
+	if slices.Contains(phases, "metadata") || !slices.Contains(phases, "frame_structure") || stringFromUnknown(result.CropAnalysis["reason"]) != "legacy-crop" {
+		t.Fatalf("legacy refresh did not preserve reusable evidence: phases=%v crop=%#v", phases, result.CropAnalysis)
+	}
+}
+
+func TestInvalidIncrementalCacheFallsBackToSuccessfulFullRefresh(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	ffmpegPath := filepath.Join(binDir, "ffmpeg")
+	probeScript := `#!/bin/sh
+case "$*" in
+  *-show_format*) printf '%s' '{"format":{"format_name":"matroska","duration":"100","bit_rate":"1000000"},"streams":[{"codec_type":"video","codec_name":"h264","avg_frame_rate":"25/1","width":720,"height":480}]}' ;;
+  *) printf '%s' '{"frames":[
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"8.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"8.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"50.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"50.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"92.00","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+    {"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"92.04","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0}
+  ]}' ;;
+esac
+`
+	pixelScript := `#!/bin/sh
+printf '%s\n' \
+  'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' \
+  'Multi frame detection: TFF: 0 BFF: 0 Progressive: 100 Undetermined: 0' \
+  'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ffmpegPath, []byte(pixelScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:incremental-full-fallback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 100, VideoCodec: "h264", Width: 720, Height: 480,
+		VideoStreams:           models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "framesAnalyzed": 10}, RawProbe: models.JSONMap{},
+	}
+	// Stamp first, then corrupt the cached base metadata while retaining a valid manifest.
+	snapshot.RawProbe = models.JSONMap{}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["frameStructure"] = 1
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if err != nil || cached {
+		t.Fatalf("full fallback failed: cached=%t err=%v phases=%v", cached, err, phases)
+	}
+	if !slices.Contains(phases, "incremental_fallback") || !slices.Contains(phases, "metadata") || snapshotFallbackReason(result) != "cached_metadata_invalid" {
+		t.Fatalf("fallback was not observable: phases=%v reason=%q", phases, snapshotFallbackReason(result))
 	}
 }
 
