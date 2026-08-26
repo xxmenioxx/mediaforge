@@ -624,25 +624,28 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 	interlaceStale := slices.Contains(staleComponents, "interlace")
 	cropStale := slices.Contains(staleComponents, "crop")
 	if interlaceStale || cropStale {
-		pixelPlan := plan
+		basePixelPlan := plan
 		if len(frameAnalysis.Positions) > 0 {
-			pixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
-			pixelPlan.Adaptive = false
-			pixelPlan.InitialWindows = len(pixelPlan.Positions)
+			basePixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
+			basePixelPlan.Adaptive = false
+			basePixelPlan.InitialWindows = len(basePixelPlan.Positions)
 		}
-		maximumInterlaceWindows := len(pixelPlan.Positions)
-		pixelPlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(pixelPlan, frameAnalysis, video.FieldOrder)
-		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, pixelPlan)
+		interlacePlan := basePixelPlan
+		interlaceDepth, interlaceDepthReason := "", ""
+		if interlaceStale {
+			interlacePlan, interlaceDepth, interlaceDepthReason = adaptiveInterlaceSamplingPlan(basePixelPlan, frameAnalysis, video.FieldOrder)
+		}
+		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, basePixelPlan)
 		if interlaceStale {
 			report("interlace", 60, "Refreshing Interlace from shared frame and pixel evidence")
-			interlace = detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, pixelPlan, frameAnalysis, pixelSession)
+			interlace = detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, interlacePlan, frameAnalysis, pixelSession)
 			interlace.Codec = video.CodecName
 			interlace.AverageFrameRate = video.AverageFrameRate
 			interlace.RealFrameRate = video.RealBaseFrameRate
 			interlace.AnalysisDepth = interlaceDepth
-			interlace.WindowsRequested = len(pixelPlan.Positions)
-			interlace.MaximumWindows = maximumInterlaceWindows
-			interlace.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && maximumInterlaceWindows > 2
+			interlace.WindowsRequested = len(interlacePlan.Positions)
+			interlace.MaximumWindows = len(basePixelPlan.Positions)
+			interlace.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(basePixelPlan.Positions) > 2
 			interlace.DepthReason = interlaceDepthReason
 			existing.RawProbe["interlaceAnalysis"] = interlace
 			existing.InterlaceAnalysis = structToJSONMap(interlace)
@@ -652,7 +655,7 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 		}
 		if cropStale {
 			report("crop", 75, "Refreshing Crop from shared pixel evidence")
-			crop := detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, pixelPlan, pixelSession)
+			crop := detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, basePixelPlan, pixelSession)
 			existing.RawProbe["cropAnalysis"] = crop
 			existing.CropAnalysis = structToJSONMap(crop)
 		}
@@ -1127,30 +1130,29 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 		return FFProbeResult{}, nil, err
 	}
 	report("interlace", 60, "Validating shared frame evidence with interlace samples")
-	pixelPlan := samplingPlan
+	basePixelPlan := samplingPlan
 	if frameErr == nil && len(frameAnalysis.Positions) > 0 {
-		pixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
-		pixelPlan.Adaptive = false
-		pixelPlan.InitialWindows = len(pixelPlan.Positions)
+		basePixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
+		basePixelPlan.Adaptive = false
+		basePixelPlan.InitialWindows = len(basePixelPlan.Positions)
 	}
-	maximumInterlaceWindows := len(pixelPlan.Positions)
-	pixelPlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(pixelPlan, frameAnalysis, video.FieldOrder)
-	pixelSession := newPixelSamplingSession(path, video.Width, video.Height, pixelPlan)
-	interlaceAnalysis := detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, pixelPlan, frameAnalysis, pixelSession)
+	interlacePlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(basePixelPlan, frameAnalysis, video.FieldOrder)
+	pixelSession := newPixelSamplingSession(path, video.Width, video.Height, basePixelPlan)
+	interlaceAnalysis := detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, interlacePlan, frameAnalysis, pixelSession)
 	interlaceAnalysis.Codec = video.CodecName
 	interlaceAnalysis.AverageFrameRate = video.AverageFrameRate
 	interlaceAnalysis.RealFrameRate = video.RealBaseFrameRate
 	interlaceAnalysis.AnalysisDepth = interlaceDepth
-	interlaceAnalysis.WindowsRequested = len(pixelPlan.Positions)
-	interlaceAnalysis.MaximumWindows = maximumInterlaceWindows
-	interlaceAnalysis.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && maximumInterlaceWindows > 2
+	interlaceAnalysis.WindowsRequested = len(interlacePlan.Positions)
+	interlaceAnalysis.MaximumWindows = len(basePixelPlan.Positions)
+	interlaceAnalysis.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(basePixelPlan.Positions) > 2
 	interlaceAnalysis.DepthReason = interlaceDepthReason
 	raw["interlaceAnalysis"] = interlaceAnalysis
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}
 	report("crop", 80, "Checking shared sample regions for crop boundaries")
-	raw["cropAnalysis"] = detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, pixelPlan, pixelSession)
+	raw["cropAnalysis"] = detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, basePixelPlan, pixelSession)
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}

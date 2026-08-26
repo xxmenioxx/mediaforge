@@ -569,6 +569,72 @@ printf '%s\n' \
 	}
 }
 
+func TestCropOnlyIncrementalRefreshKeepsIndependentThreeWindowDepth(t *testing.T) {
+	binDir := t.TempDir()
+	counterPath := filepath.Join(binDir, "calls")
+	ffmpegPath := filepath.Join(binDir, "ffmpeg")
+	script := `#!/bin/sh
+printf x >> "$PIXEL_COUNTER"
+printf '%s\n' 'crop=700:400:10:40' >&2
+`
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIXEL_COUNTER", counterPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:incremental-crop-only-depth?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("crop fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(mediaPath)
+	interlace := models.JSONMap{"version": interlaceAnalysisVersion, "status": "progressive", "analysisDepth": "deep", "reason": "preserve-interlace"}
+	frame := models.JSONMap{
+		"version": 2, "source": "cached-frame", "framesAnalyzed": 720, "confidenceScore": 0.995, "windowCount": 3,
+		"positions": []any{0.08, 0.27, 0.50, 0.73, 0.92},
+		"windows": []any{
+			map[string]any{"position": 0.08, "frameSignals": map[string]any{"decodedFrames": 240, "progressiveFrames": 240, "effectiveFps": 24.0}},
+			map[string]any{"position": 0.50, "frameSignals": map[string]any{"decodedFrames": 240, "progressiveFrames": 240, "effectiveFps": 24.0}},
+			map[string]any{"position": 0.92, "frameSignals": map[string]any{"decodedFrames": 240, "progressiveFrames": 240, "effectiveFps": 24.0}},
+		},
+	}
+	snapshot := models.ScanResult{
+		Path: mediaPath, FileName: "episode.mkv", SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 720, Height: 480,
+		VideoStreams:      models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}},
+		InterlaceAnalysis: interlace, FrameStructureAnalysis: frame, CropAnalysis: models.JSONMap{"version": 3, "status": "unknown"},
+		RawProbe: models.JSONMap{
+			"format":            map[string]any{"format_name": "matroska", "duration": "1000"},
+			"streams":           []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}},
+			"interlaceAnalysis": interlace, "frameStructureAnalysis": frame, "cropAnalysis": models.JSONMap{"version": 3, "status": "unknown"},
+		},
+	}
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["crop"] = 0
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(mediaPath, info, ScanRequest{}, nil)
+	if err != nil || cached {
+		t.Fatalf("crop-only incremental refresh failed: cached=%t err=%v", cached, err)
+	}
+	calls, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "xxx" || jsonMapInt(result.CropAnalysis, "windows") != 3 || stringFromUnknown(result.InterlaceAnalysis["reason"]) != "preserve-interlace" {
+		t.Fatalf("Crop depth depended on Adaptive IDET: calls=%q crop=%#v interlace=%#v", calls, result.CropAnalysis, result.InterlaceAnalysis)
+	}
+}
+
 func TestScanResolvedFileFingerprintAndForceBypassCacheEndToEnd(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -61,7 +61,7 @@ func TestSharedPixelProbeParsesEvidenceIndependently(t *testing.T) {
 	}
 }
 
-func TestQuickInterlaceAndCropPreserveSharedDecodePerSelectedWindow(t *testing.T) {
+func TestQuickInterlaceDoesNotReduceCropDepthAndPreservesSharedDecode(t *testing.T) {
 	binDir := t.TempDir()
 	counterPath := filepath.Join(binDir, "calls")
 	ffmpegPath := filepath.Join(binDir, "ffmpeg")
@@ -77,19 +77,21 @@ printf '%s\n' \
 	}
 	t.Setenv("PIXEL_COUNTER", counterPath)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	plan := SamplingPlan{AssetDurationSeconds: 1000, WindowSeconds: 20, Positions: []float64{0.08, 0.92}}
-	frame := QSVFrameStructureAnalysis{Windows: []FrameStructureWindow{
+	basePlan := canonicalSamplingPlan(1000, defaultFrameStructureSamplingPolicy())
+	frame := QSVFrameStructureAnalysis{ConfidenceScore: 0.995, WindowCount: 3, Windows: []FrameStructureWindow{
 		{Position: 0.08, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
+		{Position: 0.50, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
 		{Position: 0.92, FrameSignals: FrameSignalSummary{DecodedFrames: 240, ProgressiveFrames: 240, EffectiveFPS: 24}},
 	}}
-	session := newPixelSamplingSession("/fixture/movie.mkv", 720, 480, plan)
-	interlace := detectInterlaceWithSharedEvidenceContext(context.Background(), "/fixture/movie.mkv", "progressive", 20, false, plan, frame, session)
-	crop := detectCropWithSharedPixelEvidenceContext(context.Background(), "/fixture/movie.mkv", 720, 480, plan, session)
+	interlacePlan, depth, _ := adaptiveInterlaceSamplingPlan(basePlan, frame, "progressive")
+	session := newPixelSamplingSession("/fixture/movie.mkv", 720, 480, basePlan)
+	interlace := detectInterlaceWithSharedEvidenceContext(context.Background(), "/fixture/movie.mkv", "progressive", 20, false, interlacePlan, frame, session)
+	crop := detectCropWithSharedPixelEvidenceContext(context.Background(), "/fixture/movie.mkv", 720, 480, basePlan, session)
 	calls, err := os.ReadFile(counterPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(calls) != "xx" || interlace.SampleCount != 2 || crop.Windows != 2 || crop.RecommendedCrop != "700:400:10:40" {
+	if depth != interlaceAnalysisDepthQuick || string(calls) != "xxx" || interlace.SampleCount != 2 || crop.Windows != 3 || crop.RecommendedCrop != "700:400:10:40" {
 		t.Fatalf("quick shared decode regressed: calls=%q interlace=%#v crop=%#v", calls, interlace, crop)
 	}
 }
