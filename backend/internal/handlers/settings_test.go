@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -69,6 +70,34 @@ func TestSettingsRejectsInvalidAnalysisPolicy(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "between 1 and 4") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSettingsPersistsCanonicalCustomAnalysisPolicy(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-custom-analysis-policy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+	body := `{"value":{"mode":"custom","adaptiveAnalysis":true,"earlyConfidenceEnabled":true,"earlyConfidenceThreshold":0.97,"initialWindows":3,"maximumWindows":5,"windowSeconds":25,"positions":[0.08,0.27,0.5,0.73,0.92],"interlaceValidation":"always","cropDepth":"full","reuseSnapshots":true,"incrementalRefresh":true,"concurrentAssets":2}}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/analysisPolicy", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	policy := analysisPolicy(db)
+	if policy.Mode != "custom" || policy.InitialWindows != 3 || policy.MaximumWindows != 5 || policy.EarlyConfidenceThreshold != 0.97 || policy.InterlaceValidation != "always" || policy.CropDepth != "full" || policy.ConcurrentAssets != 2 {
+		t.Fatalf("unexpected persisted policy: %#v", policy)
+	}
+	if !slices.Equal(policy.Positions, []float64{0.08, 0.27, 0.5, 0.73, 0.92}) {
+		t.Fatalf("positions were not persisted canonically: %v", policy.Positions)
 	}
 }
 

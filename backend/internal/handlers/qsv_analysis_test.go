@@ -38,6 +38,31 @@ printf '%s' '{"frames":[
 	}
 }
 
+func TestFastAnalysisPresetUsesOneDeterministicThreeWindowBatch(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobePath := filepath.Join(binDir, "ffprobe")
+	probeScript := `#!/bin/sh
+printf '%s' '{"frames":[
+{"pict_type":"I","key_frame":1,"best_effort_timestamp_time":"80.0","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"P","key_frame":0,"best_effort_timestamp_time":"500.0","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0},
+{"pict_type":"B","key_frame":0,"best_effort_timestamp_time":"920.0","pkt_duration_time":"0.04","interlaced_frame":0,"repeat_pict":0}
+]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(probeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := canonicalSamplingPlan(1000, frameStructurePolicyFromAnalysis(analysisPolicyPreset("fast")))
+	analysis, err := analyzeVideoFrameStructureWithSamplingPlan(context.Background(), "/fixture/movie.mkv", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.ProcessCount != 1 || analysis.WindowCount != 3 || analysis.DeepAnalysisTriggered || analysis.EarlyStopped {
+		t.Fatalf("fast preset did not use one deterministic batch: %#v", analysis)
+	}
+}
+
 func TestFrameStructureFallsBackWhenMultiIntervalTimestampsAreMissing(t *testing.T) {
 	binDir := t.TempDir()
 	ffprobePath := filepath.Join(binDir, "ffprobe")

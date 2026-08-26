@@ -55,6 +55,7 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		input.Value = normalizedAnalysisPolicyValue(input.Value)
 	}
 	if key == "mvforgePreferences" {
 		if err := validateMVForgePreferences(input.Value); err != nil {

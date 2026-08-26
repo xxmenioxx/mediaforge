@@ -22,7 +22,7 @@ func TestAnalysisPolicyPresetsKeepIndependentOperationalControls(t *testing.T) {
 	}
 
 	policy := analysisPolicy(db)
-	if policy.Mode != "fast" || policy.InitialWindows != 2 || policy.MaximumWindows != 3 || policy.EarlyConfidenceThreshold != 0.95 || policy.CropDepth != "reduced" {
+	if policy.Mode != "fast" || policy.InitialWindows != 3 || policy.MaximumWindows != 3 || policy.EarlyConfidenceEnabled || policy.CropDepth != "reduced" {
 		t.Fatalf("unexpected fast preset: %#v", policy)
 	}
 	if policy.ReuseSnapshots || policy.IncrementalRefresh || policy.ConcurrentAssets != 4 {
@@ -41,9 +41,58 @@ func TestCustomAnalysisPolicyFlowsIntoSamplingPlan(t *testing.T) {
 	}
 }
 
+func TestCanonicalPixelDepthSurvivesFrameEarlyStop(t *testing.T) {
+	policy := balancedAnalysisPolicy()
+	policy.Mode = "custom"
+	policy.InterlaceValidation = "always"
+	policy.CropDepth = "full"
+	canonical := canonicalSamplingPlan(1800, frameStructurePolicyFromAnalysis(policy))
+	frame := QSVFrameStructureAnalysis{Positions: []float64{0.08, 0.5, 0.92}, EarlyStopped: true}
+	interlace, crop := analyzerPixelPlans(canonical, frame)
+	if len(interlace.Positions) != 5 || len(crop.Positions) != 5 {
+		t.Fatalf("canonical depth was reduced: interlace=%v crop=%v", interlace.Positions, crop.Positions)
+	}
+
+	policy.InterlaceValidation = "automatic"
+	policy.CropDepth = "normal"
+	canonical = canonicalSamplingPlan(1800, frameStructurePolicyFromAnalysis(policy))
+	interlace, crop = analyzerPixelPlans(canonical, frame)
+	if len(interlace.Positions) != 3 || len(crop.Positions) != 3 {
+		t.Fatalf("automatic plans should follow observed adaptive depth: interlace=%v crop=%v", interlace.Positions, crop.Positions)
+	}
+}
+
 func TestValidateAnalysisPolicyRejectsInvalidCustomWindowContract(t *testing.T) {
 	err := validateAnalysisPolicy(models.JSONMap{"mode": "custom", "initialWindows": 4, "maximumWindows": 2, "windowSeconds": 20, "earlyConfidenceThreshold": 0.98, "positions": []any{0.1, 0.5}, "interlaceValidation": "automatic", "cropDepth": "normal", "concurrentAssets": 1})
 	if err == nil {
 		t.Fatal("expected invalid custom window contract to be rejected")
+	}
+}
+
+func TestValidateAnalysisPolicyRejectsUnsafeCustomEvidenceSettings(t *testing.T) {
+	base := models.JSONMap{"mode": "custom", "adaptiveAnalysis": true, "earlyConfidenceEnabled": true, "initialWindows": 3, "maximumWindows": 5, "windowSeconds": 20, "earlyConfidenceThreshold": 0.98, "positions": []any{0.08, 0.27, 0.5, 0.73, 0.92}, "interlaceValidation": "automatic", "cropDepth": "normal", "concurrentAssets": 1}
+	cases := []struct {
+		name  string
+		patch models.JSONMap
+	}{
+		{name: "confidence below safe floor", patch: models.JSONMap{"earlyConfidenceThreshold": 0.89}},
+		{name: "one initial window", patch: models.JSONMap{"initialWindows": 1}},
+		{name: "duplicate positions", patch: models.JSONMap{"positions": []any{0.08, 0.27, 0.5, 0.5, 0.92}}},
+		{name: "unsorted positions", patch: models.JSONMap{"positions": []any{0.08, 0.5, 0.27, 0.73, 0.92}}},
+		{name: "out of range position", patch: models.JSONMap{"positions": []any{0.0, 0.27, 0.5, 0.73, 0.92}}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			value := models.JSONMap{}
+			for key, item := range base {
+				value[key] = item
+			}
+			for key, item := range testCase.patch {
+				value[key] = item
+			}
+			if err := validateAnalysisPolicy(value); err == nil {
+				t.Fatalf("expected invalid policy to be rejected: %#v", value)
+			}
+		})
 	}
 }

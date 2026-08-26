@@ -290,14 +290,22 @@ func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 }
 
 func stampSnapshotCacheMetadata(result *models.ScanResult, path string, info os.FileInfo) {
-	stampSnapshotCacheMetadataWithRefresh(result, path, info, "full", nil, snapshotComponentNames)
+	stampSnapshotCacheMetadataWithPolicy(result, path, info, balancedAnalysisPolicy())
+}
+
+func stampSnapshotCacheMetadataWithPolicy(result *models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy) {
+	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result, path, info, "full", nil, snapshotComponentNames, "", policy)
 }
 
 func stampSnapshotCacheMetadataWithRefresh(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string) {
-	stampSnapshotCacheMetadataWithRefreshReason(result, path, info, mode, reused, refreshed, "")
+	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result, path, info, mode, reused, refreshed, "", balancedAnalysisPolicy())
 }
 
 func stampSnapshotCacheMetadataWithRefreshReason(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string, fallbackReason string) {
+	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result, path, info, mode, reused, refreshed, fallbackReason, balancedAnalysisPolicy())
+}
+
+func stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(result *models.ScanResult, path string, info os.FileInfo, mode string, reused, refreshed []string, fallbackReason string, policy AnalysisPolicy) {
 	if result == nil {
 		return
 	}
@@ -318,10 +326,29 @@ func stampSnapshotCacheMetadataWithRefreshReason(result *models.ScanResult, path
 		lastRefresh["fallbackReason"] = fallbackReason
 	}
 	result.RawProbe["snapshotCache"] = models.JSONMap{
-		"schemaVersion": snapshotCacheSchemaVersion,
-		"fingerprint":   snapshotFingerprint(path, info),
-		"components":    components,
-		"lastRefresh":   lastRefresh,
+		"schemaVersion":  snapshotCacheSchemaVersion,
+		"fingerprint":    snapshotFingerprint(path, info),
+		"analysisPolicy": analysisPolicyEvidenceManifest(policy),
+		"components":     components,
+		"lastRefresh":    lastRefresh,
+	}
+}
+
+func stampInheritedSnapshotCacheMetadata(result *models.ScanResult, path string, info os.FileInfo) {
+	if result == nil {
+		return
+	}
+	var inheritedPolicy any
+	if cache, ok := snapshotCacheMap(result.RawProbe["snapshotCache"]); ok {
+		inheritedPolicy = cache["analysisPolicy"]
+	}
+	stampSnapshotCacheMetadataWithRefresh(result, path, info, "inherited", snapshotComponentNames, nil)
+	if cache, ok := snapshotCacheMap(result.RawProbe["snapshotCache"]); ok {
+		if inheritedPolicy == nil {
+			delete(cache, "analysisPolicy")
+		} else {
+			cache["analysisPolicy"] = inheritedPolicy
+		}
 	}
 }
 
@@ -414,6 +441,10 @@ func snapshotCacheMatches(snapshot models.ScanResult, path string, info os.FileI
 }
 
 func snapshotCacheState(snapshot models.ScanResult, path string, info os.FileInfo) (fingerprintMatches bool, legacy bool, staleComponents []string) {
+	return snapshotCacheStateWithPolicy(snapshot, path, info, balancedAnalysisPolicy())
+}
+
+func snapshotCacheStateWithPolicy(snapshot models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy) (fingerprintMatches bool, legacy bool, staleComponents []string) {
 	cache, ok := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
 	if !ok {
 		return true, true, nil
@@ -442,8 +473,59 @@ func snapshotCacheState(snapshot models.ScanResult, path string, info os.FileInf
 			staleComponents = append(staleComponents, component)
 		}
 	}
+	staleComponents = append(staleComponents, staleComponentsForAnalysisPolicy(cache["analysisPolicy"], policy)...)
+	staleComponents = uniqueStrings(staleComponents)
 	sort.Strings(staleComponents)
 	return true, false, staleComponents
+}
+
+func analysisPolicyEvidenceManifest(policy AnalysisPolicy) models.JSONMap {
+	policy = normalizedAnalysisPolicy(policy)
+	positions := make([]string, 0, len(policy.Positions))
+	for _, position := range policy.Positions {
+		positions = append(positions, strconv.FormatFloat(position, 'f', 6, 64))
+	}
+	positionSignature := strings.Join(positions, ",")
+	frame := fmt.Sprintf("adaptive=%t;early=%t;threshold=%.6f;initial=%d;maximum=%d;seconds=%.6f;positions=%s", policy.AdaptiveAnalysis, policy.EarlyConfidenceEnabled, policy.EarlyConfidenceThreshold, policy.InitialWindows, policy.MaximumWindows, policy.WindowSeconds, positionSignature)
+	interlace := fmt.Sprintf("validation=%s;adaptive=%t;maximum=%d;positions=%s", policy.InterlaceValidation, policy.AdaptiveAnalysis, policy.MaximumWindows, positionSignature)
+	if policy.InterlaceValidation == "automatic" {
+		interlace += ";frame=" + frame
+	}
+	return models.JSONMap{
+		"mode":           policy.Mode,
+		"frameStructure": frame,
+		"interlace":      interlace,
+		"crop":           fmt.Sprintf("adaptive=%t;maximum=%d;positions=%s;depth=%s", policy.AdaptiveAnalysis, policy.MaximumWindows, positionSignature, policy.CropDepth),
+	}
+}
+
+func staleComponentsForAnalysisPolicy(stored any, policy AnalysisPolicy) []string {
+	storedManifest, ok := snapshotCacheMap(stored)
+	if !ok {
+		return []string{"cadence", "crop", "frameStructure", "interlace"}
+	}
+	current := analysisPolicyEvidenceManifest(policy)
+	stale := []string{}
+	if stringFromUnknown(storedManifest["frameStructure"]) != stringFromUnknown(current["frameStructure"]) {
+		stale = append(stale, "frameStructure", "cadence")
+	}
+	if stringFromUnknown(storedManifest["interlace"]) != stringFromUnknown(current["interlace"]) {
+		stale = append(stale, "interlace", "cadence")
+	}
+	if stringFromUnknown(storedManifest["crop"]) != stringFromUnknown(current["crop"]) {
+		stale = append(stale, "crop")
+	}
+	return uniqueStrings(stale)
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if !slices.Contains(result, value) {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func snapshotRefreshDetails(snapshot models.ScanResult, cacheHit bool) (reused, refreshed []string, statuses map[string]string) {
@@ -508,12 +590,12 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	if !request.Force && policy.ReuseSnapshots {
 		if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
 			foundExisting = true
-			fingerprintMatches, legacyCache, staleComponents := snapshotCacheState(existing, path, info)
+			fingerprintMatches, legacyCache, staleComponents := snapshotCacheStateWithPolicy(existing, path, info, policy)
 			if legacyCache {
 				if legacySnapshotIdentityMatches(existing, info) {
 					migrateLegacySnapshotCache(&existing, path, info)
 					_ = h.db.Model(&existing).Update("raw_probe", existing.RawProbe).Error
-					fingerprintMatches, _, staleComponents = snapshotCacheState(existing, path, info)
+					fingerprintMatches, _, staleComponents = snapshotCacheStateWithPolicy(existing, path, info, policy)
 				} else {
 					fingerprintMatches = false
 					report("legacy_identity_mismatch", 8, "Legacy snapshot identity cannot be verified; starting a full analysis")
@@ -563,7 +645,7 @@ func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string
 	}
 
 	result := buildScanResult(path, info.Size(), probe, raw)
-	stampSnapshotCacheMetadataWithRefreshReason(&result, path, info, fullRefreshMode, nil, snapshotComponentNames, fallbackReason)
+	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(&result, path, info, fullRefreshMode, nil, snapshotComponentNames, fallbackReason, policy)
 	applySnapshotDirectPlay(h.db, &result)
 	if err := persistFinalAssetSnapshot(h.db, &result); err != nil {
 		return models.ScanResult{}, false, err
@@ -625,18 +707,13 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 	interlaceStale := slices.Contains(staleComponents, "interlace")
 	cropStale := slices.Contains(staleComponents, "crop")
 	if interlaceStale || cropStale {
-		basePixelPlan := plan
-		if len(frameAnalysis.Positions) > 0 {
-			basePixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
-			basePixelPlan.Adaptive = false
-			basePixelPlan.InitialWindows = len(basePixelPlan.Positions)
-		}
-		interlacePlan := basePixelPlan
+		interlaceBasePlan, cropPlan := analyzerPixelPlans(plan, frameAnalysis)
+		interlacePlan := interlaceBasePlan
 		interlaceDepth, interlaceDepthReason := "", ""
 		if interlaceStale {
-			interlacePlan, interlaceDepth, interlaceDepthReason = adaptiveInterlaceSamplingPlan(basePixelPlan, frameAnalysis, video.FieldOrder)
+			interlacePlan, interlaceDepth, interlaceDepthReason = adaptiveInterlaceSamplingPlan(interlaceBasePlan, frameAnalysis, video.FieldOrder)
 		}
-		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, basePixelPlan)
+		pixelSession := newPixelSamplingSession(path, video.Width, video.Height, plan)
 		if interlaceStale {
 			report("interlace", 60, "Refreshing Interlace from shared frame and pixel evidence")
 			interlace = detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, interlacePlan, frameAnalysis, pixelSession)
@@ -645,8 +722,8 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 			interlace.RealFrameRate = video.RealBaseFrameRate
 			interlace.AnalysisDepth = interlaceDepth
 			interlace.WindowsRequested = len(interlacePlan.Positions)
-			interlace.MaximumWindows = len(basePixelPlan.Positions)
-			interlace.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(basePixelPlan.Positions) > 2
+			interlace.MaximumWindows = len(interlaceBasePlan.Positions)
+			interlace.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(interlaceBasePlan.Positions) > 2
 			interlace.DepthReason = interlaceDepthReason
 			existing.RawProbe["interlaceAnalysis"] = interlace
 			existing.InterlaceAnalysis = structToJSONMap(interlace)
@@ -656,7 +733,7 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 		}
 		if cropStale {
 			report("crop", 75, "Refreshing Crop from shared pixel evidence")
-			crop := detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, basePixelPlan, pixelSession)
+			crop := detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, cropPlan, pixelSession)
 			existing.RawProbe["cropAnalysis"] = crop
 			existing.CropAnalysis = structToJSONMap(crop)
 		}
@@ -689,7 +766,7 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 	}
 	sort.Strings(refreshed)
 	reused := componentDifference(snapshotComponentNames, refreshed)
-	stampSnapshotCacheMetadataWithRefresh(&existing, path, info, "incremental", reused, refreshed)
+	stampSnapshotCacheMetadataWithRefreshReasonAndPolicy(&existing, path, info, "incremental", reused, refreshed, "", analysisPolicy(h.db))
 	if err := persistFinalAssetSnapshot(h.db, &existing); err != nil {
 		return models.ScanResult{}, err
 	}
@@ -705,6 +782,24 @@ func componentDifference(all, excluded []string) []string {
 		}
 	}
 	return result
+}
+
+func analyzerPixelPlans(canonical SamplingPlan, frameAnalysis QSVFrameStructureAnalysis) (interlace, crop SamplingPlan) {
+	observed := canonical
+	if len(frameAnalysis.Positions) > 0 {
+		observed.Positions = append([]float64(nil), frameAnalysis.Positions...)
+		observed.Adaptive = false
+		observed.InitialWindows = len(observed.Positions)
+	}
+	interlace = observed
+	if canonical.InterlaceValidation == "always" {
+		interlace = canonical
+	}
+	crop = observed
+	if canonical.CropDepth == "full" {
+		crop = canonical
+	}
+	return interlace, crop
 }
 
 func decodeJSONValue(value any, target any) bool {
@@ -743,7 +838,7 @@ func inheritedOriginalSnapshot(db *gorm.DB, archivePath string, info os.FileInfo
 	if source.RawProbe == nil {
 		source.RawProbe = models.JSONMap{}
 	}
-	stampSnapshotCacheMetadataWithRefresh(&source, archivePath, info, "inherited", snapshotComponentNames, nil)
+	stampInheritedSnapshotCacheMetadata(&source, archivePath, info)
 	ensureFrameStructureRecommendation(&source)
 	ensureHEVCLevelRecommendation(&source)
 	source.RawProbe["snapshotProvenance"] = models.JSONMap{
@@ -1144,29 +1239,24 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 		return FFProbeResult{}, nil, err
 	}
 	report("interlace", 60, "Validating shared frame evidence with interlace samples")
-	basePixelPlan := samplingPlan
-	if frameErr == nil && len(frameAnalysis.Positions) > 0 {
-		basePixelPlan.Positions = append([]float64(nil), frameAnalysis.Positions...)
-		basePixelPlan.Adaptive = false
-		basePixelPlan.InitialWindows = len(basePixelPlan.Positions)
-	}
-	interlacePlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(basePixelPlan, frameAnalysis, video.FieldOrder)
-	pixelSession := newPixelSamplingSession(path, video.Width, video.Height, basePixelPlan)
+	interlaceBasePlan, cropPlan := analyzerPixelPlans(samplingPlan, frameAnalysis)
+	interlacePlan, interlaceDepth, interlaceDepthReason := adaptiveInterlaceSamplingPlan(interlaceBasePlan, frameAnalysis, video.FieldOrder)
+	pixelSession := newPixelSamplingSession(path, video.Width, video.Height, samplingPlan)
 	interlaceAnalysis := detectInterlaceWithSharedEvidenceContext(ctx, path, video.FieldOrder, analysisSeconds, false, interlacePlan, frameAnalysis, pixelSession)
 	interlaceAnalysis.Codec = video.CodecName
 	interlaceAnalysis.AverageFrameRate = video.AverageFrameRate
 	interlaceAnalysis.RealFrameRate = video.RealBaseFrameRate
 	interlaceAnalysis.AnalysisDepth = interlaceDepth
 	interlaceAnalysis.WindowsRequested = len(interlacePlan.Positions)
-	interlaceAnalysis.MaximumWindows = len(basePixelPlan.Positions)
-	interlaceAnalysis.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(basePixelPlan.Positions) > 2
+	interlaceAnalysis.MaximumWindows = len(interlaceBasePlan.Positions)
+	interlaceAnalysis.DeepAnalysisTriggered = interlaceDepth == interlaceAnalysisDepthDeep && len(interlaceBasePlan.Positions) > 2
 	interlaceAnalysis.DepthReason = interlaceDepthReason
 	raw["interlaceAnalysis"] = interlaceAnalysis
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}
 	report("crop", 80, "Checking shared sample regions for crop boundaries")
-	raw["cropAnalysis"] = detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, basePixelPlan, pixelSession)
+	raw["cropAnalysis"] = detectCropWithSharedPixelEvidenceContext(ctx, path, video.Width, video.Height, cropPlan, pixelSession)
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}

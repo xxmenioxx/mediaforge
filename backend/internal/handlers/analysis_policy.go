@@ -40,8 +40,9 @@ func analysisPolicyPreset(mode string) AnalysisPolicy {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "fast":
 		policy.Mode = "fast"
-		policy.EarlyConfidenceThreshold = 0.95
-		policy.InitialWindows = 2
+		policy.AdaptiveAnalysis = true
+		policy.EarlyConfidenceEnabled = false
+		policy.InitialWindows = 3
 		policy.MaximumWindows = 3
 		policy.Positions = []float64{0.08, 0.50, 0.92}
 		policy.CropDepth = "reduced"
@@ -96,10 +97,10 @@ func analysisPolicy(db *gorm.DB) AnalysisPolicy {
 }
 
 func normalizedAnalysisPolicy(policy AnalysisPolicy) AnalysisPolicy {
-	policy.InitialWindows = max(1, min(5, policy.InitialWindows))
+	policy.InitialWindows = max(3, min(5, policy.InitialWindows))
 	policy.MaximumWindows = max(policy.InitialWindows, min(5, policy.MaximumWindows))
 	policy.WindowSeconds = max(5, min(60, policy.WindowSeconds))
-	policy.EarlyConfidenceThreshold = max(0.50, min(1.0, policy.EarlyConfidenceThreshold))
+	policy.EarlyConfidenceThreshold = max(0.90, min(1.0, policy.EarlyConfidenceThreshold))
 	policy.ConcurrentAssets = max(1, min(4, policy.ConcurrentAssets))
 	if len(policy.Positions) < policy.MaximumWindows {
 		policy.Positions = append([]float64(nil), balancedAnalysisPolicy().Positions...)
@@ -131,18 +132,21 @@ func validateAnalysisPolicy(value models.JSONMap) error {
 	policy.MaximumWindows = workerIntValue(value["maximumWindows"], 0)
 	policy.WindowSeconds = workerNumberValue(value["windowSeconds"], 0)
 	policy.EarlyConfidenceThreshold = workerNumberValue(value["earlyConfidenceThreshold"], 0)
-	if policy.InitialWindows < 1 || policy.InitialWindows > 5 || policy.MaximumWindows < policy.InitialWindows || policy.MaximumWindows > 5 {
-		return fmt.Errorf("analysis windows must satisfy 1 <= initial <= maximum <= 5")
+	if policy.InitialWindows < 3 || policy.InitialWindows > 5 || policy.MaximumWindows < policy.InitialWindows || policy.MaximumWindows > 5 {
+		return fmt.Errorf("analysis windows must satisfy 3 <= initial <= maximum <= 5")
 	}
-	if policy.EarlyConfidenceThreshold < 0.50 || policy.EarlyConfidenceThreshold > 1 {
-		return fmt.Errorf("early confidence threshold must be between 0.50 and 1.00")
+	if policy.EarlyConfidenceThreshold < 0.90 || policy.EarlyConfidenceThreshold > 1 {
+		return fmt.Errorf("early confidence threshold must be between 0.90 and 1.00")
 	}
 	if policy.WindowSeconds < 5 || policy.WindowSeconds > 60 {
 		return fmt.Errorf("analysis window length must be between 5 and 60 seconds")
 	}
-	positions := floatSliceFromUnknown(value["positions"], nil)
-	if len(positions) < policy.MaximumWindows {
-		return fmt.Errorf("analysis positions must include at least maximumWindows entries between 0 and 1")
+	positions, err := strictAnalysisPositions(value["positions"])
+	if err != nil || len(positions) < policy.MaximumWindows {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("analysis positions must include at least maximumWindows entries")
 	}
 	interlaceValidation := strings.ToLower(strings.TrimSpace(stringFromUnknown(value["interlaceValidation"])))
 	if !slices.Contains([]string{"automatic", "always"}, interlaceValidation) {
@@ -153,6 +157,53 @@ func validateAnalysisPolicy(value models.JSONMap) error {
 		return fmt.Errorf("crop depth must be reduced, normal, or full")
 	}
 	return nil
+}
+
+func normalizedAnalysisPolicyValue(value models.JSONMap) models.JSONMap {
+	policy := analysisPolicyPreset(strings.ToLower(strings.TrimSpace(stringFromUnknown(value["mode"]))))
+	policy.ReuseSnapshots = boolFromUnknown(value["reuseSnapshots"], policy.ReuseSnapshots)
+	policy.IncrementalRefresh = boolFromUnknown(value["incrementalRefresh"], policy.IncrementalRefresh)
+	policy.ConcurrentAssets = workerIntValue(value["concurrentAssets"], policy.ConcurrentAssets)
+	if policy.Mode == "custom" {
+		policy.AdaptiveAnalysis = boolFromUnknown(value["adaptiveAnalysis"], policy.AdaptiveAnalysis)
+		policy.EarlyConfidenceEnabled = boolFromUnknown(value["earlyConfidenceEnabled"], policy.EarlyConfidenceEnabled)
+		policy.EarlyConfidenceThreshold = workerNumberValue(value["earlyConfidenceThreshold"], policy.EarlyConfidenceThreshold)
+		policy.InitialWindows = workerIntValue(value["initialWindows"], policy.InitialWindows)
+		policy.MaximumWindows = workerIntValue(value["maximumWindows"], policy.MaximumWindows)
+		policy.WindowSeconds = workerNumberValue(value["windowSeconds"], policy.WindowSeconds)
+		policy.Positions, _ = strictAnalysisPositions(value["positions"])
+		policy.InterlaceValidation = strings.ToLower(strings.TrimSpace(stringFromUnknown(value["interlaceValidation"])))
+		policy.CropDepth = strings.ToLower(strings.TrimSpace(stringFromUnknown(value["cropDepth"])))
+	}
+	policy = normalizedAnalysisPolicy(policy)
+	return models.JSONMap{"mode": policy.Mode, "adaptiveAnalysis": policy.AdaptiveAnalysis, "earlyConfidenceEnabled": policy.EarlyConfidenceEnabled, "earlyConfidenceThreshold": policy.EarlyConfidenceThreshold, "initialWindows": policy.InitialWindows, "maximumWindows": policy.MaximumWindows, "windowSeconds": policy.WindowSeconds, "positions": policy.Positions, "interlaceValidation": policy.InterlaceValidation, "cropDepth": policy.CropDepth, "reuseSnapshots": policy.ReuseSnapshots, "incrementalRefresh": policy.IncrementalRefresh, "concurrentAssets": policy.ConcurrentAssets}
+}
+
+func strictAnalysisPositions(value any) ([]float64, error) {
+	var raw []any
+	switch typed := value.(type) {
+	case []any:
+		raw = typed
+	case []float64:
+		raw = make([]any, len(typed))
+		for index, item := range typed {
+			raw[index] = item
+		}
+	default:
+		return nil, fmt.Errorf("analysis positions must be a numeric list")
+	}
+	positions := make([]float64, 0, len(raw))
+	for _, item := range raw {
+		position := workerNumberValue(item, -1)
+		if position <= 0 || position >= 1 {
+			return nil, fmt.Errorf("analysis positions must be between 0 and 1")
+		}
+		if len(positions) > 0 && position <= positions[len(positions)-1] {
+			return nil, fmt.Errorf("analysis positions must be unique and strictly increasing")
+		}
+		positions = append(positions, position)
+	}
+	return positions, nil
 }
 
 func boolFromUnknown(value any, fallback bool) bool {

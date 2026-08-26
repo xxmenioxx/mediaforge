@@ -124,6 +124,56 @@ func TestSnapshotOperationEnforcesConfiguredAssetConcurrency(t *testing.T) {
 	}
 }
 
+func TestSnapshotCacheInvalidatesComponentsByAnalysisPolicySemantics(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "policy-cache.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	balanced := balancedAnalysisPolicy()
+	snapshot := models.ScanResult{Path: mediaPath, RawProbe: models.JSONMap{}, VideoCodec: "h264", Duration: 1200, FrameStructureAnalysis: models.JSONMap{"version": 2}, InterlaceAnalysis: models.JSONMap{"version": interlaceAnalysisCacheVersion}, CropAnalysis: models.JSONMap{"version": 3}, CadenceAnalysis: models.JSONMap{"version": cadenceAnalysisVersion}}
+	stampSnapshotCacheMetadataWithPolicy(&snapshot, mediaPath, info, balanced)
+
+	tests := []struct {
+		name   string
+		policy AnalysisPolicy
+		stale  []string
+	}{
+		{name: "same effective policy", policy: balanced, stale: nil},
+		{name: "thorough invalidates dependent evidence", policy: analysisPolicyPreset("thorough"), stale: []string{"cadence", "crop", "frameStructure", "interlace"}},
+		{name: "crop depth only", policy: func() AnalysisPolicy {
+			value := balanced
+			value.Mode = "custom"
+			value.CropDepth = "full"
+			return value
+		}(), stale: []string{"crop"}},
+		{name: "interlace validation only", policy: func() AnalysisPolicy {
+			value := balanced
+			value.Mode = "custom"
+			value.InterlaceValidation = "always"
+			return value
+		}(), stale: []string{"cadence", "interlace"}},
+		{name: "execution controls only", policy: func() AnalysisPolicy {
+			value := balanced
+			value.ReuseSnapshots = false
+			value.IncrementalRefresh = false
+			value.ConcurrentAssets = 4
+			return value
+		}(), stale: nil},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			matches, legacy, stale := snapshotCacheStateWithPolicy(snapshot, mediaPath, info, testCase.policy)
+			if !matches || legacy || !slices.Equal(stale, testCase.stale) {
+				t.Fatalf("matches=%t legacy=%t stale=%v want=%v", matches, legacy, stale, testCase.stale)
+			}
+		})
+	}
+}
+
 func TestSnapshotOperationRecordsStageTimings(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
 	operation := &SnapshotOperation{
@@ -884,7 +934,7 @@ func TestLegacySnapshotIdentityMismatchSelectsFullMetadataRefresh(t *testing.T) 
 	}
 }
 
-func TestLegacySnapshotMissingFrameRefreshesIncrementallyWithoutMetadataProbe(t *testing.T) {
+func TestLegacySnapshotWithoutPolicyRefreshesAdvancedEvidenceWithoutMetadataProbe(t *testing.T) {
 	binDir := t.TempDir()
 	ffprobePath := filepath.Join(binDir, "ffprobe")
 	probeScript := `#!/bin/sh
@@ -935,8 +985,8 @@ printf '%s' '{"frames":[
 	if err != nil || cached {
 		t.Fatalf("legacy incremental refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
 	}
-	if slices.Contains(phases, "metadata") || !slices.Contains(phases, "frame_structure") || stringFromUnknown(result.CropAnalysis["reason"]) != "legacy-crop" {
-		t.Fatalf("legacy refresh did not preserve reusable evidence: phases=%v crop=%#v", phases, result.CropAnalysis)
+	if slices.Contains(phases, "metadata") || !slices.Contains(phases, "frame_structure") || !slices.Contains(phases, "interlace") || !slices.Contains(phases, "crop") || stringFromUnknown(result.CropAnalysis["reason"]) == "legacy-crop" {
+		t.Fatalf("legacy refresh did not rebuild policy-unknown evidence: phases=%v crop=%#v", phases, result.CropAnalysis)
 	}
 }
 
