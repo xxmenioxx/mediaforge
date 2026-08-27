@@ -75,7 +75,8 @@ func newMaintenanceTestFixture(t *testing.T) maintenanceTestFixture {
 			}
 			return actual, nil
 		},
-		remux: func(_ context.Context, args []string) error {
+		remux: func(_ context.Context, args []string, _ float64, report func(float64)) error {
+			report(0.5)
 			return os.WriteFile(args[len(args)-1], []byte("validated remux"), 0o644)
 		},
 		analyze: func(candidate string) (models.ScanResult, error) {
@@ -288,9 +289,39 @@ func TestExecuteTrackRemovalSuccessRefreshesSnapshotWithoutQueueJobOrStatusChang
 	}
 }
 
+func TestExecuteTrackRemovalPersistsFFmpegRemuxProgress(t *testing.T) {
+	fixture := newMaintenanceTestFixture(t)
+	reported := make(chan struct{})
+	release := make(chan struct{})
+	fixture.inventory.DurationSeconds = 100
+	fixture.runtime.remux = func(_ context.Context, args []string, duration float64, report func(float64)) error {
+		if duration != 100 {
+			t.Errorf("duration=%v want 100", duration)
+		}
+		report(0.5)
+		close(reported)
+		<-release
+		return os.WriteFile(args[len(args)-1], []byte("validated remux"), 0o644)
+	}
+	done := make(chan struct{})
+	go func() {
+		fixture.handler.executeTrackRemoval(fixture.operation.ID, fixture.inventory, fixture.remaining)
+		close(done)
+	}()
+	<-reported
+	operation := fixture.loadOperation(t)
+	if operation.Status != maintenanceStatusRunning || operation.Phase != "remuxing" || operation.Progress != 30 {
+		t.Fatalf("FFmpeg progress was not persisted during remux: %#v", operation)
+	}
+	close(release)
+	<-done
+}
+
 func TestExecuteTrackRemovalFFmpegFailureLeavesOriginalUntouched(t *testing.T) {
 	fixture := newMaintenanceTestFixture(t)
-	fixture.runtime.remux = func(context.Context, []string) error { return errors.New("injected ffmpeg failure") }
+	fixture.runtime.remux = func(context.Context, []string, float64, func(float64)) error {
+		return errors.New("injected ffmpeg failure")
+	}
 
 	fixture.handler.executeTrackRemoval(fixture.operation.ID, fixture.inventory, fixture.remaining)
 

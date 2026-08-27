@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -56,13 +57,14 @@ type TrackMaintenanceInventory struct {
 	Fingerprint               string                   `json:"fingerprint"`
 	Streams                   []TrackMaintenanceStream `json:"streams"`
 	Chapters                  int                      `json:"chapters"`
+	DurationSeconds           float64                  `json:"durationSeconds"`
 	MaintenanceAllowed        bool                     `json:"maintenanceAllowed"`
 	MaintenanceDisabledReason string                   `json:"maintenanceDisabledReason,omitempty"`
 }
 
 type trackMaintenanceRuntime struct {
 	probeInventory func(context.Context, string) (TrackMaintenanceInventory, error)
-	remux          func(context.Context, []string) error
+	remux          func(context.Context, []string, float64, func(float64)) error
 	analyze        func(string) (models.ScanResult, error)
 	stat           func(string) (os.FileInfo, error)
 	rename         func(string, string) error
@@ -74,11 +76,42 @@ type trackMaintenanceRuntime struct {
 func defaultTrackMaintenanceRuntime() *trackMaintenanceRuntime {
 	return &trackMaintenanceRuntime{
 		probeInventory: probeTrackMaintenanceInventory,
-		remux: func(ctx context.Context, args []string) error {
-			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+		remux: func(ctx context.Context, args []string, durationSeconds float64, report func(float64)) error {
+			progressArgs := append([]string(nil), args[:len(args)-1]...)
+			progressArgs = append(progressArgs, "-progress", "pipe:1", "-nostats", args[len(args)-1])
+			cmd := exec.CommandContext(ctx, "ffmpeg", progressArgs...)
 			var stderr bytes.Buffer
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				return fmt.Errorf("open ffmpeg progress: %w", err)
+			}
 			cmd.Stderr = &stderr
-			if err := cmd.Run(); err != nil {
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("start ffmpeg remux: %w", err)
+			}
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				key, value, ok := strings.Cut(scanner.Text(), "=")
+				if !ok {
+					continue
+				}
+				switch key {
+				case "out_time_us":
+					micros, parseErr := strconv.ParseInt(value, 10, 64)
+					if parseErr == nil && durationSeconds > 0 && report != nil {
+						report(min(1.0, maxFloat(0, float64(micros)/1_000_000/durationSeconds)))
+					}
+				case "progress":
+					if value == "end" && report != nil {
+						report(1)
+					}
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				_ = cmd.Wait()
+				return fmt.Errorf("read ffmpeg progress: %w", err)
+			}
+			if err := cmd.Wait(); err != nil {
 				return fmt.Errorf("ffmpeg remux failed: %s", strings.TrimSpace(stderr.String()))
 			}
 			return nil
@@ -123,10 +156,13 @@ type trackProbeResponse struct {
 		Disposition   map[string]int    `json:"disposition"`
 	} `json:"streams"`
 	Chapters []json.RawMessage `json:"chapters"`
+	Format   struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
 }
 
 func probeTrackMaintenanceInventory(ctx context.Context, path string) (TrackMaintenanceInventory, error) {
-	args := []string{"-v", "error", "-print_format", "json", "-show_streams", "-show_chapters", path}
+	args := []string{"-v", "error", "-print_format", "json", "-show_streams", "-show_chapters", "-show_format", path}
 	cmd := exec.CommandContext(ctx, "ffprobe", args...)
 	var output bytes.Buffer
 	var stderr bytes.Buffer
@@ -143,6 +179,7 @@ func probeTrackMaintenanceInventory(ctx context.Context, path string) (TrackMain
 		return TrackMaintenanceInventory{}, fmt.Errorf("fingerprint asset: %w", err)
 	}
 	inventory := TrackMaintenanceInventory{Path: filepath.Clean(path), Fingerprint: fingerprint, Chapters: len(response.Chapters)}
+	inventory.DurationSeconds, _ = strconv.ParseFloat(response.Format.Duration, 64)
 	for _, stream := range response.Streams {
 		inventory.Streams = append(inventory.Streams, TrackMaintenanceStream{
 			Index: stream.Index, Type: stream.CodecType, Codec: stream.CodecName, Profile: stream.Profile,
@@ -757,7 +794,15 @@ func (h AssetHandler) executeTrackMutation(id string, inventory TrackMaintenance
 	h.updateMaintenance(id, maintenanceStatusRunning, "remuxing", 10, map[string]any{"started_at": time.Now(), "temporary_path": temporary, "backup_path": backup})
 	defer func() { _ = runtime.remove(temporary) }()
 	args := buildArgs(temporary)
-	if err := runtime.remux(context.Background(), args); err != nil {
+	lastProgress := 10
+	if err := runtime.remux(context.Background(), args, inventory.DurationSeconds, func(fraction float64) {
+		progress := 10 + int(fraction*40)
+		if progress <= lastProgress {
+			return
+		}
+		lastProgress = progress
+		h.updateMaintenance(id, maintenanceStatusRunning, "remuxing", progress, nil)
+	}); err != nil {
 		h.failMaintenance(id, "remuxing", err)
 		return
 	}

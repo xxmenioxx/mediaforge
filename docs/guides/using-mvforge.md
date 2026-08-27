@@ -125,10 +125,11 @@ configurado (`media/anime`, `media/movies`, etc.). No crea opciones separadas
 para una serie, temporada o subpath más profundo, y la misma selección se puede
 reutilizar en Unprocessed, Library, Converted y Archive.
 
-Abrir **Asset Info** en cualquiera de esas áreas sólo consulta el último
-snapshot persistido; no inicia FFmpeg ni crea una operación de análisis. Si no
-existe evidencia, usa **Analyze asset**. **Rescan** fuerza explícitamente una
-nueva lectura del archivo.
+Abrir **Asset Info** en cualquiera de esas áreas valida primero el último
+snapshot persistido mediante fingerprint, versiones y política. Si la evidencia
+está vigente no inicia FFmpeg ni crea una operación. Si no existe, el archivo
+cambió o algún componente está obsoleto, inicia automáticamente el análisis
+necesario. **Rescan** fuerza explícitamente una nueva lectura del archivo.
 
 ## 5. Revisar el análisis
 
@@ -153,6 +154,12 @@ En **Profile Lab**:
 4. Compara original y resultado.
 5. Revisa comando, codecs, tamaño estimado y warnings.
 6. Ajusta o duplica el perfil si es necesario.
+
+Al seleccionar un asset —también al llegar desde Asset Overrides— LAB valida el
+snapshot persistido con la misma regla de Asset Info. Reutiliza evidencia
+vigente y sólo inicia análisis cuando falta, cambió el archivo, el snapshot es
+legacy o algún componente está incompleto, corrupto u obsoleto. **Re-scan**
+continúa siendo una acción forzada.
 
 Una muestra útil debe representar una escena exigente: movimiento, grano, diálogo, música, subtítulos o cambios de luminosidad.
 

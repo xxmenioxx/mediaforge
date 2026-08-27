@@ -951,6 +951,13 @@ export function ProfileLabPage() {
   });
   const [labSnapshotOperation, setLabSnapshotOperation] = useState<SnapshotOperation | null>(null);
   const snapshotRequestRef = useRef(0);
+  const automaticSnapshotKey = useRef('');
+  const storedLabSnapshot = useQuery({
+    queryKey: ['assetSnapshot', assetPath],
+    queryFn: () => api.latestSnapshot(assetPath),
+    enabled: Boolean(assetPath),
+    staleTime: 0,
+  });
   const trackSnapshot = useMutation({
     mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
       const requestID = ++snapshotRequestRef.current;
@@ -965,8 +972,21 @@ export function ProfileLabPage() {
       if (operation.status === 'error' || !operation.result) throw new Error(operation.error || 'Asset snapshot did not return a result');
       return operation.result;
     },
+    onSuccess: (scan) => {
+      queryClient.setQueryData(['assetSnapshot', scan.path], {
+        found: true,
+        snapshot: scan,
+        status: 'current',
+        requiresAnalysis: false,
+        staleComponents: [],
+      });
+    },
   });
-  const selectedAssetSnapshot = trackSnapshot.data?.path === assetPath ? trackSnapshot.data : undefined;
+  const selectedAssetSnapshot = trackSnapshot.data?.path === assetPath
+    ? trackSnapshot.data
+    : storedLabSnapshot.data?.snapshot?.path === assetPath && !storedLabSnapshot.data.requiresAnalysis
+      ? storedLabSnapshot.data.snapshot
+      : undefined;
   const pathTrackPreview = useQuery({
     queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft],
     queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: { ...trackDraft, scope: 'path' } }),
@@ -974,7 +994,14 @@ export function ProfileLabPage() {
   });
   const autoRecommendation = useMutation({
     mutationFn: async (path: string) => {
-      await trackSnapshot.mutateAsync({ path });
+      const state = await api.latestSnapshot(path);
+      if (state.requiresAnalysis) {
+        await trackSnapshot.mutateAsync({ path });
+      } else if (state.snapshot) {
+        queryClient.setQueryData(['assetSnapshot', path], state);
+      } else {
+        throw new Error('The selected asset is unavailable and has no usable snapshot');
+      }
       return api.suggestProfile(path);
     },
     onSuccess: (suggestion, requestedPath) => {
@@ -1122,6 +1149,19 @@ export function ProfileLabPage() {
     );
   
   useEffect(() => {
+    const state = storedLabSnapshot.data;
+    if (!assetPath || storedLabSnapshot.isFetching || trackSnapshot.isPending || !state?.requiresAnalysis) {
+      return;
+    }
+    const key = `${assetPath}:${state.status}:${state.snapshot?.updatedAt ?? 'none'}`;
+    if (automaticSnapshotKey.current === key) {
+      return;
+    }
+    automaticSnapshotKey.current = key;
+    trackSnapshot.mutate({ path: assetPath });
+  }, [assetPath, storedLabSnapshot.data, storedLabSnapshot.isFetching, trackSnapshot]);
+
+  useEffect(() => {
     if (!currentEncoderRecommendation) {
       return;
     }
@@ -1235,8 +1275,8 @@ export function ProfileLabPage() {
     encoderQualityRecommendation.reset();
     setLastEncoderRecommendation(undefined);
     if (assetPath) {
+      automaticSnapshotKey.current = '';
       trackSnapshot.reset();
-      trackSnapshot.mutate({ path: assetPath });
     }
   }, [assetPath]);
 

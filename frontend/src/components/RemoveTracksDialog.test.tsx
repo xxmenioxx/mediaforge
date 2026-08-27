@@ -12,7 +12,7 @@ vi.mock('../api/client', () => ({ api: {
 } }));
 
 const inventory = {
-  path: '/library/movie.mkv', fingerprint: 'sha256:before', chapters: 3,
+  path: '/library/movie.mkv', fingerprint: 'sha256:before', chapters: 3, durationSeconds: 120,
   streams: [
     { index: 0, type: 'video', codec: 'hevc', default: true, forced: false, attachedPic: false, stillImage: false },
     { index: 1, type: 'audio', codec: 'truehd', language: 'jpn', default: true, forced: false, attachedPic: false, stillImage: false },

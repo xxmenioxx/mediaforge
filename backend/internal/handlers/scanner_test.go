@@ -30,8 +30,18 @@ func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "converted.mkv")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	older := models.ScanResult{Path: path, FileName: "converted.mkv", VideoCodec: "h264", CreatedAt: time.Now().Add(-time.Hour)}
-	latest := models.ScanResult{Path: path, FileName: "converted.mkv", VideoCodec: "hevc", CreatedAt: time.Now()}
+	latest := completeAnalysisSnapshot(path, info)
+	latest.VideoCodec = "hevc"
+	latest.CreatedAt = time.Now()
+	stampSnapshotCacheMetadata(&latest, path, info)
 	if err := db.Create(&older).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +58,27 @@ func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var payload struct {
-		Found    bool               `json:"found"`
-		Snapshot *models.ScanResult `json:"snapshot"`
+		Found            bool               `json:"found"`
+		Snapshot         *models.ScanResult `json:"snapshot"`
+		Status           string             `json:"status"`
+		RequiresAnalysis bool               `json:"requiresAnalysis"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.Found || payload.Snapshot == nil || payload.Snapshot.ID != latest.ID || payload.Snapshot.VideoCodec != "hevc" {
+	if !payload.Found || payload.Snapshot == nil || payload.Snapshot.ID != latest.ID || payload.Snapshot.VideoCodec != "hevc" || payload.Status != "current" || payload.RequiresAnalysis {
 		t.Fatalf("unexpected persisted snapshot response: %#v", payload)
+	}
+	if err := os.WriteFile(path, []byte("fixture changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changedResponse := httptest.NewRecorder()
+	router.ServeHTTP(changedResponse, httptest.NewRequest(http.MethodGet, "/api/scan?path="+url.QueryEscape(path), nil))
+	if err := json.Unmarshal(changedResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "changed" || !payload.RequiresAnalysis {
+		t.Fatalf("changed media did not request analysis: %#v", payload)
 	}
 	var count int64
 	if err := db.Model(&models.ScanResult{}).Where("path = ?", path).Count(&count).Error; err != nil || count != 2 {

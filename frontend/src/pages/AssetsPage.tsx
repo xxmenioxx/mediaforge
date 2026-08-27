@@ -1639,6 +1639,7 @@ function AssetRow({
   const [snapshotTab, setSnapshotTab] = useState(0);
   const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
+  const automaticSnapshotKey = useRef('');
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [renamingSubtitle, setRenamingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleFileName, setSubtitleFileName] = useState('');
@@ -1666,7 +1667,7 @@ function AssetRow({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
     enabled: showSnapshotDialog && !asset.missing,
-    staleTime: 60_000,
+    staleTime: 0,
   });
   const snapshot = useMutation({
     mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
@@ -1683,7 +1684,13 @@ function AssetRow({
       return operation.result;
     },
     onSuccess: async (scan) => {
-      queryClient.setQueryData(['assetSnapshot', asset.path], { found: true, snapshot: scan });
+      queryClient.setQueryData(['assetSnapshot', asset.path], {
+        found: true,
+        snapshot: scan,
+        status: 'current',
+        requiresAnalysis: false,
+        staleComponents: [],
+      });
       if (asset.status !== 'converted' && asset.status !== 'archive' && asset.status !== 'accepted') {
         profileSuggestion.mutate(scan.path);
       }
@@ -1692,6 +1699,18 @@ function AssetRow({
     },
   });
   const snapshotData = snapshot.data ?? storedSnapshot.data?.snapshot ?? null;
+  useEffect(() => {
+    const state = storedSnapshot.data;
+    if (!showSnapshotDialog || asset.missing || storedSnapshot.isFetching || snapshot.isPending || !state?.requiresAnalysis) {
+      return;
+    }
+    const key = `${asset.path}:${state.status}:${state.snapshot?.updatedAt ?? 'none'}`;
+    if (automaticSnapshotKey.current === key) {
+      return;
+    }
+    automaticSnapshotKey.current = key;
+    snapshot.mutate({ path: asset.path });
+  }, [asset.missing, asset.path, showSnapshotDialog, snapshot, storedSnapshot.data, storedSnapshot.isFetching]);
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
@@ -1927,6 +1946,7 @@ function AssetRow({
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
+    automaticSnapshotKey.current = '';
     setSnapshotTab(0);
     setShowSnapshotDialog(true);
   }
@@ -2820,7 +2840,7 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {!asset.missing && !storedSnapshot.isLoading && !snapshot.isPending && !snapshotData ? (
+            {!asset.missing && !storedSnapshot.isLoading && !storedSnapshot.data?.requiresAnalysis && !snapshot.isPending && !snapshotData ? (
               <Alert
                 severity="info"
                 action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })}>Analyze asset</Button>}

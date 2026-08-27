@@ -190,8 +190,8 @@ func NewScannerHandler(db *gorm.DB) ScannerHandler {
 	return ScannerHandler{db: db}
 }
 
-// LatestSnapshot returns persisted evidence only. It deliberately does not
-// stat, probe, refresh, or otherwise analyze the media path.
+// LatestSnapshot returns persisted evidence and a cheap freshness assessment.
+// It never probes or refreshes media; callers decide whether to start analysis.
 func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
 	if path == "" {
@@ -199,18 +199,49 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 		return
 	}
 	path = resolveMediaPath(h.db, path)
+	info, statErr := os.Stat(path)
 
 	var snapshot models.ScanResult
 	result := h.db.Where("path = ?", path).Order("created_at desc").First(&snapshot)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusOK, gin.H{"found": false, "snapshot": nil})
+			status := "missing"
+			requiresAnalysis := statErr == nil && !info.IsDir()
+			if !requiresAnalysis {
+				status = "unavailable"
+			}
+			c.JSON(http.StatusOK, gin.H{"found": false, "snapshot": nil, "status": status, "requiresAnalysis": requiresAnalysis, "staleComponents": []string{}})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot})
+	if statErr != nil || info.IsDir() {
+		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}})
+		return
+	}
+
+	policy := analysisPolicy(h.db)
+	fingerprintMatches, legacy, staleComponents := snapshotCacheStateWithEvidence(snapshot, path, info, policy, 20)
+	status := "current"
+	requiresAnalysis := false
+	switch {
+	case legacy:
+		status, requiresAnalysis = "legacy", true
+	case !fingerprintMatches:
+		status, requiresAnalysis = "changed", true
+	case snapshotRequiresFrameStructureRefresh(snapshot):
+		status, requiresAnalysis = "stale", true
+		if !slices.Contains(staleComponents, "frameStructure") {
+			staleComponents = append(staleComponents, "frameStructure")
+		}
+	case len(staleComponents) > 0:
+		status, requiresAnalysis = "stale", true
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"found": true, "snapshot": snapshot, "status": status,
+		"requiresAnalysis": requiresAnalysis, "staleComponents": staleComponents,
+	})
 }
 
 func (h ScannerHandler) Scan(c *gin.Context) {

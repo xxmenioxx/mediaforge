@@ -78,7 +78,7 @@ export function QueuePage() {
   const workerFilter = searchParams.get('worker') ?? 'all';
   const selectedJobId = Number(searchParams.get('job'));
   const jobHistory = useMemo(() => jobs.data ?? [], [jobs.data]);
-  const allJobs = useMemo(() => latestJobsByAsset(jobHistory), [jobHistory]);
+  const allJobs = useMemo(() => queueJobsForDisplay(jobHistory), [jobHistory]);
   const workerOptions = useMemo(
     () => [...new Set(allJobs.map((job) => job.workerName || 'unassigned'))].sort((left, right) => left.localeCompare(right)),
     [allJobs],
@@ -1268,6 +1268,25 @@ function latestJobsByAsset(jobs: QueueJob[]) {
     }
   }
   return [...latest.values()];
+}
+
+function queueJobsForDisplay(jobs: QueueJob[]) {
+  const visible = new Map(latestJobsByAsset(jobs).map((job) => [job.id, job]));
+  const actionableBatchIds = new Set(
+    jobs
+      .filter((job) => job.batchId && job.status !== 'completed')
+      .map((job) => job.batchId),
+  );
+
+  // A batch is one Queue operation. Keep all of its members together while any
+  // member can still be canceled, requeued, or removed, even when a newer job
+  // for the same asset would otherwise replace it in the latest-job view.
+  for (const job of jobs) {
+    if (job.batchId && actionableBatchIds.has(job.batchId)) {
+      visible.set(job.id, job);
+    }
+  }
+  return [...visible.values()];
 }
 
 function sortJobsForQueue(left: QueueJob, right: QueueJob) {

@@ -464,7 +464,13 @@ export const api = {
       body: JSON.stringify({ path, force, analysisSeconds }),
   }),
   latestSnapshot: (path: string) =>
-    request<{ found: boolean; snapshot: ScanResult | null }>(`/api/scan?path=${encodeURIComponent(path)}`),
+    request<{
+      found: boolean;
+      snapshot: ScanResult | null;
+      status: 'current' | 'missing' | 'changed' | 'stale' | 'legacy' | 'unavailable';
+      requiresAnalysis: boolean;
+      staleComponents: string[];
+    }>(`/api/scan?path=${encodeURIComponent(path)}`),
   startSnapshotOperation: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
     request<SnapshotOperation>('/api/scan/operations', {
       method: 'POST',
