@@ -1662,6 +1662,12 @@ function AssetRow({
     normalizeAssetConversionOverride(asset.conversion),
   );
   const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
+  const storedSnapshot = useQuery({
+    queryKey: ['assetSnapshot', asset.path],
+    queryFn: () => api.latestSnapshot(asset.path),
+    enabled: showSnapshotDialog && !asset.missing,
+    staleTime: 60_000,
+  });
   const snapshot = useMutation({
     mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
       let operation = await api.startSnapshotOperation(input);
@@ -1677,6 +1683,7 @@ function AssetRow({
       return operation.result;
     },
     onSuccess: async (scan) => {
+      queryClient.setQueryData(['assetSnapshot', asset.path], { found: true, snapshot: scan });
       if (asset.status !== 'converted' && asset.status !== 'archive' && asset.status !== 'accepted') {
         profileSuggestion.mutate(scan.path);
       }
@@ -1684,6 +1691,7 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
     },
   });
+  const snapshotData = snapshot.data ?? storedSnapshot.data?.snapshot ?? null;
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
@@ -1921,9 +1929,6 @@ function AssetRow({
     event.stopPropagation();
     setSnapshotTab(0);
     setShowSnapshotDialog(true);
-    if (!asset.missing && !snapshot.data && !snapshot.isPending) {
-      snapshot.mutate({ path: asset.path });
-    }
   }
 
   function openPreviewDialog(event: MouseEvent<HTMLButtonElement>) {
@@ -1957,7 +1962,7 @@ function AssetRow({
   }
 
   function toggleSnapshotStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
-    const scan = snapshot.data;
+    const scan = snapshotData;
     if (!scan) {
       return;
     }
@@ -2356,14 +2361,14 @@ async function generateExternalSubtitle(
         {isConverted ? (
           <TableCell>
             <ConvertedMediaSummary
-              technical={snapshot.data ? {
-                videoCodec: snapshot.data.videoCodec,
+              technical={snapshotData ? {
+                videoCodec: snapshotData.videoCodec,
                 encoder: asset.technical?.encoder,
-                width: snapshot.data.width,
-                height: snapshot.data.height,
-                duration: snapshot.data.duration,
-                bitrate: snapshot.data.bitrate,
-                hdr: snapshot.data.hdr,
+                width: snapshotData.width,
+                height: snapshotData.height,
+                duration: snapshotData.duration,
+                bitrate: snapshotData.bitrate,
+                hdr: snapshotData.hdr,
               } : asset.technical}
             />
           </TableCell>
@@ -2786,6 +2791,7 @@ async function generateExternalSubtitle(
               </Stack>
             </Stack>
             {asset.missing ? <Alert severity="warning">This indexed asset is marked as missing. Synchronize Assets and verify that the backend media mount contains the file before scanning it.</Alert> : null}
+            {storedSnapshot.isLoading && !snapshotData && !snapshot.isPending ? <LinearProgress /> : null}
             {snapshot.isPending ? (
               <Alert severity="info">
                 <Stack spacing={1}>
@@ -2814,7 +2820,15 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {snapshot.data ? (
+            {!asset.missing && !storedSnapshot.isLoading && !snapshot.isPending && !snapshotData ? (
+              <Alert
+                severity="info"
+                action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })}>Analyze asset</Button>}
+              >
+                No stored snapshot is available. Opening Asset Info does not analyze media automatically.
+              </Alert>
+            ) : null}
+            {snapshotData ? (
               <>
                 <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
                   <Tab label="Asset Information" />
@@ -2827,32 +2841,32 @@ async function generateExternalSubtitle(
                 </Tabs>
                 <Box hidden={snapshotTab !== 1}>
                   <Box sx={{ pt: 1.5 }}>
-                    <MediaSnapshotDetails scan={snapshot.data} section="general" />
-                    <DirectPlaySnapshotComparison scan={snapshot.data} job={associatedJob} />
+                    <MediaSnapshotDetails scan={snapshotData} section="general" />
+                    <DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} />
                   </Box>
                 </Box>
                 <Box hidden={snapshotTab !== 2}>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     <TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 2} hasOpenJob={hasOpenJob} />
                     {!isConverted && !isArchive ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
-                      scan={snapshot.data}
+                      scan={snapshotData}
                       section="tracks"
                       streamControls={
                         isConverted || isArchive
                           ? undefined
                           : {
                               video: {
-                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'video'),
+                                selected: conversionStreamIndexes(conversionDraft, snapshotData, 'video'),
                                 disabled: updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
                               },
                               audio: {
-                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'audio'),
+                                selected: conversionStreamIndexes(conversionDraft, snapshotData, 'audio'),
                                 disabled: updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
                               },
                               subtitle: {
-                                selected: conversionStreamIndexes(conversionDraft, snapshot.data, 'subtitle'),
+                                selected: conversionStreamIndexes(conversionDraft, snapshotData, 'subtitle'),
                                 disabled: updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
                               },
@@ -2886,7 +2900,7 @@ async function generateExternalSubtitle(
                       </Alert>
                     ) : null}
                     <EmbeddedSubtitleActions
-                      streams={snapshot.data.subtitleStreams}
+                      streams={snapshotData.subtitleStreams}
                       generations={subtitleGenerations}
                       onGenerate={generateExternalSubtitle}
                     />
@@ -2976,7 +2990,7 @@ async function generateExternalSubtitle(
                         assetPath={asset.path}
                         draft={conversionDraft}
                         profile={profiles.find((profile) => profile.id === effectiveProfileId)}
-                        scan={snapshot.data}
+                        scan={snapshotData}
                         onChange={updateConversionDraft}
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -187,6 +188,29 @@ type FFProbeStream struct {
 
 func NewScannerHandler(db *gorm.DB) ScannerHandler {
 	return ScannerHandler{db: db}
+}
+
+// LatestSnapshot returns persisted evidence only. It deliberately does not
+// stat, probe, refresh, or otherwise analyze the media path.
+func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	path = resolveMediaPath(h.db, path)
+
+	var snapshot models.ScanResult
+	result := h.db.Where("path = ?", path).Order("created_at desc").First(&snapshot)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusOK, gin.H{"found": false, "snapshot": nil})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot})
 }
 
 func (h ScannerHandler) Scan(c *gin.Context) {

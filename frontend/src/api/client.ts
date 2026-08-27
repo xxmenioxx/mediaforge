@@ -463,6 +463,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path, force, analysisSeconds }),
   }),
+  latestSnapshot: (path: string) =>
+    request<{ found: boolean; snapshot: ScanResult | null }>(`/api/scan?path=${encodeURIComponent(path)}`),
   startSnapshotOperation: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
     request<SnapshotOperation>('/api/scan/operations', {
       method: 'POST',

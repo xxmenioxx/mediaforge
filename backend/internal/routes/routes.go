@@ -154,6 +154,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/workers/jobs/:id/status", workers.UpdateJobStatus)
 		api.POST("/validation/jobs/:id", validation.ValidateJob)
 		api.POST("/scan", scanner.Scan)
+		api.GET("/scan", scanner.LatestSnapshot)
 		api.POST("/scan/operations", scanner.StartSnapshotOperation)
 		api.GET("/scan/operations", scanner.ListSnapshotOperations)
 		api.GET("/scan/operations/:id", scanner.GetSnapshotOperation)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,48 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:latest-snapshot-read-only?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "converted.mkv")
+	older := models.ScanResult{Path: path, FileName: "converted.mkv", VideoCodec: "h264", CreatedAt: time.Now().Add(-time.Hour)}
+	latest := models.ScanResult{Path: path, FileName: "converted.mkv", VideoCodec: "hevc", CreatedAt: time.Now()}
+	if err := db.Create(&older).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&latest).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/scan", NewScannerHandler(db).LatestSnapshot)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/scan?path="+url.QueryEscape(path), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Found    bool               `json:"found"`
+		Snapshot *models.ScanResult `json:"snapshot"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Found || payload.Snapshot == nil || payload.Snapshot.ID != latest.ID || payload.Snapshot.VideoCodec != "hevc" {
+		t.Fatalf("unexpected persisted snapshot response: %#v", payload)
+	}
+	var count int64
+	if err := db.Model(&models.ScanResult{}).Where("path = ?", path).Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("read-only lookup changed snapshot history: count=%d err=%v", count, err)
+	}
+}
 
 func TestSnapshotOperationUsesOnlySelectedCachedAsset(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:snapshot-operation-single-asset?mode=memory&cache=shared"), &gorm.Config{})

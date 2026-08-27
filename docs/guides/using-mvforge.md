@@ -125,6 +125,11 @@ configurado (`media/anime`, `media/movies`, etc.). No crea opciones separadas
 para una serie, temporada o subpath más profundo, y la misma selección se puede
 reutilizar en Unprocessed, Library, Converted y Archive.
 
+Abrir **Asset Info** en cualquiera de esas áreas sólo consulta el último
+snapshot persistido; no inicia FFmpeg ni crea una operación de análisis. Si no
+existe evidencia, usa **Analyze asset**. **Rescan** fuerza explícitamente una
+nueva lectura del archivo.
+
 ## 5. Revisar el análisis
 
 Antes de convertir:
