@@ -20,13 +20,14 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 const (
-	testEncodeOwnerType           = "test_encode"
+	legacyTestEncodeOwnerType     = "test_encode"
 	testEncodeWaiting             = "waiting"
 	testEncodeRunning             = "generating"
 	testEncodeReady               = "ready"
@@ -69,8 +70,6 @@ var testEncodeProcesses = struct {
 	cancel map[uint]context.CancelFunc
 }{cancel: map[uint]context.CancelFunc{}}
 
-var testEncodeDispatchMu sync.Mutex
-
 func recoverInterruptedTestEncodes(db *gorm.DB) {
 	if db == nil || !db.Migrator().HasTable(&models.TestEncode{}) {
 		return
@@ -85,8 +84,10 @@ func recoverInterruptedTestEncodes(db *gorm.DB) {
 			"error_message": "Test Encode was interrupted by application restart", "completed_at": &now, "updated_at": now,
 		}).Error
 	}
+	// Remove reservations created by older releases. They are legacy data and
+	// must never affect scheduler capacity after Test Encode was decoupled.
 	if db.Migrator().HasTable(&models.TaskReservation{}) {
-		_ = db.Where("owner_type = ?", testEncodeOwnerType).Delete(&models.TaskReservation{}).Error
+		_ = db.Where("owner_type = ?", legacyTestEncodeOwnerType).Delete(&models.TaskReservation{}).Error
 	}
 }
 
@@ -149,7 +150,8 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		SourcePath: resolved.job.MediaPath, SourceFingerprint: fingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
 		LibraryID: resolved.library.ID, ConfigurationSource: normalizedTestEncodeConfigurationSource(input.ConfigurationSource),
 		RequestedConfiguration: resolved.requested, ProfileID: resolved.job.ProfileID, ProfileVersion: resolved.job.ProfileVersion,
-		StartSeconds: start, DurationSeconds: duration, Status: testEncodeWaiting, Phase: "resolving_capacity", Progress: 0,
+		StartSeconds: start, DurationSeconds: duration, Status: testEncodeRunning, Phase: "preparing", Progress: 1,
+		StartedAt: &now,
 		ExpiresAt: &expires, CreatedAt: now, UpdatedAt: now,
 	}
 	var record models.AssetRecord
@@ -183,7 +185,6 @@ func (h AssetHandler) CancelTestEncode(c *gin.Context) {
 	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", test.ID).Updates(map[string]any{
 		"status": testEncodeCanceled, "phase": "canceled", "canceled_at": &now, "updated_at": now,
 	}).Error
-	_ = scheduler.ReleaseTaskReservation(h.db, testEncodeOwnerType, test.ID)
 	c.JSON(http.StatusAccepted, gin.H{"status": testEncodeCanceled, "id": test.ID})
 }
 
@@ -505,14 +506,13 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		testEncodeProcesses.Lock()
 		delete(testEncodeProcesses.cancel, id)
 		testEncodeProcesses.Unlock()
-		_ = scheduler.ReleaseTaskReservation(h.db, testEncodeOwnerType, id)
 	}()
 
 	var test models.TestEncode
 	if h.db.First(&test, id).Error != nil {
 		return
 	}
-	if test.Status != testEncodeWaiting {
+	if test.Status != testEncodeRunning {
 		return
 	}
 	planned := plannedTestEncodeOutputPath(h.db, resolved.job, resolved.library, resolved.profile)
@@ -555,53 +555,24 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		"title":                   fmt.Sprintf("MVForge Test T%d", id),
 	}
 	encoder := resolvedVideoEncoder(plan.Profile)
-	planDecision := models.ExecutionPlan{
-		SelectedEncoder: encoder, EstimatedOutputMaxBytes: max(64<<20, test.SourceSizeBytes/20),
-		EstimatedWorkspaceBytes: max(64<<20, test.SourceSizeBytes/20),
-		Reservation:             models.JSONMap{"jobType": string(scheduler.JobTypeTestEncode)},
+	var runtimeSnapshotID *uint
+	if snapshot, snapshotErr := runtimeinfo.Latest(h.db); snapshotErr == nil {
+		runtimeSnapshotID = &snapshot.ID
 	}
-
-	var workerName string
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		testEncodeDispatchMu.Lock()
-		decision, decisionErr := scheduler.EvaluateResources(h.db, &planDecision)
-		if decisionErr == nil && decision.Allowed {
-			workerName = decision.Worker.Worker
-			decisionErr = scheduler.ActivateTaskReservation(h.db, testEncodeOwnerType, id, test.SourcePath, planDecision, workerName)
-		}
-		testEncodeDispatchMu.Unlock()
-		if decisionErr != nil {
-			h.failTestEncode(id, decisionErr)
-			return
-		}
-		if decision.Allowed {
-			break
-		}
-		_ = h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeWaiting).Updates(map[string]any{
-			"phase": decision.WaitingState, "updated_at": time.Now(),
-		}).Error
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-		}
-	}
+	executorName := "test-encode-local"
 
 	effective := models.JSONMap{
 		"profile": plan.Profile, "override": plan.Override, "streamPlan": resolveEffectiveStreamPlan(plan),
-		"effectiveEncoder": encoder, "worker": workerName, "runtimeSnapshotId": planDecision.RuntimeSnapshotID,
+		"effectiveEncoder": encoder, "executor": executorName, "runtimeSnapshotId": runtimeSnapshotID,
 	}
 	effectiveHash := configurationHash(effective)
 	plan.OutputMetadata["MVFORGE_CONFIG_HASH"] = effectiveHash
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := "ffmpeg " + shellJoin(args)
 	now := time.Now()
-	result := h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeWaiting).Updates(map[string]any{
-		"status": testEncodeRunning, "phase": "generating", "progress": 5, "started_at": &now,
-		"worker_name": workerName, "runtime_snapshot_id": planDecision.RuntimeSnapshotID,
+	result := h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeRunning).Updates(map[string]any{
+		"phase": "generating", "progress": 5,
+		"worker_name": executorName, "runtime_snapshot_id": runtimeSnapshotID,
 		"effective_encoder": encoder, "effective_configuration": effective, "configuration_hash": effectiveHash,
 		// The model pins this column name so partial V1 databases migrate consistently.
 		testEncodeFFmpegCommandColumn: command, "output_path": output, "temporary_path": temporary, "updated_at": now,

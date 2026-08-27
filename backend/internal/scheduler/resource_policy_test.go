@@ -17,18 +17,8 @@ func TestBuildReservationClassifiesEncoders(t *testing.T) {
 	}
 }
 
-func TestBuildReservationPreservesTestEncodeClassification(t *testing.T) {
-	reservation := BuildReservation(models.ExecutionPlan{
-		SelectedEncoder: "hevc_qsv",
-		Reservation:     models.JSONMap{"jobType": string(JobTypeTestEncode)},
-	})
-	if reservation["jobType"] != string(JobTypeTestEncode) || reservation["weight"] != string(JobWeightHeavy) {
-		t.Fatalf("unexpected Test Encode reservation: %#v", reservation)
-	}
-}
-
-func TestTaskReservationConsumesWorkerCapacity(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:test-encode-worker-capacity?mode=memory&cache=shared"), &gorm.Config{})
+func TestWorkerAvailabilityIgnoresLegacyTaskReservations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:legacy-task-reservation?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,25 +30,15 @@ func TestTaskReservationConsumesWorkerCapacity(t *testing.T) {
 	if err := db.Create(&worker).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ActivateTaskReservation(db, "test_encode", 7, "/raw/a.mkv", models.ExecutionPlan{SelectedEncoder: "libx265", Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)}}, worker.Name); err != nil {
+	if err := db.Create(&models.TaskReservation{OwnerType: "test_encode", OwnerID: 7, AssetKey: "/raw/a.mkv", State: ReservationStateActive, WorkerName: worker.Name}).Error; err != nil {
 		t.Fatal(err)
 	}
 	decision, err := EvaluateWorkerAvailability(db, models.ExecutionPlan{SelectedEncoder: "libx265"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Available {
-		t.Fatalf("worker accepted another job despite active Test Encode: %#v", decision)
-	}
-	if err := ReleaseTaskReservation(db, "test_encode", 7); err != nil {
-		t.Fatal(err)
-	}
-	decision, err = EvaluateWorkerAvailability(db, models.ExecutionPlan{SelectedEncoder: "libx265"}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !decision.Available {
-		t.Fatalf("worker did not recover capacity: %#v", decision)
+		t.Fatalf("legacy Test Encode reservation affected Queue worker capacity: %#v", decision)
 	}
 }
 
@@ -98,50 +78,6 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	}
 	if candidate.SelectedEncoder != "libx265" {
 		t.Fatalf("resource saturation must not replace a locked encoder: %#v", candidate)
-	}
-
-	testEncode := models.ExecutionPlan{
-		SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 1 << 30, EstimatedOutputMaxBytes: 1 << 30,
-		Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)},
-	}
-	decision, err := EvaluateResources(db, &testEncode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !decision.Allowed || decision.WaitingState == "WAITING_PROFILE_LIMIT" {
-		t.Fatalf("Test Encode was blocked by conversion profile limits: %#v", decision)
-	}
-}
-
-func TestActiveTestEncodeDoesNotConsumeProfileLimitCounters(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:test-encode-profile-limit-exclusion?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.TaskReservation{}, &models.WorkerNode{}); err != nil {
-		t.Fatal(err)
-	}
-	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
-	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
-		t.Fatal(err)
-	}
-	worker := models.WorkerNode{Name: "local", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265"}, LastSeenAt: time.Now()}
-	if err := db.Create(&worker).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := ActivateTaskReservation(db, "test_encode", 9, "/raw/test.mkv", models.ExecutionPlan{
-		SelectedEncoder: "libx265", Reservation: models.JSONMap{"jobType": string(JobTypeTestEncode)},
-	}, worker.Name); err != nil {
-		t.Fatal(err)
-	}
-	decision, err := EvaluateResources(db, &models.ExecutionPlan{
-		SelectedEncoder: "libx265", EstimatedWorkspaceBytes: 1 << 30, EstimatedOutputMaxBytes: 1 << 30,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !decision.Allowed || decision.WaitingState == "WAITING_PROFILE_LIMIT" {
-		t.Fatalf("active Test Encode consumed conversion profile limits: %#v", decision)
 	}
 }
 

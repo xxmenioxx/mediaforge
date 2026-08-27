@@ -98,39 +98,18 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
 	jobType := JobType(jsonString(plan.Reservation, "jobType"))
-	usesProfileLimits := jobType != JobTypeTestEncode
 	reasons := []string{}
 	var activeReservations []models.SchedulerReservation
 	if err := db.Where("state = ?", ReservationStateActive).Find(&activeReservations).Error; err != nil {
 		return ResourceDecision{}, err
 	}
-	if db.Migrator().HasTable(&models.TaskReservation{}) {
-		var taskReservations []models.TaskReservation
-		if err := db.Where("state = ?", ReservationStateActive).Find(&taskReservations).Error; err != nil {
-			return ResourceDecision{}, err
-		}
-		for _, item := range taskReservations {
-			activeReservations = append(activeReservations, models.SchedulerReservation{
-				AssetKey: item.AssetKey, State: item.State, WorkerName: item.WorkerName,
-				JobType: item.JobType, Encoder: item.Encoder, EncoderClass: item.EncoderClass,
-				MemoryBytes: item.MemoryBytes, WorkspaceBytes: item.WorkspaceBytes,
-				LibraryBytes: item.LibraryBytes, AcquiredAt: item.AcquiredAt,
-			})
-		}
-	}
-	profileReservations := make([]models.SchedulerReservation, 0, len(activeReservations))
-	for _, item := range activeReservations {
-		if item.JobType != string(JobTypeTestEncode) {
-			profileReservations = append(profileReservations, item)
-		}
-	}
-	running := int64(len(profileReservations))
-	if usesProfileLimits && int(running) >= limits.MaxRunningJobs {
+	running := int64(len(activeReservations))
+	if int(running) >= limits.MaxRunningJobs {
 		reasons = append(reasons, fmt.Sprintf("Running job limit reached (%d/%d)", running, limits.MaxRunningJobs))
 	}
 
 	video, software, hardware, audio, lab := 0, 0, 0, 0, 0
-	for _, item := range profileReservations {
+	for _, item := range activeReservations {
 		if item.JobType == string(JobTypeAudioRestoration) {
 			audio++
 		}
@@ -148,13 +127,13 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 			hardware++
 		}
 	}
-	if usesProfileLimits && video >= limits.MaxVideoJobs {
+	if video >= limits.MaxVideoJobs {
 		reasons = append(reasons, fmt.Sprintf("Video job limit reached (%d/%d)", video, limits.MaxVideoJobs))
 	}
-	if usesProfileLimits && plan.SelectedEncoder == "libx265" && software >= limits.MaxSoftwareX265Jobs {
+	if plan.SelectedEncoder == "libx265" && software >= limits.MaxSoftwareX265Jobs {
 		reasons = append(reasons, fmt.Sprintf("Software x265 limit reached (%d/%d)", software, limits.MaxSoftwareX265Jobs))
 	}
-	if usesProfileLimits && isHardwareEncoder(plan.SelectedEncoder) && hardware >= limits.MaxHardwareEncodeJobs {
+	if isHardwareEncoder(plan.SelectedEncoder) && hardware >= limits.MaxHardwareEncodeJobs {
 		reasons = append(reasons, fmt.Sprintf("Hardware encoder limit reached (%d/%d)", hardware, limits.MaxHardwareEncodeJobs))
 	}
 	if jobType == JobTypeAudioRestoration && audio >= limits.MaxAudioJobs {

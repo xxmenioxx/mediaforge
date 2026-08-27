@@ -73,10 +73,9 @@ Una aprobación no garantiza ejecución inmediata. El plan todavía debe satisfa
 
 Los estados de espera son condiciones recuperables. El planner vuelve a evaluarlos cuando cambia el entorno.
 
-Test Encode no participa en `WAITING_PROFILE_LIMIT`: no se bloquea por los
-límites de cantidad de conversiones del runtime profile y sus reservas activas
-no consumen esos contadores. Sigue respetando RAM, espacio, energía y la
-capacidad concurrente real del worker.
+Test Encode no forma parte del scheduler: no crea planes ni reservas, no espera
+un worker y no participa en ningún estado `WAITING_*`. Su executor y lifecycle
+son independientes de Queue.
 
 ## Runtime snapshot y encoder
 

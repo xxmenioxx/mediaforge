@@ -9,7 +9,6 @@ const (
 	JobTypeVideoConversion  JobType = "video_conversion"
 	JobTypeAudioRestoration JobType = "audio_restoration"
 	JobTypeLabPreview       JobType = "lab_preview"
-	JobTypeTestEncode       JobType = "test_encode"
 	JobTypeAnalysis         JobType = "analysis"
 	JobTypeValidation       JobType = "validation"
 	JobTypePublishing       JobType = "publishing"
@@ -30,7 +29,7 @@ type JobClassification struct {
 
 func ClassifyJob(jobType JobType) (JobClassification, error) {
 	switch jobType {
-	case JobTypeVideoConversion, JobTypeAudioRestoration, JobTypeTestEncode:
+	case JobTypeVideoConversion, JobTypeAudioRestoration:
 		return JobClassification{Type: jobType, Weight: JobWeightHeavy, RequiresWorkingWindow: true}, nil
 	case JobTypeLabPreview, JobTypeAnalysis, JobTypeValidation, JobTypePublishing, JobTypeCleanup:
 		return JobClassification{Type: jobType, Weight: JobWeightLight, RequiresWorkingWindow: false}, nil

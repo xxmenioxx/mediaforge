@@ -539,7 +539,7 @@ func TestRecoverInterruptedTestEncodesFailsOnlyActiveWorkAndReleasesReservations
 	if err := db.Create(&ready).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.TaskReservation{OwnerType: testEncodeOwnerType, OwnerID: waiting.ID, AssetKey: waiting.SourcePath, State: "active"}).Error; err != nil {
+	if err := db.Create(&models.TaskReservation{OwnerType: legacyTestEncodeOwnerType, OwnerID: waiting.ID, AssetKey: waiting.SourcePath, State: "active"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	recoverInterruptedTestEncodes(db)

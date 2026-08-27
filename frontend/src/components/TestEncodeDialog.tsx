@@ -83,7 +83,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Alert severity="info">
-              Generates a real short encode with the final MVForge pipeline. It does not enter Queue, publish, or archive the original.
+              Generates a real short encode immediately in its own executor. It does not enter Queue, wait for a worker, publish, or archive the original.
             </Alert>
             {request.configurationSource === 'lab_draft' ? <Alert severity="warning">Uses the current Lab configuration, including unsaved changes.</Alert> : null}
             <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{sourcePath}</Typography>
@@ -172,7 +172,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
               {details?.staleReason ? <Alert severity="warning">{details.staleReason}</Alert> : null}
               <DetailRow label="Configuration" value={`${details?.configurationSource || 'pending'} · ${details?.configurationHash || 'pending'}`} />
               <DetailRow label="Sample window" value={`${details?.startSeconds ?? 0}s + ${details?.durationSeconds ?? 0}s`} />
-              <DetailRow label="Worker / encoder" value={`${details?.workerName || 'pending'} · ${details?.effectiveEncoder || 'pending'}`} />
+              <DetailRow label="Executor / encoder" value={`${details?.workerName || 'pending'} · ${details?.effectiveEncoder || 'pending'}`} />
               <DetailRow label="Source" value={details?.sourcePath || 'pending'} path />
               <DetailRow label="Output" value={details?.outputPath || 'pending'} path />
               <DetailRow label="Output size" value={formatBytes(details?.outputSizeBytes ?? 0)} />

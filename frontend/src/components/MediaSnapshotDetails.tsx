@@ -145,7 +145,7 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
                     size="small"
                     color={window.status === 'progressive' ? 'success' : window.status === 'unknown' ? 'default' : 'warning'}
                     variant="outlined"
-                    label={`Region ${index + 1} · ${formatDuration(window.start)} · ${window.status} · TFF ${window.tff} / BFF ${window.bff} / P ${window.progressive}${window.frameSignals?.cadence ? ` · ${window.frameSignals.cadence.replaceAll('_', ' ')}` : ''}`}
+                    label={`Region ${index + 1} · ${formatDuration(window.start)} · ${window.status} · TFF ${window.tff} / BFF ${window.bff} / P ${window.progressive}${window.frameSignals?.cadence ? ` · ${repeatCadenceLabel(window.frameSignals.cadence)}` : ''}`}
                   />
                 ))}
               </Stack>
@@ -155,6 +155,14 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
       ) : null}
     </Stack>
   );
+}
+
+function repeatCadenceLabel(value: string): string {
+  if (value === 'none_or_insufficient') return 'no repeat cadence established';
+  if (value === 'irregular') return 'irregular repeat cadence';
+  const stable = value.match(/^stable_every_(\d+)_frames$/);
+  if (stable) return `repeat every ${stable[1]} frames`;
+  return value.replaceAll('_', ' ');
 }
 
 type SnapshotCacheDetails = {

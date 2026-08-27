@@ -46,8 +46,9 @@ type TestEncode struct {
 	UpdatedAt              time.Time  `json:"updatedAt"`
 }
 
-// TaskReservation lets non-Queue execution types participate in the same
-// resource accounting without borrowing QueueJob lifecycle semantics.
+// TaskReservation is retained as a legacy persistence model so existing
+// databases remain readable. New Test Encode executions do not create or use
+// scheduler reservations.
 type TaskReservation struct {
 	ID             uint       `json:"id" gorm:"primaryKey"`
 	OwnerType      string     `json:"ownerType" gorm:"not null;uniqueIndex:idx_task_reservation_owner"`
