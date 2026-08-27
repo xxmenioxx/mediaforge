@@ -136,21 +136,48 @@ var profileSampleEstimateSlot = make(chan struct{}, 1)
 var assetInventorySyncMu sync.Mutex
 
 type AssetInventory struct {
-	Unprocessed       []Asset       `json:"unprocessed"`
-	Library           []Asset       `json:"library"`
-	Converted         []Asset       `json:"converted"`
-	Unverified        []Asset       `json:"unverified"`
-	Accepted          []Asset       `json:"accepted"`
-	Archive           []Asset       `json:"archive"`
-	Missing           []Asset       `json:"missing"`
-	UnprocessedGroups []AssetGroup  `json:"unprocessedGroups"`
-	LibraryGroups     []AssetGroup  `json:"libraryGroups"`
-	ConvertedGroups   []AssetGroup  `json:"convertedGroups"`
-	UnverifiedGroups  []AssetGroup  `json:"unverifiedGroups"`
-	AcceptedGroups    []AssetGroup  `json:"acceptedGroups"`
-	ArchiveGroups     []AssetGroup  `json:"archiveGroups"`
-	Reports           AssetReports  `json:"reports"`
-	Sync              AssetSyncInfo `json:"sync"`
+	SourceGroups      []AssetSourceGroup `json:"sourceGroups"`
+	Unprocessed       []Asset            `json:"unprocessed"`
+	Library           []Asset            `json:"library"`
+	Converted         []Asset            `json:"converted"`
+	Unverified        []Asset            `json:"unverified"`
+	Accepted          []Asset            `json:"accepted"`
+	Archive           []Asset            `json:"archive"`
+	Missing           []Asset            `json:"missing"`
+	UnprocessedGroups []AssetGroup       `json:"unprocessedGroups"`
+	LibraryGroups     []AssetGroup       `json:"libraryGroups"`
+	ConvertedGroups   []AssetGroup       `json:"convertedGroups"`
+	UnverifiedGroups  []AssetGroup       `json:"unverifiedGroups"`
+	AcceptedGroups    []AssetGroup       `json:"acceptedGroups"`
+	ArchiveGroups     []AssetGroup       `json:"archiveGroups"`
+	Reports           AssetReports       `json:"reports"`
+	Sync              AssetSyncInfo      `json:"sync"`
+}
+
+type AssetSourceGroup struct {
+	ID            uint                `json:"id"`
+	Name          string              `json:"name"`
+	RelativePath  string              `json:"relativePath"`
+	SourcePath    string              `json:"sourcePath"`
+	FileCount     int                 `json:"fileCount"`
+	SizeBytes     int64               `json:"sizeBytes"`
+	LogicalGroups []AssetLogicalGroup `json:"logicalGroups"`
+}
+
+type AssetLogicalGroup struct {
+	Name       string      `json:"name"`
+	Path       string      `json:"path"`
+	FileCount  int         `json:"fileCount"`
+	SizeBytes  int64       `json:"sizeBytes"`
+	AssetPaths []AssetPath `json:"assetPaths"`
+}
+
+type AssetPath struct {
+	Name      string  `json:"name"`
+	Path      string  `json:"path"`
+	FileCount int     `json:"fileCount"`
+	SizeBytes int64   `json:"sizeBytes"`
+	Assets    []Asset `json:"assets"`
 }
 
 type AssetSyncInfo struct {
@@ -291,23 +318,26 @@ type SubtitleTransform struct {
 }
 
 type Asset struct {
-	LibraryID       uint                         `json:"libraryId"`
-	LibraryName     string                       `json:"libraryName"`
-	Path            string                       `json:"path"`
-	RelativePath    string                       `json:"relativePath"`
-	GroupPath       string                       `json:"groupPath"`
-	FileName        string                       `json:"fileName"`
-	Extension       string                       `json:"extension"`
-	SizeBytes       int64                        `json:"sizeBytes"`
-	ModifiedAt      time.Time                    `json:"modifiedAt"`
-	Status          string                       `json:"status"`
-	Missing         bool                         `json:"missing"`
-	ExpiresAt       *time.Time                   `json:"expiresAt,omitempty"`
-	Review          AssetReviewState             `json:"review"`
-	Metadata        AssetMetadataState           `json:"metadata"`
-	Conversion      AssetConversionOverrideState `json:"conversion"`
-	PublicationMode string                       `json:"publicationMode,omitempty"`
-	Technical       *AssetTechnicalInfo          `json:"technical,omitempty"`
+	SourceGroupID    uint                         `json:"sourceGroupId,omitempty"`
+	LogicalGroupPath string                       `json:"logicalGroupPath,omitempty"`
+	SourcePath       string                       `json:"sourcePath,omitempty"`
+	LibraryID        uint                         `json:"libraryId"`
+	LibraryName      string                       `json:"libraryName"`
+	Path             string                       `json:"path"`
+	RelativePath     string                       `json:"relativePath"`
+	GroupPath        string                       `json:"groupPath"`
+	FileName         string                       `json:"fileName"`
+	Extension        string                       `json:"extension"`
+	SizeBytes        int64                        `json:"sizeBytes"`
+	ModifiedAt       time.Time                    `json:"modifiedAt"`
+	Status           string                       `json:"status"`
+	Missing          bool                         `json:"missing"`
+	ExpiresAt        *time.Time                   `json:"expiresAt,omitempty"`
+	Review           AssetReviewState             `json:"review"`
+	Metadata         AssetMetadataState           `json:"metadata"`
+	Conversion       AssetConversionOverrideState `json:"conversion"`
+	PublicationMode  string                       `json:"publicationMode,omitempty"`
+	Technical        *AssetTechnicalInfo          `json:"technical,omitempty"`
 }
 
 type AssetTechnicalInfo struct {
@@ -2770,7 +2800,6 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
 	entries := assetMetadataOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
 	categories := normalizedTags(input.Categories)
@@ -2781,11 +2810,7 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 	if len(categories) == 0 && len(tags) == 0 {
 		delete(entries, cleanPath)
 	} else {
-		entries[cleanPath] = AssetMetadataState{
-			Categories: categories,
-			Tags:       tags,
-			UpdatedAt:  now,
-		}
+		entries[cleanPath] = AssetMetadataState{Categories: categories, Tags: tags, UpdatedAt: now}
 	}
 	if isPathMetadata {
 		var records []models.AssetRecord
@@ -4980,6 +5005,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	}
 	sortAssets(inventory.Missing)
 	inventory.Reports = assetReports(h.db, inventory, missing)
+	inventory.SourceGroups = buildAssetSourceGroups(h.db, records, technicalByPath, mvForgeOutputs, directOutputs, missing)
 
 	var last models.AssetRecord
 	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
@@ -5050,6 +5076,12 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 
 	foundPaths := map[string]struct{}{}
 	rawRecords := collectAssetRecords(models.Library{Name: "Originals", SourcePath: rawRoot}, rawRoot, "unprocessed", now)
+	if err := reconcileSourceGroups(h.db, rawRoot, rawRecords); err != nil {
+		return result, err
+	}
+	if err := annotateSourceRecords(h.db, rawRoot, rawRecords); err != nil {
+		return result, err
+	}
 	for _, record := range rawRecords {
 		foundPaths[record.Path] = struct{}{}
 		if err := upsertAssetRecord(h.db, record); err != nil {
@@ -5130,6 +5162,9 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 	if err := h.db.Find(&records).Error; err != nil {
 		return result, err
 	}
+	if err := backfillAssetSourceIdentity(h.db, records); err != nil {
+		return result, err
+	}
 	for _, record := range records {
 		if _, ok := foundPaths[record.Path]; ok {
 			continue
@@ -5146,6 +5181,54 @@ func (h AssetHandler) syncAssetInventory() (AssetSyncResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func backfillAssetSourceIdentity(db *gorm.DB, records []models.AssetRecord) error {
+	byPath := map[string]models.AssetRecord{}
+	for _, record := range records {
+		byPath[filepath.Clean(record.Path)] = record
+	}
+	copyIdentity := func(sourcePath, targetPath string) error {
+		source, sourceExists := byPath[filepath.Clean(sourcePath)]
+		target, targetExists := byPath[filepath.Clean(targetPath)]
+		if !sourceExists || !targetExists || source.SourceGroupID == 0 || target.SourceGroupID != 0 {
+			return nil
+		}
+		updates := map[string]interface{}{"source_group_id": source.SourceGroupID, "logical_group_path": source.LogicalGroupPath, "source_path": source.SourcePath}
+		if err := db.Model(&models.AssetRecord{}).Where("id = ?", target.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		target.SourceGroupID, target.LogicalGroupPath, target.SourcePath = source.SourceGroupID, source.LogicalGroupPath, source.SourcePath
+		byPath[filepath.Clean(targetPath)] = target
+		return nil
+	}
+	if db.Migrator().HasTable(&models.QueueJob{}) {
+		var jobs []models.QueueJob
+		if err := db.Find(&jobs).Error; err != nil {
+			return err
+		}
+		for _, job := range jobs {
+			for _, target := range []string{job.OutputPath, job.PublishedPath, job.OriginalArchivedPath} {
+				if strings.TrimSpace(target) != "" {
+					if err := copyIdentity(job.MediaPath, target); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	if db.Migrator().HasTable(&models.DirectPublication{}) {
+		var publications []models.DirectPublication
+		if err := db.Find(&publications).Error; err != nil {
+			return err
+		}
+		for _, publication := range publications {
+			if err := copyIdentity(publication.SourcePath, publication.PublishedPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func activeTestEncodePaths(db *gorm.DB) map[string]bool {
@@ -5470,10 +5553,143 @@ func collectAssetRecords(library models.Library, root string, status string, syn
 	return records
 }
 
+func reconcileSourceGroups(db *gorm.DB, rawRoot string, records []models.AssetRecord) error {
+	if !db.Migrator().HasTable(&models.SourceGroup{}) {
+		return nil
+	}
+	root := filepath.Clean(rawRoot)
+	groups := map[string]string{}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+				groups[entry.Name()] = filepath.Join(root, entry.Name())
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, record := range records {
+		parts := strings.Split(filepath.ToSlash(record.RelativePath), "/")
+		if len(parts) > 1 && parts[0] != "." && parts[0] != "" {
+			groups[parts[0]] = filepath.Join(root, filepath.FromSlash(parts[0]))
+		}
+	}
+	for relativePath, sourcePath := range groups {
+		group := models.SourceGroup{Name: relativePath, RelativePath: relativePath, SourcePath: filepath.Clean(sourcePath), Enabled: true}
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "relative_path"}},
+			DoUpdates: clause.AssignmentColumns([]string{"source_path", "updated_at"}),
+		}).Create(&group).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func annotateSourceRecords(db *gorm.DB, rawRoot string, records []models.AssetRecord) error {
+	if !db.Migrator().HasTable(&models.SourceGroup{}) {
+		return nil
+	}
+	var groups []models.SourceGroup
+	if err := db.Find(&groups).Error; err != nil {
+		return err
+	}
+	byRelative := map[string]models.SourceGroup{}
+	for _, group := range groups {
+		byRelative[filepath.ToSlash(filepath.Clean(group.RelativePath))] = group
+	}
+	root := filepath.Clean(rawRoot)
+	for index := range records {
+		parts := strings.Split(filepath.ToSlash(records[index].RelativePath), "/")
+		if len(parts) < 2 {
+			continue
+		}
+		group, ok := byRelative[parts[0]]
+		if !ok {
+			continue
+		}
+		records[index].SourceGroupID = group.ID
+		records[index].SourcePath = filepath.Clean(records[index].Path)
+		logicalRelative := filepath.FromSlash(strings.Join(parts[:2], "/"))
+		records[index].LogicalGroupPath = filepath.Join(root, logicalRelative)
+	}
+	return nil
+}
+
+func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technicalByPath map[string]*AssetTechnicalInfo, mvForgeOutputs, directOutputs map[string]bool, missing MissingClassification) []AssetSourceGroup {
+	if !db.Migrator().HasTable(&models.SourceGroup{}) {
+		return []AssetSourceGroup{}
+	}
+	var persisted []models.SourceGroup
+	_ = db.Where("enabled = ?", true).Order("name asc").Find(&persisted).Error
+	byID := map[uint]int{}
+	result := make([]AssetSourceGroup, 0, len(persisted))
+	for _, group := range persisted {
+		result = append(result, AssetSourceGroup{ID: group.ID, Name: group.Name, RelativePath: group.RelativePath, SourcePath: group.SourcePath, LogicalGroups: []AssetLogicalGroup{}})
+		byID[group.ID] = len(result) - 1
+	}
+	for _, record := range records {
+		groupIndex, exists := byID[record.SourceGroupID]
+		if !exists || (record.Missing && missing.HistoricalPaths[filepath.Clean(record.Path)]) {
+			continue
+		}
+		group := &result[groupIndex]
+		asset := assetFromRecord(record)
+		asset.Technical = technicalByPath[filepath.Clean(record.Path)]
+		if record.Status == "converted" {
+			switch {
+			case directOutputs[filepath.Clean(record.Path)]:
+				asset.Status, asset.PublicationMode = "published_as_is", "as_is"
+			case mvForgeOutputs[filepath.Clean(record.Path)]:
+				asset.Status = "converted"
+			default:
+				asset.Status = "unverified"
+			}
+		}
+		logicalPath := filepath.Clean(record.LogicalGroupPath)
+		logicalIndex := -1
+		for i := range group.LogicalGroups {
+			if filepath.Clean(group.LogicalGroups[i].Path) == logicalPath {
+				logicalIndex = i
+				break
+			}
+		}
+		if logicalIndex < 0 {
+			group.LogicalGroups = append(group.LogicalGroups, AssetLogicalGroup{Name: filepath.Base(logicalPath), Path: logicalPath, AssetPaths: []AssetPath{}})
+			logicalIndex = len(group.LogicalGroups) - 1
+		}
+		actualPath := filepath.Dir(filepath.Clean(record.SourcePath))
+		if strings.TrimSpace(record.SourcePath) == "" {
+			actualPath = filepath.Dir(filepath.Clean(record.Path))
+		}
+		pathIndex := -1
+		for i := range group.LogicalGroups[logicalIndex].AssetPaths {
+			if filepath.Clean(group.LogicalGroups[logicalIndex].AssetPaths[i].Path) == actualPath {
+				pathIndex = i
+				break
+			}
+		}
+		if pathIndex < 0 {
+			group.LogicalGroups[logicalIndex].AssetPaths = append(group.LogicalGroups[logicalIndex].AssetPaths, AssetPath{Name: filepath.Base(actualPath), Path: actualPath, Assets: []Asset{}})
+			pathIndex = len(group.LogicalGroups[logicalIndex].AssetPaths) - 1
+		}
+		path := &group.LogicalGroups[logicalIndex].AssetPaths[pathIndex]
+		path.Assets = append(path.Assets, asset)
+		path.FileCount++
+		path.SizeBytes += record.SizeBytes
+		group.LogicalGroups[logicalIndex].FileCount++
+		group.LogicalGroups[logicalIndex].SizeBytes += record.SizeBytes
+		group.FileCount++
+		group.SizeBytes += record.SizeBytes
+	}
+	return result
+}
+
 func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
 	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "path"}},
 		DoUpdates: clause.AssignmentColumns([]string{
+			"source_group_id", "logical_group_path", "source_path",
 			"root_path", "relative_path", "group_path", "file_name", "extension",
 			"size_bytes", "modified_at", "status", "library_id", "library_name",
 			"missing", "expires_at", "synced_at", "updated_at",
@@ -5484,18 +5700,21 @@ func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
 func assetFromRecord(record models.AssetRecord) Asset {
 	groupPath := filepath.ToSlash(logicalAssetGroupPath(filepath.FromSlash(record.RelativePath)))
 	return Asset{
-		LibraryID:    record.LibraryID,
-		LibraryName:  record.LibraryName,
-		Path:         record.Path,
-		RelativePath: record.RelativePath,
-		GroupPath:    groupPath,
-		FileName:     record.FileName,
-		Extension:    record.Extension,
-		SizeBytes:    record.SizeBytes,
-		ModifiedAt:   record.ModifiedAt,
-		Status:       record.Status,
-		Missing:      record.Missing,
-		ExpiresAt:    record.ExpiresAt,
+		SourceGroupID:    record.SourceGroupID,
+		LogicalGroupPath: record.LogicalGroupPath,
+		SourcePath:       record.SourcePath,
+		LibraryID:        record.LibraryID,
+		LibraryName:      record.LibraryName,
+		Path:             record.Path,
+		RelativePath:     record.RelativePath,
+		GroupPath:        groupPath,
+		FileName:         record.FileName,
+		Extension:        record.Extension,
+		SizeBytes:        record.SizeBytes,
+		ModifiedAt:       record.ModifiedAt,
+		Status:           record.Status,
+		Missing:          record.Missing,
+		ExpiresAt:        record.ExpiresAt,
 	}
 }
 

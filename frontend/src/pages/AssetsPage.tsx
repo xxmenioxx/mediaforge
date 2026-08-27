@@ -49,8 +49,8 @@ import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ScienceIcon from '@mui/icons-material/Science';
-import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Component, useEffect, useRef, useState } from 'react';
+import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Component, Fragment, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
@@ -63,7 +63,7 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -85,6 +85,7 @@ export function AssetsPage() {
   const [libraryDecision, setLibraryDecision] = useState<'' | 'unverified' | 'accepted'>('');
   const [assetQuery, setAssetQuery] = useState('');
   const [mediaArea, setMediaArea] = useState('');
+	const [sourceGroupId, setSourceGroupId] = useState<number | 'all'>('all');
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
@@ -119,9 +120,13 @@ export function AssetsPage() {
   const convertedCount = safeArray(assets.data?.converted).length;
   const acceptedCount = safeArray(assets.data?.accepted).length;
   const archiveCount = safeArray(assets.data?.archive).length;
-  const currentGroups = safeArray(
+  const sourceGroups = safeArray(assets.data?.sourceGroups);
+  const statusGroups = safeArray(
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
+	const currentGroups = sourceGroupId === 'all'
+		? statusGroups
+		: statusGroups.filter((group) => safeArray(group.assets).some((asset) => asset.sourceGroupId === sourceGroupId));
   const allInventoryGroups = [
     ...safeArray(assets.data?.unprocessedGroups), ...safeArray(assets.data?.libraryGroups),
     ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
@@ -151,6 +156,12 @@ export function AssetsPage() {
 
         <Card>
           <CardContent sx={{ py: 1.25 }}>
+			{sourceGroups.length > 0 && tab !== 'reports' ? (
+				<Tabs value={sourceGroupId} onChange={(_, value) => { setSourceGroupId(value); setAssetQuery(''); }} variant="scrollable" scrollButtons="auto" sx={{ mb: 1, borderBottom: 1, borderColor: 'divider' }}>
+					<Tab value="all" label="All sources" />
+					{sourceGroups.map((group) => <Tab key={group.id} value={group.id} label={`${group.name} (${group.fileCount})`} />)}
+				</Tabs>
+			) : null}
             <Stack
               direction={{ xs: 'column', lg: 'row' }}
               alignItems={{ xs: 'stretch', lg: 'flex-start' }}
@@ -574,29 +585,13 @@ function AssetTable({
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const filteredGroups = filterAssetGroups(visibleGroups, query);
-  const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const collections = buildAssetCollections(filteredGroups);
+  const pagedCollections = collections.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   const showConfidence = mode !== 'archive' && mode !== 'converted';
 
   useEffect(() => {
     setPage(0);
   }, [query, mode, visibleGroups.length]);
-
-  if (mode === 'archive') {
-    return (
-      <ArchivedAssetTable
-        groups={visibleGroups}
-        libraries={libraries}
-        profiles={profiles}
-        audioProfiles={audioProfiles}
-        trackProfiles={trackProfiles}
-        assetCategories={assetCategories}
-        queueJobs={queueJobs}
-        runningSnapshotPaths={runningSnapshotPaths}
-        query={query}
-        emptyLabel={emptyLabel}
-      />
-    );
-  }
 
   if (visibleGroups.length === 0) {
     return (
@@ -612,7 +607,7 @@ function AssetTable({
         <Table size="small" sx={{ minWidth: { xs: 0, sm: 980 }, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Asset group</TableCell>
+              <TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Path</TableCell>
               <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Library</TableCell>
               <TableCell sx={{ width: { xs: '32%', sm: 140 } }}>Status</TableCell>
               {showConfidence ? <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Confidence</TableCell> : null}
@@ -623,11 +618,11 @@ function AssetTable({
             </TableRow>
           </TableHead>
           <TableBody>
-            {pagedGroups.length ? (
-              pagedGroups.map((group) => (
-                <AssetGroupRow
-                  key={group.id}
-                  group={group}
+            {pagedCollections.length ? (
+              pagedCollections.map((collection) => (
+                <AssetCollectionRows
+                  key={collection.id}
+                  collection={collection}
                   libraries={libraries}
                   profiles={profiles}
                   audioProfiles={audioProfiles}
@@ -637,6 +632,7 @@ function AssetTable({
                   queueJobs={queueJobs}
                   runningSnapshotPaths={runningSnapshotPaths}
                   mode={mode}
+                  columnCount={showConfidence ? 8 : 7}
                 />
               ))
             ) : (
@@ -651,8 +647,8 @@ function AssetTable({
       </Box>
       <TablePagination
         component="div"
-        count={filteredGroups.length}
-        page={Math.min(page, Math.max(0, Math.ceil(filteredGroups.length / rowsPerPage) - 1))}
+        count={collections.length}
+        page={Math.min(page, Math.max(0, Math.ceil(collections.length / rowsPerPage) - 1))}
         rowsPerPage={rowsPerPage}
         rowsPerPageOptions={[10, 25, 50, 100]}
         onPageChange={(_, nextPage) => setPage(nextPage)}
@@ -667,6 +663,383 @@ function AssetTable({
       />
     </>
   );
+}
+
+type AssetCollection = {
+  id: string;
+  title: string;
+  libraryName: string;
+  groups: AssetGroup[];
+  fileCount: number;
+  sizeBytes: number;
+};
+
+function AssetCollectionRows({
+  collection,
+  libraries,
+  profiles,
+  audioProfiles,
+  trackProfiles,
+  settings,
+  assetCategories,
+  queueJobs,
+  runningSnapshotPaths,
+  mode,
+  columnCount,
+}: {
+  collection: AssetCollection;
+  libraries: Library[];
+  profiles: Profile[];
+  audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
+  settings: AppSetting[];
+  assetCategories: string[];
+  queueJobs: QueueJob[];
+  runningSnapshotPaths: Set<string>;
+  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  columnCount: number;
+}) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
+	const scopeConfigurations = useQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations });
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [snapshotGroup, setSnapshotGroup] = useState<AssetGroup | null>(null);
+  const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt);
+  const pathAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt);
+  const pathTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt);
+	const destinations = Object.fromEntries(collection.groups.map((group) => {
+		const configuration = safeArray(scopeConfigurations.data).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path));
+		return [normalizePath(group.path), configuration?.destinationSelection === 'value' ? configuration.destinationLibraryId ?? 0 : 0];
+	}));
+  const selectedGroups = collection.groups.filter((group) => selectedPaths.includes(group.path));
+  const allSelected = collection.groups.length > 0 && selectedPaths.length === collection.groups.length;
+  const configuredPaths = collection.groups.filter((group) => pathConfigurationComplete(group, profileAssignments.data ?? [], destinations, mode)).length;
+  const queueEligible = collection.groups.some((group) => pathCanQueue(group, mode));
+  const [configuration, setConfiguration] = useState({
+    category: '',
+    videoProfileId: -1,
+    audioProfileKey: '',
+    trackProfileKey: '',
+    destinationLibraryId: 0,
+  });
+  const [configurationFields, setConfigurationFields] = useState<string[]>([]);
+
+  const saveConfiguration = useMutation({
+    mutationFn: async () => {
+      if (!selectedGroups.length) throw new Error('Select at least one path.');
+      for (const group of selectedGroups) {
+        if (configurationFields.includes('category') || configurationFields.includes('destination')) {
+			const current = safeArray(scopeConfigurations.data).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path));
+			await api.updateAssetScopeConfiguration({
+				scopeType: 'path', scopeKey: group.path,
+				categorySelection: configurationFields.includes('category') ? (configuration.category ? 'value' : 'disabled') : current?.categorySelection ?? 'inherit',
+				category: configurationFields.includes('category') ? configuration.category : current?.category ?? '',
+				destinationSelection: configurationFields.includes('destination') ? (configuration.destinationLibraryId ? 'value' : 'disabled') : current?.destinationSelection ?? 'inherit',
+				destinationLibraryId: configurationFields.includes('destination') ? configuration.destinationLibraryId : current?.destinationLibraryId,
+			});
+        }
+        if (configurationFields.includes('video')) {
+          await api.updateProfileAssignment({
+            targetType: 'path', targetPath: group.path, mediaType: 'video',
+            selection: configuration.videoProfileId > 0 ? 'profile' : 'disabled',
+            videoProfileId: Math.max(0, configuration.videoProfileId),
+            profileKey: '',
+          });
+        }
+        if (configurationFields.includes('audio')) {
+          await api.updateProfileAssignment({
+            targetType: 'path', targetPath: group.path, mediaType: 'audio',
+            selection: configuration.audioProfileKey ? 'profile' : 'disabled',
+            videoProfileId: 0,
+            profileKey: configuration.audioProfileKey,
+          });
+        }
+        if (configurationFields.includes('tracks')) {
+          await api.updateProfileAssignment({
+            targetType: 'path', targetPath: group.path, mediaType: 'tracks',
+            selection: configuration.trackProfileKey ? 'profile' : 'disabled',
+            videoProfileId: 0,
+            profileKey: configuration.trackProfileKey,
+          });
+        }
+      }
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
+		queryClient.invalidateQueries({ queryKey: ['assetScopeConfigurations'] }),
+      ]);
+      setConfigurationOpen(false);
+    },
+  });
+
+  const queuePaths = useMutation({
+    mutationFn: async () => {
+      if (!selectedGroups.length) throw new Error('Select at least one path.');
+      const blockedLifecycle = selectedGroups.filter((group) => !pathCanQueue(group, mode));
+      if (blockedLifecycle.length) throw new Error(`These paths cannot be queued from ${mode}: ${blockedLifecycle.map(pathLabelForCollection).join(', ')}`);
+      const missingDestination = selectedGroups.filter((group) => !effectivePathDestination(group, destinations, mode));
+      if (missingDestination.length) throw new Error(`Select Destination for: ${missingDestination.map(pathLabelForCollection).join(', ')}`);
+      const blockedAssets = selectedGroups.filter((group) => safeArray(group.assets).some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs)));
+      if (blockedAssets.length) throw new Error(`Review or active Queue jobs block: ${blockedAssets.map(pathLabelForCollection).join(', ')}`);
+
+		const batches: Array<{ batchId: string; batchName: string; jobs: QueueJobInput[] }> = [];
+      for (const group of selectedGroups) {
+        const assignments = pathAssignmentsFor(group.path, profileAssignments.data ?? []);
+        const video = assignments.get('video');
+        const audio = assignments.get('audio');
+        const tracks = assignments.get('tracks');
+        const hasVideo = video?.selection === 'profile' && Boolean(video.videoProfileId);
+        const hasAudio = audio?.selection === 'profile' && Boolean(audio.profileKey);
+        const hasTracks = tracks?.selection === 'profile' && Boolean(tracks.profileKey);
+        if (!hasVideo && !hasAudio && !hasTracks) throw new Error(`Select at least one profile for ${pathLabelForCollection(group)}.`);
+        const fallbackProfileId = pathVideoProfiles[0]?.id ?? profiles.find((profile) => !profile.disabled && !profile.deletedAt)?.id ?? 0;
+        const profileId = hasVideo ? video?.videoProfileId ?? 0 : fallbackProfileId;
+        if (!profileId) throw new Error(`No usable video profile is available to build ${pathLabelForCollection(group)}.`);
+        const destinationLibraryId = effectivePathDestination(group, destinations, mode);
+        const assets = safeArray(group.assets).filter((asset) => !asset.missing);
+        if (!assets.length) throw new Error(`${pathLabelForCollection(group)} has no available assets.`);
+		const jobs = assets.map((asset): QueueJobInput => ({
+            mediaPath: asset.path,
+            publishMode: mode === 'library' ? 'replace_library_asset' : 'standard',
+            libraryId: destinationLibraryId,
+            profileId,
+            audioProfileKey: hasAudio ? audio?.profileKey ?? '' : '',
+            trackProfileKey: hasTracks ? tracks?.profileKey ?? '' : '',
+            resolveProfileAssignments: true,
+            processingMode: hasVideo ? 'full_encode' : 'audio_only',
+            priority: 5,
+            notes: queueNotes(`Queued from selected path: ${groupDisplayPath(group)}`, hasAudio ? audio?.profileKey ?? '' : ''),
+		}));
+		batches.push({ batchId: `path-${slugify(pathLabelForCollection(group))}-${Date.now()}-${batches.length}`, batchName: `${collection.title} · ${pathLabelForCollection(group)}`, jobs });
+      }
+		return Promise.all(batches.map((batch) => api.createQueueBatch(batch)));
+    },
+    onSuccess: async (responses) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
+		const firstBatch = responses[0];
+		if (firstBatch) navigate(`/queue?batch=${encodeURIComponent(firstBatch.batchId)}`);
+    },
+  });
+
+  function togglePath(path: string, selected: boolean) {
+    setSelectedPaths((current) => selected ? [...new Set([...current, path])] : current.filter((candidate) => candidate !== path));
+  }
+
+  return (
+    <Fragment>
+      <TableRow sx={{ bgcolor: 'rgba(255,255,255,0.035)', '& td': { borderTop: 1, borderColor: 'divider' } }}>
+        <TableCell colSpan={columnCount} sx={{ py: 1.25 }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }} spacing={1.25}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+              <Checkbox
+                size="small"
+                checked={allSelected}
+                indeterminate={selectedPaths.length > 0 && !allSelected}
+                onChange={(event) => setSelectedPaths(event.target.checked ? collection.groups.map((group) => group.path) : [])}
+                inputProps={{ 'aria-label': `Select all paths in ${collection.title}` }}
+              />
+              <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+                <Typography variant="h3" sx={{ overflowWrap: 'anywhere' }}>{collection.title}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {collection.groups.length} path{collection.groups.length === 1 ? '' : 's'} · {collection.fileCount} files · {formatBytes(collection.sizeBytes)}
+                </Typography>
+              </Stack>
+            </Stack>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="stretch">
+              <Button
+                variant="outlined"
+                startIcon={<EditIcon />}
+                disabled={!selectedGroups.length}
+                onClick={() => {
+                  setConfiguration(configurationForPathSelection(selectedGroups, profileAssignments.data ?? [], destinations, mode));
+                  setConfigurationFields([]);
+                  setConfigurationOpen(true);
+                }}
+              >
+                Configure paths · {configuredPaths}/{collection.groups.length}
+              </Button>
+              {queueEligible ? (
+                <Button
+                  variant="contained"
+                  startIcon={<PlaylistAddIcon />}
+                  disabled={!selectedGroups.length || queuePaths.isPending}
+                  onClick={() => queuePaths.mutate()}
+                >
+                  Queue selected paths
+                </Button>
+              ) : null}
+            </Stack>
+          </Stack>
+          {queuePaths.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{queuePaths.error instanceof Error ? queuePaths.error.message : 'Could not queue selected paths.'}</Alert> : null}
+        </TableCell>
+      </TableRow>
+      {collection.groups.map((group) => (
+        <AssetGroupRow
+          key={group.id}
+          group={group}
+          libraries={libraries}
+          profiles={profiles}
+          audioProfiles={audioProfiles}
+          trackProfiles={trackProfiles}
+          settings={settings}
+          assetCategories={assetCategories}
+          queueJobs={queueJobs}
+          runningSnapshotPaths={runningSnapshotPaths}
+          mode={mode}
+          pathSelected={selectedPaths.includes(group.path)}
+          onPathSelectionChange={(selected) => togglePath(group.path, selected)}
+          onOpenPathSnapshots={() => setSnapshotGroup(group)}
+          collectionManaged
+        />
+      ))}
+      <Dialog open={configurationOpen} onClose={() => !saveConfiguration.isPending && setConfigurationOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Configure {selectedGroups.length} path{selectedGroups.length === 1 ? '' : 's'} · {collection.title}</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2} sx={{ pt: 0.5 }}>
+            <Alert severity="info">These values are assigned to every selected path and inherited by its assets. Asset overrides continue to take precedence.</Alert>
+            <Typography variant="body2" color="text.secondary">{selectedGroups.map(pathLabelForCollection).join(' · ')}</Typography>
+            <Grid container spacing={2}>
+              <Grid size={{ xs: 12, sm: 6 }}><AssetCategorySelect value={configuration.category} options={assetCategories} onChange={(category) => { setConfiguration((current) => ({ ...current, category })); setConfigurationFields((current) => [...new Set([...current, 'category'])]); }} label="Category" /></Grid>
+              <Grid size={{ xs: 12, sm: 6 }}><LibraryAutocomplete libraries={libraries} value={configuration.destinationLibraryId} onChange={(destinationLibraryId) => { setConfiguration((current) => ({ ...current, destinationLibraryId })); setConfigurationFields((current) => [...new Set([...current, 'destination'])]); }} label="Destination" /></Grid>
+              <Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={pathVideoProfiles} value={configuration.videoProfileId} onChange={(videoProfileId) => { setConfiguration((current) => ({ ...current, videoProfileId })); setConfigurationFields((current) => [...new Set([...current, 'video'])]); }} label="Video profile" allowNone /></Grid>
+              <Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={pathAudioProfiles} value={configuration.audioProfileKey} onChange={(audioProfileKey) => { setConfiguration((current) => ({ ...current, audioProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'audio'])]); }} label="Audio profile" /></Grid>
+              <Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={pathTrackProfiles} value={configuration.trackProfileKey} onChange={(trackProfileKey) => { setConfiguration((current) => ({ ...current, trackProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'tracks'])]); }} label="Tracks profile" /></Grid>
+            </Grid>
+            {saveConfiguration.isError ? <Alert severity="warning">{saveConfiguration.error instanceof Error ? saveConfiguration.error.message : 'Could not configure selected paths.'}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfigurationOpen(false)} disabled={saveConfiguration.isPending}>Cancel</Button>
+          <Button variant="contained" onClick={() => saveConfiguration.mutate()} disabled={saveConfiguration.isPending || !configurationFields.length}>{saveConfiguration.isPending ? 'Saving…' : 'Apply to selected paths'}</Button>
+        </DialogActions>
+      </Dialog>
+      {snapshotGroup ? (
+        <PathSnapshotsDialog
+          open
+          group={snapshotGroup}
+          runningSnapshotPaths={runningSnapshotPaths}
+          onClose={() => setSnapshotGroup(null)}
+        />
+      ) : null}
+    </Fragment>
+  );
+}
+
+function PathSnapshotsDialog({
+  open,
+  group,
+  runningSnapshotPaths,
+  onClose,
+}: {
+  open: boolean;
+  group: AssetGroup;
+  runningSnapshotPaths: Set<string>;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const assets = safeArray(group.assets).filter((asset) => !asset.missing);
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [activePaths, setActivePaths] = useState<string[]>([]);
+  const snapshotQueries = useQueries({
+    queries: assets.map((asset) => ({
+      queryKey: ['assetSnapshot', asset.path],
+      queryFn: () => api.latestSnapshot(asset.path),
+      enabled: open,
+      staleTime: 15_000,
+    })),
+  });
+  const selectableAssets = assets.filter((asset) => !runningSnapshotPaths.has(asset.path) && !activePaths.includes(asset.path));
+  const allSelected = selectableAssets.length > 0 && selectableAssets.every((asset) => selectedPaths.includes(asset.path));
+  const generateSnapshots = useMutation({
+    mutationFn: async (paths: string[]) => {
+      for (const path of paths) {
+        setActivePaths((current) => [...new Set([...current, path])]);
+        try {
+          let operation = await api.startSnapshotOperation({ path, force: true, analysisSeconds: 20 });
+          while (operation.status === 'running') {
+            await new Promise((resolve) => window.setTimeout(resolve, 1000));
+            operation = await api.snapshotOperation(operation.id);
+          }
+          if (operation.status !== 'completed') throw new Error(operation.error || `Snapshot failed for ${path}.`);
+          await queryClient.invalidateQueries({ queryKey: ['assetSnapshot', path] });
+        } finally {
+          setActivePaths((current) => current.filter((candidate) => candidate !== path));
+        }
+      }
+    },
+    onSuccess: async () => {
+      setSelectedPaths([]);
+      await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
+    },
+  });
+
+  return (
+    <Dialog open={open} onClose={() => !generateSnapshots.isPending && onClose()} maxWidth="lg" fullWidth>
+      <DialogTitle>Snapshots · {pathLabelForCollection(group)}</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.5}>
+          <Alert severity="info">Opening this list only reads snapshot state. Analysis starts only when you choose Generate.</Alert>
+          <Box sx={{ overflowX: 'auto' }}>
+            <Table size="small" sx={{ minWidth: 760 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      size="small"
+                      checked={allSelected}
+                      indeterminate={selectedPaths.length > 0 && !allSelected}
+                      disabled={!selectableAssets.length}
+                      onChange={(event) => setSelectedPaths(event.target.checked ? selectableAssets.map((asset) => asset.path) : [])}
+                      inputProps={{ 'aria-label': `Select all assets in ${group.path} for snapshot generation` }}
+                    />
+                  </TableCell>
+                  <TableCell>Asset</TableCell>
+                  <TableCell>Snapshot date</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {assets.map((asset, index) => {
+                  const query = snapshotQueries[index];
+                  const state = query.data;
+                  const running = runningSnapshotPaths.has(asset.path) || activePaths.includes(asset.path);
+                  return (
+                    <TableRow key={asset.path} hover>
+                      <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPaths.includes(asset.path)} disabled={running} onChange={(event) => setSelectedPaths((current) => event.target.checked ? [...new Set([...current, asset.path])] : current.filter((path) => path !== asset.path))} /></TableCell>
+                      <TableCell><Typography fontWeight={700}>{asset.fileName}</Typography><Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{asset.path}</Typography></TableCell>
+                      <TableCell>{state?.snapshot?.createdAt ? formatDate(state.snapshot.createdAt) : '—'}</TableCell>
+                      <TableCell>{query.isLoading ? <Chip size="small" label="Checking…" /> : <SnapshotStateChip status={running ? 'running' : state?.status ?? 'unavailable'} />}</TableCell>
+                      <TableCell align="right"><Button size="small" variant="outlined" disabled={running || generateSnapshots.isPending} onClick={() => generateSnapshots.mutate([asset.path])}>{running ? 'Generating…' : 'Generate'}</Button></TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Box>
+          {generateSnapshots.isPending ? <LinearProgress /> : null}
+          {generateSnapshots.isError ? <Alert severity="warning">{generateSnapshots.error instanceof Error ? generateSnapshots.error.message : 'Snapshot generation failed.'}</Alert> : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={generateSnapshots.isPending}>Close</Button>
+        <Button variant="contained" startIcon={<ManageSearchIcon />} disabled={!selectedPaths.length || generateSnapshots.isPending} onClick={() => generateSnapshots.mutate(selectedPaths)}>Generate selected ({selectedPaths.length})</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function SnapshotStateChip({ status }: { status: 'current' | 'missing' | 'changed' | 'stale' | 'legacy' | 'unavailable' | 'running' }) {
+  const labels = { current: 'Current', missing: 'Missing', changed: 'Changed', stale: 'Stale', legacy: 'Incomplete', unavailable: 'Corrupt / unavailable', running: 'Running' };
+  const color = status === 'current' ? 'success' : status === 'running' ? 'primary' : status === 'missing' || status === 'unavailable' ? 'default' : 'warning';
+  return <Chip size="small" label={labels[status]} color={color} />;
 }
 
 function ArchivedAssetTable({
@@ -776,6 +1149,9 @@ function ArchivedAssetTable({
   );
 }
 
+// Retained for compatibility with older local builds that imported this view.
+void ArchivedAssetTable;
+
 function AssetGroupRow({
   group,
   libraries,
@@ -787,6 +1163,10 @@ function AssetGroupRow({
   queueJobs,
   runningSnapshotPaths,
   mode,
+  pathSelected = false,
+  onPathSelectionChange,
+  onOpenPathSnapshots,
+  collectionManaged = false,
 }: {
   group: AssetGroup;
   libraries: Library[];
@@ -798,10 +1178,18 @@ function AssetGroupRow({
   queueJobs: QueueJob[];
   runningSnapshotPaths: Set<string>;
   mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  pathSelected?: boolean;
+  onPathSelectionChange?: (selected: boolean) => void;
+  onOpenPathSnapshots?: () => void;
+  collectionManaged?: boolean;
 }) {
   const queryClient = useQueryClient();
   const pendingAssetTrackSaves = useIsMutating({ mutationKey: ['assetTrackSelection', normalizePath(group.path)] });
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
+	const pathScopeConfiguration = useQuery({
+		queryKey: ['assetScopeConfigurations', 'path', normalizePath(group.path)],
+		queryFn: async () => (await api.assetScopeConfigurations()).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path)),
+	});
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path');
@@ -817,7 +1205,10 @@ function AssetGroupRow({
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const inheritedPathCategory = firstCategory(pathMetadata.categories);
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
-  const [selectedLibraryId, setSelectedLibraryId] = useState<number>(group.libraryId);
+	const configuredPathDestination = pathScopeConfiguration.data?.destinationSelection === 'value'
+		? pathScopeConfiguration.data.destinationLibraryId ?? 0
+		: (mode === 'library' ? group.libraryId : 0);
+  const [selectedLibraryId, setSelectedLibraryId] = useState<number>(configuredPathDestination);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
   const [pathAdvisorOpen, setPathAdvisorOpen] = useState(false);
@@ -885,6 +1276,9 @@ function AssetGroupRow({
   useEffect(() => {
     setGroupCategory(inheritedPathCategory);
   }, [inheritedPathCategory]);
+  useEffect(() => {
+    setSelectedLibraryId(configuredPathDestination);
+  }, [configuredPathDestination, group.path]);
   const migratePath = useMutation({
     mutationFn: api.migrateAssetPath,
     onSuccess: async () => {
@@ -1140,13 +1534,24 @@ function AssetGroupRow({
         sx={{ cursor: 'pointer' }}
       >
         <TableCell>
-          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-            <Typography fontWeight={700} sx={{ wordBreak: 'break-word', lineHeight: 1.25 }}>
-              {groupTitle(group)}
-            </Typography>
-            <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all', lineHeight: 1.25 }}>
-              {groupSubpath(group)}
-            </Typography>
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+            {collectionManaged ? (
+              <Checkbox
+                size="small"
+                checked={pathSelected}
+                onClick={(event) => event.stopPropagation()}
+                onChange={(event) => onPathSelectionChange?.(event.target.checked)}
+                inputProps={{ 'aria-label': `Select path ${group.path}` }}
+              />
+            ) : null}
+            <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+              <Typography fontWeight={700} sx={{ wordBreak: 'break-word', lineHeight: 1.25 }}>
+                {pathLabelForCollection(group)}
+              </Typography>
+              <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all', lineHeight: 1.25 }}>
+                {cleanPathLabel(group.path)}
+              </Typography>
+            </Stack>
           </Stack>
         </TableCell>
         <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>{group.libraryName}</TableCell>
@@ -1183,14 +1588,28 @@ function AssetGroupRow({
         <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{formatBytes(group.sizeBytes)}</TableCell>
         <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>{formatDate(group.modifiedAt)}</TableCell>
         <TableCell padding="checkbox" align="center">
-          <ExpandMoreIcon
-            aria-hidden
-            sx={{
-              color: 'text.secondary',
-              transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-              transition: (theme) => theme.transitions.create('transform', { duration: theme.transitions.duration.shortest }),
-            }}
-          />
+          <Stack direction="row" alignItems="center" justifyContent="center" spacing={0.25}>
+            {onOpenPathSnapshots ? (
+              <Tooltip title="Review and generate snapshots for this path">
+                <IconButton
+                  size="small"
+                  color="primary"
+                  onClick={(event) => { event.stopPropagation(); onOpenPathSnapshots(); }}
+                  aria-label={`Snapshots for ${group.path}`}
+                >
+                  <ManageSearchIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+            <ExpandMoreIcon
+              aria-hidden
+              sx={{
+                color: 'text.secondary',
+                transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: (theme) => theme.transitions.create('transform', { duration: theme.transitions.duration.shortest }),
+              }}
+            />
+          </Stack>
         </TableCell>
       </TableRow>
       <TableRow>
@@ -1198,7 +1617,7 @@ function AssetGroupRow({
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
-                {isArchiveGroup ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
+                {collectionManaged ? null : isArchiveGroup ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
                   <Alert severity="info">
                     Published as-is assets must be returned to Raw before they can be queued for conversion.
                   </Alert>
@@ -4728,6 +5147,106 @@ function filterAssetGroups(groups: AssetGroup[], query: string) {
   });
 }
 
+function buildAssetCollections(groups: AssetGroup[]): AssetCollection[] {
+  const collections = new Map<string, AssetCollection>();
+  for (const group of groups) {
+    const fallbackAsset = firstAssetForGroup(group.assets);
+	const logicalGroupPath = fallbackAsset?.logicalGroupPath ? normalizePath(fallbackAsset.logicalGroupPath) : '';
+	const logicalTitle = logicalGroupPath.split('/').filter(Boolean).at(-1);
+	const relative = cleanRelativePath(group.relativePath || groupDisplayPath(group));
+	const firstSegment = relative.split('/').filter(Boolean)[0];
+    const fallbackTitle = fallbackAsset?.fileName.replace(/\.[^.]+$/, '') || group.libraryName || 'Library root';
+	const title = logicalTitle || firstSegment || fallbackTitle;
+	const id = fallbackAsset?.sourceGroupId && logicalGroupPath
+		? `${fallbackAsset.sourceGroupId}:${logicalGroupPath}`
+		: `${group.libraryId}:${title.toLowerCase()}`;
+    const existing = collections.get(id) ?? {
+      id,
+      title,
+      libraryName: group.libraryName,
+      groups: [],
+      fileCount: 0,
+      sizeBytes: 0,
+    };
+    existing.groups.push(group);
+    existing.fileCount += group.fileCount || safeArray(group.assets).length;
+    existing.sizeBytes += Number.isFinite(group.sizeBytes) ? group.sizeBytes : 0;
+    collections.set(id, existing);
+  }
+  return [...collections.values()]
+    .map((collection) => ({ ...collection, groups: [...collection.groups].sort((left, right) => pathLabelForCollection(left).localeCompare(pathLabelForCollection(right), undefined, { numeric: true })) }))
+    .sort((left, right) => left.title.localeCompare(right.title, undefined, { numeric: true }));
+}
+
+function pathLabelForCollection(group: AssetGroup) {
+	const asset = firstAssetForGroup(group.assets);
+	if (asset?.logicalGroupPath) {
+		const sourcePath = normalizePath(asset.sourcePath || asset.path);
+		const logicalPath = normalizePath(asset.logicalGroupPath);
+		const actualPath = sourcePath.includes('/') ? sourcePath.slice(0, sourcePath.lastIndexOf('/')) : sourcePath;
+		if (actualPath === logicalPath) return 'Root';
+		if (actualPath.startsWith(`${logicalPath}/`)) return actualPath.slice(logicalPath.length + 1);
+	}
+  const relative = cleanRelativePath(group.relativePath || groupDisplayPath(group));
+  const parts = relative.split('/').filter(Boolean);
+  if (parts.length <= 1) return 'Root';
+  return parts.slice(1).join('/');
+}
+
+function pathAssignmentsFor(path: string, assignments: ProfileAssignment[]) {
+  const normalizedPath = normalizePath(path);
+  return new Map(
+    assignments
+      .filter((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizedPath)
+      .map((assignment) => [assignment.mediaType, assignment]),
+  );
+}
+
+function effectivePathDestination(group: AssetGroup, destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+  return destinations[normalizePath(group.path)] ?? (mode === 'library' ? group.libraryId : 0);
+}
+
+function pathConfigurationComplete(group: AssetGroup, assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+  const pathAssignments = pathAssignmentsFor(group.path, assignments);
+  const hasProfile = [...pathAssignments.values()].some((assignment) => assignment.selection === 'profile');
+  return hasProfile && effectivePathDestination(group, destinations, mode) > 0;
+}
+
+function pathCanQueue(group: AssetGroup, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+  if (mode === 'unprocessed') return group.status === 'unprocessed';
+  if (mode !== 'library') return false;
+  if (group.status === 'accepted' || group.status === 'published_as_is') return false;
+  return group.status === 'library' || group.status === 'unverified';
+}
+
+function configurationForPathSelection(groups: AssetGroup[], assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+  const values = groups.map((group) => {
+    const pathAssignments = pathAssignmentsFor(group.path, assignments);
+    const video = pathAssignments.get('video');
+    const audio = pathAssignments.get('audio');
+    const tracks = pathAssignments.get('tracks');
+    return {
+      category: firstCategory(group.pathMetadata?.categories),
+      videoProfileId: video?.selection === 'profile' ? video.videoProfileId ?? -1 : -1,
+      audioProfileKey: audio?.selection === 'profile' ? audio.profileKey ?? '' : '',
+      trackProfileKey: tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '',
+      destinationLibraryId: effectivePathDestination(group, destinations, mode),
+    };
+  });
+  const first = values[0] ?? { category: '', videoProfileId: -1, audioProfileKey: '', trackProfileKey: '', destinationLibraryId: 0 };
+  return {
+    category: values.every((value) => value.category === first.category) ? first.category : '',
+    videoProfileId: values.every((value) => value.videoProfileId === first.videoProfileId) ? first.videoProfileId : -1,
+    audioProfileKey: values.every((value) => value.audioProfileKey === first.audioProfileKey) ? first.audioProfileKey : '',
+    trackProfileKey: values.every((value) => value.trackProfileKey === first.trackProfileKey) ? first.trackProfileKey : '',
+    destinationLibraryId: values.every((value) => value.destinationLibraryId === first.destinationLibraryId) ? first.destinationLibraryId : 0,
+  };
+}
+
+function slugify(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'assets';
+}
+
 function archiveAssetsFromGroups(groups: AssetGroup[], query: string) {
   const cleanQuery = query.trim().toLowerCase();
   return safeArray(groups)
@@ -4857,6 +5376,8 @@ function assetDisplayPath(asset: Asset, groupRelativePath: string, libraries: Li
   return parts.slice(2).join('/');
 }
 
+void assetDisplayPath;
+
 function assetTitle(asset: Asset) {
   return cleanRelativePath(asset.fileName || relativeAssetPath(asset, []));
 }
@@ -4914,6 +5435,8 @@ function groupSubpath(group: AssetGroup) {
   }
   return shortSubpath(relativePath);
 }
+
+void groupSubpath;
 
 function cleanRelativePath(value: string) {
   return value.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+/, '');

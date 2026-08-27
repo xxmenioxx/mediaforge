@@ -891,6 +891,10 @@ func (h QueueHandler) Create(c *gin.Context) {
 
 func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JSONMap, error) {
 	resolution := models.JSONMap{}
+	effective, err := effectiveAssetConfiguration(h.db, input.MediaPath)
+	if err != nil {
+		return nil, err
+	}
 	assignments, err := profileAssignmentsForAsset(h.db, input.MediaPath)
 	if err != nil {
 		return nil, err
@@ -938,6 +942,15 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 				input.TrackProfileKey = ""
 			}
 		}
+	}
+	for name, value := range map[string]AssetConfigurationValue{"category": effective.Category, "destination": effective.Destination} {
+		resolution[name] = models.JSONMap{
+			"source": value.Source, "targetPath": value.SourceKey, "selection": value.Selection,
+			"category": value.Category, "libraryId": value.DestinationLibraryID,
+		}
+	}
+	if effective.Destination.Selection == configSelectionValue && effective.Destination.DestinationLibraryID > 0 {
+		input.LibraryID = effective.Destination.DestinationLibraryID
 	}
 	return resolution, nil
 }

@@ -58,6 +58,9 @@ export type AudioEnhancementProfile = {
 };
 
 export type Asset = {
+	sourceGroupId?: number;
+	logicalGroupPath?: string;
+	sourcePath?: string;
   libraryId: number;
   libraryName: string;
   path: string;
@@ -285,6 +288,7 @@ export type AssetConversionUpdateInput = AssetConversionOverrideState & {
 };
 
 export type AssetInventory = {
+	sourceGroups: AssetSourceGroup[];
   unprocessed: Asset[];
   library: Asset[];
   converted: Asset[];
@@ -301,6 +305,46 @@ export type AssetInventory = {
   reports: AssetReports;
   sync: AssetSyncInfo;
 };
+
+export type AssetSourceGroup = {
+	id: number;
+	name: string;
+	relativePath: string;
+	sourcePath: string;
+	fileCount: number;
+	sizeBytes: number;
+	logicalGroups: AssetLogicalGroup[];
+};
+
+export type AssetLogicalGroup = {
+	name: string;
+	path: string;
+	fileCount: number;
+	sizeBytes: number;
+	assetPaths: AssetPath[];
+};
+
+export type AssetPath = {
+	name: string;
+	path: string;
+	fileCount: number;
+	sizeBytes: number;
+	assets: Asset[];
+};
+
+export type AssetScopeConfiguration = {
+	id: number;
+	scopeType: 'source_group' | 'logical_group' | 'path' | 'asset';
+	scopeKey: string;
+	categorySelection: 'inherit' | 'value' | 'disabled';
+	category: string;
+	destinationSelection: 'inherit' | 'value' | 'disabled';
+	destinationLibraryId?: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type AssetScopeConfigurationInput = Omit<AssetScopeConfiguration, 'id' | 'createdAt' | 'updatedAt'>;
 
 export type AssetReports = {
   unprocessedFiles: number;
@@ -745,7 +789,7 @@ export type QueueBatchResponse = {
 
 export type ProfileAssignment = {
   id: number;
-  targetType: 'asset' | 'path';
+  targetType: 'source_group' | 'logical_group' | 'path' | 'asset';
   targetPath: string;
   mediaType: 'video' | 'audio' | 'tracks';
   selection:

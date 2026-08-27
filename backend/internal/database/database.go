@@ -44,6 +44,8 @@ func Migrate(db *gorm.DB) error {
 		&models.Library{},
 		&models.Profile{},
 		&models.ProfileAssignment{},
+		&models.SourceGroup{},
+		&models.AssetScopeConfiguration{},
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
 		&models.RuntimeSnapshot{},
@@ -69,6 +71,9 @@ func Migrate(db *gorm.DB) error {
 	if err := backfillProfileScopes(db); err != nil {
 		return err
 	}
+	if err := backfillSourceGroups(db); err != nil {
+		return err
+	}
 	if err := backfillLegacyTrackProfileAssignments(db); err != nil {
 		return err
 	}
@@ -88,6 +93,35 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func backfillSourceGroups(db *gorm.DB) error {
+	var records []models.AssetRecord
+	if err := db.Where("status = ?", "unprocessed").Find(&records).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, record := range records {
+			parts := strings.Split(filepath.ToSlash(filepath.Clean(record.RelativePath)), "/")
+			if len(parts) < 2 || parts[0] == "." || strings.TrimSpace(parts[0]) == "" {
+				continue
+			}
+			root := filepath.Clean(record.RootPath)
+			group := models.SourceGroup{Name: parts[0], RelativePath: parts[0], SourcePath: filepath.Join(root, filepath.FromSlash(parts[0])), Enabled: true}
+			if err := tx.Where("relative_path = ?", group.RelativePath).FirstOrCreate(&group).Error; err != nil {
+				return err
+			}
+			updates := map[string]interface{}{
+				"source_group_id":    group.ID,
+				"logical_group_path": filepath.Join(root, filepath.FromSlash(strings.Join(parts[:2], "/"))),
+				"source_path":        filepath.Clean(record.Path),
+			}
+			if err := tx.Model(&models.AssetRecord{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func backfillQueuePositions(db *gorm.DB) error {

@@ -210,6 +210,40 @@ func TestMigrateAddsTestEncodeLifecycleTables(t *testing.T) {
 	}
 }
 
+func TestMigrateBackfillsSourceGroupIdentity(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "source-groups.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{
+		Path:     "/media/raw/anime/Beck Mongolian Chop Squad/Season1/episode01.mkv",
+		RootPath: "/media/raw", RelativePath: "anime/Beck Mongolian Chop Squad/Season1/episode01.mkv",
+		GroupPath: "anime/Beck Mongolian Chop Squad/Season1", FileName: "episode01.mkv", Status: "unprocessed",
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&record, record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.SourceGroupID == 0 || record.LogicalGroupPath != "/media/raw/anime/Beck Mongolian Chop Squad" || record.SourcePath != record.Path {
+		t.Fatalf("source identity was not backfilled: %#v", record)
+	}
+	var group models.SourceGroup
+	if err := db.First(&group, record.SourceGroupID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if group.Name != "anime" || group.SourcePath != "/media/raw/anime" {
+		t.Fatalf("unexpected source group: %#v", group)
+	}
+}
+
 func TestMigrateRestoresMissingTestEncodeFFmpegCommandColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-command-column.db")), &gorm.Config{})
 	if err != nil {

@@ -53,17 +53,13 @@ func (h ProfileAssignmentHandler) Upsert(c *gin.Context) {
 	input.Selection = strings.ToLower(strings.TrimSpace(input.Selection))
 	input.TargetPath = filepath.Clean(strings.TrimSpace(input.TargetPath))
 	input.ProfileKey = strings.TrimSpace(input.ProfileKey)
-	if (input.TargetType != "asset" && input.TargetType != "path") ||
+	if !validateAssetScopeType(input.TargetType) ||
 		(input.MediaType != "video" && input.MediaType != "audio" && input.MediaType != "tracks") ||
 		(input.Selection != "profile" && input.Selection != "disabled" && input.Selection != "inherit") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile assignment"})
 		return
 	}
 	if input.Selection == "inherit" {
-		if input.TargetType != "asset" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "inherit is only valid for asset assignments"})
-			return
-		}
 		if err := h.db.Where("target_type = ? AND target_path = ? AND media_type = ?", input.TargetType, input.TargetPath, input.MediaType).Delete(&models.ProfileAssignment{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -111,7 +107,11 @@ func (h ProfileAssignmentHandler) validateProfile(input ProfileAssignmentInput) 
 		if profile.Disabled {
 			return errProfileAssignmentInactiveProfile
 		}
-		if normalizedStoredProfileScope(profile.Scope) != input.TargetType {
+		expectedScope := "path"
+		if input.TargetType == assetScopeAsset {
+			expectedScope = "asset"
+		}
+		if normalizedStoredProfileScope(profile.Scope) != expectedScope {
 			return errProfileAssignmentScope
 		}
 		return nil
@@ -133,7 +133,11 @@ func (h ProfileAssignmentHandler) validateProfile(input ProfileAssignmentInput) 
 		if profile == nil || strings.TrimSpace(stringFromUnknown(profile["key"])) != input.ProfileKey {
 			continue
 		}
-		if storedSettingProfileScope(profile) != input.TargetType {
+		expectedScope := "path"
+		if input.TargetType == assetScopeAsset {
+			expectedScope = "asset"
+		}
+		if storedSettingProfileScope(profile) != expectedScope {
 			return errProfileAssignmentScope
 		}
 		disabled, _ := profile["disabled"].(bool)
@@ -185,23 +189,5 @@ type profileAssignmentError struct{ message string }
 func (e *profileAssignmentError) Error() string { return e.message }
 
 func profileAssignmentsForAsset(db *gorm.DB, assetPath string) (map[string]models.ProfileAssignment, error) {
-	clean := filepath.Clean(assetPath)
-	targets := []string{clean}
-	var record models.AssetRecord
-	if err := db.Where("path = ?", clean).First(&record).Error; err == nil && strings.TrimSpace(record.GroupPath) != "" {
-		targets = append(targets, filepath.Clean(filepath.Join(record.RootPath, record.GroupPath)))
-	} else {
-		targets = append(targets, filepath.Dir(clean))
-	}
-	var assignments []models.ProfileAssignment
-	if err := db.Where("(target_type = ? AND target_path = ?) OR (target_type = ? AND target_path = ?)", "asset", targets[0], "path", targets[1]).Find(&assignments).Error; err != nil {
-		return nil, err
-	}
-	resolved := map[string]models.ProfileAssignment{}
-	for _, assignment := range assignments {
-		if existing, ok := resolved[assignment.MediaType]; !ok || (existing.TargetType == "path" && assignment.TargetType == "asset") {
-			resolved[assignment.MediaType] = assignment
-		}
-	}
-	return resolved, nil
+	return effectiveProfileAssignments(db, assetPath)
 }

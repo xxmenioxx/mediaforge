@@ -147,6 +147,9 @@ export const api = {
   browsePaths: (root: 'raw' | 'library' | 'staging') =>
     request<PathBrowseResponse>(`/api/paths/browse?root=${encodeURIComponent(root)}`),
   assets: () => request<AssetInventory>('/api/assets'),
+	assetScopeConfigurations: () => request<import('./types').AssetScopeConfiguration[]>('/api/asset-scope-configurations'),
+	updateAssetScopeConfiguration: (input: import('./types').AssetScopeConfigurationInput) =>
+		request<import('./types').AssetScopeConfiguration>('/api/asset-scope-configurations', { method: 'POST', body: JSON.stringify(input) }),
   syncAssets: () =>
     request<AssetSyncResult>('/api/assets/sync', {
       method: 'POST',
