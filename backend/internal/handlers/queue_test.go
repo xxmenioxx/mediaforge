@@ -1461,3 +1461,261 @@ func TestQueueCreateBatchRollsBackEntireBatchWhenOneAssetReservationFails(t *tes
 		)
 	}
 }
+
+func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	logicalPath := "/media/raw/Anime/Akira"
+	records := []models.AssetRecord{
+		{Path: logicalPath + "/Season 1/Akira 02.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Season 1/Akira 02.mkv", FileName: "Akira 02.mkv", Status: "unprocessed", SizeBytes: 20},
+		{Path: logicalPath + "/Season 1/Akira 10.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Season 1/Akira 10.mkv", FileName: "Akira 10.mkv", Status: "unprocessed", SizeBytes: 10},
+		{Path: logicalPath + "/Season 1/Missing.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Season 1/Missing.mkv", FileName: "Missing.mkv", Status: "unprocessed", Missing: true},
+		{Path: "/media/raw/Anime/No Destination/Episode.mkv", LogicalGroupPath: "/media/raw/Anime/No Destination", SourcePath: "/media/raw/Anime/No Destination/Episode.mkv", FileName: "Episode.mkv", Status: "unprocessed"},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: 7}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: records[3].LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{
+		AssetIDs: []uint{records[1].ID, records[0].ID, records[2].ID, records[3].ID, 999999, records[0].ID},
+		Commit:   false,
+	})
+	if response.Summary.Selected != 5 || response.Summary.Eligible != 2 || response.Summary.Skipped != 1 || response.Summary.Failed != 2 {
+		t.Fatalf("unexpected plan summary: %#v", response.Summary)
+	}
+	if response.Summary.TitleCount != 2 || response.Summary.SizeBytes != 30 {
+		t.Fatalf("unexpected title/size summary: %#v", response.Summary)
+	}
+	if len(response.Results) != 5 || response.Results[0].AssetID != records[0].ID || response.Results[1].AssetID != records[1].ID {
+		t.Fatalf("results are not naturally ordered and deduplicated: %#v", response.Results)
+	}
+	reasons := map[uint]string{}
+	for _, result := range response.Results {
+		reasons[result.AssetID] = result.Reason
+	}
+	if reasons[records[2].ID] != "missing" || reasons[records[3].ID] != "invalid_configuration" || reasons[999999] != "not_found" {
+		t.Fatalf("unexpected per-asset reasons: %#v", reasons)
+	}
+	for _, result := range response.Results[:2] {
+		if result.Outcome != "eligible" || result.BatchID == "" || result.BatchName != "Season 1" {
+			t.Fatalf("eligible result lacks backend batch plan: %#v", result)
+		}
+	}
+	for _, model := range []any{&models.QueueJob{}, &models.SchedulerReservation{}, &models.ExecutionPlan{}} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("planning persisted %T count=%d err=%v", model, count, err)
+		}
+	}
+}
+
+func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrder(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	successLogical := "/media/raw/Anime/A Success"
+	conflictLogical := "/media/raw/Anime/B Conflict"
+	records := []models.AssetRecord{
+		{Path: successLogical + "/Season 2/Episode 10.mkv", LogicalGroupPath: successLogical, SourcePath: successLogical + "/Season 2/Episode 10.mkv", FileName: "Episode 10.mkv", Status: "unprocessed", SizeBytes: 10},
+		{Path: successLogical + "/Season 2/Episode 2.mkv", LogicalGroupPath: successLogical, SourcePath: successLogical + "/Season 2/Episode 2.mkv", FileName: "Episode 2.mkv", Status: "unprocessed", SizeBytes: 20},
+		{Path: conflictLogical + "/Season 1/Episode 1.mkv", LogicalGroupPath: conflictLogical, SourcePath: conflictLogical + "/Season 1/Episode 1.mkv", FileName: "Episode 1.mkv", Status: "unprocessed", SizeBytes: 30},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, logicalPath := range []string{successLogical, conflictLogical} {
+		if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: 9}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := []models.AppSetting{
+		{Key: "audioEnhancementProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{"key": "selected-audio", "scope": "path", "filters": "volume=0.8"}}}},
+		{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{"key": "selected-tracks", "scope": "path", "videoMode": "first", "audioMode": "default", "subtitleMode": "none"}}}},
+	}
+	for index := range settings {
+		if err := db.Create(&settings[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mediaType := range []string{"audio", "tracks"} {
+		profileKey := "selected-" + mediaType
+		if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: successLogical, MediaType: mediaType, Selection: "profile", ProfileKey: profileKey}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, record := range records[:2] {
+		if err := db.Create(&models.ScanResult{Path: record.Path, VideoStreams: models.JSONList{map[string]any{"index": 0}}, AudioStreams: models.JSONList{map[string]any{"index": 1, "default": true}}}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plan := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[2].ID, records[1].ID}, Commit: false})
+	if plan.Summary.Eligible != 3 || plan.Summary.Failed != 0 {
+		t.Fatalf("pre-commit plan was not fully eligible: %#v", plan)
+	}
+	if err := db.Create(&models.SchedulerReservation{JobID: 999999, AssetKey: filepath.Clean(records[2].Path), State: scheduler.ReservationStateLocked}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[2].ID, records[1].ID}, Commit: true})
+	if response.Summary.Queued != 2 || response.Summary.Failed != 1 || len(response.Batches) != 1 {
+		t.Fatalf("partial commit was not explicit: %#v", response)
+	}
+	results := map[uint]QueueSelectedAssetResult{}
+	for _, result := range response.Results {
+		results[result.AssetID] = result
+	}
+	if results[records[2].ID].Reason != "reservation_conflict" {
+		t.Fatalf("conflicting asset reason=%#v", results[records[2].ID])
+	}
+
+	var jobs []models.QueueJob
+	if err := db.Order("queue_position asc").Find(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 || filepath.Base(jobs[0].MediaPath) != "Episode 2.mkv" || filepath.Base(jobs[1].MediaPath) != "Episode 10.mkv" {
+		t.Fatalf("queued jobs lost natural order: %#v", jobs)
+	}
+	for _, job := range jobs {
+		if job.ProfileCapturedAt == nil || job.ProfileSnapshot == nil || job.AudioProfileSnapshot == nil || job.TrackProfileSnapshot == nil || job.ProfileResolution == nil {
+			t.Fatalf("job lacks immutable effective snapshots: %#v", job)
+		}
+		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
+		if videoResolution["source"] != assetScopeLogicalGroup {
+			t.Fatalf("job did not preserve inherited provenance: %#v", job.ProfileResolution)
+		}
+	}
+	var plans int64
+	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 2 {
+		t.Fatalf("execution plans=%d err=%v", plans, err)
+	}
+}
+
+func TestQueueSelectedAssetsReportsReviewOpenJobAndMaintenanceSeparately(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	logicalPath := "/media/raw/Anime/Blocked"
+	records := []models.AssetRecord{
+		{Path: logicalPath + "/Review.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Review.mkv", FileName: "Review.mkv", Status: "unprocessed"},
+		{Path: logicalPath + "/Queued.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Queued.mkv", FileName: "Queued.mkv", Status: "unprocessed"},
+		{Path: logicalPath + "/Maintenance.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Maintenance.mkv", FileName: "Maintenance.mkv", Status: "unprocessed"},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetReviewOverrides(db, map[string]AssetReviewState{records[0].Path: {RequiresReview: true, Reason: "manual", Source: "manual", UpdatedAt: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.QueueJob{MediaPath: records[1].Path, Status: JobStatusQueued, Stage: JobStageQueued}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetMaintenanceOperation{ID: "maintenance-test", AssetPath: records[2].Path, Status: maintenanceStatusRunning, Phase: "rewrite"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[1].ID, records[2].ID}})
+	reasons := map[uint]string{}
+	for _, result := range response.Results {
+		reasons[result.AssetID] = result.Reason
+	}
+	if reasons[records[0].ID] != "needs_review" || reasons[records[1].ID] != "already_queued" || reasons[records[2].ID] != "active_maintenance" {
+		t.Fatalf("unexpected blocked results: %#v", response.Results)
+	}
+	if response.Summary.Skipped != 3 || response.Summary.Eligible != 0 || response.Summary.Failed != 0 {
+		t.Fatalf("unexpected blocked summary: %#v", response.Summary)
+	}
+}
+
+func TestQueueSelectedAssetsUsesBackendFallbackForInheritedAudioOnlyJob(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	fallback := authoritativeTestProfile()
+	if err := db.Create(&fallback).Error; err != nil {
+		t.Fatal(err)
+	}
+	logicalPath := "/media/raw/Anime/Audio Only"
+	record := models.AssetRecord{Path: logicalPath + "/Episode 1.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Episode 1.mkv", FileName: "Episode 1.mkv", Status: "unprocessed"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignments := []models.ProfileAssignment{
+		{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "video", Selection: VideoAssignmentAudioOnly},
+		{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "audio", Selection: "profile", ProfileKey: "audio-only-profile"},
+	}
+	if err := db.Create(&assignments).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: 11}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "audioEnhancementProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{"key": "audio-only-profile", "scope": "path", "filters": "volume=0.9"}}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
+	if response.Summary.Queued != 1 || response.Summary.Failed != 0 {
+		t.Fatalf("audio-only selection did not queue: %#v", response)
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
+	if job.ProcessingMode != ProcessingModeAudioOnly || job.ProfileID != fallback.ID || job.AudioProfileSnapshot["filters"] != "volume=0.9" || videoResolution["selection"] != VideoAssignmentAudioOnly {
+		t.Fatalf("audio-only fallback or provenance was not frozen: %#v", job)
+	}
+}
+
+func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := "file:" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name()) + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
+		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func queueSelectedAssetsRequest(t *testing.T, db *gorm.DB, input QueueSelectedAssetsInput) QueueSelectedAssetsResponse {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/selected-assets", NewQueueHandler(db).QueueSelectedAssets)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/selected-assets", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result QueueSelectedAssetsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}

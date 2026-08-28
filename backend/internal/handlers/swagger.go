@@ -180,6 +180,33 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/assets/effective-configurations": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Assets"},
+				"summary":     "Resolve effective configuration for multiple assets",
+				"operationId": "resolveEffectiveAssetConfigurations",
+				"requestBody": requestBody(gin.H{
+					"type": "object", "required": []string{"assetIds"},
+					"properties": gin.H{"assetIds": gin.H{"type": "array", "items": gin.H{"type": "integer"}, "minItems": 1, "maxItems": 1000}},
+				}),
+				"responses": gin.H{
+					"200": jsonResponse("Effective configurations keyed by asset ID", gin.H{"type": "object"}),
+					"400": jsonResponse("Invalid asset IDs", ref("Error")),
+				},
+			},
+		},
+		"/api/asset-scope-configurations/logical-groups/batch": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Assets"},
+				"summary":     "Transactionally update selected LogicalGroup configuration dimensions",
+				"operationId": "configureLogicalGroupsBatch",
+				"requestBody": requestBody(ref("ConfigureLogicalGroupsBatchInput")),
+				"responses": gin.H{
+					"200": jsonResponse("Updated LogicalGroup scopes", ref("ConfigureLogicalGroupsBatchResponse")),
+					"400": jsonResponse("Invalid batch configuration", ref("Error")),
+				},
+			},
+		},
 		"/api/assets/track-maintenance/inventory": gin.H{
 			"get": gin.H{"tags": []string{"Assets"}, "summary": "Inspect embedded tracks and maintenance availability", "operationId": "trackMaintenanceInventory", "parameters": []gin.H{{"name": "path", "in": "query", "required": true, "schema": gin.H{"type": "string"}}}, "responses": gin.H{"200": jsonResponse("Track inventory", gin.H{"type": "object"})}},
 		},
@@ -409,6 +436,19 @@ func openAPIPaths() gin.H {
 				"responses": gin.H{
 					"201": jsonResponse("Created queue job", ref("QueueJob")),
 					"400": jsonResponse("Invalid request", ref("Error")),
+				},
+			},
+		},
+		"/api/queue/selected-assets": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Queue"},
+				"summary":     "Plan or queue selected assets by authoritative Asset IDs",
+				"operationId": "queueSelectedAssets",
+				"requestBody": requestBody(ref("QueueSelectedAssetsInput")),
+				"responses": gin.H{
+					"200": jsonResponse("Authoritative per-asset Queue results", ref("QueueSelectedAssetsResponse")),
+					"400": jsonResponse("Invalid selection", ref("Error")),
+					"500": jsonResponse("Queue planning failed", ref("Error")),
 				},
 			},
 		},
@@ -672,6 +712,29 @@ func openAPIComponents() gin.H {
 				"required": []string{"error"},
 				"properties": gin.H{
 					"error": gin.H{"type": "string"},
+				},
+			},
+			"LogicalGroupConfigurationChange": gin.H{
+				"type": "object", "required": []string{"mode"},
+				"properties": gin.H{
+					"mode":           gin.H{"type": "string", "enum": []string{"no_change", "inherit", "value", "disabled"}},
+					"videoProfileId": gin.H{"type": "integer"}, "profileKey": gin.H{"type": "string"},
+					"category": gin.H{"type": "string"}, "destinationLibraryId": gin.H{"type": "integer"},
+				},
+			},
+			"ConfigureLogicalGroupsBatchInput": gin.H{
+				"type": "object", "required": []string{"logicalGroupPaths", "video", "audio", "tracks", "category", "destination"},
+				"properties": gin.H{
+					"logicalGroupPaths": gin.H{"type": "array", "minItems": 1, "maxItems": 500, "items": gin.H{"type": "string"}},
+					"video":             ref("LogicalGroupConfigurationChange"), "audio": ref("LogicalGroupConfigurationChange"), "tracks": ref("LogicalGroupConfigurationChange"),
+					"category": ref("LogicalGroupConfigurationChange"), "destination": ref("LogicalGroupConfigurationChange"),
+				},
+			},
+			"ConfigureLogicalGroupsBatchResponse": gin.H{
+				"type": "object", "required": []string{"logicalGroupPaths", "changedDimensions"},
+				"properties": gin.H{
+					"logicalGroupPaths": gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"changedDimensions": gin.H{"type": "array", "items": gin.H{"type": "string", "enum": []string{"video", "audio", "tracks", "category", "destination"}}},
 				},
 			},
 			"TestEncodeInput": gin.H{
@@ -1014,6 +1077,32 @@ func openAPIComponents() gin.H {
 					"resolveProfileAssignments": gin.H{"type": "boolean", "description": "Resolve asset-over-path assignments and freeze their snapshots before queueing."},
 					"priority":                  gin.H{"type": "integer", "example": 5},
 					"notes":                     gin.H{"type": "string", "example": "Manual test job"},
+				},
+			},
+			"QueueSelectedAssetsInput": gin.H{
+				"type": "object", "required": []string{"assetIds"},
+				"properties": gin.H{
+					"assetIds": gin.H{"type": "array", "minItems": 1, "maxItems": 1000, "items": gin.H{"type": "integer"}},
+					"commit":   gin.H{"type": "boolean"},
+				},
+			},
+			"QueueSelectedAssetResult": gin.H{
+				"type": "object", "required": []string{"assetId", "outcome"},
+				"properties": gin.H{
+					"assetId": gin.H{"type": "integer"},
+					"outcome": gin.H{"type": "string", "enum": []string{"eligible", "queued", "skipped", "failed"}},
+					"reason":  gin.H{"type": "string", "enum": []string{"not_found", "missing", "needs_review", "already_queued", "active_maintenance", "invalid_configuration", "reservation_conflict", "queue_creation_failed"}},
+					"message": gin.H{"type": "string"}, "batchId": gin.H{"type": "string"}, "batchName": gin.H{"type": "string"}, "jobId": gin.H{"type": "integer"},
+				},
+			},
+			"QueueSelectedAssetsResponse": gin.H{
+				"type": "object", "required": []string{"summary", "results", "batches"},
+				"properties": gin.H{
+					"summary": gin.H{"type": "object", "properties": gin.H{
+						"selected": gin.H{"type": "integer"}, "eligible": gin.H{"type": "integer"}, "queued": gin.H{"type": "integer"}, "skipped": gin.H{"type": "integer"}, "failed": gin.H{"type": "integer"}, "titleCount": gin.H{"type": "integer"}, "sizeBytes": gin.H{"type": "integer", "format": "int64"},
+					}},
+					"results": gin.H{"type": "array", "items": ref("QueueSelectedAssetResult")},
+					"batches": gin.H{"type": "array", "items": gin.H{"type": "object", "properties": gin.H{"batchId": gin.H{"type": "string"}, "batchName": gin.H{"type": "string"}, "jobCount": gin.H{"type": "integer"}}}},
 				},
 			},
 			"ProfileAssignment": mergeSchema(ref("ProfileAssignmentInput"), gin.H{

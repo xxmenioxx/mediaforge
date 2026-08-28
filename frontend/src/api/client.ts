@@ -31,7 +31,9 @@ import type {
   QueueJobUpdateInput,
   QueueReorderInput,
   QueueBatchInput,
-  QueueBatchResponse, 
+  QueueBatchResponse,
+  QueueSelectedAssetsInput,
+  QueueSelectedAssetsResponse,
   RuntimeSnapshot,
   RuntimeProfilesResponse,
   ScanResult,
@@ -149,8 +151,11 @@ export const api = {
   assets: () => request<AssetInventory>('/api/assets'),
 	assetScopeConfigurations: () => request<import('./types').AssetScopeConfiguration[]>('/api/asset-scope-configurations'),
 	effectiveAssetConfiguration: (path: string) => request<import('./types').EffectiveAssetConfiguration>(`/api/assets/effective-configuration?path=${encodeURIComponent(path)}`),
+	effectiveAssetConfigurations: (assetIds: number[]) => request<import('./types').EffectiveAssetConfigurationBatchResponse>('/api/assets/effective-configurations', { method: 'POST', body: JSON.stringify({ assetIds }) }),
 	updateAssetScopeConfiguration: (input: import('./types').AssetScopeConfigurationInput) =>
 		request<import('./types').AssetScopeConfiguration>('/api/asset-scope-configurations', { method: 'POST', body: JSON.stringify(input) }),
+	configureLogicalGroupsBatch: (input: import('./types').ConfigureLogicalGroupsBatchInput) =>
+		request<import('./types').ConfigureLogicalGroupsBatchResponse>('/api/asset-scope-configurations/logical-groups/batch', { method: 'POST', body: JSON.stringify(input) }),
   syncAssets: () =>
     request<AssetSyncResult>('/api/assets/sync', {
       method: 'POST',
@@ -374,6 +379,11 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(batch),
   }),
+  queueSelectedAssets: (input: QueueSelectedAssetsInput) =>
+    request<QueueSelectedAssetsResponse>('/api/queue/selected-assets', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   updateQueueJob: ({ jobId, ...job }: QueueJobUpdateInput) =>
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
       method: 'POST',

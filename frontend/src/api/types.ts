@@ -362,6 +362,28 @@ export type AssetScopeConfiguration = {
 
 export type AssetScopeConfigurationInput = Omit<AssetScopeConfiguration, 'id' | 'createdAt' | 'updatedAt'>;
 
+export type LogicalGroupConfigurationChange = {
+	mode: 'no_change' | 'inherit' | 'value' | 'disabled';
+	videoProfileId?: number;
+	profileKey?: string;
+	category?: string;
+	destinationLibraryId?: number;
+};
+
+export type ConfigureLogicalGroupsBatchInput = {
+	logicalGroupPaths: string[];
+	video: LogicalGroupConfigurationChange;
+	audio: LogicalGroupConfigurationChange;
+	tracks: LogicalGroupConfigurationChange;
+	category: LogicalGroupConfigurationChange;
+	destination: LogicalGroupConfigurationChange;
+};
+
+export type ConfigureLogicalGroupsBatchResponse = {
+	logicalGroupPaths: string[];
+	changedDimensions: Array<'video' | 'audio' | 'tracks' | 'category' | 'destination'>;
+};
+
 export type EffectiveAssetConfigurationValue = {
 	selection: 'inherit' | 'profile' | 'value' | 'disabled' | 'override_only' | 'audio_only' | string;
 	source?: 'source_group' | 'logical_group' | 'path' | 'asset' | string;
@@ -380,6 +402,11 @@ export type EffectiveAssetConfiguration = {
 	tracks: EffectiveAssetConfigurationValue;
 	category: EffectiveAssetConfigurationValue;
 	destination: EffectiveAssetConfigurationValue;
+};
+
+export type EffectiveAssetConfigurationBatchResponse = {
+	configurations: Record<string, EffectiveAssetConfiguration>;
+	missingAssetIds: number[];
 };
 
 export type AssetReports = {
@@ -821,6 +848,45 @@ export type QueueBatchResponse = {
   batchId: string;
   batchName: string;
   jobs: QueueJob[];
+};
+
+export type QueueSelectedAssetsInput = {
+  assetIds: number[];
+  commit: boolean;
+};
+
+export type QueueSelectedAssetReason =
+  | 'not_found'
+  | 'missing'
+  | 'needs_review'
+  | 'already_queued'
+  | 'active_maintenance'
+  | 'invalid_configuration'
+  | 'reservation_conflict'
+  | 'queue_creation_failed';
+
+export type QueueSelectedAssetResult = {
+  assetId: number;
+  outcome: 'eligible' | 'queued' | 'skipped' | 'failed';
+  reason?: QueueSelectedAssetReason;
+  message?: string;
+  batchId?: string;
+  batchName?: string;
+  jobId?: number;
+};
+
+export type QueueSelectedAssetsResponse = {
+  summary: {
+    selected: number;
+    eligible: number;
+    queued: number;
+    skipped: number;
+    failed: number;
+    titleCount: number;
+    sizeBytes: number;
+  };
+  results: QueueSelectedAssetResult[];
+  batches: Array<{ batchId: string; batchName: string; jobCount: number }>;
 };
 
 export type ProfileAssignment = {

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -145,6 +146,251 @@ type EffectiveAssetConfiguration struct {
 	Tracks      AssetConfigurationValue `json:"tracks"`
 	Category    AssetConfigurationValue `json:"category"`
 	Destination AssetConfigurationValue `json:"destination"`
+}
+
+type EffectiveAssetConfigurationBatchInput struct {
+	AssetIDs []uint `json:"assetIds" binding:"required"`
+}
+
+type EffectiveAssetConfigurationBatchResponse struct {
+	Configurations  map[string]EffectiveAssetConfiguration `json:"configurations"`
+	MissingAssetIDs []uint                                 `json:"missingAssetIds"`
+}
+
+const (
+	batchChangeNoChange = "no_change"
+	batchChangeInherit  = "inherit"
+	batchChangeValue    = "value"
+	batchChangeDisabled = "disabled"
+)
+
+type LogicalGroupConfigurationChange struct {
+	Mode                 string `json:"mode" binding:"required"`
+	VideoProfileID       uint   `json:"videoProfileId,omitempty"`
+	ProfileKey           string `json:"profileKey,omitempty"`
+	Category             string `json:"category,omitempty"`
+	DestinationLibraryID uint   `json:"destinationLibraryId,omitempty"`
+}
+
+type ConfigureLogicalGroupsBatchInput struct {
+	LogicalGroupPaths []string                        `json:"logicalGroupPaths" binding:"required,min=1,max=500"`
+	Video             LogicalGroupConfigurationChange `json:"video" binding:"required"`
+	Audio             LogicalGroupConfigurationChange `json:"audio" binding:"required"`
+	Tracks            LogicalGroupConfigurationChange `json:"tracks" binding:"required"`
+	Category          LogicalGroupConfigurationChange `json:"category" binding:"required"`
+	Destination       LogicalGroupConfigurationChange `json:"destination" binding:"required"`
+}
+
+type ConfigureLogicalGroupsBatchResponse struct {
+	LogicalGroupPaths []string `json:"logicalGroupPaths"`
+	ChangedDimensions []string `json:"changedDimensions"`
+}
+
+func (h AssetConfigurationHandler) ConfigureLogicalGroupsBatch(c *gin.Context) {
+	var input ConfigureLogicalGroupsBatchInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	paths, changes, err := normalizeLogicalGroupBatchInput(input)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var existing []string
+	if err := h.db.Model(&models.AssetRecord{}).
+		Distinct("logical_group_path").
+		Where("status = ? AND logical_group_path IN ?", "unprocessed", paths).
+		Pluck("logical_group_path", &existing).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	existingSet := make(map[string]bool, len(existing))
+	for _, path := range existing {
+		existingSet[filepath.Clean(path)] = true
+	}
+	for _, path := range paths {
+		if !existingSet[path] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("logical group is not an active Unprocessed scope: %s", path)})
+			return
+		}
+	}
+
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		for _, path := range paths {
+			for _, mediaType := range []string{"video", "audio", "tracks"} {
+				change := changes[mediaType]
+				if change.Mode == batchChangeNoChange {
+					continue
+				}
+				selection := change.Mode
+				if selection == batchChangeValue {
+					selection = "profile"
+				}
+				if _, _, err := applyProfileAssignment(tx, ProfileAssignmentInput{
+					TargetType: assetScopeLogicalGroup, TargetPath: path, MediaType: mediaType,
+					Selection: selection, VideoProfileID: change.VideoProfileID, ProfileKey: change.ProfileKey,
+				}); err != nil {
+					return fmt.Errorf("configure %s for %s: %w", mediaType, path, err)
+				}
+			}
+
+			categoryChange, destinationChange := changes["category"], changes["destination"]
+			if categoryChange.Mode == batchChangeNoChange && destinationChange.Mode == batchChangeNoChange {
+				continue
+			}
+			current := models.AssetScopeConfiguration{
+				ScopeType: assetScopeLogicalGroup, ScopeKey: path,
+				CategorySelection: configSelectionInherit, DestinationSelection: configSelectionInherit,
+			}
+			if err := tx.Where("scope_type = ? AND scope_key = ?", assetScopeLogicalGroup, path).First(&current).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if categoryChange.Mode != batchChangeNoChange {
+				current.CategorySelection = categoryChange.Mode
+				current.Category = categoryChange.Category
+			}
+			if destinationChange.Mode != batchChangeNoChange {
+				current.DestinationSelection = destinationChange.Mode
+				current.DestinationLibraryID = destinationChange.DestinationLibraryID
+			}
+			if _, err := upsertAssetScopeConfiguration(tx, AssetScopeConfigurationInput{
+				ScopeType: assetScopeLogicalGroup, ScopeKey: path,
+				CategorySelection: current.CategorySelection, Category: current.Category,
+				DestinationSelection: current.DestinationSelection, DestinationLibraryID: current.DestinationLibraryID,
+			}); err != nil {
+				return fmt.Errorf("configure scope values for %s: %w", path, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	changed := make([]string, 0, len(changes))
+	for _, dimension := range []string{"video", "audio", "tracks", "category", "destination"} {
+		if changes[dimension].Mode != batchChangeNoChange {
+			changed = append(changed, dimension)
+		}
+	}
+	c.JSON(http.StatusOK, ConfigureLogicalGroupsBatchResponse{LogicalGroupPaths: paths, ChangedDimensions: changed})
+}
+
+func normalizeLogicalGroupBatchInput(input ConfigureLogicalGroupsBatchInput) ([]string, map[string]LogicalGroupConfigurationChange, error) {
+	paths := make([]string, 0, len(input.LogicalGroupPaths))
+	seen := map[string]bool{}
+	for _, rawPath := range input.LogicalGroupPaths {
+		path := filepath.Clean(strings.TrimSpace(rawPath))
+		if path == "." || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, nil, fmt.Errorf("at least one valid logical group path is required")
+	}
+	changes := map[string]LogicalGroupConfigurationChange{
+		"video": input.Video, "audio": input.Audio, "tracks": input.Tracks,
+		"category": input.Category, "destination": input.Destination,
+	}
+	changed := false
+	for dimension, change := range changes {
+		change.Mode = strings.ToLower(strings.TrimSpace(change.Mode))
+		change.ProfileKey = strings.TrimSpace(change.ProfileKey)
+		change.Category = strings.TrimSpace(change.Category)
+		if change.Mode != batchChangeNoChange && change.Mode != batchChangeInherit && change.Mode != batchChangeValue && change.Mode != batchChangeDisabled {
+			return nil, nil, fmt.Errorf("invalid %s change mode", dimension)
+		}
+		if change.Mode != batchChangeNoChange {
+			changed = true
+		}
+		if change.Mode == batchChangeValue {
+			switch dimension {
+			case "video":
+				if change.VideoProfileID == 0 {
+					return nil, nil, fmt.Errorf("video profile is required")
+				}
+			case "audio", "tracks":
+				if change.ProfileKey == "" {
+					return nil, nil, fmt.Errorf("%s profile is required", dimension)
+				}
+			case "category":
+				if change.Category == "" {
+					return nil, nil, fmt.Errorf("category value is required")
+				}
+			case "destination":
+				if change.DestinationLibraryID == 0 {
+					return nil, nil, fmt.Errorf("destination library is required")
+				}
+			}
+		}
+		changes[dimension] = change
+	}
+	if !changed {
+		return nil, nil, fmt.Errorf("at least one dimension must change")
+	}
+	return paths, changes, nil
+}
+
+func (h AssetConfigurationHandler) EffectiveBatch(c *gin.Context) {
+	var input EffectiveAssetConfigurationBatchInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(input.AssetIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain at least one asset"})
+		return
+	}
+	if len(input.AssetIDs) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds cannot contain more than 1000 assets"})
+		return
+	}
+
+	assetIDs := make([]uint, 0, len(input.AssetIDs))
+	seen := make(map[uint]bool, len(input.AssetIDs))
+	for _, assetID := range input.AssetIDs {
+		if assetID == 0 || seen[assetID] {
+			continue
+		}
+		seen[assetID] = true
+		assetIDs = append(assetIDs, assetID)
+	}
+	if len(assetIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain a valid asset id"})
+		return
+	}
+
+	var records []models.AssetRecord
+	if err := h.db.Where("id IN ?", assetIDs).Find(&records).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	byID := make(map[uint]models.AssetRecord, len(records))
+	for _, record := range records {
+		byID[record.ID] = record
+	}
+	response := EffectiveAssetConfigurationBatchResponse{
+		Configurations:  map[string]EffectiveAssetConfiguration{},
+		MissingAssetIDs: []uint{},
+	}
+	for _, assetID := range assetIDs {
+		record, exists := byID[assetID]
+		if !exists {
+			response.MissingAssetIDs = append(response.MissingAssetIDs, assetID)
+			continue
+		}
+		configuration, err := effectiveAssetConfiguration(h.db, record.Path)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("resolve effective configuration for asset %d: %v", assetID, err)})
+			return
+		}
+		response.Configurations[strconv.FormatUint(uint64(assetID), 10)] = configuration
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 type assetScopeTarget struct {

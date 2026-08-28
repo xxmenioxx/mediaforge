@@ -63,7 +63,7 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -76,7 +76,13 @@ import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
-import { hierarchicalSelectionState, selectableAssetsForPaths } from '../utils/unprocessedAssetSelection';
+import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
+import {
+  mergedScopeConfigurationInput,
+  profileAssignmentForScopeChange,
+  scopeConfigurationEditorValues,
+  type ScopeConfigurationField,
+} from '../utils/scopeConfigurationEditor';
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
@@ -716,24 +722,14 @@ function UnprocessedAssetsView({
 			<Box sx={{ px: 2, py: 1.5 }}>
 				<Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}><Typography variant="h2">{sourceGroup.name}</Typography><SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /></Stack>
 				<Typography variant="body2" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
-				{selectedAssetIds.size ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} queueJobs={queueJobs} onClear={() => setSelectedAssetIds(new Set())} /> : null}
+				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} onClear={() => setSelectedAssetIds(new Set())} /> : null}
 			</Box>
 			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} operationalGroups={operationalGroups} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
 		</Box>
 	);
 }
 
-type PreparedSelectionQueue = {
-	titleCount: number;
-	selectedCount: number;
-	eligibleCount: number;
-	alreadyQueuedCount: number;
-	needsReviewCount: number;
-	missingCount: number;
-	invalidCount: number;
-	sizeBytes: number;
-	batches: Array<{ batchId: string; batchName: string; jobs: QueueJobInput[] }>;
-};
+type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
 function UnprocessedLogicalGroup({ logicalGroup, operationalGroups, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
 	logicalGroup: AssetLogicalGroup; operationalGroups: AssetGroup[]; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
@@ -744,27 +740,32 @@ function UnprocessedLogicalGroup({ logicalGroup, operationalGroups, selectedAsse
 	const [managedPath, setManagedPath] = useState<import('../api/types').AssetPath | null>(null);
 	const paths = safeArray(logicalGroup.assetPaths);
 	const assets = selectableAssetsForPaths(paths);
+	const assetIds = assets.map((asset) => asset.id as number);
 	const groupSelection = hierarchicalSelectionState(assets.map((asset) => asset.id as number), selectedAssetIds);
-	const effectiveQueries = useQueries({ queries: assets.map((asset) => ({ queryKey: ['effectiveAssetConfiguration', asset.path], queryFn: () => api.effectiveAssetConfiguration(asset.path), enabled: expanded, staleTime: 15_000 })) });
-	const effectiveByPath = new Map(assets.map((asset, index) => [normalizePath(asset.path), effectiveQueries[index]?.data]));
+	const effectiveConfigurations = useQuery({
+		queryKey: ['effectiveAssetConfiguration', 'batch', ...assetIds],
+		queryFn: () => api.effectiveAssetConfigurations(assetIds),
+		enabled: expanded && assetIds.length > 0,
+		staleTime: 15_000,
+	});
 	const rootPaths = paths.filter((path) => path.isLogicalGroupRoot);
 	const childPaths = paths.filter((path) => !path.isLogicalGroupRoot);
 	const operationalGroup = (path: import('../api/types').AssetPath) => operationalGroups.find((group) => normalizePath(group.path) === normalizePath(path.path)) ?? assetGroupFromTreePath(path);
 	const renderAssets = (path: import('../api/types').AssetPath) => {
-		const visibleAssets = safeArray(path.assets).filter((asset) => !asset.missing && asset.id);
+		const visibleAssets = safeArray(path.assets).filter((asset) => asset.id);
 		if (!visibleAssets.length) return <Alert severity="info">No available assets in this path.</Alert>;
 		return <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 720, tableLayout: 'fixed' }}><TableHead><TableRow><TableCell padding="checkbox" sx={{ width: 48 }} /><TableCell>Asset</TableCell><TableCell sx={{ width: 180 }}>Status</TableCell><TableCell sx={{ width: 100 }}>Size</TableCell><TableCell align="center" sx={{ width: 220 }}>Actions</TableCell></TableRow></TableHead><TableBody>{visibleAssets.map((asset) => {
-			const effective = effectiveByPath.get(normalizePath(asset.path));
+			const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
 			const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
 			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
 		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 1, py: 1, bgcolor: 'rgba(255,255,255,0.035)' }}>
-			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} /><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
+			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} /><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
 			<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} />
 		</Stack>
-		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}><Stack direction="row" justifyContent="flex-end" spacing={0.5} sx={{ mb: 0.5 }}><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Root path settings" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /><Button size="small" startIcon={<InfoOutlinedIcon />} onClick={() => setManagedPath(path)}>Path actions</Button><Button size="small" startIcon={<ManageSearchIcon />} onClick={() => setSnapshotPath(path)}>Snapshots</Button></Stack>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = safeArray(path.assets).filter((asset) => !asset.missing && asset.id); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} /><IconButton size="small" onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><Stack direction="row"><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact /><IconButton size="small" onClick={() => setManagedPath(path)} aria-label={`Path actions ${path.displayPath || path.name}`}><InfoOutlinedIcon fontSize="small" /></IconButton><IconButton size="small" onClick={() => setSnapshotPath(path)}><ManageSearchIcon fontSize="small" /></IconButton></Stack></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
+		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}><Stack direction="row" justifyContent="flex-end" spacing={0.5} sx={{ mb: 0.5 }}><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Root path settings" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /><Button size="small" startIcon={<InfoOutlinedIcon />} onClick={() => setManagedPath(path)}>Path actions</Button><Button size="small" startIcon={<ManageSearchIcon />} onClick={() => setSnapshotPath(path)}>Snapshots</Button></Stack>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = selectableAssetsForPaths([path]); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} /><IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><Stack direction="row"><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact /><IconButton size="small" onClick={() => setManagedPath(path)} aria-label={`Path actions ${path.displayPath || path.name}`}><InfoOutlinedIcon fontSize="small" /></IconButton><IconButton size="small" onClick={() => setSnapshotPath(path)}><ManageSearchIcon fontSize="small" /></IconButton></Stack></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
 		{snapshotPath ? <PathSnapshotsDialog open group={operationalGroup(snapshotPath)} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setSnapshotPath(null)} /> : null}
 		<Dialog open={Boolean(managedPath)} onClose={() => setManagedPath(null)} maxWidth="xl" fullWidth><DialogTitle>Path actions · {managedPath?.displayPath || managedPath?.name}</DialogTitle><DialogContent dividers sx={{ p: 0 }}>{managedPath ? <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 980 }}><TableBody><AssetGroupRow group={operationalGroup(managedPath)} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} mode="unprocessed" /></TableBody></Table></Box> : null}</DialogContent><DialogActions><Button onClick={() => setManagedPath(null)}>Close</Button></DialogActions></Dialog>
 	</Box>;
@@ -776,14 +777,90 @@ function assetGroupFromTreePath(path: import('../api/types').AssetPath): AssetGr
 }
 
 function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProfiles, trackProfiles, libraries, categories, compact = false }: { targetType: 'logical_group' | 'path'; scopeKey: string; label: string; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[]; compact?: boolean }) {
-	const queryClient = useQueryClient(); const [open, setOpen] = useState(false); const [fields, setFields] = useState<Set<string>>(() => new Set());
-	const [video, setVideo] = useState(0); const [audio, setAudio] = useState('__inherit__'); const [tracks, setTracks] = useState('__inherit__'); const [categoryMode, setCategoryMode] = useState<'inherit' | 'value' | 'disabled'>('inherit'); const [category, setCategory] = useState(''); const [destinationMode, setDestinationMode] = useState<'inherit' | 'value' | 'disabled'>('inherit'); const [destination, setDestination] = useState(0);
-	const save = useMutation({ mutationFn: async () => { if (!fields.size) throw new Error('Select at least one field to change.'); if (fields.has('category') || fields.has('destination')) { const current = (await api.assetScopeConfigurations()).find((item) => item.scopeType === targetType && normalizePath(item.scopeKey) === normalizePath(scopeKey)); await api.updateAssetScopeConfiguration({ scopeType: targetType, scopeKey, categorySelection: fields.has('category') ? categoryMode : current?.categorySelection ?? 'inherit', category: fields.has('category') && categoryMode === 'value' ? category : current?.category ?? '', destinationSelection: fields.has('destination') ? destinationMode : current?.destinationSelection ?? 'inherit', destinationLibraryId: fields.has('destination') ? destinationMode === 'value' ? destination : 0 : current?.destinationLibraryId }); } for (const [mediaType, value] of [['video', video], ['audio', audio], ['tracks', tracks]] as const) { if (!fields.has(mediaType)) continue; const inherit = value === 0 || value === '__inherit__'; const disabled = value === '' || (mediaType === 'video' && Number(value) < 0); await api.updateProfileAssignment({ targetType, targetPath: scopeKey, mediaType, selection: inherit ? 'inherit' : disabled ? 'disabled' : 'profile', videoProfileId: mediaType === 'video' ? Math.max(0, Number(value)) : 0, profileKey: mediaType === 'video' || inherit || disabled ? '' : String(value) }); } }, onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }), queryClient.invalidateQueries({ queryKey: ['assetScopeConfigurations'] }), queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]); setOpen(false); } });
-	const toggle = (field: string) => setFields((current) => { const next = new Set(current); if (next.has(field)) next.delete(field); else next.add(field); return next; });
-	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={() => { setFields(new Set()); setOpen(true); }}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers><Stack spacing={1.5}><Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert><FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={!fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={!fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={!fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={!fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack></DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
+	const queryClient = useQueryClient();
+	const [open, setOpen] = useState(false);
+	const [loading, setLoading] = useState(false);
+	const [loadError, setLoadError] = useState('');
+	const [fields, setFields] = useState<Set<ScopeConfigurationField>>(() => new Set());
+	const [video, setVideo] = useState(0);
+	const [audio, setAudio] = useState('__inherit__');
+	const [tracks, setTracks] = useState('__inherit__');
+	const [categoryMode, setCategoryMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
+	const [category, setCategory] = useState('');
+	const [destinationMode, setDestinationMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
+	const [destination, setDestination] = useState(0);
+
+	async function loadPersistedConfiguration() {
+		setLoading(true);
+		setLoadError('');
+		try {
+			const [assignments, configurations] = await Promise.all([
+				queryClient.fetchQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments }),
+				queryClient.fetchQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations }),
+			]);
+			const values = scopeConfigurationEditorValues(targetType, scopeKey, assignments, configurations);
+			setVideo(values.videoProfileId);
+			setAudio(values.audioProfileKey);
+			setTracks(values.trackProfileKey);
+			setCategoryMode(values.categorySelection);
+			setCategory(values.category);
+			setDestinationMode(values.destinationSelection);
+			setDestination(values.destinationLibraryId);
+		} catch (error) {
+			setLoadError(error instanceof Error ? error.message : 'Could not load persisted configuration.');
+		} finally {
+			setLoading(false);
+		}
+	}
+
+	function openConfiguration() {
+		setFields(new Set());
+		setOpen(true);
+		void loadPersistedConfiguration();
+	}
+
+	const save = useMutation({
+		mutationFn: async () => {
+			if (!fields.size) throw new Error('Select at least one field to change.');
+			if (fields.has('category') || fields.has('destination')) {
+				const configurations = await api.assetScopeConfigurations();
+				const current = configurations.find((item) => item.scopeType === targetType && normalizePath(item.scopeKey) === normalizePath(scopeKey));
+				await api.updateAssetScopeConfiguration(mergedScopeConfigurationInput(targetType, scopeKey, current, fields, {
+					videoProfileId: video,
+					audioProfileKey: audio,
+					trackProfileKey: tracks,
+					categorySelection: categoryMode,
+					category,
+					destinationSelection: destinationMode,
+					destinationLibraryId: destination,
+				}));
+			}
+			for (const [mediaType, value] of [['video', video], ['audio', audio], ['tracks', tracks]] as const) {
+				if (!fields.has(mediaType)) continue;
+				await api.updateProfileAssignment(profileAssignmentForScopeChange(targetType, scopeKey, mediaType, value));
+			}
+		},
+		onSuccess: async () => {
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
+				queryClient.invalidateQueries({ queryKey: ['assetScopeConfigurations'] }),
+				queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }),
+				queryClient.invalidateQueries({ queryKey: ['assets'] }),
+			]);
+			setOpen(false);
+		},
+	});
+
+	const toggle = (field: ScopeConfigurationField) => setFields((current) => {
+		const next = new Set(current);
+		if (next.has(field)) next.delete(field); else next.add(field);
+		return next;
+	});
+
+	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}><Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert><FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={!fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={!fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={!fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={!fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
 }
 
-function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, queueJobs, onClear }: {
+function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, onClear }: {
 	selectedAssetIds: Set<number>;
 	logicalGroups: AssetLogicalGroup[];
 	profiles: Profile[];
@@ -791,13 +868,13 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	trackProfiles: TrackProfile[];
 	libraries: Library[];
 	categories: string[];
-	queueJobs: QueueJob[];
 	onClear: () => void;
 }) {
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
 	const [configureOpen, setConfigureOpen] = useState(false);
 	const [queuePlan, setQueuePlan] = useState<PreparedSelectionQueue | null>(null);
+	const [queueCommitResult, setQueueCommitResult] = useState<QueueSelectedAssetsResponse | null>(null);
 	const [videoProfileId, setVideoProfileId] = useState(0);
 	const [audioProfileKey, setAudioProfileKey] = useState('__inherit__');
 	const [trackProfileKey, setTrackProfileKey] = useState('__inherit__');
@@ -806,8 +883,8 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const [destinationMode, setDestinationMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
 	const [destinationLibraryId, setDestinationLibraryId] = useState(0);
 	const [configurationFields, setConfigurationFields] = useState<Set<string>>(() => new Set());
-	const selectedAssets = logicalGroups.flatMap((group) => group.assetPaths.flatMap((path) => path.assets)).filter((asset) => Boolean(asset.id && selectedAssetIds.has(asset.id)));
-	const selectedGroups = logicalGroups.filter((group) => group.assetPaths.some((path) => path.assets.some((asset) => Boolean(asset.id && selectedAssetIds.has(asset.id)))));
+	const selectedAssets = selectedSelectableAssetsForLogicalGroups(logicalGroups, selectedAssetIds);
+	const selectedGroups = logicalGroups.filter((group) => selectableAssetsForPaths(group.assetPaths).some((asset) => selectedAssetIds.has(asset.id as number)));
 	const fullySelectedGroups = selectedGroups.filter((group) => {
 		const ids = group.assetPaths.flatMap((path) => path.assets).filter((asset) => !asset.missing && asset.id).map((asset) => asset.id as number);
 		return ids.length > 0 && ids.every((id) => selectedAssetIds.has(id));
@@ -818,15 +895,19 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 		mutationFn: async () => {
 			if (!fullySelectedGroups.length) throw new Error('Select at least one complete title.');
 			if (!configurationFields.size) throw new Error('Select at least one field to change.');
-			for (const group of fullySelectedGroups) {
-				if (configurationFields.has('category') || configurationFields.has('destination')) { const current = safeArray(await api.assetScopeConfigurations()).find((item) => item.scopeType === 'logical_group' && normalizePath(item.scopeKey) === normalizePath(group.path)); await api.updateAssetScopeConfiguration({ scopeType: 'logical_group', scopeKey: group.path, categorySelection: configurationFields.has('category') ? categoryMode : current?.categorySelection ?? 'inherit', category: configurationFields.has('category') ? categoryMode === 'value' ? category : '' : current?.category ?? '', destinationSelection: configurationFields.has('destination') ? destinationMode : current?.destinationSelection ?? 'inherit', destinationLibraryId: configurationFields.has('destination') ? destinationMode === 'value' ? destinationLibraryId : 0 : current?.destinationLibraryId }); }
-				for (const [mediaType, value] of [['video', videoProfileId], ['audio', audioProfileKey], ['tracks', trackProfileKey]] as const) {
-					if (!configurationFields.has(mediaType)) continue;
-					const inherit = value === 0 || value === '__inherit__';
-					const disabled = value === '' || (mediaType === 'video' && Number(value) < 0);
-					await api.updateProfileAssignment({ targetType: 'logical_group', targetPath: group.path, mediaType, selection: inherit ? 'inherit' : disabled ? 'disabled' : 'profile', videoProfileId: mediaType === 'video' ? Math.max(0, Number(value)) : 0, profileKey: mediaType === 'video' || inherit || disabled ? '' : String(value) });
-				}
-			}
+			const profileChange = (field: 'audio' | 'tracks', value: string) => !configurationFields.has(field)
+				? { mode: 'no_change' as const }
+				: value === '__inherit__' ? { mode: 'inherit' as const }
+					: value === '' ? { mode: 'disabled' as const }
+						: { mode: 'value' as const, profileKey: value };
+			await api.configureLogicalGroupsBatch({
+				logicalGroupPaths: fullySelectedGroups.map((group) => group.path),
+				video: !configurationFields.has('video') ? { mode: 'no_change' } : videoProfileId === 0 ? { mode: 'inherit' } : videoProfileId < 0 ? { mode: 'disabled' } : { mode: 'value', videoProfileId },
+				audio: profileChange('audio', audioProfileKey),
+				tracks: profileChange('tracks', trackProfileKey),
+				category: !configurationFields.has('category') ? { mode: 'no_change' } : { mode: categoryMode, category: categoryMode === 'value' ? category : undefined },
+				destination: !configurationFields.has('destination') ? { mode: 'no_change' } : { mode: destinationMode, destinationLibraryId: destinationMode === 'value' ? destinationLibraryId : undefined },
+			});
 		},
 		onSuccess: async () => {
 			await Promise.all([queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }), queryClient.invalidateQueries({ queryKey: ['assetScopeConfigurations'] }), queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]);
@@ -836,54 +917,40 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 
 	const prepareQueue = useMutation({
 		mutationFn: async () => {
-			const available = selectedAssets.filter((asset) => !asset.missing && !asset.review?.requiresReview && !assetHasOpenJob(asset, queueJobs));
-			const alreadyQueuedCount = selectedAssets.filter((asset) => assetHasOpenJob(asset, queueJobs)).length;
-			const needsReviewCount = selectedAssets.filter((asset) => !asset.missing && asset.review?.requiresReview).length;
-			const missingCount = selectedAssets.filter((asset) => asset.missing).length;
-			const effective = await Promise.all(available.map(async (asset) => ({ asset, configuration: await api.effectiveAssetConfiguration(asset.path) })));
-			const hasOperation = (configuration: Awaited<ReturnType<typeof api.effectiveAssetConfiguration>>) => Boolean(configuration.video.videoProfileId || configuration.video.selection === 'override_only' || configuration.audio.profileKey || configuration.audio.selection === 'audio_only' || configuration.tracks.profileKey);
-			const invalid = effective.filter(({ configuration }) => !configuration.destination.destinationLibraryId || !hasOperation(configuration));
-			const eligible = effective.filter(({ configuration }) => configuration.destination.destinationLibraryId && hasOperation(configuration));
-			const fallbackProfileId = profiles.find((profile) => !profile.disabled && !profile.deletedAt)?.id ?? 0;
-			if (eligible.some(({ configuration }) => !configuration.video.videoProfileId && !fallbackProfileId)) throw new Error('No usable video profile is available for audio/track-only jobs.');
-			const byPath = new Map<string, typeof eligible>();
-			for (const item of eligible) {
-				const parent = normalizePath(item.asset.path).split('/').slice(0, -1).join('/');
-				byPath.set(parent, [...(byPath.get(parent) ?? []), item]);
-			}
-			const batches = [...byPath.entries()].map(([path, items], index) => ({
-				batchId: createSelectedAssetsBatchId(path, index),
-				batchName: selectedGroups.find((group) => normalizePath(path).startsWith(`${normalizePath(group.path)}/`) || normalizePath(path) === normalizePath(group.path))?.name ?? path.split('/').pop() ?? 'Selected assets',
-				jobs: items.map(({ asset, configuration }): QueueJobInput => ({ mediaPath: asset.path, publishMode: 'standard', libraryId: configuration.destination.destinationLibraryId ?? 0, profileId: configuration.video.videoProfileId ?? fallbackProfileId, audioProfileKey: configuration.audio.profileKey ?? '', trackProfileKey: configuration.tracks.profileKey ?? '', resolveProfileAssignments: true, processingMode: configuration.video.videoProfileId || configuration.video.selection === 'override_only' ? 'full_encode' : 'audio_only', priority: 5, notes: queueNotes('Queued from selected titles', configuration.audio.profileKey ?? '') })),
-			}));
-			return { titleCount: selectedGroups.length, selectedCount: selectedAssets.length, eligibleCount: eligible.length, alreadyQueuedCount, needsReviewCount, missingCount, invalidCount: invalid.length, sizeBytes: eligible.reduce((total, item) => total + item.asset.sizeBytes, 0), batches };
+			return api.queueSelectedAssets({ assetIds: selectedAssets.map((asset) => asset.id as number), commit: false });
 		},
-		onSuccess: setQueuePlan,
+		onSuccess: (response) => { setQueueCommitResult(null); setQueuePlan(response); },
 	});
 
 	const createQueue = useMutation({
 		mutationFn: async () => {
-			if (!queuePlan?.batches.length) throw new Error('No selected assets are eligible for Queue.');
-			const responses = [];
-			for (const batch of queuePlan.batches) responses.push(await api.createQueueBatch(batch));
-			return responses;
+			if (!queuePlan?.summary.eligible) throw new Error('No selected assets are eligible for Queue.');
+			return api.queueSelectedAssets({ assetIds: queuePlan.results.map((result) => result.assetId), commit: true });
 		},
-		onSuccess: async (responses) => {
+		onSuccess: async (response) => {
 			await Promise.all([queryClient.invalidateQueries({ queryKey: ['queueJobs'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]);
-			setQueuePlan(null); onClear();
-			if (responses[0]) navigate(`/queue?batch=${encodeURIComponent(responses[0].batchId)}`);
+			if (response.summary.skipped || response.summary.failed) {
+				setQueueCommitResult(response);
+				setQueuePlan(response);
+				return;
+			}
+			setQueuePlan(null); setQueueCommitResult(null); onClear();
+			if (response.batches[0]) navigate(`/queue?batch=${encodeURIComponent(response.batches[0].batchId)}`);
 		},
 	});
+	const displayedQueueResult = queueCommitResult ?? queuePlan;
+	const queueReasonCount = (reason: string) => displayedQueueResult?.results.filter((result) => result.reason === reason).length ?? 0;
+	const closeQueueDialog = () => { setQueuePlan(null); setQueueCommitResult(null); };
 
 	return <>
 		<Box sx={{ mt: 1.25, p: 1, border: 1, borderColor: 'primary.main', borderRadius: 1, bgcolor: 'action.selected', position: 'sticky', top: 8, zIndex: 2 }}>
 			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1}>
-				<Typography variant="body2">{fullySelectedGroups.length} titles selected · {selectedAssets.length} assets · {formatBytes(selectedSize)}</Typography>
+				<Typography variant="body2">{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
 				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate()} disabled={prepareQueue.isPending}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
 			</Stack>
 			{prepareQueue.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{prepareQueue.error instanceof Error ? prepareQueue.error.message : 'Could not resolve the selected assets.'}</Alert> : null}
 		</Box>
-		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && setQueuePlan(null)} maxWidth="sm" fullWidth><DialogTitle>Queue selected titles</DialogTitle><DialogContent dividers>{queuePlan ? <Stack spacing={1}><Typography>Titles: {queuePlan.titleCount}</Typography><Typography>Assets selected: {queuePlan.selectedCount}</Typography><Typography>Will be queued: {queuePlan.eligibleCount}</Typography><Typography>Estimated input size: {formatBytes(queuePlan.sizeBytes)}</Typography><Typography>Already queued: {queuePlan.alreadyQueuedCount}</Typography><Typography>Needs review: {queuePlan.needsReviewCount}</Typography><Typography>Missing: {queuePlan.missingCount}</Typography><Typography>Blocked or incomplete configuration: {queuePlan.invalidCount}</Typography><Divider /><Typography variant="body2" color="text.secondary">Destination and profiles are resolved independently for every asset and frozen in each Queue job.</Typography>{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={() => setQueuePlan(null)} disabled={createQueue.isPending}>Cancel</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || !queuePlan?.eligibleCount}>Queue {queuePlan?.eligibleCount ?? 0} assets</Button></DialogActions></Dialog>
+		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && closeQueueDialog()} maxWidth="sm" fullWidth><DialogTitle>Queue selected titles</DialogTitle><DialogContent dividers>{displayedQueueResult ? <Stack spacing={1}><Typography>Titles: {displayedQueueResult.summary.titleCount}</Typography><Typography>Assets selected: {displayedQueueResult.summary.selected}</Typography><Typography>{queueCommitResult ? 'Queued' : 'Will be queued'}: {queueCommitResult ? displayedQueueResult.summary.queued : displayedQueueResult.summary.eligible}</Typography><Typography>Estimated input size: {formatBytes(displayedQueueResult.summary.sizeBytes)}</Typography><Typography>Already queued: {queueReasonCount('already_queued')}</Typography><Typography>Needs review: {queueReasonCount('needs_review')}</Typography><Typography>Missing: {queueReasonCount('missing')}</Typography><Typography>Blocked or incomplete configuration: {queueReasonCount('invalid_configuration') + queueReasonCount('not_found') + queueReasonCount('active_maintenance')}</Typography><Divider /><Typography variant="body2" color="text.secondary">Destination and profiles are resolved independently for every asset and frozen in each Queue job.</Typography>{queueCommitResult && (queueCommitResult.summary.skipped || queueCommitResult.summary.failed) ? <Alert severity={queueCommitResult.summary.queued ? 'warning' : 'error'}>{queueCommitResult.summary.queued} queued · {queueCommitResult.summary.skipped} skipped · {queueCommitResult.summary.failed} failed{queueCommitResult.results.filter((result) => result.outcome === 'skipped' || result.outcome === 'failed').map((result) => <Typography key={result.assetId} component="div" variant="body2">Asset {result.assetId}: {result.message ?? result.reason}</Typography>)}</Alert> : null}{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={closeQueueDialog} disabled={createQueue.isPending}>{queueCommitResult ? 'Close' : 'Cancel'}</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || Boolean(queueCommitResult) || !queuePlan?.summary.eligible}>Queue {queuePlan?.summary.eligible ?? 0} assets</Button></DialogActions></Dialog>
 		<Dialog open={configureOpen} onClose={() => !saveSelectedConfiguration.isPending && setConfigureOpen(false)} maxWidth="md" fullWidth><DialogTitle>Configure {fullySelectedGroups.length} selected title{fullySelectedGroups.length === 1 ? '' : 's'}</DialogTitle><DialogContent dividers><Stack spacing={2}><Alert severity="info">Checked dimensions are written independently to each Logical Group. Unchecked dimensions remain unchanged.</Alert>{([['video','Video'],['audio','Audio'],['tracks','Tracks'],['category','Category'],['destination','Destination']] as const).map(([field, text]) => <FormControlLabel key={field} control={<Checkbox checked={configurationFields.has(field)} onChange={() => setConfigurationFields((current) => { const next = new Set(current); if (next.has(field)) next.delete(field); else next.add(field); return next; })} />} label={`Change ${text}`} />)}<Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={videoProfileId} onChange={setVideoProfileId} label="Video profile" allowNone allowInherit disabled={!configurationFields.has('video')} /></Grid><Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audioProfileKey} onChange={setAudioProfileKey} label="Audio profile" allowInherit disabled={!configurationFields.has('audio')} /></Grid><Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={trackProfileKey} onChange={setTrackProfileKey} label="Tracks profile" allowInherit disabled={!configurationFields.has('tracks')} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!configurationFields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!configurationFields.has('category') || categoryMode !== 'value'} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!configurationFields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><LibraryAutocomplete libraries={libraries} value={destinationLibraryId} onChange={setDestinationLibraryId} label="Destination" disabled={!configurationFields.has('destination') || destinationMode !== 'value'} /></Grid></Grid>{saveSelectedConfiguration.isError ? <Alert severity="warning">{saveSelectedConfiguration.error instanceof Error ? saveSelectedConfiguration.error.message : 'Could not configure the selected titles.'}</Alert> : null}</Stack></DialogContent><DialogActions><Button onClick={() => setConfigureOpen(false)} disabled={saveSelectedConfiguration.isPending}>Cancel</Button><Button variant="contained" onClick={() => saveSelectedConfiguration.mutate()} disabled={saveSelectedConfiguration.isPending || !configurationFields.size || (configurationFields.has('category') && categoryMode === 'value' && !category) || (configurationFields.has('destination') && destinationMode === 'value' && !destinationLibraryId)}>Apply to selected titles</Button></DialogActions></Dialog>
 	</>;
 }
@@ -5476,10 +5543,6 @@ function pathLabelForCollection(group: AssetGroup) {
   const parts = relative.split('/').filter(Boolean);
   if (parts.length <= 1) return 'Root';
   return parts.slice(1).join('/');
-}
-
-function createSelectedAssetsBatchId(path: string, index: number) {
-	return `selected-${slugify(path.split('/').pop() || 'assets')}-${Date.now()}-${index}`;
 }
 
 function pathAssignmentsFor(path: string, assignments: ProfileAssignment[]) {

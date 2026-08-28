@@ -1,7 +1,16 @@
-import type { AssetPath } from '../api/types';
+import type { AssetLogicalGroup, AssetPath } from '../api/types';
 
 export function selectableAssetsForPaths(paths: AssetPath[]) {
-  return paths.flatMap((path) => path.assets ?? []).filter((asset) => Boolean(asset.id));
+  return paths.flatMap((path) => path.assets ?? []).filter((asset) => Boolean(asset.id) && !asset.missing);
+}
+
+export function selectedSelectableAssetsForLogicalGroups(
+  logicalGroups: AssetLogicalGroup[],
+  selectedAssetIds: ReadonlySet<number>,
+) {
+  return logicalGroups
+    .flatMap((group) => selectableAssetsForPaths(group.assetPaths))
+    .filter((asset) => selectedAssetIds.has(asset.id as number));
 }
 
 export function hierarchicalSelectionState(assetIds: number[], selectedAssetIds: Set<number>) {

@@ -5668,7 +5668,7 @@ func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technical
 		byID[group.ID] = len(result) - 1
 	}
 	for _, record := range records {
-		if record.Status != "unprocessed" || record.Missing {
+		if record.Status != "unprocessed" {
 			continue
 		}
 		groupIndex, exists := byID[record.SourceGroupID]

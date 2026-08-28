@@ -44,6 +44,43 @@ type QueueBatchInput struct {
 	Jobs      []QueueJobInput `json:"jobs" binding:"required,min=1,dive"`
 }
 
+type QueueSelectedAssetsInput struct {
+	AssetIDs []uint `json:"assetIds" binding:"required,min=1,max=1000"`
+	Commit   bool   `json:"commit"`
+}
+
+type QueueSelectedAssetsSummary struct {
+	Selected   int   `json:"selected"`
+	Eligible   int   `json:"eligible"`
+	Queued     int   `json:"queued"`
+	Skipped    int   `json:"skipped"`
+	Failed     int   `json:"failed"`
+	TitleCount int   `json:"titleCount"`
+	SizeBytes  int64 `json:"sizeBytes"`
+}
+
+type QueueSelectedAssetResult struct {
+	AssetID   uint   `json:"assetId"`
+	Outcome   string `json:"outcome"`
+	Reason    string `json:"reason,omitempty"`
+	Message   string `json:"message,omitempty"`
+	BatchID   string `json:"batchId,omitempty"`
+	BatchName string `json:"batchName,omitempty"`
+	JobID     uint   `json:"jobId,omitempty"`
+}
+
+type QueueSelectedAssetsBatchResult struct {
+	BatchID   string `json:"batchId"`
+	BatchName string `json:"batchName"`
+	JobCount  int    `json:"jobCount"`
+}
+
+type QueueSelectedAssetsResponse struct {
+	Summary QueueSelectedAssetsSummary       `json:"summary"`
+	Results []QueueSelectedAssetResult       `json:"results"`
+	Batches []QueueSelectedAssetsBatchResult `json:"batches"`
+}
+
 const (
 	VideoAssignmentOverrideOnly = "override_only"
 	VideoAssignmentAudioOnly    = "audio_only"
@@ -427,6 +464,16 @@ func (h QueueHandler) prepareBatchQueueJob(
 				fmt.Errorf("resolve profile assignments: %w", err)
 		}
 	}
+	if normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly && input.ProfileID == 0 {
+		var fallback models.Profile
+		if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return models.QueueJob{}, http.StatusBadRequest, fmt.Errorf("no usable video profile is available for audio/track-only jobs")
+			}
+			return models.QueueJob{}, http.StatusInternalServerError, fmt.Errorf("resolve audio-only fallback profile: %w", err)
+		}
+		input.ProfileID = fallback.ID
+	}
 
 	publishMode := strings.TrimSpace(input.PublishMode)
 	if publishMode == "" {
@@ -541,6 +588,37 @@ func (h QueueHandler) prepareBatchQueueJob(
 	return job, http.StatusOK, nil
 }
 
+func (h QueueHandler) persistPreparedQueueBatch(batchID, batchName string, prepared []models.QueueJob) error {
+	return h.db.Transaction(func(tx *gorm.DB) error {
+		var highest int64
+		if err := tx.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
+			return err
+		}
+
+		for index := range prepared {
+			job := &prepared[index]
+			job.BatchID = batchID
+			job.BatchName = batchName
+			job.BatchPosition = index + 1
+			job.QueuePosition = highest + int64(index) + 1
+
+			if err := tx.Create(job).Error; err != nil {
+				return err
+			}
+			if err := scheduler.LockQueuedAsset(tx, *job); err != nil {
+				return err
+			}
+			if err := transitionJobStage(tx, job, JobStageQueued); err != nil {
+				return err
+			}
+			if _, err := scheduler.CreatePendingExecutionPlan(tx, job, "Execution plan created from atomic queue batch"); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (h QueueHandler) CreateBatch(c *gin.Context) {
 	assetMutationMu.Lock()
 	defer assetMutationMu.Unlock()
@@ -633,7 +711,7 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 	//
 	prepared := make([]models.QueueJob, 0, len(jobsInput))
 
-	for index, item := range jobsInput {
+	for _, item := range jobsInput {
 		job, status, err := h.prepareBatchQueueJob(item)
 		if err != nil {
 			c.JSON(status, gin.H{
@@ -643,59 +721,13 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 			return
 		}
 
-		job.BatchID = input.BatchID
-		job.BatchName = input.BatchName
-		job.BatchPosition = index + 1
-
 		prepared = append(prepared, job)
 	}
 
 	//
 	// Everything below is atomic.
 	//
-	err := h.db.Transaction(func(tx *gorm.DB) error {
-		var highest int64
-
-		if err := tx.
-			Model(&models.QueueJob{}).
-			Select("COALESCE(MAX(queue_position), 0)").
-			Scan(&highest).
-			Error; err != nil {
-			return err
-		}
-
-		for index := range prepared {
-			job := &prepared[index]
-
-			job.QueuePosition = highest + int64(index) + 1
-
-			if err := tx.Create(job).Error; err != nil {
-				return err
-			}
-
-			if err := scheduler.LockQueuedAsset(tx, *job); err != nil {
-				return err
-			}
-
-			if err := transitionJobStage(
-				tx,
-				job,
-				JobStageQueued,
-			); err != nil {
-				return err
-			}
-
-			if _, err := scheduler.CreatePendingExecutionPlan(
-				tx,
-				job,
-				"Execution plan created from atomic queue batch",
-			); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
+	err := h.persistPreparedQueueBatch(input.BatchID, input.BatchName, prepared)
 
 	if err != nil {
 		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
@@ -716,6 +748,253 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 		"batchName": input.BatchName,
 		"jobs":      prepared,
 	})
+}
+
+type selectedQueueCandidate struct {
+	record      models.AssetRecord
+	job         models.QueueJob
+	resultIndex int
+	groupPath   string
+	batchID     string
+	batchName   string
+}
+
+func (h QueueHandler) QueueSelectedAssets(c *gin.Context) {
+	var input QueueSelectedAssetsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(input.AssetIDs) == 0 || len(input.AssetIDs) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain between 1 and 1000 assets"})
+		return
+	}
+
+	assetIDs := make([]uint, 0, len(input.AssetIDs))
+	seen := make(map[uint]bool, len(input.AssetIDs))
+	for _, assetID := range input.AssetIDs {
+		if assetID == 0 || seen[assetID] {
+			continue
+		}
+		seen[assetID] = true
+		assetIDs = append(assetIDs, assetID)
+	}
+	if len(assetIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain a valid asset id"})
+		return
+	}
+
+	if input.Commit {
+		assetMutationMu.Lock()
+		defer assetMutationMu.Unlock()
+	}
+
+	response, err := h.resolveSelectedAssetsQueue(assetIDs, input.Commit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (QueueSelectedAssetsResponse, error) {
+	response := QueueSelectedAssetsResponse{
+		Results: make([]QueueSelectedAssetResult, 0, len(assetIDs)),
+		Batches: []QueueSelectedAssetsBatchResult{},
+	}
+	response.Summary.Selected = len(assetIDs)
+
+	var records []models.AssetRecord
+	if err := h.db.Where("id IN ?", assetIDs).Find(&records).Error; err != nil {
+		return response, fmt.Errorf("load selected assets: %w", err)
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		leftLogical := filepath.Clean(records[i].LogicalGroupPath)
+		rightLogical := filepath.Clean(records[j].LogicalGroupPath)
+		if comparison := naturalAssetCompare(leftLogical, rightLogical); comparison != 0 {
+			return comparison < 0
+		}
+		leftGroup := selectedAssetPhysicalGroup(records[i])
+		rightGroup := selectedAssetPhysicalGroup(records[j])
+		if comparison := naturalAssetCompare(leftGroup, rightGroup); comparison != 0 {
+			return comparison < 0
+		}
+		return assetSequenceLess(records[i].Path, records[j].Path)
+	})
+
+	found := make(map[uint]bool, len(records))
+	titles := map[string]bool{}
+	candidates := make([]selectedQueueCandidate, 0, len(records))
+	for _, record := range records {
+		found[record.ID] = true
+		titlePath := filepath.Clean(record.LogicalGroupPath)
+		if titlePath == "." || strings.TrimSpace(record.LogicalGroupPath) == "" {
+			titlePath = selectedAssetPhysicalGroup(record)
+		}
+		titles[titlePath] = true
+
+		result := QueueSelectedAssetResult{AssetID: record.ID}
+		if record.Missing {
+			result.Outcome, result.Reason, result.Message = "skipped", "missing", "Asset file is missing"
+			response.Results = append(response.Results, result)
+			continue
+		}
+		if reviewForPath(filepath.Clean(record.Path), assetReviewOverrides(h.db)).RequiresReview {
+			result.Outcome, result.Reason, result.Message = "skipped", "needs_review", "Asset requires review before queueing"
+			response.Results = append(response.Results, result)
+			continue
+		}
+		if active, err := h.assetHasOpenJob(record.Path, 0); err != nil {
+			return response, fmt.Errorf("check open queue job for asset %d: %w", record.ID, err)
+		} else if active {
+			result.Outcome, result.Reason, result.Message = "skipped", "already_queued", "Asset already has an open Queue job"
+			response.Results = append(response.Results, result)
+			continue
+		}
+		if active, err := activeAssetMaintenance(h.db, record.Path); err != nil {
+			return response, fmt.Errorf("check maintenance for asset %d: %w", record.ID, err)
+		} else if active {
+			result.Outcome, result.Reason, result.Message = "skipped", "active_maintenance", "Asset has an active maintenance operation"
+			response.Results = append(response.Results, result)
+			continue
+		}
+
+		effective, err := effectiveAssetConfiguration(h.db, record.Path)
+		if err != nil {
+			return response, fmt.Errorf("resolve effective configuration for asset %d: %w", record.ID, err)
+		}
+		hasOperation := effective.Video.VideoProfileID > 0 ||
+			effective.Video.Selection == VideoAssignmentOverrideOnly ||
+			effective.Video.Selection == VideoAssignmentAudioOnly ||
+			strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
+			strings.TrimSpace(effective.Tracks.ProfileKey) != ""
+		if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
+			result.Outcome, result.Reason = "failed", "invalid_configuration"
+			if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 {
+				result.Message = "No effective destination is configured"
+			} else {
+				result.Message = "No effective processing operation is configured"
+			}
+			response.Results = append(response.Results, result)
+			continue
+		}
+
+		processingMode := ProcessingModeAudioOnly
+		if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly {
+			processingMode = ProcessingModeFullEncode
+		}
+		job, status, err := h.prepareBatchQueueJob(QueueJobInput{
+			MediaPath:                 record.Path,
+			PublishMode:               PublishModeStandard,
+			LibraryID:                 effective.Destination.DestinationLibraryID,
+			ProfileID:                 effective.Video.VideoProfileID,
+			AudioProfileKey:           effective.Audio.ProfileKey,
+			TrackProfileKey:           effective.Tracks.ProfileKey,
+			ProcessingMode:            processingMode,
+			Priority:                  5,
+			Notes:                     "Queued from selected titles",
+			ResolveProfileAssignments: true,
+		})
+		if err != nil {
+			result.Outcome, result.Reason, result.Message = "failed", "invalid_configuration", err.Error()
+			if status >= http.StatusInternalServerError {
+				result.Reason = "queue_creation_failed"
+			}
+			response.Results = append(response.Results, result)
+			continue
+		}
+
+		result.Outcome = "eligible"
+		response.Results = append(response.Results, result)
+		candidates = append(candidates, selectedQueueCandidate{
+			record:      record,
+			job:         job,
+			resultIndex: len(response.Results) - 1,
+			groupPath:   selectedAssetPhysicalGroup(record),
+		})
+	}
+
+	for _, assetID := range assetIDs {
+		if found[assetID] {
+			continue
+		}
+		response.Results = append(response.Results, QueueSelectedAssetResult{
+			AssetID: assetID,
+			Outcome: "failed",
+			Reason:  "not_found",
+			Message: "Asset record was not found",
+		})
+	}
+	response.Summary.TitleCount = len(titles)
+	response.Summary.Eligible = len(candidates)
+	for _, candidate := range candidates {
+		response.Summary.SizeBytes += candidate.record.SizeBytes
+	}
+
+	batchStamp := time.Now().UTC().UnixNano()
+	groups := make([][]int, 0)
+	for index := range candidates {
+		if len(groups) == 0 || candidates[groups[len(groups)-1][0]].groupPath != candidates[index].groupPath {
+			groups = append(groups, []int{index})
+		} else {
+			groups[len(groups)-1] = append(groups[len(groups)-1], index)
+		}
+	}
+	for groupIndex, indexes := range groups {
+		batchID := fmt.Sprintf("selected-%d-%03d", batchStamp, groupIndex+1)
+		batchName := filepath.Base(candidates[indexes[0]].groupPath)
+		if batchName == "." || batchName == string(filepath.Separator) || strings.TrimSpace(batchName) == "" {
+			batchName = "Selected assets"
+		}
+		prepared := make([]models.QueueJob, 0, len(indexes))
+		for _, candidateIndex := range indexes {
+			candidate := &candidates[candidateIndex]
+			candidate.batchID, candidate.batchName = batchID, batchName
+			result := &response.Results[candidate.resultIndex]
+			result.BatchID, result.BatchName = batchID, batchName
+			prepared = append(prepared, candidate.job)
+		}
+		if !commit {
+			continue
+		}
+		if err := h.persistPreparedQueueBatch(batchID, batchName, prepared); err != nil {
+			reason := "queue_creation_failed"
+			message := err.Error()
+			if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+				reason = "reservation_conflict"
+				message = "Asset became reserved before Queue creation completed"
+			}
+			for _, candidateIndex := range indexes {
+				result := &response.Results[candidates[candidateIndex].resultIndex]
+				result.Outcome, result.Reason, result.Message = "failed", reason, message
+			}
+			continue
+		}
+		response.Batches = append(response.Batches, QueueSelectedAssetsBatchResult{BatchID: batchID, BatchName: batchName, JobCount: len(prepared)})
+		for preparedIndex, candidateIndex := range indexes {
+			result := &response.Results[candidates[candidateIndex].resultIndex]
+			result.Outcome, result.JobID = "queued", prepared[preparedIndex].ID
+		}
+	}
+
+	for _, result := range response.Results {
+		switch result.Outcome {
+		case "queued":
+			response.Summary.Queued++
+		case "skipped":
+			response.Summary.Skipped++
+		case "failed":
+			response.Summary.Failed++
+		}
+	}
+	return response, nil
+}
+
+func selectedAssetPhysicalGroup(record models.AssetRecord) string {
+	if strings.TrimSpace(record.SourcePath) != "" {
+		return filepath.Dir(filepath.Clean(record.SourcePath))
+	}
+	return filepath.Dir(filepath.Clean(record.Path))
 }
 
 func (h QueueHandler) Create(c *gin.Context) {
