@@ -149,15 +149,17 @@ describe('Unprocessed Assets hierarchy', () => {
 
   it('plans and commits Queue selected using only Asset IDs and exposes partial results', async () => {
     vi.mocked(api.queueSelectedAssets).mockImplementation(async ({ assetIds, commit }) => commit ? {
-      summary: { selected: 2, eligible: 1, queued: 1, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 2048 },
+      summary: { selected: 1, eligible: 0, queued: 0, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 1024 },
       results: [
-        { assetId: 1, outcome: 'queued', batchId: 'selected-test-001', batchName: 'Akira', jobId: 101 },
-        { assetId: 2, outcome: 'skipped', reason: 'already_queued', message: 'Asset already has an open Queue job' },
+        { assetId: 1, outcome: 'skipped', reason: 'already_queued', message: 'Asset already has an open Queue job' },
       ],
-      batches: [{ batchId: 'selected-test-001', batchName: 'Akira', jobCount: 1 }],
+      batches: [],
     } : {
-      summary: { selected: 2, eligible: 2, queued: 0, skipped: 0, failed: 0, titleCount: 1, sizeBytes: 2048 },
-      results: assetIds.map((assetId) => ({ assetId, outcome: 'eligible', batchId: 'selected-test-001', batchName: 'Akira' })),
+      summary: { selected: 2, eligible: 1, queued: 0, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 2048 },
+      results: [
+        { assetId: assetIds[0], outcome: 'eligible', batchId: 'selected-test-001', batchName: 'Akira' },
+        { assetId: assetIds[1], outcome: 'skipped', reason: 'missing', message: 'Asset file is missing' },
+      ],
       batches: [],
     });
     const user = userEvent.setup();
@@ -168,12 +170,12 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: false }));
     expect(api.effectiveAssetConfigurations).not.toHaveBeenCalled();
     expect(api.createQueueBatch).not.toHaveBeenCalled();
-    expect(await screen.findByText('Will be queued: 2')).toBeTruthy();
+    expect(await screen.findByText('Will be queued: 1')).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: 'Queue 2 assets' }));
-    await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: true }));
-    expect(await screen.findByText('1 queued · 1 skipped · 0 failed')).toBeTruthy();
-    expect(screen.getByText('Asset 2: Asset already has an open Queue job')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Queue 1 assets' }));
+    await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1], commit: true }));
+    expect(await screen.findByText('0 queued · 1 skipped · 0 failed')).toBeTruthy();
+    expect(screen.getByText('Asset 1: Asset already has an open Queue job')).toBeTruthy();
     expect(api.createQueueBatch).not.toHaveBeenCalled();
   });
 

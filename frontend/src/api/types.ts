@@ -857,6 +857,7 @@ export type QueueSelectedAssetsInput = {
 
 export type QueueSelectedAssetReason =
   | 'not_found'
+  | 'not_unprocessed'
   | 'missing'
   | 'needs_review'
   | 'already_queued'

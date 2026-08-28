@@ -1091,7 +1091,7 @@ func openAPIComponents() gin.H {
 				"properties": gin.H{
 					"assetId": gin.H{"type": "integer"},
 					"outcome": gin.H{"type": "string", "enum": []string{"eligible", "queued", "skipped", "failed"}},
-					"reason":  gin.H{"type": "string", "enum": []string{"not_found", "missing", "needs_review", "already_queued", "active_maintenance", "invalid_configuration", "reservation_conflict", "queue_creation_failed"}},
+					"reason":  gin.H{"type": "string", "enum": []string{"not_found", "not_unprocessed", "missing", "needs_review", "already_queued", "active_maintenance", "invalid_configuration", "reservation_conflict", "queue_creation_failed"}},
 					"message": gin.H{"type": "string"}, "batchId": gin.H{"type": "string"}, "batchName": gin.H{"type": "string"}, "jobId": gin.H{"type": "integer"},
 				},
 			},

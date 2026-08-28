@@ -106,6 +106,30 @@ func TestEffectiveAssetConfigurationBatchResolvesManyAssetsInOneRequest(t *testi
 	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeSourceGroup, TargetPath: group.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: 9}).Error; err != nil {
 		t.Fatal(err)
 	}
+	mixedAssignments := []models.ProfileAssignment{
+		{TargetType: assetScopeLogicalGroup, TargetPath: records[0].LogicalGroupPath, MediaType: "audio", Selection: "profile", ProfileKey: "logical-audio"},
+		{TargetType: assetScopePath, TargetPath: filepath.Dir(records[1].Path), MediaType: "video", Selection: "disabled"},
+		{TargetType: assetScopeAsset, TargetPath: records[2].Path, MediaType: "video", Selection: "profile", VideoProfileID: 11},
+	}
+	if err := db.Create(&mixedAssignments).Error; err != nil {
+		t.Fatal(err)
+	}
+	configurations := []models.AssetScopeConfiguration{
+		{ScopeType: assetScopeSourceGroup, ScopeKey: group.SourcePath, DestinationSelection: configSelectionValue, DestinationLibraryID: 7},
+		{ScopeType: assetScopeLogicalGroup, ScopeKey: records[0].LogicalGroupPath, CategorySelection: configSelectionValue, Category: "movie"},
+		{ScopeType: assetScopeAsset, ScopeKey: records[2].Path, DestinationSelection: configSelectionDisabled},
+	}
+	if err := db.Create(&configurations).Error; err != nil {
+		t.Fatal(err)
+	}
+	queryCounts := map[string]int{}
+	callbackName := "test:count-effective-batch-scans"
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		queryCounts[tx.Statement.Table]++
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Query().Remove(callbackName)
 
 	body, err := json.Marshal(EffectiveAssetConfigurationBatchInput{AssetIDs: []uint{records[0].ID, records[1].ID, records[2].ID, 999999, records[0].ID}})
 	if err != nil {
@@ -125,10 +149,21 @@ func TestEffectiveAssetConfigurationBatchResolvesManyAssetsInOneRequest(t *testi
 	if len(result.Configurations) != 3 || len(result.MissingAssetIDs) != 1 || result.MissingAssetIDs[0] != 999999 {
 		t.Fatalf("unexpected batch response: %#v", result)
 	}
-	for _, record := range records {
-		configuration := result.Configurations[strconv.FormatUint(uint64(record.ID), 10)]
-		if configuration.Video.VideoProfileID != 9 || configuration.Video.Source != assetScopeSourceGroup {
-			t.Fatalf("asset %d did not use canonical inheritance: %#v", record.ID, configuration)
+	first := result.Configurations[strconv.FormatUint(uint64(records[0].ID), 10)]
+	if first.Video.VideoProfileID != 9 || first.Audio.ProfileKey != "logical-audio" || first.Category.Category != "movie" || first.Destination.DestinationLibraryID != 7 {
+		t.Fatalf("mixed source/logical inheritance was not resolved: %#v", first)
+	}
+	second := result.Configurations[strconv.FormatUint(uint64(records[1].ID), 10)]
+	if second.Video.Selection != configSelectionDisabled || second.Video.Source != assetScopePath || second.Destination.DestinationLibraryID != 7 {
+		t.Fatalf("path precedence was not resolved: %#v", second)
+	}
+	third := result.Configurations[strconv.FormatUint(uint64(records[2].ID), 10)]
+	if third.Video.VideoProfileID != 11 || third.Video.Source != assetScopeAsset || third.Destination.Selection != configSelectionDisabled || third.Destination.Source != assetScopeAsset {
+		t.Fatalf("asset precedence was not resolved: %#v", third)
+	}
+	for _, table := range []string{"asset_records", "source_groups", "profile_assignments", "asset_scope_configurations"} {
+		if queryCounts[table] != 1 {
+			t.Fatalf("batch resolver queried %s %d times, want once: %#v", table, queryCounts[table], queryCounts)
 		}
 	}
 }

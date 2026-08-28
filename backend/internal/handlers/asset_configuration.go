@@ -377,17 +377,18 @@ func (h AssetConfigurationHandler) EffectiveBatch(c *gin.Context) {
 		Configurations:  map[string]EffectiveAssetConfiguration{},
 		MissingAssetIDs: []uint{},
 	}
+	resolver, err := loadAssetConfigurationResolver(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	for _, assetID := range assetIDs {
 		record, exists := byID[assetID]
 		if !exists {
 			response.MissingAssetIDs = append(response.MissingAssetIDs, assetID)
 			continue
 		}
-		configuration, err := effectiveAssetConfiguration(h.db, record.Path)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("resolve effective configuration for asset %d: %v", assetID, err)})
-			return
-		}
+		configuration := resolver.resolve(record)
 		response.Configurations[strconv.FormatUint(uint64(assetID), 10)] = configuration
 	}
 	c.JSON(http.StatusOK, response)
@@ -399,19 +400,56 @@ type assetScopeTarget struct {
 	Name string
 }
 
-func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]assetScopeTarget, error) {
+type assetConfigurationResolver struct {
+	sourceGroups   map[uint]models.SourceGroup
+	assignments    map[string]models.ProfileAssignment
+	configurations map[string]models.AssetScopeConfiguration
+}
+
+func loadAssetConfigurationResolver(db *gorm.DB) (assetConfigurationResolver, error) {
+	resolver := assetConfigurationResolver{
+		sourceGroups: map[uint]models.SourceGroup{}, assignments: map[string]models.ProfileAssignment{}, configurations: map[string]models.AssetScopeConfiguration{},
+	}
+	if db.Migrator().HasTable(&models.SourceGroup{}) {
+		var groups []models.SourceGroup
+		if err := db.Find(&groups).Error; err != nil {
+			return resolver, err
+		}
+		for _, group := range groups {
+			resolver.sourceGroups[group.ID] = group
+		}
+	}
+	if db.Migrator().HasTable(&models.ProfileAssignment{}) {
+		var assignments []models.ProfileAssignment
+		if err := db.Find(&assignments).Error; err != nil {
+			return resolver, err
+		}
+		for _, assignment := range assignments {
+			resolver.assignments[assignmentKey(assignment.TargetType, assignment.TargetPath, assignment.MediaType)] = assignment
+		}
+	}
+	if db.Migrator().HasTable(&models.AssetScopeConfiguration{}) {
+		var configurations []models.AssetScopeConfiguration
+		if err := db.Find(&configurations).Error; err != nil {
+			return resolver, err
+		}
+		for _, configuration := range configurations {
+			resolver.configurations[scopeKey(configuration.ScopeType, configuration.ScopeKey)] = configuration
+		}
+	}
+	return resolver, nil
+}
+
+func (resolver assetConfigurationResolver) targetsForRecord(record models.AssetRecord) []assetScopeTarget {
 	assetPath := filepath.Clean(record.Path)
 	pathTarget := filepath.Dir(assetPath)
 	if strings.TrimSpace(record.GroupPath) != "" && strings.TrimSpace(record.RootPath) != "" {
 		pathTarget = filepath.Clean(filepath.Join(record.RootPath, filepath.FromSlash(record.GroupPath)))
 	}
 	targets := []assetScopeTarget{}
-	if record.Status == "unprocessed" && record.SourceGroupID > 0 && db.Migrator().HasTable(&models.SourceGroup{}) {
-		var group models.SourceGroup
-		if err := db.First(&group, record.SourceGroupID).Error; err == nil {
+	if record.Status == "unprocessed" && record.SourceGroupID > 0 {
+		if group, exists := resolver.sourceGroups[record.SourceGroupID]; exists {
 			targets = append(targets, assetScopeTarget{Type: assetScopeSourceGroup, Key: filepath.Clean(group.SourcePath), Name: group.Name})
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, err
 		}
 	}
 	if logical := strings.TrimSpace(record.LogicalGroupPath); record.Status == "unprocessed" && logical != "" {
@@ -421,7 +459,60 @@ func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]asset
 		assetScopeTarget{Type: assetScopePath, Key: pathTarget, Name: filepath.Base(pathTarget)},
 		assetScopeTarget{Type: assetScopeAsset, Key: assetPath, Name: record.FileName},
 	)
-	return targets, nil
+	return targets
+}
+
+func (resolver assetConfigurationResolver) resolve(record models.AssetRecord) EffectiveAssetConfiguration {
+	clean := filepath.Clean(record.Path)
+	result := EffectiveAssetConfiguration{AssetPath: clean}
+	result.Video.Selection = configSelectionInherit
+	result.Audio.Selection = configSelectionInherit
+	result.Tracks.Selection = configSelectionInherit
+	result.Category.Selection = configSelectionInherit
+	result.Destination.Selection = configSelectionInherit
+
+	targets := resolver.targetsForRecord(record)
+	for _, target := range targets {
+		for _, mediaType := range []string{"video", "audio", "tracks"} {
+			assignment, ok := resolver.assignments[assignmentKey(target.Type, target.Key, mediaType)]
+			if !ok {
+				continue
+			}
+			value := AssetConfigurationValue{
+				Selection: assignment.Selection, Source: target.Type, SourceKey: target.Key, SourceName: target.Name,
+				VideoProfileID: assignment.VideoProfileID, ProfileKey: assignment.ProfileKey,
+			}
+			switch mediaType {
+			case "video":
+				result.Video = value
+			case "audio":
+				result.Audio = value
+			case "tracks":
+				result.Tracks = value
+			}
+		}
+	}
+	for _, target := range targets {
+		configuration, ok := resolver.configurations[scopeKey(target.Type, target.Key)]
+		if !ok {
+			continue
+		}
+		if configuration.CategorySelection != "" && configuration.CategorySelection != configSelectionInherit {
+			result.Category = AssetConfigurationValue{Selection: configuration.CategorySelection, Category: configuration.Category, Source: target.Type, SourceKey: target.Key, SourceName: target.Name}
+		}
+		if configuration.DestinationSelection != "" && configuration.DestinationSelection != configSelectionInherit {
+			result.Destination = AssetConfigurationValue{Selection: configuration.DestinationSelection, DestinationLibraryID: configuration.DestinationLibraryID, Source: target.Type, SourceKey: target.Key, SourceName: target.Name}
+		}
+	}
+	return result
+}
+
+func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]assetScopeTarget, error) {
+	resolver, err := loadAssetConfigurationResolver(db)
+	if err != nil {
+		return nil, err
+	}
+	return resolver.targetsForRecord(record), nil
 }
 
 func effectiveAssetConfiguration(db *gorm.DB, assetPath string) (EffectiveAssetConfiguration, error) {
@@ -433,71 +524,11 @@ func effectiveAssetConfiguration(db *gorm.DB, assetPath string) (EffectiveAssetC
 		}
 		record = models.AssetRecord{Path: clean, FileName: filepath.Base(clean)}
 	}
-	targets, err := assetScopeTargetsForRecord(db, record)
+	resolver, err := loadAssetConfigurationResolver(db)
 	if err != nil {
 		return EffectiveAssetConfiguration{}, err
 	}
-	result := EffectiveAssetConfiguration{AssetPath: clean}
-	result.Video.Selection = configSelectionInherit
-	result.Audio.Selection = configSelectionInherit
-	result.Tracks.Selection = configSelectionInherit
-	result.Category.Selection = configSelectionInherit
-	result.Destination.Selection = configSelectionInherit
-
-	if db.Migrator().HasTable(&models.ProfileAssignment{}) {
-		var assignments []models.ProfileAssignment
-		if err := db.Find(&assignments).Error; err != nil {
-			return EffectiveAssetConfiguration{}, err
-		}
-		byTarget := map[string]models.ProfileAssignment{}
-		for _, assignment := range assignments {
-			byTarget[assignmentKey(assignment.TargetType, assignment.TargetPath, assignment.MediaType)] = assignment
-		}
-		for _, target := range targets {
-			for _, mediaType := range []string{"video", "audio", "tracks"} {
-				assignment, ok := byTarget[assignmentKey(target.Type, target.Key, mediaType)]
-				if !ok {
-					continue
-				}
-				value := AssetConfigurationValue{
-					Selection: assignment.Selection, Source: target.Type, SourceKey: target.Key, SourceName: target.Name,
-					VideoProfileID: assignment.VideoProfileID, ProfileKey: assignment.ProfileKey,
-				}
-				switch mediaType {
-				case "video":
-					result.Video = value
-				case "audio":
-					result.Audio = value
-				case "tracks":
-					result.Tracks = value
-				}
-			}
-		}
-	}
-
-	if db.Migrator().HasTable(&models.AssetScopeConfiguration{}) {
-		var configurations []models.AssetScopeConfiguration
-		if err := db.Find(&configurations).Error; err != nil {
-			return EffectiveAssetConfiguration{}, err
-		}
-		byTarget := map[string]models.AssetScopeConfiguration{}
-		for _, configuration := range configurations {
-			byTarget[scopeKey(configuration.ScopeType, configuration.ScopeKey)] = configuration
-		}
-		for _, target := range targets {
-			configuration, ok := byTarget[scopeKey(target.Type, target.Key)]
-			if !ok {
-				continue
-			}
-			if configuration.CategorySelection != "" && configuration.CategorySelection != configSelectionInherit {
-				result.Category = AssetConfigurationValue{Selection: configuration.CategorySelection, Category: configuration.Category, Source: target.Type, SourceKey: target.Key, SourceName: target.Name}
-			}
-			if configuration.DestinationSelection != "" && configuration.DestinationSelection != configSelectionInherit {
-				result.Destination = AssetConfigurationValue{Selection: configuration.DestinationSelection, DestinationLibraryID: configuration.DestinationLibraryID, Source: target.Type, SourceKey: target.Key, SourceName: target.Name}
-			}
-		}
-	}
-	return result, nil
+	return resolver.resolve(record), nil
 }
 
 func effectiveProfileAssignments(db *gorm.DB, assetPath string) (map[string]models.ProfileAssignment, error) {

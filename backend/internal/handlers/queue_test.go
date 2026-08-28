@@ -330,7 +330,6 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	if err := db.Create(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
-
 	handler := NewQueueHandler(db)
 	job := models.QueueJob{MediaPath: "/media/raw/priority.mkv", LibraryID: 1, Priority: 1, Status: JobStatusQueued}
 	if err := handler.captureProfile(&job, profile.ID, "queue_create"); err != nil {
@@ -1487,6 +1486,14 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: records[3].LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
+	queryCounts := map[string]int{}
+	callbackName := "test:count-selected-queue-effective-scans"
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		queryCounts[tx.Statement.Table]++
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Query().Remove(callbackName)
 
 	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{
 		AssetIDs: []uint{records[1].ID, records[0].ID, records[2].ID, records[3].ID, 999999, records[0].ID},
@@ -1519,12 +1526,23 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 			t.Fatalf("planning persisted %T count=%d err=%v", model, count, err)
 		}
 	}
+	for _, table := range []string{"profile_assignments", "asset_scope_configurations"} {
+		if queryCounts[table] != 1 {
+			t.Fatalf("Queue prepare scanned %s %d times, want once: %#v", table, queryCounts[table], queryCounts)
+		}
+	}
 }
 
 func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrder(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	alternateProfile := authoritativeTestProfile()
+	alternateProfile.Name = "Alternate selected profile"
+	alternateProfile.QualityValue = 21
+	if err := db.Create(&alternateProfile).Error; err != nil {
 		t.Fatal(err)
 	}
 	successLogical := "/media/raw/Anime/A Success"
@@ -1560,6 +1578,9 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrde
 			t.Fatal(err)
 		}
 	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeAsset, TargetPath: records[0].Path, MediaType: "video", Selection: "profile", VideoProfileID: alternateProfile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
 	for _, record := range records[:2] {
 		if err := db.Create(&models.ScanResult{Path: record.Path, VideoStreams: models.JSONList{map[string]any{"index": 0}}, AudioStreams: models.JSONList{map[string]any{"index": 1, "default": true}}}).Error; err != nil {
 			t.Fatal(err)
@@ -1593,12 +1614,19 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrde
 	if len(jobs) != 2 || filepath.Base(jobs[0].MediaPath) != "Episode 2.mkv" || filepath.Base(jobs[1].MediaPath) != "Episode 10.mkv" {
 		t.Fatalf("queued jobs lost natural order: %#v", jobs)
 	}
-	for _, job := range jobs {
+	if jobs[0].ProfileID != profile.ID || jobs[1].ProfileID != alternateProfile.ID || snapshotQualityValue(jobs[0].ProfileSnapshot) == snapshotQualityValue(jobs[1].ProfileSnapshot) {
+		t.Fatalf("mixed effective profiles did not produce distinct snapshots: %#v", jobs)
+	}
+	for index, job := range jobs {
 		if job.ProfileCapturedAt == nil || job.ProfileSnapshot == nil || job.AudioProfileSnapshot == nil || job.TrackProfileSnapshot == nil || job.ProfileResolution == nil {
 			t.Fatalf("job lacks immutable effective snapshots: %#v", job)
 		}
 		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
-		if videoResolution["source"] != assetScopeLogicalGroup {
+		expectedSource := assetScopeLogicalGroup
+		if index == 1 {
+			expectedSource = assetScopeAsset
+		}
+		if videoResolution["source"] != expectedSource {
 			t.Fatalf("job did not preserve inherited provenance: %#v", job.ProfileResolution)
 		}
 	}
@@ -1639,6 +1667,34 @@ func TestQueueSelectedAssetsReportsReviewOpenJobAndMaintenanceSeparately(t *test
 	}
 	if response.Summary.Skipped != 3 || response.Summary.Eligible != 0 || response.Summary.Failed != 0 {
 		t.Fatalf("unexpected blocked summary: %#v", response.Summary)
+	}
+}
+
+func TestQueueSelectedAssetsSkipsNonUnprocessedRecords(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	logicalPath := "/media/raw/Anime/Converted"
+	record := models.AssetRecord{Path: logicalPath + "/Episode 1.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Episode 1.mkv", FileName: "Episode 1.mkv", Status: "converted"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopePath, TargetPath: filepath.Dir(record.Path), MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopePath, ScopeKey: filepath.Dir(record.Path), DestinationSelection: configSelectionValue, DestinationLibraryID: 3}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
+	if response.Summary.Queued != 0 || response.Summary.Skipped != 1 || len(response.Results) != 1 || response.Results[0].Reason != "not_unprocessed" {
+		t.Fatalf("non-Unprocessed record was not explicitly skipped: %#v", response)
+	}
+	var jobs int64
+	if err := db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("non-Unprocessed record created Queue jobs=%d err=%v", jobs, err)
 	}
 }
 

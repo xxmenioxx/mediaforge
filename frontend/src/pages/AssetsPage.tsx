@@ -925,7 +925,7 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const createQueue = useMutation({
 		mutationFn: async () => {
 			if (!queuePlan?.summary.eligible) throw new Error('No selected assets are eligible for Queue.');
-			return api.queueSelectedAssets({ assetIds: queuePlan.results.map((result) => result.assetId), commit: true });
+			return api.queueSelectedAssets({ assetIds: queuePlan.results.filter((result) => result.outcome === 'eligible').map((result) => result.assetId), commit: true });
 		},
 		onSuccess: async (response) => {
 			await Promise.all([queryClient.invalidateQueries({ queryKey: ['queueJobs'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]);

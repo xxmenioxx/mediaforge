@@ -36,6 +36,7 @@ type QueueJobInput struct {
 	Priority                  int    `json:"priority"`
 	Notes                     string `json:"notes"`
 	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
+	resolvedProfileResolution models.JSONMap
 }
 
 type QueueBatchInput struct {
@@ -453,7 +454,10 @@ func (h QueueHandler) prepareBatchQueueJob(
 		return models.QueueJob{}, http.StatusConflict, fmt.Errorf("asset has an active maintenance operation")
 	}
 
-	profileResolution := models.JSONMap{}
+	profileResolution := input.resolvedProfileResolution
+	if profileResolution == nil {
+		profileResolution = models.JSONMap{}
+	}
 
 	if input.ResolveProfileAssignments {
 		var err error
@@ -825,6 +829,11 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 	found := make(map[uint]bool, len(records))
 	titles := map[string]bool{}
 	candidates := make([]selectedQueueCandidate, 0, len(records))
+	configurationResolver, err := loadAssetConfigurationResolver(h.db)
+	if err != nil {
+		return response, fmt.Errorf("load effective configuration batch: %w", err)
+	}
+	reviews := assetReviewOverrides(h.db)
 	for _, record := range records {
 		found[record.ID] = true
 		titlePath := filepath.Clean(record.LogicalGroupPath)
@@ -834,12 +843,17 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		titles[titlePath] = true
 
 		result := QueueSelectedAssetResult{AssetID: record.ID}
+		if record.Status != "unprocessed" {
+			result.Outcome, result.Reason, result.Message = "skipped", "not_unprocessed", "Asset is not currently Unprocessed"
+			response.Results = append(response.Results, result)
+			continue
+		}
 		if record.Missing {
 			result.Outcome, result.Reason, result.Message = "skipped", "missing", "Asset file is missing"
 			response.Results = append(response.Results, result)
 			continue
 		}
-		if reviewForPath(filepath.Clean(record.Path), assetReviewOverrides(h.db)).RequiresReview {
+		if reviewForPath(filepath.Clean(record.Path), reviews).RequiresReview {
 			result.Outcome, result.Reason, result.Message = "skipped", "needs_review", "Asset requires review before queueing"
 			response.Results = append(response.Results, result)
 			continue
@@ -859,10 +873,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			continue
 		}
 
-		effective, err := effectiveAssetConfiguration(h.db, record.Path)
-		if err != nil {
-			return response, fmt.Errorf("resolve effective configuration for asset %d: %w", record.ID, err)
-		}
+		effective := configurationResolver.resolve(record)
 		hasOperation := effective.Video.VideoProfileID > 0 ||
 			effective.Video.Selection == VideoAssignmentOverrideOnly ||
 			effective.Video.Selection == VideoAssignmentAudioOnly ||
@@ -883,7 +894,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly {
 			processingMode = ProcessingModeFullEncode
 		}
-		job, status, err := h.prepareBatchQueueJob(QueueJobInput{
+		queueInput := QueueJobInput{
 			MediaPath:                 record.Path,
 			PublishMode:               PublishModeStandard,
 			LibraryID:                 effective.Destination.DestinationLibraryID,
@@ -893,8 +904,10 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			ProcessingMode:            processingMode,
 			Priority:                  5,
 			Notes:                     "Queued from selected titles",
-			ResolveProfileAssignments: true,
-		})
+			ResolveProfileAssignments: false,
+		}
+		queueInput.resolvedProfileResolution = resolveProfileAssignmentsFromEffective(&queueInput, effective)
+		job, status, err := h.prepareBatchQueueJob(queueInput)
 		if err != nil {
 			result.Outcome, result.Reason, result.Message = "failed", "invalid_configuration", err.Error()
 			if status >= http.StatusInternalServerError {
@@ -1169,31 +1182,34 @@ func (h QueueHandler) Create(c *gin.Context) {
 }
 
 func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JSONMap, error) {
-	resolution := models.JSONMap{}
 	effective, err := effectiveAssetConfiguration(h.db, input.MediaPath)
 	if err != nil {
 		return nil, err
 	}
-	assignments, err := profileAssignmentsForAsset(h.db, input.MediaPath)
-	if err != nil {
-		return nil, err
-	}
-	for mediaType, assignment := range assignments {
+	return resolveProfileAssignmentsFromEffective(input, effective), nil
+}
+
+func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective EffectiveAssetConfiguration) models.JSONMap {
+	resolution := models.JSONMap{}
+	for mediaType, value := range map[string]AssetConfigurationValue{"video": effective.Video, "audio": effective.Audio, "tracks": effective.Tracks} {
+		if value.Source == "" || value.Selection == configSelectionInherit {
+			continue
+		}
 		resolution[mediaType] = models.JSONMap{
-			"source":         assignment.TargetType,
-			"targetPath":     assignment.TargetPath,
-			"selection":      assignment.Selection,
-			"videoProfileId": assignment.VideoProfileID,
-			"profileKey":     assignment.ProfileKey,
-			"overrideOnly":   assignment.Selection == VideoAssignmentOverrideOnly,
+			"source":         value.Source,
+			"targetPath":     value.SourceKey,
+			"selection":      value.Selection,
+			"videoProfileId": value.VideoProfileID,
+			"profileKey":     value.ProfileKey,
+			"overrideOnly":   value.Selection == VideoAssignmentOverrideOnly,
 		}
 		switch mediaType {
 
 		case "video":
-			switch assignment.Selection {
+			switch value.Selection {
 			case "profile":
-				if assignment.VideoProfileID > 0 {
-					input.ProfileID = assignment.VideoProfileID
+				if value.VideoProfileID > 0 {
+					input.ProfileID = value.VideoProfileID
 					input.ProcessingMode = ProcessingModeFullEncode
 				}
 
@@ -1209,15 +1225,15 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 			}
 
 		case "audio":
-			if assignment.Selection == "profile" {
-				input.AudioProfileKey = assignment.ProfileKey
-			} else if assignment.Selection == "disabled" {
+			if value.Selection == "profile" {
+				input.AudioProfileKey = value.ProfileKey
+			} else if value.Selection == "disabled" {
 				input.AudioProfileKey = ""
 			}
 		case "tracks":
-			if assignment.Selection == "profile" {
-				input.TrackProfileKey = assignment.ProfileKey
-			} else if assignment.Selection == "disabled" {
+			if value.Selection == "profile" {
+				input.TrackProfileKey = value.ProfileKey
+			} else if value.Selection == "disabled" {
 				input.TrackProfileKey = ""
 			}
 		}
@@ -1231,7 +1247,7 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	if effective.Destination.Selection == configSelectionValue && effective.Destination.DestinationLibraryID > 0 {
 		input.LibraryID = effective.Destination.DestinationLibraryID
 	}
-	return resolution, nil
+	return resolution
 }
 
 func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
