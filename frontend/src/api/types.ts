@@ -362,6 +362,26 @@ export type AssetScopeConfiguration = {
 
 export type AssetScopeConfigurationInput = Omit<AssetScopeConfiguration, 'id' | 'createdAt' | 'updatedAt'>;
 
+export type EffectiveAssetConfigurationValue = {
+	selection: 'inherit' | 'profile' | 'value' | 'disabled' | 'override_only' | 'audio_only' | string;
+	source?: 'source_group' | 'logical_group' | 'path' | 'asset' | string;
+	sourceKey?: string;
+	sourceName?: string;
+	videoProfileId?: number;
+	profileKey?: string;
+	category?: string;
+	destinationLibraryId?: number;
+};
+
+export type EffectiveAssetConfiguration = {
+	assetPath: string;
+	video: EffectiveAssetConfigurationValue;
+	audio: EffectiveAssetConfigurationValue;
+	tracks: EffectiveAssetConfigurationValue;
+	category: EffectiveAssetConfigurationValue;
+	destination: EffectiveAssetConfigurationValue;
+};
+
 export type AssetReports = {
   unprocessedFiles: number;
   libraryFiles: number;

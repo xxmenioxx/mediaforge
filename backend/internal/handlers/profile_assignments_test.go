@@ -130,6 +130,79 @@ func TestQueueFreezesResolvedPathAndAssetProfiles(t *testing.T) {
 	}
 }
 
+func TestQueueFreezesDifferentSourceAndLogicalGroupProfilesPerAsset(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "source-logical-queue.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.SourceGroup{}, &models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{},
+		&models.AssetScopeConfiguration{}, &models.AppSetting{}, &models.ScanResult{},
+		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceProfile := models.Profile{Name: "Source video", Scope: "path", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}}
+	logicalProfile := models.Profile{Name: "Logical video", Scope: "path", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 17, WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}}
+	if err := db.Create(&sourceProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&logicalProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceGroup := models.SourceGroup{Name: "Movies", SourcePath: "/media/raw/movies", RelativePath: "movies", Enabled: true}
+	if err := db.Create(&sourceGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	assets := []models.AssetRecord{
+		{Path: "/media/raw/movies/Akira/Akira.mkv", RootPath: "/media/raw", RelativePath: "movies/Akira/Akira.mkv", GroupPath: "movies/Akira", FileName: "Akira.mkv", Status: "unprocessed", SourceGroupID: sourceGroup.ID, LogicalGroupPath: "/media/raw/movies/Akira", SourcePath: "/media/raw/movies/Akira/Akira.mkv"},
+		{Path: "/media/raw/movies/Perfect Blue/Perfect Blue.mkv", RootPath: "/media/raw", RelativePath: "movies/Perfect Blue/Perfect Blue.mkv", GroupPath: "movies/Perfect Blue", FileName: "Perfect Blue.mkv", Status: "unprocessed", SourceGroupID: sourceGroup.ID, LogicalGroupPath: "/media/raw/movies/Perfect Blue", SourcePath: "/media/raw/movies/Perfect Blue/Perfect Blue.mkv"},
+	}
+	if err := db.Create(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignments := []models.ProfileAssignment{
+		{TargetType: assetScopeSourceGroup, TargetPath: sourceGroup.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: sourceProfile.ID},
+		{TargetType: assetScopeLogicalGroup, TargetPath: assets[1].LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: logicalProfile.ID},
+	}
+	if err := db.Create(&assignments).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	for index, asset := range assets {
+		body := `{"mediaPath":"` + asset.Path + `","libraryId":1,"profileId":` + strconv.FormatUint(uint64(sourceProfile.ID), 10) + `,"resolveProfileAssignments":true}`
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("asset %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+		var job models.QueueJob
+		if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+			t.Fatal(err)
+		}
+		wantProfileID := sourceProfile.ID
+		wantSource := assetScopeSourceGroup
+		if index == 1 {
+			wantProfileID = logicalProfile.ID
+			wantSource = assetScopeLogicalGroup
+		}
+		if job.ProfileID != wantProfileID || job.ProfileSnapshot["profileName"] != map[bool]string{true: logicalProfile.Name, false: sourceProfile.Name}[index == 1] {
+			t.Fatalf("asset %d did not freeze its effective profile: %#v", index, job)
+		}
+		video, ok := job.ProfileResolution["video"].(map[string]any)
+		if !ok || video["source"] != wantSource {
+			t.Fatalf("asset %d resolution source=%#v want=%s", index, job.ProfileResolution["video"], wantSource)
+		}
+	}
+}
+
 func TestPathTrackProfileResolvesSemanticRulesPerAsset(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:path-track-resolution?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
