@@ -160,7 +160,7 @@ func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]asset
 		pathTarget = filepath.Clean(filepath.Join(record.RootPath, filepath.FromSlash(record.GroupPath)))
 	}
 	targets := []assetScopeTarget{}
-	if record.SourceGroupID > 0 && db.Migrator().HasTable(&models.SourceGroup{}) {
+	if record.Status == "unprocessed" && record.SourceGroupID > 0 && db.Migrator().HasTable(&models.SourceGroup{}) {
 		var group models.SourceGroup
 		if err := db.First(&group, record.SourceGroupID).Error; err == nil {
 			targets = append(targets, assetScopeTarget{Type: assetScopeSourceGroup, Key: filepath.Clean(group.SourcePath), Name: group.Name})
@@ -168,7 +168,7 @@ func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]asset
 			return nil, err
 		}
 	}
-	if logical := strings.TrimSpace(record.LogicalGroupPath); logical != "" {
+	if logical := strings.TrimSpace(record.LogicalGroupPath); record.Status == "unprocessed" && logical != "" {
 		targets = append(targets, assetScopeTarget{Type: assetScopeLogicalGroup, Key: filepath.Clean(logical), Name: filepath.Base(filepath.Clean(logical))})
 	}
 	targets = append(targets,

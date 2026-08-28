@@ -58,6 +58,7 @@ export type AudioEnhancementProfile = {
 };
 
 export type Asset = {
+	id?: number;
 	sourceGroupId?: number;
 	logicalGroupPath?: string;
 	sourcePath?: string;
@@ -312,23 +313,38 @@ export type AssetSourceGroup = {
 	relativePath: string;
 	sourcePath: string;
 	fileCount: number;
+	assetCount: number;
+	titleCount: number;
+	pathCount: number;
 	sizeBytes: number;
+	totalSizeBytes: number;
 	logicalGroups: AssetLogicalGroup[];
 };
 
 export type AssetLogicalGroup = {
+	id: string;
 	name: string;
 	path: string;
+	relativePath: string;
 	fileCount: number;
+	assetCount: number;
+	pathCount: number;
 	sizeBytes: number;
+	totalSizeBytes: number;
 	assetPaths: AssetPath[];
 };
 
 export type AssetPath = {
+	id: string;
 	name: string;
 	path: string;
+	relativePath: string;
+	displayPath: string;
+	isLogicalGroupRoot: boolean;
 	fileCount: number;
+	assetCount: number;
 	sizeBytes: number;
+	totalSizeBytes: number;
 	assets: Asset[];
 };
 

@@ -63,7 +63,7 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -85,7 +85,7 @@ export function AssetsPage() {
   const [libraryDecision, setLibraryDecision] = useState<'' | 'unverified' | 'accepted'>('');
   const [assetQuery, setAssetQuery] = useState('');
   const [mediaArea, setMediaArea] = useState('');
-	const [sourceGroupId, setSourceGroupId] = useState<number | 'all'>('all');
+	const [sourceGroupId, setSourceGroupId] = useState(0);
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
@@ -124,9 +124,8 @@ export function AssetsPage() {
   const statusGroups = safeArray(
     tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
   );
-	const currentGroups = sourceGroupId === 'all'
-		? statusGroups
-		: statusGroups.filter((group) => safeArray(group.assets).some((asset) => asset.sourceGroupId === sourceGroupId));
+	const currentGroups = statusGroups;
+	const selectedSourceGroup = sourceGroups.find((group) => group.id === sourceGroupId) ?? sourceGroups[0];
   const allInventoryGroups = [
     ...safeArray(assets.data?.unprocessedGroups), ...safeArray(assets.data?.libraryGroups),
     ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
@@ -156,12 +155,6 @@ export function AssetsPage() {
 
         <Card>
           <CardContent sx={{ py: 1.25 }}>
-			{sourceGroups.length > 0 && tab !== 'reports' ? (
-				<Tabs value={sourceGroupId} onChange={(_, value) => { setSourceGroupId(value); setAssetQuery(''); }} variant="scrollable" scrollButtons="auto" sx={{ mb: 1, borderBottom: 1, borderColor: 'divider' }}>
-					<Tab value="all" label="All sources" />
-					{sourceGroups.map((group) => <Tab key={group.id} value={group.id} label={`${group.name} (${group.fileCount})`} />)}
-				</Tabs>
-			) : null}
             <Stack
               direction={{ xs: 'column', lg: 'row' }}
               alignItems={{ xs: 'stretch', lg: 'flex-start' }}
@@ -252,6 +245,11 @@ export function AssetsPage() {
                 ) : null}
               </Stack>
             </Stack>
+			{sourceGroups.length > 0 && tab === 'unprocessed' ? (
+				<Tabs value={selectedSourceGroup?.id ?? false} onChange={(_, value) => { setSourceGroupId(value); setAssetQuery(''); }} variant="scrollable" scrollButtons="auto" sx={{ mt: 1, borderTop: 1, borderColor: 'divider' }}>
+					{sourceGroups.map((group) => <Tab key={group.id} value={group.id} label={`${group.name} (${group.fileCount})`} />)}
+				</Tabs>
+			) : null}
             {tab === 'converted' ? (
               <Alert severity="info" sx={{ mt: 1.25 }}>
                 Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
@@ -272,6 +270,23 @@ export function AssetsPage() {
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
           {tab === 'reports' ? (
             <AssetReportsPanel inventory={assets.data} />
+		  ) : tab === 'unprocessed' ? (
+			<AssetsErrorBoundary boundaryKey={`unprocessed-${selectedSourceGroup?.id ?? 'empty'}`}>
+				<UnprocessedAssetsView
+					key={selectedSourceGroup?.id ?? 'empty'}
+					sourceGroup={selectedSourceGroup}
+					groups={areaGroups}
+					libraries={libraries.data ?? []}
+					profiles={profiles.data ?? []}
+					audioProfiles={audioProfiles}
+					trackProfiles={trackProfiles}
+					settings={settings.data ?? []}
+					assetCategories={assetCategories}
+					queueJobs={jobs.data ?? []}
+					runningSnapshotPaths={runningSnapshotPaths}
+					query={assetQuery}
+				/>
+			</AssetsErrorBoundary>
           ) : (
             <AssetsErrorBoundary boundaryKey={tab}>
               <AssetTable
@@ -290,9 +305,7 @@ export function AssetsPage() {
                 emptyLabel={
                   tab === 'archive'
                     ? 'No archived originals found in the inventory.'
-                    : tab === 'unprocessed'
-                      ? 'No pending asset groups found.'
-                      : tab === 'library' ? 'No library asset groups found.' : 'No MVForge-converted asset groups found.'
+					: tab === 'library' ? 'No library asset groups found.' : 'No MVForge-converted asset groups found.'
                 }
               />
             </AssetsErrorBoundary>
@@ -585,13 +598,16 @@ function AssetTable({
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const filteredGroups = filterAssetGroups(visibleGroups, query);
-  const collections = buildAssetCollections(filteredGroups);
-  const pagedCollections = collections.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+	const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   const showConfidence = mode !== 'archive' && mode !== 'converted';
 
   useEffect(() => {
     setPage(0);
   }, [query, mode, visibleGroups.length]);
+
+	if (mode === 'archive') {
+		return <ArchivedAssetTable groups={visibleGroups} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} query={query} emptyLabel={emptyLabel} />;
+	}
 
   if (visibleGroups.length === 0) {
     return (
@@ -607,7 +623,7 @@ function AssetTable({
         <Table size="small" sx={{ minWidth: { xs: 0, sm: 980 }, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Path</TableCell>
+			  <TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Asset group</TableCell>
               <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Library</TableCell>
               <TableCell sx={{ width: { xs: '32%', sm: 140 } }}>Status</TableCell>
               {showConfidence ? <TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Confidence</TableCell> : null}
@@ -618,11 +634,11 @@ function AssetTable({
             </TableRow>
           </TableHead>
           <TableBody>
-            {pagedCollections.length ? (
-              pagedCollections.map((collection) => (
-                <AssetCollectionRows
-                  key={collection.id}
-                  collection={collection}
+            {pagedGroups.length ? (
+			  pagedGroups.map((group) => (
+				<AssetGroupRow
+				  key={group.id}
+				  group={group}
                   libraries={libraries}
                   profiles={profiles}
                   audioProfiles={audioProfiles}
@@ -631,8 +647,7 @@ function AssetTable({
                   assetCategories={assetCategories}
                   queueJobs={queueJobs}
                   runningSnapshotPaths={runningSnapshotPaths}
-                  mode={mode}
-                  columnCount={showConfidence ? 8 : 7}
+				  mode={mode}
                 />
               ))
             ) : (
@@ -647,8 +662,8 @@ function AssetTable({
       </Box>
       <TablePagination
         component="div"
-        count={collections.length}
-        page={Math.min(page, Math.max(0, Math.ceil(collections.length / rowsPerPage) - 1))}
+		count={filteredGroups.length}
+		page={Math.min(page, Math.max(0, Math.ceil(filteredGroups.length / rowsPerPage) - 1))}
         rowsPerPage={rowsPerPage}
         rowsPerPageOptions={[10, 25, 50, 100]}
         onPageChange={(_, nextPage) => setPage(nextPage)}
@@ -674,8 +689,95 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
+function UnprocessedAssetsView({
+	sourceGroup, groups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query,
+}: {
+	sourceGroup?: AssetSourceGroup;
+	groups: AssetGroup[];
+	libraries: Library[];
+	profiles: Profile[];
+	audioProfiles: AudioEnhancementProfile[];
+	trackProfiles: TrackProfile[];
+	settings: AppSetting[];
+	assetCategories: string[];
+	queueJobs: QueueJob[];
+	runningSnapshotPaths: Set<string>;
+	query: string;
+}) {
+	const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(() => new Set());
+	if (!sourceGroup) return <CardContent><Alert severity="info">No Unprocessed Source Groups found.</Alert></CardContent>;
+	const groupsByPath = new Map(groups.map((group) => [normalizePath(group.path), group]));
+	const cleanQuery = query.trim().toLowerCase();
+	const logicalGroups = safeArray(sourceGroup.logicalGroups).filter((logicalGroup) => sourceLogicalGroupMatches(logicalGroup, cleanQuery));
+	return (
+		<Box sx={{ borderTop: 1, borderColor: 'divider' }}>
+			<Box sx={{ px: 2, py: 1.5 }}>
+				<Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}><Typography variant="h2">{sourceGroup.name}</Typography><SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /></Stack>
+				<Typography variant="body2" color="text.secondary">{sourceGroup.assetCount} assets · {sourceGroup.titleCount} titles · {sourceGroup.pathCount} paths · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
+				{selectedAssetIds.size ? <Chip size="small" color="primary" label={`${selectedAssetIds.size} selected`} sx={{ mt: 1 }} onDelete={() => setSelectedAssetIds(new Set())} /> : null}
+			</Box>
+			<Table size="small" sx={{ minWidth: { xs: 0, sm: 980 }, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
+				<TableHead><TableRow><TableCell sx={{ width: { xs: '58%', sm: 390 } }}>Path</TableCell><TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Library</TableCell><TableCell sx={{ width: { xs: '32%', sm: 140 } }}>Status</TableCell><TableCell sx={{ width: 130, display: { xs: 'none', sm: 'table-cell' } }}>Confidence</TableCell><TableCell sx={{ width: 70, display: { xs: 'none', md: 'table-cell' } }}>Files</TableCell><TableCell sx={{ width: 120, display: { xs: 'none', md: 'table-cell' } }}>Size</TableCell><TableCell sx={{ width: 165, display: { xs: 'none', md: 'table-cell' } }}>Modified</TableCell><TableCell padding="checkbox" sx={{ width: { xs: '10%', sm: 52 } }} /></TableRow></TableHead>
+				<TableBody>
+					{logicalGroups.map((logicalGroup) => {
+						const logicalPaths = logicalGroup.assetPaths.map((path) => groupsByPath.get(normalizePath(path.path))).filter((group): group is AssetGroup => Boolean(group));
+						if (!logicalPaths.length) return null;
+						const collection: AssetCollection = { id: logicalGroup.id, title: logicalGroup.name, libraryName: logicalPaths[0]?.libraryName ?? 'Originals', groups: logicalPaths, fileCount: logicalGroup.fileCount, sizeBytes: logicalGroup.sizeBytes };
+						return <AssetCollectionRows key={logicalGroup.id} collection={collection} logicalGroup={logicalGroup} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} mode="unprocessed" columnCount={8} />;
+					})}
+					{!logicalGroups.length ? <TableRow><TableCell colSpan={8}><Alert severity="info">No Unprocessed assets match this search.</Alert></TableCell></TableRow> : null}
+				</TableBody>
+			</Table>
+		</Box>
+	);
+}
+
+function SourceGroupConfigureButton({ sourceGroup, profiles, audioProfiles, trackProfiles, libraries, categories }: { sourceGroup: AssetSourceGroup; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[] }) {
+	const queryClient = useQueryClient();
+	const assignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
+	const configurations = useQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations });
+	const [open, setOpen] = useState(false);
+	const [videoProfileId, setVideoProfileId] = useState(0);
+	const [audioProfileKey, setAudioProfileKey] = useState('__inherit__');
+	const [trackProfileKey, setTrackProfileKey] = useState('__inherit__');
+	const [categorySelection, setCategorySelection] = useState<'inherit' | 'value' | 'disabled'>('inherit');
+	const [category, setCategory] = useState('');
+	const [destinationSelection, setDestinationSelection] = useState<'inherit' | 'value' | 'disabled'>('inherit');
+	const [destinationLibraryId, setDestinationLibraryId] = useState(0);
+	const save = useMutation({
+		mutationFn: async () => {
+			await api.updateAssetScopeConfiguration({ scopeType: 'source_group', scopeKey: sourceGroup.sourcePath, categorySelection, category, destinationSelection, destinationLibraryId });
+			for (const [mediaType, value] of [['video', videoProfileId], ['audio', audioProfileKey], ['tracks', trackProfileKey]] as const) {
+				const inherit = value === 0 || value === '__inherit__';
+				const disabled = value === '' || (mediaType === 'video' && Number(value) < 0);
+				await api.updateProfileAssignment({ targetType: 'source_group', targetPath: sourceGroup.sourcePath, mediaType, selection: inherit ? 'inherit' : disabled ? 'disabled' : 'profile', videoProfileId: mediaType === 'video' ? Math.max(0, Number(value)) : 0, profileKey: mediaType === 'video' || inherit || disabled ? '' : String(value) });
+			}
+		},
+		onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }), queryClient.invalidateQueries({ queryKey: ['assetScopeConfigurations'] })]); setOpen(false); },
+	});
+	function openConfiguration() {
+		const scoped = safeArray(assignments.data).filter((item) => item.targetType === 'source_group' && normalizePath(item.targetPath) === normalizePath(sourceGroup.sourcePath));
+		const video = scoped.find((item) => item.mediaType === 'video'); const audio = scoped.find((item) => item.mediaType === 'audio'); const tracks = scoped.find((item) => item.mediaType === 'tracks');
+		setVideoProfileId(video?.selection === 'profile' ? video.videoProfileId ?? 0 : video?.selection === 'disabled' ? -1 : 0);
+		setAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : audio?.selection === 'disabled' ? '' : '__inherit__');
+		setTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : tracks?.selection === 'disabled' ? '' : '__inherit__');
+		const configuration = safeArray(configurations.data).find((item) => item.scopeType === 'source_group' && normalizePath(item.scopeKey) === normalizePath(sourceGroup.sourcePath));
+		setCategorySelection(configuration?.categorySelection ?? 'inherit'); setCategory(configuration?.category ?? ''); setDestinationSelection(configuration?.destinationSelection ?? 'inherit'); setDestinationLibraryId(configuration?.destinationLibraryId ?? 0); setOpen(true);
+	}
+	return <><Button variant="outlined" size="small" startIcon={<EditIcon />} onClick={openConfiguration}>Configure</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>Configure Source Group · {sourceGroup.name}</DialogTitle><DialogContent dividers><Stack spacing={2}><Alert severity="info">Defaults apply only to Unprocessed descendants that still inherit this dimension.</Alert><Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={videoProfileId} onChange={setVideoProfileId} label="Video profile" allowNone allowInherit /></Grid><Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audioProfileKey} onChange={setAudioProfileKey} label="Audio profile" allowInherit /></Grid><Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={trackProfileKey} onChange={setTrackProfileKey} label="Tracks profile" allowInherit /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Category mode" value={categorySelection} onChange={(event) => setCategorySelection(event.target.value as typeof categorySelection)}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={categorySelection !== 'value'} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Destination mode" value={destinationSelection} onChange={(event) => setDestinationSelection(event.target.value as typeof destinationSelection)}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><LibraryAutocomplete libraries={libraries} value={destinationLibraryId} onChange={setDestinationLibraryId} label="Destination" disabled={destinationSelection !== 'value'} /></Grid></Grid>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save Source Group configuration.'}</Alert> : null}</Stack></DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={save.isPending || (categorySelection === 'value' && !category) || (destinationSelection === 'value' && !destinationLibraryId)}>Save</Button></DialogActions></Dialog></>;
+}
+
+function sourceLogicalGroupMatches(group: AssetLogicalGroup, query: string) {
+	if (!query) return true;
+	return [group.name, group.path, group.relativePath, ...group.assetPaths.flatMap((path) => [path.name, path.path, path.relativePath, ...path.assets.flatMap((asset) => [asset.fileName, asset.path])])]
+		.some((value) => value.toLowerCase().includes(query));
+}
+
 function AssetCollectionRows({
   collection,
+	logicalGroup,
+	selectedAssetIds,
+	onAssetSelectionChange,
   libraries,
   profiles,
   audioProfiles,
@@ -688,6 +790,9 @@ function AssetCollectionRows({
   columnCount,
 }: {
   collection: AssetCollection;
+	logicalGroup?: AssetLogicalGroup;
+	selectedAssetIds?: Set<number>;
+	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
@@ -704,6 +809,7 @@ function AssetCollectionRows({
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
 	const scopeConfigurations = useQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations });
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+	const [logicalExpanded, setLogicalExpanded] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [snapshotGroup, setSnapshotGroup] = useState<AssetGroup | null>(null);
   const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt);
@@ -715,6 +821,9 @@ function AssetCollectionRows({
 	}));
   const selectedGroups = collection.groups.filter((group) => selectedPaths.includes(group.path));
   const allSelected = collection.groups.length > 0 && selectedPaths.length === collection.groups.length;
+	const logicalAssets = logicalGroup?.assetPaths.flatMap((path) => path.assets).filter((asset) => !asset.missing && asset.id) ?? [];
+	const allLogicalAssetsSelected = Boolean(selectedAssetIds && logicalAssets.length && logicalAssets.every((asset) => selectedAssetIds.has(asset.id ?? 0)));
+	const someLogicalAssetsSelected = Boolean(selectedAssetIds && logicalAssets.some((asset) => selectedAssetIds.has(asset.id ?? 0)));
   const configuredPaths = collection.groups.filter((group) => pathConfigurationComplete(group, profileAssignments.data ?? [], destinations, mode)).length;
   const queueEligible = collection.groups.some((group) => pathCanQueue(group, mode));
   const [configuration, setConfiguration] = useState({
@@ -725,9 +834,25 @@ function AssetCollectionRows({
     destinationLibraryId: 0,
   });
   const [configurationFields, setConfigurationFields] = useState<string[]>([]);
+	const [categoryMode, setCategoryMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
+	const [destinationMode, setDestinationMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
 
   const saveConfiguration = useMutation({
     mutationFn: async () => {
+	  if (logicalGroup) {
+		const current = safeArray(scopeConfigurations.data).find((item) => item.scopeType === 'logical_group' && normalizePath(item.scopeKey) === normalizePath(logicalGroup.path));
+		if (configurationFields.includes('category') || configurationFields.includes('destination')) {
+			await api.updateAssetScopeConfiguration({ scopeType: 'logical_group', scopeKey: logicalGroup.path, categorySelection: configurationFields.includes('category') ? categoryMode : current?.categorySelection ?? 'inherit', category: configurationFields.includes('category') ? configuration.category : current?.category ?? '', destinationSelection: configurationFields.includes('destination') ? destinationMode : current?.destinationSelection ?? 'inherit', destinationLibraryId: configurationFields.includes('destination') ? configuration.destinationLibraryId : current?.destinationLibraryId });
+		}
+		for (const mediaType of ['video', 'audio', 'tracks'] as const) {
+			if (!configurationFields.includes(mediaType)) continue;
+			const value = mediaType === 'video' ? configuration.videoProfileId : mediaType === 'audio' ? configuration.audioProfileKey : configuration.trackProfileKey;
+			const inherit = value === 0 || value === '__inherit__';
+			const disabled = value === '' || (mediaType === 'video' && Number(value) < 0);
+			await api.updateProfileAssignment({ targetType: 'logical_group', targetPath: logicalGroup.path, mediaType, selection: inherit ? 'inherit' : disabled ? 'disabled' : 'profile', videoProfileId: mediaType === 'video' ? Math.max(0, Number(value)) : 0, profileKey: mediaType === 'video' || inherit || disabled ? '' : String(value) });
+		}
+		return;
+	  }
       if (!selectedGroups.length) throw new Error('Select at least one path.');
       for (const group of selectedGroups) {
         if (configurationFields.includes('category') || configurationFields.includes('destination')) {
@@ -840,15 +965,17 @@ function AssetCollectionRows({
             <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
               <Checkbox
                 size="small"
-                checked={allSelected}
-                indeterminate={selectedPaths.length > 0 && !allSelected}
-                onChange={(event) => setSelectedPaths(event.target.checked ? collection.groups.map((group) => group.path) : [])}
+				checked={selectedAssetIds ? allLogicalAssetsSelected : allSelected}
+				indeterminate={selectedAssetIds ? someLogicalAssetsSelected && !allLogicalAssetsSelected : selectedPaths.length > 0 && !allSelected}
+				onChange={(event) => selectedAssetIds
+					? onAssetSelectionChange?.(logicalAssets.map((asset) => asset.id ?? 0), event.target.checked)
+					: setSelectedPaths(event.target.checked ? collection.groups.map((group) => group.path) : [])}
                 inputProps={{ 'aria-label': `Select all paths in ${collection.title}` }}
               />
               <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                <Typography variant="h3" sx={{ overflowWrap: 'anywhere' }}>{collection.title}</Typography>
+				<Stack direction="row" spacing={0.5} alignItems="center"><IconButton size="small" onClick={() => setLogicalExpanded((current) => !current)}><ExpandMoreIcon sx={{ transform: logicalExpanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Typography variant="h3" sx={{ overflowWrap: 'anywhere' }}>{collection.title}</Typography></Stack>
                 <Typography variant="body2" color="text.secondary">
-                  {collection.groups.length} path{collection.groups.length === 1 ? '' : 's'} · {collection.fileCount} files · {formatBytes(collection.sizeBytes)}
+				  {logicalGroup?.assetCount ?? collection.fileCount} assets · {logicalGroup?.pathCount ?? collection.groups.length} paths · {formatBytes(logicalGroup?.totalSizeBytes ?? collection.sizeBytes)}
                 </Typography>
               </Stack>
             </Stack>
@@ -856,16 +983,20 @@ function AssetCollectionRows({
               <Button
                 variant="outlined"
                 startIcon={<EditIcon />}
-                disabled={!selectedGroups.length}
+				disabled={!logicalGroup && !selectedGroups.length}
                 onClick={() => {
-                  setConfiguration(configurationForPathSelection(selectedGroups, profileAssignments.data ?? [], destinations, mode));
+				  const scoped = logicalGroup ? safeArray(scopeConfigurations.data).find((item) => item.scopeType === 'logical_group' && normalizePath(item.scopeKey) === normalizePath(logicalGroup.path)) : undefined;
+				  const scopedAssignments = logicalGroup ? safeArray(profileAssignments.data).filter((item) => item.targetType === 'logical_group' && normalizePath(item.targetPath) === normalizePath(logicalGroup.path)) : [];
+				  const video = scopedAssignments.find((item) => item.mediaType === 'video'); const audio = scopedAssignments.find((item) => item.mediaType === 'audio'); const tracks = scopedAssignments.find((item) => item.mediaType === 'tracks');
+				  setCategoryMode(scoped?.categorySelection ?? 'inherit'); setDestinationMode(scoped?.destinationSelection ?? 'inherit');
+				  setConfiguration(logicalGroup ? { category: scoped?.category ?? '', videoProfileId: video?.selection === 'profile' ? video.videoProfileId ?? 0 : video?.selection === 'disabled' ? -1 : 0, audioProfileKey: audio?.selection === 'profile' ? audio.profileKey ?? '' : audio?.selection === 'disabled' ? '' : '__inherit__', trackProfileKey: tracks?.selection === 'profile' ? tracks.profileKey ?? '' : tracks?.selection === 'disabled' ? '' : '__inherit__', destinationLibraryId: scoped?.destinationLibraryId ?? 0 } : configurationForPathSelection(selectedGroups, profileAssignments.data ?? [], destinations, mode));
                   setConfigurationFields([]);
                   setConfigurationOpen(true);
                 }}
               >
-                Configure paths · {configuredPaths}/{collection.groups.length}
+				{logicalGroup ? 'Configure' : `Configure paths · ${configuredPaths}/${collection.groups.length}`}
               </Button>
-              {queueEligible ? (
+			  {queueEligible && !logicalGroup ? (
                 <Button
                   variant="contained"
                   startIcon={<PlaylistAddIcon />}
@@ -880,7 +1011,9 @@ function AssetCollectionRows({
           {queuePaths.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{queuePaths.error instanceof Error ? queuePaths.error.message : 'Could not queue selected paths.'}</Alert> : null}
         </TableCell>
       </TableRow>
-      {collection.groups.map((group) => (
+	  {logicalExpanded ? collection.groups.map((group) => {
+		const isRoot = logicalGroup?.assetPaths.find((path) => normalizePath(path.path) === normalizePath(group.path))?.isLogicalGroupRoot ?? false;
+		return (
         <AssetGroupRow
           key={group.id}
           group={group}
@@ -896,28 +1029,34 @@ function AssetCollectionRows({
           pathSelected={selectedPaths.includes(group.path)}
           onPathSelectionChange={(selected) => togglePath(group.path, selected)}
           onOpenPathSnapshots={() => setSnapshotGroup(group)}
-          collectionManaged
+		  forceExpanded={isRoot}
+		  hidePathHeader={isRoot}
+		  selectedAssetIds={selectedAssetIds}
+		  onAssetSelectionChange={onAssetSelectionChange}
         />
-      ))}
+		);
+	  }) : null}
       <Dialog open={configurationOpen} onClose={() => !saveConfiguration.isPending && setConfigurationOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>Configure {selectedGroups.length} path{selectedGroups.length === 1 ? '' : 's'} · {collection.title}</DialogTitle>
+		<DialogTitle>Configure {logicalGroup ? `title · ${collection.title}` : `${selectedGroups.length} path${selectedGroups.length === 1 ? '' : 's'} · ${collection.title}`}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ pt: 0.5 }}>
-            <Alert severity="info">These values are assigned to every selected path and inherited by its assets. Asset overrides continue to take precedence.</Alert>
-            <Typography variant="body2" color="text.secondary">{selectedGroups.map(pathLabelForCollection).join(' · ')}</Typography>
+			<Alert severity="info">{logicalGroup ? 'These values apply at Logical Group scope. Path and Asset overrides continue to take precedence.' : 'These values are assigned to every selected path and inherited by its assets. Asset overrides continue to take precedence.'}</Alert>
+			{logicalGroup ? null : <Typography variant="body2" color="text.secondary">{selectedGroups.map(pathLabelForCollection).join(' · ')}</Typography>}
             <Grid container spacing={2}>
-              <Grid size={{ xs: 12, sm: 6 }}><AssetCategorySelect value={configuration.category} options={assetCategories} onChange={(category) => { setConfiguration((current) => ({ ...current, category })); setConfigurationFields((current) => [...new Set([...current, 'category'])]); }} label="Category" /></Grid>
-              <Grid size={{ xs: 12, sm: 6 }}><LibraryAutocomplete libraries={libraries} value={configuration.destinationLibraryId} onChange={(destinationLibraryId) => { setConfiguration((current) => ({ ...current, destinationLibraryId })); setConfigurationFields((current) => [...new Set([...current, 'destination'])]); }} label="Destination" /></Grid>
-              <Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={pathVideoProfiles} value={configuration.videoProfileId} onChange={(videoProfileId) => { setConfiguration((current) => ({ ...current, videoProfileId })); setConfigurationFields((current) => [...new Set([...current, 'video'])]); }} label="Video profile" allowNone /></Grid>
-              <Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={pathAudioProfiles} value={configuration.audioProfileKey} onChange={(audioProfileKey) => { setConfiguration((current) => ({ ...current, audioProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'audio'])]); }} label="Audio profile" /></Grid>
-              <Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={pathTrackProfiles} value={configuration.trackProfileKey} onChange={(trackProfileKey) => { setConfiguration((current) => ({ ...current, trackProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'tracks'])]); }} label="Tracks profile" /></Grid>
+			  {logicalGroup ? <Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => { setCategoryMode(event.target.value as typeof categoryMode); setConfigurationFields((current) => [...new Set([...current, 'category'])]); }}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid> : null}
+			  <Grid size={{ xs: 12, sm: logicalGroup ? 3 : 6 }}><AssetCategorySelect value={configuration.category} options={assetCategories} onChange={(category) => { setConfiguration((current) => ({ ...current, category })); setConfigurationFields((current) => [...new Set([...current, 'category'])]); }} label="Category" disabled={Boolean(logicalGroup && categoryMode !== 'value')} /></Grid>
+			  {logicalGroup ? <Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => { setDestinationMode(event.target.value as typeof destinationMode); setConfigurationFields((current) => [...new Set([...current, 'destination'])]); }}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid> : null}
+			  <Grid size={{ xs: 12, sm: logicalGroup ? 3 : 6 }}><LibraryAutocomplete libraries={libraries} value={configuration.destinationLibraryId} onChange={(destinationLibraryId) => { setConfiguration((current) => ({ ...current, destinationLibraryId })); setConfigurationFields((current) => [...new Set([...current, 'destination'])]); }} label="Destination" disabled={Boolean(logicalGroup && destinationMode !== 'value')} /></Grid>
+			  <Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={pathVideoProfiles} value={configuration.videoProfileId} onChange={(videoProfileId) => { setConfiguration((current) => ({ ...current, videoProfileId })); setConfigurationFields((current) => [...new Set([...current, 'video'])]); }} label="Video profile" allowNone allowInherit={Boolean(logicalGroup)} /></Grid>
+			  <Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={pathAudioProfiles} value={configuration.audioProfileKey} onChange={(audioProfileKey) => { setConfiguration((current) => ({ ...current, audioProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'audio'])]); }} label="Audio profile" allowInherit={Boolean(logicalGroup)} /></Grid>
+			  <Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={pathTrackProfiles} value={configuration.trackProfileKey} onChange={(trackProfileKey) => { setConfiguration((current) => ({ ...current, trackProfileKey })); setConfigurationFields((current) => [...new Set([...current, 'tracks'])]); }} label="Tracks profile" allowInherit={Boolean(logicalGroup)} /></Grid>
             </Grid>
             {saveConfiguration.isError ? <Alert severity="warning">{saveConfiguration.error instanceof Error ? saveConfiguration.error.message : 'Could not configure selected paths.'}</Alert> : null}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfigurationOpen(false)} disabled={saveConfiguration.isPending}>Cancel</Button>
-          <Button variant="contained" onClick={() => saveConfiguration.mutate()} disabled={saveConfiguration.isPending || !configurationFields.length}>{saveConfiguration.isPending ? 'Saving…' : 'Apply to selected paths'}</Button>
+		  <Button variant="contained" onClick={() => saveConfiguration.mutate()} disabled={saveConfiguration.isPending || !configurationFields.length || Boolean(logicalGroup && categoryMode === 'value' && !configuration.category) || Boolean(logicalGroup && destinationMode === 'value' && !configuration.destinationLibraryId)}>{saveConfiguration.isPending ? 'Saving…' : logicalGroup ? 'Apply to title' : 'Apply to selected paths'}</Button>
         </DialogActions>
       </Dialog>
       {snapshotGroup ? (
@@ -1167,6 +1306,10 @@ function AssetGroupRow({
   onPathSelectionChange,
   onOpenPathSnapshots,
   collectionManaged = false,
+	forceExpanded = false,
+	hidePathHeader = false,
+	selectedAssetIds,
+	onAssetSelectionChange,
 }: {
   group: AssetGroup;
   libraries: Library[];
@@ -1182,6 +1325,10 @@ function AssetGroupRow({
   onPathSelectionChange?: (selected: boolean) => void;
   onOpenPathSnapshots?: () => void;
   collectionManaged?: boolean;
+	forceExpanded?: boolean;
+	hidePathHeader?: boolean;
+	selectedAssetIds?: Set<number>;
+	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const pendingAssetTrackSaves = useIsMutating({ mutationKey: ['assetTrackSelection', normalizePath(group.path)] });
@@ -1232,7 +1379,9 @@ function AssetGroupRow({
   const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
   const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
-  const allBulkAssetsSelected = bulkSelectableAssets.length > 0 && bulkSelectableAssets.every((asset) => selectedAssetPaths.includes(asset.path));
+	const hierarchicalSelectableAssets = selectedAssetIds ? groupAssets.filter((asset) => !asset.missing && asset.id) : bulkSelectableAssets;
+	const allBulkAssetsSelected = hierarchicalSelectableAssets.length > 0 && hierarchicalSelectableAssets.every((asset) => selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path));
+	const someHierarchicalAssetsSelected = selectedAssetIds ? hierarchicalSelectableAssets.some((asset) => selectedAssetIds.has(asset.id ?? 0)) : selectedAssetPaths.length > 0;
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -1519,7 +1668,7 @@ function AssetGroupRow({
 
   return (
     <>
-      <TableRow
+	  {!hidePathHeader ? <TableRow
         hover
         onClick={toggleExpanded}
         onKeyDown={(event) => {
@@ -1535,12 +1684,15 @@ function AssetGroupRow({
       >
         <TableCell>
           <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-            {collectionManaged ? (
+			{collectionManaged || selectedAssetIds ? (
               <Checkbox
                 size="small"
-                checked={pathSelected}
+				checked={selectedAssetIds ? allBulkAssetsSelected : pathSelected}
+				indeterminate={selectedAssetIds ? someHierarchicalAssetsSelected && !allBulkAssetsSelected : false}
                 onClick={(event) => event.stopPropagation()}
-                onChange={(event) => onPathSelectionChange?.(event.target.checked)}
+				onChange={(event) => selectedAssetIds
+					? onAssetSelectionChange?.(hierarchicalSelectableAssets.map((asset) => asset.id ?? 0), event.target.checked)
+					: onPathSelectionChange?.(event.target.checked)}
                 inputProps={{ 'aria-label': `Select path ${group.path}` }}
               />
             ) : null}
@@ -1611,10 +1763,10 @@ function AssetGroupRow({
             />
           </Stack>
         </TableCell>
-      </TableRow>
+	  </TableRow> : null}
       <TableRow>
-        <TableCell colSpan={showConfidenceColumn ? 8 : 7} sx={{ p: 0, borderBottom: expanded ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
-          <Collapse in={expanded} timeout="auto" unmountOnExit>
+		<TableCell colSpan={showConfidenceColumn ? 8 : 7} sx={{ p: 0, borderBottom: (forceExpanded || expanded) ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
+		  <Collapse in={forceExpanded || expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
                 {collectionManaged ? null : isArchiveGroup ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
@@ -1766,7 +1918,7 @@ function AssetGroupRow({
                     {migrationControls}
                   </Stack>
                 ) : null}
-                {isReadOnlyGroup && hasMultipleSelectableAssets ? (
+						{(selectedAssetIds || (isReadOnlyGroup && hasMultipleSelectableAssets)) ? (
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                     <Typography color="text.secondary" variant="body2">
                       {selectedAssetPaths.length} of {bulkSelectableAssets.length} selected in this path
@@ -1838,9 +1990,11 @@ function AssetGroupRow({
                             <Checkbox
                               size="small"
                               checked={allBulkAssetsSelected}
-                              indeterminate={selectedAssetPaths.length > 0 && !allBulkAssetsSelected}
+							  indeterminate={someHierarchicalAssetsSelected && !allBulkAssetsSelected}
                               disabled={!bulkSelectableAssets.length || bulkAssetAction.isPending}
-                              onChange={(event) => setSelectedAssetPaths(event.target.checked ? bulkSelectableAssets.map((asset) => asset.path) : [])}
+						  onChange={(event) => selectedAssetIds
+								? onAssetSelectionChange?.(hierarchicalSelectableAssets.map((asset) => asset.id ?? 0), event.target.checked)
+								: setSelectedAssetPaths(event.target.checked ? bulkSelectableAssets.map((asset) => asset.path) : [])}
                               inputProps={{ 'aria-label': `Select all assets in ${group.path}` }}
                             />
                           </TableCell>
@@ -1881,10 +2035,12 @@ function AssetGroupRow({
                           queueJobs={queueJobs}
                           snapshotRunning={runningSnapshotPaths.has(asset.path)}
                           mode={mode}
-                          bulkSelected={selectedAssetPaths.includes(asset.path)}
-                          bulkSelectionEnabled={isReadOnlyGroup && hasMultipleSelectableAssets}
+						  bulkSelected={selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path)}
+						  bulkSelectionEnabled={Boolean(selectedAssetIds) || (isReadOnlyGroup && hasMultipleSelectableAssets)}
                           bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending}
-                          onBulkSelectionChange={toggleBulkAsset}
+						  onBulkSelectionChange={(path, selected) => selectedAssetIds
+							? onAssetSelectionChange?.([groupAssets.find((candidate) => candidate.path === path)?.id ?? 0], selected)
+							: toggleBulkAsset(path, selected)}
                         />
                       ))}
                     </TableBody>
@@ -4973,13 +5129,15 @@ function ProfileAutocomplete({
       getOptionLabel={(profile) =>
         profile.id === 0
           ? 'Inherit from path'
+		  : profile.id === -1 && allowNone && !allowOverrideOnly
+			? 'Disabled'
           : profile.id === VIDEO_PROFILE_OVERRIDE_ONLY
             ? 'Override only'
             : profile.id === VIDEO_PROFILE_AUDIO_ONLY
               ? 'Audio only'
-              : profile.id === -3
-                ? 'Disabled'
-                : `${profile.name} · ${profile.videoCodec}`
+			  : profile.id === -3
+				? 'Disabled'
+				: `${profile.name} · ${profile.videoCodec}`
       }
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       filterOptions={(options, state) =>
@@ -5145,37 +5303,6 @@ function filterAssetGroups(groups: AssetGroup[], query: string) {
     ];
     return values.some((value) => value.toLowerCase().includes(cleanQuery));
   });
-}
-
-function buildAssetCollections(groups: AssetGroup[]): AssetCollection[] {
-  const collections = new Map<string, AssetCollection>();
-  for (const group of groups) {
-    const fallbackAsset = firstAssetForGroup(group.assets);
-	const logicalGroupPath = fallbackAsset?.logicalGroupPath ? normalizePath(fallbackAsset.logicalGroupPath) : '';
-	const logicalTitle = logicalGroupPath.split('/').filter(Boolean).at(-1);
-	const relative = cleanRelativePath(group.relativePath || groupDisplayPath(group));
-	const firstSegment = relative.split('/').filter(Boolean)[0];
-    const fallbackTitle = fallbackAsset?.fileName.replace(/\.[^.]+$/, '') || group.libraryName || 'Library root';
-	const title = logicalTitle || firstSegment || fallbackTitle;
-	const id = fallbackAsset?.sourceGroupId && logicalGroupPath
-		? `${fallbackAsset.sourceGroupId}:${logicalGroupPath}`
-		: `${group.libraryId}:${title.toLowerCase()}`;
-    const existing = collections.get(id) ?? {
-      id,
-      title,
-      libraryName: group.libraryName,
-      groups: [],
-      fileCount: 0,
-      sizeBytes: 0,
-    };
-    existing.groups.push(group);
-    existing.fileCount += group.fileCount || safeArray(group.assets).length;
-    existing.sizeBytes += Number.isFinite(group.sizeBytes) ? group.sizeBytes : 0;
-    collections.set(id, existing);
-  }
-  return [...collections.values()]
-    .map((collection) => ({ ...collection, groups: [...collection.groups].sort((left, right) => pathLabelForCollection(left).localeCompare(pathLabelForCollection(right), undefined, { numeric: true })) }))
-    .sort((left, right) => left.title.localeCompare(right.title, undefined, { numeric: true }));
 }
 
 function pathLabelForCollection(group: AssetGroup) {

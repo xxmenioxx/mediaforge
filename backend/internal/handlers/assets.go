@@ -155,29 +155,44 @@ type AssetInventory struct {
 }
 
 type AssetSourceGroup struct {
-	ID            uint                `json:"id"`
-	Name          string              `json:"name"`
-	RelativePath  string              `json:"relativePath"`
-	SourcePath    string              `json:"sourcePath"`
-	FileCount     int                 `json:"fileCount"`
-	SizeBytes     int64               `json:"sizeBytes"`
-	LogicalGroups []AssetLogicalGroup `json:"logicalGroups"`
+	ID             uint                `json:"id"`
+	Name           string              `json:"name"`
+	RelativePath   string              `json:"relativePath"`
+	SourcePath     string              `json:"sourcePath"`
+	FileCount      int                 `json:"fileCount"`
+	AssetCount     int                 `json:"assetCount"`
+	TitleCount     int                 `json:"titleCount"`
+	PathCount      int                 `json:"pathCount"`
+	SizeBytes      int64               `json:"sizeBytes"`
+	TotalSizeBytes int64               `json:"totalSizeBytes"`
+	LogicalGroups  []AssetLogicalGroup `json:"logicalGroups"`
 }
 
 type AssetLogicalGroup struct {
-	Name       string      `json:"name"`
-	Path       string      `json:"path"`
-	FileCount  int         `json:"fileCount"`
-	SizeBytes  int64       `json:"sizeBytes"`
-	AssetPaths []AssetPath `json:"assetPaths"`
+	ID             string      `json:"id"`
+	Name           string      `json:"name"`
+	Path           string      `json:"path"`
+	RelativePath   string      `json:"relativePath"`
+	FileCount      int         `json:"fileCount"`
+	AssetCount     int         `json:"assetCount"`
+	PathCount      int         `json:"pathCount"`
+	SizeBytes      int64       `json:"sizeBytes"`
+	TotalSizeBytes int64       `json:"totalSizeBytes"`
+	AssetPaths     []AssetPath `json:"assetPaths"`
 }
 
 type AssetPath struct {
-	Name      string  `json:"name"`
-	Path      string  `json:"path"`
-	FileCount int     `json:"fileCount"`
-	SizeBytes int64   `json:"sizeBytes"`
-	Assets    []Asset `json:"assets"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	Path               string  `json:"path"`
+	RelativePath       string  `json:"relativePath"`
+	DisplayPath        string  `json:"displayPath"`
+	IsLogicalGroupRoot bool    `json:"isLogicalGroupRoot"`
+	FileCount          int     `json:"fileCount"`
+	AssetCount         int     `json:"assetCount"`
+	SizeBytes          int64   `json:"sizeBytes"`
+	TotalSizeBytes     int64   `json:"totalSizeBytes"`
+	Assets             []Asset `json:"assets"`
 }
 
 type AssetSyncInfo struct {
@@ -318,6 +333,7 @@ type SubtitleTransform struct {
 }
 
 type Asset struct {
+	ID               uint                         `json:"id,omitempty"`
 	SourceGroupID    uint                         `json:"sourceGroupId,omitempty"`
 	LogicalGroupPath string                       `json:"logicalGroupPath,omitempty"`
 	SourcePath       string                       `json:"sourcePath,omitempty"`
@@ -5006,6 +5022,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssets(inventory.Missing)
 	inventory.Reports = assetReports(h.db, inventory, missing)
 	inventory.SourceGroups = buildAssetSourceGroups(h.db, records, technicalByPath, mvForgeOutputs, directOutputs, missing)
+	hydrateSourceGroupAssets(inventory.SourceGroups, inventory.Unprocessed)
 
 	var last models.AssetRecord
 	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
@@ -5016,6 +5033,25 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	inventory.Sync.MissingActionable = missing.Actionable
 	inventory.Sync.MissingHistorical = missing.Historical
 	return inventory, nil
+}
+
+func hydrateSourceGroupAssets(groups []AssetSourceGroup, assets []Asset) {
+	byPath := map[string]Asset{}
+	for _, asset := range assets {
+		byPath[filepath.Clean(asset.Path)] = asset
+	}
+	for groupIndex := range groups {
+		for logicalIndex := range groups[groupIndex].LogicalGroups {
+			for pathIndex := range groups[groupIndex].LogicalGroups[logicalIndex].AssetPaths {
+				path := &groups[groupIndex].LogicalGroups[logicalIndex].AssetPaths[pathIndex]
+				for assetIndex := range path.Assets {
+					if hydrated, ok := byPath[filepath.Clean(path.Assets[assetIndex].Path)]; ok {
+						path.Assets[assetIndex] = hydrated
+					}
+				}
+			}
+		}
+	}
 }
 
 func mvForgeOutputPaths(db *gorm.DB) map[string]bool {
@@ -5610,8 +5646,11 @@ func annotateSourceRecords(db *gorm.DB, rawRoot string, records []models.AssetRe
 		}
 		records[index].SourceGroupID = group.ID
 		records[index].SourcePath = filepath.Clean(records[index].Path)
-		logicalRelative := filepath.FromSlash(strings.Join(parts[:2], "/"))
-		records[index].LogicalGroupPath = filepath.Join(root, logicalRelative)
+		logicalParts := parts[:1]
+		if len(parts) > 2 {
+			logicalParts = parts[:2]
+		}
+		records[index].LogicalGroupPath = filepath.Join(root, filepath.FromSlash(strings.Join(logicalParts, "/")))
 	}
 	return nil
 }
@@ -5629,6 +5668,9 @@ func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technical
 		byID[group.ID] = len(result) - 1
 	}
 	for _, record := range records {
+		if record.Status != "unprocessed" || record.Missing {
+			continue
+		}
 		groupIndex, exists := byID[record.SourceGroupID]
 		if !exists || (record.Missing && missing.HistoricalPaths[filepath.Clean(record.Path)]) {
 			continue
@@ -5655,7 +5697,11 @@ func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technical
 			}
 		}
 		if logicalIndex < 0 {
-			group.LogicalGroups = append(group.LogicalGroups, AssetLogicalGroup{Name: filepath.Base(logicalPath), Path: logicalPath, AssetPaths: []AssetPath{}})
+			logicalName := filepath.Base(logicalPath)
+			if logicalPath == filepath.Clean(group.SourcePath) {
+				logicalName = "Root"
+			}
+			group.LogicalGroups = append(group.LogicalGroups, AssetLogicalGroup{ID: logicalPath, Name: logicalName, Path: logicalPath, RelativePath: relativePathWithin(group.SourcePath, logicalPath), AssetPaths: []AssetPath{}})
 			logicalIndex = len(group.LogicalGroups) - 1
 		}
 		actualPath := filepath.Dir(filepath.Clean(record.SourcePath))
@@ -5670,19 +5716,61 @@ func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technical
 			}
 		}
 		if pathIndex < 0 {
-			group.LogicalGroups[logicalIndex].AssetPaths = append(group.LogicalGroups[logicalIndex].AssetPaths, AssetPath{Name: filepath.Base(actualPath), Path: actualPath, Assets: []Asset{}})
+			pathName := relativePathWithin(logicalPath, actualPath)
+			if pathName == "." || pathName == "" {
+				pathName = "Root"
+			}
+			displayPath := filepath.ToSlash(pathName)
+			isRoot := filepath.Clean(actualPath) == filepath.Clean(logicalPath)
+			if isRoot {
+				displayPath = "Root"
+			}
+			group.LogicalGroups[logicalIndex].AssetPaths = append(group.LogicalGroups[logicalIndex].AssetPaths, AssetPath{ID: actualPath, Name: displayPath, Path: actualPath, RelativePath: filepath.ToSlash(pathName), DisplayPath: strings.ReplaceAll(displayPath, "/", " / "), IsLogicalGroupRoot: isRoot, Assets: []Asset{}})
 			pathIndex = len(group.LogicalGroups[logicalIndex].AssetPaths) - 1
 		}
 		path := &group.LogicalGroups[logicalIndex].AssetPaths[pathIndex]
 		path.Assets = append(path.Assets, asset)
 		path.FileCount++
+		path.AssetCount++
 		path.SizeBytes += record.SizeBytes
+		path.TotalSizeBytes += record.SizeBytes
 		group.LogicalGroups[logicalIndex].FileCount++
+		group.LogicalGroups[logicalIndex].AssetCount++
 		group.LogicalGroups[logicalIndex].SizeBytes += record.SizeBytes
+		group.LogicalGroups[logicalIndex].TotalSizeBytes += record.SizeBytes
 		group.FileCount++
+		group.AssetCount++
 		group.SizeBytes += record.SizeBytes
+		group.TotalSizeBytes += record.SizeBytes
+	}
+	for groupIndex := range result {
+		sort.SliceStable(result[groupIndex].LogicalGroups, func(i, j int) bool {
+			return naturalAssetCompare(result[groupIndex].LogicalGroups[i].Name, result[groupIndex].LogicalGroups[j].Name) < 0
+		})
+		for logicalIndex := range result[groupIndex].LogicalGroups {
+			logical := &result[groupIndex].LogicalGroups[logicalIndex]
+			logical.PathCount = len(logical.AssetPaths)
+			sort.SliceStable(logical.AssetPaths, func(i, j int) bool {
+				return naturalAssetCompare(logical.AssetPaths[i].RelativePath, logical.AssetPaths[j].RelativePath) < 0
+			})
+			for pathIndex := range logical.AssetPaths {
+				sortAssets(logical.AssetPaths[pathIndex].Assets)
+			}
+		}
+		result[groupIndex].TitleCount = len(result[groupIndex].LogicalGroups)
+		for _, logical := range result[groupIndex].LogicalGroups {
+			result[groupIndex].PathCount += len(logical.AssetPaths)
+		}
 	}
 	return result
+}
+
+func relativePathWithin(root, path string) string {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.ToSlash(relative)
 }
 
 func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
@@ -5700,6 +5788,7 @@ func upsertAssetRecord(db *gorm.DB, record models.AssetRecord) error {
 func assetFromRecord(record models.AssetRecord) Asset {
 	groupPath := filepath.ToSlash(logicalAssetGroupPath(filepath.FromSlash(record.RelativePath)))
 	return Asset{
+		ID:               record.ID,
 		SourceGroupID:    record.SourceGroupID,
 		LogicalGroupPath: record.LogicalGroupPath,
 		SourcePath:       record.SourcePath,

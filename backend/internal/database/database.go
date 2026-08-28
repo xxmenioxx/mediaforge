@@ -111,9 +111,13 @@ func backfillSourceGroups(db *gorm.DB) error {
 			if err := tx.Where("relative_path = ?", group.RelativePath).FirstOrCreate(&group).Error; err != nil {
 				return err
 			}
+			logicalParts := parts[:1]
+			if len(parts) > 2 {
+				logicalParts = parts[:2]
+			}
 			updates := map[string]interface{}{
 				"source_group_id":    group.ID,
-				"logical_group_path": filepath.Join(root, filepath.FromSlash(strings.Join(parts[:2], "/"))),
+				"logical_group_path": filepath.Join(root, filepath.FromSlash(strings.Join(logicalParts, "/"))),
 				"source_path":        filepath.Clean(record.Path),
 			}
 			if err := tx.Model(&models.AssetRecord{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
