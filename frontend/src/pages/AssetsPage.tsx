@@ -2564,7 +2564,7 @@ function AssetRow({
   const renameAsset = useMutation({
     mutationFn: api.renameAsset,
     onSuccess: async () => {
-      setShowSnapshotDialog(false);
+      closeSnapshotDialog();
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });

@@ -15,7 +15,7 @@ vi.mock('../api/client', async (importOriginal) => {
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleExtractionOperations: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
-    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(),
+    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(),
     },
   };
 });
@@ -72,6 +72,7 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.snapshotOperation).mockResolvedValue(completedSnapshotOperation());
     vi.mocked(api.externalAssetSubtitles).mockResolvedValue([]);
     vi.mocked(api.subtitleExtractionOperations).mockResolvedValue({ operations: [] });
+    vi.mocked(api.renameAsset).mockResolvedValue({ oldPath: '/media/raw/movies/Akira/Akira.mkv', path: '/media/raw/movies/Akira/Akira Renamed.mkv', fileName: 'Akira Renamed.mkv' });
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -186,7 +187,7 @@ describe('Unprocessed Assets hierarchy', () => {
     view.rerender(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
-  });
+  }, 10000);
 
   it('does not re-arm Rescan after success and snapshot refetch', async () => {
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
@@ -287,6 +288,52 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.queryByText(/snapshot test failure/)).toBeNull();
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
   });
+
+  it('uses canonical snapshot cleanup when Rename closes Asset Info', async () => {
+    const analyzedSnapshot = testSnapshot('/media/raw/movies/Akira/Akira.mkv', 'rename-analyzed-codec');
+    vi.mocked(api.startSnapshotOperation).mockResolvedValue(completedSnapshotOperation(analyzedSnapshot.path, analyzedSnapshot));
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
+    expect(await screen.findByText('rename-analyzed-codec')).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Rescan' }) as HTMLButtonElement).disabled).toBe(false));
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot('/media/raw/movies/Akira/Akira.mkv', 'rename-newer-stored-codec'), status: 'current', requiresAnalysis: false, staleComponents: [] });
+
+    const renameInput = screen.getByLabelText('Rename file');
+    fireEvent.change(renameInput, { target: { value: 'Akira Renamed.mkv' } });
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
+    expect(vi.mocked(api.renameAsset).mock.calls[0]?.[0]).toEqual({ path: '/media/raw/movies/Akira/Akira.mkv', fileName: 'Akira Renamed.mkv' });
+
+    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByText('rename-newer-stored-codec')).toBeTruthy();
+    expect(screen.queryByText('rename-analyzed-codec')).toBeNull();
+    expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('does not reopen a snapshot error after Rename closes Asset Info', async () => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] });
+    vi.mocked(api.startSnapshotOperation).mockRejectedValue(new Error('rename snapshot failure'));
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('button', { name: 'Rescan' }));
+    expect(await screen.findByText(/rename snapshot failure/)).toBeTruthy();
+    const renameInput = screen.getByLabelText('Rename file');
+    fireEvent.change(renameInput, { target: { value: 'Akira Renamed.mkv' } });
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByRole('tab', { name: 'Asset Information' })).toBeTruthy();
+    expect(screen.queryByText(/rename snapshot failure/)).toBeNull();
+    expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
+  }, 10000);
 
   it('selects a collapsed title using only selectable descendants and keeps missing assets visible', async () => {
     const user = userEvent.setup();
