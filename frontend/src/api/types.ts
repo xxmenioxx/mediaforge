@@ -592,6 +592,21 @@ export type TrackProfileResolutionPreview = {
   audio: TrackProfilePreviewDecision[];
   subtitle: TrackProfilePreviewDecision[];
   warnings: string[];
+	resolvedTrackPlan: {
+		videoStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
+		audioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
+		removedAudioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
+		subtitleStreams: Array<{ streamIndex: number; codec?: string; language?: string; action: 'keep' | 'remove' | 'extract' | 'keep_and_extract' }>;
+		attachmentPolicy: 'auto' | 'keep' | 'remove';
+		attachmentsKept: boolean;
+		attachmentReason: string;
+		attachmentStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
+		fontAttachmentsExported: boolean;
+		chapterPolicy: 'keep' | 'remove';
+		chaptersKept: boolean;
+		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; forced: boolean; default: boolean }>;
+		warnings?: string[];
+	};
 };
 
 export type MWPImportSummary = {
@@ -701,14 +716,20 @@ export type QueueJob = {
   replacementTargetPath: string;
   originalArchivedPath: string;
   subtitleArtifacts?: Array<{
+    type?: 'subtitle_sidecar';
     streamIndex: number;
     sourceCodec: string;
-    format: 'srt' | 'ass';
+    format: 'srt' | 'ass' | 'ssa' | 'sup';
     language: string;
     default: boolean;
+    forced: boolean;
+    title?: string;
     stagedPath: string;
     publishedPath?: string;
     sizeBytes: number;
+    status: 'planned' | 'ready' | 'unsupported' | 'failed' | 'rolled_back' | '';
+    error?: string;
+    fontAttachmentsExported?: boolean;
   }>;
   startedAt?: string;
   finishedAt?: string;

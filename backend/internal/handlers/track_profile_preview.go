@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -31,6 +32,7 @@ type TrackProfileResolutionPreview struct {
 	Audio               []TrackProfilePreviewDecision `json:"audio"`
 	Subtitle            []TrackProfilePreviewDecision `json:"subtitle"`
 	Warnings            []string                      `json:"warnings"`
+	ResolvedTrackPlan   ResolvedTrackPlan             `json:"resolvedTrackPlan"`
 }
 
 func (h QueueHandler) PreviewTrackProfileResolution(c *gin.Context) {
@@ -45,27 +47,47 @@ func (h QueueHandler) PreviewTrackProfileResolution(c *gin.Context) {
 		return
 	}
 	profile := map[string]any(input.Profile)
-	if storedSettingProfileScope(profile) != "path" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "resolution preview requires a Path track profile"})
-		return
-	}
 	var scan models.ScanResult
 	if err := h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "a cached asset snapshot is required to preview Path track rules"})
 		return
 	}
-	resolved := resolveTrackProfileForAsset(h.db, path, profile)
-	c.JSON(http.StatusOK, buildTrackProfileResolutionPreview(scan, resolved))
+	resolved := profile
+	if storedSettingProfileScope(profile) == "path" {
+		resolved = resolveTrackProfileForAsset(h.db, path, profile)
+	}
+	plan, err := resolveTrackPlan(scan, resolved)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, buildTrackProfileResolutionPreview(scan, resolved, plan))
 }
 
-func buildTrackProfileResolutionPreview(scan models.ScanResult, resolved map[string]any) TrackProfileResolutionPreview {
-	videoKept := resolvedStreamIndexSet(resolved["keepVideoStreams"])
-	audioKept := resolvedStreamIndexSet(resolved["keepAudioStreams"])
-	subtitleKept := resolvedStreamIndexSet(resolved["keepSubtitleStreams"])
+func buildTrackProfileResolutionPreview(scan models.ScanResult, resolved map[string]any, plan ResolvedTrackPlan) TrackProfileResolutionPreview {
+	videoKept, audioKept, subtitleKept := map[int]bool{}, map[int]bool{}, map[int]bool{}
+	for _, stream := range plan.VideoStreams {
+		videoKept[stream.StreamIndex] = true
+	}
+	for _, stream := range plan.AudioStreams {
+		audioKept[stream.StreamIndex] = true
+	}
+	for _, stream := range plan.SubtitleStreams {
+		if stream.Action.KeepsEmbedded() {
+			subtitleKept[stream.StreamIndex] = true
+		}
+	}
 	preview := TrackProfileResolutionPreview{
 		AssetPath:        filepath.Clean(scan.Path),
 		KeepVideoStreams: sortedIndexSet(videoKept), KeepAudioStreams: sortedIndexSet(audioKept), KeepSubtitleStreams: sortedIndexSet(subtitleKept),
 		Video: []TrackProfilePreviewDecision{}, Audio: []TrackProfilePreviewDecision{}, Subtitle: []TrackProfilePreviewDecision{}, Warnings: []string{},
+		ResolvedTrackPlan: plan,
+	}
+	preview.Warnings = append(preview.Warnings, plan.Warnings...)
+	for _, subtitle := range plan.SubtitleStreams {
+		if subtitle.Action == SubtitleDispositionExtract && (subtitle.Codec == "ass" || subtitle.Codec == "ssa") {
+			preview.Warnings = append(preview.Warnings, fmt.Sprintf("Extracted %s subtitle stream %d may reference custom source fonts; font attachments are not exported by this operation.", strings.ToUpper(subtitle.Codec), subtitle.StreamIndex))
+		}
 	}
 	videoPosition := 0
 	for _, raw := range scan.VideoStreams {

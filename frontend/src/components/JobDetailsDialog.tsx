@@ -57,6 +57,9 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const sourceProbe = objectValue(asIs, 'sourceProbe');
   const outputProbe = objectValue(result, 'outputProbe');
   const resultPayload = objectValue(result, 'result');
+	const assetConversion = objectValue(result, 'assetConversion') ?? objectValue(asIs, 'assetConversion');
+	const resolvedTrackPlan = objectValue(assetConversion, 'resolvedTrackPlan');
+	const subtitleArtifacts = job.subtitleArtifacts ?? [];
   const profile = objectValue(asIs, 'profile');
   const streamPlan = objectValue(result, 'streamPlan') ?? objectValue(asIs, 'streamPlan');
   const activePlan = executionPlans.data?.find((plan) => plan.id === job.activeExecutionPlanId) ?? executionPlans.data?.[0];
@@ -141,11 +144,14 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   ['Final video', streamSummary(firstStream(outputProbe, 'video')) || expectedVideoSummary(profile)],
                   ['Final audio', audioStreamsSummary(outputProbe) || expectedAudioSummary(job, profile)],
                   ['Automation', automationSummary(resultPayload)],
+				  ['Subtitle sidecars', subtitleArtifactSummary(subtitleArtifacts)],
                 ]}
               />
               <AVTimingSummary report={job.validationReport} />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
               {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
+			  {resolvedTrackPlan ? <ArtifactBlock title="Resolved track decisions" value={resolvedTrackPlan} /> : null}
+			  {subtitleArtifacts.length ? <ArtifactBlock title="Subtitle sidecars" value={{ artifacts: subtitleArtifacts }} /> : null}
               <ArtifactBlock title="Lifecycle history" value={{ currentStage: job.stage || job.status, stageUpdatedAt: job.stageUpdatedAt, history: job.stageHistory ?? [] }} />
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />
@@ -506,6 +512,15 @@ function validationSummary(job: QueueJob, result?: Record<string, unknown>) {
   const status = job.validationStatus || stringValue(result, 'validationStatus') || 'Pending';
   const score = job.validationScore || numberValue(result, 'validationScore');
   return score ? `${status} · ${score}` : status;
+}
+
+function subtitleArtifactSummary(artifacts: NonNullable<QueueJob['subtitleArtifacts']>) {
+	if (!artifacts.length) return 'None requested';
+	const published = artifacts.filter((artifact) => Boolean(artifact.publishedPath)).length;
+	const failed = artifacts.filter((artifact) => artifact.status === 'failed' || artifact.status === 'unsupported' || artifact.status === 'rolled_back').length;
+	if (failed) return `${artifacts.length} requested · ${failed} failed`;
+	if (published === artifacts.length) return `${published} published`;
+	return `${artifacts.length} ready · ${published} published`;
 }
 
 function elapsedSummary(job: QueueJob, result?: Record<string, unknown>) {

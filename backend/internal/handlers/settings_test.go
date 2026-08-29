@@ -135,7 +135,7 @@ func TestSettingsNormalizesPathTrackProfilesButPreservesAssetSelections(t *testi
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
-	body := `{"value":{"profiles":[{"key":"path-rules","scope":"path","audioMode":"languages","keepAudioStreams":[1],"audioMetadata":{"1":{"default":true}},"subtitleTransforms":[{"streamIndex":4,"format":"srt"}]},{"key":"asset-exact","scope":"asset","keepAudioStreams":[2],"keepSubtitleStreams":[]}]}}`
+	body := `{"value":{"profiles":[{"key":"path-rules","scope":"path","audioMode":"languages","subtitleDisposition":"keep_and_extract","subtitleRules":[{"language":"spa","action":"keep"},{"streamIndex":4,"action":"remove"}],"attachmentPolicy":"auto","chapterPolicy":"keep","keepAudioStreams":[1],"audioMetadata":{"1":{"default":true}},"subtitleTransforms":[{"streamIndex":4,"format":"srt"}]},{"key":"asset-exact","scope":"asset","subtitleDisposition":"remove","subtitleRules":[{"streamIndex":7,"action":"extract"}],"attachmentPolicy":"remove","chapterPolicy":"remove","keepAudioStreams":[2],"keepSubtitleStreams":[]}]}}`
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/settings/trackProfiles", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -157,12 +157,53 @@ func TestSettingsNormalizesPathTrackProfilesButPreservesAssetSelections(t *testi
 			t.Fatalf("Path profile persisted asset-only field %q: %#v", key, pathProfile)
 		}
 	}
+	if pathProfile["subtitleDisposition"] != "keep_and_extract" || pathProfile["attachmentPolicy"] != "auto" || pathProfile["chapterPolicy"] != "keep" {
+		t.Fatalf("Path semantic policies were not preserved: %#v", pathProfile)
+	}
+	if rules := workerSliceValue(pathProfile["subtitleRules"]); len(rules) != 1 || workerStringValue(settingProfileObject(rules[0])["language"]) != "spa" {
+		t.Fatalf("Path profile did not retain only semantic subtitle rules: %#v", pathProfile["subtitleRules"])
+	}
 	assetProfile := settingProfileObject(profiles[1])
 	if indexes := workerSliceValue(assetProfile["keepAudioStreams"]); len(indexes) != 1 || streamIndexValue(indexes[0]) != 2 {
 		t.Fatalf("Asset audio selection was lost: %#v", assetProfile)
 	}
 	if indexes, exists := assetProfile["keepSubtitleStreams"]; !exists || len(workerSliceValue(indexes)) != 0 {
 		t.Fatalf("Asset remove-all selection was lost: %#v", assetProfile)
+	}
+	if assetProfile["subtitleDisposition"] != "remove" || assetProfile["attachmentPolicy"] != "remove" || assetProfile["chapterPolicy"] != "remove" {
+		t.Fatalf("Asset policies were not preserved: %#v", assetProfile)
+	}
+	if rules := workerSliceValue(assetProfile["subtitleRules"]); len(rules) != 1 || streamIndexValue(settingProfileObject(rules[0])["streamIndex"]) != 7 {
+		t.Fatalf("Asset stream-specific subtitle rule was lost: %#v", assetProfile["subtitleRules"])
+	}
+}
+
+func TestSettingsRejectsInvalidTrackDomainPolicies(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-track-domain-invalid?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+	for name, body := range map[string]string{
+		"subtitle":   `{"value":{"profiles":[{"key":"invalid","subtitleDisposition":"copy"}]}}`,
+		"attachment": `{"value":{"profiles":[{"key":"invalid","attachmentPolicy":"fonts_only"}]}}`,
+		"chapter":    `{"value":{"profiles":[{"key":"invalid","chapterPolicy":"auto"}]}}`,
+		"rule":       `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"eng","action":"copy"}]}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/settings/trackProfiles", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

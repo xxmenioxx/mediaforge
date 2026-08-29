@@ -236,6 +236,10 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if err := os.WriteFile(output, []byte("converted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	generatedSidecar := strings.TrimSuffix(output, filepath.Ext(output)) + ".eng.ass"
+	if err := os.WriteFile(generatedSidecar, []byte("[Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	library := models.Library{Name: "Anime", SourcePath: libraryRoot, DestinationPath: libraryRoot, Type: "movies"}
 	if err := db.Create(&library).Error; err != nil {
 		t.Fatal(err)
@@ -243,7 +247,9 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"stagingPath": stagingRoot, "originalsArchivePath": archiveRoot}}).Error; err != nil {
 		t.Fatal(err)
 	}
-	job := models.QueueJob{MediaPath: original, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1, Status: JobStatusCompleted, Stage: JobStageValidating, OutputPath: output, ValidationStatus: ValidationStatusPassed}
+	job := models.QueueJob{MediaPath: original, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1, Status: JobStatusCompleted, Stage: JobStageValidating, OutputPath: output, ValidationStatus: ValidationStatusPassed,
+		SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Language: "eng", StagedPath: generatedSidecar, Status: "ready"}}),
+	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +276,10 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	if got, err := os.ReadFile(originalSidecar); err != nil || string(got) != "library subtitle" {
 		t.Fatalf("library sidecar was moved or removed: content=%q err=%v", got, err)
 	}
+	generatedDestination := strings.TrimSuffix(original, filepath.Ext(original)) + ".eng.ass"
+	if got, err := os.ReadFile(generatedDestination); err != nil || !strings.Contains(string(got), "Dialogue:") {
+		t.Fatalf("generated sidecar was not published with replacement: content=%q err=%v", got, err)
+	}
 	var convertedRecord models.AssetRecord
 	if err := db.First(&convertedRecord, "path = ?", original).Error; err != nil {
 		t.Fatalf("converted asset was not incrementally indexed: %v", err)
@@ -294,6 +304,49 @@ func TestPublishLibraryReplacementArchivesOriginalAndKeepsPath(t *testing.T) {
 	archivedFiles, err := filepath.Glob(filepath.Join(filepath.Dir(archived), "*.mkv"))
 	if err != nil || len(archivedFiles) != 1 {
 		t.Fatalf("second publication archived the converted output: files=%v err=%v", archivedFiles, err)
+	}
+}
+
+func TestPublisherBlocksMissingRequiredSidecarBeforeOriginalArchive(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:publisher-required-sidecar-preflight?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	original := filepath.Join(root, "raw", "Movie.mkv")
+	output := filepath.Join(root, "staging", "job-1", "Movie.mkv")
+	for path, content := range map[string]string{original: "original", output: "converted"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := ResolvedTrackPlan{
+		AttachmentPolicy: AttachmentPolicyAuto,
+		ChapterPolicy:    ChapterPolicyKeep,
+		SidecarOutputs:   []ResolvedTrackSidecar{{StreamIndex: 3, Codec: "ass", Language: "spa", Format: "ass"}},
+	}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: original, OutputPath: output, Status: JobStatusCompleted, ValidationStatus: ValidationStatusPassed,
+		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap},
+		SubtitleArtifacts:    subtitleArtifactsJSON([]SubtitleArtifact{{StreamIndex: 3, Format: "ass", Language: "spa", StagedPath: filepath.Join(root, "missing.ass"), Status: "ready"}}),
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (PublisherHandler{db: db}).publishQueueJob(job, false); err == nil {
+		t.Fatal("publisher accepted a missing required sidecar")
+	}
+	if got, err := os.ReadFile(original); err != nil || string(got) != "original" {
+		t.Fatalf("original changed before required sidecar preflight completed: content=%q err=%v", got, err)
 	}
 }
 

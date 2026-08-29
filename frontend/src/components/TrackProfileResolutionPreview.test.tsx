@@ -23,13 +23,21 @@ describe('TrackProfileResolutionPreview', () => {
         { index: 2, type: 'audio', kept: false, reason: 'commentary' },
       ],
       subtitle: [{ index: 4, type: 'subtitle', kept: true, reason: 'language_match' }],
+      resolvedTrackPlan: {
+        videoStreams: [{ streamIndex: 0 }], audioStreams: [{ streamIndex: 1 }], removedAudioStreams: [{ streamIndex: 2 }],
+        subtitleStreams: [{ streamIndex: 4, action: 'keep_and_extract' }], attachmentPolicy: 'auto', attachmentsKept: false,
+        attachmentReason: 'no embedded ASS/SSA subtitles remain', attachmentStreams: [], fontAttachmentsExported: false,
+        chapterPolicy: 'keep', chaptersKept: true,
+        sidecarOutputs: [{ streamIndex: 4, format: 'sup', forced: false, default: false }],
+      },
     };
 
     render(<TrackProfileResolutionPreview scan={scan} preview={preview} loading={false} error={null} />);
 
     expect(screen.getByText(/#1 · AC3 · JPN/i)).toBeTruthy();
     expect(screen.getByText(/commentary rule/i)).toBeTruthy();
-    expect(screen.getAllByText('Keep')).toHaveLength(3);
+    expect(screen.getAllByText('Keep')).toHaveLength(2);
+    expect(screen.getByText('Keep + Extract')).toBeTruthy();
     expect(screen.getByText('Remove')).toBeTruthy();
     expect(screen.queryByRole('checkbox')).toBeNull();
   });

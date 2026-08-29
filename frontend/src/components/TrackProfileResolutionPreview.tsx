@@ -17,6 +17,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
     ['Audio', preview.audio, scan.audioStreams],
     ['Subtitles', preview.subtitle, scan.subtitleStreams],
   ] as const;
+  const subtitleActions = new Map(preview.resolvedTrackPlan.subtitleStreams.map((stream) => [stream.streamIndex, stream.action]));
   return (
     <Stack spacing={1.5}>
       {preview.warnings.map((warning) => <Alert severity="warning" key={warning}>{warning}</Alert>)}
@@ -28,7 +29,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
               {decisions.map((decision) => {
                 const stream = streams.find((candidate) => candidate.index === decision.index);
                 return <TableRow key={decision.index}>
-                  <TableCell sx={{ width: 88 }}><Chip size="small" color={decision.kept ? 'success' : 'default'} label={decision.kept ? 'Keep' : 'Remove'} /></TableCell>
+                  <TableCell sx={{ width: 128 }}><Chip size="small" color={decision.kept ? 'success' : 'default'} label={label === 'Subtitles' ? subtitleActionLabel(subtitleActions.get(decision.index) ?? 'remove') : decision.kept ? 'Keep' : 'Remove'} /></TableCell>
                   <TableCell sx={{ wordBreak: 'break-word' }}>#{decision.index} · {stream?.codec?.toUpperCase() || 'UNKNOWN'}{stream?.language ? ` · ${stream.language.toUpperCase()}` : ''}{stream?.title ? ` · ${stream.title}` : ''}</TableCell>
                   <TableCell sx={{ color: 'text.secondary' }}>{trackPreviewReasonLabel(decision.reason)}</TableCell>
                 </TableRow>;
@@ -37,8 +38,17 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
           </Table> : <Typography variant="body2" color="text.secondary" sx={{ p: 1.5 }}>No streams detected.</Typography>}
         </Box>
       ))}
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip label={`Attachments: ${preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove'} (${preview.resolvedTrackPlan.attachmentPolicy})`} title={preview.resolvedTrackPlan.attachmentReason} />
+        <Chip label={`Chapters: ${preview.resolvedTrackPlan.chaptersKept ? 'Keep' : 'Remove'}`} />
+        <Chip label={`Sidecars: ${preview.resolvedTrackPlan.sidecarOutputs.length}`} />
+      </Stack>
     </Stack>
   );
+}
+
+function subtitleActionLabel(action: 'keep' | 'remove' | 'extract' | 'keep_and_extract') {
+  return { keep: 'Keep', remove: 'Remove', extract: 'Extract', keep_and_extract: 'Keep + Extract' }[action];
 }
 
 function trackPreviewReasonLabel(reason: string) {

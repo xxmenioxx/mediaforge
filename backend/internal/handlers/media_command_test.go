@@ -1678,6 +1678,56 @@ func TestFFmpegCommandBuilderDoesNotDuplicateAACStereoAmongMultipleTracks(t *tes
 	assertNotContains(t, command, "-map 0:1 -c copy")
 }
 
+func TestFFmpegCommandConsumesResolvedTrackPlan(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/raw/Movie.mkv", OutputPath: "/staging/Movie.mkv", Overwrite: true,
+		Profile:        models.Profile{VideoCodec: "copy", AudioCodec: "copy", PreserveChapters: false, WorkerConfig: models.JSONMap{"videoEncoder": "copy"}},
+		ProcessingMode: ProcessingModeAudioOnly,
+		Streams: MediaStreamInventory{
+			Video:      []MediaStream{{Index: 0}},
+			Audio:      []MediaAudioStream{{Index: 1}, {Index: 2}},
+			Subtitle:   []MediaStream{{Index: 3, Codec: "subrip"}, {Index: 4, Codec: "ass"}, {Index: 5, Codec: "ass"}},
+			Attachment: []MediaStream{{Index: 6, Codec: "ttf"}}, ChapterCount: 2,
+		},
+		ResolvedTracks: &ResolvedTrackPlan{
+			VideoStreams: []ResolvedTrackStream{{StreamIndex: 0}},
+			AudioStreams: []ResolvedTrackStream{{StreamIndex: 1}, {StreamIndex: 2}},
+			SubtitleStreams: []ResolvedSubtitleTrack{
+				{StreamIndex: 3, Action: SubtitleDispositionKeep},
+				{StreamIndex: 4, Action: SubtitleDispositionExtract},
+				{StreamIndex: 5, Action: SubtitleDispositionKeepAndExtract},
+			},
+			AttachmentsKept: true, AttachmentStreams: []ResolvedTrackStream{{StreamIndex: 6}},
+			ChaptersKept: true,
+		},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	for _, mapping := range []string{"-map 0:0", "-map 0:1", "-map 0:2", "-map 0:3", "-map 0:5", "-map 0:6"} {
+		assertContains(t, command, mapping)
+	}
+	assertNotContains(t, command, "-map 0:4")
+	assertContains(t, command, "-map_chapters 0")
+}
+
+func TestFFmpegCommandResolvedTrackPlanRemovesSubtitlesAttachmentsAndChapters(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/raw/Movie.mkv", OutputPath: "/staging/Movie.mkv",
+		Profile:        models.Profile{VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true, PreserveChapters: true},
+		ProcessingMode: ProcessingModeAudioOnly,
+		Streams:        MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Subtitle: []MediaStream{{Index: 2, Codec: "ass"}}, Attachment: []MediaStream{{Index: 3}}, ChapterCount: 1},
+		ResolvedTracks: &ResolvedTrackPlan{
+			VideoStreams:    []ResolvedTrackStream{{StreamIndex: 0}},
+			SubtitleStreams: []ResolvedSubtitleTrack{{StreamIndex: 2, Action: SubtitleDispositionRemove}},
+			AttachmentsKept: false, ChaptersKept: false,
+		},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:0")
+	assertNotContains(t, command, "-map 0:2")
+	assertNotContains(t, command, "-map 0:3")
+	assertContains(t, command, "-map_chapters -1")
+}
+
 func TestResolvedStreamPlanAssignsDerivedAudioAfterOriginalAudio(t *testing.T) {
 	plan := MediaJobPlan{
 		ProcessingMode: ProcessingModeFullEncode,

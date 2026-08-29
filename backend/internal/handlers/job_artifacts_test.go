@@ -70,3 +70,31 @@ func TestAssetConversionReportPreservesFrameStructurePresetAndAdvancedValues(t *
 		t.Fatalf("frame structure override was not preserved in job artifacts: %#v", report.ProfileOverrides)
 	}
 }
+
+func TestTrackDecisionReportIncludesRequestedResolvedAndArtifacts(t *testing.T) {
+	plan := ResolvedTrackPlan{
+		AudioStreams:        []ResolvedTrackStream{{StreamIndex: 1, Language: "jpn"}},
+		RemovedAudioStreams: []ResolvedTrackStream{{StreamIndex: 2, Language: "eng"}},
+		SubtitleStreams:     []ResolvedSubtitleTrack{{StreamIndex: 3, Codec: "ass", Language: "spa", Action: SubtitleDispositionKeepAndExtract}},
+		AttachmentPolicy:    AttachmentPolicyAuto, AttachmentsKept: true, AttachmentReason: "embedded ASS/SSA subtitle may require font attachments",
+		ChapterPolicy: ChapterPolicyRemove, ChaptersKept: false,
+		SidecarOutputs: []ResolvedTrackSidecar{{StreamIndex: 3, Codec: "ass", Language: "spa", Format: "ass"}},
+	}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{TrackProfileKey: "anime-tracks", TrackProfileSnapshot: models.JSONMap{
+		"key": "anime-tracks", "subtitleRules": models.JSONList{models.JSONMap{"language": "spa", "action": "keep_and_extract"}},
+		resolvedTrackPlanSnapshotKey: planMap,
+	}, SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{{StreamIndex: 3, Format: "ass", Status: "ready"}})}
+	report := AssetConversionReport{}
+	attachTrackDecisionReport(&report, job)
+	if report.TrackProfileKey != "anime-tracks" || report.ResolvedTrackPlan == nil || len(report.ResolvedTrackPlan.RemovedAudioStreams) != 1 || report.TrackRequested["key"] != "anime-tracks" || report.ResolvedTrackPlan.AttachmentReason == "" || report.ResolvedTrackPlan.FontAttachmentsExported {
+		t.Fatalf("track decision report is incomplete: %#v", report)
+	}
+	outputs := jobArtifactOutputs(job)
+	if sidecars := workerSliceValue(outputs["sidecars"]); len(sidecars) != 1 {
+		t.Fatalf("artifact set did not include sidecars: %#v", outputs)
+	}
+}

@@ -192,6 +192,13 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	if _, err := os.Stat(job.OutputPath); err != nil {
 		return PublishResult{}, publishError{Status: http.StatusNotFound, Message: "job output is not readable from the backend container", Err: err}
 	}
+	if checks, _, _ := validateRequiredSubtitleArtifacts(job); len(checks) > 0 {
+		for _, check := range checks {
+			if check.Status == "failed" {
+				return PublishResult{}, publishError{Status: http.StatusConflict, Message: "required subtitle artifacts are not ready for publication: " + check.Message}
+			}
+		}
+	}
 
 	var library models.Library
 	if err := h.db.First(&library, job.LibraryID).Error; err != nil {
@@ -492,23 +499,33 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		_ = os.Remove(temporary)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "prepared replacement failed integrity verification", Err: err}
 	}
+	publishedSubtitles, subtitleErr := publishSubtitleArtifacts(&job, target, false, nil)
+	if subtitleErr != nil {
+		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSubtitles)
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed before original archival", Err: subtitleErr}
+	}
 	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
 		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSubtitles)
 		return PublishResult{}, err
 	}
 	archivedPath, err := h.libraryOriginalArchivePath(job, library)
 	if err != nil {
 		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSubtitles)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
 	}
 	job.ReplacementTargetPath = target
 	job.OriginalArchivedPath = archivedPath
 	if err := h.db.Save(&job).Error; err != nil {
 		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSubtitles)
 		return PublishResult{}, err
 	}
 	if err := moveFile(job.MediaPath, archivedPath); err != nil {
 		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSubtitles)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
 	}
 	if err := os.Rename(temporary, target); err != nil {
@@ -516,31 +533,11 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		if rollbackErr != nil {
 			return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed and original rollback also failed", Err: fmt.Errorf("replace: %v; rollback: %v", err, rollbackErr)}
 		}
+		_ = rollbackPublishedPaths(publishedSubtitles)
 		job.ReplacementTargetPath = ""
 		job.OriginalArchivedPath = ""
 		_ = h.db.Save(&job).Error
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed; original was restored", Err: err}
-	}
-	publishedSubtitles, subtitleErr :=
-		publishSubtitleArtifacts(
-			&job,
-			target,
-			false,
-			nil,
-		)
-	if subtitleErr != nil {
-		_ = os.Remove(target)
-		for _, published := range publishedSubtitles {
-			_ = os.Remove(published)
-		}
-		rollbackErr := moveFile(archivedPath, job.MediaPath)
-		if rollbackErr != nil {
-			return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed and original rollback also failed", Err: fmt.Errorf("subtitle publish: %v; rollback: %v", subtitleErr, rollbackErr)}
-		}
-		job.ReplacementTargetPath = ""
-		job.OriginalArchivedPath = ""
-		_ = h.db.Save(&job).Error
-		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed; original library asset was restored", Err: subtitleErr}
 	}
 	job.Notes = appendNote(job.Notes, "Library original archived: "+archivedPath)
 	job.PublishedPath = target

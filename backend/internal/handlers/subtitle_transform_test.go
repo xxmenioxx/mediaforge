@@ -56,6 +56,86 @@ func TestEmptySubtitleArtifactPolicyIsLimitedToSegmentedTestEncodes(t *testing.T
 	}
 }
 
+func TestOriginalSubtitleExtractionFormats(t *testing.T) {
+	tests := []struct {
+		codec, format, muxer string
+		supported            bool
+	}{
+		{"ass", "ass", "ass", true},
+		{"ssa", "ssa", "ass", true},
+		{"subrip", "srt", "srt", true},
+		{"hdmv_pgs_subtitle", "sup", "sup", true},
+		{"dvd_subtitle", "", "", false},
+		{"dvb_subtitle", "", "", false},
+	}
+	for _, test := range tests {
+		format, muxer, supported := originalSubtitleExtractionFormat(test.codec)
+		if format != test.format || muxer != test.muxer || supported != test.supported {
+			t.Fatalf("codec=%s got=(%s,%s,%t) want=(%s,%s,%t)", test.codec, format, muxer, supported, test.format, test.muxer, test.supported)
+		}
+	}
+}
+
+func TestOriginalSubtitleExtractionUsesStreamCopy(t *testing.T) {
+	command := shellJoin(originalSubtitleExtractionArgs(MediaJobPlan{InputPath: "/raw/Movie.mkv"}, 4, "ass", "/staging/Movie.spa.ass"))
+	assertContains(t, command, "-map 0:4")
+	assertContains(t, command, "-c:s copy")
+	assertContains(t, command, "-f ass")
+	assertNotContains(t, command, "-c:s ass")
+}
+
+func TestResolvedSubtitleStagedPathIsDeterministic(t *testing.T) {
+	used := map[string]struct{}{}
+	first := resolvedSubtitleStagedPath("/staging/Movie", SubtitleArtifact{StreamIndex: 4, Language: "spa", Format: "ass"}, used)
+	second := resolvedSubtitleStagedPath("/staging/Movie", SubtitleArtifact{StreamIndex: 7, Language: "spa", Format: "ass"}, used)
+	forced := resolvedSubtitleStagedPath("/staging/Movie", SubtitleArtifact{StreamIndex: 8, Language: "eng", Format: "srt", Forced: true}, used)
+	if first != "/staging/Movie.spa.ass" || second != "/staging/Movie.spa.7.ass" || forced != "/staging/Movie.eng.forced.srt" {
+		t.Fatalf("unexpected deterministic names: %q %q %q", first, second, forced)
+	}
+}
+
+func TestSubtitleArtifactJSONPreservesResolvedExtractionState(t *testing.T) {
+	values := []SubtitleArtifact{
+		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Language: "spa", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
+		{StreamIndex: 5, SourceCodec: "subrip", Format: "srt", Language: "eng", Forced: true, StagedPath: "/staging/Movie.eng.forced.srt", Status: "ready", SizeBytes: 30},
+	}
+	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON(values))
+	if len(decoded) != 2 || decoded[0].Status != "ready" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
+		t.Fatalf("multiple sidecar artifacts did not round trip: %#v", decoded)
+	}
+	if got := subtitleArtifactsFromJSON(subtitleArtifactsJSON(nil)); len(got) != 0 {
+		t.Fatalf("zero sidecar artifact result=%#v", got)
+	}
+}
+
+func TestOriginalASSAndSSASidecarsPreserveRepresentation(t *testing.T) {
+	for _, test := range []struct{ codec, format, muxer string }{
+		{"ass", "ass", "ass"}, {"ssa", "ssa", "ass"},
+	} {
+		format, muxer, ok := originalSubtitleExtractionFormat(test.codec)
+		if !ok || format != test.format || muxer != test.muxer {
+			t.Fatalf("codec=%s format=%s muxer=%s ok=%t", test.codec, format, muxer, ok)
+		}
+		args := originalSubtitleExtractionArgs(MediaJobPlan{InputPath: "/raw/Movie.mkv"}, 4, muxer, "/stage/Movie.es."+format)
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-c:s copy") || strings.Contains(joined, " srt ") {
+			t.Fatalf("ASS/SSA extraction was transcoded: %v", args)
+		}
+	}
+}
+
+func TestGenerateResolvedSubtitleArtifactsReportsUnsupportedCodec(t *testing.T) {
+	plan := MediaJobPlan{
+		OutputPath:     "/staging/Movie.mkv",
+		Streams:        MediaStreamInventory{Subtitle: []MediaStream{{Index: 2, Codec: "dvd_subtitle", Language: "spa"}}},
+		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{StreamIndex: 2, Codec: "dvd_subtitle", Language: "spa"}}},
+	}
+	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan)
+	if err == nil || len(artifacts) != 1 || artifacts[0].Status != "unsupported" || !strings.Contains(artifacts[0].Error, "stream 2") {
+		t.Fatalf("unsupported extraction was not explicit: artifacts=%#v err=%v", artifacts, err)
+	}
+}
+
 func TestValidSubtitleSidecar(t *testing.T) {
 	if !validSubtitleSidecar("srt", []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n")) {
 		t.Fatal("valid SRT was rejected")
@@ -138,6 +218,26 @@ func TestPublishSubtitleArtifactsUsesJellyfinPlexSidecarName(t *testing.T) {
 	artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
 	if len(artifacts) != 1 || artifacts[0].PublishedPath != expected {
 		t.Fatalf("published path was not recorded: %#v", artifacts)
+	}
+}
+
+func TestPublishSubtitleArtifactsUsesForcedSuffix(t *testing.T) {
+	temp := t.TempDir()
+	staged := filepath.Join(temp, "staged.srt")
+	if err := os.WriteFile(staged, []byte("1\n00:00:00,000 --> 00:00:01,000\nForced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{{
+		StreamIndex: 3, SourceCodec: "subrip", Format: "srt", Language: "eng", Forced: true,
+		StagedPath: staged, SizeBytes: 45, Status: "ready",
+	}})}
+	destinationMedia := filepath.Join(temp, "library", "Movie.mkv")
+	if _, err := publishSubtitleArtifacts(&job, destinationMedia, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(temp, "library", "Movie.eng.forced.srt")
+	if artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts); len(artifacts) != 1 || artifacts[0].PublishedPath != want {
+		t.Fatalf("forced artifact destination=%#v want=%s", artifacts, want)
 	}
 }
 

@@ -13,17 +13,30 @@ import (
 )
 
 type SubtitleArtifact struct {
-	StreamIndex   int    `json:"streamIndex"`
-	SourceCodec   string `json:"sourceCodec"`
-	Format        string `json:"format"`
-	Language      string `json:"language"`
-	Default       bool   `json:"default"`
-	StagedPath    string `json:"stagedPath"`
-	PublishedPath string `json:"publishedPath,omitempty"`
-	SizeBytes     int64  `json:"sizeBytes"`
+	Type                    string `json:"type"`
+	StreamIndex             int    `json:"streamIndex"`
+	SourceCodec             string `json:"sourceCodec"`
+	Format                  string `json:"format"`
+	Language                string `json:"language"`
+	Default                 bool   `json:"default"`
+	Forced                  bool   `json:"forced"`
+	Title                   string `json:"title,omitempty"`
+	StagedPath              string `json:"stagedPath"`
+	PublishedPath           string `json:"publishedPath,omitempty"`
+	SizeBytes               int64  `json:"sizeBytes"`
+	Status                  string `json:"status"`
+	Error                   string `json:"error,omitempty"`
+	FontAttachmentsExported bool   `json:"fontAttachmentsExported"`
 }
 
 func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]SubtitleArtifact, error) {
+	// Persisted SubtitleTransforms predate original-representation extraction
+	// and may intentionally request OCR or text conversion. Preserve that
+	// compatibility path; new canonical sidecar decisions never synthesize a
+	// transform and use stream-copy extraction below.
+	if len(plan.Override.SubtitleTransforms) == 0 && plan.ResolvedTracks != nil {
+		return generateResolvedSubtitleArtifacts(ctx, plan)
+	}
 	if len(plan.Override.SubtitleTransforms) == 0 {
 		return nil, nil
 	}
@@ -118,12 +131,167 @@ func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]Subtit
 			return nil, fmt.Errorf("subtitle stream %d produced an invalid %s sidecar", stream.Index, strings.ToUpper(transform.Format))
 		}
 		artifacts = append(artifacts, SubtitleArtifact{
-			StreamIndex: stream.Index, SourceCodec: stream.Codec, Format: transform.Format,
-			Language: language, Default: transform.MakeDefault, StagedPath: stagedPath, SizeBytes: info.Size(),
+			Type: "subtitle_sidecar", StreamIndex: stream.Index, SourceCodec: stream.Codec, Format: transform.Format,
+			Language: language, Default: transform.MakeDefault, StagedPath: stagedPath, SizeBytes: info.Size(), Status: "ready",
 		})
 	}
 	completed = true
 	return artifacts, nil
+}
+
+func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]SubtitleArtifact, error) {
+	if plan.ResolvedTracks == nil || len(plan.ResolvedTracks.SidecarOutputs) == 0 {
+		return nil, nil
+	}
+	streams := map[int]MediaStream{}
+	for _, stream := range plan.Streams.Subtitle {
+		streams[stream.Index] = stream
+	}
+	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
+	usedPaths := map[string]struct{}{}
+	artifacts := make([]SubtitleArtifact, 0, len(plan.ResolvedTracks.SidecarOutputs))
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		for index, artifact := range artifacts {
+			if artifact.StagedPath != "" {
+				_ = os.Remove(artifact.StagedPath)
+			}
+			if artifacts[index].Status == "ready" {
+				artifacts[index].Status = "rolled_back"
+				artifacts[index].Error = "sidecar set rolled back after another extraction failed"
+			}
+		}
+	}()
+	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+		stream, exists := streams[decision.StreamIndex]
+		artifact := SubtitleArtifact{
+			Type:        "subtitle_sidecar",
+			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title,
+			Status: "planned",
+		}
+		artifacts = append(artifacts, artifact)
+		current := &artifacts[len(artifacts)-1]
+		if !exists {
+			current.Status, current.Error = "failed", fmt.Sprintf("subtitle stream %d disappeared before extraction", decision.StreamIndex)
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		format, muxer, supported := originalSubtitleExtractionFormat(stream.Codec)
+		if !supported || (decision.Format != "" && !strings.EqualFold(decision.Format, format)) {
+			current.Status = "unsupported"
+			current.Error = fmt.Sprintf("subtitle stream %d codec %s does not support original sidecar extraction", stream.Index, stream.Codec)
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		current.Format = format
+		current.SourceCodec = stream.Codec
+		if current.Language == "" {
+			current.Language = stream.Language
+		}
+		current.StagedPath = resolvedSubtitleStagedPath(base, *current, usedPaths)
+		_ = os.Remove(current.StagedPath)
+		args := originalSubtitleExtractionArgs(plan, stream.Index, muxer, current.StagedPath)
+		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			current.Status = "failed"
+			current.Error = fmt.Sprintf("subtitle stream %d original extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		info, err := os.Stat(current.StagedPath)
+		if err != nil || info.IsDir() || info.Size() == 0 {
+			_ = os.Remove(current.StagedPath)
+			if emptySubtitleArtifactCanBeSkipped(plan) {
+				artifacts = artifacts[:len(artifacts)-1]
+				continue
+			}
+			current.Status, current.Error = "failed", fmt.Sprintf("subtitle stream %d produced an empty original sidecar", stream.Index)
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		content, readErr := os.ReadFile(current.StagedPath)
+		if readErr != nil || !validOriginalSubtitleSidecar(format, content) {
+			current.Status, current.Error = "failed", fmt.Sprintf("subtitle stream %d produced an invalid %s sidecar", stream.Index, strings.ToUpper(format))
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		current.SizeBytes, current.Status = info.Size(), "ready"
+	}
+	completed = true
+	return artifacts, nil
+}
+
+func originalSubtitleExtractionFormat(codec string) (format, muxer string, supported bool) {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "ass":
+		return "ass", "ass", true
+	case "ssa":
+		return "ssa", "ass", true
+	case "subrip", "srt":
+		return "srt", "srt", true
+	case "hdmv_pgs_subtitle", "pgs", "pgssub":
+		return "sup", "sup", true
+	default:
+		return "", "", false
+	}
+}
+
+func originalSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, muxer, outputPath string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y"}
+	inputSeek, outputTrim := segmentedSeekWindow(plan.SegmentStartSeconds)
+	if inputSeek > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", inputSeek))
+	}
+	args = append(args, "-i", plan.InputPath)
+	if outputTrim > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", outputTrim))
+	}
+	if plan.SegmentDurationSeconds > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", plan.SegmentDurationSeconds))
+	}
+	return append(args, "-map", fmt.Sprintf("0:%d", streamIndex), "-vn", "-an", "-c:s", "copy", "-f", muxer, outputPath)
+}
+
+func resolvedSubtitleStagedPath(base string, artifact SubtitleArtifact, used map[string]struct{}) string {
+	language := safeSubtitleFilenamePart(artifact.Language)
+	if language == "" {
+		language = "und"
+	}
+	suffix := "." + language
+	if artifact.Forced {
+		suffix += ".forced"
+	} else if artifact.Default {
+		suffix += ".default"
+	}
+	path := base + suffix + "." + artifact.Format
+	if _, duplicate := used[path]; duplicate {
+		suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
+		if artifact.Forced {
+			suffix += ".forced"
+		} else if artifact.Default {
+			suffix += ".default"
+		}
+		path = base + suffix + "." + artifact.Format
+	}
+	used[path] = struct{}{}
+	return path
+}
+
+func validOriginalSubtitleSidecar(format string, content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+	switch format {
+	case "ass", "ssa":
+		return strings.Contains(string(content), "[Events]") && strings.Contains(string(content), "Dialogue:")
+	case "srt":
+		return strings.Contains(string(content), "-->")
+	case "sup":
+		return len(content) >= 2 && content[0] == 'P' && content[1] == 'G'
+	default:
+		return false
+	}
 }
 
 func emptySubtitleArtifactCanBeSkipped(plan MediaJobPlan) bool {
@@ -189,9 +357,10 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 	result := make(models.JSONList, 0, len(values))
 	for _, value := range values {
 		result = append(result, map[string]interface{}{
-			"streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "format": value.Format,
-			"language": value.Language, "default": value.Default, "stagedPath": value.StagedPath,
-			"publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
+			"type": value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "format": value.Format,
+			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
+			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
+			"status": value.Status, "error": value.Error, "fontAttachmentsExported": value.FontAttachmentsExported,
 		})
 	}
 	return result
@@ -205,14 +374,20 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			continue
 		}
 		result = append(result, SubtitleArtifact{
-			StreamIndex:   intValueSetting(value["streamIndex"], -1),
-			SourceCodec:   stringFromUnknown(value["sourceCodec"]),
-			Format:        stringFromUnknown(value["format"]),
-			Language:      stringFromUnknown(value["language"]),
-			Default:       boolSetting(value["default"], false),
-			StagedPath:    stringFromUnknown(value["stagedPath"]),
-			PublishedPath: stringFromUnknown(value["publishedPath"]),
-			SizeBytes:     int64(intValueSetting(value["sizeBytes"], 0)),
+			Type:                    fallback(stringFromUnknown(value["type"]), "subtitle_sidecar"),
+			StreamIndex:             intValueSetting(value["streamIndex"], -1),
+			SourceCodec:             stringFromUnknown(value["sourceCodec"]),
+			Format:                  stringFromUnknown(value["format"]),
+			Language:                stringFromUnknown(value["language"]),
+			Default:                 boolSetting(value["default"], false),
+			Forced:                  boolSetting(value["forced"], false),
+			Title:                   stringFromUnknown(value["title"]),
+			StagedPath:              stringFromUnknown(value["stagedPath"]),
+			PublishedPath:           stringFromUnknown(value["publishedPath"]),
+			SizeBytes:               int64(intValueSetting(value["sizeBytes"], 0)),
+			Status:                  stringFromUnknown(value["status"]),
+			Error:                   stringFromUnknown(value["error"]),
+			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
 		})
 	}
 	return result
@@ -233,6 +408,9 @@ func publishSubtitleArtifacts(
 	alreadyPublished := make([]bool, len(artifacts))
 	usedDestinations := map[string]struct{}{}
 	for index, artifact := range artifacts {
+		if artifact.Status != "" && artifact.Status != "ready" {
+			return nil, fmt.Errorf("subtitle artifact for stream %d is not ready: %s", artifact.StreamIndex, fallback(artifact.Error, artifact.Status))
+		}
 		if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() || info.Size() == 0 {
 			return nil, fmt.Errorf("staged subtitle artifact is missing or empty: %s", artifact.StagedPath)
 		}
@@ -241,14 +419,18 @@ func publishSubtitleArtifacts(
 			language = "und"
 		}
 		suffix := "." + language
-		if artifact.Default {
+		if artifact.Forced {
+			suffix += ".forced"
+		} else if artifact.Default {
 			suffix += ".default"
 		}
 		suffix += "." + artifact.Format
 		preferredDestination := base + suffix
 		if _, duplicate := usedDestinations[preferredDestination]; duplicate {
 			suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
-			if artifact.Default {
+			if artifact.Forced {
+				suffix += ".forced"
+			} else if artifact.Default {
 				suffix += ".default"
 			}
 			suffix += "." + artifact.Format
@@ -258,7 +440,9 @@ func publishSubtitleArtifacts(
 					break
 				}
 				suffix = fmt.Sprintf(".%s.%d.%d", language, artifact.StreamIndex, discriminator)
-				if artifact.Default {
+				if artifact.Forced {
+					suffix += ".forced"
+				} else if artifact.Default {
 					suffix += ".default"
 				}
 				suffix += "." + artifact.Format

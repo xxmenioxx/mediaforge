@@ -30,6 +30,7 @@ type MediaJobPlan struct {
 	ProcessingMode               string
 	Streams                      MediaStreamInventory
 	Override                     AssetConversionOverrideState
+	ResolvedTracks               *ResolvedTrackPlan
 	StreamValidationWarnings     []string
 	Interlace                    InterlaceAnalysis
 	Cadence                      CadenceAnalysis
@@ -166,7 +167,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 	if plan.SegmentDurationSeconds > 0 {
 		args = append(args, "-t", strconv.Itoa(plan.SegmentDurationSeconds))
 	}
-	selectedAudioStreams := selectedAudioStreams(plan.Streams.Audio, plan.Override)
+	selectedAudioStreams := selectedAudioStreamsForPlan(plan)
 	addAACStereoTrack := effectiveAACOption(plan, plan.Override.AddAACStereoTrack, "addAacStereoTrack", "addAacStereoDefault", false)
 	aacStereoDefault := effectiveAACOption(plan, plan.Override.AACStereoDefault, "aacStereoDefault", "", false)
 	needsAACCompatibility := addAACStereoTrack && !hasAACStereoStream(selectedAudioStreams)
@@ -318,7 +319,11 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 			}
 		}
 	}
-	if plan.Streams.ChapterCount > 0 && plan.Profile.PreserveChapters {
+	keepChapters := plan.Profile.PreserveChapters
+	if plan.ResolvedTracks != nil {
+		keepChapters = plan.ResolvedTracks.ChaptersKept
+	}
+	if plan.Streams.ChapterCount > 0 && keepChapters {
 		args = append(args, "-map_chapters", "0")
 	} else if plan.Streams.ChapterCount > 0 {
 		args = append(args, "-map_chapters", "-1")
@@ -337,7 +342,7 @@ func segmentedSeekWindow(start float64) (float64, float64) {
 }
 
 func resolveEffectiveStreamPlan(plan MediaJobPlan) ResolvedStreamPlan {
-	selectedAudio := selectedAudioStreams(plan.Streams.Audio, plan.Override)
+	selectedAudio := selectedAudioStreamsForPlan(plan)
 	needsAAC := effectiveAACOption(plan, plan.Override.AddAACStereoTrack, "addAacStereoTrack", "addAacStereoDefault", false) && !hasAACStereoStream(selectedAudio)
 	mappedAudio := selectedAudio
 	if needsAAC && !profileWorkerBool(plan.Profile, "preserveOriginalAudio", true) {
@@ -695,6 +700,7 @@ func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile 
 		return MediaJobPlan{}, err
 	}
 	plan.Override, plan.StreamValidationWarnings = sanitizeConversionOverride(override, plan.Streams)
+	plan.ResolvedTracks = plan.Override.ResolvedTrackPlan
 	plan.StreamValidationWarnings = append(plan.StreamValidationWarnings, validateAACStereoSource(&plan)...)
 	applyProfileSubtitleExternalization(&plan)
 	plan.ProcessingMode = mediaProcessingMode(effectiveProfile)
@@ -1100,7 +1106,7 @@ func resolveStreamPlan(plan MediaJobPlan, mappedAudio []MediaAudioStream, needsA
 		resolved.Subtitles = append(resolved.Subtitles, plannedMediaStream(stream, "subtitle", typeIndex, outputIndex, map[bool]string{true: "copy", false: "encode"}[codec == "copy"], codec, metadata))
 		outputIndex++
 	}
-	for typeIndex, stream := range plan.Streams.Attachment {
+	for typeIndex, stream := range selectedAttachmentStreamsForPlan(plan) {
 		resolved.Attachments = append(resolved.Attachments, plannedMediaStream(stream, "attachment", typeIndex, outputIndex, "copy", "copy", StreamMetadataOverride{}))
 		outputIndex++
 	}
@@ -1259,7 +1265,39 @@ func selectedAudioStreams(streams []MediaAudioStream, override AssetConversionOv
 	return selected
 }
 
+func selectedAudioStreamsForPlan(plan MediaJobPlan) []MediaAudioStream {
+	if plan.ResolvedTracks == nil {
+		return selectedAudioStreams(plan.Streams.Audio, plan.Override)
+	}
+	allowed := map[int]struct{}{}
+	for _, stream := range plan.ResolvedTracks.AudioStreams {
+		allowed[stream.StreamIndex] = struct{}{}
+	}
+	selected := []MediaAudioStream{}
+	for _, stream := range plan.Streams.Audio {
+		if _, ok := allowed[stream.Index]; ok {
+			selected = append(selected, stream)
+		}
+	}
+	return selected
+}
+
 func selectedSubtitleStreams(plan MediaJobPlan) []MediaStream {
+	if plan.ResolvedTracks != nil {
+		allowed := map[int]struct{}{}
+		for _, stream := range plan.ResolvedTracks.SubtitleStreams {
+			if stream.Action.KeepsEmbedded() {
+				allowed[stream.StreamIndex] = struct{}{}
+			}
+		}
+		selected := []MediaStream{}
+		for _, stream := range plan.Streams.Subtitle {
+			if _, ok := allowed[stream.Index]; ok {
+				selected = append(selected, stream)
+			}
+		}
+		return selected
+	}
 	// A Tracks Profile owns the complete subtitle decision. Video-profile
 	// preservation flags must not erase tracks that the Tracks Profile kept.
 	trackProfileSelected := strings.TrimSpace(plan.Override.TrackProfileKey) != ""
@@ -1279,6 +1317,29 @@ func selectedSubtitleStreams(plan MediaJobPlan) []MediaStream {
 		}
 	}
 	return streams
+}
+
+func selectedAttachmentStreamsForPlan(plan MediaJobPlan) []MediaStream {
+	if plan.ResolvedTracks == nil {
+		return plan.Streams.Attachment
+	}
+	if !plan.ResolvedTracks.AttachmentsKept {
+		return []MediaStream{}
+	}
+	if len(plan.ResolvedTracks.AttachmentStreams) == 0 {
+		return plan.Streams.Attachment
+	}
+	allowed := map[int]struct{}{}
+	for _, stream := range plan.ResolvedTracks.AttachmentStreams {
+		allowed[stream.StreamIndex] = struct{}{}
+	}
+	selected := []MediaStream{}
+	for _, stream := range plan.Streams.Attachment {
+		if _, ok := allowed[stream.Index]; ok {
+			selected = append(selected, stream)
+		}
+	}
+	return selected
 }
 
 func removedEmbeddedSubtitleSet(values []SubtitleTransform) map[int]struct{} {
@@ -1349,7 +1410,7 @@ func aacStereoSourceIndex(plan MediaJobPlan) int {
 	}
 	configured := workerIntValue(plan.Profile.WorkerConfig["aacStereoSourceStreamIndex"], -1)
 	if configured >= 0 {
-		for _, stream := range selectedAudioStreams(plan.Streams.Audio, plan.Override) {
+		for _, stream := range selectedAudioStreamsForPlan(plan) {
 			if stream.Index == configured {
 				return configured
 			}
@@ -1366,7 +1427,7 @@ func validateAACStereoSource(plan *MediaJobPlan) []string {
 	if configured < 0 {
 		return nil
 	}
-	for _, stream := range selectedAudioStreams(plan.Streams.Audio, plan.Override) {
+	for _, stream := range selectedAudioStreamsForPlan(*plan) {
 		if stream.Index == configured {
 			return nil
 		}
@@ -2435,10 +2496,19 @@ func isAuxiliaryVideoStream(
 func selectedVideoStreamsForPlan(
 	plan MediaJobPlan,
 ) []MediaStream {
-	selected := selectedVideoStreams(
-		plan.Streams.Video,
-		plan.Override,
-	)
+	selected := selectedVideoStreams(plan.Streams.Video, plan.Override)
+	if plan.ResolvedTracks != nil {
+		allowed := map[int]struct{}{}
+		for _, stream := range plan.ResolvedTracks.VideoStreams {
+			allowed[stream.StreamIndex] = struct{}{}
+		}
+		selected = selected[:0]
+		for _, stream := range plan.Streams.Video {
+			if _, ok := allowed[stream.Index]; ok {
+				selected = append(selected, stream)
+			}
+		}
+	}
 
 	if plan.ProcessingMode != ProcessingModeFullEncode {
 		return selected

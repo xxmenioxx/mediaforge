@@ -1267,9 +1267,39 @@ func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 		if storedSettingProfileScope(profile) == "path" && strings.TrimSpace(workerStringValue(resolved["resolvedForAsset"])) == "" {
 			return fmt.Errorf("track profile: a cached asset snapshot is required to resolve a path profile safely")
 		}
+		var scan models.ScanResult
+		if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+			return fmt.Errorf("track profile: asset snapshot: %w", err)
+		}
+		// Profiles persisted before the canonical disposition model keep using
+		// the legacy Video Profile compatibility path. The three base policies
+		// form an atomic migration marker; newly saved Track Profiles always
+		// include all three and become authoritative for these decisions.
+		if !trackProfileHasCanonicalDisposition(resolved) {
+			job.TrackProfileSnapshot = models.JSONMap(resolved)
+			return nil
+		}
+		trackPlan, err := resolveTrackPlan(scan, resolved)
+		if err != nil {
+			return fmt.Errorf("track profile: resolve track plan: %w", err)
+		}
+		trackPlanMap, err := resolvedTrackPlanMap(trackPlan)
+		if err != nil {
+			return fmt.Errorf("track profile: freeze track plan: %w", err)
+		}
+		resolved[resolvedTrackPlanSnapshotKey] = trackPlanMap
 		job.TrackProfileSnapshot = models.JSONMap(resolved)
 	}
 	return nil
+}
+
+func trackProfileHasCanonicalDisposition(profile map[string]any) bool {
+	for _, key := range []string{"subtitleDisposition", "attachmentPolicy", "chapterPolicy"} {
+		if strings.TrimSpace(workerStringValue(profile[key])) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[string]any) map[string]any {
@@ -1673,6 +1703,9 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 		*job,
 		assetConversionOverrides(h.db),
 	)
+	if err := h.freezeEffectiveTrackPlan(job, &override); err != nil {
+		return err
+	}
 
 	if assetConversionOverrideEmpty(override) {
 		return fmt.Errorf(
@@ -1788,6 +1821,9 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 		return errQueueProfileDisabled
 	}
 	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	if err := h.freezeEffectiveTrackPlan(job, &override); err != nil {
+		return err
+	}
 	if !assetConversionOverrideEmpty(override) {
 		profile = applyAssetConversionOverrideToProfile(profile, override)
 	}
@@ -1828,6 +1864,43 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
+	return nil
+}
+
+func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *AssetConversionOverrideState) error {
+	if job == nil || override == nil || len(job.TrackProfileSnapshot) == 0 {
+		return nil
+	}
+	if _, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); !ok {
+		return nil
+	}
+	profile := map[string]any{}
+	for key, value := range job.TrackProfileSnapshot {
+		if key != resolvedTrackPlanSnapshotKey {
+			profile[key] = value
+		}
+	}
+	profile["keepVideoStreams"] = override.KeepVideoStreams
+	profile["keepAudioStreams"] = override.KeepAudioStreams
+	profile["keepSubtitleStreams"] = override.KeepSubtitleStreams
+	profile["videoMetadata"] = override.VideoMetadata
+	profile["audioMetadata"] = override.AudioMetadata
+	profile["subtitleMetadata"] = override.SubtitleMetadata
+	profile["subtitleTransforms"] = override.SubtitleTransforms
+	var scan models.ScanResult
+	if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+		return fmt.Errorf("track profile: refresh effective track plan from asset snapshot: %w", err)
+	}
+	plan, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		return fmt.Errorf("track profile: resolve effective track plan: %w", err)
+	}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		return fmt.Errorf("track profile: freeze effective track plan: %w", err)
+	}
+	job.TrackProfileSnapshot[resolvedTrackPlanSnapshotKey] = planMap
+	override.ResolvedTrackPlan = &plan
 	return nil
 }
 

@@ -775,7 +775,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 	plan.SourceAssetPath = job.MediaPath
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
-	if len(plan.Override.SubtitleTransforms) > 0 {
+	if len(plan.Override.SubtitleTransforms) > 0 || (plan.ResolvedTracks != nil && len(plan.ResolvedTracks.SidecarOutputs) > 0) {
 		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {
 			return job, http.StatusInternalServerError, err
 		}
@@ -784,6 +784,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 	subtitleArtifacts, err := generateSubtitleArtifacts(context.Background(), plan)
 	if err != nil {
+		job.SubtitleArtifacts = subtitleArtifactsJSON(subtitleArtifacts)
 		job.Status = JobStatusFailed
 		job.ErrorMessage = err.Error()
 		job.Notes = appendNote(job.Notes, "Subtitle transformation failed before media conversion: "+err.Error())
@@ -1164,6 +1165,9 @@ func currentConversionOverrideForJob(job models.QueueJob, entries map[string]Ass
 }
 
 func mergeTrackProfileBelowAssetOverride(profile, asset AssetConversionOverrideState) AssetConversionOverrideState {
+	if asset.ResolvedTrackPlan == nil {
+		asset.ResolvedTrackPlan = profile.ResolvedTrackPlan
+	}
 	if asset.KeepVideoStreams == nil {
 		asset.KeepVideoStreams = profile.KeepVideoStreams
 	}

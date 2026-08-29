@@ -250,6 +250,7 @@ type AssetMetadataState struct {
 
 type AssetConversionOverrideState struct {
 	TrackProfileKey                  string                         `json:"trackProfileKey,omitempty"`
+	ResolvedTrackPlan                *ResolvedTrackPlan             `json:"resolvedTrackPlan,omitempty"`
 	KeepVideoStreams                 []int                          `json:"keepVideoStreams"`
 	KeepAudioStreams                 []int                          `json:"keepAudioStreams"`
 	KeepSubtitleStreams              []int                          `json:"keepSubtitleStreams"`
@@ -6408,6 +6409,7 @@ func conversionOverrideForPath(path string, overrides map[string]AssetConversion
 
 func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 	return strings.TrimSpace(override.TrackProfileKey) == "" &&
+		override.ResolvedTrackPlan == nil &&
 		override.KeepVideoStreams == nil &&
 		override.KeepAudioStreams == nil &&
 		override.KeepSubtitleStreams == nil &&

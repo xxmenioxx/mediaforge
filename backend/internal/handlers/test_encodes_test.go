@@ -137,10 +137,13 @@ func TestLabDraftTrackProfileResolvesLanguageRulesForTestEncode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	override := resolveLabTrackOverride(db, path, models.JSONMap{
+	override, err := resolveLabTrackOverride(db, path, models.JSONMap{
 		"scope": "path", "videoMode": "first", "audioMode": "languages",
 		"audioLanguages": models.JSONList{"spa"}, "dropCommentary": true,
 	}, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(override.KeepAudioStreams) != 1 || override.KeepAudioStreams[0] != 1 {
 		t.Fatalf("LAB Test Encode kept audio streams %#v, want only Spanish stream 1", override.KeepAudioStreams)
 	}
@@ -701,5 +704,36 @@ func TestGenerateTestExternalSubtitleArtifactsUsesTestBasename(t *testing.T) {
 	}
 	if got, err := os.ReadFile(want); err != nil || string(got) != string(content) {
 		t.Fatalf("external sidecar was not preserved beside test output: %q err=%v", got, err)
+	}
+}
+
+func TestActivateTestSubtitleArtifactsMovesTemporarySidecarsAtomically(t *testing.T) {
+	temp := t.TempDir()
+	temporaryMedia := filepath.Join(temp, ".Movie - MVForge Test T1.partial.mkv")
+	outputMedia := filepath.Join(temp, "Movie - MVForge Test T1.mkv")
+	first := strings.TrimSuffix(temporaryMedia, filepath.Ext(temporaryMedia)) + ".spa.ass"
+	second := strings.TrimSuffix(temporaryMedia, filepath.Ext(temporaryMedia)) + ".eng.forced.srt"
+	if err := os.WriteFile(first, []byte("ass"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("srt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []SubtitleArtifact{{StagedPath: first}, {StagedPath: second}}
+	if err := activateTestSubtitleArtifacts(artifacts, temporaryMedia, outputMedia); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		if strings.Contains(artifact.StagedPath, ".partial") {
+			t.Fatalf("artifact retained temporary basename: %#v", artifacts)
+		}
+		if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
+			t.Fatalf("activated artifact is missing: %s err=%v", artifact.StagedPath, err)
+		}
+	}
+	for _, path := range []string{first, second} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("temporary sidecar still exists: %s err=%v", path, err)
+		}
 	}
 }

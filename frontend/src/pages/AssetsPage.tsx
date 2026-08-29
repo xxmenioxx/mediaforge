@@ -5431,7 +5431,8 @@ function TrackProfileAutocomplete({ profiles, value, onChange, disabled, label =
   const none: TrackProfile = {
     key: '', name: 'Disabled', description: '', videoMode: 'first', audioMode: 'all', audioLanguages: [], audioRequired: false,
     dropCommentary: false, defaultAudioLanguage: '', subtitleMode: 'all', subtitleLanguages: [], subtitlesRequired: false,
-    defaultSubtitleLanguage: '', validationMode: 'warn', notes: '',
+    defaultSubtitleLanguage: '', validationMode: 'warn', subtitleDisposition: 'keep', subtitleRules: [],
+    attachmentPolicy: 'auto', chapterPolicy: 'keep', notes: '',
   };
   const inherit: TrackProfile = { ...none, key: '__inherit__', name: 'Inherit from path' };
   const options = [...(allowInherit ? [inherit] : []), none, ...profiles];

@@ -11,6 +11,9 @@ export type SubtitleTransform = {
   title?: string;
 };
 
+export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extract';
+export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition };
+
 export type TrackProfile = {
   key: string;
   name: string;
@@ -36,6 +39,10 @@ export type TrackProfile = {
   defaultSubtitleLanguage: string;
   validationMode: 'block' | 'review' | 'warn';
   subtitleTransforms?: SubtitleTransform[];
+	  subtitleDisposition: SubtitleDisposition;
+	  subtitleRules: SubtitleRule[];
+	  attachmentPolicy: 'auto' | 'keep' | 'remove';
+	  chapterPolicy: 'keep' | 'remove';
   notes: string;
   disabled?: boolean;
   deletedAt?: string;
@@ -45,6 +52,7 @@ export const emptyTrackProfile: TrackProfile = {
   key: '', name: '', description: '', videoMode: 'first', audioMode: 'languages', audioLanguages: [],
   audioRequired: true, dropCommentary: true, defaultAudioLanguage: '', subtitleMode: 'forced-or-languages',
   subtitleLanguages: [], subtitlesRequired: false, defaultSubtitleLanguage: '', validationMode: 'review', notes: '',
+	  subtitleDisposition: 'keep', subtitleRules: [], attachmentPolicy: 'auto', chapterPolicy: 'keep',
 };
 
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
@@ -123,6 +131,15 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     });
     return values.length ? values : undefined;
   };
+	const disposition = (entry: unknown): SubtitleDisposition => entry === 'remove' || entry === 'extract' || entry === 'keep_and_extract' ? entry : 'keep';
+	const rules = (entry: unknown): SubtitleRule[] => Array.isArray(entry) ? entry.flatMap((raw) => {
+		if (!raw || typeof raw !== 'object') return [];
+		const value = raw as Record<string, unknown>;
+		const action = disposition(value.action ?? value.disposition);
+		const language = typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : undefined;
+		const streamIndex = Number.isInteger(value.streamIndex) && Number(value.streamIndex) >= 0 ? Number(value.streamIndex) : undefined;
+		return language || streamIndex !== undefined ? [{ language, streamIndex, action }] : [];
+	}) : [];
   return {
     ...emptyTrackProfile,
     key: item.key, name: item.name, description: typeof item.description === 'string' ? item.description : '',
@@ -132,6 +149,9 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     keepVideoStreams: numbers(item.keepVideoStreams), keepAudioStreams: numbers(item.keepAudioStreams), keepSubtitleStreams: numbers(item.keepSubtitleStreams),
     videoMetadata: metadata(item.videoMetadata), audioMetadata: metadata(item.audioMetadata), subtitleMetadata: metadata(item.subtitleMetadata),
     subtitleTransforms: transforms(item.subtitleTransforms),
+	  subtitleDisposition: disposition(item.subtitleDisposition), subtitleRules: rules(item.subtitleRules),
+	  attachmentPolicy: item.attachmentPolicy === 'keep' || item.attachmentPolicy === 'remove' ? item.attachmentPolicy : 'auto',
+	  chapterPolicy: item.chapterPolicy === 'remove' ? 'remove' : 'keep',
     videoMode: item.videoMode === 'all' || item.videoMode === 'require-one' ? item.videoMode : 'first',
     audioMode: item.audioMode === 'all' || item.audioMode === 'default' || item.audioMode === 'none' ? item.audioMode : 'languages',
     audioLanguages: strings(item.audioLanguages), audioRequired: item.audioRequired !== false, dropCommentary: item.dropCommentary !== false,

@@ -304,7 +304,10 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		if len(job.AudioProfileSnapshot) > 0 {
 			job.AudioProfileKey = "lab-draft"
 		}
-		labTrackOverride := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+		labTrackOverride, err := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+		if err != nil {
+			return resolvedTestEncode{}, err
+		}
 		if encoded, err := json.Marshal(labTrackOverride); err == nil {
 			_ = json.Unmarshal(encoded, &job.TrackProfileSnapshot)
 		}
@@ -334,10 +337,10 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		if job.ProfileID == 0 {
 			return resolvedTestEncode{}, fmt.Errorf("an effective video profile is required for Test Encode V1")
 		}
-		if err := queue.captureProfile(&job, job.ProfileID, "test_encode_effective_asset"); err != nil {
+		if err := queue.captureSupplementalProfiles(&job); err != nil {
 			return resolvedTestEncode{}, err
 		}
-		if err := queue.captureSupplementalProfiles(&job); err != nil {
+		if err := queue.captureProfile(&job, job.ProfileID, "test_encode_effective_asset"); err != nil {
 			return resolvedTestEncode{}, err
 		}
 		requested["profileId"] = job.ProfileID
@@ -350,7 +353,10 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	if err != nil {
 		return resolvedTestEncode{}, err
 	}
-	labTrackOverride := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+	labTrackOverride, err := resolveLabTrackOverride(h.db, path, input.LabTrackProfile, input.LabTrackOverride)
+	if err != nil {
+		return resolvedTestEncode{}, err
+	}
 	override := testEncodeConversionOverride(source, job, labTrackOverride, assetConversionOverrides(h.db))
 	profile, err = resolveTestEncodeVideoProfile(h.db, path, job, profile, override)
 	if err != nil {
@@ -381,16 +387,29 @@ func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob
 	return profile, nil
 }
 
-func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONMap, explicit AssetConversionOverrideState) AssetConversionOverrideState {
+func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONMap, explicit AssetConversionOverrideState) (AssetConversionOverrideState, error) {
 	if len(profile) == 0 {
-		return explicit
+		return explicit, nil
 	}
 	resolved := resolveTrackProfileForAsset(db, mediaPath, cloneTestEncodeJSONMap(profile))
+	var scan models.ScanResult
+	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: asset snapshot: %w", err)
+	}
+	trackPlan, err := resolveTrackPlan(scan, resolved)
+	if err != nil {
+		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: resolve track plan: %w", err)
+	}
+	trackPlanMap, err := resolvedTrackPlanMap(trackPlan)
+	if err != nil {
+		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: serialize track plan: %w", err)
+	}
+	resolved[resolvedTrackPlanSnapshotKey] = trackPlanMap
 	var semantic AssetConversionOverrideState
 	if encoded, err := json.Marshal(resolved); err != nil || json.Unmarshal(encoded, &semantic) != nil {
-		return explicit
+		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: serialize resolved override")
 	}
-	return mergeTrackProfileBelowAssetOverride(semantic, explicit)
+	return mergeTrackProfileBelowAssetOverride(semantic, explicit), nil
 }
 
 func testEncodeConversionOverride(source string, job models.QueueJob, labOverride AssetConversionOverrideState, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
@@ -586,9 +605,10 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	}
 
 	artifactPlan := plan
-	artifactPlan.OutputPath = output
+	artifactPlan.OutputPath = temporary
 	subtitleArtifacts, err := generateSubtitleArtifacts(ctx, artifactPlan)
 	if err != nil {
+		_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Update("subtitle_artifacts", subtitleArtifactsJSON(subtitleArtifacts)).Error
 		h.failTestEncode(id, fmt.Errorf("generate test subtitle sidecars: %w", err))
 		return
 	}
@@ -622,6 +642,10 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		h.failTestEncode(id, fmt.Errorf("activate test output: %w", err))
 		return
 	}
+	if err := activateTestSubtitleArtifacts(subtitleArtifacts, temporary, output); err != nil {
+		h.failTestEncode(id, fmt.Errorf("activate test subtitle sidecars: %w", err))
+		return
+	}
 	outputInfo, err := os.Stat(output)
 	if err != nil || outputInfo.Size() == 0 {
 		h.failTestEncode(id, fmt.Errorf("test output validation failed: output is missing or empty"))
@@ -646,6 +670,37 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
 		"validation_report": report, "temporary_path": "", "updated_at": completed,
 	}).Error
+}
+
+func activateTestSubtitleArtifacts(artifacts []SubtitleArtifact, temporaryMediaPath, outputMediaPath string) error {
+	temporaryBase := strings.TrimSuffix(temporaryMediaPath, filepath.Ext(temporaryMediaPath))
+	outputBase := strings.TrimSuffix(outputMediaPath, filepath.Ext(outputMediaPath))
+	type activatedPath struct{ source, destination string }
+	activated := []activatedPath{}
+	destinations := make([]string, len(artifacts))
+	for index, artifact := range artifacts {
+		if !strings.HasPrefix(artifact.StagedPath, temporaryBase+".") {
+			return fmt.Errorf("subtitle artifact is outside the Test Encode temporary basename: %s", artifact.StagedPath)
+		}
+		destination := outputBase + strings.TrimPrefix(artifact.StagedPath, temporaryBase)
+		if _, err := os.Stat(destination); err == nil {
+			return fmt.Errorf("test subtitle destination already exists: %s", destination)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(artifact.StagedPath, destination); err != nil {
+			for rollbackIndex := len(activated) - 1; rollbackIndex >= 0; rollbackIndex-- {
+				_ = os.Rename(activated[rollbackIndex].destination, activated[rollbackIndex].source)
+			}
+			return err
+		}
+		activated = append(activated, activatedPath{source: artifact.StagedPath, destination: destination})
+		destinations[index] = destination
+	}
+	for index := range artifacts {
+		artifacts[index].StagedPath = destinations[index]
+	}
+	return nil
 }
 
 func plannedTestEncodeOutputPath(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile) string {

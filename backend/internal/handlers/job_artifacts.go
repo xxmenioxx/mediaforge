@@ -37,6 +37,7 @@ type jobArtifact struct {
 	EncoderDecision      models.JSONMap        `json:"encoderDecision,omitempty"`
 	StreamPlan           ResolvedStreamPlan    `json:"streamPlan"`
 	VideoToolboxStrategy models.JSONMap        `json:"videoToolboxStrategy,omitempty"`
+	Artifacts            models.JSONMap        `json:"artifacts,omitempty"`
 }
 
 type AssetConversionReport struct {
@@ -50,6 +51,9 @@ type AssetConversionReport struct {
 	SubtitleMetadata   map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
 	SubtitleTransforms []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
 	SubtitleArtifacts  models.JSONList                `json:"subtitleArtifacts,omitempty"`
+	TrackProfileKey    string                         `json:"trackProfileKey,omitempty"`
+	TrackRequested     models.JSONMap                 `json:"trackRequested,omitempty"`
+	ResolvedTrackPlan  *ResolvedTrackPlan             `json:"resolvedTrackPlan,omitempty"`
 	ProfileOverrides   map[string]any                 `json:"profileOverrides,omitempty"`
 	HumanSummary       []string                       `json:"humanSummary,omitempty"`
 }
@@ -129,6 +133,8 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 		StreamPlan:      streamPlan,
 	}
 	artifact.EncoderDecision = encoderDecisionForProfile(profile)
+	attachTrackDecisionReport(&artifact.AssetConversion, job)
+	artifact.Artifacts = jobArtifactOutputs(job)
 	artifact.VideoToolboxStrategy = videoToolboxStrategyReport(profile)
 	if job.ActiveExecutionPlanID != nil {
 		var plan models.ExecutionPlan
@@ -673,8 +679,44 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		artifact.EncoderDecision = encoderDecisionForProfile(profile)
 	}
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
+	attachTrackDecisionReport(&artifact.AssetConversion, job)
+	artifact.Artifacts = jobArtifactOutputs(job)
 	persistCompletedEncoderResult(db, artifact)
 	return writeJobArtifact(db, job, "result", artifact)
+}
+
+func attachTrackDecisionReport(report *AssetConversionReport, job models.QueueJob) {
+	if report == nil {
+		return
+	}
+	report.TrackProfileKey = job.TrackProfileKey
+	requested := models.JSONMap{}
+	for key, value := range job.TrackProfileSnapshot {
+		if key != resolvedTrackPlanSnapshotKey {
+			requested[key] = value
+		}
+	}
+	if len(requested) > 0 {
+		report.TrackRequested = requested
+	}
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		report.ResolvedTrackPlan = plan
+	}
+}
+
+func jobArtifactOutputs(job models.QueueJob) models.JSONMap {
+	primaryPath := job.OutputPath
+	if strings.TrimSpace(job.PublishedPath) != "" {
+		primaryPath = job.PublishedPath
+	}
+	primary := models.JSONMap{"type": "primary_media", "path": primaryPath}
+	if info, err := os.Stat(primaryPath); err == nil && !info.IsDir() {
+		primary["sizeBytes"] = info.Size()
+		primary["status"] = "ready"
+	} else {
+		primary["status"] = "missing"
+	}
+	return models.JSONMap{"primary": primary, "sidecars": job.SubtitleArtifacts}
 }
 
 func videoToolboxStrategyReport(profile models.Profile) models.JSONMap {

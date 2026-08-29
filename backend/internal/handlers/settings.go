@@ -69,6 +69,12 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			return
 		}
 	}
+	if key == "trackProfiles" {
+		if err := validateTrackProfileDomainPolicies(input.Value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	if key == "audioEnhancementProfiles" || key == "trackProfiles" {
 		mediaType := "audio"
 		if key == "trackProfiles" {
@@ -126,6 +132,38 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, setting)
 }
 
+func validateTrackProfileDomainPolicies(value models.JSONMap) error {
+	for index, raw := range settingProfileValues(value["profiles"]) {
+		profile := settingProfileObject(raw)
+		if profile == nil {
+			continue
+		}
+		name := strings.TrimSpace(workerStringValue(profile["key"]))
+		if name == "" {
+			name = fmt.Sprintf("profile %d", index+1)
+		}
+		if rawValue, exists := profile["subtitleDisposition"]; exists {
+			if _, err := ParseSubtitleDisposition(workerStringValue(rawValue)); err != nil {
+				return fmt.Errorf("track profile %s: %w", name, err)
+			}
+		}
+		if rawValue, exists := profile["attachmentPolicy"]; exists {
+			if _, err := ParseAttachmentPolicy(workerStringValue(rawValue)); err != nil {
+				return fmt.Errorf("track profile %s: %w", name, err)
+			}
+		}
+		if rawValue, exists := profile["chapterPolicy"]; exists {
+			if _, err := ParseChapterPolicy(workerStringValue(rawValue)); err != nil {
+				return fmt.Errorf("track profile %s: %w", name, err)
+			}
+		}
+		if err := validateSubtitleRules(profile); err != nil {
+			return fmt.Errorf("track profile %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func normalizeTrackProfilesForStorage(value models.JSONMap) models.JSONMap {
 	result := models.JSONMap{}
 	for key, item := range value {
@@ -146,6 +184,17 @@ func normalizeTrackProfilesForStorage(value models.JSONMap) models.JSONMap {
 		if storedSettingProfileScope(copy) == "path" {
 			for _, key := range []string{"keepVideoStreams", "keepAudioStreams", "keepSubtitleStreams", "videoMetadata", "audioMetadata", "subtitleMetadata", "subtitleTransforms"} {
 				delete(copy, key)
+			}
+			if rules := workerSliceValue(copy["subtitleRules"]); rules != nil {
+				semantic := models.JSONList{}
+				for _, rawRule := range rules {
+					rule := settingProfileObject(rawRule)
+					if _, concrete := rule["streamIndex"]; concrete {
+						continue
+					}
+					semantic = append(semantic, rawRule)
+				}
+				copy["subtitleRules"] = semantic
 			}
 		}
 		normalized = append(normalized, copy)

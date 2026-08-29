@@ -79,7 +79,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { getTrackProfiles, materializeAssetTrackSelection, trackProfileOverride, trackProfileWithConversion, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, materializeAssetTrackSelection, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type TrackProfile } from '../trackProfiles';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
@@ -605,6 +605,10 @@ const emptyTrackDraft: TrackProfile = {
   subtitlesRequired: false,
   defaultSubtitleLanguage: 'spa',
   validationMode: 'review',
+  subtitleDisposition: 'keep',
+  subtitleRules: [],
+  attachmentPolicy: 'auto',
+  chapterPolicy: 'keep',
   notes: '',
 };
 
@@ -988,9 +992,9 @@ export function ProfileLabPage() {
       ? storedLabSnapshot.data.snapshot
       : undefined;
   const pathTrackPreview = useQuery({
-    queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft],
-    queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: { ...trackDraft, scope: 'path' } }),
-    enabled: labSection === 'tracks' && activeProfileScope === 'path' && Boolean(assetPath) && Boolean(selectedAssetSnapshot),
+    queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft, trackConversionDraft],
+    queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: normalizedTrackProfileDraft() as unknown as Record<string, unknown> }),
+    enabled: labSection === 'tracks' && Boolean(assetPath) && Boolean(selectedAssetSnapshot),
   });
   const autoRecommendation = useMutation({
     mutationFn: async (path: string) => {
@@ -1756,12 +1760,14 @@ export function ProfileLabPage() {
 
   function normalizedTrackProfileDraft(): TrackProfile {
     let conversion = cleanTrackConversionOverride(trackConversionDraft);
-    if ((trackDraft.scope ?? 'asset') === 'asset' && selectedAssetSnapshot) {
+    const scope = trackDraft.scope ?? 'asset';
+    if (scope === 'asset' && selectedAssetSnapshot) {
       conversion = materializeAssetTrackSelection(conversion, selectedAssetSnapshot);
     }
     return trackProfileWithConversion({
       ...trackDraft,
-      scope: trackDraft.scope ?? 'asset',
+      scope,
+      subtitleRules: scope === 'path' ? trackDraft.subtitleRules.filter((rule) => rule.streamIndex === undefined) : trackDraft.subtitleRules,
       key: slugify(trackDraft.key || trackDraft.name),
       sourceAssetPath: selectedAsset?.path ?? trackDraft.sourceAssetPath ?? '',
       sourceAssetName: selectedAsset?.fileName ?? trackDraft.sourceAssetName ?? '',
@@ -1795,36 +1801,32 @@ export function ProfileLabPage() {
     setTrackConversionDraft(trackProfileOverride(profile));
   }
 
-  function updateTrackSubtitleTransform(stream: MediaStreamInfo, format: '' | 'srt' | 'ass') {
-    setTrackConversionDraft((current) => {
-      const remaining = (current.subtitleTransforms ?? []).filter((item) => item.streamIndex !== stream.index);
-      if (!format) return { ...current, subtitleTransforms: remaining.length ? remaining : undefined };
-      const bitmap = isBitmapSubtitleStream(stream);
-      const allSubtitleIndexes = selectedAssetSnapshot ? streamIndexesForType(selectedAssetSnapshot, 'subtitle') : [];
-      const selectedSubtitleIndexes = selectedAssetSnapshot
-        ? conversionStreamIndexes(current, selectedAssetSnapshot, 'subtitle').filter((index) => index !== stream.index)
-        : (current.keepSubtitleStreams ?? []).filter((index) => index !== stream.index);
-      return {
-        ...current,
-        keepSubtitleStreams: selectedOrUndefined(selectedSubtitleIndexes, allSubtitleIndexes),
-        subtitleTransforms: [...remaining, {
-          streamIndex: stream.index,
-          format,
-          removeEmbedded: true,
-          makeDefault: stream.default,
-          language: stream.language || 'und',
-          ocrLanguage: bitmap ? defaultTrackOCRLanguage(stream.language) : undefined,
-          ocrMode: bitmap ? 'accurate' : undefined,
-          title: stream.title || undefined,
-        }],
-      };
-    });
+  function subtitleActionForStream(index: number): SubtitleDisposition {
+    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.action ?? trackDraft.subtitleDisposition;
   }
 
-  function updateTrackSubtitleTransformValue(streamIndex: number, patch: Partial<NonNullable<AssetConversionOverrideState['subtitleTransforms']>[number]>) {
+  function updateSubtitleActionForStream(index: number, action: SubtitleDisposition) {
+    setTrackDraft((current) => ({
+      ...current,
+      subtitleRules: [...current.subtitleRules.filter((rule) => rule.streamIndex !== index), { streamIndex: index, action }],
+    }));
     setTrackConversionDraft((current) => ({
       ...current,
-      subtitleTransforms: (current.subtitleTransforms ?? []).map((item) => item.streamIndex === streamIndex ? { ...item, ...patch } : item),
+      subtitleTransforms: current.subtitleTransforms?.filter((item) => item.streamIndex !== index),
+    }));
+  }
+
+  function subtitleActionForLanguage(language: string): SubtitleDisposition {
+    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === undefined && rule.language === language)?.action ?? trackDraft.subtitleDisposition;
+  }
+
+  function updateSubtitleActionForLanguage(language: string, action: SubtitleDisposition) {
+    setTrackDraft((current) => ({
+      ...current,
+      subtitleRules: [
+        ...current.subtitleRules.filter((rule) => rule.streamIndex !== undefined || rule.language !== language),
+        { language, action },
+      ],
     }));
   }
 
@@ -2612,71 +2614,10 @@ export function ProfileLabPage() {
                           <TextField select label="Quality / storage intent" value={videoDraft.optimizationIntent ?? 'balanced'} onChange={(event) => setVideoDraft((current) => ({ ...current, optimizationIntent: event.target.value as ProfileInput['optimizationIntent'] }))} helperText="Used by MVForge when comparing this profile with future assets." fullWidth>
                             <MenuItem value="maximum_savings">Maximum space saving</MenuItem><MenuItem value="balanced">Balanced</MenuItem><MenuItem value="conservative">Conservative quality</MenuItem><MenuItem value="maximum_quality">Maximum quality</MenuItem><MenuItem value="archive">Archive</MenuItem>
                           </TextField>
-                          <Grid container spacing={1}>
-                            <Grid size={{ xs: 12, sm: 6 }}>
-                              <FormControlLabel
-                                control={<Checkbox checked={videoDraft.preserveHdr} onChange={(event) => setVideoDraft((current) => ({ ...current, preserveHdr: event.target.checked }))} />}
-                                label="Preserve HDR"
-                              />
-                            </Grid>
-                            <Grid size={{ xs: 12, sm: 6 }}>
-                              <FormControlLabel
-                                control={<Checkbox checked={videoDraft.preserveChapters} onChange={(event) => setVideoDraft((current) => ({ ...current, preserveChapters: event.target.checked }))} />}
-                                label="Preserve chapters"
-                              />
-                            </Grid>
-                          </Grid>
-                          <Grid size={{ xs: 12, sm: 6 }}>
-                            <Tooltip title="Removes container attachments such as embedded fonts, cover images, XML files, and other MKV attachments from the converted output.">
-                              <FormControlLabel
-                                control={
-                                  <Checkbox
-                                    checked={
-                                      videoDraft.workerConfig?.removeAttachments === true
-                                    }
-                                    onChange={(event) =>
-                                      setVideoDraft((current) => ({
-                                        ...current,
-                                        workerConfig: {
-                                          ...current.workerConfig,
-                                          removeAttachments: event.target.checked,
-                                        },
-                                      }))
-                                    }
-                                  />
-                                }
-                                label="Remove attachments"
-                              />
-                            </Tooltip>
-                          </Grid>
-                          <TextField
-                            select
-                            fullWidth
-                            label="Convert all subtitles"
-                            value={videoExternalSubtitleFormat(videoDraft)}
-                            onChange={(event) => updateVideoSubtitleExternalization(setVideoDraft, event.target.value)}
-                            helperText="Creates validated sidecars and removes every embedded subtitle. A selected Tracks Profile takes priority."
-                          >
-                            <MenuItem value="disabled">Disabled · defer to Tracks Profile</MenuItem>
-                            <MenuItem value="source">Keep embedded subtitle tracks</MenuItem>
-                            <MenuItem value="srt">External SRT · remove embedded tracks</MenuItem>
-                            <MenuItem value="ass">External ASS · remove embedded tracks</MenuItem>
-                            <MenuItem value="remove">Remove embedded subtitle tracks</MenuItem>
-                          </TextField>
-                          {videoExternalSubtitleFormat(videoDraft) === 'srt' || videoExternalSubtitleFormat(videoDraft) === 'ass' ? (
-                            <Grid container spacing={1.5}>
-                              <Grid size={{ xs: 12, sm: 6 }}>
-                                <TextField select fullWidth label="Bitmap OCR quality" value={videoWorkerValue(videoDraft, 'subtitleOCRMode', 'accurate')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'subtitleOCRMode', event.target.value)} helperText="Accurate compares two traditional OCR passes.">
-                                  <MenuItem value="raw">Raw · one pass</MenuItem><MenuItem value="clean">Clean · corrected</MenuItem><MenuItem value="accurate">Accurate · two passes</MenuItem>
-                                </TextField>
-                              </Grid>
-                              <Grid size={{ xs: 12, sm: 6 }}>
-                                <TextField select fullWidth label="Bitmap OCR language" value={videoWorkerValue(videoDraft, 'subtitleOCRLanguage', 'auto')} onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'subtitleOCRLanguage', event.target.value)} helperText="Automatic reads each track language.">
-                                  <MenuItem value="auto">Automatic per track</MenuItem><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem>
-                                </TextField>
-                              </Grid>
-                            </Grid>
-                          ) : null}
+                          <FormControlLabel
+                            control={<Checkbox checked={videoDraft.preserveHdr} onChange={(event) => setVideoDraft((current) => ({ ...current, preserveHdr: event.target.checked }))} />}
+                            label="Preserve HDR"
+                          />
                         </Stack>
                       </Box>
                     </Grid>
@@ -3825,7 +3766,7 @@ export function ProfileLabPage() {
                         {!assetPath ? <Alert severity="warning">Choose an asset first so the Lab can show real video, audio, and subtitle tracks.</Alert> : null}
                         {trackSnapshot.isPending ? <Alert severity="info">Reading track snapshot...</Alert> : null}
                         {trackSnapshot.isError ? <Alert severity="warning">Could not scan this asset. It may not be readable from the backend.</Alert> : null}
-                        {activeProfileScope === 'path' && selectedAssetSnapshot ? (
+                        {selectedAssetSnapshot ? (
                           <TrackProfileResolutionPreview
                             scan={selectedAssetSnapshot}
                             preview={pathTrackPreview.data?.assetPath === assetPath ? pathTrackPreview.data : undefined}
@@ -3850,7 +3791,7 @@ export function ProfileLabPage() {
                               subtitle: {
                                 selected: conversionStreamIndexes(trackConversionDraft, selectedAssetSnapshot, 'subtitle'),
                                 disabled: updateSetting.isPending,
-                                onToggle: (index, keep) => toggleTrackStream('subtitle', index, keep),
+                                onToggle: (index, keep) => updateSubtitleActionForStream(index, keep ? 'keep' : 'remove'),
                               },
                             }}
                             metadataControls={{
@@ -3875,23 +3816,16 @@ export function ProfileLabPage() {
                         {activeProfileScope === 'asset' && selectedAssetSnapshot?.subtitleStreams.length ? (
                           <Stack spacing={1.25}>
                             <Stack>
-                              <Typography fontWeight={700}>External subtitle transformations</Typography>
-                              <Typography color="text.secondary" variant="body2">Create validated sidecars and remove the selected embedded tracks. Bitmap tracks run OCR before FFmpeg.</Typography>
+                              <Typography fontWeight={700}>Subtitle disposition</Typography>
+                              <Typography color="text.secondary" variant="body2">Choose the final action for each subtitle stream. The resolved preview below is authoritative.</Typography>
                             </Stack>
                             {selectedAssetSnapshot.subtitleStreams.map((stream) => {
-                              const transform = trackConversionDraft.subtitleTransforms?.find((item) => item.streamIndex === stream.index);
-                              const bitmap = isBitmapSubtitleStream(stream);
                               return <Box key={stream.index} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
                                 <Stack spacing={1.25}>
                                   <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
-                                  <Grid container spacing={1.25}>
-                                    <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField select fullWidth disabled={updateSetting.isPending} label="Subtitle action" value={transform?.format ?? ''} onChange={(event) => updateTrackSubtitleTransform(stream, event.target.value as '' | 'srt' | 'ass')}><MenuItem value="">Keep embedded track</MenuItem><MenuItem value="srt">Create SRT and remove embedded</MenuItem><MenuItem value="ass">Create ASS and remove embedded</MenuItem></TextField></Grid>
-                                    {transform ? <Grid size={{ xs: 12, md: bitmap ? 3 : 6 }}><TextField fullWidth disabled={updateSetting.isPending} label="Sidecar language" value={transform.language} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { language: event.target.value.toLowerCase() })} /></Grid> : null}
-                                    {transform && bitmap ? <>
-                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth disabled={updateSetting.isPending} label="OCR quality" value={transform.ocrMode || 'accurate'} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrMode: event.target.value as 'raw' | 'clean' | 'accurate' })}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField></Grid>
-                                      <Grid size={{ xs: 12, md: 3 }}><TextField select fullWidth disabled={updateSetting.isPending} label="OCR language" value={transform.ocrLanguage || defaultTrackOCRLanguage(stream.language)} onChange={(event) => updateTrackSubtitleTransformValue(stream.index, { ocrLanguage: event.target.value })}><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem></TextField></Grid>
-                                    </> : null}
-                                  </Grid>
+                                  <TextField select fullWidth disabled={updateSetting.isPending} label="Action" value={subtitleActionForStream(stream.index)} onChange={(event) => updateSubtitleActionForStream(stream.index, event.target.value as SubtitleDisposition)}>
+                                    <MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem>
+                                  </TextField>
                                 </Stack>
                               </Box>;
                             })}
@@ -3913,11 +3847,15 @@ export function ProfileLabPage() {
                           {activeProfileScope === 'asset' ? <Button size="small" variant="text" onClick={() => setAssetTrackRulesOpen((current) => !current)} sx={{ alignSelf: 'flex-start' }}>{assetTrackRulesOpen ? 'Hide advanced rules' : 'Show advanced rules'}</Button> : null}
                           <Collapse in={activeProfileScope === 'path' || assetTrackRulesOpen}>
                           <Grid container spacing={1.5}>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Default subtitle action" value={trackDraft.subtitleDisposition} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleDisposition: event.target.value as SubtitleDisposition })}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Attachments" value={trackDraft.attachmentPolicy} onChange={(event) => setTrackDraft({ ...trackDraft, attachmentPolicy: event.target.value as TrackProfile['attachmentPolicy'] })} helperText="Auto preserves font attachments when retained embedded ASS/SSA subtitles may require them."><MenuItem value="auto">Auto (Recommended)</MenuItem><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Chapters" value={trackDraft.chapterPolicy} onChange={(event) => setTrackDraft({ ...trackDraft, chapterPolicy: event.target.value as TrackProfile['chapterPolicy'] })}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Video rule" value={trackDraft.videoMode} onChange={(event) => setTrackDraft({ ...trackDraft, videoMode: event.target.value as TrackProfile['videoMode'] })}><MenuItem value="first">Keep first video</MenuItem><MenuItem value="all">Keep all video</MenuItem><MenuItem value="require-one">Require one video</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Audio rule" value={trackDraft.audioMode} onChange={(event) => setTrackDraft({ ...trackDraft, audioMode: event.target.value as TrackProfile['audioMode'] })}><MenuItem value="all">Keep all audio</MenuItem><MenuItem value="default">Keep default audio</MenuItem><MenuItem value="languages">Keep selected languages</MenuItem><MenuItem value="none">Remove all audio</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Subtitle rule" value={trackDraft.subtitleMode} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleMode: event.target.value as TrackProfile['subtitleMode'] })}><MenuItem value="all">Keep all subtitles</MenuItem><MenuItem value="none">Remove all subtitles</MenuItem><MenuItem value="forced">Forced only</MenuItem><MenuItem value="languages">Selected languages</MenuItem><MenuItem value="forced-or-languages">Forced or selected languages</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.audioLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, audioLanguages: normalizeStringList(values) })} disabled={trackDraft.audioMode !== 'languages'} renderInput={(params) => <TextField {...params} label="Audio languages" helperText="Select or enter ISO language codes." />} /></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.subtitleLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, subtitleLanguages: normalizeStringList(values) })} disabled={trackDraft.subtitleMode !== 'languages' && trackDraft.subtitleMode !== 'forced-or-languages'} renderInput={(params) => <TextField {...params} label="Subtitle languages" helperText="Select or enter ISO language codes." />} /></Grid>
+                            {activeProfileScope === 'path' ? trackDraft.subtitleLanguages.map((language) => <Grid key={language} size={{ xs: 12, md: 6 }}><TextField select fullWidth label={`${language.toUpperCase()} subtitle action`} value={subtitleActionForLanguage(language)} onChange={(event) => updateSubtitleActionForLanguage(language, event.target.value as SubtitleDisposition)}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>) : null}
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default audio language" value={trackDraft.defaultAudioLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultAudioLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={trackDraft.defaultSubtitleLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultSubtitleLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12 }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap><FormControlLabel control={<Checkbox checked={trackDraft.audioRequired} onChange={(event) => setTrackDraft({ ...trackDraft, audioRequired: event.target.checked })} />} label="Require matching audio" /><FormControlLabel control={<Checkbox checked={trackDraft.subtitlesRequired} onChange={(event) => setTrackDraft({ ...trackDraft, subtitlesRequired: event.target.checked })} />} label="Require matching subtitles" /><FormControlLabel control={<Checkbox checked={trackDraft.dropCommentary} onChange={(event) => setTrackDraft({ ...trackDraft, dropCommentary: event.target.checked })} />} label="Remove commentary tracks" /></Stack></Grid>
@@ -5220,25 +5158,6 @@ function videoExternalSubtitleFormat(draft: ProfileInput) {
   return legacy === 'srt' || legacy === 'ass' ? legacy : 'source';
 }
 
-function updateVideoSubtitleExternalization(
-  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
-  format: string,
-) {
-  const normalized = format === 'disabled' || format === 'srt' || format === 'ass' || format === 'remove' ? format : 'source';
-  setVideoDraft((current) => ({
-    ...current,
-    preserveSubtitles: normalized === 'disabled' || normalized === 'source',
-    workerConfig: {
-      ...current.workerConfig,
-      externalSubtitleFormat: normalized,
-      // Externalization is handled before the media command. Keep FFmpeg from
-      // independently transcoding the remaining subtitle streams.
-      subtitleOutputFormat: 'source',
-      preferSrtSubtitles: false,
-    },
-  }));
-}
-
 function videoAACTrackEnabled(draft: ProfileInput) {
   return draft.workerConfig && 'addAacStereoTrack' in draft.workerConfig
     ? videoWorkerBool(draft, 'addAacStereoTrack')
@@ -6336,14 +6255,6 @@ function isCommentaryStream(stream: MediaStreamInfo) {
 function isBitmapSubtitleStream(stream: MediaStreamInfo) {
   const codec = stream.codec.toLowerCase();
   return ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvb_subtitle', 'xsub'].includes(codec);
-}
-
-function defaultTrackOCRLanguage(language: string) {
-  const value = (language || '').trim().toLowerCase();
-  if (['spa', 'es', 'esp'].includes(value)) return 'spa';
-  if (['jpn', 'ja', 'jp'].includes(value)) return 'jpn';
-  if (['jpn_vert', 'ja_vert'].includes(value)) return 'jpn_vert';
-  return 'eng';
 }
 
 function TrackProfileAutocomplete({

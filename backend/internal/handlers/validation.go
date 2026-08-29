@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -152,6 +153,15 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		10,
 	)
 
+	sidecarChecks, sidecarWarnings, sidecarReport := validateRequiredSubtitleArtifacts(job)
+	for _, check := range sidecarChecks {
+		checks = append(checks, check)
+		if check.Status == "failed" {
+			score -= 30
+		}
+	}
+	warnings = append(warnings, sidecarWarnings...)
+
 	if job.Notes != "" && job.OutputPath != "" && !outputExists {
 		warnings = append(warnings, "This looks like a dry-run or missing output; real validation requires a generated file.")
 	}
@@ -230,6 +240,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		"warnings":    warnings,
 		"validatedAt": time.Now().Format(time.RFC3339),
 	}
+	report["subtitleArtifacts"] = sidecarReport
 	if directPlayEvaluated {
 		report["directPlay"] = directPlayReport
 	}
@@ -249,6 +260,72 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		Warnings: warnings,
 		Report:   report,
 	}
+}
+
+func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []string, models.JSONMap) {
+	expected := []ResolvedTrackSidecar{}
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		expected = plan.SidecarOutputs
+	}
+	artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+	byStream := map[int][]SubtitleArtifact{}
+	for _, artifact := range artifacts {
+		byStream[artifact.StreamIndex] = append(byStream[artifact.StreamIndex], artifact)
+	}
+	checks := []CheckResult{}
+	warnings := []string{}
+	reportItems := models.JSONList{}
+	for _, decision := range expected {
+		label := fmt.Sprintf("Subtitle sidecar for stream %d", decision.StreamIndex)
+		candidates := byStream[decision.StreamIndex]
+		var artifact *SubtitleArtifact
+		for index := range candidates {
+			if decision.Format == "" || strings.EqualFold(candidates[index].Format, decision.Format) {
+				candidate := candidates[index]
+				artifact = &candidate
+				break
+			}
+		}
+		status, message := "passed", "Required subtitle sidecar is ready."
+		item := models.JSONMap{"streamIndex": decision.StreamIndex, "language": decision.Language, "codec": decision.Codec, "requestedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "resolvedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "expectedFormat": decision.Format}
+		if artifact == nil {
+			status, message = "failed", "Requested subtitle sidecar is missing from the job artifact set."
+		} else {
+			item["artifact"] = artifact
+			if artifact.Status != "" && artifact.Status != "ready" {
+				status, message = "failed", "Requested subtitle sidecar is not ready: "+fallback(artifact.Error, artifact.Status)
+			} else if !strings.EqualFold(filepath.Ext(artifact.StagedPath), "."+artifact.Format) || (decision.Format != "" && !strings.EqualFold(artifact.Format, decision.Format)) {
+				status, message = "failed", "Subtitle sidecar extension or format does not match the resolved track plan."
+			} else if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
+				status, message = "failed", "Requested subtitle sidecar is not readable from staging."
+			} else if info.Size() <= 0 {
+				status, message = "failed", "Requested subtitle sidecar is empty."
+			} else if content, err := os.ReadFile(artifact.StagedPath); err != nil || !validOriginalSubtitleSidecar(artifact.Format, content) {
+				status, message = "failed", "Requested subtitle sidecar does not match its expected artifact type."
+			}
+			if decision.Language != "" && decision.Language != "und" && strings.TrimSpace(artifact.Language) == "" {
+				warnings = append(warnings, fmt.Sprintf("Subtitle sidecar for stream %d is valid but language metadata is unavailable.", decision.StreamIndex))
+			}
+		}
+		item["status"], item["message"] = status, message
+		reportItems = append(reportItems, item)
+		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d", decision.StreamIndex), Label: label, Status: status, Message: message})
+		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract {
+			warnings = append(warnings, fmt.Sprintf("Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.", strings.ToUpper(decision.Codec), decision.StreamIndex))
+		}
+	}
+	return checks, warnings, models.JSONMap{"required": len(expected), "artifacts": artifacts, "checks": reportItems}
+}
+
+func subtitleDispositionForSidecar(job models.QueueJob, streamIndex int) SubtitleDisposition {
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		for _, subtitle := range plan.SubtitleStreams {
+			if subtitle.StreamIndex == streamIndex {
+				return subtitle.Action
+			}
+		}
+	}
+	return SubtitleDispositionExtract
 }
 
 func resolvedStreamPlanForJobValidation(db *gorm.DB, job models.QueueJob) (ResolvedStreamPlan, bool) {
