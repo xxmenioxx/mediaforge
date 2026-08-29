@@ -373,3 +373,45 @@ func trackResolverScan() models.ScanResult {
 		RawProbe: models.JSONMap{"streams": []any{map[string]any{"index": 7, "codec_type": "attachment", "codec_name": "ttf"}}}, Chapters: 4,
 	}
 }
+
+func TestResolveTrackPlanV1IgnoresLegacySubtitleSelectionAndTransforms(t *testing.T) {
+	scan := trackResolverScan()
+
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "keep",
+		"subtitleRules":           []any{},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+
+		// Legacy fields must not influence a canonical V1 profile.
+		"keepSubtitleStreams": []int{},
+		"subtitleTransforms": []any{
+			map[string]any{
+				"streamIndex":    3,
+				"format":         "ass",
+				"removeEmbedded": true,
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, subtitle := range plan.SubtitleStreams {
+		if subtitle.Action != SubtitleDispositionKeep {
+			t.Fatalf(
+				"V1 profile was changed by legacy subtitle fields: %#v",
+				plan.SubtitleStreams,
+			)
+		}
+	}
+
+	if len(plan.SidecarOutputs) != 0 {
+		t.Fatalf(
+			"V1 profile generated sidecars from legacy subtitleTransforms: %#v",
+			plan.SidecarOutputs,
+		)
+	}
+}
