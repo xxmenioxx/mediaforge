@@ -2439,7 +2439,6 @@ function AssetRow({
   const [snapshotTab, setSnapshotTab] = useState(0);
   const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
-  const automaticSnapshotKey = useRef('');
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [renamingSubtitle, setRenamingSubtitle] = useState<ExternalSubtitle | null>(null);
   const [subtitleFileName, setSubtitleFileName] = useState('');
@@ -2499,18 +2498,9 @@ function AssetRow({
     },
   });
   const snapshotData = snapshot.data ?? storedSnapshot.data?.snapshot ?? null;
-  useEffect(() => {
-    const state = storedSnapshot.data;
-    if (!showSnapshotDialog || asset.missing || storedSnapshot.isFetching || snapshot.isPending || !state?.requiresAnalysis) {
-      return;
-    }
-    const key = `${asset.path}:${state.status}:${state.snapshot?.updatedAt ?? 'none'}`;
-    if (automaticSnapshotKey.current === key) {
-      return;
-    }
-    automaticSnapshotKey.current = key;
-    snapshot.mutate({ path: asset.path });
-  }, [asset.missing, asset.path, showSnapshotDialog, snapshot, storedSnapshot.data, storedSnapshot.isFetching]);
+  const storedSnapshotExists = snapshotData !== null;
+  const refreshRequired = storedSnapshot.data?.snapshot != null && storedSnapshot.data.requiresAnalysis;
+  const operationPending = snapshot.isPending;
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
@@ -2746,7 +2736,6 @@ function AssetRow({
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    automaticSnapshotKey.current = '';
     setSnapshotTab(0);
     setShowSnapshotDialog(true);
   }
@@ -3596,9 +3585,11 @@ async function generateExternalSubtitle(
                 {assetTitle(asset)}
               </Typography>
             </Stack>
-            <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={asset.missing || snapshot.isPending}>
-              Rescan
-            </Button>
+            {storedSnapshotExists && !refreshRequired ? (
+              <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={asset.missing || operationPending}>
+                Rescan
+              </Button>
+            ) : null}
           </Stack>
         </DialogTitle>
         <DialogContent sx={{ pt: 1 }}>
@@ -3611,8 +3602,8 @@ async function generateExternalSubtitle(
               </Stack>
             </Stack>
             {asset.missing ? <Alert severity="warning">This indexed asset is marked as missing. Synchronize Assets and verify that the backend media mount contains the file before scanning it.</Alert> : null}
-            {storedSnapshot.isLoading && !snapshotData && !snapshot.isPending ? <LinearProgress /> : null}
-            {snapshot.isPending ? (
+            {storedSnapshot.isLoading && !storedSnapshotExists && !operationPending ? <LinearProgress /> : null}
+            {operationPending ? (
               <Alert severity="info">
                 <Stack spacing={1}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
@@ -3640,15 +3631,23 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {!asset.missing && !storedSnapshot.isLoading && !storedSnapshot.data?.requiresAnalysis && !snapshot.isPending && !snapshotData ? (
+            {!asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
               <Alert
                 severity="info"
                 action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })}>Analyze asset</Button>}
               >
-                No stored snapshot is available. Opening Asset Info does not analyze media automatically.
+                No snapshot available
               </Alert>
             ) : null}
-            {snapshotData ? (
+            {!asset.missing && !operationPending && refreshRequired ? (
+              <Alert
+                severity="warning"
+                action={<Button color="inherit" size="small" onClick={refreshSnapshot}>Rescan</Button>}
+              >
+                Snapshot needs refresh
+              </Alert>
+            ) : null}
+            {storedSnapshotExists ? (
               <>
                 <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
                   <Tab label="Asset Information" />

@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetInventory, AssetPath } from '../api/types';
+import type { Asset, AssetInventory, AssetPath, ScanResult, SnapshotOperation } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -13,6 +13,7 @@ vi.mock('../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
+    latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleExtractionOperations: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(),
     },
@@ -30,6 +31,22 @@ function testAsset(id: number, path: string, missing = false): Asset {
 
 function testPath(id: string, path: string, displayPath: string, root: boolean, assets: Asset[]): AssetPath {
   return { id, name: displayPath, path, relativePath: displayPath, displayPath, isLogicalGroupRoot: root, fileCount: assets.length, assetCount: assets.length, sizeBytes: assets.length * 1024, totalSizeBytes: assets.length * 1024, assets };
+}
+
+function testSnapshot(path = '/media/raw/movies/Akira/Akira.mkv'): ScanResult {
+  return {
+    id: 1, path, fileName: 'Akira.mkv', container: 'matroska', sizeBytes: 1024, duration: 60, bitrate: 1000,
+    videoCodec: 'h264', width: 1920, height: 1080, hdr: false, audioTracks: 1, subtitleTracks: 0, chapters: 0,
+    videoStreams: [], audioStreams: [], subtitleStreams: [], compatibilityAnalysis: {}, interlaceAnalysis: {}, rawProbe: {},
+  } as unknown as ScanResult;
+}
+
+function completedSnapshotOperation(path = '/media/raw/movies/Akira/Akira.mkv', forceResult = testSnapshot(path)): SnapshotOperation {
+  return {
+    id: 'snapshot-operation-1', assetPath: path, status: 'completed', phase: 'complete', progress: 100,
+    message: 'Complete', durationMs: 10, cacheHit: false, incrementalRefresh: false, result: forceResult,
+    createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
+  };
 }
 
 describe('Unprocessed Assets hierarchy', () => {
@@ -50,6 +67,11 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.libraries).mockResolvedValue([]);
     vi.mocked(api.settings).mockResolvedValue([]);
     vi.mocked(api.snapshotOperations).mockResolvedValue({ operations: [] });
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: false, snapshot: null, status: 'missing', requiresAnalysis: true, staleComponents: [] });
+    vi.mocked(api.startSnapshotOperation).mockResolvedValue(completedSnapshotOperation());
+    vi.mocked(api.snapshotOperation).mockResolvedValue(completedSnapshotOperation());
+    vi.mocked(api.externalAssetSubtitles).mockResolvedValue([]);
+    vi.mocked(api.subtitleExtractionOperations).mockResolvedValue({ operations: [] });
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -89,6 +111,118 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByText('extras')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /expand root/i })).toBeNull();
     expect(screen.getByRole('button', { name: /path actions extras/i })).toBeTruthy();
+  });
+
+  it.each([
+    ['current stored snapshot', { found: true, snapshot: testSnapshot(), status: 'current' as const, requiresAnalysis: false, staleComponents: [] }],
+    ['stale stored snapshot', { found: true, snapshot: testSnapshot(), status: 'stale' as const, requiresAnalysis: true, staleComponents: ['interlace'] }],
+    ['no stored snapshot', { found: false, snapshot: null, status: 'missing' as const, requiresAnalysis: true, staleComponents: [] }],
+  ])('keeps Asset Info read-only for %s', async (_label, snapshotState) => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByRole('heading', { name: 'Asset Snapshot' })).toBeTruthy();
+    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv'));
+    expect(api.startSnapshotOperation).not.toHaveBeenCalled();
+    if (_label === 'no stored snapshot') {
+      expect(screen.getByText('No snapshot available')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Analyze asset' })).toBeTruthy();
+      expect(screen.queryByRole('tab', { name: 'Asset Information' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Rescan' })).toBeNull();
+    } else {
+      expect(screen.getByRole('tab', { name: 'Asset Information' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Analyze asset' })).toBeNull();
+      if (_label === 'stale stored snapshot') {
+        expect(screen.getByText('Snapshot needs refresh')).toBeTruthy();
+      } else {
+        expect(screen.queryByText('Snapshot needs refresh')).toBeNull();
+      }
+      expect(screen.getByRole('button', { name: 'Rescan' })).toBeTruthy();
+    }
+  });
+
+  it('starts one snapshot operation only after Analyze asset is clicked', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
+    await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
+    expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv' });
+  });
+
+  it('starts one forced snapshot operation only after Rescan is clicked', async () => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByRole('heading', { name: 'Asset Snapshot' })).toBeTruthy();
+    expect(api.startSnapshotOperation).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Rescan' }));
+    await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
+    expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv', force: true });
+  });
+
+  it('does not re-arm Analyze after success, snapshot refetch, or rerenders', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    const view = render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
+    await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
+    await queryClient.invalidateQueries({ queryKey: ['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'] });
+    await waitFor(() => expect(screen.getByText('Snapshot needs refresh')).toBeTruthy());
+    view.rerender(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+    view.rerender(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-arm Rescan after success and snapshot refetch', async () => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('button', { name: 'Rescan' }));
+    await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
+    await queryClient.invalidateQueries({ queryKey: ['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'] });
+
+    expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps close and reopen read-only', async () => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
+    const user = userEvent.setup();
+    const view = render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByText('Snapshot needs refresh')).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
+    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByText('Snapshot needs refresh')).toBeTruthy();
+    expect(api.startSnapshotOperation).not.toHaveBeenCalled();
+
+    view.unmount();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByText('Snapshot needs refresh')).toBeTruthy();
+    expect(api.startSnapshotOperation).not.toHaveBeenCalled();
   });
 
   it('selects a collapsed title using only selectable descendants and keeps missing assets visible', async () => {
