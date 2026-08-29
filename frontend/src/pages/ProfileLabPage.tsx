@@ -1818,7 +1818,34 @@ export function ProfileLabPage() {
   }
 
   function subtitleActionForStream(index: number): SubtitleDisposition {
-    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.action ?? trackDraft.subtitleDisposition;
+    const resolvedAction =
+      pathTrackPreview.data?.assetPath === assetPath
+        ? pathTrackPreview.data.resolvedTrackPlan.subtitleStreams.find(
+            (stream) => stream.streamIndex === index,
+          )?.action
+        : undefined;
+
+    if (resolvedAction) {
+      return resolvedAction;
+    }
+
+    // Preserve the old stream-selection model while a legacy profile
+    // is still using pre-V1 Track Profile semantics.
+    if (trackDraft.trackDispositionVersion !== 1 && selectedAssetSnapshot) {
+      return conversionStreamIndexes(
+        trackConversionDraft,
+        selectedAssetSnapshot,
+        'subtitle',
+      ).includes(index)
+        ? 'keep'
+        : 'remove';
+    }
+
+    return (
+      trackDraft.subtitleRules.find(
+        (rule) => rule.streamIndex === index,
+      )?.action ?? trackDraft.subtitleDisposition
+    );
   }
 
   function embeddedSubtitleStreamIndexes(): number[] {
@@ -2043,6 +2070,25 @@ export function ProfileLabPage() {
       previewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
+  
+  function effectiveLabChapterPolicy(): 'keep' | 'remove' {
+  const resolvedPolicy =
+    pathTrackPreview.data?.assetPath === assetPath
+      ? pathTrackPreview.data.resolvedTrackPlan.chapterPolicy
+      : undefined;
+
+  if (resolvedPolicy) {
+    return resolvedPolicy;
+  }
+
+  if (trackDraft.trackDispositionVersion === 1) {
+    return trackDraft.chapterPolicy;
+  }
+
+  return videoDraft.preserveChapters ? 'keep' : 'remove';
+}
+
+  const chapterPolicy = effectiveLabChapterPolicy();
   const embeddedSubtitleIndexes = embeddedSubtitleStreamIndexes();
   const subtitleCounts = subtitleDispositionCounts();
 
@@ -2056,6 +2102,7 @@ export function ProfileLabPage() {
     scan: selectedAssetSnapshot,
     selectedAudioStreamIndex,
     embeddedSubtitleIndexes,
+    chapterPolicy,
   });
 
   const effectivePreviewCommand =
@@ -6562,7 +6609,10 @@ type CombinedLabCommandInput = {
   scan?: ScanResult;
   selectedAudioStreamIndex?: number;
   embeddedSubtitleIndexes?: number[];
+  chapterPolicy?: 'keep' | 'remove';
 };
+
+
 
 function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
   if (!input.assetPath || !input.scan) return '';
@@ -6642,8 +6692,13 @@ function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
   appendTerminalMetadata(args, 'v', videoIndexes, input.tracks.videoMetadata);
   appendTerminalMetadata(args, 'a', audioIndexes, input.tracks.audioMetadata);
   appendTerminalMetadata(args, 's', subtitleIndexes, input.tracks.subtitleMetadata);
-  if (input.video.preserveChapters) args.push('-map_chapters', '0');
 
+  if (input.chapterPolicy === 'remove') {
+    args.push('-map_chapters', '-1');
+  } else {
+    args.push('-map_chapters', '0');
+  }
+  
   const baseName = input.assetPath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'mvforge-lab';
   const container = input.video.container === 'mp4' ? 'mp4' : 'mkv';
   args.push(shellQuote(`/tmp/${baseName}.mvforge-lab.${container}`));
