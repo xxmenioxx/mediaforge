@@ -92,7 +92,6 @@ backend/docs/swagger.yaml
 # Local AI development context
 AGENTS.md
 **/AGENTS.md
-docs/architecture/
+docs/
 scripts/ai/
 scripts/new-ai-evaluation.sh
-docs/ai/evaluations/

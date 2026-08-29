@@ -2497,7 +2497,7 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
     },
   });
-  const snapshotData = snapshot.data ?? storedSnapshot.data?.snapshot ?? null;
+  const snapshotData = storedSnapshot.data?.snapshot ?? snapshot.data ?? null;
   const storedSnapshotExists = snapshotData !== null;
   const refreshRequired = storedSnapshot.data?.snapshot != null && storedSnapshot.data.requiresAnalysis;
   const operationPending = snapshot.isPending;
@@ -2738,6 +2738,12 @@ function AssetRow({
     event.stopPropagation();
     setSnapshotTab(0);
     setShowSnapshotDialog(true);
+  }
+
+  function closeSnapshotDialog() {
+    setShowSnapshotDialog(false);
+    snapshot.reset();
+    setSnapshotOperation(null);
   }
 
   function openPreviewDialog(event: MouseEvent<HTMLButtonElement>) {
@@ -3576,7 +3582,7 @@ async function generateExternalSubtitle(
           </Stack>
         </DialogContent>
       </Dialog>
-      <Dialog open={showSnapshotDialog} onClose={() => setShowSnapshotDialog(false)} maxWidth="lg" fullWidth>
+      <Dialog open={showSnapshotDialog} onClose={closeSnapshotDialog} maxWidth="lg" fullWidth>
         <DialogTitle sx={{ pb: 0.75 }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'flex-start' }} spacing={1}>
             <Stack sx={{ minWidth: 0 }}>
