@@ -142,6 +142,9 @@ func validateTrackProfileDomainPolicies(value models.JSONMap) error {
 		if name == "" {
 			name = fmt.Sprintf("profile %d", index+1)
 		}
+		if _, err := canonicalTrackDispositionProfile(profile); err != nil {
+			return fmt.Errorf("track profile %s: %w", name, err)
+		}
 		if rawValue, exists := profile["subtitleDisposition"]; exists {
 			if _, err := ParseSubtitleDisposition(workerStringValue(rawValue)); err != nil {
 				return fmt.Errorf("track profile %s: %w", name, err)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppSetting, AssetConversionOverrideState } from './api/types';
-import { emptyTrackProfile, getTrackProfiles, materializeAssetTrackSelection, trackProfileWithConversion } from './trackProfiles';
+import { emptyTrackProfile, getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion } from './trackProfiles';
 
 const conversion: AssetConversionOverrideState = {
   keepVideoStreams: [0],
@@ -49,5 +49,43 @@ describe('trackProfileWithConversion', () => {
     expect(exact.keepVideoStreams).toEqual([0, 6]);
     expect(exact.keepAudioStreams).toEqual([1, 3]);
     expect(exact.keepSubtitleStreams).toEqual([]);
+  });
+
+  it('keeps display fallbacks separate from the explicit migration marker', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{ key: 'legacy', name: 'Legacy' }] } }] as unknown as AppSetting[];
+    const [legacy] = getTrackProfiles(settings);
+
+    expect(legacy.subtitleDisposition).toBe('keep');
+    expect(legacy.attachmentPolicy).toBe('auto');
+    expect(legacy.chapterPolicy).toBe('keep');
+    expect(legacy.trackDispositionVersion).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(legacy)).trackDispositionVersion).toBeUndefined();
+  });
+
+  it('migrates only the profile whose disposition is intentionally edited', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [
+      { key: 'legacy', name: 'Legacy' },
+      { ...emptyTrackProfile, key: 'canonical', name: 'Canonical' },
+    ] } }] as unknown as AppSetting[];
+    const [legacy, canonical] = getTrackProfiles(settings);
+    const savedCollection = JSON.parse(JSON.stringify([legacy, migrateTrackDisposition(canonical, { chapterPolicy: 'remove' })]));
+
+    expect(savedCollection[0].trackDispositionVersion).toBeUndefined();
+    expect(savedCollection[1].trackDispositionVersion).toBe(1);
+    expect(savedCollection[1].chapterPolicy).toBe('remove');
+    expect(migrateTrackDisposition(legacy, { attachmentPolicy: 'keep' }).trackDispositionVersion).toBe(1);
+  });
+
+  it('preserves explicit und and selectorless legacy rules without treating either as all', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{
+      key: 'rules', name: 'Rules', subtitleRules: [
+        { language: 'und', action: 'remove' },
+        { language: '', action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[];
+    const [profile] = getTrackProfiles(settings);
+
+    expect(profile.subtitleRules[0]).toEqual({ language: 'und', streamIndex: undefined, action: 'remove' });
+    expect(profile.subtitleRules[1]).toEqual({ language: undefined, streamIndex: undefined, action: 'keep' });
   });
 });

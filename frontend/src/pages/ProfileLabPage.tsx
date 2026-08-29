@@ -79,7 +79,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { getTrackProfiles, materializeAssetTrackSelection, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type TrackProfile } from '../trackProfiles';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
@@ -591,6 +591,7 @@ const emptyAudioDraft: AudioEnhancementProfile = {
 };
 
 const emptyTrackDraft: TrackProfile = {
+	trackDispositionVersion: 1,
   key: '',
   name: '',
   description: '',
@@ -1806,8 +1807,7 @@ export function ProfileLabPage() {
   }
 
   function updateSubtitleActionForStream(index: number, action: SubtitleDisposition) {
-    setTrackDraft((current) => ({
-      ...current,
+    setTrackDraft((current) => migrateTrackDisposition(current, {
       subtitleRules: [...current.subtitleRules.filter((rule) => rule.streamIndex !== index), { streamIndex: index, action }],
     }));
     setTrackConversionDraft((current) => ({
@@ -1821,8 +1821,7 @@ export function ProfileLabPage() {
   }
 
   function updateSubtitleActionForLanguage(language: string, action: SubtitleDisposition) {
-    setTrackDraft((current) => ({
-      ...current,
+    setTrackDraft((current) => migrateTrackDisposition(current, {
       subtitleRules: [
         ...current.subtitleRules.filter((rule) => rule.streamIndex !== undefined || rule.language !== language),
         { language, action },
@@ -3847,14 +3846,14 @@ export function ProfileLabPage() {
                           {activeProfileScope === 'asset' ? <Button size="small" variant="text" onClick={() => setAssetTrackRulesOpen((current) => !current)} sx={{ alignSelf: 'flex-start' }}>{assetTrackRulesOpen ? 'Hide advanced rules' : 'Show advanced rules'}</Button> : null}
                           <Collapse in={activeProfileScope === 'path' || assetTrackRulesOpen}>
                           <Grid container spacing={1.5}>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Default subtitle action" value={trackDraft.subtitleDisposition} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleDisposition: event.target.value as SubtitleDisposition })}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Attachments" value={trackDraft.attachmentPolicy} onChange={(event) => setTrackDraft({ ...trackDraft, attachmentPolicy: event.target.value as TrackProfile['attachmentPolicy'] })} helperText="Auto preserves font attachments when retained embedded ASS/SSA subtitles may require them."><MenuItem value="auto">Auto (Recommended)</MenuItem><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
-                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Chapters" value={trackDraft.chapterPolicy} onChange={(event) => setTrackDraft({ ...trackDraft, chapterPolicy: event.target.value as TrackProfile['chapterPolicy'] })}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Default subtitle action" value={trackDraft.subtitleDisposition} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { subtitleDisposition: event.target.value as SubtitleDisposition }))}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Attachments" value={trackDraft.attachmentPolicy} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { attachmentPolicy: event.target.value as TrackProfile['attachmentPolicy'] }))} helperText="Auto preserves font attachments when retained embedded ASS/SSA subtitles may require them."><MenuItem value="auto">Auto (Recommended)</MenuItem><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Chapters" value={trackDraft.chapterPolicy} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { chapterPolicy: event.target.value as TrackProfile['chapterPolicy'] }))}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Video rule" value={trackDraft.videoMode} onChange={(event) => setTrackDraft({ ...trackDraft, videoMode: event.target.value as TrackProfile['videoMode'] })}><MenuItem value="first">Keep first video</MenuItem><MenuItem value="all">Keep all video</MenuItem><MenuItem value="require-one">Require one video</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Audio rule" value={trackDraft.audioMode} onChange={(event) => setTrackDraft({ ...trackDraft, audioMode: event.target.value as TrackProfile['audioMode'] })}><MenuItem value="all">Keep all audio</MenuItem><MenuItem value="default">Keep default audio</MenuItem><MenuItem value="languages">Keep selected languages</MenuItem><MenuItem value="none">Remove all audio</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Subtitle rule" value={trackDraft.subtitleMode} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleMode: event.target.value as TrackProfile['subtitleMode'] })}><MenuItem value="all">Keep all subtitles</MenuItem><MenuItem value="none">Remove all subtitles</MenuItem><MenuItem value="forced">Forced only</MenuItem><MenuItem value="languages">Selected languages</MenuItem><MenuItem value="forced-or-languages">Forced or selected languages</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.audioLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, audioLanguages: normalizeStringList(values) })} disabled={trackDraft.audioMode !== 'languages'} renderInput={(params) => <TextField {...params} label="Audio languages" helperText="Select or enter ISO language codes." />} /></Grid>
-                            <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.subtitleLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, subtitleLanguages: normalizeStringList(values) })} disabled={trackDraft.subtitleMode !== 'languages' && trackDraft.subtitleMode !== 'forced-or-languages'} renderInput={(params) => <TextField {...params} label="Subtitle languages" helperText="Select or enter ISO language codes." />} /></Grid>
+                            <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.subtitleLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, subtitleLanguages: normalizeStringList(values) })} disabled={trackDraft.subtitleMode !== 'languages' && trackDraft.subtitleMode !== 'forced-or-languages'} renderInput={(params) => <TextField {...params} label="Subtitle languages" helperText="ISO codes; und matches unknown language only. Use Default subtitle action for all others." />} /></Grid>
                             {activeProfileScope === 'path' ? trackDraft.subtitleLanguages.map((language) => <Grid key={language} size={{ xs: 12, md: 6 }}><TextField select fullWidth label={`${language.toUpperCase()} subtitle action`} value={subtitleActionForLanguage(language)} onChange={(event) => updateSubtitleActionForLanguage(language, event.target.value as SubtitleDisposition)}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>) : null}
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default audio language" value={trackDraft.defaultAudioLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultAudioLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={trackDraft.defaultSubtitleLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultSubtitleLanguage: event.target.value.toLowerCase() })} /></Grid>

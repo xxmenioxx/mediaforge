@@ -1271,11 +1271,11 @@ func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 		if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
 			return fmt.Errorf("track profile: asset snapshot: %w", err)
 		}
-		// Profiles persisted before the canonical disposition model keep using
-		// the legacy Video Profile compatibility path. The three base policies
-		// form an atomic migration marker; newly saved Track Profiles always
-		// include all three and become authoritative for these decisions.
-		if !trackProfileHasCanonicalDisposition(resolved) {
+		canonical, versionErr := canonicalTrackDispositionProfile(resolved)
+		if versionErr != nil {
+			return fmt.Errorf("track profile: %w", versionErr)
+		}
+		if !canonical {
 			job.TrackProfileSnapshot = models.JSONMap(resolved)
 			return nil
 		}
@@ -1293,13 +1293,40 @@ func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 	return nil
 }
 
-func trackProfileHasCanonicalDisposition(profile map[string]any) bool {
-	for _, key := range []string{"subtitleDisposition", "attachmentPolicy", "chapterPolicy"} {
-		if strings.TrimSpace(workerStringValue(profile[key])) == "" {
-			return false
+const canonicalTrackDispositionVersion = 1
+
+func canonicalTrackDispositionProfile(profile map[string]any) (bool, error) {
+	raw, exists := profile["trackDispositionVersion"]
+	if !exists || raw == nil {
+		return false, nil
+	}
+	version := -1
+	switch value := raw.(type) {
+	case int:
+		version = value
+	case int64:
+		version = int(value)
+	case float64:
+		if value == float64(int(value)) {
+			version = int(value)
+		}
+	case json.Number:
+		if parsed, err := strconv.Atoi(value.String()); err == nil {
+			version = parsed
 		}
 	}
-	return true
+	if version == 0 {
+		return false, nil
+	}
+	if version != canonicalTrackDispositionVersion {
+		return false, fmt.Errorf("unsupported trackDispositionVersion %v", raw)
+	}
+	for _, key := range []string{"subtitleDisposition", "attachmentPolicy", "chapterPolicy"} {
+		if strings.TrimSpace(workerStringValue(profile[key])) == "" {
+			return false, fmt.Errorf("trackDispositionVersion 1 requires %s", key)
+		}
+	}
+	return true, nil
 }
 
 func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[string]any) map[string]any {

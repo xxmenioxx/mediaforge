@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -65,6 +66,61 @@ func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
 	}
 	if !first.AttachmentsKept {
 		t.Fatal("retained embedded ASS did not preserve font attachments")
+	}
+}
+
+func TestResolveTrackPlanUnknownLanguageIsNotWildcard(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 2, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 3, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 4, "codec": "subrip", "language": ""},
+	}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"subtitleDisposition": "keep",
+		"subtitleRules":       []any{map[string]any{"language": "und", "action": "remove"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleDisposition{SubtitleDispositionKeep, SubtitleDispositionKeep, SubtitleDispositionRemove}
+	for index, action := range want {
+		if plan.SubtitleStreams[index].Action != action {
+			t.Fatalf("actions=%#v", plan.SubtitleStreams)
+		}
+	}
+}
+
+func TestResolveTrackPlanSpecificRulesDefaultAndStreamPrecedence(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 2, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 4, "codec": "ass", "language": "spa"},
+		map[string]any{"index": 5, "codec": "subrip", "language": "eng"},
+	}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"subtitleDisposition": "remove",
+		"subtitleRules": []any{
+			map[string]any{"language": "spa", "action": "keep"},
+			map[string]any{"streamIndex": 4, "action": "keep_and_extract"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleDisposition{SubtitleDispositionKeep, SubtitleDispositionKeepAndExtract, SubtitleDispositionRemove}
+	for index, action := range want {
+		if plan.SubtitleStreams[index].Action != action {
+			t.Fatalf("actions=%#v", plan.SubtitleStreams)
+		}
+	}
+}
+
+func TestResolveTrackPlanRejectsSelectorlessSubtitleRule(t *testing.T) {
+	_, err := resolveTrackPlan(trackResolverScan(), map[string]any{
+		"subtitleDisposition": "keep",
+		"subtitleRules":       []any{map[string]any{"language": "", "action": "remove"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a non-empty language or streamIndex") {
+		t.Fatalf("selectorless rule error=%v", err)
 	}
 }
 
@@ -163,7 +219,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	setting := models.AppSetting{
 		Key: "trackProfiles",
 		Value: models.JSONMap{"profiles": models.JSONList{
-			models.JSONMap{"key": "tracks", "scope": "path", "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep"},
 		}},
 	}
 	if err := db.Create(&setting).Error; err != nil {
@@ -191,14 +247,64 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	}
 }
 
-func TestLegacyTrackProfileDoesNotOverrideFrozenVideoCompatibility(t *testing.T) {
-	if trackProfileHasCanonicalDisposition(map[string]any{"subtitleMode": "all"}) {
+func TestExplicitTrackDispositionVersionControlsCanonicalSemantics(t *testing.T) {
+	canonical, err := canonicalTrackDispositionProfile(map[string]any{"subtitleMode": "all"})
+	if err != nil || canonical {
 		t.Fatal("legacy profile was incorrectly treated as canonical")
 	}
-	if !trackProfileHasCanonicalDisposition(map[string]any{
+	canonical, err = canonicalTrackDispositionProfile(map[string]any{
 		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
-	}) {
-		t.Fatal("complete canonical profile was not recognized")
+	})
+	if err != nil || canonical {
+		t.Fatal("frontend fallback fields incorrectly migrated a legacy profile")
+	}
+	canonical, err = canonicalTrackDispositionProfile(map[string]any{
+		"trackDispositionVersion": 1, "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
+	})
+	if err != nil || !canonical {
+		t.Fatal("explicit canonical profile was not recognized")
+	}
+	if _, err = canonicalTrackDispositionProfile(map[string]any{"trackDispositionVersion": 2}); err == nil {
+		t.Fatal("unknown future disposition version was accepted")
+	}
+}
+
+func TestQueueFreezesLegacyAndCanonicalTrackProfilesByExplicitVersion(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:track-version-queue?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Clean("/media/raw/show/versioned.mkv")
+	if err := db.Create(&models.ScanResult{Path: path, SubtitleStreams: models.JSONList{
+		map[string]any{"index": 2, "codec": "ass"}, map[string]any{"index": 3, "codec": "subrip", "language": "spa"},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	setting := models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "legacy", "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+		models.JSONMap{"key": "canonical", "trackDispositionVersion": 1, "subtitleDisposition": "keep", "subtitleRules": models.JSONList{models.JSONMap{"language": "und", "action": "remove"}}, "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+	}}}
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := NewQueueHandler(db)
+	legacy := models.QueueJob{MediaPath: path, TrackProfileKey: "legacy"}
+	if err := handler.captureSupplementalProfiles(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ResolvedTrackPlanFromSnapshot(legacy.TrackProfileSnapshot); ok {
+		t.Fatal("legacy queue snapshot unexpectedly contains a canonical plan")
+	}
+	canonical := models.QueueJob{MediaPath: path, TrackProfileKey: "canonical"}
+	if err := handler.captureSupplementalProfiles(&canonical); err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := ResolvedTrackPlanFromSnapshot(canonical.TrackProfileSnapshot)
+	if !ok || plan.SubtitleStreams[0].Action != SubtitleDispositionRemove || plan.SubtitleStreams[1].Action != SubtitleDispositionKeep || intValueSetting(canonical.TrackProfileSnapshot["trackDispositionVersion"], 0) != 1 {
+		t.Fatalf("canonical queue snapshot=%#v", canonical.TrackProfileSnapshot)
 	}
 }
 

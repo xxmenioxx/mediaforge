@@ -13,6 +13,9 @@ import (
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
 func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedTrackPlan, error) {
+	if err := validateSubtitleRules(profile); err != nil {
+		return ResolvedTrackPlan{}, err
+	}
 	video := resolvedStreams(scan.VideoStreams, selectedProfileIndexes(profile, "keepVideoStreams"))
 	selectedAudio, audioSelectionExplicit := profileIndexSet(profile, "keepAudioStreams")
 	var selectedAudioPointer *map[int]bool
@@ -232,7 +235,11 @@ func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, languag
 		if err != nil {
 			continue
 		}
-		ruleLanguage := normalizedTrackLanguage(workerStringValue(rule["language"]))
+		rawLanguage, hasLanguage := rule["language"]
+		ruleLanguage := ""
+		if hasLanguage && strings.TrimSpace(workerStringValue(rawLanguage)) != "" {
+			ruleLanguage = normalizedTrackLanguage(workerStringValue(rawLanguage))
+		}
 		rawIndex, hasIndex := rule["streamIndex"]
 		index := streamIndexValue(rawIndex)
 		if hasIndex && index >= 0 {
@@ -241,7 +248,7 @@ func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, languag
 			}
 			continue
 		}
-		if !streamSpecific && (ruleLanguage == "und" || ruleLanguage == language) {
+		if !streamSpecific && ruleLanguage != "" && ruleLanguage == language {
 			action = parsed
 		}
 	}
@@ -286,6 +293,11 @@ func validateSubtitleRules(profile map[string]any) error {
 		}
 		if rawIndex, exists := rule["streamIndex"]; exists && streamIndexValue(rawIndex) < 0 {
 			return fmt.Errorf("subtitle rule %d streamIndex must be a non-negative integer", index+1)
+		}
+		rawLanguage, hasLanguage := rule["language"]
+		rawIndex, hasIndex := rule["streamIndex"]
+		if (!hasLanguage || strings.TrimSpace(workerStringValue(rawLanguage)) == "") && (!hasIndex || streamIndexValue(rawIndex) < 0) {
+			return fmt.Errorf("subtitle rule %d requires a non-empty language or streamIndex selector; use subtitleDisposition for the default action", index+1)
 		}
 	}
 	return nil

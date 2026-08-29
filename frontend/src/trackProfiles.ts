@@ -15,6 +15,7 @@ export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extr
 export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition };
 
 export type TrackProfile = {
+	trackDispositionVersion?: number;
   key: string;
   name: string;
   description: string;
@@ -49,11 +50,16 @@ export type TrackProfile = {
 };
 
 export const emptyTrackProfile: TrackProfile = {
+	trackDispositionVersion: 1,
   key: '', name: '', description: '', videoMode: 'first', audioMode: 'languages', audioLanguages: [],
   audioRequired: true, dropCommentary: true, defaultAudioLanguage: '', subtitleMode: 'forced-or-languages',
   subtitleLanguages: [], subtitlesRequired: false, defaultSubtitleLanguage: '', validationMode: 'review', notes: '',
 	  subtitleDisposition: 'keep', subtitleRules: [], attachmentPolicy: 'auto', chapterPolicy: 'keep',
 };
+
+export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'attachmentPolicy' | 'chapterPolicy'>>): TrackProfile {
+  return { ...profile, ...patch, trackDispositionVersion: 1 };
+}
 
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
   const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
@@ -138,11 +144,12 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
 		const action = disposition(value.action ?? value.disposition);
 		const language = typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : undefined;
 		const streamIndex = Number.isInteger(value.streamIndex) && Number(value.streamIndex) >= 0 ? Number(value.streamIndex) : undefined;
-		return language || streamIndex !== undefined ? [{ language, streamIndex, action }] : [];
+		return [{ language, streamIndex, action }];
 	}) : [];
   return {
     ...emptyTrackProfile,
     key: item.key, name: item.name, description: typeof item.description === 'string' ? item.description : '',
+	  trackDispositionVersion: typeof item.trackDispositionVersion === 'number' ? item.trackDispositionVersion : undefined,
 	  scope: item.scope === 'path' ? 'path' : 'asset',
     sourceAssetPath: typeof item.sourceAssetPath === 'string' ? item.sourceAssetPath : undefined,
     sourceAssetName: typeof item.sourceAssetName === 'string' ? item.sourceAssetName : undefined,

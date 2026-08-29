@@ -190,10 +190,13 @@ func TestSettingsRejectsInvalidTrackDomainPolicies(t *testing.T) {
 	router := gin.New()
 	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
 	for name, body := range map[string]string{
-		"subtitle":   `{"value":{"profiles":[{"key":"invalid","subtitleDisposition":"copy"}]}}`,
-		"attachment": `{"value":{"profiles":[{"key":"invalid","attachmentPolicy":"fonts_only"}]}}`,
-		"chapter":    `{"value":{"profiles":[{"key":"invalid","chapterPolicy":"auto"}]}}`,
-		"rule":       `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"eng","action":"copy"}]}]}}`,
+		"subtitle":     `{"value":{"profiles":[{"key":"invalid","subtitleDisposition":"copy"}]}}`,
+		"attachment":   `{"value":{"profiles":[{"key":"invalid","attachmentPolicy":"fonts_only"}]}}`,
+		"chapter":      `{"value":{"profiles":[{"key":"invalid","chapterPolicy":"auto"}]}}`,
+		"rule":         `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"eng","action":"copy"}]}]}}`,
+		"empty rule":   `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"","action":"remove"}]}]}}`,
+		"version":      `{"value":{"profiles":[{"key":"invalid","trackDispositionVersion":2}]}}`,
+		"version type": `{"value":{"profiles":[{"key":"invalid","trackDispositionVersion":"1"}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -204,6 +207,21 @@ func TestSettingsRejectsInvalidTrackDomainPolicies(t *testing.T) {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestNormalizeTrackProfilesPreservesPerProfileMigrationMarker(t *testing.T) {
+	value := normalizeTrackProfilesForStorage(models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "legacy", "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+		models.JSONMap{"key": "canonical", "trackDispositionVersion": 1, "subtitleDisposition": "remove", "attachmentPolicy": "remove", "chapterPolicy": "remove"},
+	}})
+	profiles := settingProfileValues(value["profiles"])
+	legacy, canonical := settingProfileObject(profiles[0]), settingProfileObject(profiles[1])
+	if _, exists := legacy["trackDispositionVersion"]; exists {
+		t.Fatalf("legacy profile was silently migrated: %#v", legacy)
+	}
+	if intValueSetting(canonical["trackDispositionVersion"], 0) != 1 {
+		t.Fatalf("canonical marker was lost: %#v", canonical)
 	}
 }
 

@@ -392,6 +392,17 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 		return explicit, nil
 	}
 	resolved := resolveTrackProfileForAsset(db, mediaPath, cloneTestEncodeJSONMap(profile))
+	canonical, versionErr := canonicalTrackDispositionProfile(resolved)
+	if versionErr != nil {
+		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: %w", versionErr)
+	}
+	if !canonical {
+		var legacy AssetConversionOverrideState
+		if encoded, err := json.Marshal(resolved); err != nil || json.Unmarshal(encoded, &legacy) != nil {
+			return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: serialize legacy override")
+		}
+		return mergeTrackProfileBelowAssetOverride(legacy, explicit), nil
+	}
 	var scan models.ScanResult
 	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: asset snapshot: %w", err)
