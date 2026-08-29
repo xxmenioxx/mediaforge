@@ -1155,16 +1155,31 @@ export function ProfileLabPage() {
   
   useEffect(() => {
     const state = storedLabSnapshot.data;
-    if (!assetPath || storedLabSnapshot.isFetching || trackSnapshot.isPending || !state?.requiresAnalysis) {
+
+    if (
+      !assetPath ||
+      storedLabSnapshot.isFetching ||
+      trackSnapshot.isPending ||
+      !state?.requiresAnalysis
+    ) {
       return;
     }
-    const key = `${assetPath}:${state.status}:${state.snapshot?.updatedAt ?? 'none'}`;
-    if (automaticSnapshotKey.current === key) {
+
+    // Automatically analyze an asset at most once per Lab selection.
+    // Snapshot timestamps/status may change after analysis and must not
+    // re-arm the automatic trigger.
+    if (automaticSnapshotKey.current === assetPath) {
       return;
     }
-    automaticSnapshotKey.current = key;
+
+    automaticSnapshotKey.current = assetPath;
     trackSnapshot.mutate({ path: assetPath });
-  }, [assetPath, storedLabSnapshot.data, storedLabSnapshot.isFetching, trackSnapshot]);
+  }, [
+    assetPath,
+    storedLabSnapshot.data,
+    storedLabSnapshot.isFetching,
+    trackSnapshot,
+  ]);
 
   useEffect(() => {
     if (!currentEncoderRecommendation) {
@@ -1806,6 +1821,50 @@ export function ProfileLabPage() {
     return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.action ?? trackDraft.subtitleDisposition;
   }
 
+  function embeddedSubtitleStreamIndexes(): number[] {
+    if (!selectedAssetSnapshot) {
+      return [];
+    }
+
+    return selectedAssetSnapshot.subtitleStreams
+      .filter((stream) => {
+        const action = subtitleActionForStream(stream.index);
+        return action === 'keep' || action === 'keep_and_extract';
+      })
+      .map((stream) => stream.index);
+  }
+
+  function subtitleDispositionCounts() {
+    if (!selectedAssetSnapshot) {
+      return {
+        embedded: 0,
+        extracted: 0,
+        removed: 0,
+        total: 0,
+      };
+    }
+
+    const actions = selectedAssetSnapshot.subtitleStreams.map((stream) =>
+      subtitleActionForStream(stream.index),
+    );
+
+    return {
+      embedded: actions.filter(
+        (action) => action === 'keep' || action === 'keep_and_extract',
+      ).length,
+
+      extracted: actions.filter(
+        (action) => action === 'extract' || action === 'keep_and_extract',
+      ).length,
+
+      removed: actions.filter(
+        (action) => action === 'remove',
+      ).length,
+
+      total: actions.length,
+    };
+  }
+
   function updateSubtitleActionForStream(index: number, action: SubtitleDisposition) {
     setTrackDraft((current) => migrateTrackDisposition(current, {
       subtitleRules: [...current.subtitleRules.filter((rule) => rule.streamIndex !== index), { streamIndex: index, action }],
@@ -1984,6 +2043,8 @@ export function ProfileLabPage() {
       previewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
+  const embeddedSubtitleIndexes = embeddedSubtitleStreamIndexes();
+  const subtitleCounts = subtitleDispositionCounts();
 
   const combinedTerminalCommand = buildCombinedLabFFmpegCommand({
     assetPath,
@@ -1994,6 +2055,7 @@ export function ProfileLabPage() {
     tracks: trackConversionDraft,
     scan: selectedAssetSnapshot,
     selectedAudioStreamIndex,
+    embeddedSubtitleIndexes,
   });
 
   const effectivePreviewCommand =
@@ -3788,7 +3850,7 @@ export function ProfileLabPage() {
                                 onToggle: (index, keep) => toggleTrackStream('audio', index, keep),
                               },
                               subtitle: {
-                                selected: conversionStreamIndexes(trackConversionDraft, selectedAssetSnapshot, 'subtitle'),
+                                selected: embeddedSubtitleStreamIndexes(),
                                 disabled: updateSetting.isPending,
                                 onToggle: (index, keep) => updateSubtitleActionForStream(index, keep ? 'keep' : 'remove'),
                               },
@@ -3887,7 +3949,14 @@ export function ProfileLabPage() {
                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                         <Chip label={`Video kept: ${trackSelectionLabel(trackConversionDraft, selectedAssetSnapshot, 'video')}`} size="small" />
                         <Chip label={`Audio kept: ${trackSelectionLabel(trackConversionDraft, selectedAssetSnapshot, 'audio')}`} size="small" />
-                        <Chip label={`Subs kept: ${trackSelectionLabel(trackConversionDraft, selectedAssetSnapshot, 'subtitle')}`} size="small" />
+                        <Chip
+                          label={`Subs embedded: ${subtitleCounts.embedded}/${subtitleCounts.total}`}
+                          size="small"
+                        />
+                        <Chip
+                          label={`Subs extracted: ${subtitleCounts.extracted}`}
+                          size="small"
+                        />
                         <Chip label={`Validation: ${trackValidationLabel(trackDraft.validationMode)}`} size="small" />
                       </Stack>
                     </Grid>
@@ -6492,6 +6561,7 @@ type CombinedLabCommandInput = {
   tracks: AssetConversionOverrideState;
   scan?: ScanResult;
   selectedAudioStreamIndex?: number;
+  embeddedSubtitleIndexes?: number[];
 };
 
 function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
@@ -6499,7 +6569,9 @@ function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
 
   const videoIndexes = conversionStreamIndexes(input.tracks, input.scan, 'video');
   let audioIndexes = conversionStreamIndexes(input.tracks, input.scan, 'audio');
-  const subtitleIndexes = conversionStreamIndexes(input.tracks, input.scan, 'subtitle');
+  const subtitleIndexes =
+    input.embeddedSubtitleIndexes ??
+    conversionStreamIndexes(input.tracks, input.scan, 'subtitle');
   const audioExplicitlyRemoved = Array.isArray(input.tracks.keepAudioStreams) && input.tracks.keepAudioStreams.length === 0;
   const sourceAudioIndex = audioExplicitlyRemoved
     ? undefined

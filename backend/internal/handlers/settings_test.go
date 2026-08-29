@@ -194,7 +194,7 @@ func TestSettingsRejectsInvalidTrackDomainPolicies(t *testing.T) {
 		"attachment":   `{"value":{"profiles":[{"key":"invalid","attachmentPolicy":"fonts_only"}]}}`,
 		"chapter":      `{"value":{"profiles":[{"key":"invalid","chapterPolicy":"auto"}]}}`,
 		"rule":         `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"eng","action":"copy"}]}]}}`,
-		"empty rule":   `{"value":{"profiles":[{"key":"invalid","subtitleRules":[{"language":"","action":"remove"}]}]}}`,
+		"empty rule":   `{"value":{"profiles":[{"key":"invalid","trackDispositionVersion": 1,"subtitleDisposition":"keep","attachmentPolicy":"auto","chapterPolicy":"keep","subtitleRules":[{"language":"","action":"remove"}]}]}}`,
 		"version":      `{"value":{"profiles":[{"key":"invalid","trackDispositionVersion":2}]}}`,
 		"version type": `{"value":{"profiles":[{"key":"invalid","trackDispositionVersion":"1"}]}}`,
 	} {

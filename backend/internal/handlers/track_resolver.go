@@ -279,6 +279,10 @@ func subtitleSidecarFormat(codec string) string {
 }
 
 func validateSubtitleRules(profile map[string]any) error {
+	strictSelectors, err := canonicalTrackDispositionProfile(profile)
+	if err != nil {
+		return err
+	}
 	for index, raw := range workerSliceValue(profile["subtitleRules"]) {
 		rule := settingProfileObject(raw)
 		if rule == nil {
@@ -296,8 +300,13 @@ func validateSubtitleRules(profile map[string]any) error {
 		}
 		rawLanguage, hasLanguage := rule["language"]
 		rawIndex, hasIndex := rule["streamIndex"]
-		if (!hasLanguage || strings.TrimSpace(workerStringValue(rawLanguage)) == "") && (!hasIndex || streamIndexValue(rawIndex) < 0) {
-			return fmt.Errorf("subtitle rule %d requires a non-empty language or streamIndex selector; use subtitleDisposition for the default action", index+1)
+		if strictSelectors &&
+			(!hasLanguage || strings.TrimSpace(workerStringValue(rawLanguage)) == "") &&
+			(!hasIndex || streamIndexValue(rawIndex) < 0) {
+			return fmt.Errorf(
+				"subtitle rule %d requires a non-empty language or streamIndex selector; use subtitleDisposition for the default action",
+				index+1,
+			)
 		}
 	}
 	return nil

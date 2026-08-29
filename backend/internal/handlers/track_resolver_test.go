@@ -116,11 +116,35 @@ func TestResolveTrackPlanSpecificRulesDefaultAndStreamPrecedence(t *testing.T) {
 
 func TestResolveTrackPlanRejectsSelectorlessSubtitleRule(t *testing.T) {
 	_, err := resolveTrackPlan(trackResolverScan(), map[string]any{
+		"trackDispositionVersion": 1,
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
 		"subtitleDisposition": "keep",
 		"subtitleRules":       []any{map[string]any{"language": "", "action": "remove"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a non-empty language or streamIndex") {
 		t.Fatalf("selectorless rule error=%v", err)
+	}
+}
+
+func TestResolveTrackPlanLegacySelectorlessSubtitleRuleIsIgnored(t *testing.T) {
+	plan, err := resolveTrackPlan(trackResolverScan(), map[string]any{
+		"subtitleDisposition": "keep",
+		"subtitleRules": []any{
+			map[string]any{
+				"language": "",
+				"action":   "remove",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, subtitle := range plan.SubtitleStreams {
+		if subtitle.Action != SubtitleDispositionKeep {
+			t.Fatalf("legacy selectorless rule changed subtitle action: %#v", plan.SubtitleStreams)
+		}
 	}
 }
 
