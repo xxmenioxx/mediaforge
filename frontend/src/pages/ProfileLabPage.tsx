@@ -1915,30 +1915,25 @@ export function ProfileLabPage() {
     }));
   }
 
-  function toggleTrackStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
+  function toggleTrackStream(type: 'video' | 'audio', index: number, keep: boolean) {
     const scan = selectedAssetSnapshot;
     if (!scan) {
       return;
     }
+
     setTrackConversionDraft((current) => {
-      if (type === 'subtitle' && keep && current.subtitleTransforms?.some((item) => item.streamIndex === index && item.removeEmbedded)) {
-        const allIndexes = streamIndexesForType(scan, 'subtitle');
-        const selected = conversionStreamIndexes(current, scan, 'subtitle');
-        const next = normalizeNumberList([...selected, index]);
-        const transforms = (current.subtitleTransforms ?? []).filter((item) => item.streamIndex !== index);
-        return {
-          ...current,
-          keepSubtitleStreams: selectedOrUndefined(next, allIndexes),
-          subtitleTransforms: transforms.length ? transforms : undefined,
-        };
-      }
       const allIndexes = streamIndexesForType(scan, type);
       const selected = conversionStreamIndexes(current, scan, type);
-      const next = keep ? normalizeNumberList([...selected, index]) : selected.filter((candidate) => candidate !== index);
+
+      const next = keep
+        ? normalizeNumberList([...selected, index])
+        : selected.filter((candidate) => candidate !== index);
+
       const indexes = selectedOrUndefined(next, allIndexes);
-      if (type === 'video') return { ...current, keepVideoStreams: indexes };
-      if (type === 'audio') return { ...current, keepAudioStreams: indexes };
-      return { ...current, keepSubtitleStreams: indexes };
+
+      return type === 'video'
+        ? { ...current, keepVideoStreams: indexes }
+        : { ...current, keepAudioStreams: indexes };
     });
   }
 
@@ -2070,7 +2065,7 @@ export function ProfileLabPage() {
       previewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
-  
+
   function effectiveLabChapterPolicy(): 'keep' | 'remove' {
   const resolvedPolicy =
     pathTrackPreview.data?.assetPath === assetPath
