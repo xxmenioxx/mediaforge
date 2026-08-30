@@ -1612,9 +1612,21 @@ export function ProfileLabPage() {
     setSelectedVideoStarterPreset('');
     setVideoDraft((current) => {
       let next: ProfileInput = { ...current, workerConfig: { ...(current.workerConfig ?? {}) } };
-      const profileKeys = new Set(['videoCodec', 'qualityMode', 'qualityValue', 'optimizationIntent', 'preserveHdr', 'preserveSubtitles', 'preserveChapters']);
+      const profileKeys = new Set([
+        'videoCodec',
+        'qualityMode',
+        'qualityValue',
+        'optimizationIntent',
+        'preserveHdr',
+      ]);
       findings.forEach((finding) => {
         Object.entries(finding.patch ?? {}).forEach(([key, value]) => {
+          // Subtitle and chapter disposition belongs to Track Profile.
+          // Keep legacy Video Profile fields readable, but do not apply
+          // new advisor decisions to them.
+          if (key === 'preserveSubtitles' || key === 'preserveChapters') {
+            return;
+          }
           if (profileKeys.has(key)) {
             next = { ...next, [key]: value } as ProfileInput;
             return;
@@ -5856,19 +5868,15 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
   const sourceSubtitleTracks = source?.subtitleStreams?.length ?? 0;
   const addCompatibilityAudio = videoAACTrackEnabled(profile);
   const preserveOriginalAudio = videoWorkerBool(profile, 'preserveOriginalAudio') || profile.audioCodec === 'copy';
-  const subtitleMode = videoExternalSubtitleFormat(profile);
-  const subtitleEffect = subtitleMode === 'remove'
-    ? `Remove ${sourceSubtitleTracks} embedded subtitle track(s)`
-    : subtitleMode === 'srt' || subtitleMode === 'ass'
-      ? `Convert/externalize compatible subtitles as ${subtitleMode.toUpperCase()}`
-      : profile.preserveSubtitles
-        ? `Preserve ${sourceSubtitleTracks} embedded subtitle track(s)`
-        : `Do not preserve ${sourceSubtitleTracks} embedded subtitle track(s)`;
+
   const trackEffects = [
-    preserveOriginalAudio ? `Preserve ${sourceAudioTracks} original audio track(s).` : `Original audio is not guaranteed to be preserved by this Video Profile.`,
-    addCompatibilityAudio ? 'Add one AAC stereo compatibility track while retaining the selected source audio.' : 'Do not add an extra AAC compatibility track.',
-    `${subtitleEffect}.`,
-    profile.preserveChapters ? `Preserve ${source?.chapters ?? 0} chapter(s).` : `Remove ${source?.chapters ?? 0} chapter(s).`,
+    preserveOriginalAudio
+      ? `Preserve ${sourceAudioTracks} original audio track(s).`
+      : 'Original audio is not guaranteed to be preserved by this Video Profile.',
+
+    addCompatibilityAudio
+      ? 'Add one AAC stereo compatibility track while retaining the selected source audio.'
+      : 'Do not add an extra AAC compatibility track.',
   ];
   const quality = encoder === 'hevc_videotoolbox'
     ? `${numberWorkerValue(profile, 'videoToolboxBitrateMbps', 2)} Mbps target · ${numberWorkerValue(profile, 'videoToolboxMaxrateMbps', 3)} Mbps max · ${numberWorkerValue(profile, 'videoToolboxBufferMbps', 5)} Mbps buffer`
@@ -5943,10 +5951,13 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
     ] : []),
     ['Video filters', 'Source image', filters || 'None', filters ? 'Image processing enabled' : 'No image cleanup'],
     ['HDR', source?.hdr ? 'HDR' : 'SDR or unknown', profile.preserveHdr ? 'Preserve' : 'Not preserved', profile.preserveHdr ? 'Protected' : 'Review required'],
-    ['Subtitles', `${source?.subtitleTracks ?? 0} embedded`, videoWorkerValue(profile, 'externalSubtitleFormat', 'source'), profile.preserveSubtitles ? 'Preserved' : 'Externalize/remove as configured'],
-    ['Bitmap subtitle OCR', 'Only applies to PGS/VobSub/DVB tracks', `${videoWorkerValue(profile, 'subtitleOCRMode', 'accurate')} · ${videoWorkerValue(profile, 'subtitleOCRLanguage', 'auto')}`, videoExternalSubtitleFormat(profile) === 'source' ? 'Not used while embedded tracks are preserved' : 'Runs before FFmpeg; Tracks Profile takes priority'],
     ['AAC compatibility track', `${source?.audioStreams?.length ?? 0} source tracks`, videoAACTrackEnabled(profile) ? `${numberWorkerValue(profile, 'aacStereoBitrateKbps', 192)} kb/s · source ${numberWorkerValue(profile, 'aacStereoSourceStreamIndex', -1) < 0 ? 'automatic/default' : `stream #${numberWorkerValue(profile, 'aacStereoSourceStreamIndex', -1)}`}` : 'Disabled', 'Asset override takes priority; missing sources fall back with a warning'],
-    ['Chapters', `${source?.chapters ?? 0}`, profile.preserveChapters ? 'Preserve' : 'Remove', profile.preserveChapters ? 'Preserved' : 'Changed intentionally'],
+    [
+      'Track disposition',
+      'Audio / subtitles / attachments / chapters',
+      'Tracks Profile',
+      'Subtitle, attachment, and chapter disposition is resolved by the effective Track Profile.',
+    ],
   ];
   return (
     <Stack spacing={2}>
@@ -6834,7 +6845,7 @@ type CombinedLabCommandInput = {
   tracks: AssetConversionOverrideState;
   scan?: ScanResult;
   selectedAudioStreamIndex?: number;
-  embeddedSubtitleIndexes?: number[];
+  embeddedSubtitleIndexes: number[];
   chapterPolicy?: 'keep' | 'remove';
 };
 
@@ -6845,9 +6856,7 @@ function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
 
   const videoIndexes = conversionStreamIndexes(input.tracks, input.scan, 'video');
   let audioIndexes = conversionStreamIndexes(input.tracks, input.scan, 'audio');
-  const subtitleIndexes =
-    input.embeddedSubtitleIndexes ??
-    conversionStreamIndexes(input.tracks, input.scan, 'subtitle');
+  const subtitleIndexes = input.embeddedSubtitleIndexes;
   const audioExplicitlyRemoved = Array.isArray(input.tracks.keepAudioStreams) && input.tracks.keepAudioStreams.length === 0;
   const sourceAudioIndex = audioExplicitlyRemoved
     ? undefined
