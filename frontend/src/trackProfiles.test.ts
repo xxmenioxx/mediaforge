@@ -88,4 +88,16 @@ describe('trackProfileWithConversion', () => {
     expect(profile.subtitleRules[0]).toEqual({ language: 'und', streamIndex: undefined, action: 'remove' });
     expect(profile.subtitleRules[1]).toEqual({ language: undefined, streamIndex: undefined, action: 'keep' });
   });
+
+  it('round-trips semantic and stream-specific subtitle sidecar formats', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'compatibility', name: 'Compatibility', subtitleSidecarFormats: ['original', 'srt'],
+      subtitleRules: [{ streamIndex: 4, action: 'keep_and_extract', sidecarFormats: ['srt'] }],
+    }] } }] as unknown as AppSetting[];
+    const [profile] = getTrackProfiles(settings);
+
+    expect(profile.subtitleSidecarFormats).toEqual(['original', 'srt']);
+    expect(profile.subtitleRules[0].sidecarFormats).toEqual(['srt']);
+  });
 });

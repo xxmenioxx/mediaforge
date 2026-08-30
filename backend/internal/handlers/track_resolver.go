@@ -50,6 +50,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	transforms := subtitleTransformsByIndex(profile["subtitleTransforms"])
 	subtitles := make([]ResolvedSubtitleTrack, 0, len(scan.SubtitleStreams))
 	sidecars := []ResolvedTrackSidecar{}
+	warnings := []string{}
 	for _, raw := range scan.SubtitleStreams {
 		stream := settingProfileObject(raw)
 		index := streamIndexValue(stream["index"])
@@ -77,24 +78,34 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		resolved := ResolvedSubtitleTrack{StreamIndex: index, Codec: codec, Language: language, Action: action}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
-			format := subtitleSidecarFormat(codec)
-
-			if !canonicalDisposition {
+			formats := []string{"original"}
+			if canonicalDisposition {
+				formats = matchingSubtitleSidecarFormats(profile, index, language, formats)
+			} else {
 				if transform, ok := transforms[index]; ok &&
 					strings.TrimSpace(transform.Format) != "" {
-					format = strings.ToLower(strings.TrimSpace(transform.Format))
+					formats = []string{strings.ToLower(strings.TrimSpace(transform.Format))}
 				}
 			}
-
-			sidecars = append(sidecars, ResolvedTrackSidecar{
-				StreamIndex: index,
-				Codec:       codec,
-				Language:    language,
-				Format:      format,
-				Title:       workerStringValue(stream["title"]),
-				Default:     boolValue(stream["default"], false),
-				Forced:      boolValue(stream["forced"], false),
-			})
+			resolvedFormats := map[string]bool{}
+			for _, requested := range formats {
+				format, mode, formatErr := resolveSubtitleSidecarFormat(codec, requested)
+				if formatErr != nil {
+					return ResolvedTrackPlan{}, fmt.Errorf("subtitle stream %d: %w", index, formatErr)
+				}
+				outputKey := format + ":" + mode
+				if resolvedFormats[outputKey] {
+					continue
+				}
+				resolvedFormats[outputKey] = true
+				sidecars = append(sidecars, ResolvedTrackSidecar{
+					StreamIndex: index, Codec: codec, Language: language, Format: format, Mode: mode,
+					Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
+				})
+				if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
+					warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
+				}
+			}
 		}
 	}
 
@@ -115,7 +126,6 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		attachments = []ResolvedTrackStream{}
 	}
 	attachmentReason := attachmentResolutionReason(attachmentPolicy, subtitles)
-	warnings := []string{}
 	if attachmentPolicy == AttachmentPolicyRemove && embeddedASSOrSSAExists(subtitles) {
 		warnings = append(warnings, "Font attachments were explicitly removed while an embedded ASS/SSA subtitle remains; rendering may differ on clients without those fonts.")
 	}
@@ -136,6 +146,83 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		ChapterPolicy: chapterPolicy, ChaptersKept: chapterPolicy == ChapterPolicyKeep,
 		SidecarOutputs: sidecars, Warnings: warnings,
 	}, nil
+}
+
+func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, language string, fallback []string) []string {
+	formats := normalizedSubtitleSidecarFormats(profile["subtitleSidecarFormats"])
+	if len(formats) == 0 {
+		formats = append([]string(nil), fallback...)
+	}
+	streamSpecific := false
+	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
+		rule := settingProfileObject(raw)
+		candidate := normalizedSubtitleSidecarFormats(rule["sidecarFormats"])
+		if len(candidate) == 0 {
+			continue
+		}
+		if rawIndex, ok := rule["streamIndex"]; ok && streamIndexValue(rawIndex) >= 0 {
+			if streamIndexValue(rawIndex) == streamIndex {
+				formats, streamSpecific = candidate, true
+			}
+			continue
+		}
+		if !streamSpecific && normalizedTrackLanguage(workerStringValue(rule["language"])) == language {
+			formats = candidate
+		}
+	}
+	if byStream := settingProfileObject(profile["subtitleSidecarFormatsByStream"]); byStream != nil {
+		if candidate := normalizedSubtitleSidecarFormats(byStream[fmt.Sprintf("%d", streamIndex)]); len(candidate) > 0 {
+			formats = candidate
+		}
+	} else if byStream, ok := profile["subtitleSidecarFormatsByStream"].(map[int][]string); ok {
+		if candidate := normalizedSubtitleSidecarFormats(byStream[streamIndex]); len(candidate) > 0 {
+			formats = candidate
+		}
+	}
+	return formats
+}
+
+func normalizedSubtitleSidecarFormats(raw any) []string {
+	result := []string{}
+	seen := map[string]bool{}
+	values := workerSliceValue(raw)
+	if strings, ok := raw.([]string); ok {
+		values = make([]any, len(strings))
+		for index := range strings {
+			values[index] = strings[index]
+		}
+	}
+	for _, value := range values {
+		format := strings.ToLower(strings.TrimSpace(workerStringValue(value)))
+		if (format == "original" || format == "srt") && !seen[format] {
+			seen[format] = true
+			result = append(result, format)
+		}
+	}
+	return result
+}
+
+func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string, err error) {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "original" {
+		format = subtitleSidecarFormat(codec)
+		if format == "" {
+			return "", "", fmt.Errorf("codec %s does not support original sidecar extraction", codec)
+		}
+		return format, "original", nil
+	}
+	if requested == "srt" {
+		switch codec {
+		case "subrip", "srt":
+			return "srt", "original", nil
+		case "ass", "ssa":
+			return "srt", "converted", nil
+		default:
+			return "", "", fmt.Errorf("codec %s cannot be converted to SRT without OCR", codec)
+		}
+	}
+	return "", "", fmt.Errorf("unsupported sidecar format %q", requested)
 }
 
 func embeddedASSOrSSAExists(subtitles []ResolvedSubtitleTrack) bool {
@@ -326,6 +413,28 @@ func validateSubtitleRules(profile map[string]any) error {
 				"subtitle rule %d requires a non-empty language or streamIndex selector; use subtitleDisposition for the default action",
 				index+1,
 			)
+		}
+	}
+	return nil
+}
+
+func validateSubtitleSidecarFormats(profile map[string]any) error {
+	validate := func(label string, raw any) error {
+		for _, value := range workerSliceValue(raw) {
+			format := strings.ToLower(strings.TrimSpace(workerStringValue(value)))
+			if format != "original" && format != "srt" {
+				return fmt.Errorf("%s must contain only original or srt", label)
+			}
+		}
+		return nil
+	}
+	if err := validate("subtitleSidecarFormats", profile["subtitleSidecarFormats"]); err != nil {
+		return err
+	}
+	for index, raw := range workerSliceValue(profile["subtitleRules"]) {
+		rule := settingProfileObject(raw)
+		if err := validate(fmt.Sprintf("subtitle rule %d sidecarFormats", index+1), rule["sidecarFormats"]); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -52,7 +52,6 @@ import ScienceIcon from '@mui/icons-material/Science';
 import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
@@ -722,7 +721,7 @@ function UnprocessedAssetsView({
 			<Box sx={{ px: 2, py: 1.5 }}>
 				<Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}><Typography variant="h2">{sourceGroup.name}</Typography><SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /></Stack>
 				<Typography variant="body2" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
-				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} onClear={() => setSelectedAssetIds(new Set())} /> : null}
+				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} queueJobs={queueJobs} onClear={() => setSelectedAssetIds(new Set())} /> : null}
 			</Box>
 			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} operationalGroups={operationalGroups} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
 		</Box>
@@ -860,7 +859,7 @@ function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProf
 	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}><Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert><FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={!fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={!fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={!fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={!fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
 }
 
-function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, onClear }: {
+function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, queueJobs, onClear }: {
 	selectedAssetIds: Set<number>;
 	logicalGroups: AssetLogicalGroup[];
 	profiles: Profile[];
@@ -868,10 +867,10 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	trackProfiles: TrackProfile[];
 	libraries: Library[];
 	categories: string[];
+	queueJobs: QueueJob[];
 	onClear: () => void;
 }) {
 	const queryClient = useQueryClient();
-	const navigate = useNavigate();
 	const [configureOpen, setConfigureOpen] = useState(false);
 	const [queuePlan, setQueuePlan] = useState<PreparedSelectionQueue | null>(null);
 	const [queueCommitResult, setQueueCommitResult] = useState<QueueSelectedAssetsResponse | null>(null);
@@ -890,6 +889,9 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 		return ids.length > 0 && ids.every((id) => selectedAssetIds.has(id));
 	});
 	const selectedSize = selectedAssets.reduce((total, asset) => total + asset.sizeBytes, 0);
+	const selectedAssetsWithOpenJobs = selectedAssets.filter((asset) => assetHasOpenJob(asset, queueJobs));
+	const allSelectedAssetsHaveOpenJobs = selectedAssets.length > 0 && selectedAssetsWithOpenJobs.length === selectedAssets.length;
+	const selectedGroupHasOpenJob = fullySelectedGroups.some((group) => group.assetPaths.some((path) => path.assets.some((asset) => !asset.missing && assetHasOpenJob(asset, queueJobs))));
 
 	const saveSelectedConfiguration = useMutation({
 		mutationFn: async () => {
@@ -928,14 +930,9 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 			return api.queueSelectedAssets({ assetIds: queuePlan.results.filter((result) => result.outcome === 'eligible').map((result) => result.assetId), commit: true });
 		},
 		onSuccess: async (response) => {
-			await Promise.all([queryClient.invalidateQueries({ queryKey: ['queueJobs'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]);
-			if (response.summary.skipped || response.summary.failed) {
-				setQueueCommitResult(response);
-				setQueuePlan(response);
-				return;
-			}
-			setQueuePlan(null); setQueueCommitResult(null); onClear();
-			if (response.batches[0]) navigate(`/queue?batch=${encodeURIComponent(response.batches[0].batchId)}`);
+			await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+			setQueueCommitResult(response);
+			setQueuePlan(response);
 		},
 	});
 	const displayedQueueResult = queueCommitResult ?? queuePlan;
@@ -946,11 +943,12 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 		<Box sx={{ mt: 1.25, p: 1, border: 1, borderColor: 'primary.main', borderRadius: 1, bgcolor: 'action.selected', position: 'sticky', top: 8, zIndex: 2 }}>
 			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1}>
 				<Typography variant="body2">{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
-				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate()} disabled={prepareQueue.isPending}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
+				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate()} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
 			</Stack>
+			{selectedAssetsWithOpenJobs.length ? <Alert severity="info" sx={{ mt: 1 }}>{countLabel(selectedAssetsWithOpenJobs.length, 'asset')} already locked by an active Queue job. Read-only details remain available.</Alert> : null}
 			{prepareQueue.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{prepareQueue.error instanceof Error ? prepareQueue.error.message : 'Could not resolve the selected assets.'}</Alert> : null}
 		</Box>
-		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && closeQueueDialog()} maxWidth="sm" fullWidth><DialogTitle>Queue selected titles</DialogTitle><DialogContent dividers>{displayedQueueResult ? <Stack spacing={1}><Typography>Titles: {displayedQueueResult.summary.titleCount}</Typography><Typography>Assets selected: {displayedQueueResult.summary.selected}</Typography><Typography>{queueCommitResult ? 'Queued' : 'Will be queued'}: {queueCommitResult ? displayedQueueResult.summary.queued : displayedQueueResult.summary.eligible}</Typography><Typography>Estimated input size: {formatBytes(displayedQueueResult.summary.sizeBytes)}</Typography><Typography>Already queued: {queueReasonCount('already_queued')}</Typography><Typography>Needs review: {queueReasonCount('needs_review')}</Typography><Typography>Missing: {queueReasonCount('missing')}</Typography><Typography>Blocked or incomplete configuration: {queueReasonCount('invalid_configuration') + queueReasonCount('not_found') + queueReasonCount('active_maintenance')}</Typography><Divider /><Typography variant="body2" color="text.secondary">Destination and profiles are resolved independently for every asset and frozen in each Queue job.</Typography>{queueCommitResult && (queueCommitResult.summary.skipped || queueCommitResult.summary.failed) ? <Alert severity={queueCommitResult.summary.queued ? 'warning' : 'error'}>{queueCommitResult.summary.queued} queued · {queueCommitResult.summary.skipped} skipped · {queueCommitResult.summary.failed} failed{queueCommitResult.results.filter((result) => result.outcome === 'skipped' || result.outcome === 'failed').map((result) => <Typography key={result.assetId} component="div" variant="body2">Asset {result.assetId}: {result.message ?? result.reason}</Typography>)}</Alert> : null}{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={closeQueueDialog} disabled={createQueue.isPending}>{queueCommitResult ? 'Close' : 'Cancel'}</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || Boolean(queueCommitResult) || !queuePlan?.summary.eligible}>Queue {queuePlan?.summary.eligible ?? 0} assets</Button></DialogActions></Dialog>
+		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && closeQueueDialog()} maxWidth="sm" fullWidth><DialogTitle>Queue selected titles</DialogTitle><DialogContent dividers>{displayedQueueResult ? <Stack spacing={1}><Typography>Titles: {displayedQueueResult.summary.titleCount}</Typography><Typography>Assets selected: {displayedQueueResult.summary.selected}</Typography><Typography>{queueCommitResult ? 'Queued' : 'Will be queued'}: {queueCommitResult ? displayedQueueResult.summary.queued : displayedQueueResult.summary.eligible}</Typography><Typography>Estimated input size: {formatBytes(displayedQueueResult.summary.sizeBytes)}</Typography><Typography>Already queued: {queueReasonCount('already_queued')}</Typography><Typography>Needs review: {queueReasonCount('needs_review')}</Typography><Typography>Missing: {queueReasonCount('missing')}</Typography><Typography>Blocked or incomplete configuration: {queueReasonCount('invalid_configuration') + queueReasonCount('not_found') + queueReasonCount('active_maintenance')}</Typography><Divider /><Typography variant="body2" color="text.secondary">Destination and profiles are resolved independently for every asset and frozen in each Queue job.</Typography>{queueCommitResult ? <Alert severity={queueCommitResult.summary.skipped || queueCommitResult.summary.failed ? (queueCommitResult.summary.queued ? 'warning' : 'error') : 'success'}>{queueCommitResult.summary.queued} queued · {queueCommitResult.summary.skipped} skipped · {queueCommitResult.summary.failed} failed{queueCommitResult.results.filter((result) => result.outcome === 'skipped' || result.outcome === 'failed').map((result) => <Typography key={result.assetId} component="div" variant="body2">Asset {result.assetId}: {result.message ?? result.reason}</Typography>)}</Alert> : null}{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={closeQueueDialog} disabled={createQueue.isPending}>{queueCommitResult ? 'Close' : 'Cancel'}</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || Boolean(queueCommitResult) || !queuePlan?.summary.eligible}>Queue {queuePlan?.summary.eligible ?? 0} assets</Button></DialogActions></Dialog>
 		<Dialog open={configureOpen} onClose={() => !saveSelectedConfiguration.isPending && setConfigureOpen(false)} maxWidth="md" fullWidth><DialogTitle>Configure {fullySelectedGroups.length} selected title{fullySelectedGroups.length === 1 ? '' : 's'}</DialogTitle><DialogContent dividers><Stack spacing={2}><Alert severity="info">Checked dimensions are written independently to each Logical Group. Unchecked dimensions remain unchanged.</Alert>{([['video','Video'],['audio','Audio'],['tracks','Tracks'],['category','Category'],['destination','Destination']] as const).map(([field, text]) => <FormControlLabel key={field} control={<Checkbox checked={configurationFields.has(field)} onChange={() => setConfigurationFields((current) => { const next = new Set(current); if (next.has(field)) next.delete(field); else next.add(field); return next; })} />} label={`Change ${text}`} />)}<Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={videoProfileId} onChange={setVideoProfileId} label="Video profile" allowNone allowInherit disabled={!configurationFields.has('video')} /></Grid><Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audioProfileKey} onChange={setAudioProfileKey} label="Audio profile" allowInherit disabled={!configurationFields.has('audio')} /></Grid><Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={trackProfileKey} onChange={setTrackProfileKey} label="Tracks profile" allowInherit disabled={!configurationFields.has('tracks')} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!configurationFields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!configurationFields.has('category') || categoryMode !== 'value'} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!configurationFields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><LibraryAutocomplete libraries={libraries} value={destinationLibraryId} onChange={setDestinationLibraryId} label="Destination" disabled={!configurationFields.has('destination') || destinationMode !== 'value'} /></Grid></Grid>{saveSelectedConfiguration.isError ? <Alert severity="warning">{saveSelectedConfiguration.error instanceof Error ? saveSelectedConfiguration.error.message : 'Could not configure the selected titles.'}</Alert> : null}</Stack></DialogContent><DialogActions><Button onClick={() => setConfigureOpen(false)} disabled={saveSelectedConfiguration.isPending}>Cancel</Button><Button variant="contained" onClick={() => saveSelectedConfiguration.mutate()} disabled={saveSelectedConfiguration.isPending || !configurationFields.size || (configurationFields.has('category') && categoryMode === 'value' && !category) || (configurationFields.has('destination') && destinationMode === 'value' && !destinationLibraryId)}>Apply to selected titles</Button></DialogActions></Dialog>
 	</>;
 }
@@ -1028,7 +1026,6 @@ export function AssetCollectionRows({
   columnCount: number;
 }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
 	const scopeConfigurations = useQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations });
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
@@ -1166,14 +1163,9 @@ export function AssetCollectionRows({
       }
 		return Promise.all(batches.map((batch) => api.createQueueBatch(batch)));
     },
-    onSuccess: async (responses) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
-        queryClient.invalidateQueries({ queryKey: ['assets'] }),
-      ]);
-		const firstBatch = responses[0];
-		if (firstBatch) navigate(`/queue?batch=${encodeURIComponent(firstBatch.batchId)}`);
-    },
+		onSuccess: async () => {
+		await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+	},
   });
 
   function togglePath(path: string, selected: boolean) {
@@ -1560,7 +1552,6 @@ function AssetGroupRow({
 		queryKey: ['assetScopeConfigurations', 'path', normalizePath(group.path)],
 		queryFn: async () => (await api.assetScopeConfigurations()).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path)),
 	});
-  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path');
   const pathAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'path');
@@ -1763,11 +1754,10 @@ function AssetGroupRow({
     });
     },
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
-        queryClient.invalidateQueries({ queryKey: ['assets'] }),
-      ]);
-      navigate(`/queue?path=${encodeURIComponent(group.path)}`);
+	  await Promise.all([
+		queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+		queryClient.invalidateQueries({ queryKey: ['assets'] }),
+	  ]);
     },
   });
   const bulkAssetAction = useMutation({
@@ -2534,10 +2524,7 @@ function AssetRow({
       return api.createQueueJob(input);
     },
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
-        queryClient.invalidateQueries({ queryKey: ['assets'] }),
-      ]);
+	  await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
   const updateReview = useMutation({
@@ -2786,6 +2773,16 @@ function AssetRow({
     const next = keep ? normalizeNumberList([...current, index]) : safeArray(current).filter((candidate) => candidate !== index);
     const indexes = selectedOrUndefined(next, allIndexes);
     const nextDraft = withStreamSelection(conversionDraft, type, indexes);
+    setConversionDraft(nextDraft);
+    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
+  }
+
+  function updateSubtitleSidecarFormats(index: number, value: string) {
+    const formats = value === 'inherit' ? undefined : value.split('+').filter((format): format is 'original' | 'srt' => format === 'original' || format === 'srt');
+    const current = { ...(conversionDraft.subtitleSidecarFormatsByStream ?? {}) };
+    if (formats?.length) current[String(index)] = formats;
+    else delete current[String(index)];
+    const nextDraft = { ...conversionDraft, subtitleSidecarFormatsByStream: Object.keys(current).length ? current : undefined };
     setConversionDraft(nextDraft);
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
@@ -3718,7 +3715,22 @@ async function generateExternalSubtitle(
                               },
                             }
                       }
-                    /></> : null}
+                    />
+                    {snapshotData.subtitleStreams.length ? <Stack spacing={1.25}>
+                      <Typography fontWeight={700}>Subtitle compatibility sidecars</Typography>
+                      <Typography variant="body2" color="text.secondary">Optional per-asset formats. Inherit uses the effective Track Profile; Queue freezes the backend-resolved artifact list.</Typography>
+                      {snapshotData.subtitleStreams.map((stream) => {
+                        const formats = conversionDraft.subtitleSidecarFormatsByStream?.[String(stream.index)];
+                        const value = formats?.length ? formats.join('+') : 'inherit';
+                        const textCompatible = ['ass', 'ssa'].includes(stream.codec.toLowerCase());
+                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={updateConversion.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
+                          <MenuItem value="inherit">Inherit Track Profile</MenuItem>
+                          <MenuItem value="original">Original format only</MenuItem>
+                          {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
+                          {textCompatible ? <MenuItem value="original+srt">Original + SRT compatibility</MenuItem> : null}
+                        </TextField>;
+                      })}
+                    </Stack> : null}</> : null}
                     {isArchive ? (
                       <Alert severity="info">
                         The archived original is used as the subtitle source. Generated files are saved beside its active converted asset.
@@ -6165,6 +6177,14 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   }
   if (Array.isArray(value.subtitleTransforms) && value.subtitleTransforms.length) {
     clean.subtitleTransforms = value.subtitleTransforms;
+  }
+  if (value.subtitleSidecarFormatsByStream) {
+    const formats = Object.fromEntries(Object.entries(value.subtitleSidecarFormatsByStream).flatMap(([index, values]) => {
+      const numericIndex = Number(index);
+      const normalized = Array.from(new Set(values.filter((format) => format === 'original' || format === 'srt')));
+      return Number.isInteger(numericIndex) && numericIndex >= 0 && normalized.length ? [[String(numericIndex), normalized]] : [];
+    }));
+    if (Object.keys(formats).length) clean.subtitleSidecarFormatsByStream = formats;
   }
   ([
     'videoCodec',

@@ -79,7 +79,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type SubtitleSidecarFormat, type TrackProfile } from '../trackProfiles';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
@@ -1905,13 +1905,43 @@ export function ProfileLabPage() {
   }
 
   function updateSubtitleActionForStream(index: number, action: SubtitleDisposition) {
-    setTrackDraft((current) => migrateTrackDisposition(current, {
-      subtitleRules: [...current.subtitleRules.filter((rule) => rule.streamIndex !== index), { streamIndex: index, action }],
-    }));
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === index);
+      return migrateTrackDisposition(current, {
+        subtitleRules: [...current.subtitleRules.filter((rule) => rule.streamIndex !== index), { ...existing, streamIndex: index, action }],
+      });
+    });
     setTrackConversionDraft((current) => ({
       ...current,
       subtitleTransforms: current.subtitleTransforms?.filter((item) => item.streamIndex !== index),
     }));
+  }
+
+  function subtitleFormatsForStream(index: number): SubtitleSidecarFormat[] {
+    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.sidecarFormats ?? trackDraft.subtitleSidecarFormats ?? ['original'];
+  }
+
+  function updateSubtitleFormatsForStream(index: number, format: SubtitleSidecarFormat, enabled: boolean) {
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === index);
+      const currentFormats = existing?.sidecarFormats ?? current.subtitleSidecarFormats ?? ['original'];
+      const nextFormats = enabled ? Array.from(new Set([...currentFormats, format])) : currentFormats.filter((candidate) => candidate !== format);
+      if (!nextFormats.length) return current;
+      return migrateTrackDisposition(current, {
+        subtitleRules: [
+          ...current.subtitleRules.filter((rule) => rule.streamIndex !== index),
+          { ...(existing ?? { streamIndex: index, action: current.subtitleDisposition }), streamIndex: index, sidecarFormats: nextFormats },
+        ],
+      });
+    });
+  }
+
+  function updateDefaultSubtitleFormat(format: SubtitleSidecarFormat, enabled: boolean) {
+    setTrackDraft((current) => {
+      const formats = current.subtitleSidecarFormats ?? ['original'];
+      const next = enabled ? Array.from(new Set([...formats, format])) : formats.filter((candidate) => candidate !== format);
+      return next.length ? migrateTrackDisposition(current, { subtitleSidecarFormats: next }) : current;
+    });
   }
 
   function subtitleActionForLanguage(language: string): SubtitleDisposition {
@@ -1919,12 +1949,15 @@ export function ProfileLabPage() {
   }
 
   function updateSubtitleActionForLanguage(language: string, action: SubtitleDisposition) {
-    setTrackDraft((current) => migrateTrackDisposition(current, {
-      subtitleRules: [
-        ...current.subtitleRules.filter((rule) => rule.streamIndex !== undefined || rule.language !== language),
-        { language, action },
-      ],
-    }));
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === undefined && rule.language === language);
+      return migrateTrackDisposition(current, {
+        subtitleRules: [
+          ...current.subtitleRules.filter((rule) => rule.streamIndex !== undefined || rule.language !== language),
+          { ...existing, language, action },
+        ],
+      });
+    });
   }
 
   function toggleTrackStream(type: 'video' | 'audio', index: number, keep: boolean) {
@@ -3941,6 +3974,10 @@ export function ProfileLabPage() {
                                   <TextField select fullWidth disabled={updateSetting.isPending} label="Action" value={subtitleActionForStream(stream.index)} onChange={(event) => updateSubtitleActionForStream(stream.index, event.target.value as SubtitleDisposition)}>
                                     <MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem>
                                   </TextField>
+                                  {subtitleActionForStream(stream.index) === 'extract' || subtitleActionForStream(stream.index) === 'keep_and_extract' ? <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                    <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('original')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'original', event.target.checked)} />} label={`${stream.codec.toUpperCase()} (Original)`} />
+                                    {(stream.codec === 'ass' || stream.codec === 'ssa') ? <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('srt')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'srt', event.target.checked)} />} label="SRT (Compatibility)" /> : stream.codec !== 'subrip' && stream.codec !== 'srt' ? <Typography variant="body2" color="text.secondary">Text compatibility conversion requires OCR for this bitmap subtitle and is unavailable.</Typography> : null}
+                                  </Stack> : null}
                                 </Stack>
                               </Box>;
                             })}
@@ -3963,6 +4000,7 @@ export function ProfileLabPage() {
                           <Collapse in={activeProfileScope === 'path' || assetTrackRulesOpen}>
                           <Grid container spacing={1.5}>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Default subtitle action" value={trackDraft.subtitleDisposition} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { subtitleDisposition: event.target.value as SubtitleDisposition }))}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>
+                            <Grid size={{ xs: 12, md: 8 }}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography variant="body2" color="text.secondary">Default sidecars</Typography><FormControlLabel control={<Checkbox checked={(trackDraft.subtitleSidecarFormats ?? ['original']).includes('original')} onChange={(event) => updateDefaultSubtitleFormat('original', event.target.checked)} />} label="Original format" /><FormControlLabel control={<Checkbox checked={(trackDraft.subtitleSidecarFormats ?? ['original']).includes('srt')} onChange={(event) => updateDefaultSubtitleFormat('srt', event.target.checked)} />} label="SRT compatibility" /></Stack></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Attachments" value={trackDraft.attachmentPolicy} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { attachmentPolicy: event.target.value as TrackProfile['attachmentPolicy'] }))} helperText="Auto preserves font attachments when retained embedded ASS/SSA subtitles may require them."><MenuItem value="auto">Auto (Recommended)</MenuItem><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Chapters" value={trackDraft.chapterPolicy} onChange={(event) => setTrackDraft((current) => migrateTrackDisposition(current, { chapterPolicy: event.target.value as TrackProfile['chapterPolicy'] }))}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Video rule" value={trackDraft.videoMode} onChange={(event) => setTrackDraft({ ...trackDraft, videoMode: event.target.value as TrackProfile['videoMode'] })}><MenuItem value="first">Keep first video</MenuItem><MenuItem value="all">Keep all video</MenuItem><MenuItem value="require-one">Require one video</MenuItem></TextField></Grid>
@@ -5865,7 +5903,6 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
   const cropAspectPolicy = videoWorkerValue(profile, 'cropAspectPolicy', 'source_sar');
   const qualityPreset = videoWorkerValue(profile, 'hardwareQualityPreset', 'custom');
   const sourceAudioTracks = source?.audioStreams?.length ?? 0;
-  const sourceSubtitleTracks = source?.subtitleStreams?.length ?? 0;
   const addCompatibilityAudio = videoAACTrackEnabled(profile);
   const preserveOriginalAudio = videoWorkerBool(profile, 'preserveOriginalAudio') || profile.audioCodec === 'copy';
 

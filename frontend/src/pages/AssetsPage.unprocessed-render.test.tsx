@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetInventory, AssetPath, ScanResult, SnapshotOperation } from '../api/types';
+import type { Asset, AssetInventory, AssetPath, QueueJob, ScanResult, SnapshotOperation } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -47,6 +47,19 @@ function completedSnapshotOperation(path = '/media/raw/movies/Akira/Akira.mkv', 
     message: 'Complete', durationMs: 10, cacheHit: false, incrementalRefresh: false, result: forceResult,
     createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
   };
+}
+
+function activeQueueJob(id: number, mediaPath: string): QueueJob {
+  return {
+    id, batchId: 'active-batch', batchName: 'Active batch', batchPosition: id, mediaPath,
+    publishMode: 'standard', libraryId: 1, profileId: 1, profileVersion: 1, profileSnapshot: {},
+    audioProfileKey: '', trackProfileKey: '', processingMode: 'full_encode', priority: 5,
+    queuePosition: id, status: 'queued', stage: 'queued', stageHistory: [], progress: 0,
+    workerName: '', outputPath: '', plannedPublishedPath: '', errorMessage: '', notes: '',
+    validationStatus: 'pending', validationScore: 0, validationReport: {}, publishedPath: '',
+    replacementTargetPath: '', originalArchivedPath: '', createdAt: '2026-08-28T00:00:00Z',
+    updatedAt: '2026-08-28T00:00:00Z',
+  } as QueueJob;
 }
 
 describe('Unprocessed Assets hierarchy', () => {
@@ -421,6 +434,62 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(await screen.findByText('0 queued · 1 skipped · 0 failed')).toBeTruthy();
     expect(screen.getByText('Asset 1: Asset already has an open Queue job')).toBeTruthy();
     expect(api.createQueueBatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Assets selection and result in place after a successful Queue selected commit', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={['/assets?tab=unprocessed']}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
+    await user.click(screen.getByRole('button', { name: 'Queue selected' }));
+    await user.click(await screen.findByRole('button', { name: 'Queue 2 assets' }));
+
+    expect(await screen.findByText('2 queued · 0 skipped · 0 failed')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Queue selected titles' })).toBeNull());
+    expect(screen.getByRole('checkbox', { name: 'Select title Akira' })).toHaveProperty('checked', true);
+    expect(screen.getByRole('heading', { name: 'Akira' })).toBeTruthy();
+  });
+
+  it('keeps focus and restores Queue selected actions after a commit failure', async () => {
+    vi.mocked(api.queueSelectedAssets).mockImplementation(async ({ assetIds, commit }) => {
+      if (commit) throw new Error('Queue service unavailable');
+      return {
+        summary: { selected: assetIds.length, eligible: assetIds.length, queued: 0, skipped: 0, failed: 0, titleCount: 1, sizeBytes: assetIds.length * 1024 },
+        results: assetIds.map((assetId) => ({ assetId, outcome: 'eligible' as const, batchId: 'selected-test-001', batchName: 'Akira' })),
+        batches: [],
+      };
+    });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
+    await user.click(screen.getByRole('button', { name: 'Queue selected' }));
+    await user.click(await screen.findByRole('button', { name: 'Queue 2 assets' }));
+
+    expect(await screen.findByText('Queue service unavailable')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Queue 2 assets' }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Queue selected titles' })).toBeNull());
+    expect(screen.getByRole('checkbox', { name: 'Select title Akira' })).toHaveProperty('checked', true);
+  });
+
+  it('locks Queue and configuration mutations for selected assets with active jobs but keeps Asset Info available', async () => {
+    vi.mocked(api.queueJobs).mockResolvedValue([
+      activeQueueJob(101, '/media/raw/movies/Akira/Akira.mkv'),
+      activeQueueJob(102, '/media/raw/movies/Akira/extras/Trailer.mkv'),
+    ]);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
+    expect((screen.getByRole('button', { name: 'Queue selected' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Configure selected' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('2 assets already locked by an active Queue job. Read-only details remain available.')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Expand Akira' }));
+    expect((await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Queue Akira.mkv' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('configures only fully selected LogicalGroups in one transactional request', async () => {

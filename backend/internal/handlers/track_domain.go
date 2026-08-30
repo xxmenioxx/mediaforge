@@ -186,6 +186,7 @@ type ResolvedTrackSidecar struct {
 	Codec       string `json:"codec,omitempty"`
 	Language    string `json:"language,omitempty"`
 	Format      string `json:"format,omitempty"`
+	Mode        string `json:"mode"`
 	Title       string `json:"title,omitempty"`
 	Default     bool   `json:"default"`
 	Forced      bool   `json:"forced"`

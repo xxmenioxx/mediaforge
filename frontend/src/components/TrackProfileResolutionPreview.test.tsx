@@ -13,7 +13,7 @@ describe('TrackProfileResolutionPreview', () => {
         { index: 1, codec: 'ac3', language: 'jpn', title: '' },
         { index: 2, codec: 'ac3', language: 'eng', title: 'Commentary' },
       ],
-      subtitleStreams: [{ index: 4, codec: 'hdmv_pgs_subtitle', language: 'spa', title: '' }],
+      subtitleStreams: [{ index: 4, codec: 'ass', language: 'spa', title: '' }],
     } as ScanResult;
     const preview: ResolutionPreview = {
       assetPath: '/media/Arbegas 21.mkv', keepVideoStreams: [0], keepAudioStreams: [1], keepSubtitleStreams: [4], warnings: [],
@@ -28,7 +28,10 @@ describe('TrackProfileResolutionPreview', () => {
         subtitleStreams: [{ streamIndex: 4, action: 'keep_and_extract' }], attachmentPolicy: 'auto', attachmentsKept: false,
         attachmentReason: 'no embedded ASS/SSA subtitles remain', attachmentStreams: [], fontAttachmentsExported: false,
         chapterPolicy: 'keep', chaptersKept: true,
-        sidecarOutputs: [{ streamIndex: 4, format: 'sup', forced: false, default: false }],
+        sidecarOutputs: [
+          { streamIndex: 4, format: 'ass', mode: 'original', forced: false, default: false },
+          { streamIndex: 4, format: 'srt', mode: 'converted', forced: false, default: false },
+        ],
       },
     };
 
@@ -39,6 +42,8 @@ describe('TrackProfileResolutionPreview', () => {
     expect(screen.getAllByText('Keep')).toHaveLength(2);
     expect(screen.getByText('Keep + Extract')).toBeTruthy();
     expect(screen.getByText('Remove')).toBeTruthy();
+    expect(screen.getByText(/#4 · ASS · Original format/i)).toBeTruthy();
+    expect(screen.getByText(/#4 · SRT · Compatibility conversion/i)).toBeTruthy();
     expect(screen.queryByRole('checkbox')).toBeNull();
   });
 });

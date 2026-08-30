@@ -139,6 +139,7 @@ export type AssetConversionOverrideState = {
     ocrMode?: 'raw' | 'clean' | 'accurate';
     title?: string;
   }>;
+  subtitleSidecarFormatsByStream?: Record<string, Array<'original' | 'srt'>>;
   videoCodec?: string;
   audioCodec?: string;
   qualityMode?: string;
@@ -604,7 +605,7 @@ export type TrackProfileResolutionPreview = {
 		fontAttachmentsExported: boolean;
 		chapterPolicy: 'keep' | 'remove';
 		chaptersKept: boolean;
-		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; forced: boolean; default: boolean }>;
+		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean }>;
 		warnings?: string[];
 	};
 };
@@ -716,10 +717,12 @@ export type QueueJob = {
   replacementTargetPath: string;
   originalArchivedPath: string;
   subtitleArtifacts?: Array<{
+    artifactId?: string;
     type?: 'subtitle_sidecar';
     streamIndex: number;
     sourceCodec: string;
     format: 'srt' | 'ass' | 'ssa' | 'sup';
+    mode?: 'original' | 'converted';
     language: string;
     default: boolean;
     forced: boolean;
@@ -727,8 +730,9 @@ export type QueueJob = {
     stagedPath: string;
     publishedPath?: string;
     sizeBytes: number;
-    status: 'planned' | 'ready' | 'unsupported' | 'failed' | 'rolled_back' | '';
+    status: 'planned' | 'generating' | 'ready' | 'unsupported' | 'failed' | 'rolled_back' | 'skipped' | '';
     error?: string;
+    displayName?: string;
     fontAttachmentsExported?: boolean;
   }>;
   startedAt?: string;

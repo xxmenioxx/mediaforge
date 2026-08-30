@@ -1833,6 +1833,7 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 	job.ProfileVersion = 1
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
+	job.SubtitleArtifacts = subtitleArtifactsJSON(plannedSubtitleArtifacts(*job))
 
 	return nil
 }
@@ -1891,6 +1892,7 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
+	job.SubtitleArtifacts = subtitleArtifactsJSON(plannedSubtitleArtifacts(*job))
 	return nil
 }
 
@@ -1914,6 +1916,7 @@ func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *A
 	profile["audioMetadata"] = override.AudioMetadata
 	profile["subtitleMetadata"] = override.SubtitleMetadata
 	profile["subtitleTransforms"] = override.SubtitleTransforms
+	profile["subtitleSidecarFormatsByStream"] = override.SubtitleSidecarFormatsByStream
 	var scan models.ScanResult
 	if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
 		return fmt.Errorf("track profile: refresh effective track plan from asset snapshot: %w", err)

@@ -243,6 +243,7 @@ function PipelineStages({ job }: { job: QueueJob }) {
             </Stack>
             <Chip size="small" color={pipelineStageColor(state)} variant={state === 'active' ? 'filled' : 'outlined'} label={state} />
             <Typography variant="body2" color="text.secondary" align="right">{event ? stageDuration(history, event, job) : '—'}</Typography>
+			{stage === 'preparing_subtitles' && job.subtitleArtifacts?.length ? <SubtitleArtifactStages artifacts={job.subtitleArtifacts} /> : null}
           </Box>
         );
       })}
@@ -250,6 +251,40 @@ function PipelineStages({ job }: { job: QueueJob }) {
       {job.validationStatus === 'warning' ? <Alert severity="warning">Validation completed with warnings. Review the Final result tab for details.</Alert> : null}
     </Stack>
   );
+}
+
+function SubtitleArtifactStages({ artifacts }: { artifacts: NonNullable<QueueJob['subtitleArtifacts']> }) {
+  return <Stack spacing={0.5} sx={{ gridColumn: '2 / -1', mt: 0.5 }}>
+    {artifacts.map((artifact) => {
+      const status = subtitleArtifactStageStatus(artifact.status);
+      const identity = artifact.artifactId || `subtitle:${artifact.streamIndex}:${artifact.mode || 'original'}:${artifact.format}`;
+      const filename = artifact.displayName || fileNameFromPath(artifact.stagedPath || artifact.publishedPath || 'Subtitle sidecar');
+      const kind = artifact.mode === 'converted' ? 'Compatibility' : 'Original';
+      const detail = [artifact.format.toUpperCase(), artifact.language || 'UND', kind].join(' · ');
+      return <Box key={identity} sx={{ display: 'grid', gridTemplateColumns: '22px minmax(160px, 1fr) minmax(120px, auto) auto', gap: 1, alignItems: 'center', py: 0.35 }}>
+        {pipelineStageIcon(status)}
+        <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{filename}</Typography>
+        <Typography variant="caption" color="text.secondary">{detail}</Typography>
+        <Chip size="small" variant="outlined" color={pipelineStageColor(status)} label={subtitleArtifactStatusLabel(artifact.status)} />
+      </Box>;
+    })}
+  </Stack>;
+}
+
+function subtitleArtifactStageStatus(status: NonNullable<QueueJob['subtitleArtifacts']>[number]['status']): PipelineStageState {
+  if (status === 'generating') return 'active';
+  if (status === 'ready') return 'success';
+  if (status === 'failed' || status === 'unsupported' || status === 'rolled_back') return 'error';
+  if (status === 'skipped') return 'skipped';
+  return 'pending';
+}
+
+function subtitleArtifactStatusLabel(status: NonNullable<QueueJob['subtitleArtifacts']>[number]['status']) {
+  if (status === 'ready') return 'Generated';
+  if (status === 'generating') return 'Generating';
+  if (status === 'failed' || status === 'unsupported' || status === 'rolled_back') return 'Failed';
+  if (status === 'skipped') return 'Skipped';
+  return 'Planned';
 }
 
 function normalizedStageHistory(job: QueueJob) {
@@ -518,9 +553,12 @@ function subtitleArtifactSummary(artifacts: NonNullable<QueueJob['subtitleArtifa
 	if (!artifacts.length) return 'None requested';
 	const published = artifacts.filter((artifact) => Boolean(artifact.publishedPath)).length;
 	const failed = artifacts.filter((artifact) => artifact.status === 'failed' || artifact.status === 'unsupported' || artifact.status === 'rolled_back').length;
+	const generating = artifacts.filter((artifact) => artifact.status === 'generating').length;
+	const planned = artifacts.filter((artifact) => artifact.status === 'planned').length;
+	const generated = artifacts.filter((artifact) => artifact.status === 'ready').length;
 	if (failed) return `${artifacts.length} requested · ${failed} failed`;
 	if (published === artifacts.length) return `${published} published`;
-	return `${artifacts.length} ready · ${published} published`;
+	return [`${artifacts.length} requested`, generated ? `${generated} generated` : '', generating ? `${generating} generating` : '', planned ? `${planned} planned` : '', published ? `${published} published` : ''].filter(Boolean).join(' · ');
 }
 
 function elapsedSummary(job: QueueJob, result?: Record<string, unknown>) {

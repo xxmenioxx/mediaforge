@@ -407,6 +407,9 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 	if err := db.Where("path = ?", filepath.Clean(mediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: asset snapshot: %w", err)
 	}
+	if len(explicit.SubtitleSidecarFormatsByStream) > 0 {
+		resolved["subtitleSidecarFormatsByStream"] = explicit.SubtitleSidecarFormatsByStream
+	}
 	trackPlan, err := resolveTrackPlan(scan, resolved)
 	if err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: resolve track plan: %w", err)

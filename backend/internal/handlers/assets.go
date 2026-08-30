@@ -258,6 +258,7 @@ type AssetConversionOverrideState struct {
 	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
 	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
 	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
+	SubtitleSidecarFormatsByStream   map[int][]string               `json:"subtitleSidecarFormatsByStream,omitempty"`
 	VideoCodec                       string                         `json:"videoCodec,omitempty"`
 	AudioCodec                       string                         `json:"audioCodec,omitempty"`
 	QualityMode                      string                         `json:"qualityMode,omitempty"`
@@ -405,6 +406,7 @@ type AssetConversionUpdateInput struct {
 	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata"`
 	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata"`
 	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms"`
+	SubtitleSidecarFormatsByStream   map[int][]string               `json:"subtitleSidecarFormatsByStream"`
 	VideoCodec                       string                         `json:"videoCodec"`
 	AudioCodec                       string                         `json:"audioCodec"`
 	QualityMode                      string                         `json:"qualityMode"`
@@ -2732,6 +2734,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
 		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
 		SubtitleTransforms:             normalizedSubtitleTransforms(input.SubtitleTransforms),
+		SubtitleSidecarFormatsByStream: normalizedSubtitleSidecarFormatsByStream(input.SubtitleSidecarFormatsByStream),
 		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
 		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
 		QualityMode:                    strings.TrimSpace(input.QualityMode),
@@ -6404,6 +6407,7 @@ func conversionOverrideForPath(path string, overrides map[string]AssetConversion
 	override.AudioMetadata = normalizedStreamMetadata(override.AudioMetadata)
 	override.SubtitleMetadata = normalizedStreamMetadata(override.SubtitleMetadata)
 	override.SubtitleTransforms = normalizedSubtitleTransforms(override.SubtitleTransforms)
+	override.SubtitleSidecarFormatsByStream = normalizedSubtitleSidecarFormatsByStream(override.SubtitleSidecarFormatsByStream)
 	return override
 }
 
@@ -6417,6 +6421,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		len(override.AudioMetadata) == 0 &&
 		len(override.SubtitleMetadata) == 0 &&
 		len(override.SubtitleTransforms) == 0 &&
+		len(override.SubtitleSidecarFormatsByStream) == 0 &&
 		strings.TrimSpace(override.VideoCodec) == "" &&
 		strings.TrimSpace(override.AudioCodec) == "" &&
 		strings.TrimSpace(override.QualityMode) == "" &&
@@ -6467,6 +6472,25 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.VideoToolboxAllowFrameReordering == nil &&
 		override.VideoToolboxPowerEfficiency == nil &&
 		strings.TrimSpace(override.HardwareQualityPreset) == ""
+}
+
+func normalizedSubtitleSidecarFormatsByStream(values map[int][]string) map[int][]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := map[int][]string{}
+	for index, formats := range values {
+		if index < 0 {
+			continue
+		}
+		if normalized := normalizedSubtitleSidecarFormats(formats); len(normalized) > 0 {
+			result[index] = normalized
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func normalizedSubtitleTransforms(values []SubtitleTransform) []SubtitleTransform {

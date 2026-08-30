@@ -69,6 +69,64 @@ func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestResolveTrackPlanASSCompatibilitySidecars(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 4, "codec": "ass", "language": "spa"},
+		map[string]any{"index": 7, "codec": "ass", "language": "spa"},
+	}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "keep_and_extract",
+		"subtitleSidecarFormats":  []string{"original", "srt"},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SidecarOutputs) != 4 {
+		t.Fatalf("sidecars=%#v", plan.SidecarOutputs)
+	}
+	wantFormats := []string{"ass", "srt", "ass", "srt"}
+	wantModes := []string{"original", "converted", "original", "converted"}
+	for index := range wantFormats {
+		if plan.SidecarOutputs[index].Format != wantFormats[index] || plan.SidecarOutputs[index].Mode != wantModes[index] {
+			t.Fatalf("sidecars=%#v", plan.SidecarOutputs)
+		}
+	}
+	if !plan.AttachmentsKept || len(plan.Warnings) != 2 {
+		t.Fatalf("attachments/warnings=%t %#v", plan.AttachmentsKept, plan.Warnings)
+	}
+}
+
+func TestResolveTrackPlanAssetSidecarFormatOverride(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "spa"}}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion":        1,
+		"subtitleDisposition":            "extract",
+		"subtitleSidecarFormats":         []string{"original", "srt"},
+		"subtitleSidecarFormatsByStream": map[string]any{"4": []string{"original"}},
+		"attachmentPolicy":               "auto",
+		"chapterPolicy":                  "keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SidecarOutputs) != 1 || plan.SidecarOutputs[0].Format != "ass" || plan.SidecarOutputs[0].Mode != "original" || plan.AttachmentsKept {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func TestResolveTrackPlanRejectsBitmapCompatibilitySidecar(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "hdmv_pgs_subtitle", "language": "spa"}}}
+	_, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+	})
+	if err == nil || !strings.Contains(err.Error(), "without OCR") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestResolveTrackPlanUnknownLanguageIsNotWildcard(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{
 		map[string]any{"index": 2, "codec": "subrip", "language": "spa"},
@@ -119,8 +177,8 @@ func TestResolveTrackPlanRejectsSelectorlessSubtitleRule(t *testing.T) {
 		"trackDispositionVersion": 1,
 		"attachmentPolicy":        "auto",
 		"chapterPolicy":           "keep",
-		"subtitleDisposition": "keep",
-		"subtitleRules":       []any{map[string]any{"language": "", "action": "remove"}},
+		"subtitleDisposition":     "keep",
+		"subtitleRules":           []any{map[string]any{"language": "", "action": "remove"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a non-empty language or streamIndex") {
 		t.Fatalf("selectorless rule error=%v", err)
@@ -243,7 +301,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	setting := models.AppSetting{
 		Key: "trackProfiles",
 		Value: models.JSONMap{"profiles": models.JSONList{
-			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep"},
 		}},
 	}
 	if err := db.Create(&setting).Error; err != nil {
@@ -254,19 +312,19 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeep || !frozen.AttachmentsKept {
+	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 {
 		t.Fatalf("canonical plan was not frozen: %#v", job.TrackProfileSnapshot)
 	}
-	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "attachmentPolicy": "remove", "chapterPolicy": "remove"}}
+	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "subtitleSidecarFormats": models.JSONList{"original"}, "attachmentPolicy": "remove", "chapterPolicy": "remove"}}
 	if err := db.Save(&setting).Error; err != nil {
 		t.Fatal(err)
 	}
 	stillFrozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeep || !stillFrozen.ChaptersKept {
+	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 {
 		t.Fatalf("queued decision changed after profile edit: %#v", stillFrozen)
 	}
 	override := currentConversionOverrideForJob(job, nil)
-	if override.ResolvedTrackPlan == nil || override.ResolvedTrackPlan.SubtitleStreams[0].Action != SubtitleDispositionKeep {
+	if override.ResolvedTrackPlan == nil || override.ResolvedTrackPlan.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || len(override.ResolvedTrackPlan.SidecarOutputs) != 2 {
 		t.Fatalf("worker did not restore frozen track plan: %#v", override)
 	}
 }
@@ -341,22 +399,25 @@ func TestFreezeEffectiveTrackPlanPreservesAssetOverridePrecedence(t *testing.T) 
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode-override.mkv")
-	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1}, map[string]any{"index": 2}}}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1}, map[string]any{"index": 2}}, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "spa"}}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	job := models.QueueJob{MediaPath: path, TrackProfileSnapshot: models.JSONMap{
-		"keepAudioStreams": []any{float64(1)}, resolvedTrackPlanSnapshotKey: models.JSONMap{
+		"keepAudioStreams": []any{float64(1)}, "trackDispositionVersion": 1, "subtitleDisposition": "keep_and_extract", "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep", resolvedTrackPlanSnapshotKey: models.JSONMap{
 			"videoStreams": []any{}, "audioStreams": []any{map[string]any{"streamIndex": float64(1)}}, "audioSelectionExplicit": true,
 			"subtitleStreams": []any{}, "attachmentPolicy": "keep", "attachmentsKept": true, "attachmentStreams": []any{},
 			"chapterPolicy": "keep", "chaptersKept": true, "sidecarOutputs": []any{},
 		},
 	}}
-	override := AssetConversionOverrideState{KeepAudioStreams: []int{2}}
+	override := AssetConversionOverrideState{KeepAudioStreams: []int{2}, SubtitleSidecarFormatsByStream: map[int][]string{4: {"original"}}}
 	if err := NewQueueHandler(db).freezeEffectiveTrackPlan(&job, &override); err != nil {
 		t.Fatal(err)
 	}
 	if override.ResolvedTrackPlan == nil || len(override.ResolvedTrackPlan.AudioStreams) != 1 || override.ResolvedTrackPlan.AudioStreams[0].StreamIndex != 2 {
 		t.Fatalf("asset override did not win in frozen canonical plan: %#v", override.ResolvedTrackPlan)
+	}
+	if len(override.ResolvedTrackPlan.SidecarOutputs) != 1 || override.ResolvedTrackPlan.SidecarOutputs[0].Format != "ass" {
+		t.Fatalf("asset sidecar override was not frozen: %#v", override.ResolvedTrackPlan.SidecarOutputs)
 	}
 }
 

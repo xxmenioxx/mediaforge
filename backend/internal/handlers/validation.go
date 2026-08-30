@@ -276,7 +276,7 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 	warnings := []string{}
 	reportItems := models.JSONList{}
 	for _, decision := range expected {
-		label := fmt.Sprintf("Subtitle sidecar for stream %d", decision.StreamIndex)
+		label := fmt.Sprintf("Subtitle %s sidecar for stream %d", strings.ToUpper(decision.Format), decision.StreamIndex)
 		candidates := byStream[decision.StreamIndex]
 		var artifact *SubtitleArtifact
 		for index := range candidates {
@@ -287,14 +287,14 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 			}
 		}
 		status, message := "passed", "Required subtitle sidecar is ready."
-		item := models.JSONMap{"streamIndex": decision.StreamIndex, "language": decision.Language, "codec": decision.Codec, "requestedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "resolvedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "expectedFormat": decision.Format}
+		item := models.JSONMap{"streamIndex": decision.StreamIndex, "language": decision.Language, "codec": decision.Codec, "requestedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "resolvedDisposition": subtitleDispositionForSidecar(job, decision.StreamIndex), "expectedFormat": decision.Format, "expectedMode": decision.Mode}
 		if artifact == nil {
 			status, message = "failed", "Requested subtitle sidecar is missing from the job artifact set."
 		} else {
 			item["artifact"] = artifact
 			if artifact.Status != "" && artifact.Status != "ready" {
 				status, message = "failed", "Requested subtitle sidecar is not ready: "+fallback(artifact.Error, artifact.Status)
-			} else if !strings.EqualFold(filepath.Ext(artifact.StagedPath), "."+artifact.Format) || (decision.Format != "" && !strings.EqualFold(artifact.Format, decision.Format)) {
+			} else if !strings.EqualFold(filepath.Ext(artifact.StagedPath), "."+artifact.Format) || (decision.Format != "" && !strings.EqualFold(artifact.Format, decision.Format)) || (decision.Mode != "" && !strings.EqualFold(artifact.Mode, decision.Mode)) {
 				status, message = "failed", "Subtitle sidecar extension or format does not match the resolved track plan."
 			} else if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
 				status, message = "failed", "Requested subtitle sidecar is not readable from staging."
@@ -309,7 +309,7 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 		}
 		item["status"], item["message"] = status, message
 		reportItems = append(reportItems, item)
-		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d", decision.StreamIndex), Label: label, Status: status, Message: message})
+		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d_%s", decision.StreamIndex, strings.ToLower(decision.Format)), Label: label, Status: status, Message: message})
 		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract {
 			warnings = append(warnings, fmt.Sprintf("Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.", strings.ToUpper(decision.Codec), decision.StreamIndex))
 		}

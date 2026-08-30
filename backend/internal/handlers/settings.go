@@ -163,6 +163,9 @@ func validateTrackProfileDomainPolicies(value models.JSONMap) error {
 		if err := validateSubtitleRules(profile); err != nil {
 			return fmt.Errorf("track profile %s: %w", name, err)
 		}
+		if err := validateSubtitleSidecarFormats(profile); err != nil {
+			return fmt.Errorf("track profile %s: %w", name, err)
+		}
 	}
 	return nil
 }

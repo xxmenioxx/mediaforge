@@ -12,7 +12,8 @@ export type SubtitleTransform = {
 };
 
 export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extract';
-export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition };
+export type SubtitleSidecarFormat = 'original' | 'srt';
+export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[] };
 
 export type TrackProfile = {
 	trackDispositionVersion?: number;
@@ -42,6 +43,7 @@ export type TrackProfile = {
   subtitleTransforms?: SubtitleTransform[];
 	  subtitleDisposition: SubtitleDisposition;
 	  subtitleRules: SubtitleRule[];
+	  subtitleSidecarFormats?: SubtitleSidecarFormat[];
 	  attachmentPolicy: 'auto' | 'keep' | 'remove';
 	  chapterPolicy: 'keep' | 'remove';
   notes: string;
@@ -54,10 +56,10 @@ export const emptyTrackProfile: TrackProfile = {
   key: '', name: '', description: '', videoMode: 'first', audioMode: 'languages', audioLanguages: [],
   audioRequired: true, dropCommentary: true, defaultAudioLanguage: '', subtitleMode: 'forced-or-languages',
   subtitleLanguages: [], subtitlesRequired: false, defaultSubtitleLanguage: '', validationMode: 'review', notes: '',
-	  subtitleDisposition: 'keep', subtitleRules: [], attachmentPolicy: 'auto', chapterPolicy: 'keep',
+	  subtitleDisposition: 'keep', subtitleRules: [], subtitleSidecarFormats: ['original'], attachmentPolicy: 'auto', chapterPolicy: 'keep',
 };
 
-export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'attachmentPolicy' | 'chapterPolicy'>>): TrackProfile {
+export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'subtitleSidecarFormats' | 'attachmentPolicy' | 'chapterPolicy'>>): TrackProfile {
   return { ...profile, ...patch, trackDispositionVersion: 1 };
 }
 
@@ -138,13 +140,16 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     return values.length ? values : undefined;
   };
 	const disposition = (entry: unknown): SubtitleDisposition => entry === 'remove' || entry === 'extract' || entry === 'keep_and_extract' ? entry : 'keep';
+	const sidecarFormats = (entry: unknown): SubtitleSidecarFormat[] => Array.isArray(entry)
+		? Array.from(new Set(entry.filter((value): value is SubtitleSidecarFormat => value === 'original' || value === 'srt')))
+		: [];
 	const rules = (entry: unknown): SubtitleRule[] => Array.isArray(entry) ? entry.flatMap((raw) => {
 		if (!raw || typeof raw !== 'object') return [];
 		const value = raw as Record<string, unknown>;
 		const action = disposition(value.action ?? value.disposition);
 		const language = typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : undefined;
 		const streamIndex = Number.isInteger(value.streamIndex) && Number(value.streamIndex) >= 0 ? Number(value.streamIndex) : undefined;
-		return [{ language, streamIndex, action }];
+		return [{ language, streamIndex, action, sidecarFormats: sidecarFormats(value.sidecarFormats).length ? sidecarFormats(value.sidecarFormats) : undefined }];
 	}) : [];
   return {
     ...emptyTrackProfile,
@@ -157,6 +162,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     videoMetadata: metadata(item.videoMetadata), audioMetadata: metadata(item.audioMetadata), subtitleMetadata: metadata(item.subtitleMetadata),
     subtitleTransforms: transforms(item.subtitleTransforms),
 	  subtitleDisposition: disposition(item.subtitleDisposition), subtitleRules: rules(item.subtitleRules),
+	  subtitleSidecarFormats: sidecarFormats(item.subtitleSidecarFormats).length ? sidecarFormats(item.subtitleSidecarFormats) : undefined,
 	  attachmentPolicy: item.attachmentPolicy === 'keep' || item.attachmentPolicy === 'remove' ? item.attachmentPolicy : 'auto',
 	  chapterPolicy: item.chapterPolicy === 'remove' ? 'remove' : 'keep',
     videoMode: item.videoMode === 'all' || item.videoMode === 'require-one' ? item.videoMode : 'first',

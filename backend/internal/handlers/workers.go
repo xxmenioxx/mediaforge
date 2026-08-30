@@ -780,11 +780,22 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 			return job, http.StatusInternalServerError, err
 		}
 		job.Progress = 3
+		if planned := plannedSubtitleArtifacts(job); len(planned) > 0 {
+			job.SubtitleArtifacts = subtitleArtifactsJSON(planned)
+		}
 		_ = h.db.Save(&job).Error
 	}
-	subtitleArtifacts, err := generateSubtitleArtifacts(context.Background(), plan)
+	subtitleArtifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, func(update SubtitleArtifact) {
+		current := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+		job.SubtitleArtifacts = subtitleArtifactsJSON(mergeSubtitleArtifactProgress(current, update))
+		_ = h.db.Model(&job).Update("subtitle_artifacts", job.SubtitleArtifacts).Error
+	})
 	if err != nil {
-		job.SubtitleArtifacts = subtitleArtifactsJSON(subtitleArtifacts)
+		current := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+		for _, artifact := range subtitleArtifacts {
+			current = mergeSubtitleArtifactProgress(current, artifact)
+		}
+		job.SubtitleArtifacts = subtitleArtifactsJSON(current)
 		job.Status = JobStatusFailed
 		job.ErrorMessage = err.Error()
 		job.Notes = appendNote(job.Notes, "Subtitle transformation failed before media conversion: "+err.Error())
@@ -793,7 +804,11 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		_ = h.db.Save(&job).Error
 		return job, http.StatusUnprocessableEntity, err
 	}
-	job.SubtitleArtifacts = subtitleArtifactsJSON(subtitleArtifacts)
+	currentSubtitleArtifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+	for _, artifact := range subtitleArtifacts {
+		currentSubtitleArtifacts = mergeSubtitleArtifactProgress(currentSubtitleArtifacts, artifact)
+	}
+	job.SubtitleArtifacts = subtitleArtifactsJSON(currentSubtitleArtifacts)
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := "ffmpeg " + shellJoin(args)
 	now := time.Now()
@@ -1188,6 +1203,9 @@ func mergeTrackProfileBelowAssetOverride(profile, asset AssetConversionOverrideS
 	}
 	if len(asset.SubtitleTransforms) == 0 {
 		asset.SubtitleTransforms = profile.SubtitleTransforms
+	}
+	if len(asset.SubtitleSidecarFormatsByStream) == 0 {
+		asset.SubtitleSidecarFormatsByStream = profile.SubtitleSidecarFormatsByStream
 	}
 	return asset
 }

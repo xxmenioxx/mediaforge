@@ -94,13 +94,30 @@ func TestResolvedSubtitleStagedPathIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestResolvedSubtitleStagedPathSharesDuplicateIdentityAcrossFormats(t *testing.T) {
+	used := map[string]struct{}{}
+	want := []string{
+		"/staging/Movie.spa.ass", "/staging/Movie.spa.srt",
+		"/staging/Movie.spa.7.ass", "/staging/Movie.spa.7.srt",
+	}
+	artifacts := []SubtitleArtifact{
+		{StreamIndex: 4, Language: "spa", Format: "ass"}, {StreamIndex: 4, Language: "spa", Format: "srt"},
+		{StreamIndex: 7, Language: "spa", Format: "ass"}, {StreamIndex: 7, Language: "spa", Format: "srt"},
+	}
+	for index, artifact := range artifacts {
+		if got := resolvedSubtitleStagedPath("/staging/Movie", artifact, used); got != want[index] {
+			t.Fatalf("path[%d]=%q want=%q", index, got, want[index])
+		}
+	}
+}
+
 func TestSubtitleArtifactJSONPreservesResolvedExtractionState(t *testing.T) {
 	values := []SubtitleArtifact{
-		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Language: "spa", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
+		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "spa", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
 		{StreamIndex: 5, SourceCodec: "subrip", Format: "srt", Language: "eng", Forced: true, StagedPath: "/staging/Movie.eng.forced.srt", Status: "ready", SizeBytes: 30},
 	}
 	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON(values))
-	if len(decoded) != 2 || decoded[0].Status != "ready" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
+	if len(decoded) != 2 || decoded[0].Status != "ready" || decoded[0].Mode != "original" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
 		t.Fatalf("multiple sidecar artifacts did not round trip: %#v", decoded)
 	}
 	if got := subtitleArtifactsFromJSON(subtitleArtifactsJSON(nil)); len(got) != 0 {
@@ -130,9 +147,77 @@ func TestGenerateResolvedSubtitleArtifactsReportsUnsupportedCodec(t *testing.T) 
 		Streams:        MediaStreamInventory{Subtitle: []MediaStream{{Index: 2, Codec: "dvd_subtitle", Language: "spa"}}},
 		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{StreamIndex: 2, Codec: "dvd_subtitle", Language: "spa"}}},
 	}
-	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan)
+	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
 	if err == nil || len(artifacts) != 1 || artifacts[0].Status != "unsupported" || !strings.Contains(artifacts[0].Error, "stream 2") {
 		t.Fatalf("unsupported extraction was not explicit: artifacts=%#v err=%v", artifacts, err)
+	}
+}
+
+func TestPlannedSubtitleArtifactsFreezeStableDistinctIdentities(t *testing.T) {
+	plan := ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{
+		{StreamIndex: 4, Codec: "ass", Language: "spa", Format: "ass", Mode: "original"},
+		{StreamIndex: 4, Codec: "ass", Language: "spa", Format: "srt", Mode: "converted"},
+		{StreamIndex: 7, Codec: "ass", Language: "spa", Format: "ass", Mode: "original"},
+		{StreamIndex: 7, Codec: "ass", Language: "spa", Format: "srt", Mode: "converted"},
+	}}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := plannedSubtitleArtifacts(models.QueueJob{MediaPath: "/raw/Movie.mkv", TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap}})
+	identities := map[string]struct{}{}
+	for _, artifact := range artifacts {
+		identities[artifact.ArtifactID] = struct{}{}
+		if artifact.Status != "planned" || artifact.DisplayName == "" {
+			t.Fatalf("invalid planned artifact: %#v", artifact)
+		}
+	}
+	if len(artifacts) != 4 || len(identities) != 4 {
+		t.Fatalf("planned artifacts are not distinct: %#v", artifacts)
+	}
+
+	plan.SidecarOutputs = nil
+	if len(artifacts) != 4 {
+		t.Fatal("queued artifact snapshot changed after the source plan was edited")
+	}
+}
+
+func TestMergeSubtitleArtifactProgressPreservesOtherPlannedArtifacts(t *testing.T) {
+	current := []SubtitleArtifact{
+		{ArtifactID: "subtitle:4:original:ass", StreamIndex: 4, Mode: "original", Format: "ass", Status: "planned"},
+		{ArtifactID: "subtitle:4:converted:srt", StreamIndex: 4, Mode: "converted", Format: "srt", Status: "planned"},
+	}
+	current = mergeSubtitleArtifactProgress(current, SubtitleArtifact{ArtifactID: current[0].ArtifactID, StreamIndex: 4, Mode: "original", Format: "ass", Status: "generating"})
+	if current[0].Status != "generating" || current[1].Status != "planned" {
+		t.Fatalf("generating transition corrupted the frozen list: %#v", current)
+	}
+	current = mergeSubtitleArtifactProgress(current, SubtitleArtifact{ArtifactID: current[0].ArtifactID, StreamIndex: 4, Mode: "original", Format: "ass", Status: "failed", Error: "command failed"})
+	if current[0].Status != "failed" || current[1].Status != "planned" {
+		t.Fatalf("failure transition corrupted the frozen list: %#v", current)
+	}
+}
+
+func TestGenerateResolvedSubtitleArtifactsReportsTruthfulProgress(t *testing.T) {
+	temp := t.TempDir()
+	ffmpeg := filepath.Join(temp, "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' '[Events]' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hola' > \"$output\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", temp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	statuses := []string{}
+	plan := MediaJobPlan{
+		InputPath: "/raw/Movie.mkv", OutputPath: filepath.Join(temp, "Movie.mkv"),
+		Streams:        MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "ass", Language: "spa"}}},
+		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{StreamIndex: 4, Codec: "ass", Language: "spa", Format: "ass", Mode: "original"}}},
+	}
+	artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, func(artifact SubtitleArtifact) {
+		statuses = append(statuses, artifact.Status)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(statuses, []string{"generating", "ready"}) || len(artifacts) != 1 || artifacts[0].Status != "ready" {
+		t.Fatalf("unexpected artifact progress: statuses=%#v artifacts=%#v", statuses, artifacts)
 	}
 }
 

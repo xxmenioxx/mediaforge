@@ -41,6 +41,7 @@ export function WorkersPage() {
   const [failedPage, setFailedPage] = useState(0);
   const [failedRowsPerPage, setFailedRowsPerPage] = useState(6);
   const [detailsJob, setDetailsJob] = useState<QueueJob | null>(null);
+	const liveDetailsJob = detailsJob ? jobs.data?.find((job) => job.id === detailsJob.id) ?? detailsJob : null;
   const statusFilter = normalizeStatusFilter(searchParams.get('status'));
   const workerFilter = searchParams.get('worker') ?? 'all';
 
@@ -319,7 +320,7 @@ export function WorkersPage() {
           </Grid>
         </Grid>
       </Box>
-      <JobDetailsDialog job={detailsJob} onClose={() => setDetailsJob(null)} />
+      <JobDetailsDialog job={liveDetailsJob} onClose={() => setDetailsJob(null)} />
     </>
   );
 }

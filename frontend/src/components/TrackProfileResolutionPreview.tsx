@@ -43,6 +43,12 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
         <Chip label={`Chapters: ${preview.resolvedTrackPlan.chaptersKept ? 'Keep' : 'Remove'}`} />
         <Chip label={`Sidecars: ${preview.resolvedTrackPlan.sidecarOutputs.length}`} />
       </Stack>
+      {preview.resolvedTrackPlan.sidecarOutputs.length ? <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+        <Typography fontWeight={700} sx={{ mb: 1 }}>Resolved subtitle sidecars</Typography>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {preview.resolvedTrackPlan.sidecarOutputs.map((output) => <Chip key={`${output.streamIndex}-${output.format}`} label={`#${output.streamIndex} · ${(output.format || 'unknown').toUpperCase()} · ${output.mode === 'converted' ? 'Compatibility conversion' : 'Original format'}`} color={output.mode === 'converted' ? 'info' : 'default'} />)}
+        </Stack>
+      </Box> : null}
     </Stack>
   );
 }
