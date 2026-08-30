@@ -3915,7 +3915,11 @@ async function generateExternalSubtitle(
               multiline
               minRows={16}
               fullWidth
-              disabled={loadSubtitleContent.isPending || loadSubtitleContent.isError}
+             disabled={
+                hasOpenJob ||
+                loadSubtitleContent.isPending ||
+                loadSubtitleContent.isError
+              }
               inputProps={{ spellCheck: false }}
             />
             <Stack direction="row" justifyContent="flex-end" spacing={1}>
@@ -3948,6 +3952,7 @@ async function generateExternalSubtitle(
               helperText="Keep the asset name prefix and use an .srt or .ass extension."
               fullWidth
               autoFocus
+              disabled={hasOpenJob}
             />
             {renameExternalSubtitle.isError ? <Alert severity="warning">{renameExternalSubtitle.error instanceof Error ? renameExternalSubtitle.error.message : 'Subtitle rename failed.'}</Alert> : null}
             <Stack direction="row" spacing={1} justifyContent="flex-end">
@@ -4112,6 +4117,7 @@ function EmbeddedSubtitleActions({
                       label="OCR language"
                       value={ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)}
                       onChange={(event) => setOcrLanguages((current) => ({ ...current, [stream.index]: event.target.value }))}
+                      disabled={disabled}
                       sx={{ minWidth: 130 }}
                     >
                       <MenuItem value="eng">English</MenuItem>
@@ -4120,9 +4126,28 @@ function EmbeddedSubtitleActions({
                       <MenuItem value="jpn_vert">Japanese vertical</MenuItem>
                     </TextField>
                   ) : null}
-                  {bitmap ? <TextField select size="small" label="OCR quality" value={ocrModes[stream.index] || 'accurate'} onChange={(event) => setOcrModes((current) => ({ ...current, [stream.index]: event.target.value as 'raw' | 'clean' | 'accurate' }))} sx={{ minWidth: 155 }}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField> : null}
-                  <Button size="small" variant="outlined" disabled={disabled} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
-                  <Button size="small" variant="outlined" disabled={disabled} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  {bitmap ? (
+                    <TextField
+                      select
+                      size="small"
+                      label="OCR quality"
+                      value={ocrModes[stream.index] || 'accurate'}
+                      onChange={(event) =>
+                        setOcrModes((current) => ({
+                          ...current,
+                          [stream.index]: event.target.value as 'raw' | 'clean' | 'accurate',
+                        }))
+                      }
+                      disabled={disabled}
+                      sx={{ minWidth: 155 }}
+                    >
+                      <MenuItem value="raw">Raw</MenuItem>
+                      <MenuItem value="clean">Clean</MenuItem>
+                      <MenuItem value="accurate">Accurate</MenuItem>
+                    </TextField>
+                  ) : null}
+                  <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
+                  <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
                 </Stack>
               </Stack>
               {streamGenerations.map((generation) => (
@@ -4251,13 +4276,13 @@ function ExternalSubtitleList({
             </Stack>
             <Stack direction="row" spacing={0.5}>
               <Tooltip title="Rename subtitle file">
-                <IconButton size="small" color="primary" disabled={renaming} onClick={() => onRename(subtitle)}><DriveFileRenameOutlineIcon /></IconButton>
+                <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
               </Tooltip>
               <Tooltip title="Edit subtitle text">
-                <IconButton size="small" color="primary" onClick={() => onEdit(subtitle)}><EditIcon /></IconButton>
+                <IconButton size="small" color="primary" disabled={disabled} onClick={() => onEdit(subtitle)} ><EditIcon /></IconButton>
               </Tooltip>
               <Tooltip title="Delete external subtitle">
-                <IconButton size="small" color="error" disabled={deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
+                <IconButton size="small" color="error" disabled={disabled || deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
               </Tooltip>
             </Stack>
           </Stack>
