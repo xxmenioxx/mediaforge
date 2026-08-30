@@ -3189,7 +3189,7 @@ async function generateExternalSubtitle(
         {mode !== 'unprocessed' ? <TableCell>{formatDate(asset.modifiedAt)}</TableCell> : null}
         {mode === 'unprocessed' && !compactUnprocessed ? (
           <TableCell sx={{ minWidth: 180 }}>
-            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={asset.missing || updateMetadata.isPending} />
+            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing || updateMetadata.isPending}} />
           </TableCell>
         ) : null}
         {!compactUnprocessed && !isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
@@ -3526,7 +3526,7 @@ async function generateExternalSubtitle(
                   color="primary"
                   variant="outlined"
                   onClick={saveAssetReview}
-                  disabled={updateReview.isPending}
+                  disabled={rowLocked || updateReview.isPending}
                   fullWidth
                 >
                   Save Review
@@ -3775,8 +3775,9 @@ async function generateExternalSubtitle(
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={asset.missing || isArchive || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
-                          <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={asset.missing || isArchive || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName}>Rename</Button>
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={rowLocked || asset.missing || isArchive || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ rowLocked || asset.missing || isArchive || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
+                          }>Rename</Button>
                         </Stack>
                       </Grid>
                       <Grid size={{ xs: 12, md: 6 }}>
