@@ -20,7 +20,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	if err != nil {
 		return ResolvedTrackPlan{}, err
 	}
-	
+
 	video := resolvedStreams(scan.VideoStreams, selectedProfileIndexes(profile, "keepVideoStreams"))
 	selectedAudio, audioSelectionExplicit := profileIndexSet(profile, "keepAudioStreams")
 	var selectedAudioPointer *map[int]bool
@@ -85,7 +85,18 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 					format = strings.ToLower(strings.TrimSpace(transform.Format))
 				}
 			}
+
+			sidecars = append(sidecars, ResolvedTrackSidecar{
+				StreamIndex: index,
+				Codec:       codec,
+				Language:    language,
+				Format:      format,
+				Title:       workerStringValue(stream["title"]),
+				Default:     boolValue(stream["default"], false),
+				Forced:      boolValue(stream["forced"], false),
+			})
 		}
+	}
 
 	attachmentPolicy := AttachmentPolicyKeep
 	if raw, exists := profile["attachmentPolicy"]; exists {
