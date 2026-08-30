@@ -6123,7 +6123,7 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
   const removedSubtitles = canonicalSubtitleActions.filter(
     ({ action }) => action === 'remove',
   );
-  const transforms = clean.subtitleTransforms ?? [];
+
   const metadataActions = ([
     ['Video', clean.videoMetadata],
     ['Audio', clean.audioMetadata],
@@ -6199,13 +6199,41 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
     return details.join(' · ');
   });
   const ruleActions = [
-    profile.dropCommentary ? 'Rule: remove tracks identified as commentary' : '',
-    profile.audioMode === 'none' ? 'Rule: remove all audio tracks' : '',
-    profile.audioMode === 'default' ? 'Rule: keep only the default audio track' : '',
-    profile.audioMode === 'languages' ? `Rule: keep audio languages ${profile.audioLanguages.join(', ') || 'none configured'}` : '',
-    profile.subtitleMode === 'none' ? 'Rule: remove all embedded subtitle tracks' : '',
-    profile.subtitleMode === 'forced' ? 'Rule: keep only forced subtitles' : '',
-    profile.subtitleMode === 'languages' || profile.subtitleMode === 'forced-or-languages' ? `Rule: keep subtitle languages ${profile.subtitleLanguages.join(', ') || 'none configured'}${profile.subtitleMode === 'forced-or-languages' ? ' plus forced tracks' : ''}` : '',
+    profile.dropCommentary
+      ? 'Rule: remove tracks identified as commentary'
+      : '',
+
+    profile.audioMode === 'none'
+      ? 'Rule: remove all audio tracks'
+      : '',
+
+    profile.audioMode === 'default'
+      ? 'Rule: keep only the default audio track'
+      : '',
+
+    profile.audioMode === 'languages'
+      ? `Rule: keep audio languages ${profile.audioLanguages.join(', ') || 'none configured'}`
+      : '',
+
+    !canonicalTrackDisposition && profile.subtitleMode === 'none'
+      ? 'Rule: remove all embedded subtitle tracks'
+      : '',
+
+    !canonicalTrackDisposition && profile.subtitleMode === 'forced'
+      ? 'Rule: keep only forced subtitles'
+      : '',
+
+    !canonicalTrackDisposition &&
+    (profile.subtitleMode === 'languages' ||
+      profile.subtitleMode === 'forced-or-languages')
+      ? `Rule: keep subtitle languages ${
+          profile.subtitleLanguages.join(', ') || 'none configured'
+        }${
+          profile.subtitleMode === 'forced-or-languages'
+            ? ' plus forced tracks'
+            : ''
+        }`
+      : '',
   ].filter(Boolean);
   const effectiveActions = [...removalActions, ...subtitleActions, ...metadataActions, ...ruleActions];
   const sourceSummary = (delta: { kept: MediaStreamInfo[]; removed: MediaStreamInfo[] }) => [...delta.kept, ...delta.removed].length
@@ -6589,7 +6617,13 @@ function TrackProfileAutocomplete({
 function profileTrackSummary(profile: TrackProfile) {
   const video = Array.isArray(profile.keepVideoStreams) ? `${profile.keepVideoStreams.length} video` : 'all video';
   const audio = Array.isArray(profile.keepAudioStreams) ? `${profile.keepAudioStreams.length} audio` : 'all audio';
-  const subs = Array.isArray(profile.keepSubtitleStreams) ? `${profile.keepSubtitleStreams.length} subs` : 'all subs';
+  const subs =
+    profile.trackDispositionVersion === 1
+      ? `subs ${profile.subtitleDisposition} · ${profile.subtitleRules.length} rule${profile.subtitleRules.length === 1 ? '' : 's'}`
+      : Array.isArray(profile.keepSubtitleStreams)
+        ? `${profile.keepSubtitleStreams.length} subs`
+        : 'all subs';
+  
   return `${video} / ${audio} / ${subs}`;
 }
 
