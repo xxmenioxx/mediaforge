@@ -3318,7 +3318,7 @@ async function generateExternalSubtitle(
                 <IconButton
                   color={assetReview.requiresReview ? 'warning' : 'primary'}
                   onClick={toggleAssetReview}
-                  disabled={updateReview.isPending}
+                  disabled={rowLocked || updateReview.isPending}
                   aria-label={`Toggle review for ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -3790,7 +3790,7 @@ async function generateExternalSubtitle(
                         </Stack>
                       </Grid>
                       <Grid size={{ xs: 12, md: 6 }}>
-                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={asset.missing || updateMetadata.isPending} />
+                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing || updateMetadata.isPending} />
                       </Grid>
                     </Grid>
                     {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}
@@ -3822,7 +3822,9 @@ async function generateExternalSubtitle(
                       <ProfileSuggestionCard
                         suggestion={profileSuggestion.data}
                         onSelect={(profile) => setSelectedProfileId(profile.id)}
-                        onApplyRecommendations={applySnapshotRecommendations}
+                        onApplyRecommendations={
+                          hasOpenJob ? undefined : applySnapshotRecommendations
+                        }
                         onReviewInLab={() => { window.location.href = `/profile-lab?assetPath=${encodeURIComponent(asset.path)}`; }}
                       />
                     ) : null}
@@ -3920,7 +3922,12 @@ async function generateExternalSubtitle(
               <Button onClick={() => setEditingSubtitle(null)}>Cancel</Button>
               <Button
                 variant="contained"
-                disabled={!editingSubtitle || !subtitleContent.trim() || saveSubtitleContent.isPending}
+                disabled={
+                  hasOpenJob ||
+                  !editingSubtitle ||
+                  !subtitleContent.trim() ||
+                  saveSubtitleContent.isPending
+                }
                 onClick={() => editingSubtitle && saveSubtitleContent.mutate({ path: asset.path, subtitlePath: editingSubtitle.path, content: subtitleContent })}
               >
                 Save subtitle
@@ -3947,7 +3954,13 @@ async function generateExternalSubtitle(
               <Button onClick={() => setRenamingSubtitle(null)}>Cancel</Button>
               <Button
                 variant="contained"
-                disabled={!renamingSubtitle || renameExternalSubtitle.isPending || !subtitleFileName.trim() || subtitleFileName.trim() === renamingSubtitle.fileName}
+                disabled={
+                  hasOpenJob ||
+                  !renamingSubtitle ||
+                  renameExternalSubtitle.isPending ||
+                  !subtitleFileName.trim() ||
+                  subtitleFileName.trim() === renamingSubtitle.fileName
+                }
                 onClick={() => renamingSubtitle && renameExternalSubtitle.mutate({ path: asset.path, subtitlePath: renamingSubtitle.path, fileName: subtitleFileName.trim() })}
               >
                 Rename
@@ -4108,8 +4121,8 @@ function EmbeddedSubtitleActions({
                     </TextField>
                   ) : null}
                   {bitmap ? <TextField select size="small" label="OCR quality" value={ocrModes[stream.index] || 'accurate'} onChange={(event) => setOcrModes((current) => ({ ...current, [stream.index]: event.target.value as 'raw' | 'clean' | 'accurate' }))} sx={{ minWidth: 155 }}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField> : null}
-                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
-                  <Button size="small" variant="outlined" disabled={generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  <Button size="small" variant="outlined" disabled={disabled} onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
+                  <Button size="small" variant="outlined" disabled={disabled} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
                 </Stack>
               </Stack>
               {streamGenerations.map((generation) => (
