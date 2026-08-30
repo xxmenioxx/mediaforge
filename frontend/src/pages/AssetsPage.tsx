@@ -3189,7 +3189,14 @@ async function generateExternalSubtitle(
         {mode !== 'unprocessed' ? <TableCell>{formatDate(asset.modifiedAt)}</TableCell> : null}
         {mode === 'unprocessed' && !compactUnprocessed ? (
           <TableCell sx={{ minWidth: 180 }}>
-            <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing || updateMetadata.isPending}} />
+            <AssetCategorySelect
+              value={category}
+              options={assetCategories}
+              onChange={saveAssetCategory}
+              label="Category"
+              size="small"
+              disabled={rowLocked || asset.missing || updateMetadata.isPending}
+            />
           </TableCell>
         ) : null}
         {!compactUnprocessed && !isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
@@ -3679,17 +3686,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'video'),
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
                               },
                               audio: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'audio'),
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
                               },
                               subtitle: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'subtitle'),
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
                               },
                             }
@@ -3700,17 +3707,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 values: conversionDraft.videoMetadata ?? {},
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('video', index, patch),
                               },
                               audio: {
                                 values: conversionDraft.audioMetadata ?? {},
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
                               },
                               subtitle: {
                                 values: conversionDraft.subtitleMetadata ?? {},
-                                disabled: updateConversion.isPending,
+                                disabled: rowLocked || updateConversion.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
                               },
                             }
@@ -3723,7 +3730,7 @@ async function generateExternalSubtitle(
                         const formats = conversionDraft.subtitleSidecarFormatsByStream?.[String(stream.index)];
                         const value = formats?.length ? formats.join('+') : 'inherit';
                         const textCompatible = ['ass', 'ssa'].includes(stream.codec.toLowerCase());
-                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={updateConversion.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
+                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked || updateConversion.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
                           <MenuItem value="inherit">Inherit Track Profile</MenuItem>
                           <MenuItem value="original">Original format only</MenuItem>
                           {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
@@ -3834,7 +3841,7 @@ async function generateExternalSubtitle(
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
                         saving={updateConversion.isPending}
-                        readOnly={isConverted}
+                        readOnly={isConverted || hasOpenJob}
                       />
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
                   </Stack>
