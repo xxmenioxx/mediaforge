@@ -6062,7 +6062,67 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
   };
   const videoDelta = streamDelta(source?.videoStreams, clean.keepVideoStreams);
   const audioDelta = streamDelta(source?.audioStreams, clean.keepAudioStreams);
-  const subtitleDelta = streamDelta(source?.subtitleStreams, clean.keepSubtitleStreams);
+  const canonicalSubtitleActions = (source?.subtitleStreams ?? []).map((stream) => {
+    let action: SubtitleDisposition =
+      profile.subtitleDisposition ?? 'keep';
+
+    let streamSpecific = false;
+
+    for (const rule of profile.subtitleRules ?? []) {
+      if (
+        rule.streamIndex !== undefined &&
+        rule.streamIndex === stream.index
+      ) {
+        action = rule.action;
+        streamSpecific = true;
+        continue;
+      }
+
+      const ruleLanguage =
+        rule.language?.trim().toLowerCase() ?? '';
+
+      const streamLanguage =
+        stream.language?.trim().toLowerCase() || 'und';
+
+      if (
+        !streamSpecific &&
+        ruleLanguage &&
+        ruleLanguage === streamLanguage
+      ) {
+        action = rule.action;
+      }
+    }
+
+    return {
+      stream,
+      action,
+    };
+  });
+
+  const legacySubtitleDelta = streamDelta(
+    source?.subtitleStreams,
+    clean.keepSubtitleStreams,
+  );
+
+  const legacyTransforms = clean.subtitleTransforms ?? [];
+
+  const canonicalTrackDisposition =
+    profile.trackDispositionVersion === 1;
+    const embeddedSubtitles = canonicalSubtitleActions.filter(
+  ({ action }) =>
+    action === 'keep' ||
+    action === 'keep_and_extract',
+  );
+
+  const extractedSubtitles = canonicalSubtitleActions.filter(
+    ({ action }) =>
+      action === 'extract' ||
+      action === 'keep_and_extract',
+  );
+
+  const removedSubtitles = canonicalSubtitleActions.filter(
+    ({ action }) => action === 'remove',
+  );
   const transforms = clean.subtitleTransforms ?? [];
   const metadataActions = ([
     ['Video', clean.videoMetadata],
@@ -6078,18 +6138,64 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
     return `${type} #${index}: ${changes.join(' · ') || 'no effective metadata change'}`;
   }));
   const removalActions = [
-    ...videoDelta.removed.map((stream) => `Remove video ${streamLabel(stream)}`),
-    ...audioDelta.removed.map((stream) => `Remove audio ${streamLabel(stream)}`),
-    ...subtitleDelta.removed.map((stream) => `Remove subtitle ${streamLabel(stream)}`),
+    ...videoDelta.removed.map(
+      (stream) => `Remove video ${streamLabel(stream)}`,
+    ),
+
+    ...audioDelta.removed.map(
+      (stream) => `Remove audio ${streamLabel(stream)}`,
+    ),
+
+    ...(canonicalTrackDisposition
+      ? removedSubtitles.map(
+          ({ stream }) =>
+            `Remove subtitle ${streamLabel(stream)}`,
+        )
+      : legacySubtitleDelta.removed.map(
+          (stream) =>
+            `Remove subtitle ${streamLabel(stream)}`,
+        )),
   ];
-  const subtitleActions = transforms.map((item) => {
-    const stream = source?.subtitleStreams?.find((candidate) => candidate.index === item.streamIndex);
+  const subtitleActions = canonicalTrackDisposition
+  ? canonicalSubtitleActions
+      .filter(
+        ({ action }) =>
+          action === 'extract' ||
+          action === 'keep_and_extract',
+      )
+      .map(({ stream, action }) =>
+        `${action === 'keep_and_extract' ? 'Keep + extract' : 'Extract'} subtitle ${streamLabel(stream)}`,
+      )
+  : legacyTransforms.map((item) => {
+  const stream = source?.subtitleStreams?.find(
+      (candidate) =>
+        candidate.index === item.streamIndex,
+    );
+
     const details = [
-      `Convert subtitle ${stream ? streamLabel(stream) : `#${item.streamIndex}`} to ${item.format.toUpperCase()}`,
-      item.removeEmbedded ? 'remove embedded track' : 'keep embedded track',
-      item.makeDefault ? 'external subtitle becomes default' : '',
-      item.ocrMode ? `OCR ${item.ocrMode}${item.ocrLanguage ? ` (${item.ocrLanguage})` : ''}` : '',
+      `Convert subtitle ${
+        stream
+          ? streamLabel(stream)
+          : `#${item.streamIndex}`
+      } to ${item.format.toUpperCase()}`,
+
+      item.removeEmbedded
+        ? 'remove embedded track'
+        : 'keep embedded track',
+
+      item.makeDefault
+        ? 'external subtitle becomes default'
+        : '',
+
+      item.ocrMode
+        ? `OCR ${item.ocrMode}${
+            item.ocrLanguage
+              ? ` (${item.ocrLanguage})`
+              : ''
+          }`
+        : '',
     ].filter(Boolean);
+
     return details.join(' · ');
   });
   const ruleActions = [
@@ -6109,14 +6215,105 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
     `Keep: ${delta.kept.length ? delta.kept.map(streamLabel).join(' | ') : 'none'}`,
     `Remove: ${delta.removed.length ? delta.removed.map(streamLabel).join(' | ') : 'none'}`,
   ].join(' — ');
+  
+  const canonicalSubtitleResult = [
+    `Embedded: ${
+      embeddedSubtitles.length
+        ? embeddedSubtitles
+            .map(({ stream }) => streamLabel(stream))
+            .join(' | ')
+        : 'none'
+    }`,
+
+    `Extracted: ${
+      extractedSubtitles.length
+        ? extractedSubtitles
+            .map(({ stream }) => streamLabel(stream))
+            .join(' | ')
+        : 'none'
+    }`,
+
+    `Removed: ${
+      removedSubtitles.length
+        ? removedSubtitles
+            .map(({ stream }) => streamLabel(stream))
+            .join(' | ')
+        : 'none'
+    }`,
+  ].join(' — ');
+
   const rows = [
     ['Video streams', sourceSummary(videoDelta), resultSummary(videoDelta), `Selection mode: ${profile.videoMode}`],
     ['Audio streams', sourceSummary(audioDelta), resultSummary(audioDelta), `${profile.audioMode} · languages ${profile.audioLanguages.join(', ') || 'none'}`],
-    ['Subtitle streams', sourceSummary(subtitleDelta), resultSummary(subtitleDelta), `${profile.subtitleMode} · languages ${profile.subtitleLanguages.join(', ') || 'none'}`],
+    [
+      'Subtitle streams',
+
+      source?.subtitleStreams?.length
+        ? source.subtitleStreams
+            .map(streamLabel)
+            .join(' | ')
+        : 'None detected',
+
+      canonicalTrackDisposition
+        ? canonicalSubtitleResult
+        : resultSummary(legacySubtitleDelta),
+
+      canonicalTrackDisposition
+        ? `Default ${profile.subtitleDisposition} · ${profile.subtitleRules.length} specific rule(s)`
+        : `${profile.subtitleMode} · languages ${
+            profile.subtitleLanguages.join(', ') || 'none'
+          }`,
+    ],
     ['Commentary tracks', audioDelta.kept.concat(audioDelta.removed).filter(isCommentaryStream).map(streamLabel).join(' | ') || 'None identified', profile.dropCommentary ? 'Remove identified commentary' : 'Keep', 'Metadata-based detection; validate against the source snapshot'],
     ['Default audio', source?.audioStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultAudioLanguage || 'Unchanged', profile.audioRequired ? 'Required track/language' : 'Optional'],
     ['Default subtitle', source?.subtitleStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultSubtitleLanguage || 'Unchanged', profile.subtitlesRequired ? 'Required track/language' : 'Optional'],
-    ['Subtitle exports', source?.subtitleStreams?.length ? source.subtitleStreams.map(streamLabel).join(' | ') : 'None detected', transforms.length ? transforms.map((item) => `#${item.streamIndex} → ${item.format.toUpperCase()}${item.removeEmbedded ? ' · remove embedded' : ''}${item.makeDefault ? ' · default' : ''}`).join(' | ') : 'None', transforms.some((item) => item.ocrMode) ? 'Bitmap exports run OCR before media conversion' : 'Text conversion or no export'],
+    [
+      'Subtitle exports',
+
+      source?.subtitleStreams?.length
+        ? source.subtitleStreams
+            .map(streamLabel)
+            .join(' | ')
+        : 'None detected',
+
+      canonicalTrackDisposition
+        ? extractedSubtitles.length
+          ? extractedSubtitles
+              .map(
+                ({ stream, action }) =>
+                  `${streamLabel(stream)} → ${
+                    action === 'keep_and_extract'
+                      ? 'Keep + Extract'
+                      : 'Extract'
+                  }`,
+              )
+              .join(' | ')
+          : 'None'
+        : legacyTransforms.length
+          ? legacyTransforms
+              .map(
+                (item) =>
+                  `#${item.streamIndex} → ${item.format.toUpperCase()}${
+                    item.removeEmbedded
+                      ? ' · remove embedded'
+                      : ''
+                  }${
+                    item.makeDefault
+                      ? ' · default'
+                      : ''
+                  }`,
+              )
+              .join(' | ')
+          : 'None',
+
+      canonicalTrackDisposition
+        ? 'Canonical Track Profile disposition'
+        : legacyTransforms.some(
+            (item) => item.ocrMode,
+          )
+          ? 'Bitmap exports run OCR before media conversion'
+          : 'Legacy subtitle transform',
+    ],
     ['Metadata', metadataActions.length ? 'Selected source-track metadata' : 'Preserve source metadata', metadataActions.length ? metadataActions.join(' | ') : 'Unchanged', 'Language, title, default and forced values are applied per stream'],
     ['Validation', 'Source snapshot', profile.validationMode, 'Missing required tracks follow this policy'],
   ];
