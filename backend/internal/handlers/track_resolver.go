@@ -16,6 +16,11 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	if err := validateSubtitleRules(profile); err != nil {
 		return ResolvedTrackPlan{}, err
 	}
+	canonicalDisposition, err := canonicalTrackDispositionProfile(profile)
+	if err != nil {
+		return ResolvedTrackPlan{}, err
+	}
+	
 	video := resolvedStreams(scan.VideoStreams, selectedProfileIndexes(profile, "keepVideoStreams"))
 	selectedAudio, audioSelectionExplicit := profileIndexSet(profile, "keepAudioStreams")
 	var selectedAudioPointer *map[int]bool
@@ -54,14 +59,18 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		codec := strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec"])))
 		language := normalizedTrackLanguage(workerStringValue(stream["language"]))
 		action := defaultDisposition
-		if explicitSubtitleSelection && !selectedSubtitles[index] {
+		if !canonicalDisposition &&
+			explicitSubtitleSelection &&
+			!selectedSubtitles[index] {
 			action = SubtitleDispositionRemove
 		}
-		if transform, ok := transforms[index]; ok {
-			if transform.RemoveEmbedded {
-				action = SubtitleDispositionExtract
-			} else {
-				action = SubtitleDispositionKeepAndExtract
+		if !canonicalDisposition {
+			if transform, ok := transforms[index]; ok {
+				if transform.RemoveEmbedded {
+					action = SubtitleDispositionExtract
+				} else {
+					action = SubtitleDispositionKeepAndExtract
+				}
 			}
 		}
 		action = matchingSubtitleRuleAction(profile, index, language, action)
@@ -69,15 +78,14 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
 			format := subtitleSidecarFormat(codec)
-			if transform, ok := transforms[index]; ok && strings.TrimSpace(transform.Format) != "" {
-				format = strings.ToLower(strings.TrimSpace(transform.Format))
+
+			if !canonicalDisposition {
+				if transform, ok := transforms[index]; ok &&
+					strings.TrimSpace(transform.Format) != "" {
+					format = strings.ToLower(strings.TrimSpace(transform.Format))
+				}
 			}
-			sidecars = append(sidecars, ResolvedTrackSidecar{
-				StreamIndex: index, Codec: codec, Language: language, Format: format,
-				Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
-			})
 		}
-	}
 
 	attachmentPolicy := AttachmentPolicyKeep
 	if raw, exists := profile["attachmentPolicy"]; exists {
