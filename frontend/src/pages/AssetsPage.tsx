@@ -3747,6 +3747,7 @@ async function generateExternalSubtitle(
                       streams={snapshotData.subtitleStreams}
                       generations={subtitleGenerations}
                       onGenerate={generateExternalSubtitle}
+                      disabled={hasOpenJob}
                     />
                     {!isArchive ? (
                       <ExternalSubtitleList
@@ -3754,6 +3755,7 @@ async function generateExternalSubtitle(
                         loading={externalSubtitles.isLoading}
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
+                        disabled={hasOpenJob}
                         onRename={(subtitle) => {
                           setRenamingSubtitle(subtitle);
                           setSubtitleFileName(subtitle.fileName);
@@ -4050,10 +4052,17 @@ function EmbeddedSubtitleActions({
   streams,
   generations,
   onGenerate,
+  disabled = false,
 }: {
   streams: MediaStreamInfo[];
   generations: Record<string, SubtitleGenerationState>;
-  onGenerate: (streamIndex: number, format: 'srt' | 'ass', ocrLanguage?: string, ocrMode?: 'raw' | 'clean' | 'accurate') => void;
+  onGenerate: (
+    streamIndex: number,
+    format: 'srt' | 'ass',
+    ocrLanguage?: string,
+    ocrMode?: 'raw' | 'clean' | 'accurate',
+  ) => void;
+  disabled?: boolean;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
   const [ocrModes, setOcrModes] = useState<Record<number, 'raw' | 'clean' | 'accurate'>>({});
@@ -4188,6 +4197,7 @@ function ExternalSubtitleList({
   loading,
   deleting,
   renaming,
+  disabled,
   onRename,
   onEdit,
   onDelete,
@@ -4196,6 +4206,7 @@ function ExternalSubtitleList({
   loading: boolean;
   deleting: boolean;
   renaming: boolean;
+  disabled?: boolean;
   onRename: (subtitle: ExternalSubtitle) => void;
   onEdit: (subtitle: ExternalSubtitle) => void;
   onDelete: (subtitle: ExternalSubtitle) => void;
