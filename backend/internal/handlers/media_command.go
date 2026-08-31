@@ -940,6 +940,17 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := strings.TrimSpace(override.VideoFilters); value != "" {
 		workerConfig["videoFilters"] = value
 	}
+	if value := normalizedUpscaleMode(override.UpscaleMode); value != "" {
+		workerConfig["upscaleMode"] = value
+		if value == "custom" && override.UpscaleCustomHeight >= 2 && override.UpscaleCustomHeight%2 == 0 {
+			workerConfig["upscaleCustomHeight"] = override.UpscaleCustomHeight
+		} else {
+			delete(workerConfig, "upscaleCustomHeight")
+		}
+	}
+	if value := normalizedUpscaleSharpen(override.UpscaleSharpen); value != "" {
+		workerConfig["upscaleSharpen"] = value
+	}
 	if value := strings.ToLower(strings.TrimSpace(override.CropAspectPolicy)); value == "source_sar" || value == "preserve_dar" {
 		workerConfig["cropAspectPolicy"] = value
 	}

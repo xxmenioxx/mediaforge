@@ -149,6 +149,9 @@ export type AssetConversionOverrideState = {
   pixFmt?: string;
   videoFilters?: string;
   cropAspectPolicy?: 'source_sar' | 'preserve_dar';
+  upscaleMode?: UpscaleMode;
+  upscaleSharpen?: UpscaleSharpen;
+  upscaleCustomHeight?: number;
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
   fieldStructureMode?: 'preserve' | 'auto' | 'deinterlace';
   cadenceMode?: 'preserve' | 'auto' | 'remove_soft_telecine' | 'inverse_telecine';

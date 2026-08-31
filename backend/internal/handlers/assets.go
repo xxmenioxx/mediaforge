@@ -268,6 +268,9 @@ type AssetConversionOverrideState struct {
 	PixFmt                           string                         `json:"pixFmt,omitempty"`
 	VideoFilters                     string                         `json:"videoFilters,omitempty"`
 	CropAspectPolicy                 string                         `json:"cropAspectPolicy,omitempty"`
+	UpscaleMode                      string                         `json:"upscaleMode,omitempty"`
+	UpscaleSharpen                   string                         `json:"upscaleSharpen,omitempty"`
+	UpscaleCustomHeight              int                            `json:"upscaleCustomHeight,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
 	FieldStructureMode               string                         `json:"fieldStructureMode,omitempty"`
 	CadenceMode                      string                         `json:"cadenceMode,omitempty"`
@@ -415,6 +418,9 @@ type AssetConversionUpdateInput struct {
 	VideoPreset                      string                         `json:"videoPreset"`
 	PixFmt                           string                         `json:"pixFmt"`
 	VideoFilters                     string                         `json:"videoFilters"`
+	UpscaleMode                      string                         `json:"upscaleMode"`
+	UpscaleSharpen                   string                         `json:"upscaleSharpen"`
+	UpscaleCustomHeight              int                            `json:"upscaleCustomHeight"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
 	FieldStructureMode               string                         `json:"fieldStructureMode"`
 	CadenceMode                      string                         `json:"cadenceMode"`
@@ -2722,6 +2728,18 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if mode := strings.TrimSpace(input.UpscaleMode); mode != "" && normalizedUpscaleMode(mode) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleMode must be disabled, auto, 720p, 1080p, custom, or omitted to inherit"})
+		return
+	}
+	if sharpen := strings.TrimSpace(input.UpscaleSharpen); sharpen != "" && normalizedUpscaleSharpen(sharpen) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpen must be off, light, medium, or omitted to inherit"})
+		return
+	}
+	if normalizedUpscaleMode(input.UpscaleMode) == string(UpscaleModeCustom) && normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleCustomHeight must be a positive even height for custom upscale"})
+		return
+	}
 
 	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
@@ -2743,6 +2761,9 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoPreset:                    strings.TrimSpace(input.VideoPreset),
 		PixFmt:                         strings.TrimSpace(input.PixFmt),
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
+		UpscaleMode:                    normalizedUpscaleMode(input.UpscaleMode),
+		UpscaleSharpen:                 normalizedUpscaleSharpen(input.UpscaleSharpen),
+		UpscaleCustomHeight:            normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
 		FieldStructureMode:             normalizedFieldStructureMode(input.FieldStructureMode),
 		CadenceMode:                    normalizedCadenceMode(input.CadenceMode),
@@ -6436,6 +6457,9 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.VideoPreset) == "" &&
 		strings.TrimSpace(override.PixFmt) == "" &&
 		strings.TrimSpace(override.VideoFilters) == "" &&
+		strings.TrimSpace(override.UpscaleMode) == "" &&
+		strings.TrimSpace(override.UpscaleSharpen) == "" &&
+		override.UpscaleCustomHeight == 0 &&
 		strings.TrimSpace(override.DeinterlaceMode) == "" &&
 		strings.TrimSpace(override.FieldStructureMode) == "" &&
 		strings.TrimSpace(override.CadenceMode) == "" &&

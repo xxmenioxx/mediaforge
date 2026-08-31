@@ -19,6 +19,26 @@ func TestParseUpscaleRequestDefaultsLegacyProfilesToDisabled(t *testing.T) {
 	}
 }
 
+func TestAssetUpscaleOverrideAppliesOnlyExplicitDimensions(t *testing.T) {
+	base := models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "auto", "upscaleSharpen": "off", "upscaleCustomHeight": 900}}
+	custom := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{UpscaleMode: "custom", UpscaleSharpen: "medium", UpscaleCustomHeight: 720})
+	request, err := parseUpscaleRequest(custom.WorkerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Mode != UpscaleModeCustom || request.Sharpen != UpscaleSharpenMedium || request.CustomHeight != 720 {
+		t.Fatalf("custom override not applied: %#v", request)
+	}
+
+	disabled := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{UpscaleMode: "disabled"})
+	if _, exists := disabled.WorkerConfig["upscaleCustomHeight"]; exists {
+		t.Fatalf("explicit non-custom override retained stale custom height: %#v", disabled.WorkerConfig)
+	}
+	if disabled.WorkerConfig["upscaleSharpen"] != "off" {
+		t.Fatalf("omitted sharpen should inherit: %#v", disabled.WorkerConfig)
+	}
+}
+
 func TestResolveUpscaleGeometryPreservesAnamorphicDAR(t *testing.T) {
 	tests := []struct {
 		name       string

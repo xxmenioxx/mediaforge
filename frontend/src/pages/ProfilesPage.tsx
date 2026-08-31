@@ -42,7 +42,8 @@ import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
-import type { Profile, ProfileInput } from '../api/types';
+import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
+import type { Profile, ProfileInput, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
@@ -831,6 +832,20 @@ export function ProfilesPage() {
                             <MenuItem value="hardware" disabled={hardwareEncodersFor(codecFamilyFor(form.videoCodec)).length === 0 || runtimeSnapshot.isLoading || !defaultHardwareEncoder}>Hardware</MenuItem>
                           </TextField>
                         </Grid>
+                        <Grid size={{ xs: 12 }}>
+                          <SmartUpscaleControls
+                            size="medium"
+                            value={{
+                              mode: (form.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
+                              sharpen: (form.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',
+                              customHeight: typeof form.workerConfig?.upscaleCustomHeight === 'number' ? form.workerConfig.upscaleCustomHeight : undefined,
+                            }}
+                            onChange={(patch) => setProfileForm({
+                              ...form,
+                              workerConfig: smartUpscaleWorkerConfigPatch(form.workerConfig ?? {}, patch),
+                            })}
+                          />
+                        </Grid>
                         {workerConfigString(form, 'preferredEncoder', 'software') === 'hardware' ? <Grid size={{ xs: 12, md: 4 }}>
                           <TextField
                             label="Hardware encoder"
@@ -1454,6 +1469,16 @@ function profileFrameValidation(profile: Profile) {
 function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
   const value = profile.workerConfig?.[key];
   return typeof value === 'string' ? value : fallback;
+}
+
+function smartUpscaleWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number }) {
+  const next = { ...(config ?? {}) };
+  if ('mode' in patch) next.upscaleMode = patch.mode;
+  if ('sharpen' in patch) next.upscaleSharpen = patch.sharpen;
+  if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
+  if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
+  delete next.resolvedUpscaleDecision;
+  return next;
 }
 
 function subtitleOutputFormat(profile: ProfileInput) {

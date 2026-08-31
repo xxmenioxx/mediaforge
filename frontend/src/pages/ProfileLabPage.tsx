@@ -66,6 +66,8 @@ import type {
   StreamMetadataOverride,
   QSVFrameStructureAnalysis,
   QSVFeatureStatus,
+  UpscaleMode,
+  UpscaleSharpen,
 } from '../api/types';
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -76,6 +78,8 @@ import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
+import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
+import { SmartUpscaleDecision } from '../components/SmartUpscaleDecision';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -88,6 +92,7 @@ import { labAudioProfileForTestEncode } from '../utils/testEncodeDraft';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
+import { customUpscaleHeightError, upscaleModeLabel, upscaleSharpenLabel } from '../upscale';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -1245,6 +1250,10 @@ export function ProfileLabPage() {
     lastFidelityInspection?.assetPath === assetPath
     ? lastFidelityInspection
     : undefined;
+  const videoUpscaleError = customUpscaleHeightError(
+    (videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
+    typeof videoDraft.workerConfig?.upscaleCustomHeight === 'number' ? videoDraft.workerConfig.upscaleCustomHeight : undefined,
+  );
   const validatedFidelityInspection = currentFidelityInspection?.requestSignature === currentVideoRequestSignature
     ? currentFidelityInspection
     : undefined;
@@ -2425,11 +2434,20 @@ export function ProfileLabPage() {
                     </section>
                   )}
                   {currentFidelityInspection?.effectiveVideoDecision ? (
-                    <Alert severity="info" icon={false}>
-                      <strong>Effective video decision</strong>
-                      <br />
-                      {formatEffectiveVideoDecision(currentFidelityInspection.effectiveVideoDecision)}
-                    </Alert>
+                    <Stack spacing={1}>
+                      <Alert severity="info" icon={false}>
+                        <strong>Effective video decision</strong>
+                        <br />
+                        {formatEffectiveVideoDecision(currentFidelityInspection.effectiveVideoDecision)}
+                      </Alert>
+                      <SmartUpscaleDecision
+                        decision={currentFidelityInspection.effectiveVideoDecision.upscale}
+                        requestedMode={(videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled'}
+                        requestedSharpen={(videoDraft.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off'}
+                        storageWidth={selectedAssetSnapshot?.width}
+                        storageHeight={selectedAssetSnapshot?.height}
+                      />
+                    </Stack>
                   ) : null}
                   <Alert severity="info">
                     The command uses the media path visible to the MVForge backend and writes a temporary MKV/MP4 under <code>/tmp</code>. Run it in an environment where that input path and FFmpeg are available. Hardware Auto uses the matching software encoder as a portable terminal fallback.
@@ -2717,7 +2735,7 @@ export function ProfileLabPage() {
                         startIcon={<SaveIcon />}
                         variant="outlined"
                         size="small"
-                        disabled={!videoDraft.name || videoNameConflict || saveVideoProfileMutation.isPending}
+                        disabled={!videoDraft.name || videoNameConflict || saveVideoProfileMutation.isPending || Boolean(videoUpscaleError)}
                         onClick={saveVideoProfile}
                         sx={{ minHeight: 32 }}
                       >
@@ -3411,6 +3429,21 @@ export function ProfileLabPage() {
                                         <Alert severity="warning">Preserving the pre-crop DAR recalculates SAR and can make the remaining image look stretched. Use it only when that is intentional.</Alert>
                                       ) : null}
                                     </Stack>
+                                  </Box>
+                                </Grid>
+                                <Grid size={{ xs: 12 }}>
+                                  <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.02)' }}>
+                                    <SmartUpscaleControls
+                                      value={{
+                                        mode: (videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
+                                        sharpen: (videoDraft.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',
+                                        customHeight: typeof videoDraft.workerConfig?.upscaleCustomHeight === 'number' ? videoDraft.workerConfig.upscaleCustomHeight : undefined,
+                                      }}
+                                      onChange={(patch) => setVideoDraft((current) => ({
+                                        ...current,
+                                        workerConfig: smartUpscaleLabWorkerConfigPatch(current.workerConfig ?? {}, patch),
+                                      }))}
+                                    />
                                   </Box>
                                 </Grid>
                               </Grid>
@@ -5969,6 +6002,8 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
     ['Profile', video?.profile || 'Unknown', videoWorkerValue(profile, 'videoToolboxProfile', profile.videoCodec.includes('10bit') ? 'Main 10' : 'Encoder default'), 'Configured output'],
     ['Pixel format / bit depth', video?.pixFmt || 'Unknown', pixFmt, video?.pixFmt === pixFmt ? 'Preserved' : 'Changed intentionally'],
     ['Frame size', source ? `${source.width}×${source.height}` : 'Unknown', source ? `${source.width}×${source.height}` : 'Preserve source', 'Preserved unless crop/filter changes it'],
+    ['Smart Upscale', source ? `${source.width}×${source.height}` : 'Unknown', videoWorkerValue(profile, 'upscaleMode', 'disabled') === 'custom' ? `Custom · ${numberWorkerValue(profile, 'upscaleCustomHeight', 0)}p` : upscaleModeLabel(videoWorkerValue(profile, 'upscaleMode', 'disabled') as UpscaleMode), 'Resolved per asset by the shared backend planner'],
+    ['Sharpen after upscale', 'Not applicable to source', upscaleSharpenLabel(videoWorkerValue(profile, 'upscaleSharpen', 'off') as UpscaleSharpen), 'Applied only after a resolved Smart Upscale'],
     ...(crop ? [['Crop geometry', `${video?.sampleAspectRatio || 'Unknown'} SAR · ${video?.displayAspectRatio || 'Unknown'} DAR`, `${crop[1]}×${crop[2]} · ${cropAspectPolicy === 'source_sar' ? 'Preserve source SAR' : 'Explicitly preserve original DAR'}`, cropAspectPolicy === 'source_sar' ? 'Crop removes pixels; displayed aspect ratio may change naturally' : 'Pipeline recalculates SAR only because preserve DAR was explicitly selected']] : []),
     ['Frame rate', video?.avgFrameRate || 'Unknown', 'Preserve source', 'No CFR override'],
     ['Field handling', video?.fieldOrder || source?.interlaceAnalysis?.status || 'Unknown', deinterlace, deinterlace === 'off' ? 'No deinterlacing' : 'Filter applied when required'],
@@ -7611,5 +7646,16 @@ function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
     gop,
     level,
     decision.cadenceOperation,
+    decision.upscale ? `Upscale ${upscaleModeLabel(decision.upscale.resolvedMode)}${decision.upscale.upscaleApplied ? ` ${decision.upscale.targetWidth}×${decision.upscale.targetHeight}` : ''}` : '',
   ].filter(Boolean).join(' · ');
+}
+
+function smartUpscaleLabWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number }) {
+  const next = { ...(config ?? {}) };
+  if ('mode' in patch) next.upscaleMode = patch.mode;
+  if ('sharpen' in patch) next.upscaleSharpen = patch.sharpen;
+  if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
+  if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
+  delete next.resolvedUpscaleDecision;
+  return next;
 }

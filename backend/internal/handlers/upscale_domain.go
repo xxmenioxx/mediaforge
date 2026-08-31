@@ -404,6 +404,33 @@ func parseUpscaleRequest(config models.JSONMap) (UpscaleRequest, error) {
 	return request, nil
 }
 
+func normalizedUpscaleMode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch UpscaleMode(value) {
+	case UpscaleModeDisabled, UpscaleModeAuto, UpscaleMode720p, UpscaleMode1080p, UpscaleModeCustom:
+		return value
+	default:
+		return ""
+	}
+}
+
+func normalizedUpscaleSharpen(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch UpscaleSharpen(value) {
+	case UpscaleSharpenOff, UpscaleSharpenLight, UpscaleSharpenMedium:
+		return value
+	default:
+		return ""
+	}
+}
+
+func normalizedUpscaleCustomHeight(mode string, height int) int {
+	if normalizedUpscaleMode(mode) == string(UpscaleModeCustom) && height >= 2 && height%2 == 0 {
+		return height
+	}
+	return 0
+}
+
 func resolvedUpscaleDecisionFromProfile(profile models.Profile) (*ResolvedUpscaleDecision, bool) {
 	raw, ok := profile.WorkerConfig["resolvedUpscaleDecision"]
 	if !ok || raw == nil {

@@ -60,9 +60,10 @@ import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
+import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -75,6 +76,7 @@ import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
+import { customUpscaleHeightError } from '../upscale';
 import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
 import {
   mergedScopeConfigurationInput,
@@ -4492,6 +4494,7 @@ function AssetConversionOverridePanel({
   const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
   const effectiveEvaluationProfile = assetQualityProfile(profile, draft, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
+  const upscaleHeightError = customUpscaleHeightError(draft.upscaleMode, draft.upscaleCustomHeight);
   const effectiveEvaluationSignature = JSON.stringify(effectiveEvaluationProfile);
   const displayedEncoderRecommendation =
     lastEncoderRecommendation?.path === assetPath
@@ -4621,7 +4624,7 @@ function AssetConversionOverridePanel({
             <Button variant="outlined" onClick={onReset} disabled={saving || readOnly}>
               Remove
             </Button>
-            <Button variant="contained" onClick={onSave} disabled={saving || readOnly}>
+            <Button variant="contained" onClick={onSave} disabled={saving || readOnly || Boolean(upscaleHeightError)}>
               Save
             </Button>
           </Stack>
@@ -4716,6 +4719,21 @@ function AssetConversionOverridePanel({
               <Typography fontWeight={700}>Image cleanup</Typography>
               <Typography variant="body2" color="text.secondary">Crop, field handling, and cleanup filters are applied to this asset only.</Typography>
             </Stack>
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <SmartUpscaleControls
+              allowInherit
+              disabled={readOnly}
+              value={{ mode: draft.upscaleMode, sharpen: draft.upscaleSharpen, customHeight: draft.upscaleCustomHeight }}
+              onChange={(patch) => {
+                if ('mode' in patch) {
+                  onChange('upscaleMode', patch.mode as UpscaleMode | undefined);
+                  if (patch.mode !== 'custom') onChange('upscaleCustomHeight', undefined);
+                }
+                if ('sharpen' in patch) onChange('upscaleSharpen', patch.sharpen as UpscaleSharpen | undefined);
+                if ('customHeight' in patch) onChange('upscaleCustomHeight', patch.customHeight);
+              }}
+            />
           </Grid>
           <Grid size={{ xs: 12, md: 8 }}>
             <TextField
@@ -6261,6 +6279,15 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   });
   if (value.cropAspectPolicy === 'source_sar' || value.cropAspectPolicy === 'preserve_dar') {
     clean.cropAspectPolicy = value.cropAspectPolicy;
+  }
+  if (value.upscaleMode === 'disabled' || value.upscaleMode === 'auto' || value.upscaleMode === '720p' || value.upscaleMode === '1080p' || value.upscaleMode === 'custom') {
+    clean.upscaleMode = value.upscaleMode;
+  }
+  if (value.upscaleSharpen === 'off' || value.upscaleSharpen === 'light' || value.upscaleSharpen === 'medium') {
+    clean.upscaleSharpen = value.upscaleSharpen;
+  }
+  if (typeof value.upscaleCustomHeight === 'number' && Number.isFinite(value.upscaleCustomHeight) && value.upscaleCustomHeight >= 2 && value.upscaleCustomHeight % 2 === 0 && value.upscaleMode === 'custom') {
+    clean.upscaleCustomHeight = value.upscaleCustomHeight;
   }
   if (value.optimizationIntent === 'maximum_savings' || value.optimizationIntent === 'balanced' || value.optimizationIntent === 'conservative' || value.optimizationIntent === 'maximum_quality' || value.optimizationIntent === 'archive') {
     clean.optimizationIntent = value.optimizationIntent;
