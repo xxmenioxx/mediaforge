@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -72,6 +73,30 @@ func TestResolveUpscaleGeometryPreservesAnamorphicDAR(t *testing.T) {
 				t.Fatalf("target is not encoder-safe even geometry: %#v", decision)
 			}
 		})
+	}
+}
+
+func TestResolveUpscaleAcceptsCanonicalCleanupAndReportsSharpenConflict(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"upscaleMode": "720p", "upscaleSharpen": "light",
+		"videoFilters": "deflicker=size=5:mode=pm,deblock=filter=strong:block=8,chromanr=thres=25,hqdn3d=4:3:6:4.5,deband=1thr=0.024,exposure=exposure=0.12,unsharp=5:5:0.25:5:5:0,cas=strength=0.20",
+	}}
+	resolved := resolveUpscaleProfile(profile, MediaStreamInventory{Video: []MediaStream{{
+		Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9",
+	}}}, UpscaleAnalysisEvidence{})
+	decision, ok := resolvedUpscaleDecisionFromProfile(resolved)
+	if !ok || !decision.UpscaleApplied || decision.TargetWidth != 1280 || decision.TargetHeight != 720 {
+		t.Fatalf("canonical cleanup prevented explicit Smart Upscale resolution: %#v", decision)
+	}
+	if !containsString(decision.Reasons, "smart_upscale_sharpen_replaces_legacy_unsharp") {
+		t.Fatalf("legacy Unsharp conflict reason missing: %#v", decision.Reasons)
+	}
+	if !containsString(decision.Reasons, "smart_upscale_sharpen_replaces_legacy_cas") {
+		t.Fatalf("legacy CAS conflict reason missing: %#v", decision.Reasons)
+	}
+	warnings := strings.Join(decision.Warnings, " ")
+	if !strings.Contains(warnings, "legacy Unsharp") || !strings.Contains(warnings, "legacy CAS") || !strings.Contains(warnings, "double sharpening") {
+		t.Fatalf("legacy sharpen conflict warning missing: %#v", decision.Warnings)
 	}
 }
 

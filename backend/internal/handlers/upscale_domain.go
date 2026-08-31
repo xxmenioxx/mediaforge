@@ -222,8 +222,35 @@ func resolveUpscaleProfile(profile models.Profile, streams MediaStreamInventory,
 	decision.UpscaleApplied = true
 	decision.SharpenMode = request.Sharpen
 	decision.Reasons = append(decision.Reasons, "target_width_derived_from_effective_dar", "square_pixel_output")
+	decision = annotateSmartUpscaleSharpenConflicts(decision, workerStringValue(profile.WorkerConfig["videoFilters"]))
 	storeResolvedUpscaleDecision(profile.WorkerConfig, decision)
 	return profile
+}
+
+func annotateSmartUpscaleSharpenConflicts(decision ResolvedUpscaleDecision, filters string) ResolvedUpscaleDecision {
+	if decision.SharpenMode == UpscaleSharpenOff {
+		return decision
+	}
+	hasLegacyCAS := false
+	hasLegacyUnsharp := false
+	for _, raw := range splitVideoFilterChain(filters) {
+		name, _, _ := strings.Cut(strings.TrimSpace(raw), "=")
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "cas":
+			hasLegacyCAS = true
+		case "unsharp":
+			hasLegacyUnsharp = true
+		}
+	}
+	if hasLegacyCAS {
+		decision.Reasons = append(decision.Reasons, "smart_upscale_sharpen_replaces_legacy_cas")
+		decision.Warnings = append(decision.Warnings, "Smart Upscale sharpen replaces the legacy CAS filter to prevent double sharpening.")
+	}
+	if hasLegacyUnsharp {
+		decision.Reasons = append(decision.Reasons, "smart_upscale_sharpen_replaces_legacy_unsharp")
+		decision.Warnings = append(decision.Warnings, "Smart Upscale sharpen replaces the legacy Unsharp filter to prevent double sharpening.")
+	}
+	return decision
 }
 
 type upscaleGeometry struct {
@@ -309,7 +336,9 @@ func effectiveUpscaleGeometry(profile models.Profile, source MediaStream) (upsca
 			}
 		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "eq", "hqdn3d", "unsharp", "format", "colorspace", "setfield", "null":
 		default:
-			return upscaleGeometry{}, false
+			if _, known := restorationStageForFilter(filter); !known {
+				return upscaleGeometry{}, false
+			}
 		}
 	}
 	darNum, darDen = reduceRatio(width*sarNum, height*sarDen)

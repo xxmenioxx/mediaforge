@@ -333,6 +333,7 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 	}}
 	requested := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
 		"videoEncoder": "libx265", "upscaleMode": "auto", "upscaleSharpen": "light", "frameStructureMode": "balanced", "hevcLevelMode": "auto", "finalColorPolicy": "preserve",
+		"videoFilters": "setfield=prog,hqdn3d=2:2:7:7,deblock=filter=strong:block=8",
 	}}
 	streams := MediaStreamInventory{Video: []MediaStream{{
 		Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "30000/1001",
@@ -370,7 +371,7 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 			t.Fatalf("%s rendered Smart Upscale filter diverged: got=%q queue=%q", name, got, wantFilter)
 		}
 	}
-	if wantFilter != "scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10" {
+	if wantFilter != "deblock=filter=strong:block=8,hqdn3d=2:2:7:7,scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10,setfield=prog" {
 		t.Fatalf("unexpected shared Smart Upscale filter=%q", wantFilter)
 	}
 }

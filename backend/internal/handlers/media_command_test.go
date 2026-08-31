@@ -217,7 +217,7 @@ func TestFFmpegCommandBuilderOrdersSmartUpscaleAfterStructureAndCrop(t *testing.
 	}{
 		{name: "crop", filters: "crop=704:448:8:16,hqdn3d=2:2:6:6", before: []string{"crop="}},
 		{name: "deinterlace", filters: "bwdif=mode=send_frame:parity=bff:deint=all,hqdn3d=2:2:6:6", before: []string{"bwdif="}},
-		{name: "IVTC", filters: "fieldmatch=order=tff,decimate,setfield=prog,colorspace=space=bt709", before: []string{"fieldmatch=", "decimate", "setfield="}},
+		{name: "IVTC", filters: "fieldmatch=order=tff,decimate,setfield=prog,colorspace=space=bt709", before: []string{"fieldmatch=", "decimate"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -236,10 +236,58 @@ func TestFFmpegCommandBuilderOrdersSmartUpscaleAfterStructureAndCrop(t *testing.
 					t.Fatalf("%s must precede scale: %q", expected, filter)
 				}
 			}
-			if colorIndex := strings.Index(filter, "colorspace="); colorIndex >= 0 && colorIndex < casIndex {
-				t.Fatalf("color conversion must remain after Smart Upscale/CAS: %q", filter)
+			if colorIndex := strings.Index(filter, "colorspace="); colorIndex >= 0 && colorIndex > scaleIndex {
+				t.Fatalf("color normalization must precede Smart Upscale: %q", filter)
+			}
+			if fieldIndex := strings.Index(filter, "setfield="); fieldIndex >= 0 && fieldIndex < casIndex {
+				t.Fatalf("field metadata must follow Smart Upscale/CAS: %q", filter)
 			}
 		})
+	}
+}
+
+func TestFFmpegCommandBuilderCanonicalRestorationOrderForProgressiveCleanup(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265",
+		// Deliberately scrambled and without motion/crop insertion anchors.
+		"videoFilters": "setfield=prog,cas=strength=0.35,unsharp=5:5:0.25:5:5:0,deband=1thr=0.024,eq=gamma=0.94,hqdn3d=4:3:6:4.5,chromanr=thres=25,deblock=filter=strong:block=8,deflicker=size=5:mode=pm,colorspace=space=bt709",
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{
+			RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p,
+			TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1",
+			UpscaleApplied: true, SharpenMode: UpscaleSharpenLight,
+		},
+	}}
+	filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
+	want := "deflicker=size=5:mode=pm,deblock=filter=strong:block=8,chromanr=thres=25,hqdn3d=4:3:6:4.5,deband=1thr=0.024,eq=gamma=0.94,colorspace=space=bt709,scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10,setfield=prog"
+	if filter != want {
+		t.Fatalf("canonical progressive restoration chain=%q want %q", filter, want)
+	}
+	if strings.Contains(filter, "unsharp=") || strings.Count(filter, "cas=") != 1 {
+		t.Fatalf("Smart Upscale must be the sole final sharpen authority: %q", filter)
+	}
+}
+
+func TestCanonicalRestorationFilterChainDeduplicatesKnownAuthorities(t *testing.T) {
+	filter := canonicalizeRestorationFilterChain("unsharp=5:5:0.1,scale=640:480,setsar=8/9,deblock=filter=weak:block=8,scale=720:480,setdar=4/3,cas=strength=0.2,setfield=prog")
+	want := "deblock=filter=weak:block=8,scale=720:480,setdar=4/3,cas=strength=0.2,setfield=prog"
+	if filter != want {
+		t.Fatalf("deduplicated chain=%q want %q", filter, want)
+	}
+}
+
+func TestCanonicalRestorationFilterChainOrdersEveryKnownStage(t *testing.T) {
+	filter := canonicalizeRestorationFilterChain("setfield=prog,cas=strength=0.1,setsar=1,scale=1280:720,colorspace=space=bt709,eq=gamma=0.94,deband=1thr=0.024,hqdn3d=4:3:6:4.5,chromanr=thres=25,crop=704:448:8:16,deblock=filter=strong:block=8,deflicker=size=5:mode=pm,bwdif=mode=send_frame:parity=bff:deint=all")
+	want := "bwdif=mode=send_frame:parity=bff:deint=all,deflicker=size=5:mode=pm,deblock=filter=strong:block=8,crop=704:448:8:16,chromanr=thres=25,hqdn3d=4:3:6:4.5,deband=1thr=0.024,eq=gamma=0.94,colorspace=space=bt709,scale=1280:720,setsar=1,cas=strength=0.1,setfield=prog"
+	if filter != want {
+		t.Fatalf("canonical stage order=%q want %q", filter, want)
+	}
+}
+
+func TestCanonicalRestorationFilterChainPreservesUnknownBarriers(t *testing.T) {
+	filter := canonicalizeRestorationFilterChain("hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8")
+	want := "hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8"
+	if filter != want {
+		t.Fatalf("unknown advanced filter was moved or changed: %q", filter)
 	}
 }
 
@@ -328,7 +376,7 @@ func TestPreviewDisplayNormalizationKeepsSmartUpscaleSquarePixelOrder(t *testing
 	}}
 	profile = profileWithPreviewDisplayNormalization(profile, "colorspace=space=bt709:primaries=bt709:trc=bt709,setsar=32/27")
 	filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
-	want := "bwdif=mode=send_frame:parity=bff:deint=all,scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10,colorspace=space=bt709:primaries=bt709:trc=bt709"
+	want := "bwdif=mode=send_frame:parity=bff:deint=all,colorspace=space=bt709:primaries=bt709:trc=bt709,scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10"
 	if filter != want || strings.Count(filter, "setsar=") != 1 {
 		t.Fatalf("Preview Smart Upscale/display normalization=%q want %q", filter, want)
 	}

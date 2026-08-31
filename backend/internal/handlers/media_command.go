@@ -1940,6 +1940,7 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 	encoder := resolvedVideoEncoder(profile)
 	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
 	filters = applyCropAspectPolicy(filters, profile, source)
+	filters = canonicalizeRestorationFilterChain(filters)
 	filters = renderResolvedUpscaleFilters(filters, profile)
 	if encoder == "hevc_vaapi" {
 		format := "nv12"
@@ -2002,9 +2003,10 @@ func renderResolvedUpscaleFilters(filters string, profile models.Profile) string
 	}
 
 	parts := []string{}
+	fieldMetadata := []string{}
 	preferZScale := false
 	zscaleOptions := []string{}
-	for _, raw := range strings.Split(filters, ",") {
+	for _, raw := range splitVideoFilterChain(filters) {
 		filter := strings.TrimSpace(raw)
 		if filter == "" {
 			continue
@@ -2023,11 +2025,19 @@ func renderResolvedUpscaleFilters(filters string, profile models.Profile) string
 			// The resolved target is square-pixel. Remove conflicting legacy
 			// aspect metadata and emit one canonical setsar stage below.
 			continue
+		case "cas", "unsharp":
+			if _, apply := smartUpscaleCASStrength(decision.SharpenMode); apply {
+				// A resolved Smart Upscale sharpen is the sole final sharpen
+				// authority. The resolver records the legacy conflict.
+				continue
+			}
+		case "setfield":
+			fieldMetadata = append(fieldMetadata, filter)
+			continue
 		}
 		parts = append(parts, filter)
 	}
 
-	insertAt := smartUpscaleInsertionIndex(parts)
 	scaler := fmt.Sprintf("scale=%d:%d:flags=lanczos", decision.TargetWidth, decision.TargetHeight)
 	if preferZScale {
 		scaler = fmt.Sprintf("zscale=w=%d:h=%d:filter=lanczos", decision.TargetWidth, decision.TargetHeight)
@@ -2039,29 +2049,206 @@ func renderResolvedUpscaleFilters(filters string, profile models.Profile) string
 	if strength, apply := smartUpscaleCASStrength(decision.SharpenMode); apply {
 		stages = append(stages, "cas=strength="+strength)
 	}
-	rendered := make([]string, 0, len(parts)+len(stages))
-	rendered = append(rendered, parts[:insertAt]...)
+	rendered := make([]string, 0, len(parts)+len(stages)+len(fieldMetadata))
+	rendered = append(rendered, parts...)
 	rendered = append(rendered, stages...)
-	rendered = append(rendered, parts[insertAt:]...)
+	rendered = append(rendered, fieldMetadata...)
 	return strings.Join(rendered, ",")
 }
 
-func smartUpscaleInsertionIndex(filters []string) int {
-	insertAt := 0
-	for index, filter := range filters {
-		name, _, _ := strings.Cut(strings.TrimSpace(filter), "=")
+type restorationFilterStage int
+
+const (
+	restorationStageMotion restorationFilterStage = iota
+	restorationStageDeflicker
+	restorationStageDeblock
+	restorationStageCrop
+	restorationStageChromaCleanup
+	restorationStageDenoise
+	restorationStageDeband
+	restorationStageImageAdjustments
+	restorationStageColorNormalization
+	restorationStageSmartUpscale
+	restorationStageSARNormalization
+	restorationStageFinalSharpen
+	restorationStageFieldMetadata
+)
+
+type classifiedRestorationFilter struct {
+	filter string
+	stage  restorationFilterStage
+}
+
+// canonicalizeRestorationFilterChain orders only filters whose semantics are
+// known to MVForge. Unknown advanced filters remain stable barriers so the raw
+// escape hatch is never guessed at or destructively reordered.
+func canonicalizeRestorationFilterChain(filters string) string {
+	parts := splitVideoFilterChain(filters)
+	if len(parts) == 0 {
+		return ""
+	}
+	parts = deduplicateRestorationAuthorities(parts)
+	result := make([]string, 0, len(parts))
+	run := make([]classifiedRestorationFilter, 0, len(parts))
+	flush := func() {
+		sort.SliceStable(run, func(left, right int) bool { return run[left].stage < run[right].stage })
+		for _, item := range run {
+			result = append(result, item.filter)
+		}
+		run = run[:0]
+	}
+	for _, raw := range parts {
+		filter := strings.TrimSpace(raw)
+		if filter == "" {
+			continue
+		}
+		if stage, ok := restorationStageForFilter(filter); ok {
+			run = append(run, classifiedRestorationFilter{filter: filter, stage: stage})
+			continue
+		}
+		flush()
+		result = append(result, filter)
+	}
+	flush()
+	return strings.Join(result, ",")
+}
+
+func restorationStageForFilter(filter string) (restorationFilterStage, bool) {
+	name, value, _ := strings.Cut(strings.TrimSpace(filter), "=")
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "fps", "bwdif", "yadif", "fieldmatch", "decimate":
+		return restorationStageMotion, true
+	case "deflicker":
+		return restorationStageDeflicker, true
+	case "deblock":
+		return restorationStageDeblock, true
+	case "crop":
+		return restorationStageCrop, true
+	case "chromanr", "chromashift":
+		return restorationStageChromaCleanup, true
+	case "hqdn3d", "nlmeans", "atadenoise", "dctdnoiz", "fftdnoiz", "owdenoise", "vaguedenoiser":
+		return restorationStageDenoise, true
+	case "deband", "gradfun":
+		return restorationStageDeband, true
+	case "exposure", "eq", "colorlevels", "vibrance", "colorbalance", "curves", "normalize", "limiter":
+		return restorationStageImageAdjustments, true
+	case "colorspace", "colormatrix":
+		return restorationStageColorNormalization, true
+	case "zscale":
+		if zscaleHasGeometry(value) {
+			return restorationStageSmartUpscale, true
+		}
+		return restorationStageColorNormalization, true
+	case "scale", "scale_qsv", "vpp_qsv":
+		return restorationStageSmartUpscale, true
+	case "setsar", "setdar":
+		return restorationStageSARNormalization, true
+	case "cas", "unsharp":
+		return restorationStageFinalSharpen, true
+	case "setfield":
+		return restorationStageFieldMetadata, true
+	default:
+		return 0, false
+	}
+}
+
+func deduplicateRestorationAuthorities(parts []string) []string {
+	lastGeometry, lastAspect, lastSharpen := -1, -1, -1
+	for index, raw := range parts {
+		filter := strings.TrimSpace(raw)
+		name, value, _ := strings.Cut(filter, "=")
 		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "setfield":
-			if insertAt <= index {
-				insertAt = index + 1
+		case "scale", "scale_qsv", "vpp_qsv":
+			lastGeometry = index
+		case "zscale":
+			if zscaleHasGeometry(value) {
+				lastGeometry = index
 			}
-		case "crop":
-			// Crop is the final structural boundary even when a custom chain
-			// placed compatible restoration filters before it.
-			insertAt = index + 1
+		case "setsar", "setdar":
+			lastAspect = index
+		case "cas", "unsharp":
+			lastSharpen = index
 		}
 	}
-	return insertAt
+	result := make([]string, 0, len(parts))
+	for index, raw := range parts {
+		filter := strings.TrimSpace(raw)
+		if filter == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(filter, "=")
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "scale", "scale_qsv", "vpp_qsv":
+			if index != lastGeometry {
+				continue
+			}
+		case "zscale":
+			if zscaleHasGeometry(value) && index != lastGeometry {
+				options := zscaleOptionsWithoutGeometry(value)
+				if len(options) == 0 {
+					continue
+				}
+				filter = "zscale=" + strings.Join(options, ":")
+			}
+		case "setsar", "setdar":
+			if index != lastAspect {
+				continue
+			}
+		case "cas", "unsharp":
+			if index != lastSharpen {
+				continue
+			}
+		}
+		result = append(result, filter)
+	}
+	return result
+}
+
+func zscaleHasGeometry(value string) bool {
+	for _, option := range strings.Split(value, ":") {
+		name, _, found := strings.Cut(strings.TrimSpace(option), "=")
+		if !found {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "w", "width", "h", "height":
+			return true
+		}
+	}
+	return false
+}
+
+func splitVideoFilterChain(filters string) []string {
+	parts := []string{}
+	start := 0
+	quote := rune(0)
+	escaped := false
+	for index, value := range filters {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if value == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if value == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value == '\'' || value == '"' {
+			quote = value
+			continue
+		}
+		if value == ',' {
+			parts = append(parts, filters[start:index])
+			start = index + 1
+		}
+	}
+	parts = append(parts, filters[start:])
+	return parts
 }
 
 func zscaleOptionsWithoutGeometry(value string) []string {
