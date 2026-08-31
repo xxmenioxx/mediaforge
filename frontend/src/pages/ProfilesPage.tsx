@@ -43,6 +43,7 @@ import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
+import { RestorationControls } from '../components/RestorationControls';
 import type { Profile, ProfileInput, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
@@ -53,6 +54,7 @@ import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { smartUpscaleControlsDisabled } from '../upscale';
+import { restorationConfigFromLegacyFilters, withStructuredRestorationFilters } from '../utils/restorationFilters';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -99,6 +101,7 @@ const initialProfile: ProfileInput = {
     frameStructureGopMode: 'recommended',
     frameStructureBFrameMode: 'recommended',
     fieldStructureMode: 'auto',
+    deinterlaceFieldOrder: 'auto',
     cadenceMode: 'auto',
     cadenceFieldOrder: 'auto',
   },
@@ -274,6 +277,11 @@ export function ProfilesPage() {
       },
     };
     setProfileForm(['videoEncoder', 'useHardwareIfAvailable', 'pixFmt'].includes(key) ? synchronizeAuthoritativeContract(next) : next);
+  }
+
+  function updateRestorationConfig(patch: Record<string, unknown>) {
+    const workerConfig = withStructuredRestorationFilters({ ...form.workerConfig, ...patch });
+    setProfileForm({ ...form, workerConfig });
   }
 
   function updateProcessingPreference(preference: 'software' | 'hardware') {
@@ -841,6 +849,7 @@ export function ProfilesPage() {
                               mode: (form.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
                               sharpen: (form.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',
                               customHeight: typeof form.workerConfig?.upscaleCustomHeight === 'number' ? form.workerConfig.upscaleCustomHeight : undefined,
+                              customSharpenStrength: typeof form.workerConfig?.upscaleSharpenCustomStrength === 'number' ? form.workerConfig.upscaleSharpenCustomStrength : undefined,
                             }}
                             onChange={(patch) => setProfileForm({
                               ...form,
@@ -1194,7 +1203,16 @@ export function ProfilesPage() {
                             onFieldStructureChange={(value) => updateWorkerConfig('fieldStructureMode', value)}
                             onCadenceChange={(value) => updateWorkerConfig('cadenceMode', value)}
                             onCadenceFieldOrderChange={(value) => updateWorkerConfig('cadenceFieldOrder', value)}
+                            onDeinterlaceFieldOrderChange={(value) => updateWorkerConfig('deinterlaceFieldOrder', value)}
                           />
+                          <Grid size={{ xs: 12 }}>
+                            <RestorationControls
+                              title="Restoration cleanup"
+                              config={form.workerConfig ?? {}}
+                              onChange={updateRestorationConfig}
+                              disabled={form.videoCodec === 'copy'}
+                            />
+                          </Grid>
                           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                             <TextField
                               label="Tune"
@@ -1473,10 +1491,14 @@ function workerConfigString(profile: ProfileInput, key: string, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
-function smartUpscaleWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number }) {
+function smartUpscaleWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number; customSharpenStrength?: number }) {
   const next = { ...(config ?? {}) };
   if ('mode' in patch) next.upscaleMode = patch.mode;
   if ('sharpen' in patch) next.upscaleSharpen = patch.sharpen;
+  if ('customSharpenStrength' in patch) {
+    if (patch.customSharpenStrength === undefined) delete next.upscaleSharpenCustomStrength;
+    else next.upscaleSharpenCustomStrength = patch.customSharpenStrength;
+  }
   if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
   if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
   delete next.resolvedUpscaleDecision;
@@ -1668,7 +1690,7 @@ function profileInputFromProfile(profile: Profile): ProfileInput {
     preserveHdr: profile.preserveHdr,
     preserveSubtitles: profile.preserveSubtitles,
     preserveChapters: profile.preserveChapters,
-    workerConfig: normalized.workerConfig,
+    workerConfig: restorationConfigFromLegacyFilters(normalized.workerConfig ?? {}),
     disabled: profile.disabled,
   };
 }

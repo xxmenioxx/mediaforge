@@ -283,6 +283,18 @@ func TestCanonicalRestorationFilterChainOrdersEveryKnownStage(t *testing.T) {
 	}
 }
 
+func TestFFmpegCommandBuilderRendersStructuredRestorationExamplesCanonically(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265",
+		"videoFilters": "deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,hqdn3d=4:3:6:4.5,deblock=filter=strong:block=8,chromanr=thres=25:sizew=3:sizeh=3",
+	}}
+	filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480}), "-vf")
+	want := "deblock=filter=strong:block=8,chromanr=thres=25:sizew=3:sizeh=3,hqdn3d=4:3:6:4.5,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024"
+	if filter != want {
+		t.Fatalf("structured restoration filter=%q want %q", filter, want)
+	}
+}
+
 func TestCanonicalRestorationFilterChainPreservesUnknownBarriers(t *testing.T) {
 	filter := canonicalizeRestorationFilterChain("hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8")
 	want := "hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8"
@@ -319,18 +331,20 @@ func TestSmartUpscaleSquarePixelTargetOverridesCropPreserveDAR(t *testing.T) {
 
 func TestFFmpegCommandBuilderMapsSmartUpscaleSharpenAndAvoidsDuplicateGeometry(t *testing.T) {
 	tests := []struct {
-		mode UpscaleSharpen
-		cas  string
+		mode     UpscaleSharpen
+		strength float64
+		cas      string
 	}{
 		{mode: UpscaleSharpenOff},
 		{mode: UpscaleSharpenLight, cas: "cas=strength=0.10"},
 		{mode: UpscaleSharpenMedium, cas: "cas=strength=0.18"},
+		{mode: UpscaleSharpenCustom, strength: .16, cas: "cas=strength=0.16"},
 	}
 	for _, test := range tests {
 		t.Run(string(test.mode), func(t *testing.T) {
 			profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
 				"videoEncoder": "libx265", "videoFilters": "scale=640:480,setsar=8/9,eq=contrast=1.05",
-				"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: test.mode},
+				"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: test.mode, SharpenStrength: test.strength},
 			}}
 			filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
 			if strings.Count(filter, "scale=") != 1 || strings.Count(filter, "setsar=") != 1 || strings.Contains(filter, "scale=640:480") || strings.Contains(filter, "setsar=8/9") {
@@ -354,6 +368,30 @@ func TestFFmpegCommandBuilderMapsSmartUpscaleSharpenAndAvoidsDuplicateGeometry(t
 	zscaleFilter := argumentValue(videoWorkerArgsForSource(zscaleProfile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
 	if strings.Count(zscaleFilter, "zscale=") != 1 || strings.Contains(zscaleFilter, ",scale=") || !strings.Contains(zscaleFilter, "zscale=w=1280:h=720:filter=lanczos:matrix=bt709") {
 		t.Fatalf("zscale geometry was duplicated instead of composed: %q", zscaleFilter)
+	}
+}
+
+func TestDeinterlaceFieldOrderOverrideDoesNotForceDeinterlace(t *testing.T) {
+	analysis := InterlaceAnalysis{Status: "interlaced", Confidence: .99, DetectedFieldOrder: "tff"}
+	forced := profileWithAutomaticDeinterlace(models.Profile{WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "force", "deinterlaceFieldOrder": "bff",
+	}}, analysis)
+	if filter := workerStringValue(forced.WorkerConfig["videoFilters"]); !strings.Contains(filter, "bwdif=mode=send_frame:parity=bff:deint=all") {
+		t.Fatalf("BFF override was not applied to resolved deinterlace: %q", filter)
+	}
+
+	preserve := profileWithAutomaticDeinterlace(models.Profile{WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "off", "deinterlaceFieldOrder": "bff",
+	}}, analysis)
+	if filter := workerStringValue(preserve.WorkerConfig["videoFilters"]); strings.Contains(filter, "bwdif=") {
+		t.Fatalf("parity override forced deinterlace: %q", filter)
+	}
+
+	progressive := profileWithAutomaticDeinterlace(models.Profile{WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "auto", "deinterlaceFieldOrder": "tff",
+	}}, InterlaceAnalysis{Status: "progressive", Confidence: .99})
+	if filter := workerStringValue(progressive.WorkerConfig["videoFilters"]); strings.Contains(filter, "bwdif=") {
+		t.Fatalf("parity override deinterlaced progressive input: %q", filter)
 	}
 }
 

@@ -27,6 +27,7 @@ const (
 	UpscaleSharpenOff    UpscaleSharpen = "off"
 	UpscaleSharpenLight  UpscaleSharpen = "light"
 	UpscaleSharpenMedium UpscaleSharpen = "medium"
+	UpscaleSharpenCustom UpscaleSharpen = "custom"
 )
 
 type ResolvedUpscaleMode string
@@ -50,26 +51,28 @@ const (
 // UpscaleRequest is profile intent only. Custom stores a target height so the
 // future geometry resolver can derive width after crop and SAR/DAR handling.
 type UpscaleRequest struct {
-	Mode         UpscaleMode    `json:"upscaleMode"`
-	Sharpen      UpscaleSharpen `json:"upscaleSharpen"`
-	CustomHeight int            `json:"upscaleCustomHeight,omitempty"`
+	Mode                  UpscaleMode    `json:"upscaleMode"`
+	Sharpen               UpscaleSharpen `json:"upscaleSharpen"`
+	CustomHeight          int            `json:"upscaleCustomHeight,omitempty"`
+	CustomSharpenStrength float64        `json:"upscaleSharpenCustomStrength,omitempty"`
 }
 
 type ResolvedUpscaleDecision struct {
-	RequestedMode  UpscaleMode         `json:"requestedMode"`
-	ResolvedMode   ResolvedUpscaleMode `json:"resolvedMode"`
-	SourceWidth    int                 `json:"sourceWidth"`
-	SourceHeight   int                 `json:"sourceHeight"`
-	SourceSAR      string              `json:"sourceSAR,omitempty"`
-	SourceDAR      string              `json:"sourceDAR,omitempty"`
-	TargetWidth    int                 `json:"targetWidth"`
-	TargetHeight   int                 `json:"targetHeight"`
-	TargetSAR      string              `json:"targetSAR,omitempty"`
-	UpscaleApplied bool                `json:"upscaleApplied"`
-	SharpenMode    UpscaleSharpen      `json:"sharpenMode"`
-	Confidence     UpscaleConfidence   `json:"confidence"`
-	Reasons        []string            `json:"reasons"`
-	Warnings       []string            `json:"warnings"`
+	RequestedMode   UpscaleMode         `json:"requestedMode"`
+	ResolvedMode    ResolvedUpscaleMode `json:"resolvedMode"`
+	SourceWidth     int                 `json:"sourceWidth"`
+	SourceHeight    int                 `json:"sourceHeight"`
+	SourceSAR       string              `json:"sourceSAR,omitempty"`
+	SourceDAR       string              `json:"sourceDAR,omitempty"`
+	TargetWidth     int                 `json:"targetWidth"`
+	TargetHeight    int                 `json:"targetHeight"`
+	TargetSAR       string              `json:"targetSAR,omitempty"`
+	UpscaleApplied  bool                `json:"upscaleApplied"`
+	SharpenMode     UpscaleSharpen      `json:"sharpenMode"`
+	SharpenStrength float64             `json:"sharpenStrength,omitempty"`
+	Confidence      UpscaleConfidence   `json:"confidence"`
+	Reasons         []string            `json:"reasons"`
+	Warnings        []string            `json:"warnings"`
 }
 
 type UpscaleSignalAvailability struct {
@@ -221,6 +224,7 @@ func resolveUpscaleProfile(profile models.Profile, streams MediaStreamInventory,
 	decision.TargetSAR = "1:1"
 	decision.UpscaleApplied = true
 	decision.SharpenMode = request.Sharpen
+	decision.SharpenStrength = request.CustomSharpenStrength
 	decision.Reasons = append(decision.Reasons, "target_width_derived_from_effective_dar", "square_pixel_output")
 	decision = annotateSmartUpscaleSharpenConflicts(decision, workerStringValue(profile.WorkerConfig["videoFilters"]))
 	storeResolvedUpscaleDecision(profile.WorkerConfig, decision)
@@ -438,9 +442,16 @@ func parseUpscaleRequest(config models.JSONMap) (UpscaleRequest, error) {
 		return UpscaleRequest{}, fmt.Errorf("upscaleMode must be disabled, auto, 720p, 1080p, or custom")
 	}
 	switch request.Sharpen {
-	case UpscaleSharpenOff, UpscaleSharpenLight, UpscaleSharpenMedium:
+	case UpscaleSharpenOff, UpscaleSharpenLight, UpscaleSharpenMedium, UpscaleSharpenCustom:
 	default:
-		return UpscaleRequest{}, fmt.Errorf("upscaleSharpen must be off, light, or medium")
+		return UpscaleRequest{}, fmt.Errorf("upscaleSharpen must be off, light, medium, or custom")
+	}
+	if request.Sharpen == UpscaleSharpenCustom {
+		strength, ok := floatSetting(config["upscaleSharpenCustomStrength"])
+		if !ok || strength < 0 || strength > .4 {
+			return UpscaleRequest{}, fmt.Errorf("upscaleSharpenCustomStrength must be between 0.00 and 0.40 for custom sharpen")
+		}
+		request.CustomSharpenStrength = strength
 	}
 	request.CustomHeight = intValueSetting(config["upscaleCustomHeight"], 0)
 	if request.Mode == UpscaleModeCustom {
@@ -464,10 +475,31 @@ func normalizedUpscaleMode(value string) string {
 func normalizedUpscaleSharpen(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch UpscaleSharpen(value) {
-	case UpscaleSharpenOff, UpscaleSharpenLight, UpscaleSharpenMedium:
+	case UpscaleSharpenOff, UpscaleSharpenLight, UpscaleSharpenMedium, UpscaleSharpenCustom:
 		return value
 	default:
 		return ""
+	}
+}
+
+func floatSetting(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -476,6 +508,14 @@ func normalizedUpscaleCustomHeight(mode string, height int) int {
 		return height
 	}
 	return 0
+}
+
+func normalizedUpscaleSharpenStrength(mode string, strength *float64) *float64 {
+	if normalizedUpscaleSharpen(mode) != string(UpscaleSharpenCustom) || strength == nil || *strength < 0 || *strength > .4 {
+		return nil
+	}
+	value := *strength
+	return &value
 }
 
 func resolvedUpscaleDecisionFromProfile(profile models.Profile) (*ResolvedUpscaleDecision, bool) {

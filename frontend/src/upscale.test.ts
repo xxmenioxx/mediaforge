@@ -23,10 +23,18 @@ describe('smart upscale profile domain', () => {
     expect(upscaleRequestFromWorkerConfig(config)).toEqual({ upscaleMode: 'custom', upscaleSharpen: 'light', upscaleCustomHeight: 900 });
   });
 
+  it('round-trips Custom CAS 0.16 and clears it for semantic presets', () => {
+    const custom = workerConfigWithUpscaleRequest({}, { upscaleMode: '720p', upscaleSharpen: 'custom', upscaleSharpenCustomStrength: 0.16 });
+    expect(upscaleRequestFromWorkerConfig(custom)).toEqual({ upscaleMode: '720p', upscaleSharpen: 'custom', upscaleSharpenCustomStrength: 0.16 });
+    expect(workerConfigWithUpscaleRequest(custom, { upscaleMode: '720p', upscaleSharpen: 'light' }).upscaleSharpenCustomStrength).toBeUndefined();
+  });
+
   it.each([
     [{ upscaleMode: 'invalid' }, 'Invalid upscale mode'],
     [{ upscaleMode: 'auto', upscaleSharpen: 'strong' }, 'Invalid upscale sharpen mode'],
     [{ upscaleMode: 'custom', upscaleCustomHeight: 721 }, 'positive even target height'],
+    [{ upscaleMode: '720p', upscaleSharpen: 'custom' }, 'CAS strength'],
+    [{ upscaleMode: '720p', upscaleSharpen: 'custom', upscaleSharpenCustomStrength: 0.41 }, 'CAS strength'],
   ])('rejects invalid request %#j', (config, message) => {
     expect(() => upscaleRequestFromWorkerConfig(config as never)).toThrow(message);
   });

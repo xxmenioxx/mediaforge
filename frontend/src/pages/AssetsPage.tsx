@@ -4724,13 +4724,14 @@ function AssetConversionOverridePanel({
             <SmartUpscaleControls
               allowInherit
               disabled={smartUpscaleControlsDisabled(effectiveVideoCodec, readOnly)}
-              value={{ mode: draft.upscaleMode, sharpen: draft.upscaleSharpen, customHeight: draft.upscaleCustomHeight }}
+              value={{ mode: draft.upscaleMode, sharpen: draft.upscaleSharpen, customHeight: draft.upscaleCustomHeight, customSharpenStrength: draft.upscaleSharpenCustomStrength }}
               onChange={(patch) => {
                 if ('mode' in patch) {
                   onChange('upscaleMode', patch.mode as UpscaleMode | undefined);
                   if (patch.mode !== 'custom') onChange('upscaleCustomHeight', undefined);
                 }
                 if ('sharpen' in patch) onChange('upscaleSharpen', patch.sharpen as UpscaleSharpen | undefined);
+                if ('customSharpenStrength' in patch) onChange('upscaleSharpenCustomStrength', patch.customSharpenStrength);
                 if ('customHeight' in patch) onChange('upscaleCustomHeight', patch.customHeight);
               }}
             />
@@ -4752,12 +4753,14 @@ function AssetConversionOverridePanel({
             </TextField>
           </Grid>
           <FrameCadenceControls
+            disabled={readOnly}
             {...assetMotionModes}
             scan={scan}
             allowProfileDefault
             onFieldStructureChange={(value) => onChange('fieldStructureMode', value || undefined)}
             onCadenceChange={(value) => onChange('cadenceMode', value || undefined)}
             onCadenceFieldOrderChange={(value) => onChange('cadenceFieldOrder', value || undefined)}
+            onDeinterlaceFieldOrderChange={(value) => onChange('deinterlaceFieldOrder', value || undefined)}
           />
           <Grid size={{ xs: 12 }}>
             <Box sx={{ border: 1, borderColor: suggestedCropEnabled ? 'primary.main' : 'divider', borderRadius: 1, p: 1.5, bgcolor: suggestedCropEnabled ? 'rgba(79,179,255,0.055)' : 'rgba(255,255,255,0.02)' }}>
@@ -6283,9 +6286,10 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.upscaleMode === 'disabled' || value.upscaleMode === 'auto' || value.upscaleMode === '720p' || value.upscaleMode === '1080p' || value.upscaleMode === 'custom') {
     clean.upscaleMode = value.upscaleMode;
   }
-  if (value.upscaleSharpen === 'off' || value.upscaleSharpen === 'light' || value.upscaleSharpen === 'medium') {
+  if (value.upscaleSharpen === 'off' || value.upscaleSharpen === 'light' || value.upscaleSharpen === 'medium' || value.upscaleSharpen === 'custom') {
     clean.upscaleSharpen = value.upscaleSharpen;
   }
+  if (value.upscaleSharpen === 'custom' && typeof value.upscaleSharpenCustomStrength === 'number' && Number.isFinite(value.upscaleSharpenCustomStrength) && value.upscaleSharpenCustomStrength >= 0 && value.upscaleSharpenCustomStrength <= 0.4) clean.upscaleSharpenCustomStrength = value.upscaleSharpenCustomStrength;
   if (typeof value.upscaleCustomHeight === 'number' && Number.isFinite(value.upscaleCustomHeight) && value.upscaleCustomHeight >= 2 && value.upscaleCustomHeight % 2 === 0 && value.upscaleMode === 'custom') {
     clean.upscaleCustomHeight = value.upscaleCustomHeight;
   }
@@ -6304,6 +6308,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.fieldStructureMode === 'preserve' || value.fieldStructureMode === 'auto' || value.fieldStructureMode === 'deinterlace') clean.fieldStructureMode = value.fieldStructureMode;
   if (value.cadenceMode === 'preserve' || value.cadenceMode === 'auto' || value.cadenceMode === 'remove_soft_telecine' || value.cadenceMode === 'inverse_telecine') clean.cadenceMode = value.cadenceMode;
   if (value.cadenceFieldOrder === 'auto' || value.cadenceFieldOrder === 'tff' || value.cadenceFieldOrder === 'bff') clean.cadenceFieldOrder = value.cadenceFieldOrder;
+  if (value.deinterlaceFieldOrder === 'auto' || value.deinterlaceFieldOrder === 'tff' || value.deinterlaceFieldOrder === 'bff') clean.deinterlaceFieldOrder = value.deinterlaceFieldOrder;
   if (value.frameStructureMode === 'auto' || value.frameStructureMode === 'off' || value.frameStructureMode === 'compatible' || value.frameStructureMode === 'balanced' || value.frameStructureMode === 'maximum_compression' || value.frameStructureMode === 'custom') clean.frameStructureMode = value.frameStructureMode;
   if (value.frameStructureGopMode === 'auto' || value.frameStructureGopMode === 'recommended' || value.frameStructureGopMode === 'custom') clean.frameStructureGopMode = value.frameStructureGopMode;
   if (typeof value.frameStructureGopFrames === 'number' && Number.isFinite(value.frameStructureGopFrames) && value.frameStructureGopFrames > 0) clean.frameStructureGopFrames = Math.min(1000, Math.round(value.frameStructureGopFrames));

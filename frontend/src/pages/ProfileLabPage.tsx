@@ -80,6 +80,9 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { SmartUpscaleDecision } from '../components/SmartUpscaleDecision';
+import { RestorationControls } from '../components/RestorationControls';
+import { restorationConfigFromLegacyFilters, structuredRestorationStages } from '../utils/restorationFilters';
+import { brightnessFromStored, brightnessToStored, exposureFromStored, exposureToStored, formatFilterNumber, ratioFromStored, ratioToStored } from '../utils/imageAdjustmentPrecision';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -222,15 +225,6 @@ const videoEncoderOptions = [
   { value: 'libx265', label: 'Software x265', description: 'Slower, usually better compression and quality per GB.' },
 ] as const;
 
-const denoiseOptions = [
-  { value: 'off', label: 'Off' },
-  { value: 'film-grain', label: 'Preserve grain · very light' },
-  { value: 'film-restore', label: 'Film restoration · gentle' },
-  { value: 'light', label: 'Light' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'strong', label: 'Strong' },
-] as const;
-
 const unsharpOptions = [
   { value: 'off', label: 'Off' },
   { value: 'subtle', label: 'Subtle · 0.10' },
@@ -238,22 +232,10 @@ const unsharpOptions = [
   { value: 'light', label: 'Light · 0.25' },
 ] as const;
 
-const debandOptions = [
-  { value: 'off', label: 'Off' },
-  { value: 'light', label: 'Light' },
-  { value: 'medium', label: 'Medium' },
-] as const;
-
 const deflickerOptions = [
   { value: 'off', label: 'Off' },
   { value: 'light', label: 'Light · 5 frames' },
   { value: 'medium', label: 'Medium · 9 frames' },
-] as const;
-
-const deblockOptions = [
-  { value: 'off', label: 'Off' },
-  { value: 'light', label: 'Light' },
-  { value: 'medium', label: 'Medium' },
 ] as const;
 
 const videoStarterPresets = [
@@ -489,9 +471,11 @@ const emptyVideoDraft: ProfileInput = {
     videoPreset: 'medium',
     pixFmt: 'yuv420p10le',
     deinterlaceMode: 'off',
+    deinterlaceFieldOrder: 'auto',
     denoise: 'off',
     deflicker: 'off',
     deblockFilter: 'off',
+    chromaNR: 'off',
     unsharp: 'off',
     deband: 'off',
     crop: 'off',
@@ -532,7 +516,7 @@ function profileInputFromSavedProfile(profile: Profile): ProfileInput {
 
   const workerConfig = {
     ...emptyVideoDraft.workerConfig,
-    ...normalized.workerConfig,
+    ...restorationConfigFromLegacyFilters(normalized.workerConfig ?? {}),
   };
   delete workerConfig.processingMode;
   const requestedPreference = typeof workerConfig.preferredEncoder === 'string' ? workerConfig.preferredEncoder : '';
@@ -1494,6 +1478,7 @@ export function ProfileLabPage() {
     const workerConfig = {
       ...proposed.workerConfig,
       deinterlaceMode,
+      deinterlaceFieldOrder: 'auto',
       fieldStructureMode,
       cadenceMode,
       cadenceFieldOrder,
@@ -1501,6 +1486,7 @@ export function ProfileLabPage() {
       denoise: 'off',
       deflicker: 'off',
       deblockFilter: 'off',
+      chromaNR: 'off',
       unsharp: 'off',
       deband: 'off',
       crop: 'off',
@@ -3175,36 +3161,13 @@ export function ProfileLabPage() {
                                   onFieldStructureChange={(value) => updateVideoFilterControl(setVideoDraft, 'fieldStructureMode', value)}
                                   onCadenceChange={(value) => updateVideoFilterControl(setVideoDraft, 'cadenceMode', value)}
                                   onCadenceFieldOrderChange={(value) => updateVideoFilterControl(setVideoDraft, 'cadenceFieldOrder', value)}
+                                  onDeinterlaceFieldOrderChange={(value) => updateVideoFilterControl(setVideoDraft, 'deinterlaceFieldOrder', value)}
                                 />
-                                <Grid size={{ xs: 12, sm: 6 }}>
-                                  <TextField
-                                    label="Denoise"
-                                    value={videoFilterControlValue(videoDraft, 'denoise', 'off')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'denoise', event.target.value)}
-                                    select
-                                    fullWidth
-                                  >
-                                    {denoiseOptions.map((option) => (
-                                      <MenuItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
-                                </Grid>
-                                <Grid size={{ xs: 12, sm: 6 }}>
-                                  <TextField
-                                    label="Deband"
-                                    value={videoFilterControlValue(videoDraft, 'deband', 'off')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deband', event.target.value)}
-                                    select
-                                    fullWidth
-                                  >
-                                    {debandOptions.map((option) => (
-                                      <MenuItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
+                                <Grid size={{ xs: 12 }}>
+                                  <RestorationControls
+                                    config={videoDraft.workerConfig ?? {}}
+                                    onChange={(patch) => updateVideoFilterControls(setVideoDraft, patch)}
+                                  />
                                 </Grid>
                                 <Grid size={{ xs: 12, sm: 6 }}>
                                   <TextField
@@ -3216,22 +3179,6 @@ export function ProfileLabPage() {
                                     fullWidth
                                   >
                                     {deflickerOptions.map((option) => (
-                                      <MenuItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
-                                </Grid>
-                                <Grid size={{ xs: 12, sm: 6 }}>
-                                  <TextField
-                                    label="Deblock"
-                                    value={videoFilterControlValue(videoDraft, 'deblockFilter', 'off')}
-                                    onChange={(event) => updateVideoFilterControl(setVideoDraft, 'deblockFilter', event.target.value)}
-                                    helperText="Softens visible MPEG/DVD block boundaries. Preview before saving."
-                                    select
-                                    fullWidth
-                                  >
-                                    {deblockOptions.map((option) => (
                                       <MenuItem key={option.value} value={option.value}>
                                         {option.label}
                                       </MenuItem>
@@ -3287,6 +3234,10 @@ export function ProfileLabPage() {
                                     scaleLabels={['+2', '0', '-2']}
                                     valueLabel={(value) => `${value > 0 ? '+' : ''}${(value / 100).toFixed(1)} EV`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'exposure', String(value))}
+                                    numericValue={exposureFromStored(numberWorkerValue(videoDraft, 'exposure', 0))}
+                                    numericMin={-2}
+                                    numericMax={2}
+                                    onNumericChange={(value) => updateVideoFilterControl(setVideoDraft, 'exposure', String(exposureToStored(value)))}
                                   />
                                       <ImageAdjustmentSlider
                                     label="Brightness"
@@ -3296,6 +3247,10 @@ export function ProfileLabPage() {
                                     max={100}
                                     valueLabel={(value) => (value === 0 ? 'Neutral' : `${value > 0 ? '+' : ''}${value}%`)}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'brightness', String(value))}
+                                    numericValue={brightnessFromStored(numberWorkerValue(videoDraft, 'brightness', 0))}
+                                    numericMin={-0.12}
+                                    numericMax={0.12}
+                                    onNumericChange={(value) => updateVideoFilterControl(setVideoDraft, 'brightness', String(brightnessToStored(value)))}
                                   />
                                   <ImageAdjustmentSlider
                                     label="Contrast"
@@ -3305,6 +3260,10 @@ export function ProfileLabPage() {
                                     max={150}
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'contrast', String(value))}
+                                    numericValue={ratioFromStored(numberWorkerValue(videoDraft, 'contrast', 100))}
+                                    numericMin={0.5}
+                                    numericMax={1.5}
+                                    onNumericChange={(value) => updateVideoFilterControl(setVideoDraft, 'contrast', String(ratioToStored(value)))}
                                   />
                                   <ImageAdjustmentSlider
                                     label="Saturation"
@@ -3314,6 +3273,10 @@ export function ProfileLabPage() {
                                     max={150}
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'saturation', String(value))}
+                                    numericValue={ratioFromStored(numberWorkerValue(videoDraft, 'saturation', 100))}
+                                    numericMin={0.5}
+                                    numericMax={1.5}
+                                    onNumericChange={(value) => updateVideoFilterControl(setVideoDraft, 'saturation', String(ratioToStored(value)))}
                                   />
                                   <ImageAdjustmentSlider
                                     label="Vibrance"
@@ -3332,6 +3295,10 @@ export function ProfileLabPage() {
                                     max={130}
                                     valueLabel={(value) => `${value}%`}
                                     onChange={(value) => updateVideoFilterControl(setVideoDraft, 'gamma', String(value))}
+                                    numericValue={ratioFromStored(numberWorkerValue(videoDraft, 'gamma', 100))}
+                                    numericMin={0.7}
+                                    numericMax={1.3}
+                                    onNumericChange={(value) => updateVideoFilterControl(setVideoDraft, 'gamma', String(ratioToStored(value)))}
                                   />
                                   <ImageAdjustmentSlider
                                     label="Temperature"
@@ -3439,6 +3406,7 @@ export function ProfileLabPage() {
                                         mode: (videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
                                         sharpen: (videoDraft.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',
                                         customHeight: typeof videoDraft.workerConfig?.upscaleCustomHeight === 'number' ? videoDraft.workerConfig.upscaleCustomHeight : undefined,
+                                        customSharpenStrength: typeof videoDraft.workerConfig?.upscaleSharpenCustomStrength === 'number' ? videoDraft.workerConfig.upscaleSharpenCustomStrength : undefined,
                                       }}
                                       onChange={(patch) => setVideoDraft((current) => ({
                                         ...current,
@@ -4824,6 +4792,10 @@ function ImageAdjustmentSlider({
   scaleLabels,
   valueLabel,
   onChange,
+  numericValue,
+  numericMin,
+  numericMax,
+  onNumericChange,
 }: {
   label: string;
   tooltip: string;
@@ -4834,6 +4806,10 @@ function ImageAdjustmentSlider({
   scaleLabels?: [string, string, string];
   valueLabel: (value: number) => string;
   onChange: (value: number) => void;
+  numericValue?: number;
+  numericMin?: number;
+  numericMax?: number;
+  onNumericChange?: (value: number) => void;
 }) {
   return (
     <Tooltip title={tooltip}>
@@ -4857,6 +4833,17 @@ function ImageAdjustmentSlider({
           size="small"
           sx={{ maxWidth: '100%', height: 22, '& .MuiChip-label': { px: 0.75, fontSize: 11 } }}
         />
+        {numericValue !== undefined && onNumericChange ? (
+          <TextField
+            label={`${label} value`}
+            type="number"
+            value={Number(numericValue.toFixed(4))}
+            onChange={(event) => onNumericChange(Number(event.target.value))}
+            inputProps={{ min: numericMin, max: numericMax, step: 0.01 }}
+            size="small"
+            fullWidth
+          />
+        ) : null}
         <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: 190 }}>
           <Stack justifyContent="space-between" sx={{ height: '100%' }}>
             <Typography color="text.secondary" variant="caption">{scaleLabels?.[0] ?? max}</Typography>
@@ -5660,6 +5647,16 @@ function updateVideoFilterControl(
   });
 }
 
+function updateVideoFilterControls(
+  setVideoDraft: Dispatch<SetStateAction<ProfileInput>>,
+  patch: Record<string, unknown>,
+) {
+  setVideoDraft((current) => {
+    const workerConfig = { ...current.workerConfig, ...patch };
+    return { ...current, workerConfig: { ...workerConfig, videoFilters: buildVideoFilterChain(workerConfig) } };
+  });
+}
+
 function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<ProfileInput>>) {
   setVideoDraft((current) => {
     const workerConfig = {
@@ -5688,11 +5685,8 @@ function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<Pro
 function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
   const correctProgressiveFieldMetadata = workerConfig.correctProgressiveFieldMetadata === true;
-  const denoise = stringValue(workerConfig.denoise, 'off');
   const deflicker = stringValue(workerConfig.deflicker, 'off');
-  const deblockFilter = stringValue(workerConfig.deblockFilter, 'off');
   const unsharp = stringValue(workerConfig.unsharp, 'off');
-  const deband = stringValue(workerConfig.deband, 'off');
   const crop = stringValue(workerConfig.crop, 'off');
   const cropValue = stringValue(workerConfig.cropValue, '');
   const brightness = numericWorkerConfigValue(workerConfig, 'brightness', 0);
@@ -5705,46 +5699,20 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const vibrance = numericWorkerConfigValue(workerConfig, 'vibrance', 0);
   const blackPoint = numericWorkerConfigValue(workerConfig, 'blackPoint', 0);
   const whitePoint = numericWorkerConfigValue(workerConfig, 'whitePoint', 100);
+  const restoration = structuredRestorationStages(workerConfig);
 
-  if (correctProgressiveFieldMetadata) {
-    filters.push('setfield=prog');
-  }
   if (deflicker === 'light') {
     filters.push('deflicker=size=5:mode=pm');
   } else if (deflicker === 'medium') {
     filters.push('deflicker=size=9:mode=pm');
   }
-  if (deblockFilter === 'light') {
-    filters.push('deblock=filter=weak:block=8');
-  } else if (deblockFilter === 'medium') {
-    filters.push('deblock=filter=strong:block=8');
-  }
-  if (denoise === 'film-grain') {
-    filters.push('hqdn3d=1.0:1.0:3.0:3.0');
-  } else if (denoise === 'film-restore') {
-    filters.push('hqdn3d=1.2:1.0:4.0:3.0');
-  } else if (denoise === 'light') {
-    filters.push('hqdn3d=1.5:1.5:6:6');
-  } else if (denoise === 'medium') {
-    filters.push('hqdn3d=2:2:7:7');
-  } else if (denoise === 'strong') {
-    filters.push('nlmeans=s=2:p=7:r=15');
-  }
-  if (unsharp === 'subtle') {
-    filters.push('unsharp=5:5:0.10:5:5:0.0');
-  } else if (unsharp === 'film-restore') {
-    filters.push('unsharp=5:5:0.15:5:5:0.0');
-  } else if (unsharp === 'light') {
-    filters.push('unsharp=5:5:0.25:5:5:0.0');
-  }
-  if (deband === 'light') {
-    filters.push('deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018');
-  } else if (deband === 'medium') {
-    filters.push('deband=1thr=0.028:2thr=0.028:3thr=0.028:4thr=0.028');
-  }
+  if (restoration.deblock) filters.push(restoration.deblock);
   if (crop === 'manual' && cropValue.trim()) {
     filters.push(`crop=${cropValue.trim()}`);
   }
+  if (restoration.chromaCleanup) filters.push(restoration.chromaCleanup);
+  if (restoration.denoise) filters.push(restoration.denoise);
+  if (restoration.deband) filters.push(restoration.deband);
   if (exposure !== 0) {
     filters.push(`exposure=exposure=${trimGain(Math.max(-200, Math.min(200, exposure)) / 100)}`);
   }
@@ -5773,6 +5741,14 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
     const green = trimGain(-magenta * 0.06);
     filters.push(`colorbalance=rs=${red}:bs=${blue}:gs=${green}:rm=${red}:bm=${blue}:gm=${green}`);
   }
+  if (unsharp === 'subtle') {
+    filters.push('unsharp=5:5:0.10:5:5:0.0');
+  } else if (unsharp === 'film-restore') {
+    filters.push('unsharp=5:5:0.15:5:5:0.0');
+  } else if (unsharp === 'light') {
+    filters.push('unsharp=5:5:0.25:5:5:0.0');
+  }
+  if (correctProgressiveFieldMetadata) filters.push('setfield=prog');
   return filters.join(',');
 }
 
@@ -7572,7 +7548,7 @@ function slugify(value: string) {
 }
 
 function trimGain(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return formatFilterNumber(value);
 }
 
 function formatFrequency(frequency: number) {
@@ -7651,10 +7627,14 @@ function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
   ].filter(Boolean).join(' · ');
 }
 
-function smartUpscaleLabWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number }) {
+function smartUpscaleLabWorkerConfigPatch(config: ProfileInput['workerConfig'], patch: { mode?: UpscaleMode; sharpen?: UpscaleSharpen; customHeight?: number; customSharpenStrength?: number }) {
   const next = { ...(config ?? {}) };
   if ('mode' in patch) next.upscaleMode = patch.mode;
   if ('sharpen' in patch) next.upscaleSharpen = patch.sharpen;
+  if ('customSharpenStrength' in patch) {
+    if (patch.customSharpenStrength === undefined) delete next.upscaleSharpenCustomStrength;
+    else next.upscaleSharpenCustomStrength = patch.customSharpenStrength;
+  }
   if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
   if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
   delete next.resolvedUpscaleDecision;

@@ -368,12 +368,17 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
 	}
 	filter := effectiveDeinterlaceFilter(mode, analysis)
-	fieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(filter, existingVideoFilters(profile), analysis)
+	existing := strings.TrimSpace(existingVideoFilters(profile))
+	fieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(filter, existing, analysis)
 	if filter == "" && fieldMetadataFilter == "" {
+		updated := applyDeinterlaceFieldOrderOverride(existing, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
+		if updated != existing {
+			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+			profile.WorkerConfig["videoFilters"] = updated
+		}
 		return profile
 	}
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-	existing := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
 	hasMotionFilter := strings.Contains(existing, "bwdif=") || strings.Contains(existing, "yadif=") || strings.Contains(existing, "fieldmatch") || strings.Contains(existing, "decimate")
 	if existing != "" && !hasMotionFilter {
 		if filter != "" {
@@ -389,8 +394,43 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 		}
 		filter += fieldMetadataFilter
 	}
+	filter = applyDeinterlaceFieldOrderOverride(filter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 	profile.WorkerConfig["videoFilters"] = filter
 	return profile
+}
+
+func applyDeinterlaceFieldOrderOverride(filters, requested string) string {
+	requested = normalizedCadenceFieldOrder(requested)
+	if requested == "" || requested == "auto" {
+		return filters
+	}
+	parts := splitVideoFilterChain(filters)
+	changed := false
+	for index, filter := range parts {
+		name, value, found := strings.Cut(strings.TrimSpace(filter), "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(name), "bwdif") {
+			continue
+		}
+		options := strings.Split(value, ":")
+		parityFound := false
+		for optionIndex, option := range options {
+			key, _, hasValue := strings.Cut(strings.TrimSpace(option), "=")
+			if hasValue && strings.EqualFold(key, "parity") {
+				options[optionIndex] = "parity=" + requested
+				parityFound = true
+				changed = true
+			}
+		}
+		if !parityFound {
+			options = append(options, "parity="+requested)
+			changed = true
+		}
+		parts[index] = "bwdif=" + strings.Join(options, ":")
+	}
+	if !changed {
+		return filters
+	}
+	return strings.Join(parts, ",")
 }
 
 func existingVideoFilters(profile models.Profile) string {
@@ -950,6 +990,11 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := normalizedUpscaleSharpen(override.UpscaleSharpen); value != "" {
 		workerConfig["upscaleSharpen"] = value
+		if value == string(UpscaleSharpenCustom) && override.UpscaleSharpenCustomStrength != nil {
+			workerConfig["upscaleSharpenCustomStrength"] = *override.UpscaleSharpenCustomStrength
+		} else {
+			delete(workerConfig, "upscaleSharpenCustomStrength")
+		}
 	}
 	if value := strings.ToLower(strings.TrimSpace(override.CropAspectPolicy)); value == "source_sar" || value == "preserve_dar" {
 		workerConfig["cropAspectPolicy"] = value
@@ -991,6 +1036,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := strings.TrimSpace(override.DeinterlaceMode); value != "" {
 		workerConfig["deinterlaceMode"] = value
+	}
+	if value := normalizedCadenceFieldOrder(override.DeinterlaceFieldOrder); value != "" {
+		workerConfig["deinterlaceFieldOrder"] = value
 	}
 	if value := normalizedFieldStructureMode(override.FieldStructureMode); value != "" {
 		workerConfig["fieldStructureMode"] = value
@@ -2026,7 +2074,7 @@ func renderResolvedUpscaleFilters(filters string, profile models.Profile) string
 			// aspect metadata and emit one canonical setsar stage below.
 			continue
 		case "cas", "unsharp":
-			if _, apply := smartUpscaleCASStrength(decision.SharpenMode); apply {
+			if _, apply := smartUpscaleCASStrength(*decision); apply {
 				// A resolved Smart Upscale sharpen is the sole final sharpen
 				// authority. The resolver records the legacy conflict.
 				continue
@@ -2046,7 +2094,7 @@ func renderResolvedUpscaleFilters(filters string, profile models.Profile) string
 		}
 	}
 	stages := []string{scaler, "setsar=1"}
-	if strength, apply := smartUpscaleCASStrength(decision.SharpenMode); apply {
+	if strength, apply := smartUpscaleCASStrength(*decision); apply {
 		stages = append(stages, "cas=strength="+strength)
 	}
 	rendered := make([]string, 0, len(parts)+len(stages)+len(fieldMetadata))
@@ -2271,12 +2319,17 @@ func zscaleOptionsWithoutGeometry(value string) []string {
 	return result
 }
 
-func smartUpscaleCASStrength(mode UpscaleSharpen) (string, bool) {
-	switch mode {
+func smartUpscaleCASStrength(decision ResolvedUpscaleDecision) (string, bool) {
+	switch decision.SharpenMode {
 	case UpscaleSharpenLight:
 		return smartUpscaleCASLightStrength, true
 	case UpscaleSharpenMedium:
 		return smartUpscaleCASMediumStrength, true
+	case UpscaleSharpenCustom:
+		if decision.SharpenStrength < 0 || decision.SharpenStrength > .4 {
+			return "", false
+		}
+		return strconv.FormatFloat(decision.SharpenStrength, 'f', 2, 64), true
 	default:
 		return "", false
 	}

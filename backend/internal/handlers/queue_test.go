@@ -415,7 +415,8 @@ func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	}
 	profile := authoritativeTestProfile()
 	profile.WorkerConfig["upscaleMode"] = "auto"
-	profile.WorkerConfig["upscaleSharpen"] = "light"
+	profile.WorkerConfig["upscaleSharpen"] = "custom"
+	profile.WorkerConfig["upscaleSharpenCustomStrength"] = .16
 	if err := db.Create(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -443,11 +444,12 @@ func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := resolvedUpscaleDecisionFromProfile(frozenProfile)
-	if !ok || !frozen.UpscaleApplied || frozen.TargetWidth != 1280 || frozen.TargetHeight != 720 || frozen.SharpenMode != UpscaleSharpenLight {
+	if !ok || !frozen.UpscaleApplied || frozen.TargetWidth != 1280 || frozen.TargetHeight != 720 || frozen.SharpenMode != UpscaleSharpenCustom || frozen.SharpenStrength != .16 {
 		t.Fatalf("queue did not freeze resolved upscale: %#v", frozen)
 	}
 
 	profile.WorkerConfig["upscaleMode"] = "1080p"
+	profile.WorkerConfig["upscaleSharpenCustomStrength"] = .30
 	if err := db.Save(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -508,6 +510,57 @@ func TestQueueProfileSnapshotFreezesKeepSourceAfterProfileChangesTo1080p(t *test
 	consumed, _ := resolvedUpscaleDecisionFromProfile(consumedProfile)
 	if !reflect.DeepEqual(frozen, consumed) {
 		t.Fatalf("worker changed frozen Keep Source after profile edit: frozen=%#v consumed=%#v", frozen, consumed)
+	}
+}
+
+func TestQueueProfileSnapshotFreezesDeinterlaceParityWithoutForcingIt(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-deinterlace-parity-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["deinterlaceMode"] = "force"
+	profile.WorkerConfig["deinterlaceFieldOrder"] = "bff"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/interlaced-dvd.mkv"
+	scan := models.ScanResult{Path: path, InterlaceAnalysis: models.JSONMap{
+		"version": float64(interlaceAnalysisVersion), "status": "interlaced", "confidence": .99, "detectedFieldOrder": "tff",
+	}}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	profile.WorkerConfig["deinterlaceFieldOrder"] = "tff"
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, ok := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	if !ok {
+		t.Fatalf("interlace evidence was not frozen: %#v", job.ProfileSnapshot)
+	}
+	resolved := profileWithAutomaticDeinterlace(frozen, analysis)
+	filter := workerStringValue(resolved.WorkerConfig["videoFilters"])
+	if !strings.Contains(filter, "bwdif=mode=send_frame:parity=bff:deint=all") {
+		t.Fatalf("queued BFF parity changed after profile edit: %q", filter)
+	}
+
+	frozen.WorkerConfig["deinterlaceMode"] = "off"
+	frozen.WorkerConfig["videoFilters"] = ""
+	preserved := profileWithAutomaticDeinterlace(frozen, analysis)
+	if filter := workerStringValue(preserved.WorkerConfig["videoFilters"]); strings.Contains(filter, "bwdif=") {
+		t.Fatalf("frozen parity forced deinterlace after mode was disabled: %q", filter)
 	}
 }
 

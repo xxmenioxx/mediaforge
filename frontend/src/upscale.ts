@@ -4,6 +4,7 @@ export type UpscaleRequest = {
   upscaleMode: UpscaleMode;
   upscaleSharpen: UpscaleSharpen;
   upscaleCustomHeight?: number;
+  upscaleSharpenCustomStrength?: number;
 };
 
 export const upscaleModeOptions: ReadonlyArray<{ value: UpscaleMode; label: string }> = [
@@ -18,6 +19,7 @@ export const upscaleSharpenOptions: ReadonlyArray<{ value: UpscaleSharpen; label
   { value: 'off', label: 'Off' },
   { value: 'light', label: 'Light' },
   { value: 'medium', label: 'Medium' },
+  { value: 'custom', label: 'Custom' },
 ];
 
 const upscaleModes = upscaleModeOptions.map((option) => option.value);
@@ -36,6 +38,13 @@ export function customUpscaleHeightError(mode: UpscaleMode | undefined, height: 
   if (mode !== 'custom') return '';
   if (!height || height < 2) return 'Target height is required and must be positive.';
   if (height % 2 !== 0) return 'Target height must be even.';
+  return '';
+}
+
+export function customUpscaleSharpenError(mode: UpscaleSharpen | undefined, strength: number | undefined) {
+  if (mode !== 'custom') return '';
+  if (strength === undefined || !Number.isFinite(strength)) return 'Custom CAS strength is required.';
+  if (strength < 0 || strength > 0.4) return 'Custom CAS strength must be between 0.00 and 0.40.';
   return '';
 }
 
@@ -71,7 +80,16 @@ export function upscaleRequestFromWorkerConfig(config?: VideoWorkerConfig): Upsc
   if (mode === 'custom' && (!customHeight || customHeight < 2 || customHeight % 2 !== 0)) {
     throw new Error('Custom upscale requires a positive even target height');
   }
-  return { upscaleMode: mode as UpscaleMode, upscaleSharpen: sharpen as UpscaleSharpen, ...(mode === 'custom' ? { upscaleCustomHeight: customHeight } : {}) };
+  const customSharpenStrength = typeof config?.upscaleSharpenCustomStrength === 'number' ? config.upscaleSharpenCustomStrength : undefined;
+  if (sharpen === 'custom' && customUpscaleSharpenError(sharpen as UpscaleSharpen, customSharpenStrength)) {
+    throw new Error('Custom sharpen requires a CAS strength between 0.00 and 0.40');
+  }
+  return {
+    upscaleMode: mode as UpscaleMode,
+    upscaleSharpen: sharpen as UpscaleSharpen,
+    ...(mode === 'custom' ? { upscaleCustomHeight: customHeight } : {}),
+    ...(sharpen === 'custom' ? { upscaleSharpenCustomStrength: customSharpenStrength } : {}),
+  };
 }
 
 export function workerConfigWithUpscaleRequest(config: VideoWorkerConfig, request: UpscaleRequest): VideoWorkerConfig {
@@ -79,6 +97,8 @@ export function workerConfigWithUpscaleRequest(config: VideoWorkerConfig, reques
   const next: VideoWorkerConfig = { ...config, upscaleMode: validated.upscaleMode, upscaleSharpen: validated.upscaleSharpen };
   if (validated.upscaleMode === 'custom') next.upscaleCustomHeight = validated.upscaleCustomHeight;
   else delete next.upscaleCustomHeight;
+  if (validated.upscaleSharpen === 'custom') next.upscaleSharpenCustomStrength = validated.upscaleSharpenCustomStrength;
+  else delete next.upscaleSharpenCustomStrength;
   delete next.resolvedUpscaleDecision;
   return next;
 }

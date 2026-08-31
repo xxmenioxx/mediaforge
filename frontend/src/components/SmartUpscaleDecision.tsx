@@ -29,7 +29,7 @@ export function SmartUpscaleDecision({ decision, requestedMode, requestedSharpen
           {showEffective ? <DecisionValue label="Effective geometry after crop" value={effectiveGeometry} /> : null}
           <DecisionValue label="Resolved output" value={outputGeometry} />
           <DecisionValue label="Pixel aspect" value={decision.targetSAR || (decision.upscaleApplied ? '1:1' : decision.sourceSAR) || 'Unknown'} />
-          <DecisionValue label="Sharpen" value={upscaleSharpenLabel(decision.sharpenMode)} />
+          <DecisionValue label="Sharpen" value={decision.sharpenMode === 'custom' ? `Custom · ${decision.sharpenStrength?.toFixed(2) ?? 'Unknown'}` : upscaleSharpenLabel(decision.sharpenMode)} />
         </Grid>
         {decision.reasons?.length ? <Stack spacing={0.35}><Typography variant="caption" color="text.secondary">Why</Typography>{decision.reasons.map((reason) => <Typography key={reason} variant="body2">✓ {upscaleEvidenceLabel(reason)}</Typography>)}</Stack> : null}
         {decision.warnings?.length ? <Alert severity="warning"><Stack spacing={0.35}>{decision.warnings.map((warning) => <Typography key={warning} variant="body2">• {upscaleEvidenceLabel(warning)}</Typography>)}</Stack></Alert> : null}

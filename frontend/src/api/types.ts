@@ -151,8 +151,10 @@ export type AssetConversionOverrideState = {
   cropAspectPolicy?: 'source_sar' | 'preserve_dar';
   upscaleMode?: UpscaleMode;
   upscaleSharpen?: UpscaleSharpen;
+  upscaleSharpenCustomStrength?: number;
   upscaleCustomHeight?: number;
   deinterlaceMode?: 'auto' | 'off' | 'force' | 'ivtc_tff' | 'ivtc_bff';
+  deinterlaceFieldOrder?: 'auto' | 'tff' | 'bff';
   fieldStructureMode?: 'preserve' | 'auto' | 'deinterlace';
   cadenceMode?: 'preserve' | 'auto' | 'remove_soft_telecine' | 'inverse_telecine';
   cadenceFieldOrder?: 'auto' | 'tff' | 'bff';
@@ -479,13 +481,14 @@ export type ProfileCandidate = {
 };
 
 export type UpscaleMode = 'disabled' | 'auto' | '720p' | '1080p' | 'custom';
-export type UpscaleSharpen = 'off' | 'light' | 'medium';
+export type UpscaleSharpen = 'off' | 'light' | 'medium' | 'custom';
 export type ResolvedUpscaleMode = 'keep_source' | '720p' | '1080p' | 'custom';
 export type UpscaleConfidence = 'unavailable' | 'low' | 'medium' | 'high';
 
 export type VideoWorkerConfig = Record<string, unknown> & {
   upscaleMode?: UpscaleMode;
   upscaleSharpen?: UpscaleSharpen;
+  upscaleSharpenCustomStrength?: number;
   upscaleCustomHeight?: number;
   resolvedUpscaleDecision?: ResolvedUpscaleDecision;
 };
@@ -502,6 +505,7 @@ export type ResolvedUpscaleDecision = {
   targetSAR?: string;
   upscaleApplied: boolean;
   sharpenMode: UpscaleSharpen;
+  sharpenStrength?: number;
   confidence: UpscaleConfidence;
   reasons: string[];
   warnings: string[];

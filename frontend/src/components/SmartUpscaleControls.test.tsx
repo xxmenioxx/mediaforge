@@ -46,4 +46,17 @@ describe('SmartUpscaleControls', () => {
     expect(screen.getByRole('combobox', { name: 'Upscale' }).getAttribute('aria-disabled')).not.toBe('true');
     expect(screen.getByRole('combobox', { name: 'Upscale' }).textContent).toContain('1080p');
   });
+
+  it('offers Custom CAS with 0.01 precision and preserves 0.16', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(<SmartUpscaleControls value={{ mode: '720p', sharpen: 'light' }} onChange={onChange} />);
+    await user.click(screen.getByRole('combobox', { name: 'Sharpen after upscale' }));
+    await user.click(screen.getByRole('option', { name: 'Custom' }));
+    expect(onChange).toHaveBeenCalledWith({ sharpen: 'custom', customSharpenStrength: 0.16 });
+    rerender(<SmartUpscaleControls value={{ mode: '720p', sharpen: 'custom', customSharpenStrength: 0.16 }} onChange={onChange} />);
+    const input = screen.getByLabelText(/CAS strength/) as HTMLInputElement;
+    expect(input.value).toBe('0.16');
+    expect(input.step).toBe('0.01');
+  });
 });

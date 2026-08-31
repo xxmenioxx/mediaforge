@@ -1,11 +1,12 @@
 import { Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import type { UpscaleMode, UpscaleSharpen } from '../api/types';
-import { customUpscaleHeightError, upscaleModeOptions, upscaleSharpenOptions } from '../upscale';
+import { customUpscaleHeightError, customUpscaleSharpenError, upscaleModeOptions, upscaleSharpenOptions } from '../upscale';
 
 export type SmartUpscaleControlValues = {
   mode?: UpscaleMode;
   sharpen?: UpscaleSharpen;
   customHeight?: number;
+  customSharpenStrength?: number;
 };
 
 export function SmartUpscaleControls({
@@ -24,6 +25,7 @@ export function SmartUpscaleControls({
   const mode = value.mode ?? (allowInherit ? undefined : 'disabled');
   const sharpen = value.sharpen ?? (allowInherit ? undefined : 'off');
   const heightError = customUpscaleHeightError(mode, value.customHeight);
+  const sharpenError = customUpscaleSharpenError(sharpen, value.customSharpenStrength);
   return (
     <Stack spacing={1.5}>
       <Stack spacing={0.35}>
@@ -43,11 +45,17 @@ export function SmartUpscaleControls({
           <TextField required fullWidth size={size} type="number" label="Target height" value={value.customHeight ?? ''} disabled={disabled} error={Boolean(heightError)} helperText={heightError || 'Width is derived from the effective display aspect ratio.'} inputProps={{ min: 2, step: 2 }} onChange={(event) => onChange({ customHeight: event.target.value === '' ? undefined : Number(event.target.value) })} />
         </Grid> : null}
         <Grid size={{ xs: 12, md: 4 }}>
-          <TextField select fullWidth size={size} label="Sharpen after upscale" value={sharpen ?? ''} disabled={disabled} onChange={(event) => onChange({ sharpen: (event.target.value || undefined) as UpscaleSharpen | undefined })} helperText="Light is recommended for most sources.">
+          <TextField select fullWidth size={size} label="Sharpen after upscale" value={sharpen ?? ''} disabled={disabled} onChange={(event) => {
+            const next = (event.target.value || undefined) as UpscaleSharpen | undefined;
+            onChange({ sharpen: next, ...(next === 'custom' ? { customSharpenStrength: value.customSharpenStrength ?? 0.16 } : { customSharpenStrength: undefined }) });
+          }} helperText="Light is recommended for most sources.">
             {allowInherit ? <MenuItem value="">Inherit</MenuItem> : null}
             {upscaleSharpenOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
           </TextField>
         </Grid>
+        {sharpen === 'custom' ? <Grid size={{ xs: 12, md: 4 }}>
+          <TextField required fullWidth size={size} type="number" label="CAS strength" value={value.customSharpenStrength ?? 0.16} disabled={disabled} error={Boolean(sharpenError)} helperText={sharpenError || 'Custom range 0.00–0.40.'} inputProps={{ min: 0, max: 0.4, step: 0.01 }} onChange={(event) => onChange({ customSharpenStrength: event.target.value === '' ? undefined : Number(event.target.value) })} />
+        </Grid> : null}
       </Grid>
     </Stack>
   );

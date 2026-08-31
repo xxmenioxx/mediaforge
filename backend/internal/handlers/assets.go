@@ -270,8 +270,10 @@ type AssetConversionOverrideState struct {
 	CropAspectPolicy                 string                         `json:"cropAspectPolicy,omitempty"`
 	UpscaleMode                      string                         `json:"upscaleMode,omitempty"`
 	UpscaleSharpen                   string                         `json:"upscaleSharpen,omitempty"`
+	UpscaleSharpenCustomStrength     *float64                       `json:"upscaleSharpenCustomStrength,omitempty"`
 	UpscaleCustomHeight              int                            `json:"upscaleCustomHeight,omitempty"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode,omitempty"`
+	DeinterlaceFieldOrder            string                         `json:"deinterlaceFieldOrder,omitempty"`
 	FieldStructureMode               string                         `json:"fieldStructureMode,omitempty"`
 	CadenceMode                      string                         `json:"cadenceMode,omitempty"`
 	CadenceFieldOrder                string                         `json:"cadenceFieldOrder,omitempty"`
@@ -420,8 +422,10 @@ type AssetConversionUpdateInput struct {
 	VideoFilters                     string                         `json:"videoFilters"`
 	UpscaleMode                      string                         `json:"upscaleMode"`
 	UpscaleSharpen                   string                         `json:"upscaleSharpen"`
+	UpscaleSharpenCustomStrength     *float64                       `json:"upscaleSharpenCustomStrength"`
 	UpscaleCustomHeight              int                            `json:"upscaleCustomHeight"`
 	DeinterlaceMode                  string                         `json:"deinterlaceMode"`
+	DeinterlaceFieldOrder            string                         `json:"deinterlaceFieldOrder"`
 	FieldStructureMode               string                         `json:"fieldStructureMode"`
 	CadenceMode                      string                         `json:"cadenceMode"`
 	CadenceFieldOrder                string                         `json:"cadenceFieldOrder"`
@@ -2733,7 +2737,15 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		return
 	}
 	if sharpen := strings.TrimSpace(input.UpscaleSharpen); sharpen != "" && normalizedUpscaleSharpen(sharpen) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpen must be off, light, medium, or omitted to inherit"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpen must be off, light, medium, custom, or omitted to inherit"})
+		return
+	}
+	if normalizedUpscaleSharpen(input.UpscaleSharpen) == string(UpscaleSharpenCustom) && (input.UpscaleSharpenCustomStrength == nil || *input.UpscaleSharpenCustomStrength < 0 || *input.UpscaleSharpenCustomStrength > .4) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpenCustomStrength must be between 0.00 and 0.40 for custom sharpen"})
+		return
+	}
+	if fieldOrder := strings.TrimSpace(input.DeinterlaceFieldOrder); fieldOrder != "" && normalizedCadenceFieldOrder(fieldOrder) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "deinterlaceFieldOrder must be auto, tff, bff, or omitted to inherit"})
 		return
 	}
 	if normalizedUpscaleMode(input.UpscaleMode) == string(UpscaleModeCustom) && normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight) == 0 {
@@ -2763,8 +2775,10 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
 		UpscaleMode:                    normalizedUpscaleMode(input.UpscaleMode),
 		UpscaleSharpen:                 normalizedUpscaleSharpen(input.UpscaleSharpen),
+		UpscaleSharpenCustomStrength:   normalizedUpscaleSharpenStrength(input.UpscaleSharpen, input.UpscaleSharpenCustomStrength),
 		UpscaleCustomHeight:            normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight),
 		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
+		DeinterlaceFieldOrder:          normalizedCadenceFieldOrder(input.DeinterlaceFieldOrder),
 		FieldStructureMode:             normalizedFieldStructureMode(input.FieldStructureMode),
 		CadenceMode:                    normalizedCadenceMode(input.CadenceMode),
 		CadenceFieldOrder:              normalizedCadenceFieldOrder(input.CadenceFieldOrder),
@@ -6459,8 +6473,10 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.VideoFilters) == "" &&
 		strings.TrimSpace(override.UpscaleMode) == "" &&
 		strings.TrimSpace(override.UpscaleSharpen) == "" &&
+		override.UpscaleSharpenCustomStrength == nil &&
 		override.UpscaleCustomHeight == 0 &&
 		strings.TrimSpace(override.DeinterlaceMode) == "" &&
+		strings.TrimSpace(override.DeinterlaceFieldOrder) == "" &&
 		strings.TrimSpace(override.FieldStructureMode) == "" &&
 		strings.TrimSpace(override.CadenceMode) == "" &&
 		strings.TrimSpace(override.CadenceFieldOrder) == "" &&

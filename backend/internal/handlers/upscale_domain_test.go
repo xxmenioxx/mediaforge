@@ -100,6 +100,17 @@ func TestResolveUpscaleAcceptsCanonicalCleanupAndReportsSharpenConflict(t *testi
 	}
 }
 
+func TestResolveUpscaleFreezesCustomCASStrength(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"upscaleMode": "720p", "upscaleSharpen": "custom", "upscaleSharpenCustomStrength": .16,
+	}}
+	resolved := resolveUpscaleProfile(profile, MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}, UpscaleAnalysisEvidence{})
+	decision, ok := resolvedUpscaleDecisionFromProfile(resolved)
+	if !ok || decision.SharpenMode != UpscaleSharpenCustom || decision.SharpenStrength != .16 {
+		t.Fatalf("custom CAS was not frozen in resolved decision: %#v", decision)
+	}
+}
+
 func TestResolveUpscaleKeepsSourceForVideoCopyWithoutRewritingRequest(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -214,8 +225,11 @@ func TestParseUpscaleRequestValidatesEnumsAndCustomHeight(t *testing.T) {
 	}{
 		{name: "auto", config: models.JSONMap{"upscaleMode": "auto", "upscaleSharpen": "light"}, valid: true},
 		{name: "custom even height", config: models.JSONMap{"upscaleMode": "custom", "upscaleSharpen": "medium", "upscaleCustomHeight": 900}, valid: true},
+		{name: "custom CAS", config: models.JSONMap{"upscaleMode": "720p", "upscaleSharpen": "custom", "upscaleSharpenCustomStrength": .16}, valid: true},
 		{name: "invalid mode", config: models.JSONMap{"upscaleMode": "ai"}},
 		{name: "invalid sharpen", config: models.JSONMap{"upscaleSharpen": "strong"}},
+		{name: "missing custom CAS", config: models.JSONMap{"upscaleSharpen": "custom"}},
+		{name: "custom CAS above range", config: models.JSONMap{"upscaleSharpen": "custom", "upscaleSharpenCustomStrength": .41}},
 		{name: "missing custom height", config: models.JSONMap{"upscaleMode": "custom"}},
 		{name: "odd custom height", config: models.JSONMap{"upscaleMode": "custom", "upscaleCustomHeight": 721}},
 	}
