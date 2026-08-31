@@ -65,9 +65,9 @@ func TestSmartUpscaleValidationRejectsWrongGeometryAndStretchedFourByThree(t *te
 
 func TestSmartUpscaleValidationAcceptanceGeometryModes(t *testing.T) {
 	tests := []struct {
-		name                 string
-		width, height        int
-		dar                  string
+		name          string
+		width, height int
+		dar           string
 	}{
 		{name: "NTSC anamorphic", width: 1280, height: 720, dar: "16:9"},
 		{name: "NTSC four by three", width: 960, height: 720, dar: "4:3"},
@@ -94,6 +94,52 @@ func TestSmartUpscaleKeepSourceIsReportedAsSuccess(t *testing.T) {
 	}
 }
 
+func TestSmartUpscaleValidationRejectsSARMismatchWithCorrectGeometry(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"resolvedUpscaleDecision": ResolvedUpscaleDecision{
+		RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p,
+		TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true,
+	}}}
+	report := validateSmartUpscaleOutput(profile, nil, models.JSONMap{
+		"width": 1280, "height": 720, "sampleAspectRatio": "4:3", "displayAspectRatio": "16:9",
+	})
+	fields := report["fields"].(models.JSONMap)
+	if fields["geometry"].(models.JSONMap)["status"] != "passed" {
+		t.Fatalf("correct geometry did not pass: %#v", report)
+	}
+	if fields["sampleAspectRatio"].(models.JSONMap)["status"] != "mismatch" || report["status"] != "mismatch" {
+		t.Fatalf("incorrect SAR did not fail Smart Upscale validation: %#v", report)
+	}
+}
+
+func TestSmartUpscaleValidationAcceptsIVTCOutput(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"effectiveOutputFrameRate": "24000/1001", "effectiveOutputProgressive": true,
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true},
+	}}
+	report := validateSmartUpscaleOutput(profile, models.JSONMap{"width": 720, "height": 480, "fieldOrder": "tt"}, models.JSONMap{
+		"width": 1280, "height": 720, "sampleAspectRatio": "1:1", "displayAspectRatio": "16:9",
+		"frameRate": "24000/1001", "realFrameRate": "24000/1001", "fieldOrder": "progressive",
+	})
+	fields := report["fields"].(models.JSONMap)
+	if report["status"] != "passed" || fields["geometry"].(models.JSONMap)["status"] != "passed" || fields["frameRate"].(models.JSONMap)["status"] != "validated" || fields["frameStructure"].(models.JSONMap)["status"] != "passed" {
+		t.Fatalf("valid IVTC + Smart Upscale output rejected: %#v", report)
+	}
+}
+
+func TestSmartUpscaleValidationAcceptsDeinterlacedOutput(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"effectiveOutputProgressive": true,
+		"resolvedUpscaleDecision":    ResolvedUpscaleDecision{RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true},
+	}}
+	report := validateSmartUpscaleOutput(profile, models.JSONMap{"width": 720, "height": 480, "fieldOrder": "bb"}, models.JSONMap{
+		"width": 1280, "height": 720, "sampleAspectRatio": "1:1", "displayAspectRatio": "16:9", "fieldOrder": "progressive",
+	})
+	fields := report["fields"].(models.JSONMap)
+	if report["status"] != "passed" || fields["frameStructure"].(models.JSONMap)["status"] != "passed" {
+		t.Fatalf("valid deinterlace + Smart Upscale output rejected: %#v", report)
+	}
+}
+
 func TestQueueValidationBlocksSmartUpscaleGeometryMismatch(t *testing.T) {
 	tempDir := t.TempDir()
 	binDir := filepath.Join(tempDir, "bin")
@@ -107,7 +153,7 @@ func TestQueueValidationBlocksSmartUpscaleGeometryMismatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	probeScript := "#!/bin/sh\ncase \"$*\" in\n  *output.mkv*) printf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"hevc\",\"width\":720,\"height\":480,\"sample_aspect_ratio\":\"1:1\",\"display_aspect_ratio\":\"3:2\",\"avg_frame_rate\":\"24000/1001\",\"r_frame_rate\":\"24000/1001\",\"field_order\":\"progressive\"}],\"format\":{\"size\":\"7\"}} ;;\n  *) printf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"mpeg2video\",\"width\":720,\"height\":480,\"sample_aspect_ratio\":\"32:27\",\"display_aspect_ratio\":\"16:9\",\"avg_frame_rate\":\"30000/1001\",\"r_frame_rate\":\"30000/1001\",\"field_order\":\"progressive\"}],\"format\":{\"size\":\"7\"}} ;;\nesac\n"
+	probeScript := "#!/bin/sh\ncase \"$*\" in\n  *output.mkv*) printf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"hevc\",\"width\":720,\"height\":480,\"sample_aspect_ratio\":\"1:1\",\"display_aspect_ratio\":\"3:2\",\"avg_frame_rate\":\"24000/1001\",\"r_frame_rate\":\"24000/1001\",\"field_order\":\"progressive\"}],\"format\":{\"size\":\"7\"}}' ;;\n  *) printf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"mpeg2video\",\"width\":720,\"height\":480,\"sample_aspect_ratio\":\"32:27\",\"display_aspect_ratio\":\"16:9\",\"avg_frame_rate\":\"30000/1001\",\"r_frame_rate\":\"30000/1001\",\"field_order\":\"progressive\"}],\"format\":{\"size\":\"7\"}}' ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte(probeScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
