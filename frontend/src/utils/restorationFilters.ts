@@ -34,6 +34,14 @@ export function withStructuredRestorationFilters(config: RestorationConfig): Res
   };
 }
 
+export function chromaNRWindowError(value: unknown) {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 99 || parsed % 2 === 0) {
+    return 'Window size must be an odd integer from 1 to 99.';
+  }
+  return '';
+}
+
 export function restorationConfigFromLegacyFilters(config: RestorationConfig): RestorationConfig {
   const result = { ...config };
   for (const filter of splitFilterChain(stringValue(config.videoFilters))) {
@@ -137,7 +145,35 @@ function renderDeband(config: RestorationConfig) {
 }
 
 function splitFilterChain(value: string) {
-  return value.split(',').map((filter) => filter.trim()).filter(Boolean);
+  const filters: string[] = [];
+  let start = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === ',') {
+      filters.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  filters.push(value.slice(start));
+  return filters.map((filter) => filter.trim()).filter(Boolean);
 }
 
 function filterName(filter: string) {

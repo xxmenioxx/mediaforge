@@ -57,4 +57,21 @@ describe('RestorationControls', () => {
       hqdn3dChromaTemporal: 4.5,
     });
   });
+
+  it('rejects even and out-of-range custom Chroma NR windows without silently substituting them', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<RestorationControls config={{ chromaNR: 'custom', chromaNRWindowWidth: 3, chromaNRWindowHeight: 5 }} onChange={onChange} />);
+    const width = screen.getByLabelText('Window width') as HTMLInputElement;
+
+    await user.clear(width);
+    await user.type(width, '4');
+    expect(width.value).toBe('4');
+    expect(screen.getByText('Window size must be an odd integer from 1 to 99.')).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.clear(width);
+    await user.type(width, '5');
+    expect(onChange).toHaveBeenLastCalledWith({ chromaNRWindowWidth: 5 });
+  });
 });

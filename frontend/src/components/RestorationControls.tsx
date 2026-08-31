@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
-import type { RestorationConfig } from '../utils/restorationFilters';
+import { chromaNRWindowError, type RestorationConfig } from '../utils/restorationFilters';
 
 const standardOptions = [
   { value: 'off', label: 'Off' },
@@ -118,12 +119,37 @@ export function RestorationControls({
         {mode('chromaNR') === 'custom' ? (
           <>
             {numericField('Chroma threshold', 'chromaNRThreshold', 25, 1, 100, 0.1)}
-            {numericField('Window width', 'chromaNRWindowWidth', 3, 1, 99, 2)}
-            {numericField('Window height', 'chromaNRWindowHeight', 3, 1, 99, 2)}
+            <OddWindowField key={`width-${number('chromaNRWindowWidth', 3)}`} label="Window width" value={number('chromaNRWindowWidth', 3)} disabled={disabled} onChange={(value) => onChange({ chromaNRWindowWidth: value })} />
+            <OddWindowField key={`height-${number('chromaNRWindowHeight', 3)}`} label="Window height" value={number('chromaNRWindowHeight', 3)} disabled={disabled} onChange={(value) => onChange({ chromaNRWindowHeight: value })} />
           </>
         ) : null}
         {mode('deband') === 'custom' ? numericField('Deband threshold', 'debandThreshold', 0.024, 0.001, 1, 0.001) : null}
       </Grid>
     </Stack>
+  );
+}
+
+function OddWindowField({ label, value, disabled, onChange }: { label: string; value: number; disabled: boolean; onChange: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  const error = chromaNRWindowError(draft);
+  return (
+    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+      <TextField
+        label={label}
+        type="number"
+        value={draft}
+        onChange={(event) => {
+          const next = event.target.value;
+          setDraft(next);
+          if (!chromaNRWindowError(next)) onChange(Number(next));
+        }}
+        inputProps={{ min: 1, max: 99, step: 2 }}
+        error={Boolean(error)}
+        helperText={error || 'Odd integer from 1 to 99.'}
+        disabled={disabled}
+        size="small"
+        fullWidth
+      />
+    </Grid>
   );
 }
