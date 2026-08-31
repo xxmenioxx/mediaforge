@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { upscaleRequestFromWorkerConfig, workerConfigWithUpscaleRequest } from './upscale';
+import { smartUpscaleControlsDisabled, upscaleRequestFromWorkerConfig, workerConfigWithUpscaleRequest } from './upscale';
 
 describe('smart upscale profile domain', () => {
+  it('disables controls for Copy and preserves the independent active-job lock', () => {
+    expect(smartUpscaleControlsDisabled('copy')).toBe(true);
+    expect(smartUpscaleControlsDisabled('COPY')).toBe(true);
+    expect(smartUpscaleControlsDisabled('x265')).toBe(false);
+    expect(smartUpscaleControlsDisabled('x265', true)).toBe(true);
+  });
   it('treats missing legacy fields as disabled without changing the stored config', () => {
     const legacy = { videoEncoder: 'hevc_qsv' };
     expect(upscaleRequestFromWorkerConfig(legacy)).toEqual({ upscaleMode: 'disabled', upscaleSharpen: 'off' });

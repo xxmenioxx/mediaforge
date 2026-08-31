@@ -52,6 +52,7 @@ import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
+import { smartUpscaleControlsDisabled } from '../upscale';
 
 const initialProfile: ProfileInput = {
   name: '',
@@ -824,7 +825,7 @@ export function ProfilesPage() {
                             value={workerConfigString(form, 'preferredEncoder', 'software')}
                             onChange={(event) => updateProcessingPreference(event.target.value as 'software' | 'hardware')}
                             helperText="Software follows Video Codec; Hardware exposes a validated hardware encoder."
-                            disabled={form.videoCodec === 'copy'}
+                            disabled={smartUpscaleControlsDisabled(form.videoCodec)}
                             select
                             fullWidth
                           >
@@ -835,6 +836,7 @@ export function ProfilesPage() {
                         <Grid size={{ xs: 12 }}>
                           <SmartUpscaleControls
                             size="medium"
+                            disabled={form.videoCodec === 'copy'}
                             value={{
                               mode: (form.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
                               sharpen: (form.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',

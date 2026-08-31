@@ -39,11 +39,16 @@ export function customUpscaleHeightError(mode: UpscaleMode | undefined, height: 
   return '';
 }
 
+export function smartUpscaleControlsDisabled(videoCodec: string | undefined, readOnly = false) {
+  return readOnly || videoCodec?.trim().toLowerCase() === 'copy';
+}
+
 const reasonLabels: Record<string, string> = {
   upscale_disabled: 'Smart Upscale is disabled.',
   keep_source_geometry_unresolved: 'Source geometry could not be resolved reliably.',
   keep_source_above_sd: 'The effective source resolution is already above SD.',
   keep_source_evidence_insufficient: 'Available asset evidence is insufficient for a safe upscale recommendation.',
+  keep_source_video_copy: 'Video Codec is Copy, so Smart Upscale cannot modify the video stream.',
   reliable_sd_progressive_output: 'The source is SD and the effective output is progressive.',
   conservative_720p_target: '720p is the conservative recommended target.',
   keep_source_target_is_not_an_upscale: 'The requested target would not increase the effective source resolution.',

@@ -189,6 +189,25 @@ func TestFFmpegCommandBuilderRendersResolvedSmartUpscaleTargets(t *testing.T) {
 	}
 }
 
+func TestFFmpegCommandBuilderVideoCopyCannotRenderSmartUpscale(t *testing.T) {
+	requested := models.Profile{VideoCodec: "copy", AudioCodec: "copy", WorkerConfig: models.JSONMap{
+		"upscaleMode": "1080p", "upscaleSharpen": "medium",
+	}}
+	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}
+	resolved := resolveUpscaleProfile(requested, streams, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+	args := FFmpegCommandBuilder{}.Build(MediaJobPlan{
+		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode, Profile: resolved, Streams: streams,
+	})
+	command := shellJoin(args)
+	assertContains(t, command, "-c:v copy")
+	for _, unexpected := range []string{"scale=1920:1080", "zscale=w=1920:h=1080", "setsar=1", "cas="} {
+		if strings.Contains(command, unexpected) {
+			t.Fatalf("copy command contains Smart Upscale filter %q: %s", unexpected, command)
+		}
+	}
+}
+
 func TestFFmpegCommandBuilderOrdersSmartUpscaleAfterStructureAndCrop(t *testing.T) {
 	tests := []struct {
 		name    string

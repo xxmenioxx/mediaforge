@@ -75,6 +75,34 @@ func TestResolveUpscaleGeometryPreservesAnamorphicDAR(t *testing.T) {
 	}
 }
 
+func TestResolveUpscaleKeepsSourceForVideoCopyWithoutRewritingRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		config models.JSONMap
+	}{
+		{name: "auto", config: models.JSONMap{"upscaleMode": "auto", "upscaleSharpen": "light"}},
+		{name: "1080p", config: models.JSONMap{"upscaleMode": "1080p", "upscaleSharpen": "medium"}},
+		{name: "custom", config: models.JSONMap{"upscaleMode": "custom", "upscaleSharpen": "light", "upscaleCustomHeight": 900}},
+	}
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "copy", WorkerConfig: cloneWorkerConfig(test.config)}
+			resolved := resolveUpscaleProfile(profile, streams, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+			decision, ok := resolvedUpscaleDecisionFromProfile(resolved)
+			if !ok || decision.ResolvedMode != ResolvedUpscaleKeepSource || decision.UpscaleApplied || decision.SharpenMode != UpscaleSharpenOff {
+				t.Fatalf("copy decision=%#v", decision)
+			}
+			if !reflect.DeepEqual(profile.WorkerConfig, test.config) {
+				t.Fatalf("request mutated: got %#v want %#v", profile.WorkerConfig, test.config)
+			}
+			if len(decision.Reasons) != 1 || decision.Reasons[0] != "keep_source_video_copy" || len(decision.Warnings) != 1 {
+				t.Fatalf("copy evidence=%#v", decision)
+			}
+		})
+	}
+}
+
 func TestResolveUpscaleExplicitDisabledAndNonUpscaleTarget(t *testing.T) {
 	stream := MediaStream{Width: 1280, Height: 720, SampleAspectRatio: "1:1", DisplayAspectRatio: "16:9"}
 	disabled := resolveUpscaleProfile(models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "disabled"}}, MediaStreamInventory{Video: []MediaStream{stream}}, UpscaleAnalysisEvidence{})

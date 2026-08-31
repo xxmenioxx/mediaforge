@@ -22,5 +22,12 @@ describe('SmartUpscaleDecision', () => {
     expect(screen.getAllByText('Keep Source')).toHaveLength(2);
     expect(screen.queryByText('Effective geometry after crop')).toBeNull();
   });
+
+  it('renders the backend Video Copy reason without frontend policy', () => {
+    render(<SmartUpscaleDecision requestedMode="1080p" storageWidth={720} storageHeight={480} decision={{ requestedMode: '1080p', resolvedMode: 'keep_source', sourceWidth: 720, sourceHeight: 480, targetWidth: 720, targetHeight: 480, targetSAR: '32:27', upscaleApplied: false, sharpenMode: 'off', confidence: 'high', reasons: ['keep_source_video_copy'], warnings: ['Smart Upscale requires video re-encoding; Video Codec is configured as Copy.'] }} />);
+    expect(screen.getByText('1080p')).toBeTruthy();
+    expect(screen.getByText(/Video Codec is Copy, so Smart Upscale cannot modify/i)).toBeTruthy();
+    expect(screen.getByText(/requires video re-encoding/i)).toBeTruthy();
+  });
 });
 afterEach(cleanup);

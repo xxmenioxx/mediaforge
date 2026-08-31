@@ -92,7 +92,7 @@ import { labAudioProfileForTestEncode } from '../utils/testEncodeDraft';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
-import { customUpscaleHeightError, upscaleModeLabel, upscaleSharpenLabel } from '../upscale';
+import { customUpscaleHeightError, smartUpscaleControlsDisabled, upscaleModeLabel, upscaleSharpenLabel } from '../upscale';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
@@ -3434,6 +3434,7 @@ export function ProfileLabPage() {
                                 <Grid size={{ xs: 12 }}>
                                   <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(255,255,255,0.02)' }}>
                                     <SmartUpscaleControls
+                                      disabled={smartUpscaleControlsDisabled(videoDraft.videoCodec)}
                                       value={{
                                         mode: (videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
                                         sharpen: (videoDraft.workerConfig?.upscaleSharpen as UpscaleSharpen | undefined) ?? 'off',

@@ -76,7 +76,7 @@ import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
-import { customUpscaleHeightError } from '../upscale';
+import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
 import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
 import {
   mergedScopeConfigurationInput,
@@ -4723,7 +4723,7 @@ function AssetConversionOverridePanel({
           <Grid size={{ xs: 12 }}>
             <SmartUpscaleControls
               allowInherit
-              disabled={readOnly}
+              disabled={smartUpscaleControlsDisabled(effectiveVideoCodec, readOnly)}
               value={{ mode: draft.upscaleMode, sharpen: draft.upscaleSharpen, customHeight: draft.upscaleCustomHeight }}
               onChange={(patch) => {
                 if ('mode' in patch) {

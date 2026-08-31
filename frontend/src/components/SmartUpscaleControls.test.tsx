@@ -36,4 +36,14 @@ describe('SmartUpscaleControls', () => {
     await user.click(screen.getByRole('combobox', { name: 'Upscale' }));
     expect(screen.queryByRole('option', { name: 'Inherit' })).toBeNull();
   });
+
+  it('keeps the requested selection when a Copy-style disabled state is removed', () => {
+    const value = { mode: '1080p' as const, sharpen: 'light' as const };
+    const { rerender } = render(<SmartUpscaleControls disabled value={value} onChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Upscale' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('combobox', { name: 'Upscale' }).textContent).toContain('1080p');
+    rerender(<SmartUpscaleControls value={value} onChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Upscale' }).getAttribute('aria-disabled')).not.toBe('true');
+    expect(screen.getByRole('combobox', { name: 'Upscale' }).textContent).toContain('1080p');
+  });
 });
