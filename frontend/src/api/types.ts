@@ -475,6 +475,63 @@ export type ProfileCandidate = {
   source?: string;
 };
 
+export type UpscaleMode = 'disabled' | 'auto' | '720p' | '1080p' | 'custom';
+export type UpscaleSharpen = 'off' | 'light' | 'medium';
+export type ResolvedUpscaleMode = 'keep_source' | '720p' | '1080p' | 'custom';
+export type UpscaleConfidence = 'unavailable' | 'low' | 'medium' | 'high';
+
+export type VideoWorkerConfig = Record<string, unknown> & {
+  upscaleMode?: UpscaleMode;
+  upscaleSharpen?: UpscaleSharpen;
+  upscaleCustomHeight?: number;
+  resolvedUpscaleDecision?: ResolvedUpscaleDecision;
+};
+
+export type ResolvedUpscaleDecision = {
+  requestedMode: UpscaleMode;
+  resolvedMode: ResolvedUpscaleMode;
+  sourceWidth: number;
+  sourceHeight: number;
+  sourceSAR?: string;
+  sourceDAR?: string;
+  targetWidth: number;
+  targetHeight: number;
+  targetSAR?: string;
+  upscaleApplied: boolean;
+  sharpenMode: UpscaleSharpen;
+  confidence: UpscaleConfidence;
+  reasons: string[];
+  warnings: string[];
+};
+
+export type UpscaleAnalysisEvidence = {
+  sourceWidth: number;
+  sourceHeight: number;
+  sourceSAR?: string;
+  sourceDAR?: string;
+  codec?: string;
+  bitrate?: number;
+  cropAvailable: boolean;
+  cropStatus?: string;
+  cropConfidence?: number;
+  frameStructureAvailable: boolean;
+  interlaceAvailable: boolean;
+  interlaceStatus?: string;
+  interlaceConfidence?: number;
+  cadenceAvailable: boolean;
+  cadenceType?: string;
+  cadenceConfidence?: number;
+  cadenceRecommendation?: string;
+  effectiveFrameRate?: string;
+  qualitySignals: {
+    noise: 'unavailable';
+    grain: 'unavailable';
+    compressionArtifacts: 'unavailable';
+    ringing: 'unavailable';
+    edgeDetail: 'unavailable';
+  };
+};
+
 export type ProfileSuggestion = {
   matchType: 'existing' | 'create' | 'assigned_asset' | 'assigned_path';
   summary: string;
@@ -529,7 +586,7 @@ export type Profile = {
   preserveHdr: boolean;
   preserveSubtitles: boolean;
   preserveChapters: boolean;
-  workerConfig: Record<string, unknown>;
+  workerConfig: VideoWorkerConfig;
   disabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -557,7 +614,7 @@ export type ProfileInput = {
   preserveHdr: boolean;
   preserveSubtitles: boolean;
   preserveChapters: boolean;
-  workerConfig?: Record<string, unknown>;
+  workerConfig?: VideoWorkerConfig;
   disabled?: boolean;
 };
 
@@ -1443,6 +1500,7 @@ export type EffectiveVideoDecision = {
   hevcTier?: string;
   hevcLevelWarning?: string;
   effectiveFinalColorPolicy?: string;
+  upscale?: ResolvedUpscaleDecision;
 };
 
 export type PreviewFrameMetrics = {

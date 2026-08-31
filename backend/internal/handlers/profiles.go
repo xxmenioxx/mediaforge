@@ -84,6 +84,10 @@ func (h ProfileHandler) Create(c *gin.Context) {
 	}
 	input.Scope = normalizedProfileScope(input.Scope)
 	delete(input.WorkerConfig, "processingMode")
+	if _, err := parseUpscaleRequest(input.WorkerConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	profile := models.Profile{
 		Name:               input.Name,
@@ -139,6 +143,10 @@ func (h ProfileHandler) Update(c *gin.Context) {
 		input.WorkerConfig = models.JSONMap{}
 	}
 	delete(input.WorkerConfig, "processingMode")
+	if _, err := parseUpscaleRequest(input.WorkerConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var profile models.Profile
 	if err := h.db.Unscoped().First(&profile, uint(id)).Error; err != nil {

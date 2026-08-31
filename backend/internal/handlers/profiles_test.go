@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -98,5 +99,31 @@ func TestProfileUpdateWithoutScopePreservesPathScope(t *testing.T) {
 	}
 	if profile.Scope != "path" {
 		t.Fatalf("omitted scope changed path profile to %q", profile.Scope)
+	}
+}
+
+func TestProfileCreateRejectsInvalidUpscaleRequest(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:profile-invalid-upscale?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	payload := ProfileInput{
+		Name: "Invalid upscale", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy",
+		QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{"upscaleMode": "custom", "upscaleCustomHeight": 721},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+	NewProfileHandler(db).Create(context)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "positive even height") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

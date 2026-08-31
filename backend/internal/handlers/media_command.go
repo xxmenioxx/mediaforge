@@ -672,7 +672,7 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 	if parsedFPS := parseFrameRateValue(fps); parsedFPS > 0 && gopFrames > 0 {
 		gopSeconds = float64(gopFrames) / parsedFPS
 	}
-	return models.JSONMap{
+	decision := models.JSONMap{
 		"encoder":                   resolvedVideoEncoder(profile),
 		"codec":                     profile.VideoCodec,
 		"profile":                   map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
@@ -691,6 +691,10 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 		"hevcLevelWarning":          workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
 		"effectiveFinalColorPolicy": workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
 	}
+	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
+		decision["upscale"] = upscale
+	}
+	return decision
 }
 
 func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile models.Profile, audioProfile *audioEnhancementProfile, overwrite bool, override AssetConversionOverrideState) (MediaJobPlan, error) {
