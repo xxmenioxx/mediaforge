@@ -1928,8 +1928,8 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 	args := []string{}
 	encoder := resolvedVideoEncoder(profile)
 	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
-	filters = renderResolvedUpscaleFilters(filters, profile)
 	filters = applyCropAspectPolicy(filters, profile, source)
+	filters = renderResolvedUpscaleFilters(filters, profile)
 	if encoder == "hevc_vaapi" {
 		format := "nv12"
 		if profileUsesTenBit(profile) {
@@ -1974,8 +1974,8 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 }
 
 const (
-	smartUpscaleCASLightStrength  = "0.20"
-	smartUpscaleCASMediumStrength = "0.35"
+	smartUpscaleCASLightStrength  = "0.10"
+	smartUpscaleCASMediumStrength = "0.18"
 )
 
 // renderResolvedUpscaleFilters translates an already-resolved decision into

@@ -370,7 +370,7 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 			t.Fatalf("%s rendered Smart Upscale filter diverged: got=%q queue=%q", name, got, wantFilter)
 		}
 	}
-	if wantFilter != "scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.20" {
+	if wantFilter != "scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.10" {
 		t.Fatalf("unexpected shared Smart Upscale filter=%q", wantFilter)
 	}
 }
