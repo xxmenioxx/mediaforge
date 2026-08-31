@@ -108,6 +108,19 @@ func TestHEVCLevelAutoUsesResolvedCadenceFPS(t *testing.T) {
 	}
 }
 
+func TestHEVCLevelUsesResolvedUpscaleGeometry(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "60/1"}}}
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "upscaleMode": "1080p",
+	}}
+	profile = resolveUpscaleProfile(profile, streams, UpscaleAnalysisEvidence{})
+	profile = resolveHEVCLevel(profile, streams)
+	recommendation, ok := profile.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	if !ok || recommendation.Width != 1920 || recommendation.Height != 1080 || recommendation.RecommendedLevel != "4.1" {
+		t.Fatalf("HEVC Level used pre-upscale geometry: %#v", profile.WorkerConfig)
+	}
+}
+
 func TestHEVCLevelAutoUsesEffectiveOutputGeometry(t *testing.T) {
 	tests := []struct {
 		name                      string

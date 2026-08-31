@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -401,6 +402,71 @@ func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
 	}
 	if frozenRecommendation, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey]); !ok || frozenRecommendation.Operation != "review" {
 		t.Fatalf("expected immutable cadence recommendation, got %#v", job.ProfileSnapshot[cadenceRecommendationSnapshotKey])
+	}
+}
+
+func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["upscaleMode"] = "auto"
+	profile.WorkerConfig["upscaleSharpen"] = "light"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/anamorphic-dvd.mkv"
+	scan := models.ScanResult{
+		Path: path, FileName: "anamorphic-dvd.mkv", Width: 720, Height: 480, VideoCodec: "mpeg2video",
+		VideoStreams: models.JSONList{map[string]any{
+			"width": 720, "height": 480, "sampleAspectRatio": "32:27", "displayAspectRatio": "16:9", "avgFrameRate": "30000/1001",
+		}},
+		InterlaceAnalysis:      models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive", "confidence": .99, "recommendedAction": "preserve"},
+		CadenceAnalysis:        models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native", "confidence": .99},
+		CadenceRecommendation:  models.JSONMap{"version": 1.0, "operation": "preserve", "confidence": .99},
+		FrameStructureAnalysis: models.JSONMap{"version": 2.0, "framesAnalyzed": 900.0, "confidence": "high"},
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozenProfile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, ok := resolvedUpscaleDecisionFromProfile(frozenProfile)
+	if !ok || !frozen.UpscaleApplied || frozen.TargetWidth != 1280 || frozen.TargetHeight != 720 || frozen.SharpenMode != UpscaleSharpenLight {
+		t.Fatalf("queue did not freeze resolved upscale: %#v", frozen)
+	}
+
+	profile.WorkerConfig["upscaleMode"] = "1080p"
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan.VideoStreams = models.JSONList{map[string]any{"width": 720, "height": 480, "sampleAspectRatio": "8:9", "displayAspectRatio": "4:3"}}
+	if err := db.Save(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	restoredAgain, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillFrozen, _ := resolvedUpscaleDecisionFromProfile(restoredAgain)
+	if !reflect.DeepEqual(frozen, stillFrozen) {
+		t.Fatalf("queued upscale changed after profile/snapshot edits: before=%#v after=%#v", frozen, stillFrozen)
+	}
+	workerResolved := resolveUpscaleProfile(restoredAgain, MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"}}}, upscaleAnalysisEvidence(scan))
+	consumed, _ := resolvedUpscaleDecisionFromProfile(workerResolved)
+	if !reflect.DeepEqual(frozen, consumed) {
+		t.Fatalf("worker re-resolved frozen upscale decision: frozen=%#v consumed=%#v", frozen, consumed)
 	}
 }
 

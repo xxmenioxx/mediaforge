@@ -652,17 +652,46 @@ func resolveMediaJobVideoProfile(profile models.Profile, streams MediaStreamInve
 func resolveEffectiveVideoMotionProfile(profile models.Profile, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
 	profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
 	profile = profileWithAutomaticDeinterlace(profile, interlace)
-	return profileWithCadenceOutputDecision(profile, cadence, recommendation)
+	profile = profileWithCadenceOutputDecision(profile, cadence, recommendation)
+	return profileWithEffectiveProgressiveOutput(profile, interlace, cadence, recommendation)
 }
 
-func resolveEffectiveVideoEncodingProfile(profile models.Profile, streams MediaStreamInventory, analysisPath string) models.Profile {
+func resolveEffectiveVideoEncodingProfile(profile models.Profile, streams MediaStreamInventory, analysisPath string, upscaleEvidence ...UpscaleAnalysisEvidence) models.Profile {
 	intent := qualityIntentForMedia(profile, analysisPath, streams)
 	profile = applyVideoToolboxQualityRecommendation(profile, intent)
 	profile = applyQSVQualityRecommendation(profile, intent, capabilities.CheckEncoder("hevc_qsv"))
+	evidence := UpscaleAnalysisEvidence{}
+	if len(upscaleEvidence) > 0 {
+		evidence = upscaleEvidence[0]
+	}
+	profile = resolveUpscaleProfile(profile, streams, evidence)
 	if len(streams.Video) > 0 {
 		profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
 	}
 	return resolveHEVCLevel(profile, streams)
+}
+
+func profileWithEffectiveProgressiveOutput(profile models.Profile, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	filters := strings.ToLower(workerStringValue(profile.WorkerConfig["videoFilters"]))
+	operation := strings.ToLower(workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]))
+	progressive := strings.Contains(filters, "bwdif=") || strings.Contains(filters, "yadif=") ||
+		strings.Contains(filters, "fieldmatch") || operation == "inverse_telecine" || operation == "remove_soft_telecine"
+	reliable := progressive
+	if !progressive && strings.EqualFold(strings.TrimSpace(interlace.Status), "progressive") {
+		progressive = true
+		reliable = interlace.Confidence >= .8
+	}
+	if (operation == "inverse_telecine" || operation == "remove_soft_telecine") && recommendation.Confidence > 0 {
+		reliable = recommendation.Confidence >= .8 && cadence.Confidence >= .8
+	}
+	profile.WorkerConfig["effectiveOutputProgressive"] = progressive
+	if reliable {
+		delete(profile.WorkerConfig, "effectiveOutputProgressiveUnreliable")
+	} else {
+		profile.WorkerConfig["effectiveOutputProgressiveUnreliable"] = true
+	}
+	return profile
 }
 
 func effectiveVideoDecision(profile models.Profile) models.JSONMap {

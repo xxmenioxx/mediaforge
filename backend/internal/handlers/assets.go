@@ -3513,7 +3513,7 @@ func resolvePreviewVideoProfile(db *gorm.DB, path string, profile models.Profile
 	if err != nil {
 		return models.Profile{}, err
 	}
-	return resolveEffectiveVideoEncodingProfile(profile, streams, path), nil
+	return resolveEffectiveVideoEncodingProfile(profile, streams, path, upscaleAnalysisEvidenceForPath(db, path)), nil
 }
 
 func profileWithPreviewDisplayNormalization(profile models.Profile, displayFilter string) models.Profile {

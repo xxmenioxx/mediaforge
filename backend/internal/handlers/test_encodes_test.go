@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -318,6 +319,50 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 		"codec": "hevc", "hevcLevel": "3.1", "width": 1280, "height": 720, "frameRate": "24000/1001",
 	}); level["status"] != "validated" {
 		t.Fatalf("validation disagrees with effective snapshot and command: %#v", level)
+	}
+}
+
+func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
+	db := testEncodeTestDB(t, "smart-upscale-entrypoint-parity")
+	path := filepath.Clean("/media/raw/anamorphic-sd.mkv")
+	interlace := InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .99, RecommendedAction: "preserve"}
+	cadence := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "native", Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "preserve", Confidence: .99}
+	job := models.QueueJob{MediaPath: path, ProfileSnapshot: models.JSONMap{
+		interlaceAnalysisSnapshotKey: interlace, cadenceAnalysisSnapshotKey: cadenceAnalysisMap(cadence), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	requested := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "upscaleMode": "auto", "upscaleSharpen": "light", "frameStructureMode": "balanced", "hevcLevelMode": "auto", "finalColorPolicy": "preserve",
+	}}
+	streams := MediaStreamInventory{Video: []MediaStream{{
+		Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "30000/1001",
+		ColorSpace: "smpte170m", ColorTransfer: "smpte170m", ColorPrimaries: "smpte170m", ColorRange: "tv",
+	}}}
+
+	preview, err := resolvePreviewVideoProfile(db, path, requested, streams, interlace, cadence, recommendation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode = resolveMediaJobVideoProfile(testEncode, streams, path, interlace, cadence, recommendation)
+	queue, err := resolveQueueVideoProfile(db, path, job, requested, AssetConversionOverrideState{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue = resolveMediaJobVideoProfile(queue, streams, path, interlace, cadence, recommendation)
+
+	want, ok := resolvedUpscaleDecisionFromProfile(queue)
+	if !ok || !want.UpscaleApplied || want.TargetWidth != 1280 || want.TargetHeight != 720 {
+		t.Fatalf("queue decision=%#v", want)
+	}
+	for name, profile := range map[string]models.Profile{"preview": preview, "test_encode": testEncode} {
+		got, ok := resolvedUpscaleDecisionFromProfile(profile)
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s upscale diverged: got=%#v queue=%#v", name, got, want)
+		}
 	}
 }
 

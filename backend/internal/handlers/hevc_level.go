@@ -380,6 +380,9 @@ func resolveEffectiveVideoGeometry(profile models.Profile, source MediaStream) (
 			return 0, 0, false
 		}
 	}
+	if decision, ok := resolvedUpscaleDecisionFromProfile(profile); ok && decision.TargetWidth > 0 && decision.TargetHeight > 0 {
+		return decision.TargetWidth, decision.TargetHeight, true
+	}
 	return width, height, true
 }
 

@@ -19,6 +19,110 @@ func TestParseUpscaleRequestDefaultsLegacyProfilesToDisabled(t *testing.T) {
 	}
 }
 
+func TestResolveUpscaleGeometryPreservesAnamorphicDAR(t *testing.T) {
+	tests := []struct {
+		name       string
+		stream     MediaStream
+		filters    string
+		mode       UpscaleMode
+		custom     int
+		wantWidth  int
+		wantHeight int
+	}{
+		{name: "NTSC anamorphic 16:9", stream: MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}, mode: UpscaleMode720p, wantWidth: 1280, wantHeight: 720},
+		{name: "NTSC 4:3", stream: MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"}, mode: UpscaleMode720p, wantWidth: 960, wantHeight: 720},
+		{name: "PAL anamorphic 16:9", stream: MediaStream{Width: 720, Height: 576, SampleAspectRatio: "64:45", DisplayAspectRatio: "16:9"}, mode: UpscaleMode720p, wantWidth: 1280, wantHeight: 720},
+		{name: "crop changes effective DAR", stream: MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"}, filters: "crop=704:448:8:16", mode: UpscaleMode720p, wantWidth: 1006, wantHeight: 720},
+		{name: "odd calculated width rounds even", stream: MediaStream{Width: 853, Height: 480, SampleAspectRatio: "1:1", DisplayAspectRatio: "853:480"}, mode: UpscaleMode720p, wantWidth: 1280, wantHeight: 720},
+		{name: "explicit 1080p", stream: MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}, mode: UpscaleMode1080p, wantWidth: 1920, wantHeight: 1080},
+		{name: "custom height", stream: MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"}, mode: UpscaleModeCustom, custom: 900, wantWidth: 1200, wantHeight: 900},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := models.JSONMap{"upscaleMode": string(test.mode), "upscaleSharpen": "medium", "videoFilters": test.filters}
+			if test.custom > 0 {
+				config["upscaleCustomHeight"] = test.custom
+			}
+			resolved := resolveUpscaleProfile(models.Profile{WorkerConfig: config}, MediaStreamInventory{Video: []MediaStream{test.stream}}, UpscaleAnalysisEvidence{})
+			decision, ok := resolvedUpscaleDecisionFromProfile(resolved)
+			if !ok || !decision.UpscaleApplied || decision.TargetWidth != test.wantWidth || decision.TargetHeight != test.wantHeight || decision.TargetSAR != "1:1" || decision.SharpenMode != UpscaleSharpenMedium {
+				t.Fatalf("decision=%#v want %dx%d square-pixel medium", decision, test.wantWidth, test.wantHeight)
+			}
+			if decision.TargetWidth%2 != 0 || decision.TargetHeight%2 != 0 {
+				t.Fatalf("target is not encoder-safe even geometry: %#v", decision)
+			}
+		})
+	}
+}
+
+func TestResolveUpscaleExplicitDisabledAndNonUpscaleTarget(t *testing.T) {
+	stream := MediaStream{Width: 1280, Height: 720, SampleAspectRatio: "1:1", DisplayAspectRatio: "16:9"}
+	disabled := resolveUpscaleProfile(models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "disabled"}}, MediaStreamInventory{Video: []MediaStream{stream}}, UpscaleAnalysisEvidence{})
+	decision, ok := resolvedUpscaleDecisionFromProfile(disabled)
+	if !ok || decision.UpscaleApplied || decision.TargetWidth != 1280 || decision.TargetHeight != 720 {
+		t.Fatalf("disabled decision=%#v", decision)
+	}
+	lower := resolveUpscaleProfile(models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "720p"}}, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, SampleAspectRatio: "1:1", DisplayAspectRatio: "16:9"}}}, UpscaleAnalysisEvidence{})
+	lowerDecision, _ := resolvedUpscaleDecisionFromProfile(lower)
+	if lowerDecision.UpscaleApplied || len(lowerDecision.Warnings) == 0 {
+		t.Fatalf("lower target was silently treated as upscale: %#v", lowerDecision)
+	}
+}
+
+func TestResolveUpscaleAutoPolicy(t *testing.T) {
+	reliableProfile := models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "auto", "upscaleSharpen": "light", "effectiveOutputProgressive": true}}
+	sd := MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}
+	reliable := resolveUpscaleProfile(reliableProfile, sd, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+	reliableDecision, _ := resolvedUpscaleDecisionFromProfile(reliable)
+	if !reliableDecision.UpscaleApplied || reliableDecision.ResolvedMode != ResolvedUpscale720p || reliableDecision.TargetWidth != 1280 || reliableDecision.SharpenMode != UpscaleSharpenLight {
+		t.Fatalf("reliable SD Auto=%#v", reliableDecision)
+	}
+
+	hd := resolveUpscaleProfile(reliableProfile, MediaStreamInventory{Video: []MediaStream{{Width: 1280, Height: 720, SampleAspectRatio: "1:1", DisplayAspectRatio: "16:9"}}}, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+	hdDecision, _ := resolvedUpscaleDecisionFromProfile(hd)
+	if hdDecision.UpscaleApplied || hdDecision.ResolvedMode != ResolvedUpscaleKeepSource {
+		t.Fatalf("720p+ Auto=%#v", hdDecision)
+	}
+
+	unreliable := resolveUpscaleProfile(models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "auto"}}, sd, UpscaleAnalysisEvidence{})
+	unreliableDecision, _ := resolvedUpscaleDecisionFromProfile(unreliable)
+	if unreliableDecision.UpscaleApplied || len(unreliableDecision.Warnings) == 0 {
+		t.Fatalf("unreliable Auto=%#v", unreliableDecision)
+	}
+}
+
+func TestResolveUpscaleRunsAfterIVTCAndDeinterlace(t *testing.T) {
+	stream := MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "30000/1001"}}}
+	tests := []struct {
+		name           string
+		profile        models.Profile
+		interlace      InterlaceAnalysis
+		cadence        CadenceAnalysis
+		recommendation CadenceRecommendation
+	}{
+		{
+			name: "IVTC", profile: models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "auto", "cadenceMode": "auto"}},
+			interlace:      InterlaceAnalysis{Status: "telecine", Confidence: .99},
+			cadence:        CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "soft_telecine", Confidence: .99},
+			recommendation: CadenceRecommendation{Version: 1, Operation: "remove_soft_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
+		},
+		{
+			name: "deinterlace", profile: models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "auto", "fieldStructureMode": "deinterlace"}},
+			interlace: InterlaceAnalysis{Status: "interlaced", Confidence: .99, DetectedFieldOrder: "tff"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			motion := resolveEffectiveVideoMotionProfile(test.profile, test.interlace, test.cadence, test.recommendation)
+			resolved := resolveUpscaleProfile(motion, stream, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+			decision, _ := resolvedUpscaleDecisionFromProfile(resolved)
+			if !profileWorkerBool(motion, "effectiveOutputProgressive", false) || !decision.UpscaleApplied || decision.TargetWidth != 1280 || decision.TargetHeight != 720 {
+				t.Fatalf("upscale did not consume effective progressive output: motion=%#v decision=%#v", motion.WorkerConfig, decision)
+			}
+		})
+	}
+}
+
 func TestParseUpscaleRequestValidatesEnumsAndCustomHeight(t *testing.T) {
 	tests := []struct {
 		name   string

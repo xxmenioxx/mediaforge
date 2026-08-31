@@ -1935,25 +1935,85 @@ func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *A
 }
 
 func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSONMap) {
-	if h.db == nil || snapshot == nil || strings.TrimSpace(path) == "" || !h.db.Migrator().HasTable(&models.ScanResult{}) {
+	if snapshot == nil {
 		return
 	}
 	var scan models.ScanResult
-	if err := h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error; err != nil {
-		return
-	}
-	if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
-		snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
-	}
-	if analysis, ok := decodeCadenceAnalysis(scan.CadenceAnalysis); ok {
-		snapshot[cadenceAnalysisSnapshotKey] = scan.CadenceAnalysis
-		if _, recommendationOK := decodeCadenceRecommendation(scan.CadenceRecommendation); !recommendationOK {
-			snapshot[cadenceRecommendationSnapshotKey] = cadenceRecommendationMap(recommendCadence(analysis))
+	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
+		h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error == nil
+	if haveScan {
+		if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
+			snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
+		}
+		if analysis, ok := decodeCadenceAnalysis(scan.CadenceAnalysis); ok {
+			snapshot[cadenceAnalysisSnapshotKey] = scan.CadenceAnalysis
+			if _, recommendationOK := decodeCadenceRecommendation(scan.CadenceRecommendation); !recommendationOK {
+				snapshot[cadenceRecommendationSnapshotKey] = cadenceRecommendationMap(recommendCadence(analysis))
+			}
+		}
+		if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
+			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
 	}
-	if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
-		snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
+	h.freezeResolvedUpscaleSnapshot(snapshot, scan)
+}
+
+func (h QueueHandler) freezeResolvedUpscaleSnapshot(snapshot models.JSONMap, scan models.ScanResult) {
+	profile, err := scheduler.RestoreProfileSnapshot(snapshot)
+	if err != nil {
+		return
 	}
+	request, err := parseUpscaleRequest(profile.WorkerConfig)
+	if err != nil || request.Mode == UpscaleModeDisabled {
+		return
+	}
+	interlace, _ := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
+	cadence, _ := decodeCadenceAnalysis(scan.CadenceAnalysis)
+	recommendation, ok := decodeCadenceRecommendation(scan.CadenceRecommendation)
+	if !ok {
+		recommendation = recommendCadence(cadence)
+	}
+	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
+	profile = resolveUpscaleProfile(profile, mediaStreamInventoryFromScan(scan), upscaleAnalysisEvidence(scan))
+	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
+	if !ok {
+		return
+	}
+	workerConfig := models.JSONMap{}
+	if raw, exists := snapshot["workerConfig"]; exists {
+		encoded, encodeErr := json.Marshal(raw)
+		if encodeErr != nil || json.Unmarshal(encoded, &workerConfig) != nil {
+			return
+		}
+	}
+	workerConfig["resolvedUpscaleDecision"] = *decision
+	applyResolvedUpscaleGeometry(workerConfig, *decision)
+	snapshot["workerConfig"] = workerConfig
+}
+
+func mediaStreamInventoryFromScan(scan models.ScanResult) MediaStreamInventory {
+	stream := MediaStream{
+		Codec: scan.VideoCodec, Width: scan.Width, Height: scan.Height,
+		Bitrate: scanVideoBitrate(scan),
+	}
+	if len(scan.VideoStreams) > 0 {
+		if values, ok := upscaleStreamMap(scan.VideoStreams[0]); ok {
+			stream.Codec = firstNonEmptyString(values, "codec", "codecName", "codec_name")
+			if stream.Codec == "" {
+				stream.Codec = scan.VideoCodec
+			}
+			stream.Width = workerIntValue(values["width"], stream.Width)
+			stream.Height = workerIntValue(values["height"], stream.Height)
+			stream.SampleAspectRatio = firstNonEmptyString(values, "sampleAspectRatio", "sample_aspect_ratio")
+			stream.DisplayAspectRatio = firstNonEmptyString(values, "displayAspectRatio", "display_aspect_ratio")
+			stream.FrameRate = firstNonEmptyString(values, "avgFrameRate", "averageFrameRate", "avg_frame_rate")
+			stream.FieldOrder = firstNonEmptyString(values, "fieldOrder", "field_order")
+		}
+	}
+	if stream.Width <= 0 || stream.Height <= 0 {
+		return MediaStreamInventory{}
+	}
+	return MediaStreamInventory{Video: []MediaStream{stream}, Duration: scan.Duration, TotalBitrate: scan.Bitrate}
 }
 
 func (h QueueHandler) profileCaptureError(c *gin.Context, err error) {
