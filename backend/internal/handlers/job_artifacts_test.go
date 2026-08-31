@@ -98,3 +98,19 @@ func TestTrackDecisionReportIncludesRequestedResolvedAndArtifacts(t *testing.T) 
 		t.Fatalf("artifact set did not include sidecars: %#v", outputs)
 	}
 }
+
+func TestSmartUpscalePlanReportPreservesRequestedResolvedAndGeometry(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"resolvedUpscaleDecision": ResolvedUpscaleDecision{
+		RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p, SourceWidth: 704, SourceHeight: 448,
+		SourceSAR: "40:33", SourceDAR: "40:21", TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1",
+		UpscaleApplied: true, SharpenMode: UpscaleSharpenLight, Confidence: UpscaleConfidenceHigh,
+		Reasons: []string{"reliable_sd_progressive_output"}, Warnings: []string{},
+	}}}
+	report := smartUpscalePlanReport(profile, map[string]any{"streams": []interface{}{map[string]interface{}{"codec_type": "video", "width": 720, "height": 480, "sample_aspect_ratio": "32:27", "display_aspect_ratio": "16:9"}}})
+	if report["requestedMode"] != UpscaleModeAuto || report["resolvedMode"] != ResolvedUpscale720p || report["status"] != "planned" {
+		t.Fatalf("decision history missing: %#v", report)
+	}
+	if report["sourceStorage"].(models.JSONMap)["width"] != 720 || report["effectiveGeometry"].(models.JSONMap)["width"] != 704 || report["resolvedOutput"].(models.JSONMap)["width"] != 1280 {
+		t.Fatalf("history geometry conflated: %#v", report)
+	}
+}

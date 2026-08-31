@@ -1993,6 +1993,9 @@ const (
 // FFmpeg filters. Policy stays in the resolver; this renderer consumes the
 // frozen target verbatim and does not inspect source quality or dimensions.
 func renderResolvedUpscaleFilters(filters string, profile models.Profile) string {
+	if strings.EqualFold(strings.TrimSpace(profile.VideoCodec), "copy") {
+		return filters
+	}
 	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
 	if !ok || !decision.UpscaleApplied || decision.TargetWidth <= 0 || decision.TargetHeight <= 0 {
 		return filters

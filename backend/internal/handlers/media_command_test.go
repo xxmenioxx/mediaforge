@@ -191,13 +191,14 @@ func TestFFmpegCommandBuilderRendersResolvedSmartUpscaleTargets(t *testing.T) {
 
 func TestFFmpegCommandBuilderVideoCopyCannotRenderSmartUpscale(t *testing.T) {
 	requested := models.Profile{VideoCodec: "copy", AudioCodec: "copy", WorkerConfig: models.JSONMap{
-		"upscaleMode": "1080p", "upscaleSharpen": "medium",
+		"upscaleMode": "1080p", "upscaleSharpen": "medium", "resolvedUpscaleDecision": ResolvedUpscaleDecision{
+			RequestedMode: UpscaleMode1080p, ResolvedMode: ResolvedUpscale1080p, TargetWidth: 1920, TargetHeight: 1080, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: UpscaleSharpenMedium,
+		},
 	}}
 	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}
-	resolved := resolveUpscaleProfile(requested, streams, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
 	args := FFmpegCommandBuilder{}.Build(MediaJobPlan{
 		InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
-		ProcessingMode: ProcessingModeFullEncode, Profile: resolved, Streams: streams,
+		ProcessingMode: ProcessingModeFullEncode, Profile: requested, Streams: streams,
 	})
 	command := shellJoin(args)
 	assertContains(t, command, "-c:v copy")

@@ -121,6 +121,19 @@ func TestHEVCLevelUsesResolvedUpscaleGeometry(t *testing.T) {
 	}
 }
 
+func TestHEVCLevelUsesResolved1080pGeometryAndIVTCFrameRate(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "30000/1001"}}}
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "upscaleMode": "1080p", "effectiveOutputFrameRate": "24000/1001",
+	}}
+	profile = resolveUpscaleProfile(profile, streams, UpscaleAnalysisEvidence{})
+	profile = resolveHEVCLevel(profile, streams)
+	recommendation, ok := profile.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	if !ok || recommendation.Width != 1920 || recommendation.Height != 1080 || !nearFPS(recommendation.FPS, 24000.0/1001.0, .001) || recommendation.RecommendedLevel != "4.0" {
+		t.Fatalf("HEVC Level ignored resolved 1080p/IVTC plan: %#v", profile.WorkerConfig)
+	}
+}
+
 func TestHEVCLevelAutoUsesEffectiveOutputGeometry(t *testing.T) {
 	tests := []struct {
 		name                      string

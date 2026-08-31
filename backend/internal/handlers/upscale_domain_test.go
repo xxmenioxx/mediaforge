@@ -103,6 +103,16 @@ func TestResolveUpscaleKeepsSourceForVideoCopyWithoutRewritingRequest(t *testing
 	}
 }
 
+func TestResolveUpscalePreservesFrozenDecisionBeforeVideoCopyGuard(t *testing.T) {
+	frozen := ResolvedUpscaleDecision{RequestedMode: UpscaleMode1080p, ResolvedMode: ResolvedUpscale1080p, SourceWidth: 720, SourceHeight: 480, TargetWidth: 1920, TargetHeight: 1080, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: UpscaleSharpenLight, Confidence: UpscaleConfidenceMedium}
+	profile := models.Profile{VideoCodec: "copy", WorkerConfig: models.JSONMap{"upscaleMode": "disabled", "resolvedUpscaleDecision": frozen}}
+	resolved := resolveUpscaleProfile(profile, MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480}}}, UpscaleAnalysisEvidence{})
+	got, ok := resolvedUpscaleDecisionFromProfile(resolved)
+	if !ok || !reflect.DeepEqual(*got, frozen) {
+		t.Fatalf("frozen decision was re-resolved: got=%#v want=%#v", got, frozen)
+	}
+}
+
 func TestResolveUpscaleExplicitDisabledAndNonUpscaleTarget(t *testing.T) {
 	stream := MediaStream{Width: 1280, Height: 720, SampleAspectRatio: "1:1", DisplayAspectRatio: "16:9"}
 	disabled := resolveUpscaleProfile(models.Profile{WorkerConfig: models.JSONMap{"upscaleMode": "disabled"}}, MediaStreamInventory{Video: []MediaStream{stream}}, UpscaleAnalysisEvidence{})

@@ -108,6 +108,10 @@ type UpscaleAnalysisEvidence struct {
 // at enqueue time instead of re-resolving it.
 func resolveUpscaleProfile(profile models.Profile, streams MediaStreamInventory, evidence UpscaleAnalysisEvidence) models.Profile {
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	if frozen, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
+		applyResolvedUpscaleGeometry(profile.WorkerConfig, *frozen)
+		return profile
+	}
 	request, err := parseUpscaleRequest(profile.WorkerConfig)
 	if err != nil {
 		return profile
@@ -134,10 +138,6 @@ func resolveUpscaleProfile(profile models.Profile, streams MediaStreamInventory,
 			Warnings:      []string{"Smart Upscale requires video re-encoding; Video Codec is configured as Copy."},
 		}
 		storeResolvedUpscaleDecision(profile.WorkerConfig, decision)
-		return profile
-	}
-	if frozen, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
-		applyResolvedUpscaleGeometry(profile.WorkerConfig, *frozen)
 		return profile
 	}
 	decision := ResolvedUpscaleDecision{

@@ -37,6 +37,7 @@ type jobArtifact struct {
 	EncoderDecision      models.JSONMap        `json:"encoderDecision,omitempty"`
 	StreamPlan           ResolvedStreamPlan    `json:"streamPlan"`
 	VideoToolboxStrategy models.JSONMap        `json:"videoToolboxStrategy,omitempty"`
+	SmartUpscale         models.JSONMap        `json:"smartUpscale,omitempty"`
 	Artifacts            models.JSONMap        `json:"artifacts,omitempty"`
 }
 
@@ -136,6 +137,7 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 	attachTrackDecisionReport(&artifact.AssetConversion, job)
 	artifact.Artifacts = jobArtifactOutputs(job)
 	artifact.VideoToolboxStrategy = videoToolboxStrategyReport(profile)
+	artifact.SmartUpscale = smartUpscalePlanReport(profile, sourceProbe)
 	if job.ActiveExecutionPlanID != nil {
 		var plan models.ExecutionPlan
 		if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil {
@@ -673,16 +675,45 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		if raw, ok := asIs["videoToolboxStrategy"].(map[string]any); ok {
 			artifact.VideoToolboxStrategy = models.JSONMap(raw)
 		}
+		if raw := unknownRecord(asIs["smartUpscale"]); raw != nil {
+			artifact.SmartUpscale = models.JSONMap(raw)
+		}
 	}
 	if profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); err == nil {
 		artifact.Profile = profile
 		artifact.EncoderDecision = encoderDecisionForProfile(profile)
+		if len(artifact.SmartUpscale) == 0 {
+			artifact.SmartUpscale = smartUpscalePlanReport(profile, nil)
+		}
+	}
+	if validated := unknownRecord(job.ValidationReport["smartUpscale"]); validated != nil {
+		artifact.SmartUpscale = models.JSONMap(validated)
+	} else if len(artifact.SmartUpscale) > 0 {
+		artifact.SmartUpscale["actualOutput"] = firstVideoFrameCharacteristics(artifact.OutputProbe)
+		artifact.SmartUpscale["validationResult"] = "unverified"
 	}
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
 	attachTrackDecisionReport(&artifact.AssetConversion, job)
 	artifact.Artifacts = jobArtifactOutputs(job)
 	persistCompletedEncoderResult(db, artifact)
 	return writeJobArtifact(db, job, "result", artifact)
+}
+
+func smartUpscalePlanReport(profile models.Profile, sourceProbe map[string]any) models.JSONMap {
+	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
+	if !ok {
+		return nil
+	}
+	source := firstVideoFrameCharacteristics(sourceProbe)
+	return models.JSONMap{
+		"requestedMode": decision.RequestedMode, "resolvedMode": decision.ResolvedMode,
+		"upscaleApplied": decision.UpscaleApplied, "sharpenMode": decision.SharpenMode,
+		"confidence": decision.Confidence, "reasons": decision.Reasons, "warnings": decision.Warnings,
+		"sourceStorage": models.JSONMap{"width": workerIntValue(source["width"], 0), "height": workerIntValue(source["height"], 0), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])},
+		"effectiveGeometry": models.JSONMap{"width": decision.SourceWidth, "height": decision.SourceHeight, "sar": decision.SourceSAR, "dar": decision.SourceDAR},
+		"resolvedOutput": models.JSONMap{"width": decision.TargetWidth, "height": decision.TargetHeight, "sar": decision.TargetSAR, "dar": aspectRatioString(decision.TargetWidth, decision.TargetHeight, decision.TargetSAR)},
+		"status": map[bool]string{true: "planned", false: "keep_source"}[decision.UpscaleApplied],
+	}
 }
 
 func attachTrackDecisionReport(report *AssetConversionReport, job models.QueueJob) {

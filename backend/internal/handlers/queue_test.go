@@ -470,6 +470,47 @@ func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	}
 }
 
+func TestQueueProfileSnapshotFreezesKeepSourceAfterProfileChangesTo1080p(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-upscale-keep-source-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["upscaleMode"] = "auto"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/unsafe-sd.mkv"
+	scan := models.ScanResult{Path: path, FileName: "unsafe-sd.mkv", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"width": 720, "height": 480, "sampleAspectRatio": "32:27", "displayAspectRatio": "16:9"}}}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozenProfile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, ok := resolvedUpscaleDecisionFromProfile(frozenProfile)
+	if !ok || frozen.UpscaleApplied || frozen.ResolvedMode != ResolvedUpscaleKeepSource {
+		t.Fatalf("Queue did not freeze Keep Source: %#v", frozen)
+	}
+	profile.WorkerConfig["upscaleMode"] = "1080p"
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	consumedProfile := resolveUpscaleProfile(frozenProfile, MediaStreamInventory{Video: []MediaStream{{Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9"}}}, UpscaleAnalysisEvidence{FrameStructureAvailable: true})
+	consumed, _ := resolvedUpscaleDecisionFromProfile(consumedProfile)
+	if !reflect.DeepEqual(frozen, consumed) {
+		t.Fatalf("worker changed frozen Keep Source after profile edit: frozen=%#v consumed=%#v", frozen, consumed)
+	}
+}
+
 func TestQueueUpscaleSnapshotUsesHighestIDWhenUpdatedAtTies(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot-order?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
