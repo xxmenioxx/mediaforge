@@ -139,6 +139,155 @@ func TestFFmpegCommandBuilderEmitsEffectiveHEVCLevelForX265(t *testing.T) {
 	assertContains(t, command, "-x265-params level-idc=4.0:high-tier=0")
 }
 
+func TestFFmpegCommandBuilderRendersResolvedSmartUpscaleTargets(t *testing.T) {
+	tests := []struct {
+		name       string
+		decision   ResolvedUpscaleDecision
+		filters    string
+		wantFilter string
+	}{
+		{
+			name: "disabled", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleModeDisabled, ResolvedMode: ResolvedUpscaleKeepSource, TargetWidth: 720, TargetHeight: 480},
+			wantFilter: "",
+		},
+		{
+			name: "keep source", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscaleKeepSource, TargetWidth: 720, TargetHeight: 480, SharpenMode: UpscaleSharpenMedium},
+			wantFilter: "",
+		},
+		{
+			name: "anamorphic 720p", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true},
+			wantFilter: "scale=1280:720:flags=lanczos,setsar=1",
+		},
+		{
+			name: "four by three", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 960, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true},
+			wantFilter: "scale=960:720:flags=lanczos,setsar=1",
+		},
+		{
+			name: "explicit 1080p", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleMode1080p, ResolvedMode: ResolvedUpscale1080p, TargetWidth: 1920, TargetHeight: 1080, TargetSAR: "1:1", UpscaleApplied: true},
+			wantFilter: "scale=1920:1080:flags=lanczos,setsar=1",
+		},
+		{
+			name: "custom", decision: ResolvedUpscaleDecision{RequestedMode: UpscaleModeCustom, ResolvedMode: ResolvedUpscaleCustom, TargetWidth: 1200, TargetHeight: 900, TargetSAR: "1:1", UpscaleApplied: true},
+			wantFilter: "scale=1200:900:flags=lanczos,setsar=1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+				"videoEncoder": "libx265", "videoFilters": test.filters, "resolvedUpscaleDecision": test.decision,
+			}}
+			args := FFmpegCommandBuilder{}.Build(MediaJobPlan{
+				InputPath: "/media/raw/dvd.mkv", OutputPath: "/media/staging/dvd.mkv", Overwrite: true,
+				ProcessingMode: ProcessingModeFullEncode, Profile: profile,
+				Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 720, Height: 480, SampleAspectRatio: "32:27"}}},
+			})
+			filter := argumentValue(args, "-vf")
+			if filter != test.wantFilter {
+				t.Fatalf("filter=%q want %q", filter, test.wantFilter)
+			}
+		})
+	}
+}
+
+func TestFFmpegCommandBuilderOrdersSmartUpscaleAfterStructureAndCrop(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters string
+		before  []string
+	}{
+		{name: "crop", filters: "crop=704:448:8:16,hqdn3d=2:2:6:6", before: []string{"crop="}},
+		{name: "deinterlace", filters: "bwdif=mode=send_frame:parity=bff:deint=all,hqdn3d=2:2:6:6", before: []string{"bwdif="}},
+		{name: "IVTC", filters: "fieldmatch=order=tff,decimate,setfield=prog,colorspace=space=bt709", before: []string{"fieldmatch=", "decimate", "setfield="}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+				"videoEncoder": "libx265", "videoFilters": test.filters,
+				"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: UpscaleSharpenLight},
+			}}
+			filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
+			scaleIndex := strings.Index(filter, "scale=1280:720:flags=lanczos")
+			casIndex := strings.Index(filter, "cas=strength=0.20")
+			if scaleIndex < 0 || casIndex < scaleIndex {
+				t.Fatalf("scale/CAS ordering=%q", filter)
+			}
+			for _, expected := range test.before {
+				if index := strings.Index(filter, expected); index < 0 || index > scaleIndex {
+					t.Fatalf("%s must precede scale: %q", expected, filter)
+				}
+			}
+			if colorIndex := strings.Index(filter, "colorspace="); colorIndex >= 0 && colorIndex < casIndex {
+				t.Fatalf("color conversion must remain after Smart Upscale/CAS: %q", filter)
+			}
+		})
+	}
+}
+
+func TestFFmpegCommandBuilderMapsSmartUpscaleSharpenAndAvoidsDuplicateGeometry(t *testing.T) {
+	tests := []struct {
+		mode UpscaleSharpen
+		cas  string
+	}{
+		{mode: UpscaleSharpenOff},
+		{mode: UpscaleSharpenLight, cas: "cas=strength=0.20"},
+		{mode: UpscaleSharpenMedium, cas: "cas=strength=0.35"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.mode), func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+				"videoEncoder": "libx265", "videoFilters": "scale=640:480,setsar=8/9,eq=contrast=1.05",
+				"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: test.mode},
+			}}
+			filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
+			if strings.Count(filter, "scale=") != 1 || strings.Count(filter, "setsar=") != 1 || strings.Contains(filter, "scale=640:480") || strings.Contains(filter, "setsar=8/9") {
+				t.Fatalf("duplicate/conflicting geometry=%q", filter)
+			}
+			if test.cas == "" {
+				assertNotContains(t, filter, "cas=")
+			} else {
+				assertContains(t, filter, test.cas)
+				if strings.Index(filter, test.cas) < strings.Index(filter, "setsar=1") {
+					t.Fatalf("CAS must follow scale/SAR: %q", filter)
+				}
+			}
+		})
+	}
+
+	zscaleProfile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "videoFilters": "zscale=w=640:h=480:matrix=bt709,setsar=8/9",
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true},
+	}}
+	zscaleFilter := argumentValue(videoWorkerArgsForSource(zscaleProfile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
+	if strings.Count(zscaleFilter, "zscale=") != 1 || strings.Contains(zscaleFilter, ",scale=") || !strings.Contains(zscaleFilter, "zscale=w=1280:h=720:filter=lanczos:matrix=bt709") {
+		t.Fatalf("zscale geometry was duplicated instead of composed: %q", zscaleFilter)
+	}
+}
+
+func TestFFmpegCommandBuilderSmartUpscalePreservesQSVMain10PixelFormat(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", BitDepth: 10, WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "pixFmt": "p010le",
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: UpscaleSharpenLight},
+	}}
+	args := videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"})
+	if argumentValue(args, "-pix_fmt") != "p010le" || argumentValue(args, "-vf") != "scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.20" {
+		t.Fatalf("QSV Main10/upscale args=%#v", args)
+	}
+	assertNotContains(t, strings.Join(args, " "), "hwdownload")
+}
+
+func TestPreviewDisplayNormalizationKeepsSmartUpscaleSquarePixelOrder(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "videoFilters": "bwdif=mode=send_frame:parity=bff:deint=all", "effectiveFinalColorPolicy": "preserve",
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscale720p, TargetWidth: 1280, TargetHeight: 720, TargetSAR: "1:1", UpscaleApplied: true, SharpenMode: UpscaleSharpenLight},
+	}}
+	profile = profileWithPreviewDisplayNormalization(profile, "colorspace=space=bt709:primaries=bt709:trc=bt709,setsar=32/27")
+	filter := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "32:27"}), "-vf")
+	want := "bwdif=mode=send_frame:parity=bff:deint=all,scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.20,colorspace=space=bt709:primaries=bt709:trc=bt709"
+	if filter != want || strings.Count(filter, "setsar=") != 1 {
+		t.Fatalf("Preview Smart Upscale/display normalization=%q want %q", filter, want)
+	}
+}
+
 func TestFFmpegCommandBuilderUsesSoftwareAndCodecDefaultWhenHardwareIsDisabled(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,

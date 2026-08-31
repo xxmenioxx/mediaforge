@@ -364,6 +364,15 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 			t.Fatalf("%s upscale diverged: got=%#v queue=%#v", name, got, want)
 		}
 	}
+	wantFilter := argumentValue(videoWorkerArgsForSource(queue, &streams.Video[0]), "-vf")
+	for name, profile := range map[string]models.Profile{"preview": preview, "test_encode": testEncode} {
+		if got := argumentValue(videoWorkerArgsForSource(profile, &streams.Video[0]), "-vf"); got != wantFilter {
+			t.Fatalf("%s rendered Smart Upscale filter diverged: got=%q queue=%q", name, got, wantFilter)
+		}
+	}
+	if wantFilter != "scale=1280:720:flags=lanczos,setsar=1,cas=strength=0.20" {
+		t.Fatalf("unexpected shared Smart Upscale filter=%q", wantFilter)
+	}
 }
 
 func TestMediaJobPlanWithOverridePreservesResolvedVideoDecisionThroughRender(t *testing.T) {

@@ -3248,7 +3248,10 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	// deinterlace and preview normalization). Add mapping only after resolving
 	// that profile so FFmpeg receives exactly one -vf/-filter_complex path.
 	if effectivePreviewProfile != nil {
-		videoFilter = existingVideoFilters(*effectivePreviewProfile)
+		videoFilter = argumentValue(videoCodecArguments, "-vf")
+		if strings.TrimSpace(videoFilter) == "" {
+			videoFilter = existingVideoFilters(*effectivePreviewProfile)
+		}
 	}
 	if subtitleStreamIndex >= 0 {
 		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
@@ -3523,7 +3526,10 @@ func profileWithPreviewDisplayNormalization(profile models.Profile, displayFilte
 	if workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]) == "normalize_bt709" {
 		displayFilter = ""
 	}
-	profile.WorkerConfig["videoFilters"] = joinPreviewFilters(displayFilter, existingVideoFilters(profile))
+	if decision, ok := resolvedUpscaleDecisionFromProfile(profile); ok && decision.UpscaleApplied {
+		displayFilter = filterChainWithoutAspectMetadata(displayFilter)
+	}
+	profile.WorkerConfig["videoFilters"] = joinPreviewFilters(existingVideoFilters(profile), displayFilter)
 	return profile
 }
 

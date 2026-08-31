@@ -1940,7 +1940,7 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 	}
 	var scan models.ScanResult
 	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
-		h.db.Where("path = ?", path).Order("updated_at desc").First(&scan).Error == nil
+		h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error == nil
 	if haveScan {
 		if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
 			snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis

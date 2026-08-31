@@ -470,6 +470,43 @@ func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	}
 }
 
+func TestQueueUpscaleSnapshotUsesHighestIDWhenUpdatedAtTies(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot-order?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["upscaleMode"] = "720p"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/tied-snapshot.mkv"
+	updatedAt := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
+	for _, stream := range []models.JSONList{
+		{map[string]any{"width": 720, "height": 480, "sampleAspectRatio": "8:9", "displayAspectRatio": "4:3"}},
+		{map[string]any{"width": 720, "height": 480, "sampleAspectRatio": "32:27", "displayAspectRatio": "16:9"}},
+	} {
+		if err := db.Create(&models.ScanResult{Path: path, FileName: "tied-snapshot.mkv", Width: 720, Height: 480, VideoStreams: stream, UpdatedAt: updatedAt}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozenProfile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, ok := resolvedUpscaleDecisionFromProfile(frozenProfile)
+	if !ok || decision.TargetWidth != 1280 || decision.TargetHeight != 720 {
+		t.Fatalf("Queue did not select the highest-id tied snapshot: %#v", decision)
+	}
+}
+
 func TestQueueProfileSnapshotIgnoresGlobalDraftPreferences(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-ignores-draft-preferences?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

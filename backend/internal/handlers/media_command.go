@@ -1928,6 +1928,7 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 	args := []string{}
 	encoder := resolvedVideoEncoder(profile)
 	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
+	filters = renderResolvedUpscaleFilters(filters, profile)
 	filters = applyCropAspectPolicy(filters, profile, source)
 	if encoder == "hevc_vaapi" {
 		format := "nv12"
@@ -1970,6 +1971,130 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 		args = append(args, qsvWorkerArgs(profile)...)
 	}
 	return args
+}
+
+const (
+	smartUpscaleCASLightStrength  = "0.20"
+	smartUpscaleCASMediumStrength = "0.35"
+)
+
+// renderResolvedUpscaleFilters translates an already-resolved decision into
+// FFmpeg filters. Policy stays in the resolver; this renderer consumes the
+// frozen target verbatim and does not inspect source quality or dimensions.
+func renderResolvedUpscaleFilters(filters string, profile models.Profile) string {
+	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
+	if !ok || !decision.UpscaleApplied || decision.TargetWidth <= 0 || decision.TargetHeight <= 0 {
+		return filters
+	}
+
+	parts := []string{}
+	preferZScale := false
+	zscaleOptions := []string{}
+	for _, raw := range strings.Split(filters, ",") {
+		filter := strings.TrimSpace(raw)
+		if filter == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(filter, "=")
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "scale", "scale_qsv", "vpp_qsv":
+			// Smart Upscale owns final geometry. Replace any prior geometry
+			// scaler rather than producing two resize operations.
+			continue
+		case "zscale":
+			preferZScale = true
+			zscaleOptions = zscaleOptionsWithoutGeometry(value)
+			continue
+		case "setsar", "setdar":
+			// The resolved target is square-pixel. Remove conflicting legacy
+			// aspect metadata and emit one canonical setsar stage below.
+			continue
+		}
+		parts = append(parts, filter)
+	}
+
+	insertAt := smartUpscaleInsertionIndex(parts)
+	scaler := fmt.Sprintf("scale=%d:%d:flags=lanczos", decision.TargetWidth, decision.TargetHeight)
+	if preferZScale {
+		scaler = fmt.Sprintf("zscale=w=%d:h=%d:filter=lanczos", decision.TargetWidth, decision.TargetHeight)
+		if len(zscaleOptions) > 0 {
+			scaler += ":" + strings.Join(zscaleOptions, ":")
+		}
+	}
+	stages := []string{scaler, "setsar=1"}
+	if strength, apply := smartUpscaleCASStrength(decision.SharpenMode); apply {
+		stages = append(stages, "cas=strength="+strength)
+	}
+	rendered := make([]string, 0, len(parts)+len(stages))
+	rendered = append(rendered, parts[:insertAt]...)
+	rendered = append(rendered, stages...)
+	rendered = append(rendered, parts[insertAt:]...)
+	return strings.Join(rendered, ",")
+}
+
+func smartUpscaleInsertionIndex(filters []string) int {
+	insertAt := 0
+	for index, filter := range filters {
+		name, _, _ := strings.Cut(strings.TrimSpace(filter), "=")
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "setfield":
+			if insertAt <= index {
+				insertAt = index + 1
+			}
+		case "crop":
+			// Crop is the final structural boundary even when a custom chain
+			// placed compatible restoration filters before it.
+			insertAt = index + 1
+		}
+	}
+	return insertAt
+}
+
+func zscaleOptionsWithoutGeometry(value string) []string {
+	result := []string{}
+	for _, option := range strings.Split(value, ":") {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			continue
+		}
+		name, _, found := strings.Cut(option, "=")
+		if !found {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "w", "width", "h", "height", "filter":
+			continue
+		}
+		result = append(result, option)
+	}
+	return result
+}
+
+func smartUpscaleCASStrength(mode UpscaleSharpen) (string, bool) {
+	switch mode {
+	case UpscaleSharpenLight:
+		return smartUpscaleCASLightStrength, true
+	case UpscaleSharpenMedium:
+		return smartUpscaleCASMediumStrength, true
+	default:
+		return "", false
+	}
+}
+
+func filterChainWithoutAspectMetadata(filters string) string {
+	result := []string{}
+	for _, raw := range strings.Split(filters, ",") {
+		filter := strings.TrimSpace(raw)
+		if filter == "" {
+			continue
+		}
+		name, _, _ := strings.Cut(filter, "=")
+		if strings.EqualFold(strings.TrimSpace(name), "setsar") || strings.EqualFold(strings.TrimSpace(name), "setdar") {
+			continue
+		}
+		result = append(result, filter)
+	}
+	return strings.Join(result, ",")
 }
 
 func applyCropAspectPolicy(filters string, profile models.Profile, source *MediaStream) string {
