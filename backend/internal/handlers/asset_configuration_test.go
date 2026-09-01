@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
@@ -194,6 +196,165 @@ func TestSourceGroupHierarchyUsesBackendIdentity(t *testing.T) {
 	}
 	if hierarchy[0].AssetCount != 1 || hierarchy[0].TitleCount != 1 || hierarchy[0].PathCount != 1 || hierarchy[0].TotalSizeBytes != 10 {
 		t.Fatalf("unexpected source metrics: %#v", hierarchy[0])
+	}
+}
+
+func TestSourceGroupReconcileUsesConfiguredRootFirstSegment(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	rawRoot := t.TempDir()
+	for _, directory := range []string{"movies", "anime-movies"} {
+		if err := os.MkdirAll(filepath.Join(rawRoot, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records := []models.AssetRecord{
+		{Path: filepath.Join(rawRoot, "movies", "Los aristogatos", "movie.mkv"), RootPath: rawRoot, RelativePath: "movies/Los aristogatos/movie.mkv", FileName: "movie.mkv", Status: "unprocessed"},
+		{Path: filepath.Join(rawRoot, "anime-movies", "Porco_Rosso", "movie.mkv"), RootPath: rawRoot, RelativePath: "anime-movies/Porco_Rosso/movie.mkv", FileName: "movie.mkv", Status: "unprocessed"},
+	}
+	if err := reconcileSourceGroups(db, rawRoot, records); err != nil {
+		t.Fatal(err)
+	}
+	if err := annotateSourceRecords(db, rawRoot, records); err != nil {
+		t.Fatal(err)
+	}
+	var groups []models.SourceGroup
+	if err := db.Order("relative_path asc").Find(&groups).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 || groups[0].RelativePath != "anime-movies" || groups[1].RelativePath != "movies" {
+		t.Fatalf("nested titles became source groups: %#v", groups)
+	}
+	if records[0].SourceGroupID != groups[1].ID || records[1].SourceGroupID != groups[0].ID {
+		t.Fatalf("records were assigned to the wrong top-level groups: %#v %#v", records, groups)
+	}
+}
+
+func TestSourceGroupReconcileDisablesOrphanAndPreservesConfiguration(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	rawRoot := t.TempDir()
+	phantomPath := filepath.Join(rawRoot, "library-replacements")
+	phantom := models.SourceGroup{Name: "Library replacements", RelativePath: "library-replacements", SourcePath: phantomPath, Enabled: true}
+	if err := db.Create(&phantom).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignment := models.ProfileAssignment{TargetType: assetScopeSourceGroup, TargetPath: phantomPath, MediaType: "video", Selection: "profile", VideoProfileID: 17}
+	configuration := models.AssetScopeConfiguration{ScopeType: assetScopeSourceGroup, ScopeKey: phantomPath, CategorySelection: configSelectionValue, Category: "movie"}
+	historical := models.AssetRecord{Path: filepath.Join(phantomPath, "old.mkv"), RootPath: rawRoot, RelativePath: "library-replacements/old.mkv", FileName: "old.mkv", Status: "unprocessed", Missing: true, SourceGroupID: phantom.ID}
+	if err := db.Create(&assignment).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&configuration).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&historical).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSourceGroups(db, rawRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&phantom, phantom.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if phantom.Enabled {
+		t.Fatalf("confirmed orphan remained enabled: %#v", phantom)
+	}
+	var assignmentCount, configurationCount, historicalCount int64
+	db.Model(&models.ProfileAssignment{}).Where("id = ?", assignment.ID).Count(&assignmentCount)
+	db.Model(&models.AssetScopeConfiguration{}).Where("id = ?", configuration.ID).Count(&configurationCount)
+	db.Model(&models.AssetRecord{}).Where("id = ? AND source_group_id = ?", historical.ID, phantom.ID).Count(&historicalCount)
+	if assignmentCount != 1 || configurationCount != 1 || historicalCount != 1 {
+		t.Fatalf("orphan reconciliation removed provenance: assignment=%d configuration=%d history=%d", assignmentCount, configurationCount, historicalCount)
+	}
+}
+
+func TestSourceGroupReconcileFailureDoesNotDisableGroups(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	group := models.SourceGroup{Name: "Movies", RelativePath: "movies", SourcePath: "/unavailable/raw/movies", Enabled: true}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSourceGroups(db, filepath.Join(t.TempDir(), "not-mounted"), nil); err == nil {
+		t.Fatal("missing source root was treated as an authoritative empty enumeration")
+	}
+	if err := db.First(&group, group.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !group.Enabled {
+		t.Fatalf("source group was disabled after enumeration failure: %#v", group)
+	}
+}
+
+func TestSourceGroupHierarchyOmitsEnabledGroupWithoutVisibleAssets(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	group := models.SourceGroup{Name: "Empty", RelativePath: "empty", SourcePath: "/media/raw/empty", Enabled: true}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if hierarchy := buildAssetSourceGroups(db, nil, nil, nil, nil, MissingClassification{HistoricalPaths: map[string]bool{}}); len(hierarchy) != 0 {
+		t.Fatalf("zero-current-asset group was exposed: %#v", hierarchy)
+	}
+}
+
+func TestSourceGroupReconcileIsIdempotent(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	rawRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rawRoot, "movies"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSourceGroups(db, rawRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	var first models.SourceGroup
+	if err := db.Where("relative_path = ?", "movies").First(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	stableUpdatedAt := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := db.Model(&models.SourceGroup{}).Where("id = ?", first.ID).UpdateColumn("updated_at", stableUpdatedAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSourceGroups(db, rawRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	var second models.SourceGroup
+	if err := db.First(&second, first.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !second.Enabled || !second.UpdatedAt.Equal(stableUpdatedAt) {
+		t.Fatalf("unchanged group was mutated during repeated reconciliation: %#v", second)
+	}
+}
+
+func TestSourceGroupReconcileHealsHistoricalPorcoRossoPhantom(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	rawRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rawRoot, "anime-movies"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	phantom := models.SourceGroup{Name: "Porco_Rosso", RelativePath: "Porco_Rosso", SourcePath: filepath.Join(rawRoot, "Porco_Rosso"), Enabled: true}
+	if err := db.Create(&phantom).Error; err != nil {
+		t.Fatal(err)
+	}
+	historicalPath := filepath.Join(rawRoot, "Porco_Rosso", "movie.mkv")
+	currentPath := filepath.Join(rawRoot, "anime-movies", "Porco_Rosso", "movie.mkv")
+	records := []models.AssetRecord{
+		{Path: historicalPath, RootPath: rawRoot, RelativePath: "Porco_Rosso/movie.mkv", FileName: "movie.mkv", Status: "unprocessed", Missing: true, SourceGroupID: phantom.ID},
+		{Path: currentPath, RootPath: rawRoot, RelativePath: "anime-movies/Porco_Rosso/movie.mkv", FileName: "movie.mkv", Status: "unprocessed"},
+	}
+	if err := reconcileSourceGroups(db, rawRoot, records); err != nil {
+		t.Fatal(err)
+	}
+	if err := annotateSourceRecords(db, rawRoot, records[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&phantom, phantom.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if phantom.Enabled {
+		t.Fatalf("historical phantom remained enabled: %#v", phantom)
+	}
+	hierarchy := buildAssetSourceGroups(db, records, nil, nil, nil, MissingClassification{HistoricalPaths: map[string]bool{filepath.Clean(historicalPath): true}})
+	if len(hierarchy) != 1 || hierarchy[0].RelativePath != "anime-movies" || hierarchy[0].AssetCount != 1 {
+		t.Fatalf("current hierarchy did not converge to anime-movies: %#v", hierarchy)
 	}
 }
 

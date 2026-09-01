@@ -97,7 +97,7 @@ func Migrate(db *gorm.DB) error {
 
 func backfillSourceGroups(db *gorm.DB) error {
 	var records []models.AssetRecord
-	if err := db.Where("status = ?", "unprocessed").Find(&records).Error; err != nil {
+	if err := db.Where("status = ? AND missing = ?", "unprocessed", false).Find(&records).Error; err != nil {
 		return err
 	}
 	return db.Transaction(func(tx *gorm.DB) error {

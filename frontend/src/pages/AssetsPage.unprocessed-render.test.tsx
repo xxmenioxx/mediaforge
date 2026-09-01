@@ -124,7 +124,47 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByRole('button', { name: 'Toggle review for Akira.mkv' })).toBeTruthy();
     expect(screen.getByText('extras')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /expand root/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /path actions extras/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Root path settings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /path actions/i })).toBeNull();
+    // One SourceGroup Configure plus one nested path Configure; Root contributes none.
+    expect(screen.getAllByRole('button', { name: 'Configure' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Snapshots' })).toHaveLength(1);
+  });
+
+  it('shows one title-scoped Snapshots surface with root and nested assets', async () => {
+    vi.mocked(api.latestSnapshot).mockImplementation(async (path) => path.endsWith('/Akira.mkv')
+      ? { found: true, snapshot: testSnapshot(path), status: 'current', requiresAnalysis: false, staleComponents: [] }
+      : { found: false, snapshot: null, status: 'missing', requiresAnalysis: true, staleComponents: [] });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    const snapshots = await screen.findAllByRole('button', { name: 'Snapshots' });
+    expect(snapshots).toHaveLength(1);
+    await user.click(snapshots[0]);
+    expect(await screen.findByRole('heading', { name: 'Snapshots · Akira' })).toBeTruthy();
+    expect(screen.getByText('Akira.mkv')).toBeTruthy();
+    expect(screen.getByText('Trailer.mkv')).toBeTruthy();
+    expect(screen.getByRole('cell', { name: 'Root' })).toBeTruthy();
+    expect(screen.getByRole('cell', { name: 'extras' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Regenerate' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }));
+    await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv', force: true, analysisSeconds: 20 }));
+  });
+
+  it('keeps nested path configuration as an explicit inheritance-aware override', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(screen.getAllByRole('button', { name: 'Configure' })[1]);
+    expect(await screen.findByRole('heading', { name: 'Configure' })).toBeTruthy();
+    expect((screen.getByLabelText('Video profile') as HTMLInputElement).value).toContain('Inherit');
+    expect((screen.getByLabelText('Audio profile') as HTMLInputElement).value).toContain('Inherit');
+    expect((screen.getByLabelText('Tracks profile') as HTMLInputElement).value).toContain('Inherit');
+    expect(screen.getByLabelText('Destination mode').textContent).toContain('Inherit');
+    expect(screen.queryByRole('button', { name: /Snapshots for/ })).toBeNull();
   });
 
   it.each([
@@ -486,6 +526,12 @@ describe('Unprocessed Assets hierarchy', () => {
     expect((screen.getByRole('button', { name: 'Queue selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Configure selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('2 assets already locked by an active Queue job. Read-only details remain available.')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Configure title' }));
+    expect(await screen.findByText('This scope has an active Queue job. Configuration is read-only until the job finishes.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Configure title' })).toBeNull());
 
     await user.click(screen.getByRole('button', { name: 'Expand Akira' }));
     expect((await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }) as HTMLButtonElement).disabled).toBe(false);

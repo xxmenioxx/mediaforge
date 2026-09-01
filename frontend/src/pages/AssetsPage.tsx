@@ -285,7 +285,6 @@ export function AssetsPage() {
 				<UnprocessedAssetsView
 					key={selectedSourceGroup?.id ?? 'empty'}
 					sourceGroup={selectedSourceGroup}
-					operationalGroups={currentGroups}
 					libraries={libraries.data ?? []}
 					profiles={profiles.data ?? []}
 					audioProfiles={audioProfiles}
@@ -700,10 +699,9 @@ type AssetCollection = {
 };
 
 function UnprocessedAssetsView({
-	sourceGroup, operationalGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query,
+	sourceGroup, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query,
 }: {
 	sourceGroup?: AssetSourceGroup;
-	operationalGroups: AssetGroup[];
 	libraries: Library[];
 	profiles: Profile[];
 	audioProfiles: AudioEnhancementProfile[];
@@ -725,22 +723,32 @@ function UnprocessedAssetsView({
 				<Typography variant="body2" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
 				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} queueJobs={queueJobs} onClear={() => setSelectedAssetIds(new Set())} /> : null}
 			</Box>
-			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} operationalGroups={operationalGroups} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
+			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
 		</Box>
 	);
 }
 
 type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
-function UnprocessedLogicalGroup({ logicalGroup, operationalGroups, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
-	logicalGroup: AssetLogicalGroup; operationalGroups: AssetGroup[]; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
+function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
+	logicalGroup: AssetLogicalGroup; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
-	const [snapshotPath, setSnapshotPath] = useState<import('../api/types').AssetPath | null>(null);
-	const [managedPath, setManagedPath] = useState<import('../api/types').AssetPath | null>(null);
+	const [titleSnapshotsOpen, setTitleSnapshotsOpen] = useState(false);
 	const paths = safeArray(logicalGroup.assetPaths);
 	const assets = selectableAssetsForPaths(paths);
+	const titleHasOpenJob = paths.some((path) => safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)));
+	const titleSnapshotGroup = paths.length ? {
+		...assetGroupFromTreePath(paths[0]),
+		id: logicalGroup.id,
+		path: logicalGroup.path,
+		relativePath: logicalGroup.relativePath,
+		fileCount: logicalGroup.fileCount,
+		sizeBytes: logicalGroup.totalSizeBytes,
+		assets: paths.flatMap((path) => safeArray(path.assets)),
+	} : null;
+	const snapshotPathLabels = Object.fromEntries(paths.flatMap((path) => safeArray(path.assets).map((asset) => [normalizePath(asset.path), path.isLogicalGroupRoot ? 'Root' : path.displayPath || path.name])));
 	const assetIds = assets.map((asset) => asset.id as number);
 	const groupSelection = hierarchicalSelectionState(assets.map((asset) => asset.id as number), selectedAssetIds);
 	const effectiveConfigurations = useQuery({
@@ -751,7 +759,6 @@ function UnprocessedLogicalGroup({ logicalGroup, operationalGroups, selectedAsse
 	});
 	const rootPaths = paths.filter((path) => path.isLogicalGroupRoot);
 	const childPaths = paths.filter((path) => !path.isLogicalGroupRoot);
-	const operationalGroup = (path: import('../api/types').AssetPath) => operationalGroups.find((group) => normalizePath(group.path) === normalizePath(path.path)) ?? assetGroupFromTreePath(path);
 	const renderAssets = (path: import('../api/types').AssetPath) => {
 		const visibleAssets = safeArray(path.assets).filter((asset) => asset.id);
 		if (!visibleAssets.length) return <Alert severity="info">No available assets in this path.</Alert>;
@@ -764,11 +771,13 @@ function UnprocessedLogicalGroup({ logicalGroup, operationalGroups, selectedAsse
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
 		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 1, py: 1, bgcolor: 'rgba(255,255,255,0.035)' }}>
 			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} /><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
-			<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} />
+			<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} readOnly={titleHasOpenJob} />
+				<Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup}>Snapshots</Button>
+			</Stack>
 		</Stack>
-		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}><Stack direction="row" justifyContent="flex-end" spacing={0.5} sx={{ mb: 0.5 }}><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Root path settings" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /><Button size="small" startIcon={<InfoOutlinedIcon />} onClick={() => setManagedPath(path)}>Path actions</Button><Button size="small" startIcon={<ManageSearchIcon />} onClick={() => setSnapshotPath(path)}>Snapshots</Button></Stack>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = selectableAssetsForPaths([path]); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} /><IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><Stack direction="row"><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact /><IconButton size="small" onClick={() => setManagedPath(path)} aria-label={`Path actions ${path.displayPath || path.name}`}><InfoOutlinedIcon fontSize="small" /></IconButton><IconButton size="small" onClick={() => setSnapshotPath(path)}><ManageSearchIcon fontSize="small" /></IconButton></Stack></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
-		{snapshotPath ? <PathSnapshotsDialog open group={operationalGroup(snapshotPath)} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setSnapshotPath(null)} /> : null}
-		<Dialog open={Boolean(managedPath)} onClose={() => setManagedPath(null)} maxWidth="xl" fullWidth><DialogTitle>Path actions · {managedPath?.displayPath || managedPath?.name}</DialogTitle><DialogContent dividers sx={{ p: 0 }}>{managedPath ? <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 980 }}><TableBody><AssetGroupRow group={operationalGroup(managedPath)} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} mode="unprocessed" /></TableBody></Table></Box> : null}</DialogContent><DialogActions><Button onClick={() => setManagedPath(null)}>Close</Button></DialogActions></Dialog>
+		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = selectableAssetsForPaths([path]); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); const pathHasOpenJob = safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} /><IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={pathHasOpenJob} /></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
+		{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
 	</Box>;
 }
 
@@ -777,7 +786,7 @@ function assetGroupFromTreePath(path: import('../api/types').AssetPath): AssetGr
 	return { id: path.id, libraryId: assets[0]?.libraryId ?? 0, libraryName: assets[0]?.libraryName ?? 'Originals', path: path.path, relativePath: path.relativePath, status: 'unprocessed', fileCount: path.fileCount, sizeBytes: path.totalSizeBytes, modifiedAt: assets[0]?.modifiedAt ?? '', assets, review: assets[0]?.review, pathReview: assets[0]?.review, metadata: assets[0]?.metadata, pathMetadata: assets[0]?.metadata } as AssetGroup;
 }
 
-function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProfiles, trackProfiles, libraries, categories, compact = false }: { targetType: 'logical_group' | 'path'; scopeKey: string; label: string; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[]; compact?: boolean }) {
+function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProfiles, trackProfiles, libraries, categories, compact = false, readOnly = false }: { targetType: 'logical_group' | 'path'; scopeKey: string; label: string; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[]; compact?: boolean; readOnly?: boolean }) {
 	const queryClient = useQueryClient();
 	const [open, setOpen] = useState(false);
 	const [loading, setLoading] = useState(false);
@@ -858,7 +867,7 @@ function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProf
 		return next;
 	});
 
-	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}><Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert><FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={!fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={!fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={!fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={!fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
+	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}>{readOnly ? <Alert severity="warning">This scope has an active Queue job. Configuration is read-only until the job finishes.</Alert> : <Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert>}<FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} disabled={readOnly} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={readOnly || !fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} disabled={readOnly} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={readOnly || !fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} disabled={readOnly} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={readOnly || !fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} disabled={readOnly} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={readOnly || !fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={readOnly || !fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} disabled={readOnly} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={readOnly || !fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={readOnly || !fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={readOnly || loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
 }
 
 function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, queueJobs, onClear }: {
@@ -1291,11 +1300,15 @@ export function AssetCollectionRows({
 function PathSnapshotsDialog({
   open,
   group,
+  title,
+  pathLabels,
   runningSnapshotPaths,
   onClose,
 }: {
   open: boolean;
   group: AssetGroup;
+  title?: string;
+  pathLabels?: Record<string, string>;
   runningSnapshotPaths: Set<string>;
   onClose: () => void;
 }) {
@@ -1338,7 +1351,7 @@ function PathSnapshotsDialog({
 
   return (
     <Dialog open={open} onClose={() => !generateSnapshots.isPending && onClose()} maxWidth="lg" fullWidth>
-      <DialogTitle>Snapshots · {pathLabelForCollection(group)}</DialogTitle>
+      <DialogTitle>Snapshots · {title ?? pathLabelForCollection(group)}</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={1.5}>
           <Alert severity="info">Opening this list only reads snapshot state. Analysis starts only when you choose Generate.</Alert>
@@ -1353,10 +1366,11 @@ function PathSnapshotsDialog({
                       indeterminate={selectedPaths.length > 0 && !allSelected}
                       disabled={!selectableAssets.length}
                       onChange={(event) => setSelectedPaths(event.target.checked ? selectableAssets.map((asset) => asset.path) : [])}
-                      inputProps={{ 'aria-label': `Select all assets in ${group.path} for snapshot generation` }}
+                      inputProps={{ 'aria-label': `Select all assets in ${title ?? group.path} for snapshot generation` }}
                     />
                   </TableCell>
                   <TableCell>Asset</TableCell>
+                  {pathLabels ? <TableCell>Path</TableCell> : null}
                   <TableCell>Snapshot date</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell align="right">Action</TableCell>
@@ -1371,9 +1385,10 @@ function PathSnapshotsDialog({
                     <TableRow key={asset.path} hover>
                       <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPaths.includes(asset.path)} disabled={running} onChange={(event) => setSelectedPaths((current) => event.target.checked ? [...new Set([...current, asset.path])] : current.filter((path) => path !== asset.path))} /></TableCell>
                       <TableCell><Typography fontWeight={700}>{asset.fileName}</Typography><Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{asset.path}</Typography></TableCell>
+                      {pathLabels ? <TableCell>{pathLabels[normalizePath(asset.path)] ?? 'Root'}</TableCell> : null}
                       <TableCell>{state?.snapshot?.createdAt ? formatDate(state.snapshot.createdAt) : '—'}</TableCell>
                       <TableCell>{query.isLoading ? <Chip size="small" label="Checking…" /> : <SnapshotStateChip status={running ? 'running' : state?.status ?? 'unavailable'} />}</TableCell>
-                      <TableCell align="right"><Button size="small" variant="outlined" disabled={running || generateSnapshots.isPending} onClick={() => generateSnapshots.mutate([asset.path])}>{running ? 'Generating…' : 'Generate'}</Button></TableCell>
+                      <TableCell align="right"><Button size="small" variant="outlined" disabled={running || generateSnapshots.isPending} onClick={() => generateSnapshots.mutate([asset.path])}>{running ? 'Generating…' : state?.snapshot ? 'Regenerate' : 'Generate'}</Button></TableCell>
                     </TableRow>
                   );
                 })}

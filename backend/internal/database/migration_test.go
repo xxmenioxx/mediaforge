@@ -244,6 +244,40 @@ func TestMigrateBackfillsSourceGroupIdentity(t *testing.T) {
 	}
 }
 
+func TestMigrateDoesNotBackfillSourceGroupsFromMissingHistoricalAssets(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "missing-source-groups.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AssetRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []models.AssetRecord{
+		{Path: "/media/raw/Porco_Rosso/movie.mkv", RootPath: "/media/raw", RelativePath: "Porco_Rosso/movie.mkv", FileName: "movie.mkv", Status: "unprocessed", Missing: true},
+		{Path: "/media/raw/library-replacements/old.mkv", RootPath: "/media/raw", RelativePath: "library-replacements/old.mkv", FileName: "old.mkv", Status: "unprocessed", Missing: true},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var groupCount int64
+	if err := db.Model(&models.SourceGroup{}).Count(&groupCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if groupCount != 0 {
+		t.Fatalf("missing historical assets created %d source groups", groupCount)
+	}
+	var preserved []models.AssetRecord
+	if err := db.Order("id asc").Find(&preserved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(preserved) != 2 || !preserved[0].Missing || !preserved[1].Missing || preserved[0].SourceGroupID != 0 || preserved[1].SourceGroupID != 0 {
+		t.Fatalf("historical assets were not preserved unchanged: %#v", preserved)
+	}
+}
+
 func TestMigrateRestoresMissingTestEncodeFFmpegCommandColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-command-column.db")), &gorm.Config{})
 	if err != nil {

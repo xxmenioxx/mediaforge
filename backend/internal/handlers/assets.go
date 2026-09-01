@@ -5639,33 +5639,65 @@ func reconcileSourceGroups(db *gorm.DB, rawRoot string, records []models.AssetRe
 	if !db.Migrator().HasTable(&models.SourceGroup{}) {
 		return nil
 	}
+	if strings.TrimSpace(rawRoot) == "" {
+		return errors.New("source root is not configured")
+	}
 	root := filepath.Clean(rawRoot)
 	groups := map[string]string{}
-	if entries, err := os.ReadDir(root); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-				groups[entry.Name()] = filepath.Join(root, entry.Name())
-			}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("enumerate source root %q: %w", root, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			groups[entry.Name()] = filepath.Join(root, entry.Name())
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	for _, record := range records {
+		if record.Status != "unprocessed" || record.Missing {
+			continue
+		}
 		parts := strings.Split(filepath.ToSlash(record.RelativePath), "/")
 		if len(parts) > 1 && parts[0] != "." && parts[0] != "" {
 			groups[parts[0]] = filepath.Join(root, filepath.FromSlash(parts[0]))
 		}
 	}
-	for relativePath, sourcePath := range groups {
-		group := models.SourceGroup{Name: relativePath, RelativePath: relativePath, SourcePath: filepath.Clean(sourcePath), Enabled: true}
-		if err := db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "relative_path"}},
-			DoUpdates: clause.AssignmentColumns([]string{"source_path", "updated_at"}),
-		}).Create(&group).Error; err != nil {
+	return db.Transaction(func(tx *gorm.DB) error {
+		for relativePath, sourcePath := range groups {
+			cleanSourcePath := filepath.Clean(sourcePath)
+			var group models.SourceGroup
+			err := tx.Where("relative_path = ?", relativePath).First(&group).Error
+			switch {
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				group = models.SourceGroup{Name: relativePath, RelativePath: relativePath, SourcePath: cleanSourcePath, Enabled: true}
+				if err := tx.Create(&group).Error; err != nil {
+					return err
+				}
+			case err != nil:
+				return err
+			case filepath.Clean(group.SourcePath) != cleanSourcePath:
+				if err := tx.Model(&group).Update("source_path", cleanSourcePath).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		var persisted []models.SourceGroup
+		if err := tx.Where("enabled = ?", true).Find(&persisted).Error; err != nil {
 			return err
 		}
-	}
-	return nil
+		for _, group := range persisted {
+			if _, current := groups[filepath.ToSlash(filepath.Clean(group.RelativePath))]; current {
+				continue
+			}
+			if err := tx.Model(&models.SourceGroup{}).
+				Where("id = ? AND enabled = ?", group.ID, true).
+				Update("enabled", false).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func annotateSourceRecords(db *gorm.DB, rawRoot string, records []models.AssetRecord) error {
@@ -5808,7 +5840,13 @@ func buildAssetSourceGroups(db *gorm.DB, records []models.AssetRecord, technical
 			result[groupIndex].PathCount += len(logical.AssetPaths)
 		}
 	}
-	return result
+	visible := result[:0]
+	for _, group := range result {
+		if group.AssetCount > 0 {
+			visible = append(visible, group)
+		}
+	}
+	return visible
 }
 
 func relativePathWithin(root, path string) string {
