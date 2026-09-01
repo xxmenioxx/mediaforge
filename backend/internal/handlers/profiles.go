@@ -85,6 +85,7 @@ func (h ProfileHandler) Create(c *gin.Context) {
 	input.Scope = normalizedProfileScope(input.Scope)
 	delete(input.WorkerConfig, "processingMode")
 	delete(input.WorkerConfig, "resolvedUpscaleDecision")
+	delete(input.WorkerConfig, resolvedRestorationPlanKey)
 	if _, err := parseUpscaleRequest(input.WorkerConfig); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -145,6 +146,7 @@ func (h ProfileHandler) Update(c *gin.Context) {
 	}
 	delete(input.WorkerConfig, "processingMode")
 	delete(input.WorkerConfig, "resolvedUpscaleDecision")
+	delete(input.WorkerConfig, resolvedRestorationPlanKey)
 
 	if _, err := parseUpscaleRequest(input.WorkerConfig); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

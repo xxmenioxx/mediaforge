@@ -213,6 +213,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		}
 	}
 	smartUpscaleReport := models.JSONMap{"status": "not_applicable"}
+	restorationReport := models.JSONMap{"status": "not_applicable"}
 	if profile, restoreErr := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); restoreErr == nil {
 		smartUpscaleReport = validateSmartUpscaleOutput(profile, firstVideoFrameCharacteristics(sourceProbe), firstVideoFrameCharacteristics(outputProbe))
 		switch smartUpscaleReport["status"] {
@@ -221,6 +222,13 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			warnings = append(warnings, "Final output does not match the frozen Smart Upscale decision.")
 		case "unverified":
 			warnings = append(warnings, "Smart Upscale output could not be fully verified from final ffprobe evidence.")
+		}
+		restorationReport = validateRestorationOutput(profile, firstVideoFrameCharacteristics(sourceProbe), firstVideoFrameCharacteristics(outputProbe), smartUpscaleReport)
+		if restorationReport["status"] == "mismatch" && smartUpscaleReport["status"] != "mismatch" {
+			addCheck("restoration_output", "Restoration output", false, "Final output does not match the frozen restoration geometry/frame plan.", 20)
+			warnings = append(warnings, "Final output does not match the frozen restoration execution plan.")
+		} else if restorationReport["status"] == "unverified" {
+			warnings = append(warnings, "Restoration output could not be fully verified from final ffprobe evidence.")
 		}
 	}
 	if outputExists {
@@ -264,6 +272,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 	report["avTiming"] = timingReport
 	report["smartUpscale"] = smartUpscaleReport
+	report["restoration"] = restorationReport
 
 	return ValidationResult{
 		JobID:    job.ID,
@@ -275,6 +284,67 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 }
 
+func validateRestorationOutput(profile models.Profile, source, output, smartUpscale models.JSONMap) models.JSONMap {
+	plan, ok := resolvedRestorationPlanFromProfile(profile)
+	if !ok {
+		return models.JSONMap{"status": "not_applicable"}
+	}
+	report := restorationPlanReport(profile, nil, nil, "")
+	report["sourceStorage"] = models.JSONMap{"width": workerIntValue(source["width"], plan.SourceStorage.Width), "height": workerIntValue(source["height"], plan.SourceStorage.Height), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])}
+	report["actualOutput"] = output
+	fields := models.JSONMap{}
+	actualWidth, actualHeight := workerIntValue(output["width"], 0), workerIntValue(output["height"], 0)
+	geometryStatus := "passed"
+	if plan.ResolvedOutput.Width <= 0 || plan.ResolvedOutput.Height <= 0 || actualWidth <= 0 || actualHeight <= 0 {
+		geometryStatus = "unverified"
+	} else if plan.ResolvedOutput.Width != actualWidth || plan.ResolvedOutput.Height != actualHeight {
+		geometryStatus = "mismatch"
+	}
+	fields["geometry"] = models.JSONMap{"expectedWidth": plan.ResolvedOutput.Width, "expectedHeight": plan.ResolvedOutput.Height, "actualWidth": actualWidth, "actualHeight": actualHeight, "status": geometryStatus}
+	if strings.TrimSpace(plan.ResolvedOutput.SAR) != "" {
+		fields["sampleAspectRatio"] = ratioValidation(plan.ResolvedOutput.SAR, stringFromUnknown(output["sampleAspectRatio"]), 0.000001)
+	}
+	if strings.TrimSpace(plan.ResolvedOutput.DAR) != "" {
+		actualDAR := stringFromUnknown(output["displayAspectRatio"])
+		if ratioValue(actualDAR) <= 0 {
+			actualDAR = aspectRatioString(actualWidth, actualHeight, stringFromUnknown(output["sampleAspectRatio"]))
+		}
+		fields["displayAspectRatio"] = ratioValidation(plan.ResolvedOutput.DAR, actualDAR, 0.01)
+	}
+	fields["frameRate"] = validateCadenceOutputFrameRate(map[string]interface{}(profile.WorkerConfig), output)
+	if profileWorkerBool(profile, "effectiveOutputProgressive", false) {
+		fieldOrder := strings.ToLower(strings.TrimSpace(stringFromUnknown(output["fieldOrder"])))
+		status := "passed"
+		if fieldOrder == "" || fieldOrder == "unknown" {
+			status = "unverified"
+		} else if fieldOrder != "progressive" {
+			status = "mismatch"
+		}
+		fields["frameStructure"] = models.JSONMap{"expected": "progressive", "actual": fieldOrder, "status": status}
+	}
+	status := "passed"
+	for _, raw := range fields {
+		field := unknownRecord(raw)
+		if field == nil {
+			continue
+		}
+		if field["status"] == "mismatch" {
+			status = "mismatch"
+			break
+		}
+		if field["status"] == "unverified" {
+			status = "unverified"
+		}
+	}
+	if smartUpscale["status"] == "mismatch" {
+		status = "mismatch"
+	}
+	report["fields"] = fields
+	report["status"] = status
+	report["validationResult"] = status
+	return report
+}
+
 func validateSmartUpscaleOutput(profile models.Profile, source, output models.JSONMap) models.JSONMap {
 	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
 	if !ok {
@@ -284,10 +354,10 @@ func validateSmartUpscaleOutput(profile models.Profile, source, output models.JS
 		"requestedMode": decision.RequestedMode, "resolvedMode": decision.ResolvedMode,
 		"upscaleApplied": decision.UpscaleApplied, "sharpenMode": decision.SharpenMode,
 		"confidence": decision.Confidence, "reasons": decision.Reasons, "warnings": decision.Warnings,
-		"sourceStorage": models.JSONMap{"width": workerIntValue(source["width"], 0), "height": workerIntValue(source["height"], 0), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])},
+		"sourceStorage":     models.JSONMap{"width": workerIntValue(source["width"], 0), "height": workerIntValue(source["height"], 0), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])},
 		"effectiveGeometry": models.JSONMap{"width": decision.SourceWidth, "height": decision.SourceHeight, "sar": decision.SourceSAR, "dar": decision.SourceDAR},
-		"resolvedOutput": models.JSONMap{"width": decision.TargetWidth, "height": decision.TargetHeight, "sar": decision.TargetSAR, "dar": aspectRatioString(decision.TargetWidth, decision.TargetHeight, decision.TargetSAR)},
-		"actualOutput": models.JSONMap{"width": workerIntValue(output["width"], 0), "height": workerIntValue(output["height"], 0), "sar": stringFromUnknown(output["sampleAspectRatio"]), "dar": stringFromUnknown(output["displayAspectRatio"]), "frameRate": stringFromUnknown(output["frameRate"]), "realFrameRate": stringFromUnknown(output["realFrameRate"]), "fieldOrder": stringFromUnknown(output["fieldOrder"])},
+		"resolvedOutput":    models.JSONMap{"width": decision.TargetWidth, "height": decision.TargetHeight, "sar": decision.TargetSAR, "dar": aspectRatioString(decision.TargetWidth, decision.TargetHeight, decision.TargetSAR)},
+		"actualOutput":      models.JSONMap{"width": workerIntValue(output["width"], 0), "height": workerIntValue(output["height"], 0), "sar": stringFromUnknown(output["sampleAspectRatio"]), "dar": stringFromUnknown(output["displayAspectRatio"]), "frameRate": stringFromUnknown(output["frameRate"]), "realFrameRate": stringFromUnknown(output["realFrameRate"]), "fieldOrder": stringFromUnknown(output["fieldOrder"])},
 	}
 	if !decision.UpscaleApplied {
 		report["status"] = "passed"

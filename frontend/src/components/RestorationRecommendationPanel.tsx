@@ -33,10 +33,17 @@ export function RestorationRecommendationPanel({ plan, selected, onToggle }: {
                 <Chip size="small" label={humanize(item.state)} color={item.state === 'manual_review' ? 'warning' : 'default'} />
                 <Chip size="small" label={`confidence ${humanize(item.confidence)}`} />
               </Stack>
-              {[...item.reasons, ...item.warnings, ...item.supportingEvidence].map((detail, index) => (
-                <Typography key={`${item.id}-${index}`} variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>{detail}</Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Current: {item.currentValue ? humanize(item.currentValue) : 'Not configured'}</Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Recommended: {displayRecommendation(item)}{output ? ` · ${output}` : ''}</Typography>
+              {item.reasons.map((detail, index) => (
+                <Typography key={`${item.id}-reason-${index}`} variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Reason: {detail}</Typography>
               ))}
-              {item.currentValue ? <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Current: {humanize(item.currentValue)}</Typography> : null}
+              {item.warnings.map((detail, index) => (
+                <Typography key={`${item.id}-warning-${index}`} variant="caption" color="warning.main" display="block" sx={{ pl: actionable ? 4 : 0 }}>Warning: {detail}</Typography>
+              ))}
+              {item.supportingEvidence.map((detail, index) => (
+                <Typography key={`${item.id}-evidence-${index}`} variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Evidence: {detail}</Typography>
+              ))}
             </Box>
           );
         })}

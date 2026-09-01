@@ -707,6 +707,9 @@ func resolveEffectiveVideoEncodingProfile(profile models.Profile, streams MediaS
 	profile = resolveUpscaleProfile(profile, streams, evidence)
 	if len(streams.Video) > 0 {
 		profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
+		profile = resolveRestorationPlan(profile, &streams.Video[0])
+	} else {
+		profile = resolveRestorationPlan(profile, nil)
 	}
 	return resolveHEVCLevel(profile, streams)
 }
@@ -762,6 +765,9 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 	}
 	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
 		decision["upscale"] = upscale
+	}
+	if restoration, ok := resolvedRestorationPlanFromProfile(profile); ok {
+		decision["restoration"] = restoration
 	}
 	return decision
 }
@@ -1986,10 +1992,7 @@ func videoWorkerArgsForSource(profile models.Profile, source *MediaStream) []str
 
 	args := []string{}
 	encoder := resolvedVideoEncoder(profile)
-	filters := workerStringValue(profile.WorkerConfig["videoFilters"])
-	filters = applyCropAspectPolicy(filters, profile, source)
-	filters = canonicalizeRestorationFilterChain(filters)
-	filters = renderResolvedUpscaleFilters(filters, profile)
+	filters := restorationFilterChainForCommand(profile, source)
 	if encoder == "hevc_vaapi" {
 		format := "nv12"
 		if profileUsesTenBit(profile) {

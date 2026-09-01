@@ -100,5 +100,6 @@ export function workerConfigWithUpscaleRequest(config: VideoWorkerConfig, reques
   if (validated.upscaleSharpen === 'custom') next.upscaleSharpenCustomStrength = validated.upscaleSharpenCustomStrength;
   else delete next.upscaleSharpenCustomStrength;
   delete next.resolvedUpscaleDecision;
+	delete next.resolvedRestorationPlan;
   return next;
 }

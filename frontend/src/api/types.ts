@@ -491,6 +491,35 @@ export type VideoWorkerConfig = Record<string, unknown> & {
   upscaleSharpenCustomStrength?: number;
   upscaleCustomHeight?: number;
   resolvedUpscaleDecision?: ResolvedUpscaleDecision;
+  resolvedRestorationPlan?: ResolvedRestorationPlan;
+  restorationRecommendationProvenance?: RestorationRecommendationProvenance;
+};
+
+export type ResolvedRestorationStage = {
+  stage: string;
+  filter: string;
+  parameters?: Record<string, unknown>;
+};
+
+export type RestorationRecommendationProvenance = {
+  version: number;
+  appliedRecommendations: Array<Pick<RestorationRecommendation, 'id' | 'domain' | 'state' | 'recommendedValue' | 'confidence' | 'reasons' | 'warnings'>>;
+  restorationEvidence: RestorationAnalysis;
+};
+
+export type ResolvedRestorationPlan = {
+  version: number;
+  requestedFilterChain?: string;
+  resolvedFilterChain?: string;
+  stages: ResolvedRestorationStage[];
+  requiresVideoEncode: boolean;
+  executable: boolean;
+  sourceStorage: { width: number; height: number; sar?: string; dar?: string };
+  effectiveGeometry: { width: number; height: number; sar?: string; dar?: string };
+  resolvedOutput: { width: number; height: number; sar?: string; dar?: string };
+  recommendationProvenance?: RestorationRecommendationProvenance;
+  restorationEvidence?: RestorationAnalysis;
+  warnings: string[];
 };
 
 export type ResolvedUpscaleDecision = {
@@ -1557,6 +1586,7 @@ export type EffectiveVideoDecision = {
   hevcLevelWarning?: string;
   effectiveFinalColorPolicy?: string;
   upscale?: ResolvedUpscaleDecision;
+  restoration?: ResolvedRestorationPlan;
 };
 
 export type PreviewFrameMetrics = {

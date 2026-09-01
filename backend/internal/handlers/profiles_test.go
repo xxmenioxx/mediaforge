@@ -127,3 +127,42 @@ func TestProfileCreateRejectsInvalidUpscaleRequest(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestProfileCreateStripsResolvedRestorationPlan(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:profile-strip-restoration-plan?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	payload := ProfileInput{
+		Name: "Restoration intent only", Container: "mkv", VideoCodec: "hevc", AudioCodec: "copy",
+		QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{
+			"videoFilters": "hqdn3d=4:3:6:4.5",
+			resolvedRestorationPlanKey: ResolvedRestorationPlan{Version: 1, ResolvedFilterChain: "hqdn3d=1:1:1:1"},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+	NewProfileHandler(db).Create(context)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var profile models.Profile
+	if err := db.Where("name = ?", payload.Name).First(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := profile.WorkerConfig[resolvedRestorationPlanKey]; exists {
+		t.Fatalf("asset-specific restoration plan persisted in normal profile: %#v", profile.WorkerConfig)
+	}
+	if profile.WorkerConfig["videoFilters"] != "hqdn3d=4:3:6:4.5" {
+		t.Fatalf("restoration request was changed: %#v", profile.WorkerConfig)
+	}
+}

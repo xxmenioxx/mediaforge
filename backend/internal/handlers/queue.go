@@ -1955,16 +1955,14 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
 	}
-	h.freezeResolvedUpscaleSnapshot(snapshot, scan)
+	if haveScan {
+		h.freezeResolvedRestorationSnapshot(snapshot, scan)
+	}
 }
 
-func (h QueueHandler) freezeResolvedUpscaleSnapshot(snapshot models.JSONMap, scan models.ScanResult) {
+func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap, scan models.ScanResult) {
 	profile, err := scheduler.RestoreProfileSnapshot(snapshot)
 	if err != nil {
-		return
-	}
-	request, err := parseUpscaleRequest(profile.WorkerConfig)
-	if err != nil || request.Mode == UpscaleModeDisabled {
 		return
 	}
 	interlace, _ := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
@@ -1975,20 +1973,15 @@ func (h QueueHandler) freezeResolvedUpscaleSnapshot(snapshot models.JSONMap, sca
 	}
 	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
 	profile = resolveUpscaleProfile(profile, mediaStreamInventoryFromScan(scan), upscaleAnalysisEvidence(scan))
-	decision, ok := resolvedUpscaleDecisionFromProfile(profile)
-	if !ok {
-		return
+	streams := mediaStreamInventoryFromScan(scan)
+	if len(streams.Video) > 0 {
+		profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
+		profile.WorkerConfig[restorationAnalysisSnapshotKey] = scan.RestorationAnalysis
+		profile = resolveRestorationPlan(profile, &streams.Video[0])
+	} else {
+		profile = resolveRestorationPlan(profile, nil)
 	}
-	workerConfig := models.JSONMap{}
-	if raw, exists := snapshot["workerConfig"]; exists {
-		encoded, encodeErr := json.Marshal(raw)
-		if encodeErr != nil || json.Unmarshal(encoded, &workerConfig) != nil {
-			return
-		}
-	}
-	workerConfig["resolvedUpscaleDecision"] = *decision
-	applyResolvedUpscaleGeometry(workerConfig, *decision)
-	snapshot["workerConfig"] = workerConfig
+	snapshot["workerConfig"] = cloneWorkerConfig(profile.WorkerConfig)
 }
 
 func mediaStreamInventoryFromScan(scan models.ScanResult) MediaStreamInventory {

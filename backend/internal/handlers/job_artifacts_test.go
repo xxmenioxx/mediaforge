@@ -184,3 +184,51 @@ func TestSmartUpscaleCopyKeepSourceHistoryPreservesRequestAndEvidence(t *testing
 		t.Fatalf("Copy Keep Source evidence missing: %#v", report)
 	}
 }
+
+func TestResultArtifactUsesValidatedFrozenRestorationReport(t *testing.T) {
+	db := testEncodeTestDB(t, "result-artifact-validated-restoration", &models.QueueJob{})
+	reportsDir := filepath.Join(t.TempDir(), "results")
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": reportsDir}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := resolveRestorationPlan(exactRestorationProfile(), &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"})
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated := restorationPlanReport(profile, nil, nil, "")
+	validated["actualOutput"] = models.JSONMap{"width": 960, "height": 720, "sar": "1:1", "dar": "4:3", "frameRate": "30000/1001", "fieldOrder": "progressive"}
+	validated["validationResult"] = "passed"
+	validated["status"] = "passed"
+	job := models.QueueJob{MediaPath: "/media/raw/restored-dvd.mkv", ProfileSnapshot: snapshot, ValidationReport: models.JSONMap{"restoration": validated}, Status: JobStatusCompleted}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobResultArtifact(db, job, map[string]any{"status": "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, _, err := readLatestJobArtifact(db, job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := unknownRecord(artifact["restoration"])
+	if report == nil || report["validationResult"] != "passed" || report["status"] != "passed" {
+		t.Fatalf("validated restoration report was replaced: %#v", report)
+	}
+	if got := workerIntValue(unknownRecord(report["sourceStorage"])["width"], 0); got != 720 {
+		t.Fatalf("source storage geometry lost: %#v", report)
+	}
+	if got := workerIntValue(unknownRecord(report["effectiveGeometry"])["width"], 0); got != 704 {
+		t.Fatalf("post-crop geometry lost: %#v", report)
+	}
+	if got := workerIntValue(unknownRecord(report["resolvedOutput"])["width"], 0); got != 960 {
+		t.Fatalf("resolved output geometry lost: %#v", report)
+	}
+	if got := workerIntValue(unknownRecord(report["actualOutput"])["width"], 0); got != 960 {
+		t.Fatalf("actual output geometry lost: %#v", report)
+	}
+	stages := workerSliceValue(report["stages"])
+	if len(stages) == 0 {
+		t.Fatalf("structured executed stages missing: %#v", report)
+	}
+}

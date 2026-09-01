@@ -1502,6 +1502,7 @@ function smartUpscaleWorkerConfigPatch(config: ProfileInput['workerConfig'], pat
   if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
   if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
   delete next.resolvedUpscaleDecision;
+	delete next.resolvedRestorationPlan;
   return next;
 }
 

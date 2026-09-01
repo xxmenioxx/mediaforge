@@ -56,6 +56,7 @@ import type {
   ProfileInput,
   ProfileSuggestion,
   AdvisorFinding,
+	RestorationRecommendationPlan,
   QualityRecommendationResponse,
   PreviewVideoCharacteristics,
   PreviewInspection,
@@ -83,7 +84,7 @@ import { SmartUpscaleDecision } from '../components/SmartUpscaleDecision';
 import { RestorationControls } from '../components/RestorationControls';
 import { RestorationEvidencePanel } from '../components/RestorationEvidencePanel';
 import { RestorationRecommendationPanel } from '../components/RestorationRecommendationPanel';
-import { isActionableRestorationRecommendation, restorationRecommendationSelectionID } from '../utils/restorationRecommendations';
+import { isActionableRestorationRecommendation, restorationRecommendationProvenance, restorationRecommendationSelectionID } from '../utils/restorationRecommendations';
 import { restorationConfigFromLegacyFilters, structuredRestorationStages } from '../utils/restorationFilters';
 import { brightnessFromStored, brightnessToStored, exposureFromStored, exposureToStored, formatFilterNumber, ratioFromStored, ratioToStored } from '../utils/imageAdjustmentPrecision';
 import { formatHEVCLevel } from '../utils/hevcLevel';
@@ -522,6 +523,7 @@ function profileInputFromSavedProfile(profile: Profile): ProfileInput {
     ...restorationConfigFromLegacyFilters(normalized.workerConfig ?? {}),
   };
   delete workerConfig.processingMode;
+	delete workerConfig.resolvedRestorationPlan;
   const requestedPreference = typeof workerConfig.preferredEncoder === 'string' ? workerConfig.preferredEncoder : '';
   const hardwareSupported =
     hardwareEncodingSupportedForCodec(normalized.videoCodec);
@@ -1604,7 +1606,7 @@ export function ProfileLabPage() {
     setRecommendationApplied((current) => ({ ...current, [section]: true }));
   }
 
-  function applyLabVideoFindings(findings: AdvisorFinding[]) {
+  function applyLabVideoFindings(findings: AdvisorFinding[], restorationPlan?: RestorationRecommendationPlan) {
     if (findings.length === 0) return;
     setSavedVideoProfileId(null);
     setVideoProfileSaveMessage('');
@@ -1641,6 +1643,15 @@ export function ProfileLabPage() {
           next = { ...next, workerConfig };
         });
       });
+      if (restorationPlan) {
+        const provenance = restorationRecommendationProvenance(
+          restorationPlan,
+          findings.filter((finding) => finding.id.startsWith('restoration:')).map((finding) => finding.id.slice('restoration:'.length)),
+        );
+        if (provenance) {
+          next.workerConfig = { ...(next.workerConfig ?? {}), restorationRecommendationProvenance: provenance };
+        }
+      }
       return synchronizeLabAuthoritativeContract(next);
     });
     setRecommendationApplied((current) => ({ ...current, video: true }));
@@ -1656,7 +1667,7 @@ export function ProfileLabPage() {
         detail: item.reasons.join(' '), severity: 'recommended', confidence: item.confidence,
         actionable: true, defaultSelected: true, patch: item.patch,
       }));
-    applyLabVideoFindings([...findings, ...restorationFindings]);
+    applyLabVideoFindings([...findings, ...restorationFindings], suggestion.restorationPlan);
     if (applyAll || selected.has('audio-draft')) applyAutoRecommendation(suggestion, 'audio');
     if (applyAll || selected.has('tracks-draft')) applyAutoRecommendation(suggestion, 'tracks');
     setRecommendationOpen(false);
@@ -7647,6 +7658,7 @@ function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
     level,
     decision.cadenceOperation,
     decision.upscale ? `Upscale ${upscaleModeLabel(decision.upscale.resolvedMode)}${decision.upscale.upscaleApplied ? ` ${decision.upscale.targetWidth}×${decision.upscale.targetHeight}` : ''}` : '',
+	decision.restoration?.stages.length ? `Restoration ${decision.restoration.stages.map((stage) => stage.stage).join(' → ')}` : '',
   ].filter(Boolean).join(' · ');
 }
 
@@ -7661,5 +7673,6 @@ function smartUpscaleLabWorkerConfigPatch(config: ProfileInput['workerConfig'], 
   if ('customHeight' in patch) next.upscaleCustomHeight = patch.customHeight;
   if (next.upscaleMode !== 'custom') delete next.upscaleCustomHeight;
   delete next.resolvedUpscaleDecision;
+	delete next.resolvedRestorationPlan;
   return next;
 }

@@ -38,6 +38,7 @@ type jobArtifact struct {
 	StreamPlan           ResolvedStreamPlan    `json:"streamPlan"`
 	VideoToolboxStrategy models.JSONMap        `json:"videoToolboxStrategy,omitempty"`
 	SmartUpscale         models.JSONMap        `json:"smartUpscale,omitempty"`
+	Restoration          models.JSONMap        `json:"restoration,omitempty"`
 	Artifacts            models.JSONMap        `json:"artifacts,omitempty"`
 }
 
@@ -138,6 +139,7 @@ func writeJobAsIsArtifact(db *gorm.DB, job models.QueueJob, profile models.Profi
 	artifact.Artifacts = jobArtifactOutputs(job)
 	artifact.VideoToolboxStrategy = videoToolboxStrategyReport(profile)
 	artifact.SmartUpscale = smartUpscalePlanReport(profile, sourceProbe)
+	artifact.Restoration = restorationPlanReport(profile, sourceProbe, nil, command)
 	if job.ActiveExecutionPlanID != nil {
 		var plan models.ExecutionPlan
 		if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil {
@@ -678,6 +680,9 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		if raw := unknownRecord(asIs["smartUpscale"]); raw != nil {
 			artifact.SmartUpscale = models.JSONMap(raw)
 		}
+		if raw := unknownRecord(asIs["restoration"]); raw != nil {
+			artifact.Restoration = models.JSONMap(raw)
+		}
 	}
 	if profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot); err == nil {
 		artifact.Profile = profile
@@ -685,12 +690,21 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		if len(artifact.SmartUpscale) == 0 {
 			artifact.SmartUpscale = smartUpscalePlanReport(profile, nil)
 		}
+		if len(artifact.Restoration) == 0 {
+			artifact.Restoration = restorationPlanReport(profile, nil, nil, "")
+		}
 	}
 	if validated := unknownRecord(job.ValidationReport["smartUpscale"]); validated != nil {
 		artifact.SmartUpscale = models.JSONMap(validated)
 	} else if len(artifact.SmartUpscale) > 0 {
 		artifact.SmartUpscale["actualOutput"] = firstVideoFrameCharacteristics(artifact.OutputProbe)
 		artifact.SmartUpscale["validationResult"] = "unverified"
+	}
+	if validated := unknownRecord(job.ValidationReport["restoration"]); validated != nil {
+		artifact.Restoration = models.JSONMap(validated)
+	} else if len(artifact.Restoration) > 0 {
+		artifact.Restoration["actualOutput"] = firstVideoFrameCharacteristics(artifact.OutputProbe)
+		artifact.Restoration["validationResult"] = "unverified"
 	}
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
 	attachTrackDecisionReport(&artifact.AssetConversion, job)
@@ -709,11 +723,41 @@ func smartUpscalePlanReport(profile models.Profile, sourceProbe map[string]any) 
 		"requestedMode": decision.RequestedMode, "resolvedMode": decision.ResolvedMode,
 		"upscaleApplied": decision.UpscaleApplied, "sharpenMode": decision.SharpenMode,
 		"confidence": decision.Confidence, "reasons": decision.Reasons, "warnings": decision.Warnings,
-		"sourceStorage": models.JSONMap{"width": workerIntValue(source["width"], 0), "height": workerIntValue(source["height"], 0), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])},
+		"sourceStorage":     models.JSONMap{"width": workerIntValue(source["width"], 0), "height": workerIntValue(source["height"], 0), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])},
 		"effectiveGeometry": models.JSONMap{"width": decision.SourceWidth, "height": decision.SourceHeight, "sar": decision.SourceSAR, "dar": decision.SourceDAR},
-		"resolvedOutput": models.JSONMap{"width": decision.TargetWidth, "height": decision.TargetHeight, "sar": decision.TargetSAR, "dar": aspectRatioString(decision.TargetWidth, decision.TargetHeight, decision.TargetSAR)},
-		"status": map[bool]string{true: "planned", false: "keep_source"}[decision.UpscaleApplied],
+		"resolvedOutput":    models.JSONMap{"width": decision.TargetWidth, "height": decision.TargetHeight, "sar": decision.TargetSAR, "dar": aspectRatioString(decision.TargetWidth, decision.TargetHeight, decision.TargetSAR)},
+		"status":            map[bool]string{true: "planned", false: "keep_source"}[decision.UpscaleApplied],
 	}
+}
+
+func restorationPlanReport(profile models.Profile, sourceProbe, outputProbe map[string]any, command string) models.JSONMap {
+	plan, ok := resolvedRestorationPlanFromProfile(profile)
+	if !ok {
+		profile = resolveRestorationPlan(profile, nil)
+		plan, ok = resolvedRestorationPlanFromProfile(profile)
+	}
+	if !ok {
+		return nil
+	}
+	report := models.JSONMap{
+		"version": plan.Version, "requestedFilterChain": plan.RequestedFilterChain,
+		"resolvedFilterChain": plan.ResolvedFilterChain, "stages": plan.Stages,
+		"requiresVideoEncode": plan.RequiresVideoEncode, "executable": plan.Executable,
+		"sourceStorage": plan.SourceStorage, "effectiveGeometry": plan.EffectiveGeometry,
+		"resolvedOutput": plan.ResolvedOutput, "recommendationProvenance": plan.RecommendationProvenance,
+		"restorationEvidence": plan.Evidence, "warnings": plan.Warnings,
+	}
+	if source := firstVideoFrameCharacteristics(sourceProbe); len(source) > 0 {
+		report["sourceStorage"] = models.JSONMap{"width": workerIntValue(source["width"], plan.SourceStorage.Width), "height": workerIntValue(source["height"], plan.SourceStorage.Height), "sar": stringFromUnknown(source["sampleAspectRatio"]), "dar": stringFromUnknown(source["displayAspectRatio"])}
+	}
+	if output := firstVideoFrameCharacteristics(outputProbe); len(output) > 0 {
+		report["actualOutput"] = output
+	}
+	if strings.TrimSpace(command) != "" {
+		executed := plan.Executable && (!plan.RequiresVideoEncode || strings.Contains(command, plan.ResolvedFilterChain))
+		report["commandExecution"] = models.JSONMap{"matchedResolvedFilterChain": executed, "stages": map[bool]any{true: plan.Stages, false: []ResolvedRestorationStage{}}[executed]}
+	}
+	return report
 }
 
 func attachTrackDecisionReport(report *AssetConversionReport, job models.QueueJob) {
