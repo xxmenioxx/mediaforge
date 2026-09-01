@@ -5675,9 +5675,18 @@ func reconcileSourceGroups(db *gorm.DB, rawRoot string, records []models.AssetRe
 				}
 			case err != nil:
 				return err
-			case filepath.Clean(group.SourcePath) != cleanSourcePath:
-				if err := tx.Model(&group).Update("source_path", cleanSourcePath).Error; err != nil {
-					return err
+			default:
+				updates := map[string]interface{}{}
+				if filepath.Clean(group.SourcePath) != cleanSourcePath {
+					updates["source_path"] = cleanSourcePath
+				}
+				if !group.Enabled {
+					updates["enabled"] = true
+				}
+				if len(updates) > 0 {
+					if err := tx.Model(&group).Updates(updates).Error; err != nil {
+						return err
+					}
 				}
 			}
 		}

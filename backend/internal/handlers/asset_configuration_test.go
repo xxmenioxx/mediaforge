@@ -324,6 +324,79 @@ func TestSourceGroupReconcileIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSourceGroupReconcileReEnablesReturningGroupAndPreservesConfiguration(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	rawRoot := t.TempDir()
+	moviesPath := filepath.Join(rawRoot, "movies")
+	if err := os.MkdirAll(moviesPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	group := models.SourceGroup{Name: "Movies", RelativePath: "movies", SourcePath: filepath.Join(rawRoot, "old-movies"), Enabled: false}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignment := models.ProfileAssignment{TargetType: assetScopeSourceGroup, TargetPath: group.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: 23}
+	configuration := models.AssetScopeConfiguration{ScopeType: assetScopeSourceGroup, ScopeKey: group.SourcePath, CategorySelection: configSelectionValue, Category: "movie", DestinationSelection: configSelectionValue, DestinationLibraryID: 9}
+	if err := db.Create(&assignment).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&configuration).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reconcileSourceGroups(db, rawRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	var restored models.SourceGroup
+	if err := db.First(&restored, group.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Enabled || restored.ID != group.ID || filepath.Clean(restored.SourcePath) != moviesPath {
+		t.Fatalf("returning source group was not restored in place: %#v", restored)
+	}
+	var groupCount, assignmentCount, configurationCount int64
+	if err := db.Model(&models.SourceGroup{}).Where("relative_path = ?", "movies").Count(&groupCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.ProfileAssignment{}).Where("id = ? AND target_path = ?", assignment.ID, assignment.TargetPath).Count(&assignmentCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.AssetScopeConfiguration{}).Where("id = ? AND scope_key = ?", configuration.ID, configuration.ScopeKey).Count(&configurationCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if groupCount != 1 || assignmentCount != 1 || configurationCount != 1 {
+		t.Fatalf("returning group lost identity or configuration: groups=%d assignments=%d configurations=%d", groupCount, assignmentCount, configurationCount)
+	}
+
+	stableUpdatedAt := restored.UpdatedAt
+	if err := reconcileSourceGroups(db, rawRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&restored, group.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !restored.UpdatedAt.Equal(stableUpdatedAt) {
+		t.Fatalf("idempotent reconciliation mutated returning group: before=%s after=%s", stableUpdatedAt, restored.UpdatedAt)
+	}
+}
+
+func TestSourceGroupReconcileFailureDoesNotEnableDisabledGroup(t *testing.T) {
+	db := assetConfigurationTestDB(t)
+	group := models.SourceGroup{Name: "Movies", RelativePath: "movies", SourcePath: "/unavailable/raw/movies", Enabled: false}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSourceGroups(db, filepath.Join(t.TempDir(), "not-mounted"), nil); err == nil {
+		t.Fatal("missing source root was treated as authoritative")
+	}
+	if err := db.First(&group, group.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if group.Enabled {
+		t.Fatalf("failed discovery changed disabled group lifecycle: %#v", group)
+	}
+}
+
 func TestSourceGroupReconcileHealsHistoricalPorcoRossoPhantom(t *testing.T) {
 	db := assetConfigurationTestDB(t)
 	rawRoot := t.TempDir()

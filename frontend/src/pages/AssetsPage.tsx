@@ -733,6 +733,7 @@ type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
 	logicalGroup: AssetLogicalGroup; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
 }) {
+	const queryClient = useQueryClient();
 	const [expanded, setExpanded] = useState(false);
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
 	const [titleSnapshotsOpen, setTitleSnapshotsOpen] = useState(false);
@@ -757,6 +758,43 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 		enabled: expanded && assetIds.length > 0,
 		staleTime: 15_000,
 	});
+	const [titleAdvisorResults, setTitleAdvisorResults] = useState<Array<{ asset: Asset; response?: AdvisorResponse; error?: string }>>([]);
+	const runTitleAdvisor = useMutation({
+		mutationFn: async () => {
+			const effective = await api.effectiveAssetConfigurations(assetIds);
+			const results: Array<{ asset: Asset; response?: AdvisorResponse; error?: string }> = [];
+			for (const asset of assets) {
+				const profileId = effective.configurations[String(asset.id)]?.video.videoProfileId ?? 0;
+				if (!profileId) {
+					results.push({ asset, error: 'No effective Video Profile is available for Advisor.' });
+					continue;
+				}
+				try {
+					const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId });
+					queryClient.setQueryData(['advisor', 'asset-row', asset.path, profileId], response);
+					results.push({ asset, response });
+				} catch (error) {
+					results.push({ asset, error: error instanceof Error ? error.message : 'Advisor evaluation failed.' });
+				}
+			}
+			return results;
+		},
+		onSuccess: setTitleAdvisorResults,
+	});
+	const publishTitleAsIs = useMutation({
+		mutationFn: async () => {
+			const effective = await api.effectiveAssetConfigurations(assetIds);
+			const destinationIDs = [...new Set(assets.map((asset) => effective.configurations[String(asset.id)]?.destination.destinationLibraryId ?? 0).filter(Boolean))];
+			if (destinationIDs.length !== 1) throw new Error('Configure one effective Destination for every asset in this title before publishing as-is.');
+			const destination = libraries.find((library) => library.id === destinationIDs[0]);
+			if (!destination) throw new Error('The effective Destination Library is unavailable.');
+			if (!window.confirm(`Publish ${assets.length} original asset(s) in ${logicalGroup.name} as-is to ${destination.name}? FFmpeg will not run and the title directory will move from Raw to Library.`)) throw new Error('Publish as-is canceled.');
+			return api.publishAssetsAsIs({ sourcePath: logicalGroup.path, destinationLibraryId: destination.id });
+		},
+		onSuccess: async () => {
+			await Promise.all([queryClient.invalidateQueries({ queryKey: ['assets'] }), queryClient.invalidateQueries({ queryKey: ['queueJobs'] })]);
+		},
+	});
 	const rootPaths = paths.filter((path) => path.isLogicalGroupRoot);
 	const childPaths = paths.filter((path) => !path.isLogicalGroupRoot);
 	const renderAssets = (path: import('../api/types').AssetPath) => {
@@ -774,8 +812,13 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 			<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
 				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} readOnly={titleHasOpenJob} />
 				<Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup}>Snapshots</Button>
+				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Run Advisor'}</Button>
+				<Button size="small" variant="outlined" color="success" onClick={() => publishTitleAsIs.mutate()} disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}>{publishTitleAsIs.isPending ? 'Publishing…' : 'Publish as-is'}</Button>
 			</Stack>
 		</Stack>
+		{titleAdvisorResults.length ? <Alert severity={titleAdvisorResults.some((result) => result.error) ? 'warning' : 'success'} sx={{ m: 1 }}>{titleAdvisorResults.length} asset{titleAdvisorResults.length === 1 ? '' : 's'} evaluated · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review · {titleAdvisorResults.filter((result) => result.error).length} failed</Alert> : null}
+		{publishTitleAsIs.isSuccess ? <Alert severity="success" sx={{ m: 1 }}>{publishTitleAsIs.data.message}</Alert> : null}
+		{publishTitleAsIs.isError && publishTitleAsIs.error.message !== 'Publish as-is canceled.' ? <Alert severity="warning" sx={{ m: 1 }}>{publishTitleAsIs.error.message}</Alert> : null}
 		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = selectableAssetsForPaths([path]); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); const pathHasOpenJob = safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} /><IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={pathHasOpenJob} /></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
 		{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
 	</Box>;
