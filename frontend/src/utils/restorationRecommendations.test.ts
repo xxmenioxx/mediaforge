@@ -15,9 +15,10 @@ describe('restoration recommendation provenance', () => {
       ],
     };
 
-    const provenance = restorationRecommendationProvenance(plan, ['upscale', 'denoise']);
+    const provenance = restorationRecommendationProvenance(plan, ['upscale', 'denoise'], '/media/raw/dvd-a.mkv');
 
     expect(provenance?.appliedRecommendations.map((item) => item.id)).toEqual(['upscale']);
+    expect(provenance?.sourceAssetPath).toBe('/media/raw/dvd-a.mkv');
     expect(provenance?.restorationEvidence).toEqual(plan.restorationEvidence);
   });
 
@@ -30,6 +31,6 @@ describe('restoration recommendation provenance', () => {
         { id: 'deblock', domain: 'Deblock', state: 'manual_review', confidence: 'medium', reasons: [], warnings: [], supportingEvidence: [] },
       ],
     };
-    expect(restorationRecommendationProvenance(plan, ['deblock'])).toBeUndefined();
+    expect(restorationRecommendationProvenance(plan, ['deblock'], '/media/raw/dvd-a.mkv')).toBeUndefined();
   });
 });

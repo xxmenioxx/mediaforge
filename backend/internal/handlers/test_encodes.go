@@ -374,6 +374,7 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 
 func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState) (models.Profile, error) {
 	profile = applyAssetConversionOverrideToProfile(profile, override)
+	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, path)
 	profile = applyFrozenCadenceResolution(job, profile)
 	profile, err := resolveAutomaticFrameStructure(db, path, profile)
 	if err != nil {

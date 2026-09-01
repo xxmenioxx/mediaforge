@@ -1647,6 +1647,7 @@ export function ProfileLabPage() {
         const provenance = restorationRecommendationProvenance(
           restorationPlan,
           findings.filter((finding) => finding.id.startsWith('restoration:')).map((finding) => finding.id.slice('restoration:'.length)),
+          assetPath,
         );
         if (provenance) {
           next.workerConfig = { ...(next.workerConfig ?? {}), restorationRecommendationProvenance: provenance };

@@ -49,7 +49,7 @@ func TestResolvedRestorationPlanRendersExactStructuredChainInCanonicalOrder(t *t
 
 func TestQueueSnapshotFreezesRestorationPlanAndWorkerConsumesIt(t *testing.T) {
 	profile := exactRestorationProfile()
-	profile.WorkerConfig[restorationProvenanceSnapshotKey] = models.JSONMap{"version": 1, "appliedRecommendations": models.JSONList{models.JSONMap{"id": "upscale", "confidence": "high"}}}
+	profile.WorkerConfig[restorationProvenanceSnapshotKey] = models.JSONMap{"version": 1, "sourceAssetPath": "/media/raw/restored-dvd.mkv", "appliedRecommendations": models.JSONList{models.JSONMap{"id": "upscale", "confidence": "high"}}}
 	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_create")
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestQueueSnapshotFreezesRestorationPlanAndWorkerConsumesIt(t *testing.T) {
 		InterlaceAnalysis:   models.JSONMap{"version": interlaceAnalysisVersion, "status": "interlaced", "confidence": .99, "recommendedAction": "deinterlace", "fieldOrder": "bff"},
 		RestorationAnalysis: structToJSONMap(restorationEvidenceUnavailable()),
 	}
-	QueueHandler{}.freezeResolvedRestorationSnapshot(snapshot, scan)
+	QueueHandler{}.freezeResolvedRestorationSnapshot(snapshot, scan, "/media/raw/restored-dvd.mkv")
 	frozenProfile, err := scheduler.RestoreProfileSnapshot(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +79,63 @@ func TestQueueSnapshotFreezesRestorationPlanAndWorkerConsumesIt(t *testing.T) {
 	}
 	if got := argumentValue(videoWorkerArgsForSource(consumed, nil), "-vf"); got != frozen.ResolvedFilterChain {
 		t.Fatalf("Worker command did not use frozen restoration chain: %s", got)
+	}
+}
+
+func TestQueueFreezesExplicitRestorationPlanWithoutScanResult(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoFilters": "deblock=filter=strong:block=8,hqdn3d=4:3:6:4.5,exposure=exposure=0.12,eq=saturation=0.96:gamma=0.94",
+		"upscaleMode":  "auto",
+	}}
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	QueueHandler{}.captureInterlaceSnapshot("/media/raw/no-snapshot-dvd.mkv", snapshot)
+	frozen, err := scheduler.RestoreProfileSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := resolvedRestorationPlanFromProfile(frozen)
+	if !ok || plan.ResolvedFilterChain != "deblock=filter=strong:block=8,hqdn3d=4:3:6:4.5,exposure=exposure=0.12,eq=saturation=0.96:gamma=0.94" {
+		t.Fatalf("explicit no-scan restoration was not frozen: %#v", plan)
+	}
+	upscale, ok := resolvedUpscaleDecisionFromProfile(frozen)
+	if !ok || upscale.UpscaleApplied {
+		t.Fatalf("no-scan Auto upscale must remain conservative: %#v", upscale)
+	}
+	consumed := resolveRestorationPlan(frozen, &MediaStream{Width: 1920, Height: 1080})
+	if got := argumentValue(videoWorkerArgsForSource(consumed, nil), "-vf"); got != plan.ResolvedFilterChain {
+		t.Fatalf("Worker did not consume no-scan frozen chain: %q", got)
+	}
+}
+
+func TestQueueRecommendationProvenanceIsBoundToSourceAsset(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoFilters": "hqdn3d=4:3:6:4.5",
+		restorationProvenanceSnapshotKey: models.JSONMap{
+			"version": 1, "sourceAssetPath": "/media/raw/dvd-a.mkv",
+			"appliedRecommendations": models.JSONList{models.JSONMap{"id": "upscale"}},
+		},
+	}}
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	QueueHandler{}.captureInterlaceSnapshot("/media/raw/dvd-b.mkv", snapshot)
+	frozen, err := scheduler.RestoreProfileSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := resolvedRestorationPlanFromProfile(frozen)
+	if !ok || plan.ResolvedFilterChain != "hqdn3d=4:3:6:4.5" {
+		t.Fatalf("structured settings were not preserved: %#v", plan)
+	}
+	if plan.RecommendationProvenance != nil {
+		t.Fatalf("DVD A provenance leaked into DVD B Queue snapshot: %#v", plan.RecommendationProvenance)
+	}
+	if _, exists := frozen.WorkerConfig[restorationProvenanceSnapshotKey]; exists {
+		t.Fatalf("stale source provenance remained in frozen WorkerConfig: %#v", frozen.WorkerConfig)
 	}
 }
 

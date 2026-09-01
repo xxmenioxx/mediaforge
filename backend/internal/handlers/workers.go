@@ -906,6 +906,7 @@ func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) m
 
 func resolveQueueVideoProfile(db *gorm.DB, mediaPath string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState, selectedEncoder string) (models.Profile, error) {
 	profile = applyAssetConversionOverrideToProfile(profile, override)
+	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, mediaPath)
 	profile = applySelectedEncoder(profile, selectedEncoder)
 	profile = applyFrozenCadenceResolution(job, profile)
 	profile, err := resolveAutomaticFrameStructure(db, mediaPath, profile)

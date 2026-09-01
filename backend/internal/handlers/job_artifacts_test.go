@@ -3,6 +3,7 @@ package handlers
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,7 +189,7 @@ func TestSmartUpscaleCopyKeepSourceHistoryPreservesRequestAndEvidence(t *testing
 func TestResultArtifactUsesValidatedFrozenRestorationReport(t *testing.T) {
 	db := testEncodeTestDB(t, "result-artifact-validated-restoration", &models.QueueJob{})
 	reportsDir := filepath.Join(t.TempDir(), "results")
-	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": reportsDir}}).Error; err != nil {
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": reportsDir, "asIsReportsPath": reportsDir}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	profile := resolveRestorationPlan(exactRestorationProfile(), &MediaStream{Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3"})
@@ -202,6 +203,10 @@ func TestResultArtifactUsesValidatedFrozenRestorationReport(t *testing.T) {
 	validated["status"] = "passed"
 	job := models.QueueJob{MediaPath: "/media/raw/restored-dvd.mkv", ProfileSnapshot: snapshot, ValidationReport: models.JSONMap{"restoration": validated}, Status: JobStatusCompleted}
 	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := resolvedRestorationPlanFromProfile(profile)
+	if err := writeJobAsIsArtifact(db, job, profile, nil, "ffmpeg -vf "+plan.ResolvedFilterChain+" output.mkv", ProcessingModeFullEncode, ResolvedStreamPlan{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJobResultArtifact(db, job, map[string]any{"status": "completed"}); err != nil {
@@ -230,5 +235,15 @@ func TestResultArtifactUsesValidatedFrozenRestorationReport(t *testing.T) {
 	stages := workerSliceValue(report["stages"])
 	if len(stages) == 0 {
 		t.Fatalf("structured executed stages missing: %#v", report)
+	}
+	chain := stringFromUnknown(report["resolvedFilterChain"])
+	for _, exact := range []string{"exposure=exposure=0.12", "saturation=0.96", "gamma=0.94", "cas=strength=0.16"} {
+		if !strings.Contains(chain, exact) {
+			t.Fatalf("precision value %q was lost from Result/History: %#v", exact, report)
+		}
+	}
+	execution := unknownRecord(report["commandExecution"])
+	if execution == nil || execution["matchedResolvedFilterChain"] != true {
+		t.Fatalf("rendered command evidence was not preserved: %#v", report)
 	}
 }

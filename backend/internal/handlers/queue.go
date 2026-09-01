@@ -1955,16 +1955,15 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
 	}
-	if haveScan {
-		h.freezeResolvedRestorationSnapshot(snapshot, scan)
-	}
+	h.freezeResolvedRestorationSnapshot(snapshot, scan, path)
 }
 
-func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap, scan models.ScanResult) {
+func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap, scan models.ScanResult, path string) {
 	profile, err := scheduler.RestoreProfileSnapshot(snapshot)
 	if err != nil {
 		return
 	}
+	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, path)
 	interlace, _ := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
 	cadence, _ := decodeCadenceAnalysis(scan.CadenceAnalysis)
 	recommendation, ok := decodeCadenceRecommendation(scan.CadenceRecommendation)
@@ -1982,6 +1981,21 @@ func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap,
 		profile = resolveRestorationPlan(profile, nil)
 	}
 	snapshot["workerConfig"] = cloneWorkerConfig(profile.WorkerConfig)
+}
+
+func restorationWorkerConfigForAsset(config models.JSONMap, path string) models.JSONMap {
+	result := cloneWorkerConfig(config)
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	provenance := unknownRecord(result[restorationProvenanceSnapshotKey])
+	if provenance == nil || filepath.Clean(strings.TrimSpace(stringFromUnknown(provenance["sourceAssetPath"]))) != cleanPath {
+		delete(result, restorationProvenanceSnapshotKey)
+	}
+	profile := models.Profile{WorkerConfig: result}
+	if plan, ok := resolvedRestorationPlanFromProfile(profile); ok && plan.RecommendationProvenance != nil && filepath.Clean(strings.TrimSpace(stringFromUnknown(plan.RecommendationProvenance["sourceAssetPath"]))) != cleanPath {
+		plan.RecommendationProvenance = nil
+		result[resolvedRestorationPlanKey] = *plan
+	}
+	return result
 }
 
 func mediaStreamInventoryFromScan(scan models.ScanResult) MediaStreamInventory {

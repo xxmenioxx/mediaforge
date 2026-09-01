@@ -376,6 +376,60 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 	}
 }
 
+func TestResolvedRestorationPlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
+	db := testEncodeTestDB(t, "restoration-entrypoint-parity")
+	path := filepath.Clean("/media/raw/restoration-parity.mkv")
+	interlace := InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "interlaced", Confidence: .99, DetectedFieldOrder: "bff", RecommendedAction: "deinterlace", RecommendedMode: "bwdif_bff"}
+	cadence := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "native", Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "preserve", Confidence: .99}
+	job := models.QueueJob{MediaPath: path, ProfileSnapshot: models.JSONMap{
+		interlaceAnalysisSnapshotKey: interlace, cadenceAnalysisSnapshotKey: cadenceAnalysisMap(cadence), cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	requested := exactRestorationProfile()
+	requested.WorkerConfig["fieldStructureMode"] = "deinterlace"
+	requested.WorkerConfig["deinterlaceMode"] = "force"
+	requested.WorkerConfig["deinterlaceFieldOrder"] = "bff"
+	requested.WorkerConfig["finalColorPolicy"] = "preserve"
+	streams := MediaStreamInventory{Video: []MediaStream{{
+		Width: 720, Height: 480, SampleAspectRatio: "8:9", DisplayAspectRatio: "4:3", FrameRate: "30000/1001",
+		ColorSpace: "smpte170m", ColorTransfer: "smpte170m", ColorPrimaries: "smpte170m", ColorRange: "tv", FieldOrder: "bb",
+	}}}
+
+	preview, err := resolvePreviewVideoProfile(db, path, requested, streams, interlace, cadence, recommendation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode = resolveMediaJobVideoProfile(testEncode, streams, path, interlace, cadence, recommendation)
+	queue, err := resolveQueueVideoProfile(db, path, job, requested, AssetConversionOverrideState{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue = resolveMediaJobVideoProfile(queue, streams, path, interlace, cadence, recommendation)
+
+	want, ok := resolvedRestorationPlanFromProfile(queue)
+	if !ok {
+		t.Fatal("Queue restoration plan missing")
+	}
+	for name, profile := range map[string]models.Profile{"preview": preview, "test_encode": testEncode} {
+		got, ok := resolvedRestorationPlanFromProfile(profile)
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s restoration plan diverged: got=%#v queue=%#v", name, got, want)
+		}
+		if filter := argumentValue(videoWorkerArgsForSource(profile, &streams.Video[0]), "-vf"); filter != want.ResolvedFilterChain {
+			t.Fatalf("%s rendered chain=%q queue plan=%q", name, filter, want.ResolvedFilterChain)
+		}
+	}
+	for _, fragment := range []string{"bwdif=mode=send_frame:parity=bff", "deblock=filter=strong:block=8", "crop=704:448:8:16", "chromanr=thres=25:sizew=3:sizeh=3", "hqdn3d=4:3:6:4.5", "deband=1thr=0.024", "exposure=exposure=0.12", "saturation=0.96:gamma=0.94", "zscale=w=960:h=720", "setsar=1", "cas=strength=0.16", "setfield=prog"} {
+		if !strings.Contains(want.ResolvedFilterChain, fragment) {
+			t.Fatalf("shared restoration chain missing %q: %s", fragment, want.ResolvedFilterChain)
+		}
+	}
+}
+
 func TestMediaJobPlanWithOverridePreservesResolvedVideoDecisionThroughRender(t *testing.T) {
 	db := testEncodeTestDB(t, "media-job-plan-override-parity")
 	path := filepath.Clean("/media/raw/soft-telecine.mkv")

@@ -701,7 +701,11 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 		artifact.SmartUpscale["validationResult"] = "unverified"
 	}
 	if validated := unknownRecord(job.ValidationReport["restoration"]); validated != nil {
+		commandExecution := artifact.Restoration["commandExecution"]
 		artifact.Restoration = models.JSONMap(validated)
+		if commandExecution != nil {
+			artifact.Restoration["commandExecution"] = commandExecution
+		}
 	} else if len(artifact.Restoration) > 0 {
 		artifact.Restoration["actualOutput"] = firstVideoFrameCharacteristics(artifact.OutputProbe)
 		artifact.Restoration["validationResult"] = "unverified"

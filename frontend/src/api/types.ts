@@ -503,6 +503,7 @@ export type ResolvedRestorationStage = {
 
 export type RestorationRecommendationProvenance = {
   version: number;
+  sourceAssetPath: string;
   appliedRecommendations: Array<Pick<RestorationRecommendation, 'id' | 'domain' | 'state' | 'recommendedValue' | 'confidence' | 'reasons' | 'warnings'>>;
   restorationEvidence: RestorationAnalysis;
 };

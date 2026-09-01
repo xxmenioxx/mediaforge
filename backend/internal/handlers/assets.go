@@ -3546,6 +3546,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 }
 
 func resolvePreviewVideoProfile(db *gorm.DB, path string, profile models.Profile, streams MediaStreamInventory, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) (models.Profile, error) {
+	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, path)
 	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
 	profile, err := resolveAutomaticFrameStructure(db, path, profile)
 	if err != nil {

@@ -139,7 +139,7 @@ func TestProfileCreateStripsResolvedRestorationPlan(t *testing.T) {
 	payload := ProfileInput{
 		Name: "Restoration intent only", Container: "mkv", VideoCodec: "hevc", AudioCodec: "copy",
 		QualityMode: "crf", QualityValue: 20, WorkerConfig: models.JSONMap{
-			"videoFilters": "hqdn3d=4:3:6:4.5",
+			"videoFilters":             "hqdn3d=4:3:6:4.5",
 			resolvedRestorationPlanKey: ResolvedRestorationPlan{Version: 1, ResolvedFilterChain: "hqdn3d=1:1:1:1"},
 		},
 	}
