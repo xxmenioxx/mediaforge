@@ -81,6 +81,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { SmartUpscaleDecision } from '../components/SmartUpscaleDecision';
 import { RestorationControls } from '../components/RestorationControls';
+import { RestorationEvidencePanel } from '../components/RestorationEvidencePanel';
 import { restorationConfigFromLegacyFilters, structuredRestorationStages } from '../utils/restorationFilters';
 import { brightnessFromStored, brightnessToStored, exposureFromStored, exposureToStored, formatFilterNumber, ratioFromStored, ratioToStored } from '../utils/imageAdjustmentPrecision';
 import { formatHEVCLevel } from '../utils/hevcLevel';
@@ -4103,6 +4104,7 @@ function LabTechnicalSnapshot({ scan }: { scan?: ScanResult }) {
         </Typography>
       </Stack>
       <MediaSnapshotDetails scan={scan} section="general" />
+      <RestorationEvidencePanel analysis={scan.restorationAnalysis} />
     </Stack>
   );
 }

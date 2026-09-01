@@ -293,7 +293,7 @@ printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame dete
 		t.Fatalf("motion refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
 	}
 	reused, refreshed, _ := snapshotRefreshDetails(result, false)
-	if slices.Contains(phases, "metadata") || slices.Contains(phases, "frame_structure") || slices.Contains(phases, "crop") || !slices.Contains(phases, "interlace") || !slices.Equal(refreshed, []string{"cadence", "interlace"}) || !slices.Equal(reused, []string{"metadata", "crop", "frameStructure"}) {
+	if slices.Contains(phases, "metadata") || slices.Contains(phases, "frame_structure") || slices.Contains(phases, "crop") || !slices.Contains(phases, "interlace") || !slices.Equal(refreshed, []string{"cadence", "interlace"}) || !slices.Equal(reused, []string{"metadata", "crop", "restoration", "frameStructure"}) {
 		t.Fatalf("unexpected motion refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
 	}
 }
@@ -345,7 +345,7 @@ printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame dete
 		t.Fatalf("Balanced to Thorough refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
 	}
 	reused, refreshed, _ := snapshotRefreshDetails(result, false)
-	if !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) || !slices.Equal(reused, []string{"metadata"}) || slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") {
+	if !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) || !slices.Equal(reused, []string{"metadata", "restoration"}) || slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") {
 		t.Fatalf("unexpected Thorough refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
 	}
 }
@@ -355,7 +355,77 @@ func completeAnalysisSnapshot(path string, info os.FileInfo) models.ScanResult {
 	crop := models.JSONMap{"version": 3, "status": "none", "reason": "cached-crop"}
 	frame := models.JSONMap{"version": 2, "status": "valid", "source": "cached-frame", "framesAnalyzed": 100, "confidenceScore": 0.99}
 	cadence := models.JSONMap{"version": cadenceAnalysisVersion, "status": "native", "recommendedAction": "preserve"}
-	return models.ScanResult{Path: path, FileName: filepath.Base(path), SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, CropAnalysis: crop, FrameStructureAnalysis: frame, CadenceAnalysis: cadence, RawProbe: models.JSONMap{"format": map[string]any{"duration": "1000"}, "streams": []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}}, "interlaceAnalysis": interlace, "cropAnalysis": crop, "frameStructureAnalysis": frame, "cadenceAnalysis": cadence}}
+	restoration := structToJSONMap(restorationEvidenceUnavailable())
+	return models.ScanResult{Path: path, FileName: filepath.Base(path), SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, CropAnalysis: crop, RestorationAnalysis: restoration, FrameStructureAnalysis: frame, CadenceAnalysis: cadence, RawProbe: models.JSONMap{"format": map[string]any{"duration": "1000"}, "streams": []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}}, "interlaceAnalysis": interlace, "cropAnalysis": crop, "restorationAnalysis": restoration, "frameStructureAnalysis": frame, "cadenceAnalysis": cadence}}
+}
+
+func TestSnapshotCacheTracksRestorationAnalysisVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "restoration-cache.mkv")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	snapshot := completeAnalysisSnapshot(path, info)
+	stampSnapshotCacheMetadata(&snapshot, path, info)
+	if matches, legacy, stale := snapshotCacheState(snapshot, path, info); !matches || legacy || len(stale) != 0 {
+		t.Fatalf("current restoration component was not cacheable: matches=%t legacy=%t stale=%v", matches, legacy, stale)
+	}
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["restoration"] = models.JSONMap{"version": 0, "status": "missing"}
+	if _, _, stale := snapshotCacheState(snapshot, path, info); !slices.Contains(stale, "restoration") {
+		t.Fatalf("stale restoration component was not invalidated: %v", stale)
+	}
+}
+
+func TestScanResolvedFileRefreshesOnlySampledRestorationEvidence(t *testing.T) {
+	binDir := t.TempDir()
+	ffmpegScript := `#!/bin/sh
+printf '%s\n' 'lavfi.block=10.000000' 'lavfi.bitplanenoise.0.1=0.030000' 'lavfi.bitplanenoise.1.1=0.050000' 'lavfi.bitplanenoise.2.1=0.070000' >&2
+`
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(ffmpegScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "ffprobe"), []byte("#!/bin/sh\nprintf 'full metadata scan must not run' >&2\nexit 19\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	db, err := gorm.Open(sqlite.Open("file:restoration-incremental-refresh?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	snapshot := completeAnalysisSnapshot(path, info)
+	stampSnapshotCacheMetadata(&snapshot, path, info)
+	cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+	components, _ := snapshotCacheMap(cache["components"])
+	components["restoration"] = models.JSONMap{"version": 0, "status": "missing"}
+	if err := db.Create(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var phases []string
+	result, cached, err := NewScannerHandler(db).scanResolvedFile(path, info, ScanRequest{}, func(phase string, _ float64, _ string) { phases = append(phases, phase) })
+	if err != nil || cached {
+		t.Fatalf("restoration refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
+	}
+	if slices.Contains(phases, "metadata") || !slices.Contains(phases, "restoration") {
+		t.Fatalf("restoration refresh did not remain sampled/incremental: %v", phases)
+	}
+	var analysis RestorationAnalysis
+	if !decodeJSONValue(result.RestorationAnalysis, &analysis) || analysis.Blocking.Availability != "available" || analysis.Windows != 3 {
+		t.Fatalf("restoration evidence was not persisted: %#v", result.RestorationAnalysis)
+	}
+	reused, refreshed, _ := snapshotRefreshDetails(result, false)
+	if !slices.Equal(refreshed, []string{"restoration"}) || slices.Contains(reused, "restoration") {
+		t.Fatalf("component provenance mismatch: reused=%v refreshed=%v", reused, refreshed)
+	}
 }
 
 func TestSnapshotOperationRecordsStageTimings(t *testing.T) {
@@ -1587,8 +1657,8 @@ func TestArchivedOriginalInheritancePreservesStaleComponentProvenance(t *testing
 		wantRefreshed []string
 		wantReused    []string
 	}{
-		{component: "interlace", wantRefreshed: []string{"cadence", "interlace"}, wantReused: []string{"metadata", "crop", "frameStructure"}},
-		{component: "crop", wantRefreshed: []string{"crop"}, wantReused: []string{"metadata", "interlace", "frameStructure", "cadence"}},
+		{component: "interlace", wantRefreshed: []string{"cadence", "interlace"}, wantReused: []string{"metadata", "crop", "restoration", "frameStructure"}},
+		{component: "crop", wantRefreshed: []string{"crop"}, wantReused: []string{"metadata", "interlace", "restoration", "frameStructure", "cadence"}},
 	} {
 		t.Run(testCase.component, func(t *testing.T) {
 			binDir := t.TempDir()

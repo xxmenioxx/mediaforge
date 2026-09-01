@@ -24,6 +24,7 @@ type ScanResult struct {
 	CadenceAnalysis              JSONMap   `json:"cadenceAnalysis" gorm:"type:json"`
 	CadenceRecommendation        JSONMap   `json:"cadenceRecommendation" gorm:"type:json"`
 	CropAnalysis                 JSONMap   `json:"cropAnalysis" gorm:"type:json"`
+	RestorationAnalysis          JSONMap   `json:"restorationAnalysis" gorm:"type:json"`
 	FrameStructureAnalysis       JSONMap   `json:"frameStructureAnalysis" gorm:"type:json"`
 	FrameStructureRecommendation JSONMap   `json:"frameStructureRecommendation" gorm:"type:json"`
 	HEVCLevelRecommendation      JSONMap   `json:"hevcLevelRecommendation" gorm:"type:json"`

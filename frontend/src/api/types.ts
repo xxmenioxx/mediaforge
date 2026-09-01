@@ -1249,12 +1249,36 @@ export type ScanResult = {
     sampledAt?: number[];
     reason?: string;
   };
+  restorationAnalysis?: RestorationAnalysis;
   frameStructureAnalysis?: QSVFrameStructureAnalysis;
   frameStructureRecommendation?: FrameStructureRecommendationSet;
   hevcLevelRecommendation?: HEVCLevelRecommendation;
   rawProbe: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+};
+
+export type RestorationSignalEvidence = {
+  availability: 'available' | 'ambiguous' | 'unavailable' | string;
+  severity: string;
+  value?: number;
+  confidence: string;
+  supportingEvidence: string[];
+};
+
+export type RestorationAnalysis = {
+  version: number;
+  status: 'available' | 'unavailable' | string;
+  source: string;
+  windows: number;
+  sampledFrames: number;
+  blocking: RestorationSignalEvidence;
+  noise: RestorationSignalEvidence;
+  grain: RestorationSignalEvidence;
+  chromaNoise: RestorationSignalEvidence;
+  banding: RestorationSignalEvidence;
+  ringing: RestorationSignalEvidence;
+  edgeDetailConfidence: RestorationSignalEvidence;
 };
 
 export type MVForgeQualityGoal = 'maximum_savings' | 'balanced' | 'conservative' | 'maximum_quality' | 'archive';

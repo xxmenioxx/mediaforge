@@ -329,11 +329,12 @@ var snapshotAnalysisVersions = models.JSONMap{
 	"metadata":       1,
 	"interlace":      interlaceAnalysisCacheVersion,
 	"crop":           3,
+	"restoration":    restorationAnalysisVersion,
 	"frameStructure": 2,
 	"cadence":        cadenceAnalysisVersion,
 }
 
-var snapshotComponentNames = []string{"metadata", "interlace", "crop", "frameStructure", "cadence"}
+var snapshotComponentNames = []string{"metadata", "interlace", "crop", "restoration", "frameStructure", "cadence"}
 
 func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 	fingerprint := models.JSONMap{"path": filepath.Clean(path)}
@@ -422,6 +423,7 @@ func migrateLegacySnapshotCache(result *models.ScanResult, path string, info os.
 		"metadata":       legacyMetadataVersion(*result),
 		"interlace":      jsonMapInt(result.InterlaceAnalysis, "version"),
 		"crop":           jsonMapInt(result.CropAnalysis, "version"),
+		"restoration":    jsonMapInt(result.RestorationAnalysis, "version"),
 		"frameStructure": jsonMapInt(result.FrameStructureAnalysis, "version"),
 		"cadence":        jsonMapInt(result.CadenceAnalysis, "version"),
 	}
@@ -467,6 +469,8 @@ func snapshotComponentStatus(result models.ScanResult, component string) string 
 		analysis = result.InterlaceAnalysis
 	case "crop":
 		analysis = result.CropAnalysis
+	case "restoration":
+		analysis = result.RestorationAnalysis
 	case "frameStructure":
 		analysis = result.FrameStructureAnalysis
 	case "cadence":
@@ -558,6 +562,7 @@ func analysisPolicyEvidenceManifest(policy AnalysisPolicy, analysisSeconds int) 
 		"frameStructure": frame,
 		"interlace":      interlace,
 		"crop":           fmt.Sprintf("adaptive=%t;maximum=%d;positions=%s;depth=%s", policy.AdaptiveAnalysis, policy.MaximumWindows, positionSignature, policy.CropDepth),
+		"restoration":    fmt.Sprintf("maximum=%d;seconds=3;positions=%s", min(3, policy.MaximumWindows), positionSignature),
 	}
 }
 
@@ -576,6 +581,9 @@ func staleComponentsForAnalysisPolicy(stored any, policy AnalysisPolicy, analysi
 	}
 	if stringFromUnknown(storedManifest["crop"]) != stringFromUnknown(current["crop"]) {
 		stale = append(stale, "crop")
+	}
+	if stringFromUnknown(storedManifest["restoration"]) != stringFromUnknown(current["restoration"]) {
+		stale = append(stale, "restoration")
 	}
 	return uniqueStrings(stale)
 }
@@ -835,6 +843,15 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 		existing.RawProbe["cadenceRecommendation"] = recommendCadence(cadence)
 		existing.CadenceAnalysis = structToJSONMap(cadence)
 		existing.CadenceRecommendation = structToJSONMap(recommendCadence(cadence))
+	}
+	if slices.Contains(staleComponents, "restoration") {
+		report("restoration", 90, "Refreshing sampled restoration evidence")
+		restoration := analyzeRestorationSignalsWithSamplingPlanContext(ctx, path, plan)
+		existing.RawProbe["restorationAnalysis"] = restoration
+		existing.RestorationAnalysis = structToJSONMap(restoration)
+		if ctx.Err() != nil {
+			return models.ScanResult{}, ctx.Err()
+		}
 	}
 	existing.FrameStructureAnalysis = analysisMapFromRaw(existing.RawProbe, "frameStructureAnalysis")
 	existing.FrameStructureRecommendation = frameStructureRecommendationMap(existing)
@@ -1339,6 +1356,11 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 	if err := ctx.Err(); err != nil {
 		return FFProbeResult{}, nil, err
 	}
+	report("restoration", 88, "Measuring sampled restoration evidence")
+	raw["restorationAnalysis"] = pixelSession.restorationAnalysis()
+	if err := ctx.Err(); err != nil {
+		return FFProbeResult{}, nil, err
+	}
 	if frameErr == nil {
 		encoded, _ := json.Marshal(frameAnalysis)
 		frameMap := models.JSONMap{}
@@ -1388,6 +1410,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		CadenceAnalysis:        analysisMapFromRaw(raw, "cadenceAnalysis"),
 		CadenceRecommendation:  analysisMapFromRaw(raw, "cadenceRecommendation"),
 		CropAnalysis:           analysisMapFromRaw(raw, "cropAnalysis"),
+		RestorationAnalysis:    analysisMapFromRaw(raw, "restorationAnalysis"),
 		FrameStructureAnalysis: analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
