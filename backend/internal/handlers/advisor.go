@@ -48,14 +48,15 @@ type AdvisorFinding struct {
 }
 
 type ProfileSuggestionResponse struct {
-	MatchType        string             `json:"matchType"`
-	Summary          string             `json:"summary"`
-	Scan             models.ScanResult  `json:"scan"`
-	SuggestedProfile *models.Profile    `json:"suggestedProfile,omitempty"`
-	Candidates       []ProfileCandidate `json:"candidates"`
-	ProposedProfile  ProfileInput       `json:"proposedProfile"`
-	Insights         AnalysisInsights   `json:"insights"`
-	Findings         []AdvisorFinding   `json:"findings"`
+	MatchType        string                        `json:"matchType"`
+	Summary          string                        `json:"summary"`
+	Scan             models.ScanResult             `json:"scan"`
+	SuggestedProfile *models.Profile               `json:"suggestedProfile,omitempty"`
+	Candidates       []ProfileCandidate            `json:"candidates"`
+	ProposedProfile  ProfileInput                  `json:"proposedProfile"`
+	Insights         AnalysisInsights              `json:"insights"`
+	Findings         []AdvisorFinding              `json:"findings"`
+	RestorationPlan  RestorationRecommendationPlan `json:"restorationPlan"`
 }
 
 type MVForgePreferences struct {
@@ -178,6 +179,16 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 	}
 	response.Insights = analysisInsights(scan, targetCRF)
 	response.Findings = advisorFindings(scan, proposal, preferences, hardwareEncoder, hardwareWorker)
+	applyLocked, lockErr := (QueueHandler{db: h.db}).assetHasOpenJob(request.MediaPath, 0)
+	if lockErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": lockErr.Error()})
+		return
+	}
+	recommendationProfile := proposal
+	if response.SuggestedProfile != nil {
+		recommendationProfile = advisorProposalFromProfile(*response.SuggestedProfile)
+	}
+	response.RestorationPlan = buildRestorationRecommendationPlan(scan, recommendationProfile, applyLocked)
 	c.JSON(http.StatusOK, response)
 }
 

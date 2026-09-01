@@ -82,6 +82,8 @@ import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { SmartUpscaleDecision } from '../components/SmartUpscaleDecision';
 import { RestorationControls } from '../components/RestorationControls';
 import { RestorationEvidencePanel } from '../components/RestorationEvidencePanel';
+import { RestorationRecommendationPanel } from '../components/RestorationRecommendationPanel';
+import { isActionableRestorationRecommendation, restorationRecommendationSelectionID } from '../utils/restorationRecommendations';
 import { restorationConfigFromLegacyFilters, structuredRestorationStages } from '../utils/restorationFilters';
 import { brightnessFromStored, brightnessToStored, exposureFromStored, exposureToStored, formatFilterNumber, ratioFromStored, ratioToStored } from '../utils/imageAdjustmentPrecision';
 import { formatHEVCLevel } from '../utils/hevcLevel';
@@ -1005,7 +1007,8 @@ export function ProfileLabPage() {
       setRecommendationReport(previewRecommendationReport(suggestion));
       setRecommendationApplied({ video: false, audio: false, tracks: false });
       setRecommendationSelected([
-        ...(suggestion.findings ?? []).filter((finding) => finding.actionable && finding.defaultSelected).map((finding) => finding.id),
+        ...(suggestion.findings ?? []).filter((finding) => !finding.id.startsWith('motion-') && finding.actionable && finding.defaultSelected).map((finding) => finding.id),
+        ...(suggestion.restorationPlan?.recommendations ?? []).filter(isActionableRestorationRecommendation).map((item) => restorationRecommendationSelectionID(item.id)),
         'audio-draft',
         'tracks-draft',
       ]);
@@ -1641,6 +1644,22 @@ export function ProfileLabPage() {
       return synchronizeLabAuthoritativeContract(next);
     });
     setRecommendationApplied((current) => ({ ...current, video: true }));
+  }
+
+  function applyRecommendationSelection(suggestion: ProfileSuggestion, applyAll: boolean) {
+    const selected = new Set(recommendationSelected);
+    const findings = (suggestion.findings ?? []).filter((finding) => !finding.id.startsWith('motion-') && finding.actionable && (applyAll || selected.has(finding.id)));
+    const restorationFindings: AdvisorFinding[] = (suggestion.restorationPlan?.recommendations ?? [])
+      .filter((item) => isActionableRestorationRecommendation(item) && (applyAll || selected.has(restorationRecommendationSelectionID(item.id))))
+      .map((item) => ({
+        id: restorationRecommendationSelectionID(item.id), category: 'restoration', title: item.domain,
+        detail: item.reasons.join(' '), severity: 'recommended', confidence: item.confidence,
+        actionable: true, defaultSelected: true, patch: item.patch,
+      }));
+    applyLabVideoFindings([...findings, ...restorationFindings]);
+    if (applyAll || selected.has('audio-draft')) applyAutoRecommendation(suggestion, 'audio');
+    if (applyAll || selected.has('tracks-draft')) applyAutoRecommendation(suggestion, 'tracks');
+    setRecommendationOpen(false);
   }
 
   function applyStarterVideoPreset(presetKey: string) {
@@ -2506,17 +2525,17 @@ export function ProfileLabPage() {
           <DialogActions>
             <Button onClick={() => setRecommendationOpen(false)}>Open without suggestions</Button>
             <Button
-              variant="contained"
-              disabled={!recommendationSuggestion || recommendationSelected.length === 0}
-              onClick={() => {
-                if (!recommendationSuggestion) return;
-                applyLabVideoFindings((recommendationSuggestion.findings ?? []).filter((finding) => finding.actionable && recommendationSelected.includes(finding.id)));
-                if (recommendationSelected.includes('audio-draft')) applyAutoRecommendation(recommendationSuggestion, 'audio');
-                if (recommendationSelected.includes('tracks-draft')) applyAutoRecommendation(recommendationSuggestion, 'tracks');
-                setRecommendationOpen(false);
-              }}
+              disabled={!recommendationSuggestion || recommendationSuggestion.restorationPlan?.applyLocked}
+              onClick={() => recommendationSuggestion && applyRecommendationSelection(recommendationSuggestion, true)}
             >
-              Apply suggestions
+              Apply all recommendations
+            </Button>
+            <Button
+              variant="contained"
+              disabled={!recommendationSuggestion || recommendationSelected.length === 0 || recommendationSuggestion.restorationPlan?.applyLocked}
+              onClick={() => recommendationSuggestion && applyRecommendationSelection(recommendationSuggestion, false)}
+            >
+              Apply selected
             </Button>
           </DialogActions>
         </Dialog>
@@ -6489,7 +6508,7 @@ function LabRecommendationDetails({
     { id: 'audio-draft', category: 'audio', title: 'Prepare an editable audio draft', detail: report.audio.join(' '), actionable: true, severity: 'recommended', confidence: 'medium' },
     { id: 'tracks-draft', category: 'tracks', title: 'Prepare an editable tracks draft', detail: report.tracks.join(' '), actionable: true, severity: 'recommended', confidence: 'high' },
   ];
-  const items = [...(suggestion?.findings ?? []), ...draftItems];
+  const items = [...(suggestion?.findings ?? []).filter((item) => !item.id.startsWith('motion-')), ...draftItems];
   const selectedCount = selected.length;
   return (
     <Stack spacing={1.5}>
@@ -6500,6 +6519,8 @@ function LabRecommendationDetails({
       </Alert>
       <Typography variant="h3">{report.summary}</Typography>
       <Typography color="text.secondary" variant="body2">{report.match}</Typography>
+      {suggestion?.restorationPlan ? <RestorationRecommendationPanel plan={suggestion.restorationPlan} selected={selected} onToggle={onToggle} /> : null}
+      <Typography variant="h3">Other profile drafts</Typography>
       <Stack spacing={1}>
         {items.map((item) => (
           <Box key={item.id} sx={{ p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1 }}>

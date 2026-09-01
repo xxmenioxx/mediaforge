@@ -555,6 +555,31 @@ export type ProfileSuggestion = {
     recommendations: string[];
   };
   findings: AdvisorFinding[];
+  restorationPlan: RestorationRecommendationPlan;
+};
+
+export type RestorationRecommendationState = 'recommended' | 'manual_review' | 'not_applicable' | 'no_recommendation';
+
+export type RestorationRecommendation = {
+  id: string;
+  domain: string;
+  state: RestorationRecommendationState;
+  currentValue?: string;
+  recommendedValue?: string;
+  confidence: string;
+  reasons: string[];
+  warnings: string[];
+  supportingEvidence: string[];
+  patch?: Record<string, unknown>;
+  resolvedOutput?: { width: number; height: number; sar?: string };
+};
+
+export type RestorationRecommendationPlan = {
+  version: number;
+  applyLocked: boolean;
+  applyLockReason?: string;
+  recommendations: RestorationRecommendation[];
+  restorationEvidence: RestorationAnalysis;
 };
 
 export type AdvisorFinding = {
