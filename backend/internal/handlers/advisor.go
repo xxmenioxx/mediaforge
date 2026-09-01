@@ -184,11 +184,10 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": lockErr.Error()})
 		return
 	}
-	recommendationProfile := proposal
+	response.RestorationPlan = buildRestorationRecommendationPlan(scan, proposal, applyLocked)
 	if response.SuggestedProfile != nil {
-		recommendationProfile = advisorProposalFromProfile(*response.SuggestedProfile)
+		annotateRestorationRecommendationCurrentProfile(&response.RestorationPlan, *response.SuggestedProfile)
 	}
-	response.RestorationPlan = buildRestorationRecommendationPlan(scan, recommendationProfile, applyLocked)
 	c.JSON(http.StatusOK, response)
 }
 

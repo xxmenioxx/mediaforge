@@ -54,6 +54,46 @@ func TestRestorationRecommendationsReuseSmartUpscaleDecision(t *testing.T) {
 	}
 }
 
+func TestRestorationRecommendationUsesNeutralUpscaleInputAndOnlyAnnotatesCurrentProfile(t *testing.T) {
+	scan := recommendationScan(InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .95}, CadenceAnalysis{}, CadenceRecommendation{})
+	current := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"upscaleMode": "disabled", "upscaleSharpen": "medium"}}
+	plan := buildRestorationRecommendationPlan(scan, proposedProfileForScan(scan), false)
+	annotateRestorationRecommendationCurrentProfile(&plan, current)
+	upscale := recommendationByID(t, plan, "upscale")
+	if upscale.CurrentValue != "disabled" || upscale.RecommendedValue != "720p" || upscale.Patch["upscaleMode"] != "auto" || upscale.ResolvedOutput == nil || upscale.ResolvedOutput.Width != 1280 || upscale.ResolvedOutput.Height != 720 {
+		t.Fatalf("current Disabled contaminated neutral Auto recommendation: %#v", upscale)
+	}
+	if sharpen := recommendationByID(t, plan, "sharpen"); sharpen.CurrentValue != "medium" || sharpen.State != RestorationRecommendationNotApplicable {
+		t.Fatalf("current sharpen must be comparison-only: %#v", sharpen)
+	}
+
+	hd := scan
+	hd.Width, hd.Height = 1280, 720
+	hd.VideoStreams = models.JSONList{map[string]any{"width": 1280, "height": 720, "sampleAspectRatio": "1:1", "displayAspectRatio": "16:9"}}
+	hdPlan := buildRestorationRecommendationPlan(hd, proposedProfileForScan(hd), false)
+	current.WorkerConfig["upscaleMode"] = "1080p"
+	annotateRestorationRecommendationCurrentProfile(&hdPlan, current)
+	hdUpscale := recommendationByID(t, hdPlan, "upscale")
+	if hdUpscale.CurrentValue != "1080p" || hdUpscale.RecommendedValue != "keep_source" {
+		t.Fatalf("current 1080p contaminated neutral Keep Source recommendation: %#v", hdUpscale)
+	}
+}
+
+func TestRestorationRecommendationUsesNeutralMotionInput(t *testing.T) {
+	scan := recommendationScan(
+		InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff"},
+		CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .99},
+		CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
+	)
+	current := models.Profile{WorkerConfig: models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "preserve", "deinterlaceMode": "force"}}
+	plan := buildRestorationRecommendationPlan(scan, proposedProfileForScan(scan), false)
+	annotateRestorationRecommendationCurrentProfile(&plan, current)
+	frame := recommendationByID(t, plan, "frame_structure")
+	if frame.CurrentValue != "deinterlace / preserve" || frame.RecommendedValue != "ivtc" {
+		t.Fatalf("forced deinterlace contaminated telecine recommendation: %#v", frame)
+	}
+}
+
 func TestRestorationRecommendationsPreserveResolvedSharpenAndVideoCopyReason(t *testing.T) {
 	scan := recommendationScan(InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .95}, CadenceAnalysis{}, CadenceRecommendation{})
 	proposal := proposedProfileForScan(scan)
@@ -69,8 +109,48 @@ func TestRestorationRecommendationsPreserveResolvedSharpenAndVideoCopyReason(t *
 	proposal.WorkerConfig["upscaleMode"] = "1080p"
 	copyPlan := buildRestorationRecommendationPlan(scan, proposal, false)
 	upscale := recommendationByID(t, copyPlan, "upscale")
-	if upscale.CurrentValue != "1080p" || upscale.RecommendedValue != "keep_source" || len(upscale.Reasons) != 1 || upscale.Reasons[0] != "keep_source_video_copy" || len(upscale.Warnings) == 0 {
+	if upscale.RecommendedValue != "keep_source" || len(upscale.Reasons) != 1 || upscale.Reasons[0] != "keep_source_video_copy" || len(upscale.Warnings) == 0 {
 		t.Fatalf("Video Copy request/resolution evidence was lost: %#v", upscale)
+	}
+}
+
+func TestMotionRecommendationPatchesReplaceConflictingState(t *testing.T) {
+	tests := []struct {
+		name        string
+		interlace   InterlaceAnalysis
+		cadence     CadenceAnalysis
+		cadencePlan CadenceRecommendation
+		current     models.JSONMap
+		want        models.JSONMap
+	}{
+		{
+			name: "ivtc", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff"},
+			cadence: CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .99}, cadencePlan: CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
+			current: models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "preserve", "deinterlaceMode": "force", "deinterlaceFieldOrder": "bff"},
+			want:    models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "deinterlaceMode": "ivtc_tff", "cadenceFieldOrder": "tff", "deinterlaceFieldOrder": "auto"},
+		},
+		{
+			name: "deinterlace", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "interlaced", Confidence: .99, DetectedFieldOrder: "bff", RecommendedMode: "bwdif_bff"},
+			current: models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "deinterlaceMode": "ivtc_tff", "cadenceFieldOrder": "tff"},
+			want:    models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "preserve", "deinterlaceMode": "force", "cadenceFieldOrder": "auto", "deinterlaceFieldOrder": "bff"},
+		},
+		{
+			name: "progressive", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .99},
+			current: models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "inverse_telecine", "deinterlaceMode": "ivtc_bff", "cadenceFieldOrder": "bff", "deinterlaceFieldOrder": "tff"},
+			want:    models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "preserve", "deinterlaceMode": "off", "cadenceFieldOrder": "auto", "deinterlaceFieldOrder": "auto"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scan := recommendationScan(test.interlace, test.cadence, test.cadencePlan)
+			item := recommendationByID(t, buildRestorationRecommendationPlan(scan, proposedProfileForScan(scan), false), "frame_structure")
+			result := applyRestorationRecommendations(test.current, RestorationRecommendationPlan{Recommendations: []RestorationRecommendation{item}}, []string{"frame_structure"})
+			for key, want := range test.want {
+				if result[key] != want {
+					t.Fatalf("%s=%#v want %#v; config=%#v patch=%#v", key, result[key], want, result, item.Patch)
+				}
+			}
+		})
 	}
 }
 

@@ -60,6 +60,12 @@ func buildRestorationRecommendationPlan(scan models.ScanResult, proposal Profile
 	}
 
 	profile := profileFromAdvisorProposal(proposal)
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["fieldStructureMode"] = "auto"
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["deinterlaceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["deinterlaceFieldOrder"] = "auto"
 	interlace, _ := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
 	cadence, _ := decodeCadenceAnalysis(scan.CadenceAnalysis)
 	cadenceRecommendation, _ := decodeCadenceRecommendation(scan.CadenceRecommendation)
@@ -67,12 +73,11 @@ func buildRestorationRecommendationPlan(scan models.ScanResult, proposal Profile
 	plan.Recommendations = append(plan.Recommendations, frameStructureRestorationRecommendation(interlace, resolvedMotion))
 
 	upscaleRequest := cloneWorkerConfig(resolvedMotion.WorkerConfig)
-	if strings.TrimSpace(workerStringValue(upscaleRequest["upscaleMode"])) == "" {
-		upscaleRequest["upscaleMode"] = string(UpscaleModeAuto)
-	}
+	upscaleRequest["upscaleMode"] = string(UpscaleModeAuto)
 	if strings.TrimSpace(workerStringValue(upscaleRequest["upscaleSharpen"])) == "" {
 		upscaleRequest["upscaleSharpen"] = string(UpscaleSharpenOff)
 	}
+	delete(upscaleRequest, "upscaleCustomHeight")
 	delete(upscaleRequest, "resolvedUpscaleDecision")
 	resolvedMotion.WorkerConfig = upscaleRequest
 	resolvedUpscale := resolveUpscaleProfile(resolvedMotion, mediaStreamInventoryFromScan(scan), upscaleAnalysisEvidence(scan))
@@ -93,8 +98,50 @@ func buildRestorationRecommendationPlan(scan models.ScanResult, proposal Profile
 		noAutomaticRestorationRecommendation("eq", "EQ / color adjustments", "No calibrated color-correction advisor is available."),
 		noAutomaticRestorationRecommendation("color", "Color normalization", "No additional restoration color recommendation is available beyond the existing color-policy resolver."),
 	)
-	annotateCurrentRestorationValues(plan.Recommendations, workerStringValue(profile.WorkerConfig["videoFilters"]))
 	return plan
+}
+
+func annotateRestorationRecommendationCurrentProfile(plan *RestorationRecommendationPlan, profile models.Profile) {
+	if plan == nil {
+		return
+	}
+	worker := profile.WorkerConfig
+	fieldMode := normalizedFieldStructureMode(workerStringValue(worker["fieldStructureMode"]))
+	cadenceMode := normalizedCadenceMode(workerStringValue(worker["cadenceMode"]))
+	legacy := strings.ToLower(strings.TrimSpace(workerStringValue(worker["deinterlaceMode"])))
+	if fieldMode == "" {
+		if legacy == "force" {
+			fieldMode = "deinterlace"
+		} else {
+			fieldMode = "preserve"
+		}
+	}
+	if cadenceMode == "" {
+		if legacy == "ivtc_tff" || legacy == "ivtc_bff" {
+			cadenceMode = "inverse_telecine"
+		} else {
+			cadenceMode = "preserve"
+		}
+	}
+	upscaleMode := normalizedUpscaleMode(workerStringValue(worker["upscaleMode"]))
+	if upscaleMode == "" {
+		upscaleMode = string(UpscaleModeDisabled)
+	}
+	sharpenMode := normalizedUpscaleSharpen(workerStringValue(worker["upscaleSharpen"]))
+	if sharpenMode == "" {
+		sharpenMode = string(UpscaleSharpenOff)
+	}
+	for index := range plan.Recommendations {
+		switch plan.Recommendations[index].ID {
+		case "frame_structure":
+			plan.Recommendations[index].CurrentValue = fieldMode + " / " + cadenceMode
+		case "upscale":
+			plan.Recommendations[index].CurrentValue = upscaleMode
+		case "sharpen":
+			plan.Recommendations[index].CurrentValue = sharpenMode
+		}
+	}
+	annotateCurrentRestorationValues(plan.Recommendations, workerStringValue(worker["videoFilters"]))
 }
 
 func annotateCurrentRestorationValues(recommendations []RestorationRecommendation, filters string) {
@@ -128,38 +175,31 @@ func profileFromAdvisorProposal(input ProfileInput) models.Profile {
 	}
 }
 
-func advisorProposalFromProfile(profile models.Profile) ProfileInput {
-	return ProfileInput{
-		Name: profile.Name, Scope: profile.Scope, Description: profile.Description, Container: profile.Container,
-		VideoCodec: profile.VideoCodec, CodecFamily: profile.CodecFamily, EncoderPolicy: profile.EncoderPolicy,
-		PreferredEncoder: profile.PreferredEncoder, AllowedEncoders: []string(profile.AllowedEncoders), FallbackPolicy: profile.FallbackPolicy,
-		BitDepth: profile.BitDepth, PixelFormat: profile.PixelFormat, QualityStrategy: profile.QualityStrategy,
-		OptimizationIntent: profile.OptimizationIntent, AudioCodec: profile.AudioCodec, QualityMode: profile.QualityMode,
-		QualityValue: profile.QualityValue, PreserveHDR: profile.PreserveHDR, PreserveSubtitles: profile.PreserveSubtitles,
-		PreserveChapters: profile.PreserveChapters, WorkerConfig: cloneWorkerConfig(profile.WorkerConfig), Disabled: profile.Disabled,
-	}
-}
-
 func frameStructureRestorationRecommendation(interlace InterlaceAnalysis, resolved models.Profile) RestorationRecommendation {
 	confidence := confidenceLabel(interlace.Confidence)
 	operation := strings.ToLower(workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]))
 	filters := strings.ToLower(workerStringValue(resolved.WorkerConfig["videoFilters"]))
 	if operation == "inverse_telecine" || strings.Contains(filters, "fieldmatch") {
-		patch := models.JSONMap{"cadenceMode": "inverse_telecine"}
+		patch := models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "deinterlaceMode": "off", "deinterlaceFieldOrder": "auto"}
 		if order := normalizedRecommendationFieldOrder(interlace.DetectedFieldOrder, interlace.RecommendedMode); order != "" {
 			patch["cadenceFieldOrder"] = order
+			patch["deinterlaceMode"] = "ivtc_" + order
+		} else {
+			patch["cadenceFieldOrder"] = "auto"
 		}
-		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, CurrentValue: interlace.Status, RecommendedValue: "ivtc", Confidence: confidence, Reasons: []string{"The authoritative cadence/frame-structure resolver selected inverse telecine."}, Patch: patch}
+		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, RecommendedValue: "ivtc", Confidence: confidence, Reasons: []string{"The authoritative cadence/frame-structure resolver selected inverse telecine."}, Patch: patch}
 	}
 	if strings.Contains(filters, "bwdif=") || strings.Contains(filters, "yadif=") {
-		patch := models.JSONMap{"fieldStructureMode": "deinterlace"}
+		patch := models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "preserve", "deinterlaceMode": "force", "cadenceFieldOrder": "auto"}
 		if order := normalizedRecommendationFieldOrder(interlace.DetectedFieldOrder, interlace.RecommendedMode); order != "" {
 			patch["deinterlaceFieldOrder"] = order
+		} else {
+			patch["deinterlaceFieldOrder"] = "auto"
 		}
-		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, CurrentValue: interlace.Status, RecommendedValue: "deinterlace", Confidence: confidence, Reasons: []string{"The authoritative frame-structure resolver selected deinterlacing."}, Patch: patch}
+		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, RecommendedValue: "deinterlace", Confidence: confidence, Reasons: []string{"The authoritative frame-structure resolver selected deinterlacing."}, Patch: patch}
 	}
 	if strings.EqualFold(interlace.Status, "progressive") {
-		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, CurrentValue: "progressive", RecommendedValue: "preserve_progressive", Confidence: confidence, Reasons: []string{"The authoritative frame-structure resolver classified the effective output as progressive."}, Patch: models.JSONMap{"fieldStructureMode": "preserve"}}
+		return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationRecommended, RecommendedValue: "preserve_progressive", Confidence: confidence, Reasons: []string{"The authoritative frame-structure resolver classified the effective output as progressive."}, Patch: models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "preserve", "deinterlaceMode": "off", "cadenceFieldOrder": "auto", "deinterlaceFieldOrder": "auto"}}
 	}
 	return RestorationRecommendation{ID: "frame_structure", Domain: "Frame Structure", State: RestorationRecommendationManualReview, CurrentValue: fallback(interlace.Status, "unknown"), Confidence: confidence, Reasons: []string{"Frame structure is not reliable enough for an automatic action."}}
 }
@@ -187,7 +227,7 @@ func smartUpscaleRestorationRecommendation(decision ResolvedUpscaleDecision) Res
 	}
 	return RestorationRecommendation{
 		ID: "upscale", Domain: "Smart Upscale", State: RestorationRecommendationRecommended,
-		CurrentValue: string(decision.RequestedMode), RecommendedValue: value, Confidence: string(decision.Confidence),
+		RecommendedValue: value, Confidence: string(decision.Confidence),
 		Reasons: append([]string(nil), decision.Reasons...), Warnings: append([]string(nil), decision.Warnings...), Patch: patch,
 		ResolvedOutput: &RestorationRecommendationOutput{Width: decision.TargetWidth, Height: decision.TargetHeight, SAR: decision.TargetSAR},
 	}
@@ -195,16 +235,16 @@ func smartUpscaleRestorationRecommendation(decision ResolvedUpscaleDecision) Res
 
 func smartUpscaleSharpenRecommendation(decision ResolvedUpscaleDecision) RestorationRecommendation {
 	if !decision.UpscaleApplied {
-		return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationNotApplicable, CurrentValue: string(decision.SharpenMode), Confidence: string(decision.Confidence), Reasons: []string{"Smart Upscale kept the source geometry, so no post-upscale sharpen is applicable."}}
+		return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationNotApplicable, Confidence: string(decision.Confidence), Reasons: []string{"Smart Upscale kept the source geometry, so no post-upscale sharpen is applicable."}}
 	}
 	if decision.SharpenMode == UpscaleSharpenOff {
-		return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationNotApplicable, CurrentValue: "off", RecommendedValue: "off", Confidence: string(decision.Confidence), Reasons: []string{"The established Smart Upscale decision leaves post-scale sharpening off."}}
+		return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationNotApplicable, RecommendedValue: "off", Confidence: string(decision.Confidence), Reasons: []string{"The established Smart Upscale decision leaves post-scale sharpening off."}}
 	}
 	patch := models.JSONMap{"upscaleSharpen": string(decision.SharpenMode)}
 	if decision.SharpenMode == UpscaleSharpenCustom {
 		patch["upscaleSharpenCustomStrength"] = decision.SharpenStrength
 	}
-	return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationRecommended, CurrentValue: string(decision.SharpenMode), RecommendedValue: string(decision.SharpenMode), Confidence: string(decision.Confidence), Reasons: []string{"This value comes from the established Smart Upscale resolver; restoration evidence did not increase it."}, Patch: patch}
+	return RestorationRecommendation{ID: "sharpen", Domain: "Final sharpen", State: RestorationRecommendationRecommended, RecommendedValue: string(decision.SharpenMode), Confidence: string(decision.Confidence), Reasons: []string{"This value comes from the established Smart Upscale resolver; restoration evidence did not increase it."}, Patch: patch}
 }
 
 func signalRestorationRecommendation(id, domain string, signal RestorationSignalEvidence) RestorationRecommendation {
