@@ -17,6 +17,7 @@ describe('TrackProfileResolutionPreview', () => {
       ],
       subtitleStreams: [{ index: 4, codec: 'ass', language: 'spa', title: '' }],
       attachmentStreams: [],
+      attachmentInventoryAvailable: true,
     } as unknown as ScanResult;
     const preview: ResolutionPreview = {
       assetPath: '/media/Arbegas 21.mkv', keepVideoStreams: [0], keepAudioStreams: [1], keepSubtitleStreams: [4], warnings: [],
@@ -57,14 +58,15 @@ describe('TrackProfileResolutionPreview', () => {
       attachmentStreams: [
         { index: 7, type: 'attachment', codec: 'ttf', filename: 'CustomFont-Regular.ttf', mimeType: 'application/x-truetype-font', attachmentKind: 'FONT', fontFormat: 'TTF' },
       ],
+      attachmentInventoryAvailable: true,
     } as unknown as ScanResult;
     const preview = attachmentPreview(true, [
       { streamIndex: 7, codec: 'ttf', filename: 'CustomFont-Regular.ttf', mimeType: 'application/x-truetype-font', attachmentKind: 'FONT', fontFormat: 'TTF' },
       { streamIndex: 8, codec: 'otf', filename: 'Display.otf', attachmentKind: 'FONT', fontFormat: 'OTF' },
       { streamIndex: 9, codec: 'ttc', filename: 'Collection.ttc', attachmentKind: 'FONT', fontFormat: 'TTC' },
       { streamIndex: 10, codec: 'otc', filename: 'Collection.otc', attachmentKind: 'FONT', fontFormat: 'OTC' },
-      { streamIndex: 11, codec: 'mjpeg', filename: 'cover.jpg', mimeType: 'image/jpeg', attachmentKind: 'IMAGE' },
-      { streamIndex: 12, codec: 'png', filename: 'poster.png', mimeType: 'image/png', attachmentKind: 'IMAGE' },
+      { streamIndex: 11, codec: 'mjpeg', filename: 'fake.otf', mimeType: 'image/jpeg', attachmentKind: 'IMAGE' },
+      { streamIndex: 12, codec: 'png', filename: 'fake.ttf', mimeType: 'image/png', attachmentKind: 'IMAGE' },
       { streamIndex: 13, codec: 'bin_data', filename: 'payload.bin', attachmentKind: 'ATTACHMENT' },
       { streamIndex: 14, codec: 'bin_data', attachmentKind: 'ATTACHMENT' },
     ]);
@@ -85,7 +87,7 @@ describe('TrackProfileResolutionPreview', () => {
   });
 
   it('shows aggregate Remove disposition while retaining attachment visibility', () => {
-    const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: [] } as unknown as ScanResult;
+    const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: [], attachmentInventoryAvailable: true } as unknown as ScanResult;
     const preview = attachmentPreview(false, [
       { streamIndex: 9, codec: 'mjpeg', filename: 'cover.jpg', mimeType: 'image/jpeg', attachmentKind: 'IMAGE' },
     ]);
@@ -96,8 +98,18 @@ describe('TrackProfileResolutionPreview', () => {
     expect(screen.getByText('Final MKV: Remove')).toBeTruthy();
   });
 
+  it('uses explicit availability when the persisted collection reloads empty', () => {
+    const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: [], attachmentInventoryAvailable: false } as unknown as ScanResult;
+    const preview = attachmentPreview(true, []);
+
+    render(<TrackProfileResolutionPreview scan={scan} preview={preview} loading={false} error={null} />);
+
+    expect(screen.getByText('Attachment metadata unavailable.')).toBeTruthy();
+    expect(screen.queryByText('No source attachments.')).toBeNull();
+  });
+
   it('handles legacy null attachment arrays without crashing', () => {
-    const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: null } as unknown as ScanResult;
+    const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: null, attachmentInventoryAvailable: false } as unknown as ScanResult;
     const preview = attachmentPreview(true, []) as ResolutionPreview;
     preview.resolvedTrackPlan.attachmentStreams = null as unknown as ResolutionPreview['resolvedTrackPlan']['attachmentStreams'];
 

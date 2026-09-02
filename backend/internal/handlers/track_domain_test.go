@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 func TestTrackDomainEnumsRoundTripJSON(t *testing.T) {
@@ -123,5 +125,33 @@ func TestResolvedTrackPlanSerializesCanonicalDecisions(t *testing.T) {
 	}
 	if len(decoded.AttachmentStreams) != 1 || decoded.AttachmentStreams[0].Filename != "Font.ttf" || decoded.AttachmentStreams[0].MIMEType != "font/ttf" || decoded.AttachmentStreams[0].AttachmentKind != "FONT" || decoded.AttachmentStreams[0].FontFormat != "TTF" {
 		t.Fatalf("resolved plan lost attachment metadata: %#v", decoded.AttachmentStreams)
+	}
+}
+
+func TestResolvedTrackPlanFromSnapshotAcceptsLegacyAttachmentStreamShape(t *testing.T) {
+	snapshot := models.JSONMap{resolvedTrackPlanSnapshotKey: models.JSONMap{
+		"videoStreams":        models.JSONList{},
+		"audioStreams":        models.JSONList{},
+		"removedAudioStreams": models.JSONList{},
+		"subtitleStreams":     models.JSONList{},
+		"attachmentPolicy":    "keep",
+		"attachmentsKept":     true,
+		"attachmentReason":    "attachments explicitly kept",
+		"attachmentStreams": models.JSONList{models.JSONMap{
+			"streamIndex": 7,
+			"codec":       "ttf",
+			"language":    "und",
+		}},
+		"chapterPolicy":  "keep",
+		"chaptersKept":   true,
+		"sidecarOutputs": models.JSONList{},
+	}}
+
+	plan, ok := ResolvedTrackPlanFromSnapshot(snapshot)
+	if !ok || plan == nil {
+		t.Fatalf("legacy frozen plan did not decode: %#v", snapshot)
+	}
+	if len(plan.AttachmentStreams) != 1 || plan.AttachmentStreams[0].StreamIndex != 7 || plan.AttachmentStreams[0].Codec != "ttf" {
+		t.Fatalf("legacy attachment stream was not preserved: %#v", plan.AttachmentStreams)
 	}
 }

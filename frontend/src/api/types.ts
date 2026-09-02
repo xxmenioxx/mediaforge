@@ -1179,6 +1179,7 @@ export type ScanResult = {
   audioStreams: MediaStreamInfo[];
   subtitleStreams: MediaStreamInfo[];
   attachmentStreams: AttachmentStreamInfo[];
+  attachmentInventoryAvailable: boolean;
   compatibilityAnalysis: {
     version?: number;
     target?: string;

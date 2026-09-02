@@ -18,7 +18,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
     ['Subtitles', preview.subtitle, scan.subtitleStreams],
   ] as const;
   const subtitleActions = new Map(preview.resolvedTrackPlan.subtitleStreams.map((stream) => [stream.streamIndex, stream.action]));
-  const attachmentInventoryAvailable = Array.isArray(scan.attachmentStreams);
+  const attachmentInventoryAvailable = scan.attachmentInventoryAvailable === true;
   const attachments = Array.isArray(preview.resolvedTrackPlan.attachmentStreams) ? preview.resolvedTrackPlan.attachmentStreams : [];
   const attachmentDisposition = preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove';
   return (

@@ -384,7 +384,7 @@ func TestBuildScanResultCreatesCanonicalAttachmentInventory(t *testing.T) {
 		{Index: 14, CodecType: "attachment", CodecName: "bin_data"},
 	}}
 	result := buildScanResult("/media/raw/movie.mkv", 100, probe, models.JSONMap{"streams": models.JSONList{}})
-	if len(result.AttachmentStreams) != 8 {
+	if !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 8 {
 		t.Fatalf("attachment inventory=%#v", result.AttachmentStreams)
 	}
 	want := []struct {
@@ -428,7 +428,7 @@ func TestBuildScanResultSerializesKnownEmptyAttachmentInventoryAsArray(t *testin
 	if err := db.First(&reloaded, result.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.AttachmentStreams == nil || len(reloaded.AttachmentStreams) != 0 {
+	if !normalizeScanResultAttachmentStreams(&reloaded) || !reloaded.AttachmentInventoryAvailable || reloaded.AttachmentStreams == nil || len(reloaded.AttachmentStreams) != 0 {
 		t.Fatalf("stored known-empty attachment inventory=%#v", reloaded.AttachmentStreams)
 	}
 	encoded, err := json.Marshal(reloaded)
@@ -444,7 +444,7 @@ func TestNormalizeLegacySnapshotAttachmentInventoryFromRawProbe(t *testing.T) {
 	legacy := models.ScanResult{RawProbe: models.JSONMap{"streams": models.JSONList{
 		models.JSONMap{"index": 7, "codec_type": "attachment", "codec_name": "ttf", "tags": models.JSONMap{"filename": "Legacy.ttf", "mimetype": "application/x-truetype-font"}},
 	}}}
-	if !normalizeScanResultAttachmentStreams(&legacy) || len(legacy.AttachmentStreams) != 1 {
+	if !normalizeScanResultAttachmentStreams(&legacy) || !legacy.AttachmentInventoryAvailable || len(legacy.AttachmentStreams) != 1 {
 		t.Fatalf("legacy attachment inventory was not reconstructed: %#v", legacy.AttachmentStreams)
 	}
 	attachment := settingProfileObject(legacy.AttachmentStreams[0])
@@ -453,13 +453,99 @@ func TestNormalizeLegacySnapshotAttachmentInventoryFromRawProbe(t *testing.T) {
 	}
 
 	knownEmpty := models.ScanResult{RawProbe: models.JSONMap{"streams": models.JSONList{models.JSONMap{"index": 0, "codec_type": "video", "codec_name": "h264"}}}}
-	if !normalizeScanResultAttachmentStreams(&knownEmpty) || knownEmpty.AttachmentStreams == nil || len(knownEmpty.AttachmentStreams) != 0 {
+	if !normalizeScanResultAttachmentStreams(&knownEmpty) || !knownEmpty.AttachmentInventoryAvailable || knownEmpty.AttachmentStreams == nil || len(knownEmpty.AttachmentStreams) != 0 {
 		t.Fatalf("legacy known-empty inventory=%#v", knownEmpty.AttachmentStreams)
 	}
 
 	unavailable := models.ScanResult{}
-	if normalizeScanResultAttachmentStreams(&unavailable) || unavailable.AttachmentStreams != nil {
+	if normalizeScanResultAttachmentStreams(&unavailable) || unavailable.AttachmentInventoryAvailable || unavailable.AttachmentStreams != nil {
 		t.Fatalf("unavailable RawProbe was presented as known-empty: %#v", unavailable.AttachmentStreams)
+	}
+}
+
+func TestAttachmentInventoryAvailabilityAcrossGORMBoundary(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:attachment-inventory-availability?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		raw       models.JSONMap
+		available bool
+		count     int
+	}{
+		{name: "unavailable raw probe", raw: models.JSONMap{}, available: false, count: 0},
+		{name: "null streams are unavailable", raw: models.JSONMap{"streams": nil}, available: false, count: 0},
+		{name: "malformed streams are unavailable", raw: models.JSONMap{"streams": models.JSONMap{"not": "an array"}}, available: false, count: 0},
+		{name: "valid raw probe with no attachments", raw: models.JSONMap{"streams": models.JSONList{models.JSONMap{"index": 0, "codec_type": "video", "codec_name": "h264"}}}, available: true, count: 0},
+		{
+			name: "valid raw probe with attachment",
+			raw: models.JSONMap{"streams": models.JSONList{
+				models.JSONMap{"index": 7, "codec_type": "attachment", "codec_name": "ttf", "tags": models.JSONMap{"filename": "Legacy.ttf", "mimetype": "font/ttf"}},
+			}},
+			available: true,
+			count:     1,
+		},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			row := models.ScanResult{Path: fmt.Sprintf("/media/raw/legacy-%d.mkv", index), FileName: fmt.Sprintf("legacy-%d.mkv", index), RawProbe: test.raw}
+			if err := db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&models.ScanResult{}).Where("id = ?", row.ID).UpdateColumn("attachment_streams", nil).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			var reloaded models.ScanResult
+			if err := db.First(&reloaded, row.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			normalized := normalizeScanResultAttachmentStreams(&reloaded)
+			if normalized != test.available || reloaded.AttachmentInventoryAvailable != test.available || len(reloaded.AttachmentStreams) != test.count {
+				t.Fatalf("normalized=%t available=%t count=%d inventory=%#v", normalized, reloaded.AttachmentInventoryAvailable, len(reloaded.AttachmentStreams), reloaded.AttachmentStreams)
+			}
+			encoded, err := json.Marshal(reloaded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			availabilityJSON := fmt.Sprintf(`"attachmentInventoryAvailable":%t`, test.available)
+			if !strings.Contains(string(encoded), availabilityJSON) {
+				t.Fatalf("availability was not exposed by API JSON: %s", encoded)
+			}
+			if test.available && test.count == 0 && !strings.Contains(string(encoded), `"attachmentStreams":[]`) {
+				t.Fatalf("known-empty inventory did not remain []: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestClassifyAttachmentUsesReliableMIMEBeforeFilename(t *testing.T) {
+	tests := []struct {
+		name, codec, filename, mimeType, kind, format string
+	}{
+		{name: "PNG MIME overrides TTF extension", filename: "fake.ttf", mimeType: "image/png", kind: "IMAGE"},
+		{name: "JPEG MIME overrides OTF extension", filename: "fake.otf", mimeType: "image/jpeg", kind: "IMAGE"},
+		{name: "TTF MIME overrides PNG extension", filename: "fake.png", mimeType: "font/ttf", kind: "FONT", format: "TTF"},
+		{name: "TrueType MIME overrides JPEG extension", filename: "fake.jpg", mimeType: "application/x-truetype-font", kind: "FONT", format: "TTF"},
+		{name: "generic MIME uses TTF extension", filename: "Font.ttf", mimeType: "application/octet-stream", kind: "FONT", format: "TTF"},
+		{name: "missing MIME uses OTF extension", filename: "Font.otf", kind: "FONT", format: "OTF"},
+		{name: "collection MIME and TTC extension", filename: "Collection.ttc", mimeType: "font/collection", kind: "FONT", format: "TTC"},
+		{name: "collection MIME and OTC extension", filename: "Collection.otc", mimeType: "font/collection", kind: "FONT", format: "OTC"},
+		{name: "collection MIME without filename", codec: "ttc", mimeType: "font/collection", kind: "FONT"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			kind, format := classifyAttachment(test.codec, test.filename, test.mimeType)
+			if kind != test.kind || format != test.format {
+				t.Fatalf("kind=%q format=%q want kind=%q format=%q", kind, format, test.kind, test.format)
+			}
+		})
 	}
 }
 

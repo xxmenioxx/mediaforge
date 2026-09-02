@@ -1095,15 +1095,25 @@ func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 	if result == nil {
 		return false
 	}
-	if len(result.AttachmentStreams) > 0 {
+	if result.AttachmentInventoryAvailable {
+		if result.AttachmentStreams == nil {
+			result.AttachmentStreams = models.JSONList{}
+		}
 		return true
+	}
+	for _, raw := range result.AttachmentStreams {
+		stream := settingProfileObject(raw)
+		if streamIndexValue(stream["index"]) >= 0 {
+			result.AttachmentInventoryAvailable = true
+			return true
+		}
 	}
 	rawStreams, ok := result.RawProbe["streams"]
 	if !ok {
 		return false
 	}
 	encoded, err := json.Marshal(rawStreams)
-	if err != nil {
+	if err != nil || len(encoded) == 0 || encoded[0] != '[' {
 		return false
 	}
 	var streams []FFProbeStream
@@ -1111,6 +1121,7 @@ func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 		return false
 	}
 	result.AttachmentStreams = attachmentStreamSummaries(streams)
+	result.AttachmentInventoryAvailable = true
 	return true
 }
 
@@ -1430,30 +1441,31 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	}
 
 	result := models.ScanResult{
-		Path:                   path,
-		FileName:               filepath.Base(path),
-		Container:              probe.Format.FormatName,
-		SizeBytes:              size,
-		Duration:               duration,
-		Bitrate:                bitrate,
-		VideoCodec:             video.CodecName,
-		Width:                  video.Width,
-		Height:                 video.Height,
-		HDR:                    isHDR(video),
-		AudioTracks:            countStreams(probe.Streams, "audio"),
-		SubtitleTracks:         countStreams(probe.Streams, "subtitle"),
-		Chapters:               len(probe.Chapters),
-		VideoStreams:           streamSummaries(probe.Streams, "video"),
-		AudioStreams:           streamSummaries(probe.Streams, "audio"),
-		SubtitleStreams:        streamSummaries(probe.Streams, "subtitle"),
-		AttachmentStreams:      attachmentStreamSummaries(probe.Streams),
-		RawProbe:               raw,
-		InterlaceAnalysis:      interlaceAnalysisFromRaw(raw),
-		CadenceAnalysis:        analysisMapFromRaw(raw, "cadenceAnalysis"),
-		CadenceRecommendation:  analysisMapFromRaw(raw, "cadenceRecommendation"),
-		CropAnalysis:           analysisMapFromRaw(raw, "cropAnalysis"),
-		RestorationAnalysis:    analysisMapFromRaw(raw, "restorationAnalysis"),
-		FrameStructureAnalysis: analysisMapFromRaw(raw, "frameStructureAnalysis"),
+		Path:                         path,
+		FileName:                     filepath.Base(path),
+		Container:                    probe.Format.FormatName,
+		SizeBytes:                    size,
+		Duration:                     duration,
+		Bitrate:                      bitrate,
+		VideoCodec:                   video.CodecName,
+		Width:                        video.Width,
+		Height:                       video.Height,
+		HDR:                          isHDR(video),
+		AudioTracks:                  countStreams(probe.Streams, "audio"),
+		SubtitleTracks:               countStreams(probe.Streams, "subtitle"),
+		Chapters:                     len(probe.Chapters),
+		VideoStreams:                 streamSummaries(probe.Streams, "video"),
+		AudioStreams:                 streamSummaries(probe.Streams, "audio"),
+		SubtitleStreams:              streamSummaries(probe.Streams, "subtitle"),
+		AttachmentStreams:            attachmentStreamSummaries(probe.Streams),
+		AttachmentInventoryAvailable: true,
+		RawProbe:                     raw,
+		InterlaceAnalysis:            interlaceAnalysisFromRaw(raw),
+		CadenceAnalysis:              analysisMapFromRaw(raw, "cadenceAnalysis"),
+		CadenceRecommendation:        analysisMapFromRaw(raw, "cadenceRecommendation"),
+		CropAnalysis:                 analysisMapFromRaw(raw, "cropAnalysis"),
+		RestorationAnalysis:          analysisMapFromRaw(raw, "restorationAnalysis"),
+		FrameStructureAnalysis:       analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
 	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
@@ -1666,11 +1678,28 @@ func classifyAttachment(codec, filename, mimeType string) (kind, fontFormat stri
 		"application/x-font-opentype": "OTF",
 		"font/otf":                    "OTF",
 		"application/x-font-ttc":      "TTC",
-		"font/collection":             "TTC",
 		"application/x-font-otc":      "OTC",
 	}
 	if format := fontByMIME[mimeType]; format != "" {
 		return "FONT", format
+	}
+	if mimeType == "image/jpeg" || mimeType == "image/png" {
+		return "IMAGE", ""
+	}
+	if mimeType == "font/collection" {
+		if extension == ".ttc" {
+			return "FONT", "TTC"
+		}
+		if extension == ".otc" {
+			return "FONT", "OTC"
+		}
+		return "FONT", ""
+	}
+	if strings.HasPrefix(mimeType, "font/") || mimeType == "application/font-sfnt" || mimeType == "application/x-font" {
+		return "FONT", ""
+	}
+	if mimeType != "" && mimeType != "application/octet-stream" && mimeType != "binary/octet-stream" && mimeType != "application/x-binary" {
+		return "ATTACHMENT", ""
 	}
 	fontByExtension := map[string]string{".ttf": "TTF", ".otf": "OTF", ".ttc": "TTC", ".otc": "OTC"}
 	if format := fontByExtension[extension]; format != "" {
@@ -1680,7 +1709,7 @@ func classifyAttachment(codec, filename, mimeType string) (kind, fontFormat stri
 	if format := fontByCodec[codec]; format != "" {
 		return "FONT", format
 	}
-	if mimeType == "image/jpeg" || mimeType == "image/png" || extension == ".jpg" || extension == ".jpeg" || extension == ".png" || codec == "jpeg" || codec == "mjpeg" || codec == "png" {
+	if extension == ".jpg" || extension == ".jpeg" || extension == ".png" || codec == "jpeg" || codec == "mjpeg" || codec == "png" {
 		return "IMAGE", ""
 	}
 	return "ATTACHMENT", ""
