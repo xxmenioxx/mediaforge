@@ -21,6 +21,19 @@ import (
 	"gorm.io/gorm"
 )
 
+type snapshotTestFileInfo struct {
+	name    string
+	size    int64
+	modTime time.Time
+}
+
+func (info snapshotTestFileInfo) Name() string       { return info.name }
+func (info snapshotTestFileInfo) Size() int64        { return info.size }
+func (info snapshotTestFileInfo) Mode() os.FileMode  { return 0o644 }
+func (info snapshotTestFileInfo) ModTime() time.Time { return info.modTime }
+func (info snapshotTestFileInfo) IsDir() bool        { return false }
+func (info snapshotTestFileInfo) Sys() any           { return nil }
+
 func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:latest-snapshot-read-only?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -737,6 +750,33 @@ func TestSnapshotCacheFingerprintInvalidatesChangedFile(t *testing.T) {
 	}
 	if matches, _ := snapshotCacheMatches(snapshot, mediaPath, changedInfo); matches {
 		t.Fatal("changed file size did not invalidate the snapshot fingerprint")
+	}
+}
+
+func TestSnapshotCacheFingerprintSurvivesPersistedLargeFileSize(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "large-dvd.mkv")
+	info := snapshotTestFileInfo{
+		name:    filepath.Base(mediaPath),
+		size:    4_516_123_773,
+		modTime: time.Unix(1_787_527_498, 71_882_565),
+	}
+	snapshot := completeAnalysisSnapshot(mediaPath, info)
+	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+
+	// ScanResult JSON columns are decoded through encoding/json when read back
+	// from SQLite. Large file sizes therefore arrive as float64 values, whose
+	// default string form may use scientific notation.
+	persisted, err := json.Marshal(snapshot.RawProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.RawProbe = models.JSONMap{}
+	if err := json.Unmarshal(persisted, &snapshot.RawProbe); err != nil {
+		t.Fatal(err)
+	}
+
+	if matches, legacy, stale := snapshotCacheState(snapshot, mediaPath, info); !matches || legacy || len(stale) != 0 {
+		t.Fatalf("persisted large-file fingerprint became stale: matches=%t legacy=%t stale=%v raw=%#v", matches, legacy, stale, snapshot.RawProbe)
 	}
 }
 

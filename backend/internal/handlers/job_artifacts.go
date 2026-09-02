@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -928,8 +929,46 @@ func probeFormatFloat64(probe map[string]any, key string) float64 {
 }
 
 func jsonInt64(value any) int64 {
-	parsed, _ := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 64)
-	return parsed
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int32:
+		return int64(typed)
+	case int64:
+		return typed
+	case uint:
+		if uint64(typed) <= math.MaxInt64 {
+			return int64(typed)
+		}
+	case uint32:
+		return int64(typed)
+	case uint64:
+		if typed <= math.MaxInt64 {
+			return int64(typed)
+		}
+	case float64:
+		if !math.IsNaN(typed) && !math.IsInf(typed, 0) && math.Trunc(typed) == typed && typed >= math.MinInt64 && typed < math.MaxInt64 {
+			return int64(typed)
+		}
+	case float32:
+		parsed := float64(typed)
+		if !math.IsNaN(parsed) && !math.IsInf(parsed, 0) && math.Trunc(parsed) == parsed && parsed >= math.MinInt64 && parsed < math.MaxInt64 {
+			return int64(parsed)
+		}
+	case json.Number:
+		if parsed, err := typed.Int64(); err == nil {
+			return parsed
+		}
+	case string:
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64); err == nil {
+			return parsed
+		}
+	default:
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 64); err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func jsonFloat64(value any) float64 {
