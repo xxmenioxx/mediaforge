@@ -12,7 +12,7 @@ export function RestorationRecommendationPanel({ plan, selected, onToggle }: {
       <Typography variant="h3">Restoration recommendation plan</Typography>
       {plan.applyLocked ? <Alert severity="warning">{plan.applyLockReason}</Alert> : null}
       <Stack spacing={1}>
-        {plan.recommendations.map((item) => {
+        {(plan.recommendations ?? []).map((item) => {
           const selectionID = restorationRecommendationSelectionID(item.id);
           const actionable = isActionableRestorationRecommendation(item);
           const output = item.resolvedOutput?.width && item.resolvedOutput?.height
@@ -35,13 +35,13 @@ export function RestorationRecommendationPanel({ plan, selected, onToggle }: {
               </Stack>
               <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Current: {item.currentValue ? humanize(item.currentValue) : 'Not configured'}</Typography>
               <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Recommended: {displayRecommendation(item)}{output ? ` · ${output}` : ''}</Typography>
-              {item.reasons.map((detail, index) => (
+              {(item.reasons ?? []).map((detail, index) => (
                 <Typography key={`${item.id}-reason-${index}`} variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Reason: {detail}</Typography>
               ))}
-              {item.warnings.map((detail, index) => (
+              {(item.warnings ?? []).map((detail, index) => (
                 <Typography key={`${item.id}-warning-${index}`} variant="caption" color="warning.main" display="block" sx={{ pl: actionable ? 4 : 0 }}>Warning: {detail}</Typography>
               ))}
-              {item.supportingEvidence.map((detail, index) => (
+              {(item.supportingEvidence ?? []).map((detail, index) => (
                 <Typography key={`${item.id}-evidence-${index}`} variant="caption" color="text.secondary" display="block" sx={{ pl: actionable ? 4 : 0 }}>Evidence: {detail}</Typography>
               ))}
             </Box>

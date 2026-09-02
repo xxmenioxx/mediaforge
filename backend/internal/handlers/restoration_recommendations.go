@@ -98,7 +98,30 @@ func buildRestorationRecommendationPlan(scan models.ScanResult, proposal Profile
 		noAutomaticRestorationRecommendation("eq", "EQ / color adjustments", "No calibrated color-correction advisor is available."),
 		noAutomaticRestorationRecommendation("color", "Color normalization", "No additional restoration color recommendation is available beyond the existing color-policy resolver."),
 	)
+	normalizeRestorationRecommendationPlan(&plan)
 	return plan
+}
+
+func normalizeRestorationRecommendationPlan(plan *RestorationRecommendationPlan) {
+	if plan == nil {
+		return
+	}
+	if plan.Recommendations == nil {
+		plan.Recommendations = []RestorationRecommendation{}
+	}
+	for index := range plan.Recommendations {
+		recommendation := &plan.Recommendations[index]
+		if recommendation.Reasons == nil {
+			recommendation.Reasons = []string{}
+		}
+		if recommendation.Warnings == nil {
+			recommendation.Warnings = []string{}
+		}
+		if recommendation.SupportingEvidence == nil {
+			recommendation.SupportingEvidence = []string{}
+		}
+	}
+	normalizeRestorationAnalysis(&plan.RestorationEvidence)
 }
 
 func annotateRestorationRecommendationCurrentProfile(plan *RestorationRecommendationPlan, profile models.Profile) {
@@ -284,6 +307,7 @@ func decodeRestorationAnalysis(value any) RestorationAnalysis {
 	encoded, _ := json.Marshal(value)
 	result := RestorationAnalysis{}
 	_ = json.Unmarshal(encoded, &result)
+	normalizeRestorationAnalysis(&result)
 	return result
 }
 

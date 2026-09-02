@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 func TestParseAndClassifyRestorationEvidenceKeepsAmbiguityExplicit(t *testing.T) {
@@ -44,6 +47,32 @@ func TestRestorationEvidenceUnavailableIsNotLow(t *testing.T) {
 	if analysis.Status != "unavailable" || analysis.Blocking.Availability != "unavailable" || analysis.Blocking.Confidence == "low" || analysis.Blocking.Value != nil {
 		t.Fatalf("unavailable evidence was represented as low: %#v", analysis)
 	}
+}
+
+func TestScanResultRestorationEvidenceNormalizesLegacyNullCollections(t *testing.T) {
+	scan := models.ScanResult{RestorationAnalysis: models.JSONMap{
+		"version":  restorationAnalysisVersion,
+		"status":   "unavailable",
+		"blocking": map[string]any{"availability": "unavailable", "supportingEvidence": nil},
+	}}
+	normalizeScanResultRestorationCollections(&scan)
+
+	analysis := restorationEvidenceFromRaw(scan.RestorationAnalysis)
+	if analysis.Blocking.SupportingEvidence == nil || analysis.Noise.SupportingEvidence == nil || analysis.EdgeDetail.SupportingEvidence == nil {
+		t.Fatalf("snapshot evidence collections were not normalized: %#v", scan.RestorationAnalysis)
+	}
+	if encoded := string(mustJSON(t, scan.RestorationAnalysis)); strings.Contains(encoded, `"supportingEvidence":null`) {
+		t.Fatalf("snapshot API evidence still contains null: %s", encoded)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return encoded
 }
 
 func TestRestorationMetricFilterDoesNotUsePreviewComparisonMetrics(t *testing.T) {

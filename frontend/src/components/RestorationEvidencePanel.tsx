@@ -40,7 +40,7 @@ function EvidenceRow({ label, evidence }: { label: string; evidence: Restoration
         <Chip size="small" variant="outlined" label={`Confidence: ${humanize(evidence.confidence)}`} />
         <Typography variant="body2">{value} · Severity: {humanize(evidence.severity)}</Typography>
       </Stack>
-      {evidence.supportingEvidence.map((item) => <Typography key={item} variant="caption" color="text.secondary" display="block">{item}</Typography>)}
+      {(evidence.supportingEvidence ?? []).map((item) => <Typography key={item} variant="caption" color="text.secondary" display="block">{item}</Typography>)}
     </Box>
   );
 }

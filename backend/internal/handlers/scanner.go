@@ -216,6 +216,7 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
 		return
 	}
+	normalizeScanResultRestorationCollections(&snapshot)
 	if statErr != nil || info.IsDir() {
 		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}})
 		return
@@ -290,6 +291,7 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": scanErr.Error()})
 		return
 	}
+	normalizeScanResultRestorationCollections(&result)
 	if cached {
 		c.JSON(http.StatusOK, result)
 		return
@@ -1059,6 +1061,7 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 			}
 			return
 		}
+		normalizeScanResultRestorationCollections(&outcome.result)
 		transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 			finishSnapshotOperationTiming(item, time.Now())
 			item.CacheHit = outcome.cached
@@ -1071,6 +1074,14 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		}
 	}(info)
 	c.JSON(http.StatusAccepted, response)
+}
+
+func normalizeScanResultRestorationCollections(result *models.ScanResult) {
+	if result == nil {
+		return
+	}
+	analysis := restorationEvidenceFromRaw(result.RestorationAnalysis)
+	result.RestorationAnalysis = structToJSONMap(analysis)
 }
 
 func (h ScannerHandler) CancelSnapshotOperation(c *gin.Context) {

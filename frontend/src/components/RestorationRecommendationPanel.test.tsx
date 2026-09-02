@@ -21,6 +21,33 @@ const plan: RestorationRecommendationPlan = {
 };
 
 describe('RestorationRecommendationPanel', () => {
+  it('renders legacy recommendations whose collection fields are null', () => {
+    const legacyPlan = {
+      ...plan,
+      recommendations: [{
+        ...plan.recommendations[0],
+        reasons: null,
+        warnings: null,
+        supportingEvidence: null,
+      }],
+    } as unknown as RestorationRecommendationPlan;
+
+    render(<RestorationRecommendationPanel plan={legacyPlan} selected={[]} onToggle={vi.fn()} />);
+
+    expect(screen.getByText('Frame Structure')).toBeTruthy();
+    expect(screen.getByText('Recommended: Ivtc')).toBeTruthy();
+    expect(screen.getByText('confidence High')).toBeTruthy();
+  });
+
+  it('renders canonical empty recommendation arrays', () => {
+    render(<RestorationRecommendationPanel plan={{
+      ...plan,
+      recommendations: [{ ...plan.recommendations[0], reasons: [], warnings: [], supportingEvidence: [] }],
+    }} selected={[]} onToggle={vi.fn()} />);
+
+    expect(screen.getByText('Frame Structure')).toBeTruthy();
+  });
+
   it('makes only actionable recommendations selectable and keeps readiness states distinct', async () => {
     const onToggle = vi.fn();
     render(<RestorationRecommendationPanel plan={plan} selected={[]} onToggle={onToggle} />);

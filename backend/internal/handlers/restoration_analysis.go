@@ -37,6 +37,25 @@ type RestorationAnalysis struct {
 	EdgeDetail    RestorationSignalEvidence `json:"edgeDetailConfidence"`
 }
 
+func normalizeRestorationAnalysis(analysis *RestorationAnalysis) {
+	if analysis == nil {
+		return
+	}
+	for _, signal := range []*RestorationSignalEvidence{
+		&analysis.Blocking,
+		&analysis.Noise,
+		&analysis.Grain,
+		&analysis.ChromaNoise,
+		&analysis.Banding,
+		&analysis.Ringing,
+		&analysis.EdgeDetail,
+	} {
+		if signal.SupportingEvidence == nil {
+			signal.SupportingEvidence = []string{}
+		}
+	}
+}
+
 type restorationWindowEvidence struct {
 	blocking []float64
 	luma     []float64
@@ -194,6 +213,7 @@ func restorationEvidenceFromRaw(value any) RestorationAnalysis {
 	if !decodeJSONValue(value, &analysis) || analysis.Version != restorationAnalysisVersion {
 		return restorationEvidenceUnavailable()
 	}
+	normalizeRestorationAnalysis(&analysis)
 	return analysis
 }
 

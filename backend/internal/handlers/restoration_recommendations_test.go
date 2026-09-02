@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -220,6 +221,33 @@ func TestRecommendationGenerationDoesNotMutateProfileAndQueueLockIsPresentationO
 	}
 	if !plan.ApplyLocked || plan.ApplyLockReason == "" || len(plan.Recommendations) == 0 {
 		t.Fatalf("locked plan should stay visible and explain why applying is disabled: %#v", plan)
+	}
+}
+
+func TestRestorationRecommendationPlanNormalizesCollectionFieldsForJSON(t *testing.T) {
+	scan := recommendationScan(InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .95}, CadenceAnalysis{}, CadenceRecommendation{})
+	plan := buildRestorationRecommendationPlan(scan, proposedProfileForScan(scan), false)
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	for _, recommendation := range plan.Recommendations {
+		if recommendation.Reasons == nil || recommendation.Warnings == nil || recommendation.SupportingEvidence == nil {
+			t.Fatalf("recommendation collections must be non-nil: %#v", recommendation)
+		}
+	}
+	for name, signal := range map[string]RestorationSignalEvidence{
+		"blocking": plan.RestorationEvidence.Blocking, "noise": plan.RestorationEvidence.Noise,
+		"grain": plan.RestorationEvidence.Grain, "chroma": plan.RestorationEvidence.ChromaNoise,
+		"banding": plan.RestorationEvidence.Banding, "ringing": plan.RestorationEvidence.Ringing,
+		"detail": plan.RestorationEvidence.EdgeDetail,
+	} {
+		if signal.SupportingEvidence == nil {
+			t.Fatalf("%s supportingEvidence must be non-nil", name)
+		}
+	}
+	if strings.Contains(string(encoded), `"reasons":null`) || strings.Contains(string(encoded), `"warnings":null`) || strings.Contains(string(encoded), `"supportingEvidence":null`) {
+		t.Fatalf("API JSON contains null collection fields: %s", encoded)
 	}
 }
 

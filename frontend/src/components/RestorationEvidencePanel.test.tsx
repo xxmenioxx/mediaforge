@@ -7,6 +7,32 @@ import { RestorationEvidencePanel } from './RestorationEvidencePanel';
 afterEach(cleanup);
 
 describe('RestorationEvidencePanel', () => {
+  it('renders legacy evidence whose supporting evidence is null', () => {
+    const unavailable = {
+      availability: 'unavailable',
+      severity: 'unknown',
+      confidence: 'unavailable',
+      supportingEvidence: null,
+    };
+    render(<RestorationEvidencePanel analysis={{
+      version: 1,
+      status: 'unavailable',
+      source: 'sampled_ffmpeg_metrics',
+      windows: 0,
+      sampledFrames: 0,
+      blocking: unavailable,
+      noise: unavailable,
+      grain: unavailable,
+      chromaNoise: unavailable,
+      banding: unavailable,
+      ringing: unavailable,
+      edgeDetailConfidence: unavailable,
+    } as unknown as Parameters<typeof RestorationEvidencePanel>[0]['analysis']} />);
+
+    expect(screen.getByText('Restoration evidence')).toBeTruthy();
+    expect(screen.getAllByText('Unavailable')).toHaveLength(7);
+  });
+
   it('distinguishes measured, ambiguous and unavailable source evidence', () => {
     render(<RestorationEvidencePanel analysis={{
       version: 1,
