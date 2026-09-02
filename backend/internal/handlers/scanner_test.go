@@ -549,6 +549,111 @@ func TestClassifyAttachmentUsesReliableMIMEBeforeFilename(t *testing.T) {
 	}
 }
 
+func TestNormalizePersistedAttachmentInventoryRecanonicalizesDerivedClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		attachment models.JSONMap
+		wantKind   string
+		wantFormat string
+	}{
+		{
+			name: "stale font classification becomes image from reliable MIME",
+			attachment: models.JSONMap{
+				"index": 7, "type": "attachment", "codec": "png", "filename": "fake.ttf", "mimeType": "image/png",
+				"title": "Cover", "attachmentKind": "FONT", "fontFormat": "TTF",
+			},
+			wantKind: "IMAGE",
+		},
+		{
+			name: "stale font collection format follows filename",
+			attachment: models.JSONMap{
+				"index": 8, "type": "attachment", "codec": "ttc", "filename": "Collection.otc", "mimeType": "font/collection",
+				"attachmentKind": "FONT", "fontFormat": "TTC",
+			},
+			wantKind: "FONT", wantFormat: "OTC",
+		},
+		{
+			name: "already canonical font remains stable",
+			attachment: models.JSONMap{
+				"index": 9, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf",
+				"attachmentKind": "FONT", "fontFormat": "TTF",
+			},
+			wantKind: "FONT", wantFormat: "TTF",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := models.ScanResult{
+				AttachmentStreams:            models.JSONList{test.attachment},
+				AttachmentInventoryAvailable: true,
+			}
+			if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 1 {
+				t.Fatalf("normalized inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+			}
+			attachment := settingProfileObject(result.AttachmentStreams[0])
+			for _, key := range []string{"index", "type", "codec", "filename", "mimeType", "title"} {
+				if fmt.Sprint(attachment[key]) != fmt.Sprint(test.attachment[key]) {
+					t.Fatalf("source field %s changed: got=%#v want=%#v", key, attachment[key], test.attachment[key])
+				}
+			}
+			if workerStringValue(attachment["attachmentKind"]) != test.wantKind || workerStringValue(attachment["fontFormat"]) != test.wantFormat {
+				t.Fatalf("classification=%#v want kind=%q format=%q", attachment, test.wantKind, test.wantFormat)
+			}
+
+			first, err := json.Marshal(result.AttachmentStreams)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !normalizeScanResultAttachmentStreams(&result) {
+				t.Fatal("second normalization unexpectedly made inventory unavailable")
+			}
+			second, err := json.Marshal(result.AttachmentStreams)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(first) != string(second) {
+				t.Fatalf("normalization drifted: first=%s second=%s", first, second)
+			}
+		})
+	}
+}
+
+func TestNormalizePersistedAttachmentInventoryDropsMalformedRows(t *testing.T) {
+	result := models.ScanResult{
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"type": "attachment", "filename": "missing-index.ttf", "attachmentKind": "FONT", "fontFormat": "TTF"},
+			models.JSONMap{"index": 7, "type": "video", "codec": "h264"},
+			models.JSONMap{"index": 8, "type": "attachment", "codec": "png", "filename": "cover.png", "mimeType": "image/png"},
+		},
+		AttachmentInventoryAvailable: true,
+	}
+	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 1 {
+		t.Fatalf("normalized inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+	}
+	attachment := settingProfileObject(result.AttachmentStreams[0])
+	if streamIndexValue(attachment["index"]) != 8 || workerStringValue(attachment["attachmentKind"]) != "IMAGE" {
+		t.Fatalf("valid attachment was not retained canonically: %#v", attachment)
+	}
+}
+
+func TestNormalizeUnusablePersistedAttachmentInventoryFallsBackToRawProbe(t *testing.T) {
+	result := models.ScanResult{
+		AttachmentStreams:            models.JSONList{models.JSONMap{"type": "attachment", "filename": "missing-index.ttf"}},
+		AttachmentInventoryAvailable: true,
+		RawProbe: models.JSONMap{"streams": models.JSONList{
+			models.JSONMap{"index": 11, "codec_type": "attachment", "codec_name": "otf", "tags": models.JSONMap{"filename": "Recovered.otf", "mimetype": "font/otf"}},
+		}},
+	}
+	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 1 {
+		t.Fatalf("fallback inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+	}
+	attachment := settingProfileObject(result.AttachmentStreams[0])
+	if streamIndexValue(attachment["index"]) != 11 || workerStringValue(attachment["fontFormat"]) != "OTF" {
+		t.Fatalf("RawProbe fallback did not reconstruct canonical attachment: %#v", attachment)
+	}
+}
+
 func TestSnapshotCacheTracksRestorationAnalysisVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restoration-cache.mkv")
 	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {

@@ -1095,19 +1095,39 @@ func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 	if result == nil {
 		return false
 	}
-	if result.AttachmentInventoryAvailable {
+	if result.AttachmentInventoryAvailable && len(result.AttachmentStreams) == 0 {
 		if result.AttachmentStreams == nil {
 			result.AttachmentStreams = models.JSONList{}
 		}
 		return true
 	}
+	canonical := models.JSONList{}
 	for _, raw := range result.AttachmentStreams {
 		stream := settingProfileObject(raw)
-		if streamIndexValue(stream["index"]) >= 0 {
-			result.AttachmentInventoryAvailable = true
-			return true
+		streamType := strings.TrimSpace(workerStringValue(stream["type"]))
+		if streamIndexValue(stream["index"]) < 0 || (streamType != "" && !strings.EqualFold(streamType, "attachment")) {
+			continue
 		}
+		kind, fontFormat := classifyAttachment(
+			workerStringValue(stream["codec"]),
+			workerStringValue(stream["filename"]),
+			workerStringValue(stream["mimeType"]),
+		)
+		canonicalStream := models.JSONMap{}
+		for key, value := range stream {
+			canonicalStream[key] = value
+		}
+		canonicalStream["attachmentKind"] = kind
+		canonicalStream["fontFormat"] = fontFormat
+		canonical = append(canonical, canonicalStream)
 	}
+	if len(canonical) > 0 {
+		result.AttachmentStreams = canonical
+		result.AttachmentInventoryAvailable = true
+		return true
+	}
+	result.AttachmentStreams = nil
+	result.AttachmentInventoryAvailable = false
 	rawStreams, ok := result.RawProbe["streams"]
 	if !ok {
 		return false
