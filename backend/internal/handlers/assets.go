@@ -5678,6 +5678,9 @@ func reconcileSourceGroups(db *gorm.DB, rawRoot string, records []models.AssetRe
 			default:
 				updates := map[string]interface{}{}
 				if filepath.Clean(group.SourcePath) != cleanSourcePath {
+					if err := migrateSourceGroupConfigurationPath(tx, group.SourcePath, cleanSourcePath); err != nil {
+						return err
+					}
 					updates["source_path"] = cleanSourcePath
 				}
 				if !group.Enabled {
@@ -5707,6 +5710,29 @@ func reconcileSourceGroups(db *gorm.DB, rawRoot string, records []models.AssetRe
 		}
 		return nil
 	})
+}
+
+func migrateSourceGroupConfigurationPath(tx *gorm.DB, oldPath, newPath string) error {
+	oldPath = filepath.Clean(oldPath)
+	newPath = filepath.Clean(newPath)
+	if oldPath == newPath {
+		return nil
+	}
+	if tx.Migrator().HasTable(&models.ProfileAssignment{}) {
+		if err := tx.Model(&models.ProfileAssignment{}).
+			Where("target_type = ? AND target_path = ?", assetScopeSourceGroup, oldPath).
+			Update("target_path", newPath).Error; err != nil {
+			return fmt.Errorf("migrate SourceGroup profile assignments: %w", err)
+		}
+	}
+	if tx.Migrator().HasTable(&models.AssetScopeConfiguration{}) {
+		if err := tx.Model(&models.AssetScopeConfiguration{}).
+			Where("scope_type = ? AND scope_key = ?", assetScopeSourceGroup, oldPath).
+			Update("scope_key", newPath).Error; err != nil {
+			return fmt.Errorf("migrate SourceGroup scope configuration: %w", err)
+		}
+	}
+	return nil
 }
 
 func annotateSourceRecords(db *gorm.DB, rawRoot string, records []models.AssetRecord) error {

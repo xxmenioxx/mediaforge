@@ -15,7 +15,7 @@ vi.mock('../api/client', async (importOriginal) => {
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleExtractionOperations: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
-    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(),
+    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
     },
   };
 });
@@ -86,6 +86,8 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.externalAssetSubtitles).mockResolvedValue([]);
     vi.mocked(api.subtitleExtractionOperations).mockResolvedValue({ operations: [] });
     vi.mocked(api.renameAsset).mockResolvedValue({ oldPath: '/media/raw/movies/Akira/Akira.mkv', path: '/media/raw/movies/Akira/Akira Renamed.mkv', fileName: 'Akira Renamed.mkv' });
+    vi.mocked(api.evaluateAdvisor).mockImplementation(async ({ mediaPath }) => ({ recommendation: 'worth_it', score: 90, summary: `Ready: ${mediaPath}`, reasons: [], warnings: [] } as never));
+    vi.mocked(api.publishAssetsAsIs).mockResolvedValue({ message: 'Published as-is', published: 2 } as never);
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -108,6 +110,10 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     expect(await screen.findByRole('heading', { name: 'Akira' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Configure title' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Snapshots' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Run Advisor' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Publish as-is' })).toBeTruthy();
     expect(screen.getByText('3 assets · 1 title · 2 paths · 3.00 KB')).toBeTruthy();
     expect(screen.queryByLabelText('Media area')).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Path' })).toBeNull();
@@ -151,6 +157,62 @@ describe('Unprocessed Assets hierarchy', () => {
 
     await user.click(screen.getByRole('button', { name: 'Regenerate' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv', force: true, analysisSeconds: 20 }));
+  });
+
+  it('runs Advisor for every current asset in the title using effective profiles', async () => {
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
+      configurations: Object.fromEntries(assetIds.map((assetId) => [String(assetId), { assetPath: `/asset/${assetId}`, video: { selection: 'profile', videoProfileId: assetId + 10 }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'inherit' } }])),
+      missingAssetIds: [],
+    }));
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Run Advisor' }));
+    await waitFor(() => expect(api.evaluateAdvisor).toHaveBeenCalledTimes(2));
+    expect(api.evaluateAdvisor).toHaveBeenCalledWith({ mediaPath: '/media/raw/movies/Akira/Akira.mkv', profileId: 11 });
+    expect(api.evaluateAdvisor).toHaveBeenCalledWith({ mediaPath: '/media/raw/movies/Akira/extras/Trailer.mkv', profileId: 12 });
+    expect(await screen.findByText('2 assets evaluated · 2 comply · 0 review · 0 failed')).toBeTruthy();
+  });
+
+  it('publishes a title as-is only when every asset resolves the same Destination', async () => {
+    vi.mocked(api.libraries).mockResolvedValue([{ id: 5, name: 'Movies', sourcePath: '/media/raw', destinationPath: '/media/library/movies', type: 'movies', validationRules: {}, createdAt: '', updatedAt: '' }]);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
+      configurations: Object.fromEntries(assetIds.map((assetId) => [String(assetId), { assetPath: `/asset/${assetId}`, video: { selection: 'inherit' }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'value', destinationLibraryId: 5 } }])),
+      missingAssetIds: [],
+    }));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Publish as-is' }));
+    await waitFor(() => expect(api.publishAssetsAsIs).toHaveBeenCalledWith({ sourcePath: '/media/raw/movies/Akira', destinationLibraryId: 5 }));
+  });
+
+  it.each([
+    ['a missing Destination', [5, 0]],
+    ['different Destinations', [5, 7]],
+    ['no Destinations', [0, 0]],
+  ])('blocks title Publish as-is for %s', async (_label, destinations) => {
+    vi.mocked(api.libraries).mockResolvedValue([{ id: 5, name: 'Movies', sourcePath: '/media/raw', destinationPath: '/media/library/movies', type: 'movies', validationRules: {}, createdAt: '', updatedAt: '' }]);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
+      configurations: Object.fromEntries(assetIds.map((assetId, index) => [String(assetId), { assetPath: `/asset/${assetId}`, video: { selection: 'inherit' }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: destinations[index] ? 'value' : 'inherit', destinationLibraryId: destinations[index] } }])),
+      missingAssetIds: [],
+    }));
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Publish as-is' }));
+    expect(await screen.findByText('Configure the same effective Destination for every asset in this title before publishing as-is.')).toBeTruthy();
+    expect(api.publishAssetsAsIs).not.toHaveBeenCalled();
+  });
+
+  it('blocks title Publish as-is when an asset requires review', async () => {
+    const inventory = await api.assets();
+    inventory.sourceGroups[0].logicalGroups[0].assetPaths[1].assets[0].review!.requiresReview = true;
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    expect((await screen.findByRole('button', { name: 'Publish as-is' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('keeps nested path configuration as an explicit inheritance-aware override', async () => {
@@ -526,6 +588,8 @@ describe('Unprocessed Assets hierarchy', () => {
     expect((screen.getByRole('button', { name: 'Queue selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Configure selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('2 assets already locked by an active Queue job. Read-only details remain available.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Publish as-is' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Run Advisor' }) as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(screen.getByRole('button', { name: 'Configure title' }));
     expect(await screen.findByText('This scope has an active Queue job. Configuration is read-only until the job finishes.')).toBeTruthy();

@@ -335,6 +335,9 @@ func TestSourceGroupReconcileReEnablesReturningGroupAndPreservesConfiguration(t 
 	if err := db.Create(&group).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Model(&group).UpdateColumn("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
 	assignment := models.ProfileAssignment{TargetType: assetScopeSourceGroup, TargetPath: group.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: 23}
 	configuration := models.AssetScopeConfiguration{ScopeType: assetScopeSourceGroup, ScopeKey: group.SourcePath, CategorySelection: configSelectionValue, Category: "movie", DestinationSelection: configSelectionValue, DestinationLibraryID: 9}
 	if err := db.Create(&assignment).Error; err != nil {
@@ -358,14 +361,26 @@ func TestSourceGroupReconcileReEnablesReturningGroupAndPreservesConfiguration(t 
 	if err := db.Model(&models.SourceGroup{}).Where("relative_path = ?", "movies").Count(&groupCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&models.ProfileAssignment{}).Where("id = ? AND target_path = ?", assignment.ID, assignment.TargetPath).Count(&assignmentCount).Error; err != nil {
+	if err := db.Model(&models.ProfileAssignment{}).Where("id = ? AND target_path = ?", assignment.ID, moviesPath).Count(&assignmentCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&models.AssetScopeConfiguration{}).Where("id = ? AND scope_key = ?", configuration.ID, configuration.ScopeKey).Count(&configurationCount).Error; err != nil {
+	if err := db.Model(&models.AssetScopeConfiguration{}).Where("id = ? AND scope_key = ?", configuration.ID, moviesPath).Count(&configurationCount).Error; err != nil {
 		t.Fatal(err)
 	}
 	if groupCount != 1 || assignmentCount != 1 || configurationCount != 1 {
 		t.Fatalf("returning group lost identity or configuration: groups=%d assignments=%d configurations=%d", groupCount, assignmentCount, configurationCount)
+	}
+	assetPath := filepath.Join(moviesPath, "Akira", "movie.mkv")
+	record := models.AssetRecord{Path: assetPath, RootPath: rawRoot, RelativePath: "movies/Akira/movie.mkv", FileName: "movie.mkv", Status: "unprocessed", SourceGroupID: group.ID, LogicalGroupPath: filepath.Join(moviesPath, "Akira"), SourcePath: assetPath}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	effective, err := effectiveAssetConfiguration(db, assetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.Video.VideoProfileID != assignment.VideoProfileID || effective.Video.Source != assetScopeSourceGroup || effective.Category.Category != configuration.Category || effective.Destination.DestinationLibraryID != configuration.DestinationLibraryID {
+		t.Fatalf("migrated SourceGroup configuration is not functionally reachable: %#v", effective)
 	}
 
 	stableUpdatedAt := restored.UpdatedAt
@@ -378,12 +393,24 @@ func TestSourceGroupReconcileReEnablesReturningGroupAndPreservesConfiguration(t 
 	if !restored.UpdatedAt.Equal(stableUpdatedAt) {
 		t.Fatalf("idempotent reconciliation mutated returning group: before=%s after=%s", stableUpdatedAt, restored.UpdatedAt)
 	}
+	if err := db.Model(&models.ProfileAssignment{}).Where("target_type = ? AND target_path = ?", assetScopeSourceGroup, moviesPath).Count(&assignmentCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.AssetScopeConfiguration{}).Where("scope_type = ? AND scope_key = ?", assetScopeSourceGroup, moviesPath).Count(&configurationCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assignmentCount != 1 || configurationCount != 1 {
+		t.Fatalf("repeated reconciliation duplicated SourceGroup configuration: assignments=%d configurations=%d", assignmentCount, configurationCount)
+	}
 }
 
 func TestSourceGroupReconcileFailureDoesNotEnableDisabledGroup(t *testing.T) {
 	db := assetConfigurationTestDB(t)
 	group := models.SourceGroup{Name: "Movies", RelativePath: "movies", SourcePath: "/unavailable/raw/movies", Enabled: false}
 	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&group).UpdateColumn("enabled", false).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := reconcileSourceGroups(db, filepath.Join(t.TempDir(), "not-mounted"), nil); err == nil {

@@ -784,8 +784,9 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 	const publishTitleAsIs = useMutation({
 		mutationFn: async () => {
 			const effective = await api.effectiveAssetConfigurations(assetIds);
-			const destinationIDs = [...new Set(assets.map((asset) => effective.configurations[String(asset.id)]?.destination.destinationLibraryId ?? 0).filter(Boolean))];
-			if (destinationIDs.length !== 1) throw new Error('Configure one effective Destination for every asset in this title before publishing as-is.');
+			const resolvedDestinationIDs = assets.map((asset) => effective.configurations[String(asset.id)]?.destination.destinationLibraryId ?? 0);
+			const destinationIDs = [...new Set(resolvedDestinationIDs)];
+			if (resolvedDestinationIDs.some((id) => id <= 0) || destinationIDs.length !== 1) throw new Error('Configure the same effective Destination for every asset in this title before publishing as-is.');
 			const destination = libraries.find((library) => library.id === destinationIDs[0]);
 			if (!destination) throw new Error('The effective Destination Library is unavailable.');
 			if (!window.confirm(`Publish ${assets.length} original asset(s) in ${logicalGroup.name} as-is to ${destination.name}? FFmpeg will not run and the title directory will move from Raw to Library.`)) throw new Error('Publish as-is canceled.');
