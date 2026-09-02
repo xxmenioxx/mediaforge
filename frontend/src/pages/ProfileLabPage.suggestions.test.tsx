@@ -22,6 +22,10 @@ vi.mock('../api/client', async (importOriginal) => {
       workerNodes: vi.fn(),
       latestSnapshot: vi.fn(),
       suggestProfile: vi.fn(),
+      createCompatiblePreviewRequest: vi.fn(),
+      inspectCompatibleAssetPreview: vi.fn(),
+      compatibleAssetFrameMetrics: vi.fn(),
+      recommendEncoderQuality: vi.fn(),
     },
   };
 });
@@ -126,11 +130,43 @@ const nullableSuggestion = {
   },
 } as unknown as ProfileSuggestion;
 
+const largeSavedProfile = {
+  id: 77,
+  name: 'Large restoration draft',
+  scope: 'asset',
+  videoCodec: 'x265',
+  qualityValue: 18,
+  workerConfig: {
+    videoFilters: 'deblock=filter=strong:block=8,hqdn3d=4:3:6:4.5,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,exposure=exposure=0.12,eq=brightness=0:contrast=1:saturation=0.96:gamma=0.94',
+    upscaleMode: 'auto', upscaleSharpen: 'custom', upscaleSharpenCustomStrength: 0.16,
+    fieldStructureMode: 'deinterlace', deinterlaceFieldOrder: 'bff',
+    restorationRecommendationProvenance: 'evidence,'.repeat(2_000),
+  },
+} as never;
+
+const frameStructure = {
+  framesAnalyzed: 120, iFrames: 2, pFrames: 80, bFrames: 38, bFrameRatio: 0.316,
+  averageGopLength: 60, minimumGopLength: 60, maximumGopLength: 60, maxConsecutiveBFrames: 2,
+  confidence: 'high', variability: 'low', windowCount: 3,
+};
+
+const previewInspection = {
+  source: { codec: 'mpeg2video', width: 720, height: 480, frameRate: '30000/1001', fieldOrder: 'progressive' },
+  output: { codec: 'hevc', width: 960, height: 720, frameRate: '30000/1001', fieldOrder: 'progressive', level: 93 },
+  sourceFrameStructure: frameStructure,
+  outputFrameStructure: frameStructure,
+  qsvFrameWarnings: [], qsvFeatureStatus: {}, cacheHit: false, previewMode: 'quality', start: '0', seconds: 20,
+  generatedPath: '/tmp/preview.mp4', normalization: { mode: 'normalize_bt709', applied: true, reason: 'test', sarPreserved: true },
+  requestedEncoder: 'libx265', effectiveEncoder: 'libx265', requestedQSVRateControl: '', effectiveQSVRateControl: '',
+  ffmpegArgs: ['-vf', 'scale=960:720'],
+} as never;
+
 afterEach(cleanup);
 
 describe('Profile Lab Process Asset suggestions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    HTMLElement.prototype.scrollIntoView = vi.fn();
     const inventory = {
       sourceGroups: [], unprocessed: [asset], library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [],
       unprocessedGroups: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [],
@@ -145,6 +181,10 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: scan, status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.suggestProfile).mockResolvedValue(nullableSuggestion);
+    vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => ({ requestId: `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`, cacheIdentity: 'cache', expiresInSeconds: 7200, path: options.path }));
+    vi.mocked(api.inspectCompatibleAssetPreview).mockResolvedValue(previewInspection);
+    vi.mocked(api.compatibleAssetFrameMetrics).mockResolvedValue({ comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 });
+    vi.mocked(api.recommendEncoderQuality).mockResolvedValue(undefined as never);
   });
 
   it('keeps Lab mounted and opens Suggestions when legacy collection fields are null', async () => {
@@ -169,4 +209,29 @@ describe('Profile Lab Process Asset suggestions', () => {
     expect(screen.getByText('Reason: Reliable progressive SD evidence supports a conservative 720p target.')).toBeTruthy();
     expect(api.suggestProfile).toHaveBeenCalledWith(assetPath);
   }, 15_000);
+
+  it('processes a large video draft through short compatible-preview request IDs', async () => {
+    vi.mocked(api.profiles).mockResolvedValue([largeSavedProfile]);
+    vi.mocked(api.profilesAdmin).mockResolvedValue([largeSavedProfile]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&videoProfileId=77&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+
+    await waitFor(() => expect(api.inspectCompatibleAssetPreview).toHaveBeenCalled(), { timeout: 12_000 });
+    const requests = vi.mocked(api.createCompatiblePreviewRequest).mock.calls.map(([options]) => options);
+    const conversion = requests.find((options) => options.profile);
+    expect(conversion?.profile?.workerConfig?.upscaleSharpenCustomStrength).toBe(0.16);
+    expect(String(conversion?.profile?.workerConfig?.restorationRecommendationProvenance).length).toBeGreaterThan(16_000);
+    expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.every(([requestId]) => typeof requestId === 'string' && !requestId.includes('profile='))).toBe(true);
+    expect(await screen.findByText('Profile Lab')).toBeTruthy();
+  }, 20_000);
 });

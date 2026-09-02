@@ -163,6 +163,8 @@ type LabFidelityInspection = {
     aliasWarnings?: string[];
   };
   metrics: PreviewFrameMetrics;
+  referenceRequestId: string;
+  conversionRequestId: string;
   fidelityWindows: Array<{
     position: number;
     startSeconds: number;
@@ -171,6 +173,7 @@ type LabFidelityInspection = {
     output: PreviewVideoCharacteristics;
     metrics: PreviewFrameMetrics;
     options: CompatiblePreviewOptions;
+    requestId: string;
   }>;
   completedAt: number;
 };
@@ -637,9 +640,8 @@ export function ProfileLabPage() {
   const [previewNormalization, setPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [videoPreviewNonce, setVideoPreviewNonce] = useState(0);
-  const [processedVideoCodec, setProcessedVideoCodec] = useState(emptyVideoDraft.videoCodec);
-  const [processedVideoQualityValue, setProcessedVideoQualityValue] = useState(emptyVideoDraft.qualityValue);
-  const [processedVideoOptions, setProcessedVideoOptions] = useState(videoPreviewOptions(emptyVideoDraft));
+  const [processedReferencePreviewRequestId, setProcessedReferencePreviewRequestId] = useState('');
+  const [processedVideoPreviewRequestId, setProcessedVideoPreviewRequestId] = useState('');
   const [processedVideoDraftSignature, setProcessedVideoDraftSignature] = useState('');
   const [processedVideoRequestSignature, setProcessedVideoRequestSignature] = useState('');
   const [processedPreviewNormalization, setProcessedPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
@@ -1032,27 +1034,35 @@ export function ProfileLabPage() {
       reference,
       conversion,
       signal,
+      onPrepared,
     }: {
-      reference: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
-      conversion: Parameters<typeof api.inspectCompatibleAssetPreview>[0];
+      reference: CompatiblePreviewOptions;
+      conversion: CompatiblePreviewOptions;
       signal?: AbortSignal;
+      onPrepared?: (referenceRequestId: string, conversionRequestId: string) => void;
     }): Promise<LabFidelityInspection> => {
-      const referenceInspection = await api.inspectCompatibleAssetPreview(reference, signal);
+      const [referenceRequest, conversionRequest] = await Promise.all([
+        api.createCompatiblePreviewRequest(reference, signal),
+        api.createCompatiblePreviewRequest(conversion, signal),
+      ]);
+      onPrepared?.(referenceRequest.requestId, conversionRequest.requestId);
+      const referenceInspection = await api.inspectCompatibleAssetPreview(referenceRequest.requestId, signal);
       const duration = selectedAssetSnapshot?.duration ?? 0;
       const sampling = labFrameSamplingPolicy(settings.data, duration);
       const { windowSeconds, positions } = sampling;
-      const conversionInspections: Array<{ inspection: PreviewInspection; metrics: PreviewFrameMetrics; options: CompatiblePreviewOptions; position: number; startSeconds: number }> = [];
+      const conversionInspections: Array<{ inspection: PreviewInspection; metrics: PreviewFrameMetrics; options: CompatiblePreviewOptions; requestId: string; position: number; startSeconds: number }> = [];
       for (const position of positions) {
         const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
         const options = { ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: false };
-        const inspection = await api.inspectCompatibleAssetPreview(options, signal);
-        const metrics = await api.compatibleAssetFrameMetrics(options, signal).catch((error: unknown) => ({
+        const previewRequest = await api.createCompatiblePreviewRequest(options, signal);
+        const inspection = await api.inspectCompatibleAssetPreview(previewRequest.requestId, signal);
+        const metrics = await api.compatibleAssetFrameMetrics(previewRequest.requestId, signal).catch((error: unknown) => ({
           comparable: false,
           reason: error instanceof Error ? error.message : 'Frame fidelity metrics were not available for this region.',
           sourceDimensions: '',
           outputDimensions: '',
         }));
-        conversionInspections.push({ inspection, metrics, options, position, startSeconds });
+        conversionInspections.push({ inspection, metrics, options, requestId: previewRequest.requestId, position, startSeconds });
       }
       const representativeWindow = conversionInspections[Math.floor(conversionInspections.length / 2)];
       const conversionInspection = representativeWindow.inspection;
@@ -1094,6 +1104,8 @@ export function ProfileLabPage() {
         ffmpegArgs: conversionInspection.ffmpegArgs,
         normalization: referenceInspection.normalization,
         metrics: representativeWindow.metrics,
+        referenceRequestId: referenceRequest.requestId,
+        conversionRequestId: conversionRequest.requestId,
         fidelityWindows: conversionInspections.map((window) => ({
           position: window.position,
           startSeconds: window.startSeconds,
@@ -1102,11 +1114,17 @@ export function ProfileLabPage() {
           output: window.inspection.output,
           metrics: window.metrics,
           options: window.options,
+          requestId: window.requestId,
         })),
         completedAt: Date.now(),
       };
     },
-    onSuccess: (inspection) => setLastFidelityInspection(inspection),
+    onSuccess: (inspection) => {
+      setLastFidelityInspection(inspection);
+      setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
+      setProcessedVideoPreviewRequestId(inspection.conversionRequestId);
+    },
+    onError: () => setVideoPreviewStatus('error'),
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
@@ -1286,7 +1304,8 @@ export function ProfileLabPage() {
     setProcessedAudioChannelMode('preserve');
     setVideoPreviewNonce(0);
     setVideoPreviewStatus('idle');
-    setProcessedVideoOptions(videoPreviewOptions(emptyVideoDraft));
+    setProcessedReferencePreviewRequestId('');
+    setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
     fidelityInspection.reset();
@@ -2046,18 +2065,12 @@ export function ProfileLabPage() {
     setVideoPreviewSignal(controller.signal);
     fidelityInspection.reset();
     setFidelityTab('previews');
-    const options = videoPreviewOptions(videoDraft);
-    setProcessedVideoCodec(videoDraft.videoCodec);
-    setProcessedVideoQualityValue(videoDraft.qualityValue);
     setProcessedVideoDraftSignature(JSON.stringify(videoDraft));
     setProcessedVideoRequestSignature(currentVideoRequestSignature);
     setProcessedPreviewNormalization(previewNormalization);
-    setProcessedVideoOptions({
-      ...options,
-      profile: videoDraft,
-    });
+    setProcessedReferencePreviewRequestId('');
+    setProcessedVideoPreviewRequestId('');
     setVideoPreviewStatus('loading');
-    setVideoPreviewNonce((current) => current + 1);
     if (assetPath) {
       fidelityInspection.mutate({
         reference: {
@@ -2083,6 +2096,12 @@ export function ProfileLabPage() {
           profile: videoDraft,
         },
         signal: controller.signal,
+        onPrepared: (referenceRequestId, conversionRequestId) => {
+          if (controller.signal.aborted) return;
+          setProcessedReferencePreviewRequestId(referenceRequestId);
+          setProcessedVideoPreviewRequestId(conversionRequestId);
+          setVideoPreviewNonce((current) => current + 1);
+        },
       });
     }
     scrollToPreviews();
@@ -2122,6 +2141,8 @@ export function ProfileLabPage() {
   function resetProcessedVideoPreview() {
     setVideoPreviewNonce(0);
     setVideoPreviewStatus('idle');
+    setProcessedReferencePreviewRequestId('');
+    setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
     fidelityInspection.reset();
@@ -2582,7 +2603,7 @@ export function ProfileLabPage() {
                         <VideoPreview
                           key={`original-compatible-${previewNonce}`}
                           label="Source reference · browser-compatible H.264"
-                          src={api.compatibleAssetPreviewUrl({
+                          src={processedReferencePreviewRequestId ? api.compatibleAssetPreviewUrl(processedReferencePreviewRequestId) : api.compatibleAssetPreviewUrl({
                             path: assetPath,
                             start,
                             seconds,
@@ -2611,16 +2632,7 @@ export function ProfileLabPage() {
                           <VideoPreview
                             key={`draft-${videoPreviewNonce}`}
                             label="Video draft"
-                            src={api.compatibleAssetPreviewUrl({
-                              path: assetPath,
-                              start,
-                              seconds,
-                              videoCodec: processedVideoCodec,
-                              qualityValue: processedVideoQualityValue,
-                              mode: 'quality',
-                              previewNormalization: processedPreviewNormalization,
-                              ...processedVideoOptions,
-                            })}
+                            src={api.compatibleAssetPreviewUrl(processedVideoPreviewRequestId)}
                             onStatusChange={setVideoPreviewStatus}
                             cancelSignal={videoPreviewSignal}
                           />
@@ -4504,8 +4516,8 @@ function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspec
   const overallVerdict = comparable.length === windows.length ? metricVerdict : metricVerdict === 'Reject' ? 'Reject' : 'Review';
   const safeWindowIndex = Math.min(selectedWindowIndex, windows.length - 1);
   const selectedWindow = windows[safeWindowIndex];
-  const sourceUrl = `${api.compatibleAssetFrameUrl(selectedWindow.options, 'source')}&run=${inspection.completedAt}`;
-  const outputUrl = `${api.compatibleAssetFrameUrl(selectedWindow.options, 'output')}&run=${inspection.completedAt}`;
+  const sourceUrl = `${api.compatibleAssetFrameUrl(selectedWindow.requestId, 'source')}&run=${inspection.completedAt}`;
+  const outputUrl = `${api.compatibleAssetFrameUrl(selectedWindow.requestId, 'output')}&run=${inspection.completedAt}`;
   const selectedVerdict = fidelityMetricVerdict(selectedWindow.metrics.ssim);
   const dimensionsMatch = squarePixelDimensions(selectedWindow.source) === squarePixelDimensions(selectedWindow.output);
 

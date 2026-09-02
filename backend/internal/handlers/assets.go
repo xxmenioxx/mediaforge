@@ -3101,52 +3101,53 @@ func (h AssetHandler) Preview(c *gin.Context) {
 }
 
 func (h AssetHandler) CompatiblePreview(c *gin.Context) {
-	path := strings.TrimSpace(c.Query("path"))
-	profileID := strings.TrimSpace(c.Query("profileId"))
+	input, err := compatiblePreviewRequestFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operation := "video"
+	if strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true") {
+		operation = "inspect"
+	} else if strings.EqualFold(strings.TrimSpace(c.Query("metrics")), "true") {
+		operation = "metrics"
+	} else if frame := strings.ToLower(strings.TrimSpace(c.Query("frame"))); frame == "source" || frame == "output" {
+		operation = frame + "_frame"
+	}
+	h.serveCompatiblePreview(c, input, operation)
+}
 
-	var previewProfile *models.Profile
-	if rawProfile := strings.TrimSpace(c.Query("profile")); rawProfile != "" {
-		var parsedProfile models.Profile
-		if err := json.Unmarshal([]byte(rawProfile), &parsedProfile); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "profile must contain valid JSON: " + err.Error(),
-			})
-			return
-		}
-		previewProfile = &parsedProfile
-	}
-	videoCodecOverride := strings.TrimSpace(c.Query("videoCodec"))
-	qualityValueOverride := strings.TrimSpace(c.Query("qualityValue"))
-	videoPresetOverride := strings.TrimSpace(c.Query("videoPreset"))
-	pixFmtOverride := strings.TrimSpace(c.Query("pixFmt"))
-	videoFiltersOverride := strings.TrimSpace(c.Query("videoFilters"))
-	x265ParamsOverride := strings.TrimSpace(c.Query("x265Params"))
-	videoEncoderOverride := strings.TrimSpace(c.Query("videoEncoder"))
-	useHardwareOverride, _ := strconv.ParseBool(c.Query("useHardwareIfAvailable"))
-	globalQualityOverride, _ := strconv.Atoi(c.Query("globalQuality"))
-	qsvRateControlOverride := strings.TrimSpace(c.Query("qsvRateControl"))
-	qsvLookAheadDepthOverride, _ := strconv.Atoi(c.Query("qsvLookAheadDepth"))
-	qsvExtendedBRCOverride, _ := strconv.ParseBool(c.Query("qsvExtendedBRC"))
-	qsvAdaptiveIOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveI"))
-	qsvAdaptiveBOverride, _ := strconv.ParseBool(c.Query("qsvAdaptiveB"))
-	qsvPStrategyOverride, _ := strconv.Atoi(c.Query("qsvPStrategy"))
-	previewNormalizationMode := normalizedPreviewNormalizationMode(c.Query("previewNormalization"))
+func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePreviewRequest, operation string) {
+	path := input.Path
+	profileID := strconv.FormatUint(uint64(input.ProfileID), 10)
+	previewProfile := input.Profile
+	videoCodecOverride := strings.TrimSpace(input.VideoCodec)
+	qualityValueOverride := strconv.FormatFloat(input.QualityValue, 'f', -1, 64)
+	videoPresetOverride := strings.TrimSpace(input.VideoPreset)
+	pixFmtOverride := strings.TrimSpace(input.PixelFormat)
+	videoFiltersOverride := strings.TrimSpace(input.VideoFilters)
+	x265ParamsOverride := strings.TrimSpace(input.X265Params)
+	videoEncoderOverride := strings.TrimSpace(input.VideoEncoder)
+	useHardwareOverride := input.UseHardware
+	globalQualityOverride := input.GlobalQuality
+	qsvRateControlOverride := strings.TrimSpace(input.QSVRateControl)
+	qsvLookAheadDepthOverride := input.QSVLookAheadDepth
+	qsvExtendedBRCOverride := input.QSVExtendedBRC
+	qsvAdaptiveIOverride := input.QSVAdaptiveI
+	qsvAdaptiveBOverride := input.QSVAdaptiveB
+	qsvPStrategyOverride := input.QSVPStrategy
+	previewNormalizationMode := input.PreviewNormalization
 	subtitleStreamIndex := -1
-	if rawSubtitleIndex := strings.TrimSpace(c.Query("subtitleStreamIndex")); rawSubtitleIndex != "" {
-		parsed, parseErr := strconv.Atoi(rawSubtitleIndex)
-		if parseErr != nil || parsed < 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "subtitleStreamIndex must be a non-negative stream index"})
-			return
-		}
-		subtitleStreamIndex = parsed
+	if input.SubtitleStreamIndex != nil {
+		subtitleStreamIndex = *input.SubtitleStreamIndex
 	}
-	previewMode := normalizedPreviewMode(c.Query("mode"))
-	start, ok := boundedPreviewStart(c.Query("start"))
+	previewMode := input.Mode
+	start, ok := boundedPreviewStart(input.Start)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "start must be HH:MM:SS or seconds"})
 		return
 	}
-	seconds := boundedPreviewSeconds(c.Query("seconds"))
+	seconds := input.Seconds
 	if previewMode == "quick" && seconds > 8 {
 		seconds = 8
 	}
@@ -3307,7 +3308,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 	}
 
 	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
-	inspectPreview := strings.EqualFold(strings.TrimSpace(c.Query("inspect")), "true")
+	inspectPreview := operation == "inspect"
 	if inspectPreview && effectiveVideoEncoder == "hevc_qsv" {
 		for index := 0; index+1 < len(args); index++ {
 			if args[index] == "-loglevel" {
@@ -3338,7 +3339,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 
 	info, _ := os.Stat(path)
 	cacheKey := previewCacheKey(path, info, args)
-	ephemeralPreview, _ := strconv.ParseBool(c.Query("ephemeral"))
+	ephemeralPreview := input.Ephemeral
 	if ephemeralPreview {
 		cacheKey = fmt.Sprintf("%s-ephemeral-%d", cacheKey, time.Now().UnixNano())
 	}
@@ -3353,7 +3354,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		defer os.Remove(cachePath)
 		defer os.Remove(cachePath + ".encoder.log")
 	}
-	frameKind := strings.ToLower(strings.TrimSpace(c.Query("frame")))
+	frameKind := strings.TrimSuffix(operation, "_frame")
 	if frameKind == "source" || frameKind == "output" {
 		framePath := cachePath
 		frameStart := "0"
@@ -3375,7 +3376,7 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 		c.Data(http.StatusOK, "image/png", frame)
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(c.Query("metrics")), "true") {
+	if operation == "metrics" {
 		metrics, metricsErr := generatePreviewFrameMetrics(c.Request.Context(), path, start, normalization.Filter, cachePath)
 		if metricsErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity metrics failed: " + metricsErr.Error()})

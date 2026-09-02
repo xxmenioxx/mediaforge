@@ -1640,6 +1640,13 @@ export type CompatiblePreviewOptions = {
   ephemeral?: boolean;
 };
 
+export type CompatiblePreviewRequest = {
+  requestId: string;
+  cacheIdentity: string;
+  expiresInSeconds: number;
+  path: string;
+};
+
 export type ProfileSampleEstimate = {
   assetPath: string;
   durationSeconds: number;

@@ -284,6 +284,21 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/assets/preview/compatible/requests": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Assets", "Profiles"},
+				"summary":     "Register a short-lived compatible preview request",
+				"operationId": "createCompatiblePreviewRequest",
+				"requestBody": gin.H{
+					"required": true,
+					"content":  gin.H{"application/json": gin.H{"schema": gin.H{"type": "object"}}},
+				},
+				"responses": gin.H{
+					"201": gin.H{"description": "Short-lived deterministic preview request identity"},
+					"400": jsonResponse("Invalid compatible preview request", ref("Error")),
+				},
+			},
+		},
 		"/api/assets/quality-recommendation": gin.H{
 			"post": gin.H{
 				"tags":        []string{"Assets", "Profiles"},

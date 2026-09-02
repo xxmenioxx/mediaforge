@@ -39,6 +39,7 @@ import type {
   ScanResult,
   SnapshotOperation,
   CompatiblePreviewOptions,
+  CompatiblePreviewRequest,
   ProfileSampleEstimate,
   QualityRecommendationResponse,
   PreviewInspection,
@@ -105,10 +106,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function compatiblePreviewPath({
+function compatiblePreviewPath(options: CompatiblePreviewOptions) {
+  if (options.profile !== undefined) {
+    throw new Error('Structured compatible preview profiles must be registered with createCompatiblePreviewRequest().');
+  }
+  const {
   path,
   profileId = 0,
-  profile,
   start = '00:00:00',
   seconds = 20,
   videoCodec = '',
@@ -130,8 +134,12 @@ function compatiblePreviewPath({
   previewNormalization = 'normalize_bt709',
   subtitleStreamIndex,
   ephemeral = false,
-}: CompatiblePreviewOptions) {
-  return `/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&qsvPStrategy=${qsvPStrategy}&mode=${mode}&previewNormalization=${encodeURIComponent(previewNormalization)}&ephemeral=${ephemeral}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}${profile === undefined ? '' : `&profile=${encodeURIComponent(JSON.stringify(profile))}`}`;
+  } = options;
+  return `/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&qsvPStrategy=${qsvPStrategy}&mode=${mode}&previewNormalization=${encodeURIComponent(previewNormalization)}&ephemeral=${ephemeral}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`;
+}
+
+function compatiblePreviewRequestPath(requestId: string, resource: 'video' | 'frame' | 'inspect' | 'metrics') {
+  return `/api/assets/preview/compatible/requests/${encodeURIComponent(requestId)}/${resource}`;
 }
 
 export const api = {
@@ -497,14 +505,16 @@ export const api = {
   snapshotOperations: (path: string) =>
     request<{ operations: SnapshotOperation[] }>(`/api/scan/operations?path=${encodeURIComponent(path)}`),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
-  compatibleAssetPreviewUrl: (options: CompatiblePreviewOptions) =>
-    `${API_BASE_URL}${compatiblePreviewPath(options)}`,
-  compatibleAssetFrameUrl: (options: CompatiblePreviewOptions, frame: 'source' | 'output') =>
-    `${API_BASE_URL}${compatiblePreviewPath(options)}&frame=${frame}`,
-  compatibleAssetFrameMetrics: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
-    request<PreviewFrameMetrics>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/metrics'), { signal }),
-  inspectCompatibleAssetPreview: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
-    request<PreviewInspection>(compatiblePreviewPath(options).replace('/assets/preview/compatible', '/assets/preview/inspect'), { signal }),
+  createCompatiblePreviewRequest: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
+    request<CompatiblePreviewRequest>('/api/assets/preview/compatible/requests', { method: 'POST', body: JSON.stringify(options), signal }),
+  compatibleAssetPreviewUrl: (request: string | CompatiblePreviewOptions) =>
+    `${API_BASE_URL}${typeof request === 'string' ? compatiblePreviewRequestPath(request, 'video') : compatiblePreviewPath(request)}`,
+  compatibleAssetFrameUrl: (requestId: string, frame: 'source' | 'output') =>
+    `${API_BASE_URL}${compatiblePreviewRequestPath(requestId, 'frame')}?frame=${frame}`,
+  compatibleAssetFrameMetrics: (requestId: string, signal?: AbortSignal) =>
+    request<PreviewFrameMetrics>(compatiblePreviewRequestPath(requestId, 'metrics'), { signal }),
+  inspectCompatibleAssetPreview: (requestId: string, signal?: AbortSignal) =>
+    request<PreviewInspection>(compatiblePreviewRequestPath(requestId, 'inspect'), { signal }),
   estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }, signal?: AbortSignal) =>
     request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input), signal }),
   recommendEncoderQuality: ({ signal, ...input }: { path?: string; profile: ProfileInput; signal?: AbortSignal }) =>
