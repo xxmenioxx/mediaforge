@@ -753,7 +753,15 @@ func TestSnapshotCacheFingerprintInvalidatesChangedFile(t *testing.T) {
 	}
 }
 
-func TestSnapshotCacheFingerprintSurvivesPersistedLargeFileSize(t *testing.T) {
+func TestSnapshotCacheFingerprintSurvivesSQLiteRoundTripForLargeFileSize(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:snapshot-large-fingerprint?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+
 	mediaPath := filepath.Join(t.TempDir(), "large-dvd.mkv")
 	info := snapshotTestFileInfo{
 		name:    filepath.Base(mediaPath),
@@ -762,21 +770,64 @@ func TestSnapshotCacheFingerprintSurvivesPersistedLargeFileSize(t *testing.T) {
 	}
 	snapshot := completeAnalysisSnapshot(mediaPath, info)
 	stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
-
-	// ScanResult JSON columns are decoded through encoding/json when read back
-	// from SQLite. Large file sizes therefore arrive as float64 values, whose
-	// default string form may use scientific notation.
-	persisted, err := json.Marshal(snapshot.RawProbe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot.RawProbe = models.JSONMap{}
-	if err := json.Unmarshal(persisted, &snapshot.RawProbe); err != nil {
+	if err := db.Create(&snapshot).Error; err != nil {
 		t.Fatal(err)
 	}
 
-	if matches, legacy, stale := snapshotCacheState(snapshot, mediaPath, info); !matches || legacy || len(stale) != 0 {
-		t.Fatalf("persisted large-file fingerprint became stale: matches=%t legacy=%t stale=%v raw=%#v", matches, legacy, stale, snapshot.RawProbe)
+	var reloaded models.ScanResult
+	if err := db.First(&reloaded, snapshot.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	cache, ok := snapshotCacheMap(reloaded.RawProbe["snapshotCache"])
+	if !ok {
+		t.Fatalf("reloaded snapshot cache is missing: %#v", reloaded.RawProbe)
+	}
+	fingerprint, ok := snapshotCacheMap(cache["fingerprint"])
+	if !ok {
+		t.Fatalf("reloaded fingerprint is missing: %#v", cache)
+	}
+	if got := jsonInt64(fingerprint["sizeBytes"]); got != info.size {
+		t.Fatalf("reloaded sizeBytes=%d want=%d raw=%#v", got, info.size, fingerprint["sizeBytes"])
+	}
+	if _, ok := fingerprint["sizeBytes"].(string); !ok {
+		t.Fatalf("new sizeBytes fingerprint must persist as a decimal string, got %T", fingerprint["sizeBytes"])
+	}
+
+	if matches, legacy, stale := snapshotCacheState(reloaded, mediaPath, info); !matches || legacy || len(stale) != 0 {
+		t.Fatalf("persisted large-file fingerprint became stale: matches=%t legacy=%t stale=%v raw=%#v", matches, legacy, stale, reloaded.RawProbe)
+	}
+}
+
+func TestSnapshotCacheFingerprintAcceptsHistoricalSizeRepresentations(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "historical-dvd.mkv")
+	info := snapshotTestFileInfo{
+		name:    filepath.Base(mediaPath),
+		size:    4_516_123_773,
+		modTime: time.Unix(1_787_527_498, 71_882_565),
+	}
+	representations := []struct {
+		name  string
+		value any
+	}{
+		{name: "float64", value: float64(info.size)},
+		{name: "int", value: int(info.size)},
+		{name: "int64", value: info.size},
+		{name: "json number", value: json.Number("4516123773")},
+		{name: "decimal string", value: "4516123773"},
+	}
+
+	for _, representation := range representations {
+		t.Run(representation.name, func(t *testing.T) {
+			snapshot := completeAnalysisSnapshot(mediaPath, info)
+			stampSnapshotCacheMetadata(&snapshot, mediaPath, info)
+			cache, _ := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
+			fingerprint, _ := snapshotCacheMap(cache["fingerprint"])
+			fingerprint["sizeBytes"] = representation.value
+
+			if matches, legacy, stale := snapshotCacheState(snapshot, mediaPath, info); !matches || legacy || len(stale) != 0 {
+				t.Fatalf("historical %T size became stale: matches=%t legacy=%t stale=%v", representation.value, matches, legacy, stale)
+			}
+		})
 	}
 }
 

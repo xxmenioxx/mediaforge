@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,36 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 )
+
+func TestJSONInt64(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  int64
+	}{
+		{name: "int64", value: int64(-9_223_372_036_854_775_808), want: math.MinInt64},
+		{name: "uint64 within range", value: uint64(9_223_372_036_854_775_807), want: math.MaxInt64},
+		{name: "decimal string", value: "4516123773", want: 4_516_123_773},
+		{name: "json number", value: json.Number("9223372036854775807"), want: math.MaxInt64},
+		{name: "normal float64 integer", value: float64(42), want: 42},
+		{name: "scientific float64 integer", value: float64(4.516123773e+09), want: 4_516_123_773},
+		{name: "exact float64 boundary", value: float64(1 << 53), want: 1 << 53},
+		{name: "negative exact float64 boundary", value: -float64(1 << 53), want: -(1 << 53)},
+		{name: "fractional float64", value: 42.5, want: 0},
+		{name: "nan", value: math.NaN(), want: 0},
+		{name: "positive infinity", value: math.Inf(1), want: 0},
+		{name: "float64 beyond exact integer range", value: math.Nextafter(float64(1<<53), math.Inf(1)), want: 0},
+		{name: "negative float64 beyond exact integer range", value: math.Nextafter(-float64(1<<53), math.Inf(-1)), want: 0},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := jsonInt64(test.value); got != test.want {
+				t.Fatalf("jsonInt64(%T(%v))=%d want=%d", test.value, test.value, got, test.want)
+			}
+		})
+	}
+}
 
 func TestJobArtifactMatchesJobRequiresSameIDAndMediaPath(t *testing.T) {
 	job := models.QueueJob{ID: 1, MediaPath: "/media/raw/series/current.mkv"}

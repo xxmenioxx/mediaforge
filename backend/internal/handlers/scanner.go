@@ -341,7 +341,7 @@ var snapshotComponentNames = []string{"metadata", "interlace", "crop", "restorat
 func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 	fingerprint := models.JSONMap{"path": filepath.Clean(path)}
 	if info != nil {
-		fingerprint["sizeBytes"] = info.Size()
+		fingerprint["sizeBytes"] = strconv.FormatInt(info.Size(), 10)
 		fingerprint["mtimeNs"] = strconv.FormatInt(info.ModTime().UnixNano(), 10)
 	}
 	return fingerprint

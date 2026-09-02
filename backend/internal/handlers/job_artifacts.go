@@ -929,6 +929,9 @@ func probeFormatFloat64(probe map[string]any, key string) float64 {
 }
 
 func jsonInt64(value any) int64 {
+	const maxExactFloat64Integer = float64(1 << 53)
+	const maxExactFloat32Integer = float64(1 << 24)
+
 	switch typed := value.(type) {
 	case int:
 		return int64(typed)
@@ -947,12 +950,12 @@ func jsonInt64(value any) int64 {
 			return int64(typed)
 		}
 	case float64:
-		if !math.IsNaN(typed) && !math.IsInf(typed, 0) && math.Trunc(typed) == typed && typed >= math.MinInt64 && typed < math.MaxInt64 {
+		if !math.IsNaN(typed) && !math.IsInf(typed, 0) && math.Trunc(typed) == typed && typed >= -maxExactFloat64Integer && typed <= maxExactFloat64Integer {
 			return int64(typed)
 		}
 	case float32:
 		parsed := float64(typed)
-		if !math.IsNaN(parsed) && !math.IsInf(parsed, 0) && math.Trunc(parsed) == parsed && parsed >= math.MinInt64 && parsed < math.MaxInt64 {
+		if !math.IsNaN(parsed) && !math.IsInf(parsed, 0) && math.Trunc(parsed) == parsed && parsed >= -maxExactFloat32Integer && parsed <= maxExactFloat32Integer {
 			return int64(parsed)
 		}
 	case json.Number:
