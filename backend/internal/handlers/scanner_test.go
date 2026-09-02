@@ -372,6 +372,97 @@ func completeAnalysisSnapshot(path string, info os.FileInfo) models.ScanResult {
 	return models.ScanResult{Path: path, FileName: filepath.Base(path), SizeBytes: info.Size(), Duration: 1000, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"codec": "h264", "avgFrameRate": "25/1"}}, InterlaceAnalysis: interlace, CropAnalysis: crop, RestorationAnalysis: restoration, FrameStructureAnalysis: frame, CadenceAnalysis: cadence, RawProbe: models.JSONMap{"format": map[string]any{"duration": "1000"}, "streams": []any{map[string]any{"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1", "width": 720, "height": 480}}, "interlaceAnalysis": interlace, "cropAnalysis": crop, "restorationAnalysis": restoration, "frameStructureAnalysis": frame, "cadenceAnalysis": cadence}}
 }
 
+func TestBuildScanResultCreatesCanonicalAttachmentInventory(t *testing.T) {
+	probe := FFProbeResult{Streams: []FFProbeStream{
+		{Index: 7, CodecType: "attachment", CodecName: "ttf", Tags: map[string]string{"filename": "Custom-Regular.ttf", "mimetype": "application/x-truetype-font"}},
+		{Index: 8, CodecType: "attachment", CodecName: "bin_data", Tags: map[string]string{"filename": "Display.otf"}},
+		{Index: 9, CodecType: "attachment", CodecName: "bin_data", Tags: map[string]string{"filename": "Collection.ttc"}},
+		{Index: 10, CodecType: "attachment", CodecName: "bin_data", Tags: map[string]string{"filename": "Collection.otc"}},
+		{Index: 11, CodecType: "attachment", CodecName: "mjpeg", Tags: map[string]string{"filename": "cover.jpg", "mimetype": "image/jpeg"}},
+		{Index: 12, CodecType: "attachment", CodecName: "png", Tags: map[string]string{"filename": "poster.png", "mimetype": "image/png"}},
+		{Index: 13, CodecType: "attachment", CodecName: "bin_data", Tags: map[string]string{"filename": "payload.bin", "mimetype": "application/octet-stream"}},
+		{Index: 14, CodecType: "attachment", CodecName: "bin_data"},
+	}}
+	result := buildScanResult("/media/raw/movie.mkv", 100, probe, models.JSONMap{"streams": models.JSONList{}})
+	if len(result.AttachmentStreams) != 8 {
+		t.Fatalf("attachment inventory=%#v", result.AttachmentStreams)
+	}
+	want := []struct {
+		index, kind, format string
+	}{
+		{"7", "FONT", "TTF"}, {"8", "FONT", "OTF"}, {"9", "FONT", "TTC"}, {"10", "FONT", "OTC"},
+		{"11", "IMAGE", ""}, {"12", "IMAGE", ""}, {"13", "ATTACHMENT", ""}, {"14", "ATTACHMENT", ""},
+	}
+	for position, expected := range want {
+		attachment := settingProfileObject(result.AttachmentStreams[position])
+		if fmt.Sprint(attachment["index"]) != expected.index || workerStringValue(attachment["attachmentKind"]) != expected.kind || workerStringValue(attachment["fontFormat"]) != expected.format {
+			t.Fatalf("attachment[%d]=%#v want index=%s kind=%s format=%s", position, attachment, expected.index, expected.kind, expected.format)
+		}
+	}
+	first := settingProfileObject(result.AttachmentStreams[0])
+	if workerStringValue(first["filename"]) != "Custom-Regular.ttf" || workerStringValue(first["mimeType"]) != "application/x-truetype-font" {
+		t.Fatalf("TTF metadata was not preserved: %#v", first)
+	}
+	missingFilename := settingProfileObject(result.AttachmentStreams[7])
+	if streamIndexValue(missingFilename["index"]) != 14 || workerStringValue(missingFilename["filename"]) != "" {
+		t.Fatalf("missing filename changed source identity: %#v", missingFilename)
+	}
+}
+
+func TestBuildScanResultSerializesKnownEmptyAttachmentInventoryAsArray(t *testing.T) {
+	result := buildScanResult("/media/raw/movie.mkv", 100, FFProbeResult{Streams: []FFProbeStream{}}, models.JSONMap{"streams": models.JSONList{}})
+	if result.AttachmentStreams == nil || len(result.AttachmentStreams) != 0 {
+		t.Fatalf("known-empty attachment inventory=%#v", result.AttachmentStreams)
+	}
+	db, err := gorm.Open(sqlite.Open("file:known-empty-attachment-inventory?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&result).Error; err != nil {
+		t.Fatal(err)
+	}
+	var reloaded models.ScanResult
+	if err := db.First(&reloaded, result.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.AttachmentStreams == nil || len(reloaded.AttachmentStreams) != 0 {
+		t.Fatalf("stored known-empty attachment inventory=%#v", reloaded.AttachmentStreams)
+	}
+	encoded, err := json.Marshal(reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"attachmentStreams":[]`) {
+		t.Fatalf("known-empty inventory did not serialize as []: %s", encoded)
+	}
+}
+
+func TestNormalizeLegacySnapshotAttachmentInventoryFromRawProbe(t *testing.T) {
+	legacy := models.ScanResult{RawProbe: models.JSONMap{"streams": models.JSONList{
+		models.JSONMap{"index": 7, "codec_type": "attachment", "codec_name": "ttf", "tags": models.JSONMap{"filename": "Legacy.ttf", "mimetype": "application/x-truetype-font"}},
+	}}}
+	if !normalizeScanResultAttachmentStreams(&legacy) || len(legacy.AttachmentStreams) != 1 {
+		t.Fatalf("legacy attachment inventory was not reconstructed: %#v", legacy.AttachmentStreams)
+	}
+	attachment := settingProfileObject(legacy.AttachmentStreams[0])
+	if streamIndexValue(attachment["index"]) != 7 || workerStringValue(attachment["filename"]) != "Legacy.ttf" || workerStringValue(attachment["attachmentKind"]) != "FONT" {
+		t.Fatalf("legacy attachment metadata=%#v", attachment)
+	}
+
+	knownEmpty := models.ScanResult{RawProbe: models.JSONMap{"streams": models.JSONList{models.JSONMap{"index": 0, "codec_type": "video", "codec_name": "h264"}}}}
+	if !normalizeScanResultAttachmentStreams(&knownEmpty) || knownEmpty.AttachmentStreams == nil || len(knownEmpty.AttachmentStreams) != 0 {
+		t.Fatalf("legacy known-empty inventory=%#v", knownEmpty.AttachmentStreams)
+	}
+
+	unavailable := models.ScanResult{}
+	if normalizeScanResultAttachmentStreams(&unavailable) || unavailable.AttachmentStreams != nil {
+		t.Fatalf("unavailable RawProbe was presented as known-empty: %#v", unavailable.AttachmentStreams)
+	}
+}
+
 func TestSnapshotCacheTracksRestorationAnalysisVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restoration-cache.mkv")
 	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {

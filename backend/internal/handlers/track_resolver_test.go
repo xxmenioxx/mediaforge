@@ -258,6 +258,75 @@ func TestResolveTrackPlanAttachmentAutoMatrix(t *testing.T) {
 	}
 }
 
+func TestResolveTrackPlanUsesCanonicalAttachmentInventory(t *testing.T) {
+	scan := models.ScanResult{
+		SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass"}},
+		AttachmentStreams: models.JSONList{map[string]any{
+			"index": 7, "codec": "ttf", "filename": "Canonical.ttf", "mimeType": "application/x-truetype-font", "title": "Canonical font", "attachmentKind": "FONT", "fontFormat": "TTF",
+		}},
+		RawProbe: models.JSONMap{"streams": []any{map[string]any{"index": 99, "codec_type": "attachment", "codec_name": "bin_data", "tags": map[string]any{"filename": "wrong.bin"}}}},
+	}
+	plan, err := resolveTrackPlan(scan, map[string]any{"subtitleDisposition": "keep", "attachmentPolicy": "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.AttachmentsKept || len(plan.AttachmentStreams) != 1 {
+		t.Fatalf("canonical attachment plan=%#v", plan)
+	}
+	attachment := plan.AttachmentStreams[0]
+	if attachment.StreamIndex != 7 || attachment.Filename != "Canonical.ttf" || attachment.MIMEType != "application/x-truetype-font" || attachment.AttachmentKind != "FONT" || attachment.FontFormat != "TTF" {
+		t.Fatalf("resolved attachment metadata=%#v", attachment)
+	}
+}
+
+func TestResolveTrackPlanAttachmentPoliciesKeepInventory(t *testing.T) {
+	scan := models.ScanResult{
+		SubtitleStreams:   models.JSONList{map[string]any{"index": 2, "codec": "ass"}},
+		AttachmentStreams: models.JSONList{map[string]any{"index": 7, "codec": "ttf", "filename": "Font.ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}},
+	}
+	tests := []struct {
+		policy string
+		keep   bool
+	}{
+		{policy: "keep", keep: true},
+		{policy: "remove", keep: false},
+		{policy: "auto", keep: true},
+	}
+	for _, test := range tests {
+		t.Run(test.policy, func(t *testing.T) {
+			plan, err := resolveTrackPlan(scan, map[string]any{"subtitleDisposition": "keep", "attachmentPolicy": test.policy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.AttachmentsKept != test.keep || len(plan.AttachmentStreams) != 1 {
+				t.Fatalf("policy=%s plan=%#v", test.policy, plan)
+			}
+		})
+	}
+}
+
+func TestResolveTrackPlanLegacyAttachmentInventoryAndKnownEmptyJSON(t *testing.T) {
+	legacy := models.ScanResult{RawProbe: models.JSONMap{"streams": models.JSONList{
+		models.JSONMap{"index": 7, "codec_type": "attachment", "codec_name": "otf", "tags": models.JSONMap{"filename": "Legacy.otf", "mimetype": "font/otf"}},
+	}}}
+	plan, err := resolveTrackPlan(legacy, map[string]any{"attachmentPolicy": "keep"})
+	if err != nil || len(plan.AttachmentStreams) != 1 || plan.AttachmentStreams[0].StreamIndex != 7 || plan.AttachmentStreams[0].FontFormat != "OTF" {
+		t.Fatalf("legacy canonical plan=%#v err=%v", plan, err)
+	}
+
+	empty, err := resolveTrackPlan(models.ScanResult{AttachmentStreams: models.JSONList{}}, map[string]any{"attachmentPolicy": "keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"attachmentStreams":[]`) {
+		t.Fatalf("resolved known-empty attachments serialized as null: %s", encoded)
+	}
+}
+
 func TestResolveTrackPlanMixedASSAndExplicitAttachmentPolicies(t *testing.T) {
 	scan := models.ScanResult{
 		SubtitleStreams: models.JSONList{

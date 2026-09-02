@@ -1978,7 +1978,7 @@ func TestFFmpegCommandConsumesResolvedTrackPlan(t *testing.T) {
 				{StreamIndex: 4, Action: SubtitleDispositionExtract},
 				{StreamIndex: 5, Action: SubtitleDispositionKeepAndExtract},
 			},
-			AttachmentsKept: true, AttachmentStreams: []ResolvedTrackStream{{StreamIndex: 6}},
+			AttachmentsKept: true, AttachmentStreams: []ResolvedAttachmentStream{{StreamIndex: 6}},
 			ChaptersKept: true,
 		},
 	}

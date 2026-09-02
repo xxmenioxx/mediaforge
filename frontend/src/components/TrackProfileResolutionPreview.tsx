@@ -18,6 +18,9 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
     ['Subtitles', preview.subtitle, scan.subtitleStreams],
   ] as const;
   const subtitleActions = new Map(preview.resolvedTrackPlan.subtitleStreams.map((stream) => [stream.streamIndex, stream.action]));
+  const attachmentInventoryAvailable = Array.isArray(scan.attachmentStreams);
+  const attachments = Array.isArray(preview.resolvedTrackPlan.attachmentStreams) ? preview.resolvedTrackPlan.attachmentStreams : [];
+  const attachmentDisposition = preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove';
   return (
     <Stack spacing={1.5}>
       {preview.warnings.map((warning) => <Alert severity="warning" key={warning}>{warning}</Alert>)}
@@ -38,6 +41,26 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
           </Table> : <Typography variant="body2" color="text.secondary" sx={{ p: 1.5 }}>No streams detected.</Typography>}
         </Box>
       ))}
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+        <Typography fontWeight={700} sx={{ px: 1.5, py: 1, bgcolor: 'action.hover' }}>Attachments</Typography>
+        {attachments.length ? <Table size="small" aria-label="Attachment inventory">
+          <TableBody>
+            {attachments.map((attachment) => {
+              const filename = attachment.filename?.trim() || `Attachment #${attachment.streamIndex}`;
+              return <TableRow key={attachment.streamIndex}>
+                <TableCell sx={{ width: 128 }}><Chip size="small" color={preview.resolvedTrackPlan.attachmentsKept ? 'success' : 'default'} label={`Final MKV: ${attachmentDisposition}`} /></TableCell>
+                <TableCell sx={{ wordBreak: 'break-word' }}>
+                  <Typography variant="body2">#{attachment.streamIndex} · {filename}</Typography>
+                  <Typography variant="caption" color="text.secondary">{attachmentTypeLabel(attachment)}</Typography>
+                  {attachment.mimeType ? <Typography variant="caption" color="text.secondary" display="block">MIME: {attachment.mimeType}</Typography> : null}
+                </TableCell>
+              </TableRow>;
+            })}
+          </TableBody>
+        </Table> : <Typography variant="body2" color="text.secondary" sx={{ p: 1.5 }}>
+          {attachmentInventoryAvailable ? 'No source attachments.' : 'Attachment metadata unavailable.'}
+        </Typography>}
+      </Box>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
         <Chip label={`Attachments: ${preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove'} (${preview.resolvedTrackPlan.attachmentPolicy})`} title={preview.resolvedTrackPlan.attachmentReason} />
         <Chip label={`Chapters: ${preview.resolvedTrackPlan.chaptersKept ? 'Keep' : 'Remove'}`} />
@@ -51,6 +74,19 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
       </Box> : null}
     </Stack>
   );
+}
+
+function attachmentTypeLabel(attachment: ResolutionPreview['resolvedTrackPlan']['attachmentStreams'][number]) {
+  const kind = attachment.attachmentKind || 'ATTACHMENT';
+  if (attachment.fontFormat) return `${kind} · ${attachment.fontFormat}`;
+  const mimeType = attachment.mimeType?.toLowerCase();
+  const filename = attachment.filename?.toLowerCase() ?? '';
+  const codec = attachment.codec?.toLowerCase();
+  if (kind === 'IMAGE') {
+    if (mimeType === 'image/jpeg' || /\.jpe?g$/.test(filename) || codec === 'jpeg' || codec === 'mjpeg') return 'IMAGE · JPEG';
+    if (mimeType === 'image/png' || filename.endsWith('.png') || codec === 'png') return 'IMAGE · PNG';
+  }
+  return `${kind} · ${codec?.toUpperCase() || 'UNKNOWN'}`;
 }
 
 function subtitleActionLabel(action: 'keep' | 'remove' | 'extract' | 'keep_and_extract') {

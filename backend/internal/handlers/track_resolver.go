@@ -13,6 +13,7 @@ import (
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
 func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedTrackPlan, error) {
+	normalizeScanResultAttachmentStreams(&scan)
 	if err := validateSubtitleRules(profile); err != nil {
 		return ResolvedTrackPlan{}, err
 	}
@@ -121,10 +122,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	if err != nil {
 		return ResolvedTrackPlan{}, err
 	}
-	attachments := resolvedRawProbeStreams(scan.RawProbe, "attachment")
-	if !attachmentsKept {
-		attachments = []ResolvedTrackStream{}
-	}
+	attachments := resolvedAttachmentStreams(scan.AttachmentStreams)
 	attachmentReason := attachmentResolutionReason(attachmentPolicy, subtitles)
 	if attachmentPolicy == AttachmentPolicyRemove && embeddedASSOrSSAExists(subtitles) {
 		warnings = append(warnings, "Font attachments were explicitly removed while an embedded ASS/SSA subtitle remains; rendering may differ on clients without those fonts.")
@@ -288,21 +286,22 @@ func resolvedStreams(streams models.JSONList, selected *map[int]bool) []Resolved
 	return result
 }
 
-func resolvedRawProbeStreams(raw models.JSONMap, codecType string) []ResolvedTrackStream {
-	result := []ResolvedTrackStream{}
-	for _, value := range workerSliceValue(raw["streams"]) {
-		stream := settingProfileObject(value)
-		if !strings.EqualFold(workerStringValue(stream["codec_type"]), codecType) {
+func resolvedAttachmentStreams(streams models.JSONList) []ResolvedAttachmentStream {
+	result := []ResolvedAttachmentStream{}
+	for _, raw := range streams {
+		stream := settingProfileObject(raw)
+		index := streamIndexValue(stream["index"])
+		if index < 0 {
 			continue
 		}
-		language := "und"
-		if tags := settingProfileObject(stream["tags"]); tags != nil {
-			language = normalizedTrackLanguage(workerStringValue(tags["language"]))
-		}
-		result = append(result, ResolvedTrackStream{
-			StreamIndex: streamIndexValue(stream["index"]),
-			Codec:       strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec_name"]))),
-			Language:    language,
+		result = append(result, ResolvedAttachmentStream{
+			StreamIndex:    index,
+			Codec:          strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec"]))),
+			Filename:       workerStringValue(stream["filename"]),
+			MIMEType:       workerStringValue(stream["mimeType"]),
+			Title:          workerStringValue(stream["title"]),
+			AttachmentKind: workerStringValue(stream["attachmentKind"]),
+			FontFormat:     workerStringValue(stream["fontFormat"]),
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].StreamIndex < result[j].StreamIndex })

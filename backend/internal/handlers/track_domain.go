@@ -174,6 +174,16 @@ type ResolvedTrackStream struct {
 	Language    string `json:"language,omitempty"`
 }
 
+type ResolvedAttachmentStream struct {
+	StreamIndex    int    `json:"streamIndex"`
+	Codec          string `json:"codec,omitempty"`
+	Filename       string `json:"filename,omitempty"`
+	MIMEType       string `json:"mimeType,omitempty"`
+	Title          string `json:"title,omitempty"`
+	AttachmentKind string `json:"attachmentKind"`
+	FontFormat     string `json:"fontFormat,omitempty"`
+}
+
 type ResolvedSubtitleTrack struct {
 	StreamIndex int                 `json:"streamIndex"`
 	Codec       string              `json:"codec,omitempty"`
@@ -195,20 +205,20 @@ type ResolvedTrackSidecar struct {
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
 // decisions. Task 2 wires this model into Queue snapshots and execution plans.
 type ResolvedTrackPlan struct {
-	VideoStreams            []ResolvedTrackStream   `json:"videoStreams"`
-	AudioStreams            []ResolvedTrackStream   `json:"audioStreams"`
-	RemovedAudioStreams     []ResolvedTrackStream   `json:"removedAudioStreams"`
-	AudioSelectionExplicit  bool                    `json:"audioSelectionExplicit"`
-	SubtitleStreams         []ResolvedSubtitleTrack `json:"subtitleStreams"`
-	AttachmentPolicy        AttachmentPolicy        `json:"attachmentPolicy"`
-	AttachmentsKept         bool                    `json:"attachmentsKept"`
-	AttachmentReason        string                  `json:"attachmentReason"`
-	AttachmentStreams       []ResolvedTrackStream   `json:"attachmentStreams"`
-	FontAttachmentsExported bool                    `json:"fontAttachmentsExported"`
-	ChapterPolicy           ChapterPolicy           `json:"chapterPolicy"`
-	ChaptersKept            bool                    `json:"chaptersKept"`
-	SidecarOutputs          []ResolvedTrackSidecar  `json:"sidecarOutputs"`
-	Warnings                []string                `json:"warnings,omitempty"`
+	VideoStreams            []ResolvedTrackStream      `json:"videoStreams"`
+	AudioStreams            []ResolvedTrackStream      `json:"audioStreams"`
+	RemovedAudioStreams     []ResolvedTrackStream      `json:"removedAudioStreams"`
+	AudioSelectionExplicit  bool                       `json:"audioSelectionExplicit"`
+	SubtitleStreams         []ResolvedSubtitleTrack    `json:"subtitleStreams"`
+	AttachmentPolicy        AttachmentPolicy           `json:"attachmentPolicy"`
+	AttachmentsKept         bool                       `json:"attachmentsKept"`
+	AttachmentReason        string                     `json:"attachmentReason"`
+	AttachmentStreams       []ResolvedAttachmentStream `json:"attachmentStreams"`
+	FontAttachmentsExported bool                       `json:"fontAttachmentsExported"`
+	ChapterPolicy           ChapterPolicy              `json:"chapterPolicy"`
+	ChaptersKept            bool                       `json:"chaptersKept"`
+	SidecarOutputs          []ResolvedTrackSidecar     `json:"sidecarOutputs"`
+	Warnings                []string                   `json:"warnings,omitempty"`
 }
 
 const resolvedTrackPlanSnapshotKey = "resolvedTrackPlan"

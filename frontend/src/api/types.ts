@@ -720,7 +720,7 @@ export type TrackProfileResolutionPreview = {
 		attachmentPolicy: 'auto' | 'keep' | 'remove';
 		attachmentsKept: boolean;
 		attachmentReason: string;
-		attachmentStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
+		attachmentStreams: ResolvedAttachmentStream[];
 		fontAttachmentsExported: boolean;
 		chapterPolicy: 'keep' | 'remove';
 		chaptersKept: boolean;
@@ -1139,6 +1139,27 @@ export type MediaStreamInfo = {
   bitDepth?: number;
 };
 
+export type AttachmentStreamInfo = {
+  index: number;
+  type: 'attachment';
+  codec: string;
+  filename: string;
+  mimeType: string;
+  title?: string;
+  attachmentKind: 'FONT' | 'IMAGE' | 'ATTACHMENT' | string;
+  fontFormat: 'TTF' | 'OTF' | 'TTC' | 'OTC' | '' | string;
+};
+
+export type ResolvedAttachmentStream = {
+  streamIndex: number;
+  codec?: string;
+  filename?: string;
+  mimeType?: string;
+  title?: string;
+  attachmentKind: 'FONT' | 'IMAGE' | 'ATTACHMENT' | string;
+  fontFormat?: 'TTF' | 'OTF' | 'TTC' | 'OTC' | string;
+};
+
 export type ScanResult = {
   id: number;
   path: string;
@@ -1157,6 +1178,7 @@ export type ScanResult = {
   videoStreams: MediaStreamInfo[];
   audioStreams: MediaStreamInfo[];
   subtitleStreams: MediaStreamInfo[];
+  attachmentStreams: AttachmentStreamInfo[];
   compatibilityAnalysis: {
     version?: number;
     target?: string;

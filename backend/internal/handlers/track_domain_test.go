@@ -106,7 +106,7 @@ func TestResolvedTrackPlanSerializesCanonicalDecisions(t *testing.T) {
 		AudioStreams:      []ResolvedTrackStream{{StreamIndex: 1, Codec: "ac3", Language: "eng"}},
 		SubtitleStreams:   []ResolvedSubtitleTrack{{StreamIndex: 2, Codec: "ass", Language: "eng", Action: SubtitleDispositionKeepAndExtract}},
 		AttachmentPolicy:  AttachmentPolicyAuto,
-		AttachmentStreams: []ResolvedTrackStream{{StreamIndex: 3, Codec: "ttf"}},
+		AttachmentStreams: []ResolvedAttachmentStream{{StreamIndex: 3, Codec: "ttf", Filename: "Font.ttf", MIMEType: "font/ttf", AttachmentKind: "FONT", FontFormat: "TTF"}},
 		ChapterPolicy:     ChapterPolicyKeep,
 		SidecarOutputs:    []ResolvedTrackSidecar{{StreamIndex: 2, Codec: "ass", Language: "eng", Format: "ass"}},
 	}
@@ -120,5 +120,8 @@ func TestResolvedTrackPlanSerializesCanonicalDecisions(t *testing.T) {
 	}
 	if len(decoded.SubtitleStreams) != 1 || decoded.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || decoded.AttachmentPolicy != AttachmentPolicyAuto || decoded.ChapterPolicy != ChapterPolicyKeep {
 		t.Fatalf("resolved plan lost canonical decisions: %#v", decoded)
+	}
+	if len(decoded.AttachmentStreams) != 1 || decoded.AttachmentStreams[0].Filename != "Font.ttf" || decoded.AttachmentStreams[0].MIMEType != "font/ttf" || decoded.AttachmentStreams[0].AttachmentKind != "FONT" || decoded.AttachmentStreams[0].FontFormat != "TTF" {
+		t.Fatalf("resolved plan lost attachment metadata: %#v", decoded.AttachmentStreams)
 	}
 }

@@ -217,6 +217,7 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 		return
 	}
 	normalizeScanResultRestorationCollections(&snapshot)
+	normalizeScanResultAttachmentStreams(&snapshot)
 	if statErr != nil || info.IsDir() {
 		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}})
 		return
@@ -292,6 +293,7 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 		return
 	}
 	normalizeScanResultRestorationCollections(&result)
+	normalizeScanResultAttachmentStreams(&result)
 	if cached {
 		c.JSON(http.StatusOK, result)
 		return
@@ -1062,6 +1064,7 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 			return
 		}
 		normalizeScanResultRestorationCollections(&outcome.result)
+		normalizeScanResultAttachmentStreams(&outcome.result)
 		transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 			finishSnapshotOperationTiming(item, time.Now())
 			item.CacheHit = outcome.cached
@@ -1082,6 +1085,33 @@ func normalizeScanResultRestorationCollections(result *models.ScanResult) {
 	}
 	analysis := restorationEvidenceFromRaw(result.RestorationAnalysis)
 	result.RestorationAnalysis = structToJSONMap(analysis)
+}
+
+// normalizeScanResultAttachmentStreams is the compatibility boundary for
+// snapshots created before attachments became a first-class inventory. It
+// rebuilds the collection exclusively from the ffprobe evidence already
+// persisted in RawProbe and never probes the media again.
+func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(result.AttachmentStreams) > 0 {
+		return true
+	}
+	rawStreams, ok := result.RawProbe["streams"]
+	if !ok {
+		return false
+	}
+	encoded, err := json.Marshal(rawStreams)
+	if err != nil {
+		return false
+	}
+	var streams []FFProbeStream
+	if err := json.Unmarshal(encoded, &streams); err != nil {
+		return false
+	}
+	result.AttachmentStreams = attachmentStreamSummaries(streams)
+	return true
 }
 
 func (h ScannerHandler) CancelSnapshotOperation(c *gin.Context) {
@@ -1416,6 +1446,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		VideoStreams:           streamSummaries(probe.Streams, "video"),
 		AudioStreams:           streamSummaries(probe.Streams, "audio"),
 		SubtitleStreams:        streamSummaries(probe.Streams, "subtitle"),
+		AttachmentStreams:      attachmentStreamSummaries(probe.Streams),
 		RawProbe:               raw,
 		InterlaceAnalysis:      interlaceAnalysisFromRaw(raw),
 		CadenceAnalysis:        analysisMapFromRaw(raw, "cadenceAnalysis"),
@@ -1586,6 +1617,73 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 	}
 
 	return summaries
+}
+
+func attachmentStreamSummaries(streams []FFProbeStream) models.JSONList {
+	summaries := models.JSONList{}
+	for _, stream := range streams {
+		if !strings.EqualFold(strings.TrimSpace(stream.CodecType), "attachment") {
+			continue
+		}
+		filename := attachmentTagValue(stream.Tags, "filename")
+		mimeType := attachmentTagValue(stream.Tags, "mimetype", "mime_type", "mime-type")
+		kind, fontFormat := classifyAttachment(stream.CodecName, filename, mimeType)
+		summaries = append(summaries, models.JSONMap{
+			"index":          stream.Index,
+			"type":           "attachment",
+			"codec":          strings.ToLower(strings.TrimSpace(stream.CodecName)),
+			"filename":       filename,
+			"mimeType":       mimeType,
+			"title":          attachmentTagValue(stream.Tags, "title"),
+			"attachmentKind": kind,
+			"fontFormat":     fontFormat,
+		})
+	}
+	return summaries
+}
+
+func attachmentTagValue(tags map[string]string, keys ...string) string {
+	for _, key := range keys {
+		for candidate, value := range tags {
+			if strings.EqualFold(strings.TrimSpace(candidate), key) {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func classifyAttachment(codec, filename, mimeType string) (kind, fontFormat string) {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	mimeType = strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+
+	fontByMIME := map[string]string{
+		"application/x-truetype-font": "TTF",
+		"application/x-font-ttf":      "TTF",
+		"font/ttf":                    "TTF",
+		"application/vnd.ms-opentype": "OTF",
+		"application/x-font-opentype": "OTF",
+		"font/otf":                    "OTF",
+		"application/x-font-ttc":      "TTC",
+		"font/collection":             "TTC",
+		"application/x-font-otc":      "OTC",
+	}
+	if format := fontByMIME[mimeType]; format != "" {
+		return "FONT", format
+	}
+	fontByExtension := map[string]string{".ttf": "TTF", ".otf": "OTF", ".ttc": "TTC", ".otc": "OTC"}
+	if format := fontByExtension[extension]; format != "" {
+		return "FONT", format
+	}
+	fontByCodec := map[string]string{"ttf": "TTF", "otf": "OTF", "ttc": "TTC", "otc": "OTC"}
+	if format := fontByCodec[codec]; format != "" {
+		return "FONT", format
+	}
+	if mimeType == "image/jpeg" || mimeType == "image/png" || extension == ".jpg" || extension == ".jpeg" || extension == ".png" || codec == "jpeg" || codec == "mjpeg" || codec == "png" {
+		return "IMAGE", ""
+	}
+	return "ATTACHMENT", ""
 }
 
 func streamSizeBytes(stream FFProbeStream) int64 {
