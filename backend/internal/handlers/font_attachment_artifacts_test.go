@@ -73,4 +73,50 @@ func TestValidateRequiredFontAttachmentArtifacts(t *testing.T) {
 			}
 		})
 	}
+
+	for _, test := range []struct {
+		name         string
+		relativePath func(models.QueueJob) string
+	}{
+		{
+			name: "empty relative path",
+			relativePath: func(job models.QueueJob) string {
+				return ""
+			},
+		},
+		{
+			name: "wrong fonts directory",
+			relativePath: func(job models.QueueJob) string {
+				return filepath.Join("Other.fonts", "Font.ttf")
+			},
+		},
+		{
+			name: "wrong relative filename",
+			relativePath: func(job models.QueueJob) string {
+				return fontAttachmentRelativePath(job.MediaPath, "Other.ttf")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "Font.ttf")
+			if err := os.WriteFile(path, []byte("font"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			job := fontValidationJob(t, path, "ready")
+
+			artifacts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+			if len(artifacts) != 1 {
+				t.Fatalf("expected one font attachment artifact, got %d", len(artifacts))
+			}
+
+			artifacts[0].RelativePath = test.relativePath(job)
+			job.SubtitleArtifacts = fontAttachmentArtifactsJSON(artifacts)
+
+			checks, _, _ := validateRequiredFontAttachmentArtifacts(job)
+			if len(checks) != 1 || checks[0].Status != "failed" {
+				t.Fatalf("checks=%#v", checks)
+			}
+		})
+	}
 }
