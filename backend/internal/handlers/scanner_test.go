@@ -619,38 +619,105 @@ func TestNormalizePersistedAttachmentInventoryRecanonicalizesDerivedClassificati
 	}
 }
 
-func TestNormalizePersistedAttachmentInventoryDropsMalformedRows(t *testing.T) {
+func TestNormalizePersistedAttachmentInventoryRejectsPartialCollectionWithoutRawProbe(t *testing.T) {
 	result := models.ScanResult{
 		AttachmentStreams: models.JSONList{
 			models.JSONMap{"type": "attachment", "filename": "missing-index.ttf", "attachmentKind": "FONT", "fontFormat": "TTF"},
-			models.JSONMap{"index": 7, "type": "video", "codec": "h264"},
 			models.JSONMap{"index": 8, "type": "attachment", "codec": "png", "filename": "cover.png", "mimeType": "image/png"},
 		},
 		AttachmentInventoryAvailable: true,
 	}
-	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 1 {
+	if normalizeScanResultAttachmentStreams(&result) || result.AttachmentInventoryAvailable || result.AttachmentStreams != nil {
 		t.Fatalf("normalized inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
-	}
-	attachment := settingProfileObject(result.AttachmentStreams[0])
-	if streamIndexValue(attachment["index"]) != 8 || workerStringValue(attachment["attachmentKind"]) != "IMAGE" {
-		t.Fatalf("valid attachment was not retained canonically: %#v", attachment)
 	}
 }
 
-func TestNormalizeUnusablePersistedAttachmentInventoryFallsBackToRawProbe(t *testing.T) {
+func TestNormalizePartialPersistedAttachmentInventoryFallsBackToCompleteRawProbe(t *testing.T) {
 	result := models.ScanResult{
-		AttachmentStreams:            models.JSONList{models.JSONMap{"type": "attachment", "filename": "missing-index.ttf"}},
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"index": 8, "type": "attachment", "codec": "png", "filename": "cover.png", "mimeType": "image/png"},
+			models.JSONMap{"type": "attachment", "filename": "missing-index.ttf"},
+		},
 		AttachmentInventoryAvailable: true,
 		RawProbe: models.JSONMap{"streams": models.JSONList{
-			models.JSONMap{"index": 11, "codec_type": "attachment", "codec_name": "otf", "tags": models.JSONMap{"filename": "Recovered.otf", "mimetype": "font/otf"}},
+			models.JSONMap{"index": 8, "codec_type": "attachment", "codec_name": "png", "tags": models.JSONMap{"filename": "cover.png", "mimetype": "image/png"}},
+			models.JSONMap{"index": 9, "codec_type": "attachment", "codec_name": "ttf", "tags": models.JSONMap{"filename": "Recovered.ttf", "mimetype": "font/ttf"}},
 		}},
 	}
-	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 1 {
+	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 2 {
 		t.Fatalf("fallback inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
 	}
-	attachment := settingProfileObject(result.AttachmentStreams[0])
-	if streamIndexValue(attachment["index"]) != 11 || workerStringValue(attachment["fontFormat"]) != "OTF" {
+	attachment := settingProfileObject(result.AttachmentStreams[1])
+	if streamIndexValue(attachment["index"]) != 9 || workerStringValue(attachment["attachmentKind"]) != "FONT" || workerStringValue(attachment["fontFormat"]) != "TTF" {
 		t.Fatalf("RawProbe fallback did not reconstruct canonical attachment: %#v", attachment)
+	}
+}
+
+func TestNormalizeDuplicatePersistedAttachmentIndexesFallBackToRawProbe(t *testing.T) {
+	result := models.ScanResult{
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"index": 7, "type": "attachment", "filename": "A.ttf"},
+			models.JSONMap{"index": 7, "type": "attachment", "filename": "B.ttf"},
+		},
+		AttachmentInventoryAvailable: true,
+		RawProbe: models.JSONMap{"streams": models.JSONList{
+			models.JSONMap{"index": 7, "codec_type": "attachment", "codec_name": "ttf", "tags": models.JSONMap{"filename": "Canonical.ttf", "mimetype": "font/ttf"}},
+			models.JSONMap{"index": 8, "codec_type": "attachment", "codec_name": "otf", "tags": models.JSONMap{"filename": "Other.otf", "mimetype": "font/otf"}},
+		}},
+	}
+	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 2 {
+		t.Fatalf("fallback inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+	}
+	for position, wantIndex := range []int{7, 8} {
+		if got := streamIndexValue(settingProfileObject(result.AttachmentStreams[position])["index"]); got != wantIndex {
+			t.Fatalf("attachment[%d] index=%d want=%d inventory=%#v", position, got, wantIndex, result.AttachmentStreams)
+		}
+	}
+}
+
+func TestNormalizeDuplicatePersistedAttachmentIndexesWithoutRawProbeIsUnavailable(t *testing.T) {
+	result := models.ScanResult{
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"index": 7, "type": "attachment", "filename": "A.ttf"},
+			models.JSONMap{"index": 7, "type": "attachment", "filename": "B.ttf"},
+		},
+		AttachmentInventoryAvailable: true,
+	}
+	if normalizeScanResultAttachmentStreams(&result) || result.AttachmentInventoryAvailable || result.AttachmentStreams != nil {
+		t.Fatalf("duplicate inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+	}
+}
+
+func TestNormalizeFullyValidPersistedAttachmentInventoryIsTrustworthyAndIdempotent(t *testing.T) {
+	result := models.ScanResult{
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"index": 7, "type": "attachment", "codec": "png", "filename": "fake.ttf", "mimeType": "image/png", "attachmentKind": "FONT", "fontFormat": "TTF"},
+			models.JSONMap{"index": 8, "type": "attachment", "codec": "ttc", "filename": "Collection.otc", "mimeType": "font/collection", "attachmentKind": "FONT", "fontFormat": "TTC"},
+		},
+		AttachmentInventoryAvailable: true,
+	}
+	if !normalizeScanResultAttachmentStreams(&result) || !result.AttachmentInventoryAvailable || len(result.AttachmentStreams) != 2 {
+		t.Fatalf("normalized inventory=%#v available=%t", result.AttachmentStreams, result.AttachmentInventoryAvailable)
+	}
+	if first := settingProfileObject(result.AttachmentStreams[0]); workerStringValue(first["attachmentKind"]) != "IMAGE" || workerStringValue(first["fontFormat"]) != "" {
+		t.Fatalf("first classification=%#v", first)
+	}
+	if second := settingProfileObject(result.AttachmentStreams[1]); workerStringValue(second["attachmentKind"]) != "FONT" || workerStringValue(second["fontFormat"]) != "OTC" {
+		t.Fatalf("second classification=%#v", second)
+	}
+	firstPass, err := json.Marshal(result.AttachmentStreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !normalizeScanResultAttachmentStreams(&result) {
+		t.Fatal("second normalization unexpectedly made inventory unavailable")
+	}
+	secondPass, err := json.Marshal(result.AttachmentStreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstPass) != string(secondPass) {
+		t.Fatalf("normalization drifted: first=%s second=%s", firstPass, secondPass)
 	}
 }
 

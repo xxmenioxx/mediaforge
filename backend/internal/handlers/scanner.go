@@ -1088,9 +1088,8 @@ func normalizeScanResultRestorationCollections(result *models.ScanResult) {
 }
 
 // normalizeScanResultAttachmentStreams is the compatibility boundary for
-// snapshots created before attachments became a first-class inventory. It
-// rebuilds the collection exclusively from the ffprobe evidence already
-// persisted in RawProbe and never probes the media again.
+// persisted first-class attachment inventories and older snapshots that only
+// contain ffprobe evidence in RawProbe. It never probes the media again.
 func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 	if result == nil {
 		return false
@@ -1102,12 +1101,21 @@ func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 		return true
 	}
 	canonical := models.JSONList{}
+	trustworthy := len(result.AttachmentStreams) > 0
+	seenIndexes := map[int]struct{}{}
 	for _, raw := range result.AttachmentStreams {
 		stream := settingProfileObject(raw)
 		streamType := strings.TrimSpace(workerStringValue(stream["type"]))
-		if streamIndexValue(stream["index"]) < 0 || (streamType != "" && !strings.EqualFold(streamType, "attachment")) {
+		streamIndex := streamIndexValue(stream["index"])
+		if streamIndex < 0 || (streamType != "" && !strings.EqualFold(streamType, "attachment")) {
+			trustworthy = false
 			continue
 		}
+		if _, duplicate := seenIndexes[streamIndex]; duplicate {
+			trustworthy = false
+			continue
+		}
+		seenIndexes[streamIndex] = struct{}{}
 		kind, fontFormat := classifyAttachment(
 			workerStringValue(stream["codec"]),
 			workerStringValue(stream["filename"]),
@@ -1121,7 +1129,7 @@ func normalizeScanResultAttachmentStreams(result *models.ScanResult) bool {
 		canonicalStream["fontFormat"] = fontFormat
 		canonical = append(canonical, canonicalStream)
 	}
-	if len(canonical) > 0 {
+	if trustworthy {
 		result.AttachmentStreams = canonical
 		result.AttachmentInventoryAvailable = true
 		return true
