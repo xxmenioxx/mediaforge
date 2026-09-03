@@ -45,6 +45,7 @@ export type TrackProfile = {
 	  subtitleRules: SubtitleRule[];
 	  subtitleSidecarFormats?: SubtitleSidecarFormat[];
 	  attachmentPolicy: 'auto' | 'keep' | 'remove';
+	  fontAttachmentExportPolicy?: 'none' | 'all';
 	  chapterPolicy: 'keep' | 'remove';
   notes: string;
   disabled?: boolean;
@@ -56,10 +57,10 @@ export const emptyTrackProfile: TrackProfile = {
   key: '', name: '', description: '', videoMode: 'first', audioMode: 'languages', audioLanguages: [],
   audioRequired: true, dropCommentary: true, defaultAudioLanguage: '', subtitleMode: 'forced-or-languages',
   subtitleLanguages: [], subtitlesRequired: false, defaultSubtitleLanguage: '', validationMode: 'review', notes: '',
-	  subtitleDisposition: 'keep', subtitleRules: [], subtitleSidecarFormats: ['original'], attachmentPolicy: 'auto', chapterPolicy: 'keep',
+	  subtitleDisposition: 'keep', subtitleRules: [], subtitleSidecarFormats: ['original'], attachmentPolicy: 'auto', fontAttachmentExportPolicy: 'none', chapterPolicy: 'keep',
 };
 
-export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'subtitleSidecarFormats' | 'attachmentPolicy' | 'chapterPolicy'>>): TrackProfile {
+export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'subtitleSidecarFormats' | 'attachmentPolicy' | 'fontAttachmentExportPolicy' | 'chapterPolicy'>>): TrackProfile {
   return { ...profile, ...patch, trackDispositionVersion: 1 };
 }
 
@@ -164,6 +165,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
 	  subtitleDisposition: disposition(item.subtitleDisposition), subtitleRules: rules(item.subtitleRules),
 	  subtitleSidecarFormats: sidecarFormats(item.subtitleSidecarFormats).length ? sidecarFormats(item.subtitleSidecarFormats) : undefined,
 	  attachmentPolicy: item.attachmentPolicy === 'keep' || item.attachmentPolicy === 'remove' ? item.attachmentPolicy : 'auto',
+	  fontAttachmentExportPolicy: item.fontAttachmentExportPolicy === 'all' ? 'all' : 'none',
 	  chapterPolicy: item.chapterPolicy === 'remove' ? 'remove' : 'keep',
     videoMode: item.videoMode === 'all' || item.videoMode === 'require-one' ? item.videoMode : 'first',
     audioMode: item.audioMode === 'all' || item.audioMode === 'default' || item.audioMode === 'none' ? item.audioMode : 'languages',

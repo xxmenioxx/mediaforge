@@ -32,10 +32,33 @@ type SubtitleArtifact struct {
 	FontAttachmentsExported bool   `json:"fontAttachmentsExported"`
 }
 
+type FontAttachmentArtifact struct {
+	ArtifactID        string `json:"artifactId"`
+	Type              string `json:"type"`
+	StreamIndex       int    `json:"streamIndex"`
+	AttachmentOrdinal int    `json:"attachmentOrdinal"`
+	SourceCodec       string `json:"sourceCodec,omitempty"`
+	OriginalName      string `json:"originalName,omitempty"`
+	MIMEType          string `json:"mimeType,omitempty"`
+	FontFormat        string `json:"fontFormat"`
+	SafeFilename      string `json:"safeFilename"`
+	RelativePath      string `json:"relativePath"`
+	StagedPath        string `json:"stagedPath"`
+	PublishedPath     string `json:"publishedPath,omitempty"`
+	SizeBytes         int64  `json:"sizeBytes"`
+	Status            string `json:"status"`
+	Error             string `json:"error,omitempty"`
+	DisplayName       string `json:"displayName,omitempty"`
+}
+
 type subtitleArtifactProgress func(SubtitleArtifact)
 
 func subtitleArtifactID(streamIndex int, mode, format string) string {
 	return fmt.Sprintf("subtitle:%d:%s:%s", streamIndex, fallback(strings.ToLower(strings.TrimSpace(mode)), "original"), strings.ToLower(strings.TrimSpace(format)))
+}
+
+func fontAttachmentArtifactID(streamIndex int) string {
+	return fmt.Sprintf("font-attachment:%d", streamIndex)
 }
 
 func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
@@ -56,6 +79,27 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts
+}
+
+func plannedFontAttachmentArtifacts(job models.QueueJob) []FontAttachmentArtifact {
+	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+	if !ok || len(plan.FontAttachments) == 0 {
+		return nil
+	}
+	artifacts := make([]FontAttachmentArtifact, 0, len(plan.FontAttachments))
+	for _, font := range plan.FontAttachments {
+		relativePath := filepath.Join(filepath.Base(strings.TrimSuffix(job.MediaPath, filepath.Ext(job.MediaPath)))+".fonts", font.SafeFilename)
+		artifacts = append(artifacts, FontAttachmentArtifact{
+			ArtifactID: font.ArtifactID, Type: "font_attachment", StreamIndex: font.StreamIndex, AttachmentOrdinal: font.AttachmentOrdinal,
+			SourceCodec: font.Codec, OriginalName: font.OriginalName, MIMEType: font.MIMEType, FontFormat: font.FontFormat,
+			SafeFilename: font.SafeFilename, RelativePath: relativePath, DisplayName: font.SafeFilename, Status: "planned",
+		})
+	}
+	return artifacts
+}
+
+func plannedSidecarArtifactsJSON(job models.QueueJob) models.JSONList {
+	return sidecarArtifactsJSON(plannedSubtitleArtifacts(job), plannedFontAttachmentArtifacts(job))
 }
 
 func generateSubtitleArtifacts(ctx context.Context, plan MediaJobPlan) ([]SubtitleArtifact, error) {
@@ -317,6 +361,78 @@ func originalSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, muxer, o
 	return append(args, "-map", fmt.Sprintf("0:%d", streamIndex), "-vn", "-an", "-c:s", "copy", "-f", muxer, outputPath)
 }
 
+func fontAttachmentExtractionArgs(inputPath string, attachmentOrdinal int, outputPath string) []string {
+	return []string{
+		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+		fmt.Sprintf("-dump_attachment:t:%d", attachmentOrdinal), outputPath,
+		"-i", inputPath, "-map", "0:v:0?", "-frames:v", "0", "-f", "null", "-",
+	}
+}
+
+func generateFontAttachmentArtifactsWithProgress(ctx context.Context, plan MediaJobPlan, progress func(FontAttachmentArtifact)) ([]FontAttachmentArtifact, error) {
+	if plan.ResolvedTracks == nil || len(plan.ResolvedTracks.FontAttachments) == 0 {
+		return nil, nil
+	}
+	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath)) + ".fonts"
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return nil, fmt.Errorf("prepare font attachment staging directory: %w", err)
+	}
+	artifacts := make([]FontAttachmentArtifact, 0, len(plan.ResolvedTracks.FontAttachments))
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		for index := range artifacts {
+			if artifacts[index].StagedPath != "" {
+				_ = os.Remove(artifacts[index].StagedPath)
+			}
+			if artifacts[index].Status == "ready" {
+				artifacts[index].Status = "rolled_back"
+				artifacts[index].Error = "font attachment set rolled back after another extraction failed"
+			}
+		}
+		_ = os.Remove(base)
+	}()
+	for _, font := range plan.ResolvedTracks.FontAttachments {
+		artifact := FontAttachmentArtifact{
+			ArtifactID: font.ArtifactID, Type: "font_attachment", StreamIndex: font.StreamIndex, AttachmentOrdinal: font.AttachmentOrdinal,
+			SourceCodec: font.Codec, OriginalName: font.OriginalName, MIMEType: font.MIMEType, FontFormat: font.FontFormat,
+			SafeFilename: font.SafeFilename, RelativePath: filepath.Join(filepath.Base(base), font.SafeFilename),
+			StagedPath: filepath.Join(base, font.SafeFilename), DisplayName: font.SafeFilename, Status: "generating",
+		}
+		artifacts = append(artifacts, artifact)
+		current := &artifacts[len(artifacts)-1]
+		_ = os.Remove(current.StagedPath)
+		if progress != nil {
+			progress(*current)
+		}
+		cmd := exec.CommandContext(ctx, "ffmpeg", fontAttachmentExtractionArgs(plan.InputPath, font.AttachmentOrdinal, current.StagedPath)...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			current.Status = "failed"
+			current.Error = fmt.Sprintf("font attachment stream %d extraction failed: %s", font.StreamIndex, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+			if progress != nil {
+				progress(*current)
+			}
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		info, err := os.Stat(current.StagedPath)
+		if err != nil || info.IsDir() || info.Size() == 0 {
+			_ = os.Remove(current.StagedPath)
+			current.Status, current.Error = "failed", fmt.Sprintf("font attachment stream %d produced an empty artifact", font.StreamIndex)
+			return artifacts, fmt.Errorf("%s", current.Error)
+		}
+		current.SizeBytes, current.Status = info.Size(), "ready"
+		if progress != nil {
+			progress(*current)
+		}
+	}
+	completed = true
+	return artifacts, nil
+}
+
 func resolvedSubtitleStagedPath(base string, artifact SubtitleArtifact, used map[string]struct{}) string {
 	language := safeSubtitleFilenamePart(artifact.Language)
 	if language == "" {
@@ -431,11 +547,42 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 	return result
 }
 
+func fontAttachmentArtifactsJSON(values []FontAttachmentArtifact) models.JSONList {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(models.JSONList, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]interface{}{
+			"artifactId": value.ArtifactID, "type": "font_attachment", "streamIndex": value.StreamIndex,
+			"attachmentOrdinal": value.AttachmentOrdinal, "sourceCodec": value.SourceCodec, "originalName": value.OriginalName,
+			"mimeType": value.MIMEType, "fontFormat": value.FontFormat, "safeFilename": value.SafeFilename,
+			"relativePath": value.RelativePath, "stagedPath": value.StagedPath, "publishedPath": value.PublishedPath,
+			"sizeBytes": value.SizeBytes, "status": value.Status, "error": value.Error, "displayName": value.DisplayName,
+		})
+	}
+	return result
+}
+
+func sidecarArtifactsJSON(subtitles []SubtitleArtifact, fonts []FontAttachmentArtifact) models.JSONList {
+	values := models.JSONList{}
+	values = append(values, subtitleArtifactsJSON(subtitles)...)
+	values = append(values, fontAttachmentArtifactsJSON(fonts)...)
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
 func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 	result := []SubtitleArtifact{}
 	for _, raw := range values {
 		value, ok := raw.(map[string]interface{})
 		if !ok {
+			continue
+		}
+		artifactType := strings.TrimSpace(stringFromUnknown(value["type"]))
+		if artifactType != "" && artifactType != "subtitle_sidecar" {
 			continue
 		}
 		result = append(result, SubtitleArtifact{
@@ -459,6 +606,38 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 		})
 	}
 	return result
+}
+
+func fontAttachmentArtifactsFromJSON(values models.JSONList) []FontAttachmentArtifact {
+	result := []FontAttachmentArtifact{}
+	for _, raw := range values {
+		value, ok := raw.(map[string]interface{})
+		if !ok || stringFromUnknown(value["type"]) != "font_attachment" {
+			continue
+		}
+		result = append(result, FontAttachmentArtifact{
+			ArtifactID: stringFromUnknown(value["artifactId"]), Type: "font_attachment",
+			StreamIndex: intValueSetting(value["streamIndex"], -1), AttachmentOrdinal: intValueSetting(value["attachmentOrdinal"], -1),
+			SourceCodec: stringFromUnknown(value["sourceCodec"]), OriginalName: stringFromUnknown(value["originalName"]), MIMEType: stringFromUnknown(value["mimeType"]),
+			FontFormat: stringFromUnknown(value["fontFormat"]), SafeFilename: stringFromUnknown(value["safeFilename"]), RelativePath: stringFromUnknown(value["relativePath"]),
+			StagedPath: stringFromUnknown(value["stagedPath"]), PublishedPath: stringFromUnknown(value["publishedPath"]), SizeBytes: int64(intValueSetting(value["sizeBytes"], 0)),
+			Status: stringFromUnknown(value["status"]), Error: stringFromUnknown(value["error"]), DisplayName: stringFromUnknown(value["displayName"]),
+		})
+	}
+	return result
+}
+
+func mergeFontAttachmentArtifactProgress(current []FontAttachmentArtifact, update FontAttachmentArtifact) []FontAttachmentArtifact {
+	if update.ArtifactID == "" {
+		update.ArtifactID = fontAttachmentArtifactID(update.StreamIndex)
+	}
+	for index := range current {
+		if current[index].ArtifactID == update.ArtifactID {
+			current[index] = update
+			return current
+		}
+	}
+	return append(current, update)
 }
 
 func mergeSubtitleArtifactProgress(current []SubtitleArtifact, update SubtitleArtifact) []SubtitleArtifact {
@@ -578,6 +757,64 @@ func publishSubtitleArtifacts(
 		}
 		artifacts[index].PublishedPath = destinations[index]
 	}
-	job.SubtitleArtifacts = subtitleArtifactsJSON(artifacts)
+	job.SubtitleArtifacts = sidecarArtifactsJSON(artifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
+	return published, nil
+}
+
+func publishFontAttachmentArtifacts(job *models.QueueJob, destinationMediaPath string, overwrite bool, backups *[]publishBackup) ([]string, error) {
+	artifacts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+	if len(artifacts) == 0 {
+		return nil, nil
+	}
+	destinationDir := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath)) + ".fonts"
+	directoryCreated := false
+	if info, err := os.Stat(destinationDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+			return nil, err
+		}
+		directoryCreated = true
+	} else if err != nil {
+		return nil, err
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("font attachment destination is not a directory: %s", destinationDir)
+	}
+	published := []string{}
+	if directoryCreated {
+		published = append(published, destinationDir)
+	}
+	for index, artifact := range artifacts {
+		if artifact.Status != "" && artifact.Status != "ready" {
+			return published, fmt.Errorf("font attachment for stream %d is not ready: %s", artifact.StreamIndex, fallback(artifact.Error, artifact.Status))
+		}
+		if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() || info.Size() == 0 {
+			return published, fmt.Errorf("staged font attachment is missing or empty: %s", artifact.StagedPath)
+		}
+		destination := filepath.Join(destinationDir, artifact.SafeFilename)
+		if !overwrite {
+			if _, err := os.Stat(destination); err == nil {
+				return published, fmt.Errorf("font attachment destination already exists: %s", destination)
+			} else if !os.IsNotExist(err) {
+				return published, err
+			}
+		} else if backups != nil {
+			hadBackup, err := ensurePublishBackup(destination, backups)
+			if err != nil {
+				return published, err
+			}
+			if hadBackup {
+				if err := copyPublishedFile(artifact.StagedPath, destination, true); err != nil {
+					return published, err
+				}
+				artifacts[index].PublishedPath = destination
+				continue
+			}
+		}
+		if err := copyPublishedFile(artifact.StagedPath, destination, overwrite); err != nil {
+			return published, err
+		}
+		published = append(published, destination)
+		artifacts[index].PublishedPath = destination
+	}
+	job.SubtitleArtifacts = sidecarArtifactsJSON(subtitleArtifactsFromJSON(job.SubtitleArtifacts), artifacts)
 	return published, nil
 }

@@ -382,6 +382,15 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		createdPublishPaths,
 		publishedGeneratedSubtitles...,
 	)
+	publishedFonts, err := publishFontAttachmentArtifacts(&job, destinationPath, overwrite, &publishBackups)
+	if err != nil {
+		created := append(append([]string{}, createdPublishPaths...), publishedFonts...)
+		rollbackPublishAttempt(created, publishBackups)
+		return h.failPublishingBeforeArchive(&job, publishError{
+			Status: http.StatusInternalServerError, Message: "video output is ready but font attachments could not be published; original was not archived", Err: err,
+		})
+	}
+	createdPublishPaths = append(createdPublishPaths, publishedFonts...)
 
 	if err := transitionJobStage(
 		h.db,
@@ -505,27 +514,34 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		_ = rollbackPublishedPaths(publishedSubtitles)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "subtitle publication failed before original archival", Err: subtitleErr}
 	}
+	publishedFonts, fontErr := publishFontAttachmentArtifacts(&job, target, false, nil)
+	publishedSidecars := append(append([]string{}, publishedSubtitles...), publishedFonts...)
+	if fontErr != nil {
+		_ = os.Remove(temporary)
+		_ = rollbackPublishedPaths(publishedSidecars)
+		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "font attachment publication failed before original archival", Err: fontErr}
+	}
 	if err := transitionJobStage(h.db, &job, JobStageArchivingOriginal); err != nil {
 		_ = os.Remove(temporary)
-		_ = rollbackPublishedPaths(publishedSubtitles)
+		_ = rollbackPublishedPaths(publishedSidecars)
 		return PublishResult{}, err
 	}
 	archivedPath, err := h.libraryOriginalArchivePath(job, library)
 	if err != nil {
 		_ = os.Remove(temporary)
-		_ = rollbackPublishedPaths(publishedSubtitles)
+		_ = rollbackPublishedPaths(publishedSidecars)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
 	}
 	job.ReplacementTargetPath = target
 	job.OriginalArchivedPath = archivedPath
 	if err := h.db.Save(&job).Error; err != nil {
 		_ = os.Remove(temporary)
-		_ = rollbackPublishedPaths(publishedSubtitles)
+		_ = rollbackPublishedPaths(publishedSidecars)
 		return PublishResult{}, err
 	}
 	if err := moveFile(job.MediaPath, archivedPath); err != nil {
 		_ = os.Remove(temporary)
-		_ = rollbackPublishedPaths(publishedSubtitles)
+		_ = rollbackPublishedPaths(publishedSidecars)
 		return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "original library asset could not be archived", Err: err}
 	}
 	if err := os.Rename(temporary, target); err != nil {
@@ -533,7 +549,7 @@ func (h PublisherHandler) publishLibraryReplacement(job models.QueueJob, library
 		if rollbackErr != nil {
 			return PublishResult{}, publishError{Status: http.StatusInternalServerError, Message: "replacement failed and original rollback also failed", Err: fmt.Errorf("replace: %v; rollback: %v", err, rollbackErr)}
 		}
-		_ = rollbackPublishedPaths(publishedSubtitles)
+		_ = rollbackPublishedPaths(publishedSidecars)
 		job.ReplacementTargetPath = ""
 		job.OriginalArchivedPath = ""
 		_ = h.db.Save(&job).Error

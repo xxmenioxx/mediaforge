@@ -1833,7 +1833,7 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 	job.ProfileVersion = 1
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
-	job.SubtitleArtifacts = subtitleArtifactsJSON(plannedSubtitleArtifacts(*job))
+	job.SubtitleArtifacts = plannedSidecarArtifactsJSON(*job)
 
 	return nil
 }
@@ -1892,7 +1892,7 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileSnapshot = snapshot
 	job.ProfileCapturedAt = &now
-	job.SubtitleArtifacts = subtitleArtifactsJSON(plannedSubtitleArtifacts(*job))
+	job.SubtitleArtifacts = plannedSidecarArtifactsJSON(*job)
 	return nil
 }
 

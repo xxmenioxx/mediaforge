@@ -355,6 +355,106 @@ func TestResolveTrackPlanMixedASSAndExplicitAttachmentPolicies(t *testing.T) {
 	}
 }
 
+func TestResolveFontAttachmentExportActivationMatrix(t *testing.T) {
+	baseScan := func(codec string) models.ScanResult {
+		return models.ScanResult{
+			SubtitleStreams: models.JSONList{models.JSONMap{"index": 2, "codec": codec, "language": "spa"}},
+			AttachmentStreams: models.JSONList{
+				models.JSONMap{"index": 6, "type": "attachment", "codec": "mjpeg", "filename": "cover.jpg", "mimeType": "image/jpeg", "attachmentKind": "IMAGE"},
+				models.JSONMap{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"},
+			},
+			AttachmentInventoryAvailable: true,
+		}
+	}
+	tests := []struct {
+		name, codec, disposition string
+		formats                  []string
+		policy                   string
+		wantFonts                int
+	}{
+		{name: "ASS original none", codec: "ass", disposition: "extract", formats: []string{"original"}, policy: "none"},
+		{name: "ASS original all", codec: "ass", disposition: "extract", formats: []string{"original"}, policy: "all", wantFonts: 1},
+		{name: "SSA original all", codec: "ssa", disposition: "extract", formats: []string{"original"}, policy: "all", wantFonts: 1},
+		{name: "SRT original all", codec: "subrip", disposition: "extract", formats: []string{"original"}, policy: "all"},
+		{name: "ASS compatibility only", codec: "ass", disposition: "extract", formats: []string{"srt"}, policy: "all"},
+		{name: "ASS original and compatibility", codec: "ass", disposition: "extract", formats: []string{"original", "srt"}, policy: "all", wantFonts: 1},
+		{name: "ASS embedded only", codec: "ass", disposition: "keep", formats: []string{"original"}, policy: "all"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := resolveTrackPlan(baseScan(test.codec), map[string]any{
+				"trackDispositionVersion": 1, "subtitleDisposition": test.disposition, "subtitleSidecarFormats": test.formats,
+				"attachmentPolicy": "remove", "fontAttachmentExportPolicy": test.policy, "chapterPolicy": "keep",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.FontAttachments) != test.wantFonts || plan.FontAttachmentsExported != (test.wantFonts > 0) {
+				t.Fatalf("font plan=%#v", plan)
+			}
+			if plan.AttachmentsKept {
+				t.Fatal("font sidecar export changed final-MKV attachment removal")
+			}
+		})
+	}
+}
+
+func TestResolveFontAttachmentPlanFreezesFormatsOrdinalsAndSafeNames(t *testing.T) {
+	scan := models.ScanResult{
+		SubtitleStreams: models.JSONList{models.JSONMap{"index": 2, "codec": "ass"}, models.JSONMap{"index": 3, "codec": "ass"}},
+		AttachmentStreams: models.JSONList{
+			models.JSONMap{"index": 6, "type": "attachment", "codec": "png", "filename": "cover.png", "mimeType": "image/png", "attachmentKind": "IMAGE"},
+			models.JSONMap{"index": 7, "type": "attachment", "codec": "ttf", "filename": "../../Arial.ttf", "attachmentKind": "FONT", "fontFormat": "TTF"},
+			models.JSONMap{"index": 8, "type": "attachment", "codec": "otf", "filename": `..\..\Arial.otf`, "attachmentKind": "FONT", "fontFormat": "OTF"},
+			models.JSONMap{"index": 9, "type": "attachment", "codec": "ttc", "filename": "", "attachmentKind": "FONT", "fontFormat": "TTC"},
+			models.JSONMap{"index": 10, "type": "attachment", "codec": "otc", "filename": "Collection.otc", "attachmentKind": "FONT", "fontFormat": "OTC"},
+		},
+		AttachmentInventoryAvailable: true,
+	}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"original"},
+		"attachmentPolicy": "keep", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.FontAttachments) != 4 {
+		t.Fatalf("fonts=%#v", plan.FontAttachments)
+	}
+	wantNames := []string{"Arial.ttf", "Arial.otf", "attachment-9.ttc", "Collection.otc"}
+	wantOrdinals := []int{1, 2, 3, 4}
+	for index := range wantNames {
+		if plan.FontAttachments[index].SafeFilename != wantNames[index] || plan.FontAttachments[index].AttachmentOrdinal != wantOrdinals[index] {
+			t.Fatalf("font[%d]=%#v", index, plan.FontAttachments[index])
+		}
+	}
+	if plan.FontAttachments[0].ArtifactID != "font-attachment:7" {
+		t.Fatalf("artifact ID=%q", plan.FontAttachments[0].ArtifactID)
+	}
+}
+
+func TestResolveFontAttachmentPlanDisambiguatesDuplicateNames(t *testing.T) {
+	attachments := []ResolvedAttachmentStream{
+		{StreamIndex: 7, Filename: "Arial.ttf", AttachmentKind: "FONT", FontFormat: "TTF"},
+		{StreamIndex: 9, Filename: "Arial.ttf", AttachmentKind: "FONT", FontFormat: "TTF"},
+	}
+	fonts, err := resolveFontAttachmentPlan(FontAttachmentExportAll, true, attachments, []ResolvedTrackSidecar{{Format: "ass", Mode: "original"}})
+	if err != nil || len(fonts) != 2 || fonts[0].SafeFilename != "Arial.ttf" || fonts[1].SafeFilename != "Arial.stream-9.ttf" {
+		t.Fatalf("fonts=%#v err=%v", fonts, err)
+	}
+}
+
+func TestResolveFontAttachmentPlanRequiresAvailableInventory(t *testing.T) {
+	_, err := resolveFontAttachmentPlan(FontAttachmentExportAll, false, nil, []ResolvedTrackSidecar{{Format: "ass", Mode: "original"}})
+	if err == nil || !strings.Contains(err.Error(), "refresh") {
+		t.Fatalf("err=%v", err)
+	}
+	fonts, err := resolveFontAttachmentPlan(FontAttachmentExportAll, true, nil, []ResolvedTrackSidecar{{Format: "ass", Mode: "original"}})
+	if err != nil || len(fonts) != 0 {
+		t.Fatalf("known-empty fonts=%#v err=%v", fonts, err)
+	}
+}
+
 func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:resolved-track-plan-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

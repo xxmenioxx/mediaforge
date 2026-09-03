@@ -21,6 +21,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
   const attachmentInventoryAvailable = scan.attachmentInventoryAvailable === true;
   const attachments = Array.isArray(preview.resolvedTrackPlan.attachmentStreams) ? preview.resolvedTrackPlan.attachmentStreams : [];
   const attachmentDisposition = preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove';
+	const exportedFontIndexes = new Set((preview.resolvedTrackPlan.fontAttachments ?? []).map((font) => font.streamIndex));
   return (
     <Stack spacing={1.5}>
       {preview.warnings.map((warning) => <Alert severity="warning" key={warning}>{warning}</Alert>)}
@@ -53,6 +54,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
                   <Typography variant="body2">#{attachment.streamIndex} · {filename}</Typography>
                   <Typography variant="caption" color="text.secondary">{attachmentTypeLabel(attachment)}</Typography>
                   {attachment.mimeType ? <Typography variant="caption" color="text.secondary" display="block">MIME: {attachment.mimeType}</Typography> : null}
+				  <Typography variant="caption" color="text.secondary" display="block">ASS/SSA sidecar: {attachment.attachmentKind !== 'FONT' || !attachment.fontFormat ? 'Not eligible' : exportedFontIndexes.has(attachment.streamIndex) ? 'Included' : 'Disabled'}</Typography>
                 </TableCell>
               </TableRow>;
             })}
@@ -65,6 +67,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
         <Chip label={`Attachments: ${preview.resolvedTrackPlan.attachmentsKept ? 'Keep' : 'Remove'} (${preview.resolvedTrackPlan.attachmentPolicy})`} title={preview.resolvedTrackPlan.attachmentReason} />
         <Chip label={`Chapters: ${preview.resolvedTrackPlan.chaptersKept ? 'Keep' : 'Remove'}`} />
         <Chip label={`Sidecars: ${preview.resolvedTrackPlan.sidecarOutputs.length}`} />
+		<Chip label={`ASS/SSA fonts: ${preview.resolvedTrackPlan.fontAttachmentsExported ? `${preview.resolvedTrackPlan.fontAttachments.length} included` : 'Disabled'}`} />
       </Stack>
       {preview.resolvedTrackPlan.sidecarOutputs.length ? <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
         <Typography fontWeight={700} sx={{ mb: 1 }}>Resolved subtitle sidecars</Typography>

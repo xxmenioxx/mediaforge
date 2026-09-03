@@ -88,9 +88,11 @@ func buildTrackProfileResolutionPreview(scan models.ScanResult, resolved map[str
 		ResolvedTrackPlan: plan,
 	}
 	preview.Warnings = append(preview.Warnings, plan.Warnings...)
-	for _, subtitle := range plan.SubtitleStreams {
-		if subtitle.Action == SubtitleDispositionExtract && (subtitle.Codec == "ass" || subtitle.Codec == "ssa") {
-			preview.Warnings = append(preview.Warnings, fmt.Sprintf("Extracted %s subtitle stream %d may reference custom source fonts; font attachments are not exported by this operation.", strings.ToUpper(subtitle.Codec), subtitle.StreamIndex))
+	if plan.FontAttachmentExportPolicy == FontAttachmentExportNone && hasSupportedFontAttachments(plan.AttachmentStreams) {
+		for _, sidecar := range plan.SidecarOutputs {
+			if strings.EqualFold(sidecar.Mode, "original") && (strings.EqualFold(sidecar.Format, "ass") || strings.EqualFold(sidecar.Format, "ssa")) {
+				preview.Warnings = append(preview.Warnings, fmt.Sprintf("Extracted %s subtitle stream %d may reference custom source fonts; font attachments are not exported by this operation.", strings.ToUpper(sidecar.Format), sidecar.StreamIndex))
+			}
 		}
 	}
 	videoPosition := 0
@@ -135,6 +137,15 @@ func buildTrackProfileResolutionPreview(scan models.ScanResult, resolved map[str
 		preview.Warnings = append(preview.Warnings, "No subtitle stream matches this required Path rule.")
 	}
 	return preview
+}
+
+func hasSupportedFontAttachments(attachments []ResolvedAttachmentStream) bool {
+	for _, attachment := range attachments {
+		if strings.EqualFold(attachment.AttachmentKind, "FONT") && supportedFontAttachmentFormat(attachment.FontFormat) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolvedStreamIndexSet(value any) map[int]bool {

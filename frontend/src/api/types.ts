@@ -721,6 +721,8 @@ export type TrackProfileResolutionPreview = {
 		attachmentsKept: boolean;
 		attachmentReason: string;
 		attachmentStreams: ResolvedAttachmentStream[];
+		fontAttachmentExportPolicy: 'none' | 'all';
+		fontAttachments: ResolvedFontAttachment[];
 		fontAttachmentsExported: boolean;
 		chapterPolicy: 'keep' | 'remove';
 		chaptersKept: boolean;
@@ -837,14 +839,14 @@ export type QueueJob = {
   originalArchivedPath: string;
   subtitleArtifacts?: Array<{
     artifactId?: string;
-    type?: 'subtitle_sidecar';
+    type?: 'subtitle_sidecar' | 'font_attachment';
     streamIndex: number;
     sourceCodec: string;
-    format: 'srt' | 'ass' | 'ssa' | 'sup';
+    format?: 'srt' | 'ass' | 'ssa' | 'sup';
     mode?: 'original' | 'converted';
-    language: string;
-    default: boolean;
-    forced: boolean;
+    language?: string;
+    default?: boolean;
+    forced?: boolean;
     title?: string;
     stagedPath: string;
     publishedPath?: string;
@@ -853,6 +855,12 @@ export type QueueJob = {
     error?: string;
     displayName?: string;
     fontAttachmentsExported?: boolean;
+    attachmentOrdinal?: number;
+    originalName?: string;
+    mimeType?: string;
+    fontFormat?: 'TTF' | 'OTF' | 'TTC' | 'OTC';
+    safeFilename?: string;
+    relativePath?: string;
   }>;
   startedAt?: string;
   finishedAt?: string;
@@ -1158,6 +1166,17 @@ export type ResolvedAttachmentStream = {
   title?: string;
   attachmentKind: 'FONT' | 'IMAGE' | 'ATTACHMENT' | string;
   fontFormat?: 'TTF' | 'OTF' | 'TTC' | 'OTC' | string;
+};
+
+export type ResolvedFontAttachment = {
+  artifactId: string;
+  streamIndex: number;
+  attachmentOrdinal: number;
+  codec?: string;
+  originalName?: string;
+  mimeType?: string;
+  fontFormat: 'TTF' | 'OTF' | 'TTC' | 'OTC';
+  safeFilename: string;
 };
 
 export type ScanResult = {

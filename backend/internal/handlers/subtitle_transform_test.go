@@ -125,6 +125,121 @@ func TestSubtitleArtifactJSONPreservesResolvedExtractionState(t *testing.T) {
 	}
 }
 
+func TestTypedSidecarArtifactJSONKeepsSubtitleAndFontDecodersIsolated(t *testing.T) {
+	subtitle := SubtitleArtifact{ArtifactID: "subtitle:4:original:ass", Type: "subtitle_sidecar", StreamIndex: 4, Format: "ass", Status: "planned"}
+	font := FontAttachmentArtifact{ArtifactID: "font-attachment:7", Type: "font_attachment", StreamIndex: 7, AttachmentOrdinal: 1, FontFormat: "TTF", SafeFilename: "Font.ttf", Status: "planned"}
+	values := sidecarArtifactsJSON([]SubtitleArtifact{subtitle}, []FontAttachmentArtifact{font})
+	if subtitles := subtitleArtifactsFromJSON(values); len(subtitles) != 1 || subtitles[0].StreamIndex != 4 {
+		t.Fatalf("subtitle decoder=%#v", subtitles)
+	}
+	if fonts := fontAttachmentArtifactsFromJSON(values); len(fonts) != 1 || fonts[0].StreamIndex != 7 || fonts[0].AttachmentOrdinal != 1 {
+		t.Fatalf("font decoder=%#v", fonts)
+	}
+	legacy := models.JSONList{map[string]interface{}{"streamIndex": 5, "format": "srt", "status": "ready"}}
+	if subtitles := subtitleArtifactsFromJSON(legacy); len(subtitles) != 1 || subtitles[0].Type != "subtitle_sidecar" {
+		t.Fatalf("legacy subtitle decoder=%#v", subtitles)
+	}
+}
+
+func TestPlannedFontArtifactsUseFrozenTrackPlan(t *testing.T) {
+	plan := ResolvedTrackPlan{FontAttachmentExportPolicy: FontAttachmentExportAll, FontAttachments: []ResolvedFontAttachment{
+		{ArtifactID: "font-attachment:7", StreamIndex: 7, AttachmentOrdinal: 1, FontFormat: "TTF", SafeFilename: "Font.ttf"},
+	}}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: "/raw/Movie.mkv", TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap}}
+	artifacts := plannedFontAttachmentArtifacts(job)
+	if len(artifacts) != 1 || artifacts[0].ArtifactID != "font-attachment:7" || artifacts[0].AttachmentOrdinal != 1 || artifacts[0].RelativePath != filepath.Join("Movie.fonts", "Font.ttf") {
+		t.Fatalf("planned fonts=%#v", artifacts)
+	}
+	plan.FontAttachments = nil
+	if len(artifacts) != 1 {
+		t.Fatal("planned artifacts changed after mutable profile/plan edit")
+	}
+}
+
+func TestFontAttachmentExtractionUsesFrozenAttachmentOrdinal(t *testing.T) {
+	first := strings.Join(fontAttachmentExtractionArgs("/raw/Movie.mkv", 1, "/stage/Movie.fonts/Font.ttf"), " ")
+	second := strings.Join(fontAttachmentExtractionArgs("/raw/Movie.mkv", 2, "/stage/Movie.fonts/Other.otf"), " ")
+	if !strings.Contains(first, "-dump_attachment:t:1 /stage/Movie.fonts/Font.ttf") || strings.Contains(first, "t:7") {
+		t.Fatalf("first selector=%s", first)
+	}
+	if !strings.Contains(second, "-dump_attachment:t:2 /stage/Movie.fonts/Other.otf") || strings.Contains(second, "t:9") {
+		t.Fatalf("second selector=%s", second)
+	}
+}
+
+func TestPublishFontAttachmentArtifactsCreatesOwnedDirectoryAndPreservesPreexistingDirectory(t *testing.T) {
+	for _, preexisting := range []bool{false, true} {
+		t.Run(map[bool]string{false: "created directory", true: "preexisting directory"}[preexisting], func(t *testing.T) {
+			temp := t.TempDir()
+			staged := filepath.Join(temp, "stage", "Font.ttf")
+			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(staged, []byte("font-data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			destinationMedia := filepath.Join(temp, "library", "Movie.mkv")
+			destinationDir := filepath.Join(temp, "library", "Movie.fonts")
+			if preexisting {
+				if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := models.QueueJob{SubtitleArtifacts: fontAttachmentArtifactsJSON([]FontAttachmentArtifact{{
+				ArtifactID: "font-attachment:7", Type: "font_attachment", StreamIndex: 7, AttachmentOrdinal: 0,
+				FontFormat: "TTF", SafeFilename: "Font.ttf", StagedPath: staged, Status: "ready", SizeBytes: 9,
+			}})}
+			published, err := publishFontAttachmentArtifacts(&job, destinationMedia, false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(destinationDir, "Font.ttf")); err != nil {
+				t.Fatal(err)
+			}
+			if err := rollbackPublishedPaths(published); err != nil {
+				t.Fatal(err)
+			}
+			_, err = os.Stat(destinationDir)
+			if preexisting && err != nil {
+				t.Fatalf("preexisting directory was removed: %v", err)
+			}
+			if !preexisting && !os.IsNotExist(err) {
+				t.Fatalf("job-created empty directory survived rollback: %v", err)
+			}
+		})
+	}
+}
+
+func TestPublishFontAttachmentArtifactsRejectsCollision(t *testing.T) {
+	temp := t.TempDir()
+	staged := filepath.Join(temp, "stage", "Font.ttf")
+	destinationDir := filepath.Join(temp, "library", "Movie.fonts")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationDir, "Font.ttf")
+	if err := os.WriteFile(destination, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{SubtitleArtifacts: fontAttachmentArtifactsJSON([]FontAttachmentArtifact{{ArtifactID: "font-attachment:7", Type: "font_attachment", StreamIndex: 7, FontFormat: "TTF", SafeFilename: "Font.ttf", StagedPath: staged, Status: "ready"}})}
+	if _, err := publishFontAttachmentArtifacts(&job, filepath.Join(temp, "library", "Movie.mkv"), false, nil); err == nil {
+		t.Fatal("existing unrelated font was overwritten")
+	}
+	if content, _ := os.ReadFile(destination); string(content) != "existing" {
+		t.Fatalf("existing font changed: %q", content)
+	}
+}
+
 func TestOriginalASSAndSSASidecarsPreserveRepresentation(t *testing.T) {
 	for _, test := range []struct{ codec, format, muxer string }{
 		{"ass", "ass", "ass"}, {"ssa", "ssa", "ass"},

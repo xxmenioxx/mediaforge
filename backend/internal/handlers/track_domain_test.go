@@ -20,6 +20,8 @@ func TestTrackDomainEnumsRoundTripJSON(t *testing.T) {
 		{name: "attachment auto", value: AttachmentPolicyAuto, want: `"auto"`},
 		{name: "attachment keep", value: AttachmentPolicyKeep, want: `"keep"`},
 		{name: "attachment remove", value: AttachmentPolicyRemove, want: `"remove"`},
+		{name: "font attachment export none", value: FontAttachmentExportNone, want: `"none"`},
+		{name: "font attachment export all", value: FontAttachmentExportAll, want: `"all"`},
 		{name: "chapter keep", value: ChapterPolicyKeep, want: `"keep"`},
 		{name: "chapter remove", value: ChapterPolicyRemove, want: `"remove"`},
 	}
@@ -55,6 +57,12 @@ func TestTrackDomainEnumsRejectInvalidValues(t *testing.T) {
 	}
 	if _, err := ParseAttachmentPolicy("fonts_only"); err == nil {
 		t.Fatal("invalid attachment policy was accepted")
+	}
+	if policy, err := ParseFontAttachmentExportPolicy(""); err != nil || policy != FontAttachmentExportNone {
+		t.Fatalf("legacy font export policy=%q err=%v", policy, err)
+	}
+	if _, err := ParseFontAttachmentExportPolicy("referenced"); err == nil {
+		t.Fatal("invalid font attachment export policy was accepted")
 	}
 	if _, err := ParseChapterPolicy("auto"); err == nil {
 		t.Fatal("invalid chapter policy was accepted")
@@ -126,6 +134,9 @@ func TestResolvedTrackPlanSerializesCanonicalDecisions(t *testing.T) {
 	if len(decoded.AttachmentStreams) != 1 || decoded.AttachmentStreams[0].Filename != "Font.ttf" || decoded.AttachmentStreams[0].MIMEType != "font/ttf" || decoded.AttachmentStreams[0].AttachmentKind != "FONT" || decoded.AttachmentStreams[0].FontFormat != "TTF" {
 		t.Fatalf("resolved plan lost attachment metadata: %#v", decoded.AttachmentStreams)
 	}
+	if decoded.FontAttachmentExportPolicy != FontAttachmentExportNone || decoded.FontAttachments == nil {
+		t.Fatalf("legacy/default font export contract=%#v", decoded)
+	}
 }
 
 func TestResolvedTrackPlanFromSnapshotAcceptsLegacyAttachmentStreamShape(t *testing.T) {
@@ -153,5 +164,8 @@ func TestResolvedTrackPlanFromSnapshotAcceptsLegacyAttachmentStreamShape(t *test
 	}
 	if len(plan.AttachmentStreams) != 1 || plan.AttachmentStreams[0].StreamIndex != 7 || plan.AttachmentStreams[0].Codec != "ttf" {
 		t.Fatalf("legacy attachment stream was not preserved: %#v", plan.AttachmentStreams)
+	}
+	if plan.FontAttachmentExportPolicy != FontAttachmentExportNone || plan.FontAttachments == nil {
+		t.Fatalf("legacy font export snapshot defaults=%#v", plan)
 	}
 }

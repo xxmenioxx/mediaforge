@@ -161,6 +161,14 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		}
 	}
 	warnings = append(warnings, sidecarWarnings...)
+	fontChecks, fontWarnings, fontReport := validateRequiredFontAttachmentArtifacts(job)
+	for _, check := range fontChecks {
+		checks = append(checks, check)
+		if check.Status == "failed" {
+			score -= 30
+		}
+	}
+	warnings = append(warnings, fontWarnings...)
 
 	if job.Notes != "" && job.OutputPath != "" && !outputExists {
 		warnings = append(warnings, "This looks like a dry-run or missing output; real validation requires a generated file.")
@@ -261,6 +269,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		"validatedAt": time.Now().Format(time.RFC3339),
 	}
 	report["subtitleArtifacts"] = sidecarReport
+	report["fontAttachmentArtifacts"] = fontReport
 	if directPlayEvaluated {
 		report["directPlay"] = directPlayReport
 	}
@@ -507,11 +516,55 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 		item["status"], item["message"] = status, message
 		reportItems = append(reportItems, item)
 		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d_%s", decision.StreamIndex, strings.ToLower(decision.Format)), Label: label, Status: status, Message: message})
-		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract {
+		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract && (planFontExportDisabled(job) || len(fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)) == 0) {
 			warnings = append(warnings, fmt.Sprintf("Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.", strings.ToUpper(decision.Codec), decision.StreamIndex))
 		}
 	}
 	return checks, warnings, models.JSONMap{"required": len(expected), "artifacts": artifacts, "checks": reportItems}
+}
+
+func planFontExportDisabled(job models.QueueJob) bool {
+	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+	return !ok || plan.FontAttachmentExportPolicy != FontAttachmentExportAll
+}
+
+func validateRequiredFontAttachmentArtifacts(job models.QueueJob) ([]CheckResult, []string, models.JSONMap) {
+	expected := []ResolvedFontAttachment{}
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		expected = plan.FontAttachments
+	}
+	artifacts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+	byID := map[string]FontAttachmentArtifact{}
+	for _, artifact := range artifacts {
+		byID[artifact.ArtifactID] = artifact
+	}
+	checks := []CheckResult{}
+	reportItems := models.JSONList{}
+	for _, decision := range expected {
+		status, message := "passed", "Required font attachment is ready."
+		artifact, exists := byID[decision.ArtifactID]
+		item := models.JSONMap{"artifactId": decision.ArtifactID, "streamIndex": decision.StreamIndex, "attachmentOrdinal": decision.AttachmentOrdinal, "fontFormat": decision.FontFormat, "safeFilename": decision.SafeFilename}
+		if !exists {
+			status, message = "failed", "Required font attachment is missing from the job artifact set."
+		} else {
+			item["artifact"] = artifact
+			if artifact.StreamIndex != decision.StreamIndex || artifact.AttachmentOrdinal != decision.AttachmentOrdinal || artifact.SafeFilename != decision.SafeFilename {
+				status, message = "failed", "Font attachment identity or output path does not match the frozen track plan."
+			} else if artifact.Status != "" && artifact.Status != "ready" {
+				status, message = "failed", "Required font attachment is not ready: "+fallback(artifact.Error, artifact.Status)
+			} else if filepath.Base(artifact.StagedPath) != decision.SafeFilename {
+				status, message = "failed", "Font attachment staged filename does not match the frozen track plan."
+			} else if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
+				status, message = "failed", "Required font attachment is not readable from staging."
+			} else if info.Size() <= 0 {
+				status, message = "failed", "Required font attachment is empty."
+			}
+		}
+		item["status"], item["message"] = status, message
+		reportItems = append(reportItems, item)
+		checks = append(checks, CheckResult{Key: fmt.Sprintf("font_attachment_%d", decision.StreamIndex), Label: fmt.Sprintf("Font attachment %s", decision.SafeFilename), Status: status, Message: message})
+	}
+	return checks, nil, models.JSONMap{"required": len(expected), "artifacts": artifacts, "checks": reportItems}
 }
 
 func subtitleDispositionForSidecar(job models.QueueJob, streamIndex int) SubtitleDisposition {

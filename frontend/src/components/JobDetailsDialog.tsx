@@ -257,10 +257,11 @@ function SubtitleArtifactStages({ artifacts }: { artifacts: NonNullable<QueueJob
   return <Stack spacing={0.5} sx={{ gridColumn: '2 / -1', mt: 0.5 }}>
     {artifacts.map((artifact) => {
       const status = subtitleArtifactStageStatus(artifact.status);
-      const identity = artifact.artifactId || `subtitle:${artifact.streamIndex}:${artifact.mode || 'original'}:${artifact.format}`;
-      const filename = artifact.displayName || fileNameFromPath(artifact.stagedPath || artifact.publishedPath || 'Subtitle sidecar');
-      const kind = artifact.mode === 'converted' ? 'Compatibility' : 'Original';
-      const detail = [artifact.format.toUpperCase(), artifact.language || 'UND', kind].join(' · ');
+	  const font = artifact.type === 'font_attachment';
+      const identity = artifact.artifactId || (font ? `font-attachment:${artifact.streamIndex}` : `subtitle:${artifact.streamIndex}:${artifact.mode || 'original'}:${artifact.format}`);
+	  const filename = artifact.displayName || artifact.safeFilename || fileNameFromPath(artifact.stagedPath || artifact.publishedPath || (font ? `Attachment ${artifact.streamIndex}` : 'Subtitle sidecar'));
+	  const kind = artifact.mode === 'converted' ? 'Compatibility' : 'Original';
+	  const detail = font ? ['FONT', artifact.fontFormat || artifact.sourceCodec?.toUpperCase() || 'UNKNOWN'].join(' · ') : [(artifact.format || 'unknown').toUpperCase(), artifact.language || 'UND', kind].join(' · ');
       return <Box key={identity} sx={{ display: 'grid', gridTemplateColumns: '22px minmax(160px, 1fr) minmax(120px, auto) auto', gap: 1, alignItems: 'center', py: 0.35 }}>
         {pipelineStageIcon(status)}
         <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{filename}</Typography>

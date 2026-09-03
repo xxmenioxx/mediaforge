@@ -775,19 +775,19 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 	plan.SourceAssetPath = job.MediaPath
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
-	if len(plan.Override.SubtitleTransforms) > 0 || (plan.ResolvedTracks != nil && len(plan.ResolvedTracks.SidecarOutputs) > 0) {
+	if len(plan.Override.SubtitleTransforms) > 0 || (plan.ResolvedTracks != nil && (len(plan.ResolvedTracks.SidecarOutputs) > 0 || len(plan.ResolvedTracks.FontAttachments) > 0)) {
 		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {
 			return job, http.StatusInternalServerError, err
 		}
 		job.Progress = 3
-		if planned := plannedSubtitleArtifacts(job); len(planned) > 0 {
-			job.SubtitleArtifacts = subtitleArtifactsJSON(planned)
+		if planned := plannedSidecarArtifactsJSON(job); len(planned) > 0 {
+			job.SubtitleArtifacts = planned
 		}
 		_ = h.db.Save(&job).Error
 	}
 	subtitleArtifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, func(update SubtitleArtifact) {
 		current := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
-		job.SubtitleArtifacts = subtitleArtifactsJSON(mergeSubtitleArtifactProgress(current, update))
+		job.SubtitleArtifacts = sidecarArtifactsJSON(mergeSubtitleArtifactProgress(current, update), fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
 		_ = h.db.Model(&job).Update("subtitle_artifacts", job.SubtitleArtifacts).Error
 	})
 	if err != nil {
@@ -795,7 +795,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		for _, artifact := range subtitleArtifacts {
 			current = mergeSubtitleArtifactProgress(current, artifact)
 		}
-		job.SubtitleArtifacts = subtitleArtifactsJSON(current)
+		job.SubtitleArtifacts = sidecarArtifactsJSON(current, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
 		job.Status = JobStatusFailed
 		job.ErrorMessage = err.Error()
 		job.Notes = appendNote(job.Notes, "Subtitle transformation failed before media conversion: "+err.Error())
@@ -808,7 +808,31 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	for _, artifact := range subtitleArtifacts {
 		currentSubtitleArtifacts = mergeSubtitleArtifactProgress(currentSubtitleArtifacts, artifact)
 	}
-	job.SubtitleArtifacts = subtitleArtifactsJSON(currentSubtitleArtifacts)
+	job.SubtitleArtifacts = sidecarArtifactsJSON(currentSubtitleArtifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
+	fontArtifacts, err := generateFontAttachmentArtifactsWithProgress(context.Background(), plan, func(update FontAttachmentArtifact) {
+		current := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+		job.SubtitleArtifacts = sidecarArtifactsJSON(subtitleArtifactsFromJSON(job.SubtitleArtifacts), mergeFontAttachmentArtifactProgress(current, update))
+		_ = h.db.Model(&job).Update("subtitle_artifacts", job.SubtitleArtifacts).Error
+	})
+	if err != nil {
+		current := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+		for _, artifact := range fontArtifacts {
+			current = mergeFontAttachmentArtifactProgress(current, artifact)
+		}
+		job.SubtitleArtifacts = sidecarArtifactsJSON(subtitleArtifactsFromJSON(job.SubtitleArtifacts), current)
+		job.Status = JobStatusFailed
+		job.ErrorMessage = err.Error()
+		job.Notes = appendNote(job.Notes, "Font attachment extraction failed before media conversion: "+err.Error())
+		_ = transitionJobStage(h.db, &job, JobStageFailed)
+		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
+		_ = h.db.Save(&job).Error
+		return job, http.StatusUnprocessableEntity, err
+	}
+	currentFontArtifacts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+	for _, artifact := range fontArtifacts {
+		currentFontArtifacts = mergeFontAttachmentArtifactProgress(currentFontArtifacts, artifact)
+	}
+	job.SubtitleArtifacts = sidecarArtifactsJSON(subtitleArtifactsFromJSON(job.SubtitleArtifacts), currentFontArtifacts)
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := "ffmpeg " + shellJoin(args)
 	now := time.Now()

@@ -3,8 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"path"
 	"strings"
+	"unicode"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
@@ -13,7 +14,7 @@ import (
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
 func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedTrackPlan, error) {
-	normalizeScanResultAttachmentStreams(&scan)
+	attachmentInventoryAvailable := normalizeScanResultAttachmentStreams(&scan)
 	if err := validateSubtitleRules(profile); err != nil {
 		return ResolvedTrackPlan{}, err
 	}
@@ -123,6 +124,14 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		return ResolvedTrackPlan{}, err
 	}
 	attachments := resolvedAttachmentStreams(scan.AttachmentStreams)
+	fontPolicy, err := ParseFontAttachmentExportPolicy(workerStringValue(profile["fontAttachmentExportPolicy"]))
+	if err != nil {
+		return ResolvedTrackPlan{}, err
+	}
+	fontAttachments, err := resolveFontAttachmentPlan(fontPolicy, attachmentInventoryAvailable, attachments, sidecars)
+	if err != nil {
+		return ResolvedTrackPlan{}, err
+	}
 	attachmentReason := attachmentResolutionReason(attachmentPolicy, subtitles)
 	if attachmentPolicy == AttachmentPolicyRemove && embeddedASSOrSSAExists(subtitles) {
 		warnings = append(warnings, "Font attachments were explicitly removed while an embedded ASS/SSA subtitle remains; rendering may differ on clients without those fonts.")
@@ -140,10 +149,92 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	return ResolvedTrackPlan{
 		VideoStreams: video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
 		AttachmentPolicy: attachmentPolicy, AttachmentsKept: attachmentsKept, AttachmentReason: attachmentReason,
-		AttachmentStreams: attachments, FontAttachmentsExported: false,
+		AttachmentStreams: attachments, FontAttachmentExportPolicy: fontPolicy,
+		FontAttachments: fontAttachments, FontAttachmentsExported: len(fontAttachments) > 0,
 		ChapterPolicy: chapterPolicy, ChaptersKept: chapterPolicy == ChapterPolicyKeep,
 		SidecarOutputs: sidecars, Warnings: warnings,
 	}, nil
+}
+
+func extractsOriginalASSOrSSA(sidecars []ResolvedTrackSidecar) bool {
+	for _, sidecar := range sidecars {
+		if !strings.EqualFold(strings.TrimSpace(sidecar.Mode), "original") {
+			continue
+		}
+		format := strings.ToLower(strings.TrimSpace(sidecar.Format))
+		if format == "ass" || format == "ssa" {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveFontAttachmentPlan(policy FontAttachmentExportPolicy, inventoryAvailable bool, attachments []ResolvedAttachmentStream, sidecars []ResolvedTrackSidecar) ([]ResolvedFontAttachment, error) {
+	if policy != FontAttachmentExportAll || !extractsOriginalASSOrSSA(sidecars) {
+		return []ResolvedFontAttachment{}, nil
+	}
+	if !inventoryAvailable {
+		return nil, fmt.Errorf("ASS/SSA font attachment export requires an available canonical attachment inventory; refresh the asset snapshot")
+	}
+	result := []ResolvedFontAttachment{}
+	used := map[string]struct{}{}
+	for ordinal, attachment := range attachments {
+		format := strings.ToUpper(strings.TrimSpace(attachment.FontFormat))
+		if !strings.EqualFold(strings.TrimSpace(attachment.AttachmentKind), "FONT") || !supportedFontAttachmentFormat(format) {
+			continue
+		}
+		safeName := uniqueFontAttachmentFilename(safeFontAttachmentFilename(attachment.Filename, attachment.StreamIndex, format), attachment.StreamIndex, used)
+		result = append(result, ResolvedFontAttachment{
+			ArtifactID: fontAttachmentArtifactID(attachment.StreamIndex), StreamIndex: attachment.StreamIndex, AttachmentOrdinal: ordinal,
+			Codec: attachment.Codec, OriginalName: attachment.Filename, MIMEType: attachment.MIMEType, FontFormat: format, SafeFilename: safeName,
+		})
+	}
+	return result, nil
+}
+
+func supportedFontAttachmentFormat(format string) bool {
+	switch strings.ToUpper(strings.TrimSpace(format)) {
+	case "TTF", "OTF", "TTC", "OTC":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeFontAttachmentFilename(original string, streamIndex int, fontFormat string) string {
+	base := path.Base(strings.ReplaceAll(strings.TrimSpace(original), `\`, "/"))
+	extension := "." + strings.ToLower(strings.TrimSpace(fontFormat))
+	base = strings.TrimSuffix(base, path.Ext(base))
+	base = strings.Map(func(value rune) rune {
+		if unicode.IsControl(value) || strings.ContainsRune(`<>:"/\|?*`, value) {
+			return -1
+		}
+		return value
+	}, base)
+	base = strings.Trim(strings.TrimSpace(base), ".")
+	if base == "" {
+		base = fmt.Sprintf("attachment-%d", streamIndex)
+	}
+	return base + extension
+}
+
+func uniqueFontAttachmentFilename(candidate string, streamIndex int, used map[string]struct{}) string {
+	key := strings.ToLower(candidate)
+	if _, exists := used[key]; !exists {
+		used[key] = struct{}{}
+		return candidate
+	}
+	extension := path.Ext(candidate)
+	base := strings.TrimSuffix(candidate, extension)
+	candidate = fmt.Sprintf("%s.stream-%d%s", base, streamIndex, extension)
+	for discriminator := 2; ; discriminator++ {
+		key = strings.ToLower(candidate)
+		if _, exists := used[key]; !exists {
+			used[key] = struct{}{}
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s.stream-%d.%d%s", base, streamIndex, discriminator, extension)
+	}
 }
 
 func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, language string, fallback []string) []string {
@@ -304,7 +395,6 @@ func resolvedAttachmentStreams(streams models.JSONList) []ResolvedAttachmentStre
 			FontFormat:     workerStringValue(stream["fontFormat"]),
 		})
 	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].StreamIndex < result[j].StreamIndex })
 	return result
 }
 
