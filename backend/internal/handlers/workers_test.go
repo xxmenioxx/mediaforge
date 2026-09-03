@@ -1628,3 +1628,151 @@ func TestSeasonFolderEpisodePositionDoesNotShiftAfterEarlierPublish(t *testing.T
 		)
 	}
 }
+
+func TestEnsurePlannedSidecarArtifactsPreservesFrozenArtifacts(t *testing.T) {
+	plan := ResolvedTrackPlan{
+		FontAttachmentExportPolicy: FontAttachmentExportAll,
+		FontAttachmentsExported:    true,
+		FontAttachments: []ResolvedFontAttachment{{
+			ArtifactID:        "font-attachment:7",
+			StreamIndex:       7,
+			AttachmentOrdinal: 1,
+			FontFormat:        "TTF",
+			SafeFilename:      "Planned.ttf",
+		}},
+	}
+
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frozenRelativePath := filepath.Join(
+		"Movie.fonts",
+		"Frozen.ttf",
+	)
+
+	job := models.QueueJob{
+		MediaPath: "/media/Movies/Movie.mkv",
+		TrackProfileSnapshot: models.JSONMap{
+			resolvedTrackPlanSnapshotKey: planMap,
+		},
+		SubtitleArtifacts: fontAttachmentArtifactsJSON(
+			[]FontAttachmentArtifact{{
+				ArtifactID:        "font-attachment:7",
+				Type:              "font_attachment",
+				StreamIndex:       7,
+				AttachmentOrdinal: 1,
+				FontFormat:        "TTF",
+				SafeFilename:      "Frozen.ttf",
+				RelativePath:      frozenRelativePath,
+				Status:            "planned",
+			}},
+		),
+	}
+
+	ensurePlannedSidecarArtifacts(&job)
+
+	artifacts := fontAttachmentArtifactsFromJSON(
+		job.SubtitleArtifacts,
+	)
+
+	if len(artifacts) != 1 {
+		t.Fatalf(
+			"expected one frozen font artifact, got %d",
+			len(artifacts),
+		)
+	}
+
+	artifact := artifacts[0]
+
+	if artifact.SafeFilename != "Frozen.ttf" {
+		t.Fatalf(
+			"frozen SafeFilename was replaced: %q",
+			artifact.SafeFilename,
+		)
+	}
+
+	if artifact.RelativePath != frozenRelativePath {
+		t.Fatalf(
+			"frozen RelativePath was replaced: %q",
+			artifact.RelativePath,
+		)
+	}
+
+	if artifact.SafeFilename == "Planned.ttf" {
+		t.Fatal(
+			"worker rebuilt the artifact from the resolved plan",
+		)
+	}
+}
+
+func TestEnsurePlannedSidecarArtifactsBootstrapsWhenEmpty(t *testing.T) {
+	plan := ResolvedTrackPlan{
+		FontAttachmentExportPolicy: FontAttachmentExportAll,
+		FontAttachmentsExported:    true,
+		FontAttachments: []ResolvedFontAttachment{{
+			ArtifactID:        "font-attachment:7",
+			StreamIndex:       7,
+			AttachmentOrdinal: 1,
+			FontFormat:        "TTF",
+			SafeFilename:      "Planned.ttf",
+		}},
+	}
+
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{
+		MediaPath: "/media/Movies/Movie.mkv",
+		TrackProfileSnapshot: models.JSONMap{
+			resolvedTrackPlanSnapshotKey: planMap,
+		},
+	}
+
+	ensurePlannedSidecarArtifacts(&job)
+
+	artifacts := fontAttachmentArtifactsFromJSON(
+		job.SubtitleArtifacts,
+	)
+
+	if len(artifacts) != 1 {
+		t.Fatalf(
+			"expected one bootstrapped font artifact, got %d",
+			len(artifacts),
+		)
+	}
+
+	artifact := artifacts[0]
+
+	if artifact.ArtifactID != "font-attachment:7" {
+		t.Fatalf(
+			"ArtifactID=%q want=%q",
+			artifact.ArtifactID,
+			"font-attachment:7",
+		)
+	}
+
+	if artifact.SafeFilename != "Planned.ttf" {
+		t.Fatalf(
+			"SafeFilename=%q want=%q",
+			artifact.SafeFilename,
+			"Planned.ttf",
+		)
+	}
+
+	expectedRelativePath := filepath.Join(
+		"Movie.fonts",
+		"Planned.ttf",
+	)
+
+	if artifact.RelativePath != expectedRelativePath {
+		t.Fatalf(
+			"RelativePath=%q want=%q",
+			artifact.RelativePath,
+			expectedRelativePath,
+		)
+	}
+}

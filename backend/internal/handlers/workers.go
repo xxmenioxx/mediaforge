@@ -667,6 +667,16 @@ func (h WorkerHandler) failClaimedJobExecution(jobID uint, executionErr error) {
 	_ = h.db.Save(&job).Error
 }
 
+func ensurePlannedSidecarArtifacts(job *models.QueueJob) {
+	if job == nil || len(job.SubtitleArtifacts) > 0 {
+		return
+	}
+
+	if planned := plannedSidecarArtifactsJSON(*job); len(planned) > 0 {
+		job.SubtitleArtifacts = planned
+	}
+}
+
 func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (models.QueueJob, int, error) {
 	if job.Status != JobStatusRunning {
 		return job, http.StatusBadRequest, fmt.Errorf("job must be running before conversion execution")
@@ -780,11 +790,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 			return job, http.StatusInternalServerError, err
 		}
 		job.Progress = 3
-		if len(job.SubtitleArtifacts) == 0 {
-			if planned := plannedSidecarArtifactsJSON(job); len(planned) > 0 {
-				job.SubtitleArtifacts = planned
-			}
-		}
+		ensurePlannedSidecarArtifacts(&job)
 		_ = h.db.Save(&job).Error
 	}
 	subtitleArtifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, func(update SubtitleArtifact) {

@@ -1972,3 +1972,160 @@ func queueSelectedAssetsRequest(t *testing.T, db *gorm.DB, input QueueSelectedAs
 	}
 	return result
 }
+
+func TestQueueCaptureFreezesFontAttachmentArtifacts(t *testing.T) {
+	db, err := gorm.Open(
+		sqlite.Open("file:queue-font-artifact-freeze?mode=memory&cache=shared"),
+		&gorm.Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&models.Profile{},
+		&models.QueueJob{},
+		&models.SchedulerReservation{},
+		&models.ScanResult{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	mediaPath := filepath.Clean("/media/raw/Movie.mkv")
+
+	scan := models.ScanResult{
+		Path: mediaPath,
+		SubtitleStreams: models.JSONList{
+			map[string]any{
+				"index":    4,
+				"codec":    "ass",
+				"language": "eng",
+			},
+		},
+		AttachmentStreams: models.JSONList{
+			map[string]any{
+				"index":          7,
+				"codec":          "ttf",
+				"filename":       "Font.ttf",
+				"mimeType":       "font/ttf",
+				"attachmentKind": "FONT",
+				"fontFormat":     "TTF",
+			},
+		},
+	}
+
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	trackProfile := map[string]any{
+		"trackDispositionVersion":    1,
+		"subtitleDisposition":        "extract",
+		"subtitleSidecarFormats":     models.JSONList{"original"},
+		"attachmentPolicy":           "auto",
+		"fontAttachmentExportPolicy": "all",
+		"chapterPolicy":              "keep",
+	}
+
+	resolved, err := resolveTrackPlan(scan, trackProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resolved.FontAttachments) != 1 {
+		t.Fatalf(
+			"expected one resolved font attachment, got %#v",
+			resolved.FontAttachments,
+		)
+	}
+
+	planMap, err := resolvedTrackPlanMap(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trackSnapshot := models.JSONMap{
+		"trackDispositionVersion":    1,
+		"subtitleDisposition":        "extract",
+		"subtitleSidecarFormats":     models.JSONList{"original"},
+		"attachmentPolicy":           "auto",
+		"fontAttachmentExportPolicy": "all",
+		"chapterPolicy":              "keep",
+		resolvedTrackPlanSnapshotKey: planMap,
+	}
+
+	job := models.QueueJob{
+		MediaPath:            mediaPath,
+		Status:               JobStatusQueued,
+		TrackProfileSnapshot: trackSnapshot,
+	}
+
+	if err := NewQueueHandler(db).captureProfile(
+		&job,
+		profile.ID,
+		"queue_create",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts := fontAttachmentArtifactsFromJSON(
+		job.SubtitleArtifacts,
+	)
+
+	if len(artifacts) != 1 {
+		t.Fatalf(
+			"expected one frozen font artifact, got %#v",
+			artifacts,
+		)
+	}
+
+	artifact := artifacts[0]
+
+	if artifact.ArtifactID != "font-attachment:7" {
+		t.Fatalf(
+			"ArtifactID=%q want=%q",
+			artifact.ArtifactID,
+			"font-attachment:7",
+		)
+	}
+
+	if artifact.StreamIndex != 7 {
+		t.Fatalf(
+			"StreamIndex=%d want=7",
+			artifact.StreamIndex,
+		)
+	}
+
+	if artifact.AttachmentOrdinal != 0 {
+		t.Fatalf(
+			"AttachmentOrdinal=%d want=0",
+			artifact.AttachmentOrdinal,
+		)
+	}
+
+	if artifact.SafeFilename != "Font.ttf" {
+		t.Fatalf(
+			"SafeFilename=%q want=%q",
+			artifact.SafeFilename,
+			"Font.ttf",
+		)
+	}
+
+	expectedRelativePath := filepath.Join(
+		"Movie.fonts",
+		"Font.ttf",
+	)
+
+	if artifact.RelativePath != expectedRelativePath {
+		t.Fatalf(
+			"RelativePath=%q want=%q",
+			artifact.RelativePath,
+			expectedRelativePath,
+		)
+	}
+}

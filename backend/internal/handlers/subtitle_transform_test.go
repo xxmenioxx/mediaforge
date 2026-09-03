@@ -559,3 +559,94 @@ func TestPublishSubtitleArtifactsPreservesDifferentLibrarySidecar(t *testing.T) 
 		t.Fatalf("rename was not recorded in job notes: %q", job.Notes)
 	}
 }
+
+func TestMergeFontAttachmentArtifactProgressPreservesFrozenFields(t *testing.T) {
+	current := []FontAttachmentArtifact{{
+		ArtifactID:        "font-attachment:7",
+		Type:              "font_attachment",
+		StreamIndex:       7,
+		AttachmentOrdinal: 1,
+		SourceCodec:       "ttf",
+		OriginalName:      "Original.ttf",
+		MIMEType:          "font/ttf",
+		FontFormat:        "TTF",
+		SafeFilename:      "Original.ttf",
+		RelativePath:      filepath.Join("Movie.fonts", "Original.ttf"),
+		DisplayName:       "Original font",
+		Status:            "planned",
+	}}
+
+	update := FontAttachmentArtifact{
+		ArtifactID: "font-attachment:7",
+
+		// Intentionally different planning fields.
+		StreamIndex:       99,
+		AttachmentOrdinal: 9,
+		SourceCodec:       "otf",
+		OriginalName:      "Wrong.otf",
+		MIMEType:          "font/otf",
+		FontFormat:        "OTF",
+		SafeFilename:      "Wrong.otf",
+		RelativePath:      filepath.Join("Wrong.fonts", "Wrong.otf"),
+		DisplayName:       "Wrong font",
+
+		// Runtime fields that should be updated.
+		StagedPath:    "/tmp/Original.ttf",
+		PublishedPath: "/media/Movies/Movie.fonts/Original.ttf",
+		SizeBytes:     12345,
+		Status:        "ready",
+		Error:         "",
+	}
+
+	got := mergeFontAttachmentArtifactProgress(current, update)
+
+	if len(got) != 1 {
+		t.Fatalf("expected one artifact, got %d", len(got))
+	}
+
+	artifact := got[0]
+
+	if artifact.ArtifactID != "font-attachment:7" {
+		t.Fatalf("ArtifactID changed: %q", artifact.ArtifactID)
+	}
+	if artifact.StreamIndex != 7 {
+		t.Fatalf("StreamIndex changed: %d", artifact.StreamIndex)
+	}
+	if artifact.AttachmentOrdinal != 1 {
+		t.Fatalf("AttachmentOrdinal changed: %d", artifact.AttachmentOrdinal)
+	}
+	if artifact.SourceCodec != "ttf" {
+		t.Fatalf("SourceCodec changed: %q", artifact.SourceCodec)
+	}
+	if artifact.OriginalName != "Original.ttf" {
+		t.Fatalf("OriginalName changed: %q", artifact.OriginalName)
+	}
+	if artifact.MIMEType != "font/ttf" {
+		t.Fatalf("MIMEType changed: %q", artifact.MIMEType)
+	}
+	if artifact.FontFormat != "TTF" {
+		t.Fatalf("FontFormat changed: %q", artifact.FontFormat)
+	}
+	if artifact.SafeFilename != "Original.ttf" {
+		t.Fatalf("SafeFilename changed: %q", artifact.SafeFilename)
+	}
+	if artifact.RelativePath != filepath.Join("Movie.fonts", "Original.ttf") {
+		t.Fatalf("RelativePath changed: %q", artifact.RelativePath)
+	}
+	if artifact.DisplayName != "Original font" {
+		t.Fatalf("DisplayName changed: %q", artifact.DisplayName)
+	}
+
+	if artifact.StagedPath != "/tmp/Original.ttf" {
+		t.Fatalf("StagedPath not updated: %q", artifact.StagedPath)
+	}
+	if artifact.PublishedPath != "/media/Movies/Movie.fonts/Original.ttf" {
+		t.Fatalf("PublishedPath not updated: %q", artifact.PublishedPath)
+	}
+	if artifact.SizeBytes != 12345 {
+		t.Fatalf("SizeBytes not updated: %d", artifact.SizeBytes)
+	}
+	if artifact.Status != "ready" {
+		t.Fatalf("Status not updated: %q", artifact.Status)
+	}
+}
