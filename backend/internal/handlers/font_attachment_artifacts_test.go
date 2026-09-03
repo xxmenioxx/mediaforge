@@ -22,10 +22,18 @@ func fontValidationJob(t *testing.T, stagedPath string, status string) models.Qu
 		t.Fatal(err)
 	}
 	return models.QueueJob{
+		MediaPath:            mediaPath,
 		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap},
 		SubtitleArtifacts: fontAttachmentArtifactsJSON([]FontAttachmentArtifact{{
-			ArtifactID: "font-attachment:7", Type: "font_attachment", StreamIndex: 7, AttachmentOrdinal: 1,
-			FontFormat: "TTF", SafeFilename: "Font.ttf", StagedPath: stagedPath, Status: status,
+			ArtifactID:        "font-attachment:7",
+			Type:              "font_attachment",
+			StreamIndex:       7,
+			AttachmentOrdinal: 1,
+			FontFormat:        "TTF",
+			SafeFilename:      "Font.ttf",
+			RelativePath:      fontAttachmentRelativePath(mediaPath, "Font.ttf"),
+			StagedPath:        stagedPath,
+			Status:            status,
 		}}),
 	}
 }
