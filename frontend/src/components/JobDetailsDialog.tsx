@@ -144,14 +144,14 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   ['Final video', streamSummary(firstStream(outputProbe, 'video')) || expectedVideoSummary(profile)],
                   ['Final audio', audioStreamsSummary(outputProbe) || expectedAudioSummary(job, profile)],
                   ['Automation', automationSummary(resultPayload)],
-				  ['Subtitle sidecars', subtitleArtifactSummary(subtitleArtifacts)],
+				  ['Sidecar artifacts', subtitleArtifactSummary(subtitleArtifacts)],
                 ]}
               />
               <AVTimingSummary report={job.validationReport} />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
               {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
 			  {resolvedTrackPlan ? <ArtifactBlock title="Resolved track decisions" value={resolvedTrackPlan} /> : null}
-			  {subtitleArtifacts.length ? <ArtifactBlock title="Subtitle sidecars" value={{ artifacts: subtitleArtifacts }} /> : null}
+			  {subtitleArtifacts.length ? <ArtifactBlock title="Sidecar artifacts" value={{ artifacts: subtitleArtifacts }} /> : null}
               <ArtifactBlock title="Lifecycle history" value={{ currentStage: job.stage || job.status, stageUpdatedAt: job.stageUpdatedAt, history: job.stageHistory ?? [] }} />
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />

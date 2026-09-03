@@ -171,6 +171,21 @@ func TestFontAttachmentExtractionUsesFrozenAttachmentOrdinal(t *testing.T) {
 	}
 }
 
+func TestResolvedSubtitleExecutionRoutesTextBitmapAndOriginalSeparately(t *testing.T) {
+	tests := []struct{ codec, mode, want string }{
+		{codec: "ass", mode: "converted", want: "text_ffmpeg"},
+		{codec: "hdmv_pgs_subtitle", mode: "converted", want: "bitmap_ocr"},
+		{codec: "dvd_subtitle", mode: "converted", want: "bitmap_ocr"},
+		{codec: "hdmv_pgs_subtitle", mode: "original", want: "original"},
+		{codec: "unknown", mode: "converted", want: "unsupported"},
+	}
+	for _, test := range tests {
+		if got := resolvedSubtitleExecutionKind(test.codec, test.mode); got != test.want {
+			t.Fatalf("codec=%s mode=%s got=%s want=%s", test.codec, test.mode, got, test.want)
+		}
+	}
+}
+
 func TestPublishFontAttachmentArtifactsCreatesOwnedDirectoryAndPreservesPreexistingDirectory(t *testing.T) {
 	for _, preexisting := range []bool{false, true} {
 		t.Run(map[bool]string{false: "created directory", true: "preexisting directory"}[preexisting], func(t *testing.T) {

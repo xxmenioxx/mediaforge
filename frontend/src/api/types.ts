@@ -726,7 +726,7 @@ export type TrackProfileResolutionPreview = {
 		fontAttachmentsExported: boolean;
 		chapterPolicy: 'keep' | 'remove';
 		chaptersKept: boolean;
-		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean }>;
+		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }>;
 		warnings?: string[];
 	};
 };
@@ -855,6 +855,8 @@ export type QueueJob = {
     error?: string;
     displayName?: string;
     fontAttachmentsExported?: boolean;
+	ocrLanguage?: string;
+	ocrMode?: 'raw' | 'clean' | 'accurate';
     attachmentOrdinal?: number;
     originalName?: string;
     mimeType?: string;

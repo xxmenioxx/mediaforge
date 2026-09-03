@@ -100,9 +100,22 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 					continue
 				}
 				resolvedFormats[outputKey] = true
+				ocrLanguage, ocrMode := "", ""
+				if mode == "converted" && isBitmapSubtitleCodecName(codec) {
+					ocrLanguage, ocrMode = "auto", "accurate"
+					if !canonicalDisposition {
+						if transform, ok := transforms[index]; ok {
+							ocrLanguage = fallback(strings.TrimSpace(transform.OCRLanguage), "auto")
+							ocrMode = normalizedOCRMode(transform.OCRMode)
+						}
+					} else {
+						ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language)
+					}
+				}
 				sidecars = append(sidecars, ResolvedTrackSidecar{
 					StreamIndex: index, Codec: codec, Language: language, Format: format, Mode: mode,
 					Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
+					OCRLanguage: ocrLanguage, OCRMode: ocrMode,
 				})
 				if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
 					warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
@@ -308,10 +321,37 @@ func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string,
 		case "ass", "ssa":
 			return "srt", "converted", nil
 		default:
-			return "", "", fmt.Errorf("codec %s cannot be converted to SRT without OCR", codec)
+			if isBitmapSubtitleCodecName(codec) {
+				return "srt", "converted", nil
+			}
+			return "", "", fmt.Errorf("codec %s cannot be converted to SRT", codec)
 		}
 	}
 	return "", "", fmt.Errorf("unsupported sidecar format %q", requested)
+}
+
+func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language string) (string, string) {
+	ocrLanguage, ocrMode := "auto", "accurate"
+	streamSpecific := false
+	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
+		rule := settingProfileObject(raw)
+		rawIndex, hasIndex := rule["streamIndex"]
+		if hasIndex && streamIndexValue(rawIndex) >= 0 {
+			if streamIndexValue(rawIndex) != streamIndex {
+				continue
+			}
+			streamSpecific = true
+		} else if streamSpecific || normalizedTrackLanguage(workerStringValue(rule["language"])) != language {
+			continue
+		}
+		if value := strings.TrimSpace(workerStringValue(rule["ocrLanguage"])); value != "" {
+			ocrLanguage = strings.ToLower(value)
+		}
+		if value := strings.TrimSpace(workerStringValue(rule["ocrMode"])); value != "" {
+			ocrMode = normalizedOCRMode(value)
+		}
+	}
+	return ocrLanguage, ocrMode
 }
 
 func embeddedASSOrSSAExists(subtitles []ResolvedSubtitleTrack) bool {
@@ -409,6 +449,8 @@ func subtitleTransformsByIndex(raw any) map[int]SubtitleTransform {
 		result[index] = SubtitleTransform{
 			StreamIndex: index, Format: workerStringValue(item["format"]),
 			RemoveEmbedded: boolValue(item["removeEmbedded"], true),
+			MakeDefault:    boolValue(item["makeDefault"], false), Language: workerStringValue(item["language"]),
+			OCRLanguage: workerStringValue(item["ocrLanguage"]), OCRMode: workerStringValue(item["ocrMode"]), Title: workerStringValue(item["title"]),
 		}
 	}
 	return result

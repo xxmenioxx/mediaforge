@@ -75,3 +75,26 @@ func assertIndexesEqual(t *testing.T, got, want []int) {
 		}
 	}
 }
+
+func TestTrackProfilePreviewFontExportWarningUsesResolvedPlan(t *testing.T) {
+	scan := models.ScanResult{Path: "/media/movie.mkv"}
+	base := ResolvedTrackPlan{
+		AttachmentStreams: []ResolvedAttachmentStream{{StreamIndex: 7, AttachmentKind: "FONT", FontFormat: "TTF"}},
+		SidecarOutputs:    []ResolvedTrackSidecar{{StreamIndex: 4, Codec: "ass", Format: "ass", Mode: "original"}},
+		Warnings:          []string{},
+	}
+	none := base
+	none.FontAttachmentExportPolicy = FontAttachmentExportNone
+	preview := buildTrackProfileResolutionPreview(scan, models.JSONMap{"audioRequired": false}, none)
+	if len(preview.Warnings) != 1 || !strings.Contains(preview.Warnings[0], "not exported") {
+		t.Fatalf("none warnings=%#v", preview.Warnings)
+	}
+	all := base
+	all.FontAttachmentExportPolicy = FontAttachmentExportAll
+	all.FontAttachments = []ResolvedFontAttachment{{ArtifactID: "font-attachment:7", StreamIndex: 7, FontFormat: "TTF", SafeFilename: "Font.ttf"}}
+	all.FontAttachmentsExported = true
+	preview = buildTrackProfileResolutionPreview(scan, models.JSONMap{"audioRequired": false}, all)
+	if len(preview.Warnings) != 0 {
+		t.Fatalf("all warnings=%#v", preview.Warnings)
+	}
+}

@@ -30,6 +30,8 @@ type SubtitleArtifact struct {
 	Error                   string `json:"error,omitempty"`
 	DisplayName             string `json:"displayName,omitempty"`
 	FontAttachmentsExported bool   `json:"fontAttachmentsExported"`
+	OCRLanguage             string `json:"ocrLanguage,omitempty"`
+	OCRMode                 string `json:"ocrMode,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -74,6 +76,7 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format, Mode: decision.Mode,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Status: "planned",
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode,
 		}
 		artifact.DisplayName = filepath.Base(resolvedSubtitleStagedPath(base, artifact, used))
 		artifacts = append(artifacts, artifact)
@@ -227,6 +230,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
 	usedPaths := map[string]struct{}{}
 	artifacts := make([]SubtitleArtifact, 0, len(plan.ResolvedTracks.SidecarOutputs))
+	var bitmapStreams map[int]FFProbeStream
 	completed := false
 	defer func() {
 		if completed {
@@ -249,6 +253,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			Type:        "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode,
 			Status: "planned",
 		}
 		artifacts = append(artifacts, artifact)
@@ -262,6 +267,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 		if mode == "" {
 			mode = "original"
 		}
+		executionKind := resolvedSubtitleExecutionKind(stream.Codec, mode)
 		if mode == "original" {
 			originalFormat, _, supported := originalSubtitleExtractionFormat(stream.Codec)
 			if !supported || (format != "" && !strings.EqualFold(format, originalFormat)) {
@@ -270,7 +276,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 				return artifacts, fmt.Errorf("%s", current.Error)
 			}
 			format = originalFormat
-		} else if mode != "converted" || format != "srt" || !subtitleCanConvertText(stream.Codec) {
+		} else if format != "srt" || executionKind == "unsupported" {
 			current.Status = "unsupported"
 			current.Error = fmt.Sprintf("subtitle stream %d codec %s cannot generate converted %s sidecar", stream.Index, stream.Codec, format)
 			return artifacts, fmt.Errorf("%s", current.Error)
@@ -287,24 +293,43 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 		if progress != nil {
 			progress(*current)
 		}
-		// Build arguments after the deterministic output path is known.
-		var args []string
-		if mode == "original" {
-			_, muxer, _ := originalSubtitleExtractionFormat(stream.Codec)
-			args = originalSubtitleExtractionArgs(plan, stream.Index, muxer, current.StagedPath)
-		} else {
-			args = textSubtitleExtractionArgs(plan, stream.Index, format, current.StagedPath)
-		}
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			current.Status = "failed"
-			current.Error = fmt.Sprintf("subtitle stream %d original extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
-			if progress != nil {
-				progress(*current)
+		if executionKind == "bitmap_ocr" {
+			bitmapStream, probeErr := bitmapSubtitleStreamByIndex(ctx, plan.InputPath, stream.Index, &bitmapStreams)
+			if probeErr != nil {
+				current.Status, current.Error = "failed", probeErr.Error()
+				return artifacts, probeErr
 			}
-			return artifacts, fmt.Errorf("%s", current.Error)
+			ocrLanguage := decision.OCRLanguage
+			if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
+				ocrLanguage = ""
+			}
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
+				current.Status, current.Error = "failed", err.Error()
+				if progress != nil {
+					progress(*current)
+				}
+				return artifacts, err
+			}
+		} else {
+			// Build arguments after the deterministic output path is known.
+			var args []string
+			if mode == "original" {
+				_, muxer, _ := originalSubtitleExtractionFormat(stream.Codec)
+				args = originalSubtitleExtractionArgs(plan, stream.Index, muxer, current.StagedPath)
+			} else {
+				args = textSubtitleExtractionArgs(plan, stream.Index, format, current.StagedPath)
+			}
+			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				current.Status = "failed"
+				current.Error = fmt.Sprintf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+				if progress != nil {
+					progress(*current)
+				}
+				return artifacts, fmt.Errorf("%s", current.Error)
+			}
 		}
 		info, err := os.Stat(current.StagedPath)
 		if err != nil || info.IsDir() || info.Size() == 0 {
@@ -328,6 +353,41 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 	}
 	completed = true
 	return artifacts, nil
+}
+
+func resolvedSubtitleExecutionKind(codec, mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "original") || strings.TrimSpace(mode) == "" {
+		return "original"
+	}
+	if !strings.EqualFold(strings.TrimSpace(mode), "converted") {
+		return "unsupported"
+	}
+	if isBitmapSubtitleCodecName(codec) {
+		return "bitmap_ocr"
+	}
+	if subtitleCanConvertText(codec) {
+		return "text_ffmpeg"
+	}
+	return "unsupported"
+}
+
+func bitmapSubtitleStreamByIndex(ctx context.Context, inputPath string, streamIndex int, cached *map[int]FFProbeStream) (FFProbeStream, error) {
+	if *cached == nil {
+		streams, err := probeSubtitleStreams(ctx, inputPath)
+		if err != nil {
+			return FFProbeStream{}, fmt.Errorf("OCR subtitle scan failed: %w", err)
+		}
+		*cached = map[int]FFProbeStream{}
+		for _, stream := range streams {
+			if isBitmapSubtitleCodecName(stream.CodecName) {
+				(*cached)[stream.Index] = stream
+			}
+		}
+	}
+	if stream, ok := (*cached)[streamIndex]; ok {
+		return stream, nil
+	}
+	return FFProbeStream{}, fmt.Errorf("bitmap subtitle stream %d disappeared before OCR", streamIndex)
 }
 
 func originalSubtitleExtractionFormat(codec string) (format, muxer string, supported bool) {
@@ -540,6 +600,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "format": value.Format, "mode": value.Mode,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
+			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
 		})
@@ -603,6 +664,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Error:                   stringFromUnknown(value["error"]),
 			DisplayName:             stringFromUnknown(value["displayName"]),
 			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
+			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]),
 		})
 	}
 	return result

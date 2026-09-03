@@ -516,16 +516,16 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 		item["status"], item["message"] = status, message
 		reportItems = append(reportItems, item)
 		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d_%s", decision.StreamIndex, strings.ToLower(decision.Format)), Label: label, Status: status, Message: message})
-		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract && (planFontExportDisabled(job) || len(fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)) == 0) {
+		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract && shouldWarnMissingFontExport(job) {
 			warnings = append(warnings, fmt.Sprintf("Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.", strings.ToUpper(decision.Codec), decision.StreamIndex))
 		}
 	}
 	return checks, warnings, models.JSONMap{"required": len(expected), "artifacts": artifacts, "checks": reportItems}
 }
 
-func planFontExportDisabled(job models.QueueJob) bool {
+func shouldWarnMissingFontExport(job models.QueueJob) bool {
 	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	return !ok || plan.FontAttachmentExportPolicy != FontAttachmentExportAll
+	return ok && plan.FontAttachmentExportPolicy == FontAttachmentExportNone && hasSupportedFontAttachments(plan.AttachmentStreams)
 }
 
 func validateRequiredFontAttachmentArtifacts(job models.QueueJob) ([]CheckResult, []string, models.JSONMap) {

@@ -29,6 +29,8 @@ function jobWithSidecars(): QueueJob {
       { artifactId: 'subtitle:4:converted:srt', streamIndex: 4, sourceCodec: 'ass', format: 'srt', mode: 'converted', language: 'spa', default: false, forced: false, displayName: 'Movie.spa.srt', stagedPath: '', sizeBytes: 0, status: 'generating' },
       { artifactId: 'subtitle:7:original:srt', streamIndex: 7, sourceCodec: 'subrip', format: 'srt', mode: 'original', language: 'eng', default: false, forced: true, displayName: 'Movie.eng.forced.srt', stagedPath: '', sizeBytes: 0, status: 'planned' },
       { artifactId: 'subtitle:9:converted:srt', streamIndex: 9, sourceCodec: 'ass', format: 'srt', mode: 'converted', language: 'jpn', default: false, forced: false, displayName: 'Movie.jpn.srt', stagedPath: '', sizeBytes: 0, status: 'failed', error: 'conversion failed' },
+	  { artifactId: 'font-attachment:11', type: 'font_attachment', streamIndex: 11, attachmentOrdinal: 1, sourceCodec: 'ttf', fontFormat: 'TTF', safeFilename: 'CustomFont.ttf', displayName: 'CustomFont.ttf', stagedPath: '', sizeBytes: 0, status: 'planned' },
+	  { artifactId: 'font-attachment:12', type: 'font_attachment', streamIndex: 12, attachmentOrdinal: 2, sourceCodec: 'otf', fontFormat: 'OTF', safeFilename: 'Other.otf', displayName: 'Other.otf', stagedPath: '', sizeBytes: 0, status: 'generating' },
     ],
   } as QueueJob;
 }
@@ -41,8 +43,11 @@ describe('JobDetailsDialog subtitle stage', () => {
     expect(screen.getByText('ASS · spa · Original')).toBeTruthy();
     expect(screen.getByText('SRT · spa · Compatibility')).toBeTruthy();
     expect(screen.getByText('Generated')).toBeTruthy();
-    expect(screen.getByText('Generating')).toBeTruthy();
-    expect(screen.getByText('Planned')).toBeTruthy();
+	 expect(screen.getAllByText('Generating')).toHaveLength(2);
+	 expect(screen.getAllByText('Planned')).toHaveLength(2);
     expect(screen.getByText('Failed')).toBeTruthy();
+	 expect(screen.getByText('CustomFont.ttf')).toBeTruthy();
+	 expect(screen.getByText('FONT · TTF')).toBeTruthy();
+	 expect(screen.getByText('FONT · OTF')).toBeTruthy();
   });
 });

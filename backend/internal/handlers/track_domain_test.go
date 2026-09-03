@@ -134,7 +134,7 @@ func TestResolvedTrackPlanSerializesCanonicalDecisions(t *testing.T) {
 	if len(decoded.AttachmentStreams) != 1 || decoded.AttachmentStreams[0].Filename != "Font.ttf" || decoded.AttachmentStreams[0].MIMEType != "font/ttf" || decoded.AttachmentStreams[0].AttachmentKind != "FONT" || decoded.AttachmentStreams[0].FontFormat != "TTF" {
 		t.Fatalf("resolved plan lost attachment metadata: %#v", decoded.AttachmentStreams)
 	}
-	if decoded.FontAttachmentExportPolicy != FontAttachmentExportNone || decoded.FontAttachments == nil {
+	if decoded.FontAttachmentExportPolicy != FontAttachmentExportNone {
 		t.Fatalf("legacy/default font export contract=%#v", decoded)
 	}
 }

@@ -1983,6 +1983,23 @@ export function ProfileLabPage() {
     });
   }
 
+  function subtitleOCRForStream(index: number) {
+    const rule = trackDraft.subtitleRules.find((candidate) => candidate.streamIndex === index);
+    return { language: rule?.ocrLanguage ?? 'auto', mode: rule?.ocrMode ?? 'accurate' as const };
+  }
+
+  function updateSubtitleOCRForStream(index: number, patch: { ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }) {
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === index);
+      return migrateTrackDisposition(current, {
+        subtitleRules: [
+          ...current.subtitleRules.filter((rule) => rule.streamIndex !== index),
+          { ...(existing ?? { streamIndex: index, action: current.subtitleDisposition }), streamIndex: index, ...patch },
+        ],
+      });
+    });
+  }
+
   function updateDefaultSubtitleFormat(format: SubtitleSidecarFormat, enabled: boolean) {
     setTrackDraft((current) => {
       const formats = current.subtitleSidecarFormats ?? ['original'];
@@ -4023,7 +4040,11 @@ export function ProfileLabPage() {
                                   </TextField>
                                   {subtitleActionForStream(stream.index) === 'extract' || subtitleActionForStream(stream.index) === 'keep_and_extract' ? <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                     <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('original')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'original', event.target.checked)} />} label={`${stream.codec.toUpperCase()} (Original)`} />
-                                    {(stream.codec === 'ass' || stream.codec === 'ssa') ? <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('srt')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'srt', event.target.checked)} />} label="SRT (Compatibility)" /> : stream.codec !== 'subrip' && stream.codec !== 'srt' ? <Typography variant="body2" color="text.secondary">Text compatibility conversion requires OCR for this bitmap subtitle and is unavailable.</Typography> : null}
+                                    {(stream.codec === 'ass' || stream.codec === 'ssa' || isBitmapSubtitleStream(stream)) ? <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('srt')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'srt', event.target.checked)} />} label={isBitmapSubtitleStream(stream) ? 'SRT (OCR)' : 'SRT (Compatibility)'} /> : stream.codec !== 'subrip' && stream.codec !== 'srt' ? <Typography variant="body2" color="text.secondary">This subtitle codec cannot be converted to SRT.</Typography> : null}
+                                  </Stack> : null}
+                                  {isBitmapSubtitleStream(stream) && subtitleFormatsForStream(stream.index).includes('srt') && (subtitleActionForStream(stream.index) === 'extract' || subtitleActionForStream(stream.index) === 'keep_and_extract') ? <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                                    <TextField select fullWidth label="OCR quality" value={subtitleOCRForStream(stream.index).mode} onChange={(event) => updateSubtitleOCRForStream(stream.index, { ocrMode: event.target.value as 'raw' | 'clean' | 'accurate' })}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField>
+                                    <TextField select fullWidth label="OCR language" value={subtitleOCRForStream(stream.index).language} onChange={(event) => updateSubtitleOCRForStream(stream.index, { ocrLanguage: event.target.value })}><MenuItem value="auto">Automatic</MenuItem><MenuItem value="eng">English</MenuItem><MenuItem value="spa">Spanish</MenuItem><MenuItem value="jpn">Japanese</MenuItem><MenuItem value="jpn_vert">Japanese vertical</MenuItem></TextField>
                                   </Stack> : null}
                                 </Stack>
                               </Box>;

@@ -57,10 +57,18 @@ describe('trackProfileWithConversion', () => {
 
     expect(legacy.subtitleDisposition).toBe('keep');
     expect(legacy.attachmentPolicy).toBe('auto');
+	 expect(legacy.fontAttachmentExportPolicy).toBe('none');
     expect(legacy.chapterPolicy).toBe('keep');
     expect(legacy.trackDispositionVersion).toBeUndefined();
     expect(JSON.parse(JSON.stringify(legacy)).trackDispositionVersion).toBeUndefined();
   });
+
+	it('round-trips ASS/SSA font attachment export policy', () => {
+		const settings = [{ key: 'trackProfiles', value: { profiles: [{ ...emptyTrackProfile, key: 'fonts', name: 'Fonts', fontAttachmentExportPolicy: 'all' }] } }] as unknown as AppSetting[];
+		const [profile] = getTrackProfiles(JSON.parse(JSON.stringify(settings)) as AppSetting[]);
+		expect(profile.fontAttachmentExportPolicy).toBe('all');
+		expect(migrateTrackDisposition(profile, { fontAttachmentExportPolicy: 'none' }).fontAttachmentExportPolicy).toBe('none');
+	});
 
   it('migrates only the profile whose disposition is intentionally edited', () => {
     const settings = [{ key: 'trackProfiles', value: { profiles: [
@@ -93,11 +101,13 @@ describe('trackProfileWithConversion', () => {
     const settings = [{ key: 'trackProfiles', value: { profiles: [{
       ...emptyTrackProfile,
       key: 'compatibility', name: 'Compatibility', subtitleSidecarFormats: ['original', 'srt'],
-      subtitleRules: [{ streamIndex: 4, action: 'keep_and_extract', sidecarFormats: ['srt'] }],
+	  subtitleRules: [{ streamIndex: 4, action: 'keep_and_extract', sidecarFormats: ['srt'], ocrLanguage: 'spa', ocrMode: 'accurate' }],
     }] } }] as unknown as AppSetting[];
     const [profile] = getTrackProfiles(settings);
 
     expect(profile.subtitleSidecarFormats).toEqual(['original', 'srt']);
     expect(profile.subtitleRules[0].sidecarFormats).toEqual(['srt']);
+	 expect(profile.subtitleRules[0].ocrLanguage).toBe('spa');
+	 expect(profile.subtitleRules[0].ocrMode).toBe('accurate');
   });
 });

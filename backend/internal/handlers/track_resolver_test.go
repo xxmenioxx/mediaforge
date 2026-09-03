@@ -117,13 +117,49 @@ func TestResolveTrackPlanAssetSidecarFormatOverride(t *testing.T) {
 	}
 }
 
-func TestResolveTrackPlanRejectsBitmapCompatibilitySidecar(t *testing.T) {
-	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "hdmv_pgs_subtitle", "language": "spa"}}}
-	_, err := resolveTrackPlan(scan, map[string]any{
-		"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+func TestResolveTrackPlanAcceptsBitmapCompatibilitySidecarsThroughOCR(t *testing.T) {
+	for _, codec := range []string{"hdmv_pgs_subtitle", "dvd_subtitle"} {
+		t.Run(codec, func(t *testing.T) {
+			scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": codec, "language": "spa"}}}
+			plan, err := resolveTrackPlan(scan, map[string]any{
+				"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.SidecarOutputs) != 1 || plan.SidecarOutputs[0].Format != "srt" || plan.SidecarOutputs[0].Mode != "converted" || plan.SidecarOutputs[0].OCRLanguage != "auto" || plan.SidecarOutputs[0].OCRMode != "accurate" {
+				t.Fatalf("OCR sidecar=%#v", plan.SidecarOutputs)
+			}
+		})
+	}
+	if _, _, err := resolveSubtitleSidecarFormat("unknown_bitmap", "srt"); err == nil {
+		t.Fatal("unsupported subtitle codec was accepted for SRT")
+	}
+}
+
+func TestResolveTrackPlanFreezesCanonicalBitmapOCRRule(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "spa"}}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"srt"},
+		"subtitleRules":    []any{map[string]any{"streamIndex": 4, "action": "extract", "sidecarFormats": []string{"srt"}, "ocrLanguage": "spa", "ocrMode": "accurate"}},
+		"attachmentPolicy": "auto", "chapterPolicy": "keep",
 	})
-	if err == nil || !strings.Contains(err.Error(), "without OCR") {
-		t.Fatalf("err=%v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SidecarOutputs) != 1 || plan.SidecarOutputs[0].OCRLanguage != "spa" || plan.SidecarOutputs[0].OCRMode != "accurate" {
+		t.Fatalf("frozen OCR config=%#v", plan.SidecarOutputs)
+	}
+}
+
+func TestSubtitleTransformsByIndexPreservesLegacyOCRMetadata(t *testing.T) {
+	transforms := subtitleTransformsByIndex([]any{map[string]any{
+		"streamIndex": 4, "format": "srt", "removeEmbedded": false, "makeDefault": true,
+		"language": "spa", "ocrLanguage": "jpn", "ocrMode": "clean", "title": "Signs",
+	}})
+	transform := transforms[4]
+	if transform.RemoveEmbedded || !transform.MakeDefault || transform.Language != "spa" || transform.OCRLanguage != "jpn" || transform.OCRMode != "clean" || transform.Title != "Signs" {
+		t.Fatalf("legacy transform=%#v", transform)
 	}
 }
 
@@ -464,13 +500,13 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode.mkv")
-	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "jpn"}}}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "jpn"}}, AttachmentStreams: models.JSONList{map[string]any{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}}, AttachmentInventoryAvailable: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	setting := models.AppSetting{
 		Key: "trackProfiles",
 		Value: models.JSONMap{"profiles": models.JSONList{
-			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep"},
+			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep"},
 		}},
 	}
 	if err := db.Create(&setting).Error; err != nil {
@@ -481,20 +517,58 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 {
+	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
 		t.Fatalf("canonical plan was not frozen: %#v", job.TrackProfileSnapshot)
 	}
-	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "subtitleSidecarFormats": models.JSONList{"original"}, "attachmentPolicy": "remove", "chapterPolicy": "remove"}}
+	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "subtitleSidecarFormats": models.JSONList{"original"}, "attachmentPolicy": "remove", "fontAttachmentExportPolicy": "none", "chapterPolicy": "remove"}}
 	if err := db.Save(&setting).Error; err != nil {
 		t.Fatal(err)
 	}
 	stillFrozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 {
+	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 || len(stillFrozen.FontAttachments) != 1 {
 		t.Fatalf("queued decision changed after profile edit: %#v", stillFrozen)
 	}
 	override := currentConversionOverrideForJob(job, nil)
 	if override.ResolvedTrackPlan == nil || override.ResolvedTrackPlan.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || len(override.ResolvedTrackPlan.SidecarOutputs) != 2 {
 		t.Fatalf("worker did not restore frozen track plan: %#v", override)
+	}
+}
+
+func TestQueueTrackPlanFreezesBitmapOCRConfiguration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:resolved-track-plan-ocr-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Clean("/media/raw/show/bitmap.mkv")
+	if err := db.Create(&models.ScanResult{Path: path, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "spa"}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	setting := models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{
+		"key": "ocr", "scope": "path", "trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"srt"},
+		"subtitleRules":    models.JSONList{models.JSONMap{"streamIndex": 4, "action": "extract", "sidecarFormats": models.JSONList{"srt"}, "ocrLanguage": "spa", "ocrMode": "accurate"}},
+		"attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}}}}
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: path, TrackProfileKey: "ocr"}
+	if err := NewQueueHandler(db).captureSupplementalProfiles(&job); err != nil {
+		t.Fatal(err)
+	}
+	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "ocr", "scope": "path", "trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"srt"}, "subtitleRules": models.JSONList{models.JSONMap{"streamIndex": 4, "action": "extract", "ocrLanguage": "eng", "ocrMode": "raw"}}}}
+	if err := db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+	if !ok || len(frozen.SidecarOutputs) != 1 || frozen.SidecarOutputs[0].OCRLanguage != "spa" || frozen.SidecarOutputs[0].OCRMode != "accurate" {
+		t.Fatalf("frozen OCR plan=%#v", frozen)
+	}
+	planned := plannedSubtitleArtifacts(job)
+	if len(planned) != 1 || planned[0].OCRLanguage != "spa" || planned[0].OCRMode != "accurate" {
+		t.Fatalf("frozen OCR artifact=%#v", planned)
 	}
 }
 

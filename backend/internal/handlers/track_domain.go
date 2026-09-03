@@ -251,6 +251,8 @@ type ResolvedTrackSidecar struct {
 	Title       string `json:"title,omitempty"`
 	Default     bool   `json:"default"`
 	Forced      bool   `json:"forced"`
+	OCRLanguage string `json:"ocrLanguage,omitempty"`
+	OCRMode     string `json:"ocrMode,omitempty"`
 }
 
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream

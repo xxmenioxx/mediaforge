@@ -30,7 +30,7 @@ describe('TrackProfileResolutionPreview', () => {
       resolvedTrackPlan: {
         videoStreams: [{ streamIndex: 0 }], audioStreams: [{ streamIndex: 1 }], removedAudioStreams: [{ streamIndex: 2 }],
         subtitleStreams: [{ streamIndex: 4, action: 'keep_and_extract' }], attachmentPolicy: 'auto', attachmentsKept: false,
-        attachmentReason: 'no embedded ASS/SSA subtitles remain', attachmentStreams: [], fontAttachmentsExported: false,
+        attachmentReason: 'no embedded ASS/SSA subtitles remain', attachmentStreams: [], fontAttachmentExportPolicy: 'none', fontAttachments: [], fontAttachmentsExported: false,
         chapterPolicy: 'keep', chaptersKept: true,
         sidecarOutputs: [
           { streamIndex: 4, format: 'ass', mode: 'original', forced: false, default: false },
@@ -84,6 +84,8 @@ describe('TrackProfileResolutionPreview', () => {
     expect(screen.getByText('#14 · Attachment #14')).toBeTruthy();
     expect(screen.getByText('MIME: application/x-truetype-font')).toBeTruthy();
     expect(screen.getAllByText('Final MKV: Keep')).toHaveLength(8);
+	 expect(screen.getAllByText('ASS/SSA sidecar: Disabled')).toHaveLength(4);
+	 expect(screen.getAllByText('ASS/SSA sidecar: Not eligible')).toHaveLength(4);
   });
 
   it('shows aggregate Remove disposition while retaining attachment visibility', () => {
@@ -131,8 +133,23 @@ function attachmentPreview(
       videoStreams: [], audioStreams: [], removedAudioStreams: [], subtitleStreams: [],
       attachmentPolicy: kept ? 'keep' : 'remove', attachmentsKept: kept,
       attachmentReason: kept ? 'attachments explicitly kept' : 'attachments explicitly removed',
-      attachmentStreams: attachments, fontAttachmentsExported: false,
+      attachmentStreams: attachments, fontAttachmentExportPolicy: 'none', fontAttachments: [], fontAttachmentsExported: false,
       chapterPolicy: 'keep', chaptersKept: true, sidecarOutputs: [],
     },
   };
 }
+
+it('shows font sidecar inclusion independently from final-MKV removal', () => {
+	const scan = { videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: [], attachmentInventoryAvailable: true } as unknown as ScanResult;
+	const preview = attachmentPreview(false, [
+		{ streamIndex: 7, codec: 'ttf', filename: 'Font.ttf', attachmentKind: 'FONT', fontFormat: 'TTF' },
+	]);
+	preview.resolvedTrackPlan.fontAttachmentExportPolicy = 'all';
+	preview.resolvedTrackPlan.fontAttachmentsExported = true;
+	preview.resolvedTrackPlan.fontAttachments = [{ artifactId: 'font-attachment:7', streamIndex: 7, attachmentOrdinal: 0, fontFormat: 'TTF', safeFilename: 'Font.ttf' }];
+
+	render(<TrackProfileResolutionPreview scan={scan} preview={preview} loading={false} error={null} />);
+	expect(screen.getByText('Final MKV: Remove')).toBeTruthy();
+	expect(screen.getByText('ASS/SSA sidecar: Included')).toBeTruthy();
+	expect(screen.queryByRole('checkbox')).toBeNull();
+});
