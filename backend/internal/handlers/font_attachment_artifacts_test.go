@@ -21,6 +21,9 @@ func fontValidationJob(t *testing.T, stagedPath string, status string) models.Qu
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	mediaPath := "/media/Movies/Movie.mkv"
+
 	return models.QueueJob{
 		MediaPath:            mediaPath,
 		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap},
