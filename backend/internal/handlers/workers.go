@@ -780,8 +780,10 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 			return job, http.StatusInternalServerError, err
 		}
 		job.Progress = 3
-		if planned := plannedSidecarArtifactsJSON(job); len(planned) > 0 {
-			job.SubtitleArtifacts = planned
+		if len(job.SubtitleArtifacts) == 0 {
+			if planned := plannedSidecarArtifactsJSON(job); len(planned) > 0 {
+				job.SubtitleArtifacts = planned
+			}
 		}
 		_ = h.db.Save(&job).Error
 	}
@@ -809,7 +811,8 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 		currentSubtitleArtifacts = mergeSubtitleArtifactProgress(currentSubtitleArtifacts, artifact)
 	}
 	job.SubtitleArtifacts = sidecarArtifactsJSON(currentSubtitleArtifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
-	fontArtifacts, err := generateFontAttachmentArtifactsWithProgress(context.Background(), plan, func(update FontAttachmentArtifact) {
+	frozenFontArtifacts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+	fontArtifacts, err := generateFontAttachmentArtifactsWithProgress(context.Background(), plan, frozenFontArtifacts, func(update FontAttachmentArtifact) {
 		current := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
 		job.SubtitleArtifacts = sidecarArtifactsJSON(subtitleArtifactsFromJSON(job.SubtitleArtifacts), mergeFontAttachmentArtifactProgress(current, update))
 		_ = h.db.Model(&job).Update("subtitle_artifacts", job.SubtitleArtifacts).Error

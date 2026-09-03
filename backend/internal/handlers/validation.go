@@ -516,8 +516,17 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 		item["status"], item["message"] = status, message
 		reportItems = append(reportItems, item)
 		checks = append(checks, CheckResult{Key: fmt.Sprintf("subtitle_sidecar_%d_%s", decision.StreamIndex, strings.ToLower(decision.Format)), Label: label, Status: status, Message: message})
-		if (strings.EqualFold(decision.Codec, "ass") || strings.EqualFold(decision.Codec, "ssa")) && subtitleDispositionForSidecar(job, decision.StreamIndex) == SubtitleDispositionExtract && shouldWarnMissingFontExport(job) {
-			warnings = append(warnings, fmt.Sprintf("Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.", strings.ToUpper(decision.Codec), decision.StreamIndex))
+		if fallback(strings.ToLower(strings.TrimSpace(decision.Mode)), "original") == "original" &&
+			(strings.EqualFold(decision.Format, "ass") || strings.EqualFold(decision.Format, "ssa")) &&
+			shouldWarnMissingFontExport(job) {
+			warnings = append(
+				warnings,
+				fmt.Sprintf(
+					"Extracted %s sidecar for stream %d may reference custom fonts; source font attachments were not exported.",
+					strings.ToUpper(decision.Format),
+					decision.StreamIndex,
+				),
+			)
 		}
 	}
 	return checks, warnings, models.JSONMap{"required": len(expected), "artifacts": artifacts, "checks": reportItems}
@@ -543,12 +552,16 @@ func validateRequiredFontAttachmentArtifacts(job models.QueueJob) ([]CheckResult
 	for _, decision := range expected {
 		status, message := "passed", "Required font attachment is ready."
 		artifact, exists := byID[decision.ArtifactID]
+		expectedRelativePath := fontAttachmentRelativePath(job.MediaPath, decision.SafeFilename)
 		item := models.JSONMap{"artifactId": decision.ArtifactID, "streamIndex": decision.StreamIndex, "attachmentOrdinal": decision.AttachmentOrdinal, "fontFormat": decision.FontFormat, "safeFilename": decision.SafeFilename}
 		if !exists {
 			status, message = "failed", "Required font attachment is missing from the job artifact set."
 		} else {
 			item["artifact"] = artifact
-			if artifact.StreamIndex != decision.StreamIndex || artifact.AttachmentOrdinal != decision.AttachmentOrdinal || artifact.SafeFilename != decision.SafeFilename {
+			if artifact.StreamIndex != decision.StreamIndex ||
+				artifact.AttachmentOrdinal != decision.AttachmentOrdinal ||
+				artifact.SafeFilename != decision.SafeFilename ||
+				filepath.Clean(artifact.RelativePath) != filepath.Clean(expectedRelativePath) {
 				status, message = "failed", "Font attachment identity or output path does not match the frozen track plan."
 			} else if artifact.Status != "" && artifact.Status != "ready" {
 				status, message = "failed", "Required font attachment is not ready: "+fallback(artifact.Error, artifact.Status)

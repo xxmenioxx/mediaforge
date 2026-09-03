@@ -63,6 +63,11 @@ func fontAttachmentArtifactID(streamIndex int) string {
 	return fmt.Sprintf("font-attachment:%d", streamIndex)
 }
 
+func fontAttachmentRelativePath(mediaPath, safeFilename string) string {
+	base := filepath.Base(strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath)))
+	return filepath.Join(base+".fonts", safeFilename)
+}
+
 func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
 	if !ok || len(plan.SidecarOutputs) == 0 {
@@ -91,7 +96,7 @@ func plannedFontAttachmentArtifacts(job models.QueueJob) []FontAttachmentArtifac
 	}
 	artifacts := make([]FontAttachmentArtifact, 0, len(plan.FontAttachments))
 	for _, font := range plan.FontAttachments {
-		relativePath := filepath.Join(filepath.Base(strings.TrimSuffix(job.MediaPath, filepath.Ext(job.MediaPath)))+".fonts", font.SafeFilename)
+		relativePath := fontAttachmentRelativePath(job.MediaPath, font.SafeFilename)
 		artifacts = append(artifacts, FontAttachmentArtifact{
 			ArtifactID: font.ArtifactID, Type: "font_attachment", StreamIndex: font.StreamIndex, AttachmentOrdinal: font.AttachmentOrdinal,
 			SourceCodec: font.Codec, OriginalName: font.OriginalName, MIMEType: font.MIMEType, FontFormat: font.FontFormat,
@@ -429,20 +434,29 @@ func fontAttachmentExtractionArgs(inputPath string, attachmentOrdinal int, outpu
 	}
 }
 
-func generateFontAttachmentArtifactsWithProgress(ctx context.Context, plan MediaJobPlan, progress func(FontAttachmentArtifact)) ([]FontAttachmentArtifact, error) {
-	if plan.ResolvedTracks == nil || len(plan.ResolvedTracks.FontAttachments) == 0 {
+func generateFontAttachmentArtifactsWithProgress(
+	ctx context.Context,
+	plan MediaJobPlan,
+	frozenArtifacts []FontAttachmentArtifact,
+	progress func(FontAttachmentArtifact),
+) ([]FontAttachmentArtifact, error) {
+	if len(frozenArtifacts) == 0 {
 		return nil, nil
 	}
+
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath)) + ".fonts"
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return nil, fmt.Errorf("prepare font attachment staging directory: %w", err)
 	}
-	artifacts := make([]FontAttachmentArtifact, 0, len(plan.ResolvedTracks.FontAttachments))
+
+	artifacts := make([]FontAttachmentArtifact, 0, len(frozenArtifacts))
 	completed := false
+
 	defer func() {
 		if completed {
 			return
 		}
+
 		for index := range artifacts {
 			if artifacts[index].StagedPath != "" {
 				_ = os.Remove(artifacts[index].StagedPath)
@@ -452,43 +466,73 @@ func generateFontAttachmentArtifactsWithProgress(ctx context.Context, plan Media
 				artifacts[index].Error = "font attachment set rolled back after another extraction failed"
 			}
 		}
+
 		_ = os.Remove(base)
 	}()
-	for _, font := range plan.ResolvedTracks.FontAttachments {
-		artifact := FontAttachmentArtifact{
-			ArtifactID: font.ArtifactID, Type: "font_attachment", StreamIndex: font.StreamIndex, AttachmentOrdinal: font.AttachmentOrdinal,
-			SourceCodec: font.Codec, OriginalName: font.OriginalName, MIMEType: font.MIMEType, FontFormat: font.FontFormat,
-			SafeFilename: font.SafeFilename, RelativePath: filepath.Join(filepath.Base(base), font.SafeFilename),
-			StagedPath: filepath.Join(base, font.SafeFilename), DisplayName: font.SafeFilename, Status: "generating",
-		}
+
+	for _, frozen := range frozenArtifacts {
+		artifact := frozen
+		artifact.StagedPath = filepath.Join(base, artifact.SafeFilename)
+		artifact.Status = "generating"
+		artifact.Error = ""
+		artifact.SizeBytes = 0
+
 		artifacts = append(artifacts, artifact)
 		current := &artifacts[len(artifacts)-1]
+
 		_ = os.Remove(current.StagedPath)
+
 		if progress != nil {
 			progress(*current)
 		}
-		cmd := exec.CommandContext(ctx, "ffmpeg", fontAttachmentExtractionArgs(plan.InputPath, font.AttachmentOrdinal, current.StagedPath)...)
+
+		cmd := exec.CommandContext(
+			ctx,
+			"ffmpeg",
+			fontAttachmentExtractionArgs(
+				plan.InputPath,
+				current.AttachmentOrdinal,
+				current.StagedPath,
+			)...,
+		)
+
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
+
 		if err := cmd.Run(); err != nil {
 			current.Status = "failed"
-			current.Error = fmt.Sprintf("font attachment stream %d extraction failed: %s", font.StreamIndex, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+			current.Error = fmt.Sprintf(
+				"font attachment stream %d extraction failed: %s",
+				current.StreamIndex,
+				fallback(strings.TrimSpace(stderr.String()), err.Error()),
+			)
+
 			if progress != nil {
 				progress(*current)
 			}
+
 			return artifacts, fmt.Errorf("%s", current.Error)
 		}
+
 		info, err := os.Stat(current.StagedPath)
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			_ = os.Remove(current.StagedPath)
-			current.Status, current.Error = "failed", fmt.Sprintf("font attachment stream %d produced an empty artifact", font.StreamIndex)
+			current.Status = "failed"
+			current.Error = fmt.Sprintf(
+				"font attachment stream %d produced an empty artifact",
+				current.StreamIndex,
+			)
 			return artifacts, fmt.Errorf("%s", current.Error)
 		}
-		current.SizeBytes, current.Status = info.Size(), "ready"
+
+		current.SizeBytes = info.Size()
+		current.Status = "ready"
+
 		if progress != nil {
 			progress(*current)
 		}
 	}
+
 	completed = true
 	return artifacts, nil
 }
@@ -693,12 +737,18 @@ func mergeFontAttachmentArtifactProgress(current []FontAttachmentArtifact, updat
 	if update.ArtifactID == "" {
 		update.ArtifactID = fontAttachmentArtifactID(update.StreamIndex)
 	}
+
 	for index := range current {
 		if current[index].ArtifactID == update.ArtifactID {
-			current[index] = update
+			current[index].StagedPath = update.StagedPath
+			current[index].PublishedPath = update.PublishedPath
+			current[index].SizeBytes = update.SizeBytes
+			current[index].Status = update.Status
+			current[index].Error = update.Error
 			return current
 		}
 	}
+
 	return append(current, update)
 }
 
