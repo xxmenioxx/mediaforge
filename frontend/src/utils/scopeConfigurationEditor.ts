@@ -5,7 +5,7 @@ import type {
   ProfileAssignmentInput,
 } from '../api/types';
 
-export type ConfigurableAssetScope = 'logical_group' | 'path';
+export type ConfigurableAssetScope = 'logical_group' | 'path' | 'asset';
 export type ScopeConfigurationField = 'video' | 'audio' | 'tracks' | 'category' | 'destination';
 export type ScopeValueSelection = 'inherit' | 'value' | 'disabled';
 
