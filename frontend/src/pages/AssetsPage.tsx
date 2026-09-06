@@ -820,7 +820,36 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 		{titleAdvisorResults.length ? <Alert severity={titleAdvisorResults.some((result) => result.error) ? 'warning' : 'success'} sx={{ m: 1 }}>{titleAdvisorResults.length} asset{titleAdvisorResults.length === 1 ? '' : 's'} evaluated · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review · {titleAdvisorResults.filter((result) => result.error).length} failed</Alert> : null}
 		{publishTitleAsIs.isSuccess ? <Alert severity="success" sx={{ m: 1 }}>{publishTitleAsIs.data.message}</Alert> : null}
 		{publishTitleAsIs.isError && publishTitleAsIs.error.message !== 'Publish as-is canceled.' ? <Alert severity="warning" sx={{ m: 1 }}>{publishTitleAsIs.error.message}</Alert> : null}
-		<Collapse in={expanded} unmountOnExit><Stack spacing={1} sx={{ p: 1.25 }}>{rootPaths.map((path) => <Box key={path.id}>{renderAssets(path)}</Box>)}{childPaths.map((path) => { const pathAssets = selectableAssetsForPaths([path]); const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); const open = expandedPaths.has(path.id); const pathHasOpenJob = safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)); return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center"><Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} /><IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}><ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography fontWeight={700}>{path.displayPath || path.name}</Typography><Typography variant="caption" color="text.secondary">{countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}</Typography></Box></Stack><ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={pathHasOpenJob} /></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; })}</Stack></Collapse>
+		<Collapse in={expanded} unmountOnExit>
+      <Stack spacing={1} sx={{ p: 1.25 }}>
+          {rootPaths.map((path) => 
+            <Box key={path.id}>{renderAssets(path)}</Box>
+          )}
+          {childPaths.map((path) => { 
+              const pathAssets = selectableAssetsForPaths([path]); 
+              const checked = pathAssets.length > 0 && pathAssets.every((asset) => selectedAssetIds.has(asset.id as number)); 
+              const some = pathAssets.some((asset) => selectedAssetIds.has(asset.id as number)); 
+              const open = expandedPaths.has(path.id); 
+              const pathHasOpenJob = safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)); 
+              return <Box key={path.id} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.75, py: 0.5 }}><Stack direction="row" alignItems="center">
+                  <Checkbox size="small" checked={checked} indeterminate={some && !checked} disabled={!pathAssets.length} onChange={(event) => onAssetSelectionChange(pathAssets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select path ${path.displayPath || path.name}` }} />
+                  <IconButton size="small" aria-label={`${open ? 'Collapse' : 'Expand'} path ${path.displayPath || path.name}`} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(path.id)) next.delete(path.id); else next.add(path.id); return next; })}>
+                    <ExpandMoreIcon sx={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+                  </IconButton>
+                    <Box>
+                      <Typography fontWeight={700}>
+                        {path.displayPath || path.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {countLabel(path.assetCount, 'asset')} · {formatBytes(path.totalSizeBytes)}
+                      </Typography>
+                    </Box>
+                </Stack>
+              <ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={pathHasOpenJob} /></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; 
+            })}
+        </Stack>
+    </Collapse>
 		{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
 	</Box>;
 }
