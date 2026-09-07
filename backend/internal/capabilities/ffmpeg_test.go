@@ -61,6 +61,24 @@ func TestQSVRateControlMethod(t *testing.T) {
 	}
 }
 
+func TestQSVMBBRCEnabled(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "enabled", output: "[hevc_qsv] MBBRC: ON\n", want: true},
+		{name: "disabled", output: "[hevc_qsv] MBBRC: OFF\n", want: false},
+		{name: "missing", output: "[hevc_qsv] ExtBRC: ON\n", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := qsvMBBRCEnabled([]byte(test.output)); got != test.want {
+				t.Fatalf("qsvMBBRCEnabled() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestParseQSVGPBContext(t *testing.T) {
 	gpbOn, refDistOne, bRefOff := parseQSVGPBContext("GopPicSize: 75\nGopRefDist: 1\nBRefType: off\nGPB: ON\n")
 	if !gpbOn || !refDistOne || !bRefOff {

@@ -2430,6 +2430,32 @@ type qsvEffectiveFeatures struct {
 	ExtendedBRC bool
 	AdaptiveI   bool
 	AdaptiveB   bool
+	MBBRC       bool
+}
+
+func qsvMBBRCTestedMode(rateControl string, main10 bool) string {
+	suffix := "Main8"
+	if main10 {
+		suffix = "Main10"
+	}
+	mode := map[string]string{
+		"icq": "Icq", "la_icq": "LaIcq", "cqp": "Cqp", "vbr": "Vbr", "cbr": "Cbr",
+	}[strings.ToLower(strings.TrimSpace(rateControl))]
+	if mode == "" {
+		return ""
+	}
+	return "qsvMbbrc" + mode + suffix
+}
+
+func normalizedQSVMBBRCMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "enabled", "on", "true":
+		return "enabled"
+	case "disabled", "off", "false":
+		return "disabled"
+	default:
+		return "auto"
+	}
 }
 
 func resolveQSVEffectiveFeatures(profile models.Profile, capability capabilities.EncoderCapability) qsvEffectiveFeatures {
@@ -2441,6 +2467,9 @@ func resolveQSVEffectiveFeatures(profile models.Profile, capability capabilities
 	features := qsvEffectiveFeatures{
 		AdaptiveI: map[bool]bool{false: capability.QSVAdaptiveIMain8, true: capability.QSVAdaptiveIMain10}[main10],
 		AdaptiveB: map[bool]bool{false: capability.QSVAdaptiveBMain8, true: capability.QSVAdaptiveBMain10}[main10],
+	}
+	if testedMode := qsvMBBRCTestedMode(rateControl, main10); testedMode != "" {
+		features.MBBRC = capability.TestedModes[testedMode]
 	}
 	switch rateControl {
 	case "la_icq":
@@ -2482,6 +2511,14 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 	}
 	if profileWorkerBool(profile, "qsvExtendedBRC", false) && features.ExtendedBRC {
 		args = append(args, "-extbrc", "1")
+	}
+	if features.MBBRC {
+		switch normalizedQSVMBBRCMode(workerStringValue(profile.WorkerConfig["qsvMBBRCMode"])) {
+		case "enabled":
+			args = append(args, "-mbbrc", "1")
+		case "disabled":
+			args = append(args, "-mbbrc", "0")
+		}
 	}
 	frameStructureEnabled := normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "off"
 	if frameStructureEnabled && profileWorkerBool(profile, "qsvAdaptiveI", false) && features.AdaptiveI {

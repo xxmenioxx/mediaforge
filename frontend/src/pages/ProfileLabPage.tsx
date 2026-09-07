@@ -91,7 +91,7 @@ import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type SubtitleSidecarFormat, type TrackProfile } from '../trackProfiles';
-import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { normalizedQSVMBBRCMode, qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
@@ -741,6 +741,7 @@ export function ProfileLabPage() {
     'qsvRateControl',
     'icq',
   );
+  const qsvMBBRCMode = normalizedQSVMBBRCMode(videoWorkerValue(videoDraft, 'qsvMBBRCMode', 'auto'));
 
   const qsvFeatures = resolveQSVFeatures(selectedHardwareCapability, {
     main10: qsvMain10Selected,
@@ -751,6 +752,7 @@ export function ProfileLabPage() {
     extendedBRC: videoWorkerBool(videoDraft, 'qsvExtendedBRC'),
     adaptiveI: videoWorkerBool(videoDraft, 'qsvAdaptiveI'),
     adaptiveB: !qsvBFramesDisabled && videoWorkerBool(videoDraft, 'qsvAdaptiveB'),
+    mbbrcMode: qsvMBBRCMode,
   });
   
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
@@ -3174,6 +3176,21 @@ export function ProfileLabPage() {
                                   />
                                 </Stack>
                               </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField
+                                  label="MBBRC"
+                                  value={qsvMBBRCMode}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvMBBRCMode', event.target.value)}
+                                  helperText="Macroblock-level bitrate control. Capability depends on QSV rate control and bit depth; Auto leaves the driver default unchanged."
+                                  select
+                                  size="small"
+                                  fullWidth
+                                >
+                                  <MenuItem value="auto">Auto · driver default</MenuItem>
+                                  <MenuItem value="enabled" disabled={!qsvFeatures.mbbrc && qsvMBBRCMode !== 'enabled'}>Enabled</MenuItem>
+                                  <MenuItem value="disabled" disabled={!qsvFeatures.mbbrc && qsvMBBRCMode !== 'disabled'}>Disabled</MenuItem>
+                                </TextField>
+                              </Grid>
                               {qsvWarnings.map((warning) => <Grid key={warning} size={{ xs: 12 }}><Alert severity="warning">{warning}</Alert></Grid>)}
                             </>
                           ) : null}
@@ -5271,6 +5288,7 @@ function videoPreviewOptions(
       draft,
       'qsvAdaptiveB',
     ),
+    qsvMBBRCMode: normalizedQSVMBBRCMode(videoWorkerValue(draft, 'qsvMBBRCMode', 'auto')),
     qsvPStrategy: Math.min(2, Math.max(0, numberWorkerValue(draft, 'qsvPStrategy', 0))) as 0 | 1 | 2,
 
     // VideoToolbox
@@ -5450,6 +5468,7 @@ function updateVideoWorkerConfig(
       'qsvExtendedBRC',
       'qsvAdaptiveI',
       'qsvAdaptiveB',
+      'qsvMBBRCMode',
       'qsvPStrategy',
       ...videoToolboxRateKeys,
       'videoToolboxProfile',
@@ -5540,6 +5559,7 @@ function videoDraftForProcessingPreference(
       qsvExtendedBRC: undefined,
       qsvAdaptiveI: undefined,
       qsvAdaptiveB: undefined,
+      qsvMBBRCMode: undefined,
     },
   });
 }

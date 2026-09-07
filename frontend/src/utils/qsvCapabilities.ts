@@ -4,7 +4,26 @@ export type QSVSelection = {
   adaptiveI?: boolean;
   adaptiveB?: boolean;
   extendedBRC?: boolean;
+  mbbrcMode?: string;
 };
+
+function qsvMBBRCTestedMode(rateControl: string, main10: boolean) {
+  const mode = {
+    icq: 'Icq',
+    la_icq: 'LaIcq',
+    cqp: 'Cqp',
+    vbr: 'Vbr',
+    cbr: 'Cbr',
+  }[rateControl as QSVRateControl];
+  return mode ? `qsvMbbrc${mode}${main10 ? 'Main10' : 'Main8'}` : '';
+}
+
+export function normalizedQSVMBBRCMode(value: string | undefined): 'auto' | 'enabled' | 'disabled' {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === 'enabled' || normalized === 'on' || normalized === 'true') return 'enabled';
+  if (normalized === 'disabled' || normalized === 'off' || normalized === 'false') return 'disabled';
+  return 'auto';
+}
 
 export function qsvPStrategySupported(capability: Record<string, unknown> | undefined, main10: boolean, value: 1 | 2) {
   const testedModes = capability?.testedModes;
@@ -22,6 +41,8 @@ export function resolveQSVFeatures(
 ) {
   const { main10 } = options;
   const rateControl = (options.rateControl ?? 'icq').toLowerCase();
+  const testedModes = capability?.testedModes;
+  const mbbrcTestedMode = qsvMBBRCTestedMode(rateControl, main10);
   const rateControls = {
     icq: main10
       ? capability?.qsvIcqMain10 === true
@@ -52,6 +73,11 @@ export function resolveQSVFeatures(
       main10
         ? capability?.qsvAdaptiveBMain10 === true
         : capability?.qsvAdaptiveBMain8 === true,
+
+    mbbrc:
+      Boolean(mbbrcTestedMode) &&
+      Boolean(testedModes && typeof testedModes === 'object' && !Array.isArray(testedModes)) &&
+      (testedModes as Record<string, unknown>)[mbbrcTestedMode] === true,
 
     extBrc:
       (
@@ -98,6 +124,9 @@ export function qsvSelectionWarnings(
   }
   if (selection.adaptiveB && !features.adaptiveB) {
     warnings.push('Adaptive B is requested but not validated for this worker/bit-depth combination, so it will be omitted from the effective command.');
+  }
+  if (normalizedQSVMBBRCMode(selection.mbbrcMode) !== 'auto' && !features.mbbrc) {
+    warnings.push('MBBRC was explicitly requested but is not validated for the selected rate-control and bit-depth combination on the active worker, so it will be omitted from the effective command.');
   }
   return warnings;
 }

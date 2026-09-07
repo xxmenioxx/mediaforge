@@ -76,6 +76,7 @@ func normalizeHardwareQualityPreset(profile models.Profile) models.Profile {
 		profile.WorkerConfig["qsvExtendedBRC"] = false
 		profile.WorkerConfig["qsvAdaptiveI"] = false
 		profile.WorkerConfig["qsvAdaptiveB"] = false
+		profile.WorkerConfig["qsvMBBRCMode"] = "auto"
 		profile.WorkerConfig["pixFmt"] = pixelFormat
 		profile.PixelFormat = pixelFormat
 		if qsvProfile == "main10" {
