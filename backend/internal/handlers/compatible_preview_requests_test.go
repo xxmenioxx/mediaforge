@@ -98,9 +98,24 @@ func TestCompatiblePreviewRequestIdentityIsDeterministicAndSensitive(t *testing.
 	if !ok || loaded.QSVMBBRCMode != "enabled" {
 		t.Fatalf("stored MBBRC request did not round trip: ok=%t request=%#v", ok, loaded)
 	}
+	autoRDOID, normalizedAutoRDO, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: base.Path}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabledRDOID, normalizedEnabledRDO, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: base.Path, QSVRDOMode: "enabled"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalizedAutoRDO.QSVRDOMode != "auto" || normalizedEnabledRDO.QSVRDOMode != "enabled" || autoRDOID == enabledRDOID {
+		t.Fatalf("RDO request identity was not normalized/sensitive: auto=%q enabled=%q autoID=%q enabledID=%q", normalizedAutoRDO.QSVRDOMode, normalizedEnabledRDO.QSVRDOMode, autoRDOID, enabledRDOID)
+	}
+	loadedRDO, ok := loadCompatiblePreviewRequest(enabledRDOID, now)
+	if !ok || loadedRDO.QSVRDOMode != "enabled" {
+		t.Fatalf("stored RDO request did not round trip: ok=%t request=%#v", ok, loadedRDO)
+	}
 }
 
-func TestCompatiblePreviewRequestNormalizesAndParsesMBBRCMode(t *testing.T) {
+func TestCompatiblePreviewRequestNormalizesAndParsesQSVFeatureModes(t *testing.T) {
 	for _, test := range []struct {
 		input string
 		want  string
@@ -112,17 +127,27 @@ func TestCompatiblePreviewRequestNormalizesAndParsesMBBRCMode(t *testing.T) {
 		if normalized.QSVMBBRCMode != test.want {
 			t.Fatalf("qsvMBBRCMode %q normalized to %q, want %q", test.input, normalized.QSVMBBRCMode, test.want)
 		}
+		normalized, err = normalizeCompatiblePreviewRequest(compatiblePreviewRequest{Path: "/media/raw/test.mkv", QSVRDOMode: test.input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if normalized.QSVRDOMode != test.want {
+			t.Fatalf("qsvRDOMode %q normalized to %q, want %q", test.input, normalized.QSVRDOMode, test.want)
+		}
 	}
 
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest(http.MethodGet, "/preview?path=%2Fmedia%2Fraw%2Ftest.mkv&qsvMBBRCMode=enabled", nil)
+	context.Request = httptest.NewRequest(http.MethodGet, "/preview?path=%2Fmedia%2Fraw%2Ftest.mkv&qsvMBBRCMode=enabled&qsvRDOMode=disabled", nil)
 	parsed, err := compatiblePreviewRequestFromQuery(context)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.QSVMBBRCMode != "enabled" {
 		t.Fatalf("query qsvMBBRCMode=%q, want enabled", parsed.QSVMBBRCMode)
+	}
+	if parsed.QSVRDOMode != "disabled" {
+		t.Fatalf("query qsvRDOMode=%q, want disabled", parsed.QSVRDOMode)
 	}
 }
 

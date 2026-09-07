@@ -186,6 +186,7 @@ export type AssetConversionOverrideState = {
   qsvAdaptiveI?: boolean;
   qsvAdaptiveB?: boolean;
   qsvMBBRCMode?: 'auto' | 'enabled' | 'disabled';
+  qsvRDOMode?: 'auto' | 'enabled' | 'disabled';
   qsvPStrategy?: 0 | 1 | 2;
   videoToolboxBitrateMbps?: number;
   videoToolboxMaxrateMbps?: number;
@@ -1689,6 +1690,7 @@ export type CompatiblePreviewOptions = {
   qsvAdaptiveI?: boolean;
   qsvAdaptiveB?: boolean;
   qsvMBBRCMode?: 'auto' | 'enabled' | 'disabled';
+  qsvRDOMode?: 'auto' | 'enabled' | 'disabled';
   qsvPStrategy?: 0 | 1 | 2;
   mode?: 'quick' | 'quality';
   previewNormalization?: 'preserve' | 'normalize_bt709';

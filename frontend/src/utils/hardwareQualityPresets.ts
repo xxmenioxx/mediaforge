@@ -22,7 +22,7 @@ export function applyHardwareQualityPreset(config: HardwareConfig, encoder: stri
     videoEncoder: encoder,
     hardwareQualityPreset: preset,
     hardwareQualityPresetScale: 2,
-    ...(encoder === 'hevc_qsv' && preset !== 'custom' ? { qsvRateControl: 'icq', qsvMBBRCMode: 'auto' } : {}),
+    ...(encoder === 'hevc_qsv' && preset !== 'custom' ? { qsvRateControl: 'icq', qsvMBBRCMode: 'auto', qsvRDOMode: 'auto' } : {}),
     ...(main10Preset && encoder === 'hevc_qsv' ? { pixFmt: 'p010le' } : {}),
     ...(main10Preset && encoder === 'hevc_videotoolbox' ? { pixFmt: 'p010le', videoToolboxProfile: 'main10' } : {}),
   };

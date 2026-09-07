@@ -318,6 +318,14 @@ func CheckEncoder(encoder string) EncoderCapability {
 				}
 				return passed
 			}
+			rdoProbe := func(name, expectedRateControl, format string, args ...string) bool {
+				passed, reason := qsvRDOSmokeProbe(expectedRateControl, format, args...)
+				result.TestedModes[name] = passed
+				if !passed {
+					result.ModeReasons[name] = reason
+				}
+				return passed
+			}
 			vbrAdvancedProbe := func(name, format string, expectedDepth int, args ...string) bool {
 				passed, reason := qsvVBRAdvancedSmokeProbe(format, expectedDepth, args...)
 				result.TestedModes[name] = passed
@@ -480,6 +488,29 @@ func CheckEncoder(encoder string) EncoderCapability {
 			for _, context := range mbbrcContexts {
 				if context.available {
 					mbbrcProbe(context.name, context.expectedRateControl, context.format, context.args...)
+				} else {
+					skip(context.name, context.unavailableReason)
+				}
+			}
+			rdoContexts := []struct {
+				name, expectedRateControl, format, unavailableReason string
+				available                                            bool
+				args                                                 []string
+			}{
+				{"qsvRdoIcqMain8", "ICQ", "nv12", "skipped because QSV ICQ Main8 is unavailable", result.QSVICQMain8, []string{"-profile:v", "main", "-global_quality", "25", "-rdo", "1"}},
+				{"qsvRdoLaIcqMain8", "LA_ICQ", "nv12", "skipped because QSV LA-ICQ Main8 is unavailable", result.QSVLAICQMain8, []string{"-profile:v", "main", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-rdo", "1"}},
+				{"qsvRdoCqpMain8", "CQP", "nv12", "skipped because QSV CQP Main8 is unavailable", result.QSVCQPMain8, []string{"-profile:v", "main", "-global_quality", "25", "-flags", "+qscale", "-rdo", "1"}},
+				{"qsvRdoVbrMain8", "VBR", "nv12", "skipped because QSV VBR Main8 is unavailable", result.QSVVBRMain8, []string{"-profile:v", "main", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M", "-rdo", "1"}},
+				{"qsvRdoCbrMain8", "CBR", "nv12", "skipped because QSV CBR Main8 is unavailable", result.QSVCBRMain8, []string{"-profile:v", "main", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M", "-rdo", "1"}},
+				{"qsvRdoIcqMain10", "ICQ", "p010le", "skipped because QSV ICQ Main10 is unavailable", result.QSVICQMain10, []string{"-profile:v", "main10", "-global_quality", "25", "-rdo", "1"}},
+				{"qsvRdoLaIcqMain10", "LA_ICQ", "p010le", "skipped because QSV LA-ICQ Main10 is unavailable", result.QSVLAICQMain10, []string{"-profile:v", "main10", "-global_quality", "25", "-look_ahead", "1", "-look_ahead_depth", "40", "-rdo", "1"}},
+				{"qsvRdoCqpMain10", "CQP", "p010le", "skipped because QSV CQP Main10 is unavailable", result.QSVCQPMain10, []string{"-profile:v", "main10", "-global_quality", "25", "-flags", "+qscale", "-rdo", "1"}},
+				{"qsvRdoVbrMain10", "VBR", "p010le", "skipped because QSV VBR Main10 is unavailable", result.QSVVBRMain10, []string{"-profile:v", "main10", "-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M", "-rdo", "1"}},
+				{"qsvRdoCbrMain10", "CBR", "p010le", "skipped because QSV CBR Main10 is unavailable", result.QSVCBRMain10, []string{"-profile:v", "main10", "-b:v", "2M", "-maxrate", "2M", "-bufsize", "4M", "-rdo", "1"}},
+			}
+			for _, context := range rdoContexts {
+				if context.available {
+					rdoProbe(context.name, context.expectedRateControl, context.format, context.args...)
 				} else {
 					skip(context.name, context.unavailableReason)
 				}
@@ -672,6 +703,10 @@ func qsvMBBRCEnabled(output []byte) bool {
 	return strings.Contains(string(output), "MBBRC: ON")
 }
 
+func qsvRDOEnabled(output []byte) bool {
+	return strings.Contains(string(output), "RateDistortionOpt: ON")
+}
+
 func qsvLookAheadDepth(output []byte) int {
 	text := string(output)
 
@@ -742,6 +777,32 @@ func qsvMBBRCSmokeProbe(expectedRateControl, pixelFormat string, featureArgs ...
 		return false, summarizedQSVProbeReason(output, err)
 	}
 	return qsvMBBRCEvidence(expectedRateControl, output)
+}
+
+func qsvRDOEvidence(expectedRateControl string, output []byte) (bool, string) {
+	effective := qsvRateControlMethod(output)
+	if effective == "" {
+		return false, "QSV encoding succeeded but RateControlMethod was not reported"
+	}
+	if effective != expectedRateControl {
+		return false, "requested QSV rate control " + expectedRateControl + " but encoder used " + effective
+	}
+	if !qsvRDOEnabled(output) {
+		return false, "QSV encoder did not enable RDO"
+	}
+	return true, ""
+}
+
+func qsvRDOSmokeProbe(expectedRateControl, pixelFormat string, featureArgs ...string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := qsvFeatureSmokeArgs(pixelFormat, featureArgs...)
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	if err != nil {
+		return false, summarizedQSVProbeReason(output, err)
+	}
+	return qsvRDOEvidence(expectedRateControl, output)
 }
 
 func qsvRateControlSmokeProbe(expected, pixelFormat string, featureArgs ...string) (bool, string) {
@@ -1066,6 +1127,7 @@ func summarizedQSVProbeReason(output []byte, err error) string {
 		"AdaptiveI:",
 		"AdaptiveB:",
 		"MBBRC:",
+		"RateDistortionOpt:",
 		"invalid video parameters",
 		"unsupported",
 		"not been used",

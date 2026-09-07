@@ -306,6 +306,7 @@ type AssetConversionOverrideState struct {
 	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI,omitempty"`
 	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB,omitempty"`
 	QSVMBBRCMode                     string                         `json:"qsvMBBRCMode,omitempty"`
+	QSVRDOMode                       string                         `json:"qsvRDOMode,omitempty"`
 	QSVPStrategy                     *int                           `json:"qsvPStrategy,omitempty"`
 	VideoToolboxBitrateMbps          float64                        `json:"videoToolboxBitrateMbps,omitempty"`
 	VideoToolboxMaxrateMbps          float64                        `json:"videoToolboxMaxrateMbps,omitempty"`
@@ -458,6 +459,7 @@ type AssetConversionUpdateInput struct {
 	QSVAdaptiveI                     *bool                          `json:"qsvAdaptiveI"`
 	QSVAdaptiveB                     *bool                          `json:"qsvAdaptiveB"`
 	QSVMBBRCMode                     string                         `json:"qsvMBBRCMode"`
+	QSVRDOMode                       string                         `json:"qsvRDOMode"`
 	QSVPStrategy                     *int                           `json:"qsvPStrategy"`
 	VideoToolboxBitrateMbps          float64                        `json:"videoToolboxBitrateMbps"`
 	VideoToolboxMaxrateMbps          float64                        `json:"videoToolboxMaxrateMbps"`
@@ -2812,6 +2814,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		QSVAdaptiveI:                   input.QSVAdaptiveI,
 		QSVAdaptiveB:                   input.QSVAdaptiveB,
 		QSVMBBRCMode:                   normalizedOptionalQSVMBBRCMode(input.QSVMBBRCMode),
+		QSVRDOMode:                     normalizedOptionalQSVRDOMode(input.QSVRDOMode),
 		QSVPStrategy:                   normalizedOptionalQSVPStrategy(input.QSVPStrategy),
 		VideoToolboxBitrateMbps:        input.VideoToolboxBitrateMbps,
 		VideoToolboxMaxrateMbps:        input.VideoToolboxMaxrateMbps,
@@ -3142,6 +3145,7 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 	qsvAdaptiveIOverride := input.QSVAdaptiveI
 	qsvAdaptiveBOverride := input.QSVAdaptiveB
 	qsvMBBRCModeOverride := normalizedQSVMBBRCMode(input.QSVMBBRCMode)
+	qsvRDOModeOverride := normalizedQSVRDOMode(input.QSVRDOMode)
 	qsvPStrategyOverride := input.QSVPStrategy
 	previewNormalizationMode := input.PreviewNormalization
 	subtitleStreamIndex := -1
@@ -3284,6 +3288,7 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 			qsvAdaptiveIOverride,
 			qsvAdaptiveBOverride,
 			qsvMBBRCModeOverride,
+			qsvRDOModeOverride,
 			min(2, max(0, qsvPStrategyOverride)),
 		)
 	}
@@ -4524,7 +4529,10 @@ func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride str
 		profile.WorkerConfig["qsvMBBRCMode"], _ = hardwareOverrides[8].(string)
 	}
 	if len(hardwareOverrides) > 9 {
-		if value, ok := hardwareOverrides[9].(int); ok {
+		profile.WorkerConfig["qsvRDOMode"], _ = hardwareOverrides[9].(string)
+	}
+	if len(hardwareOverrides) > 10 {
+		if value, ok := hardwareOverrides[10].(int); ok {
 			profile.WorkerConfig["qsvPStrategy"] = value
 			if value > 0 {
 				profile.WorkerConfig["frameStructureBFrameMode"] = "off"
@@ -6633,6 +6641,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		override.QSVAdaptiveI == nil &&
 		override.QSVAdaptiveB == nil &&
 		strings.TrimSpace(override.QSVMBBRCMode) == "" &&
+		strings.TrimSpace(override.QSVRDOMode) == "" &&
 		override.QSVPStrategy == nil &&
 		override.VideoToolboxBitrateMbps == 0 &&
 		override.VideoToolboxMaxrateMbps == 0 &&

@@ -5,6 +5,7 @@ export type QSVSelection = {
   adaptiveB?: boolean;
   extendedBRC?: boolean;
   mbbrcMode?: string;
+  rdoMode?: string;
 };
 
 function qsvMBBRCTestedMode(rateControl: string, main10: boolean) {
@@ -18,7 +19,25 @@ function qsvMBBRCTestedMode(rateControl: string, main10: boolean) {
   return mode ? `qsvMbbrc${mode}${main10 ? 'Main10' : 'Main8'}` : '';
 }
 
+function qsvRDOTestedMode(rateControl: string, main10: boolean) {
+  const mode = {
+    icq: 'Icq',
+    la_icq: 'LaIcq',
+    cqp: 'Cqp',
+    vbr: 'Vbr',
+    cbr: 'Cbr',
+  }[rateControl as QSVRateControl];
+  return mode ? `qsvRdo${mode}${main10 ? 'Main10' : 'Main8'}` : '';
+}
+
 export function normalizedQSVMBBRCMode(value: string | undefined): 'auto' | 'enabled' | 'disabled' {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === 'enabled' || normalized === 'on' || normalized === 'true') return 'enabled';
+  if (normalized === 'disabled' || normalized === 'off' || normalized === 'false') return 'disabled';
+  return 'auto';
+}
+
+export function normalizedQSVRDOMode(value: string | undefined): 'auto' | 'enabled' | 'disabled' {
   const normalized = (value ?? '').trim().toLowerCase();
   if (normalized === 'enabled' || normalized === 'on' || normalized === 'true') return 'enabled';
   if (normalized === 'disabled' || normalized === 'off' || normalized === 'false') return 'disabled';
@@ -43,6 +62,7 @@ export function resolveQSVFeatures(
   const rateControl = (options.rateControl ?? 'icq').toLowerCase();
   const testedModes = capability?.testedModes;
   const mbbrcTestedMode = qsvMBBRCTestedMode(rateControl, main10);
+  const rdoTestedMode = qsvRDOTestedMode(rateControl, main10);
   const rateControls = {
     icq: main10
       ? capability?.qsvIcqMain10 === true
@@ -78,6 +98,11 @@ export function resolveQSVFeatures(
       Boolean(mbbrcTestedMode) &&
       Boolean(testedModes && typeof testedModes === 'object' && !Array.isArray(testedModes)) &&
       (testedModes as Record<string, unknown>)[mbbrcTestedMode] === true,
+
+    rdo:
+      Boolean(rdoTestedMode) &&
+      Boolean(testedModes && typeof testedModes === 'object' && !Array.isArray(testedModes)) &&
+      (testedModes as Record<string, unknown>)[rdoTestedMode] === true,
 
     extBrc:
       (
@@ -127,6 +152,9 @@ export function qsvSelectionWarnings(
   }
   if (normalizedQSVMBBRCMode(selection.mbbrcMode) !== 'auto' && !features.mbbrc) {
     warnings.push('MBBRC was explicitly requested but is not validated for the selected rate-control and bit-depth combination on the active worker, so it will be omitted from the effective command.');
+  }
+  if (normalizedQSVRDOMode(selection.rdoMode) !== 'auto' && !features.rdo) {
+    warnings.push('RDO was explicitly requested but is not validated for the selected rate-control and bit-depth combination on the active worker, so it will be omitted from the effective command.');
   }
   return warnings;
 }

@@ -1110,6 +1110,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if value := normalizedOptionalQSVMBBRCMode(override.QSVMBBRCMode); value != "" {
 		workerConfig["qsvMBBRCMode"] = value
 	}
+	if value := normalizedOptionalQSVRDOMode(override.QSVRDOMode); value != "" {
+		workerConfig["qsvRDOMode"] = value
+	}
 	if override.QSVPStrategy != nil {
 		workerConfig["qsvPStrategy"] = min(2, max(0, *override.QSVPStrategy))
 	}
@@ -1162,6 +1165,13 @@ func normalizedOptionalQSVMBBRCMode(value string) string {
 		return ""
 	}
 	return normalizedQSVMBBRCMode(value)
+}
+
+func normalizedOptionalQSVRDOMode(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return normalizedQSVRDOMode(value)
 }
 
 func planHasStreamSelection(override AssetConversionOverrideState) bool {
@@ -2455,6 +2465,7 @@ type qsvEffectiveFeatures struct {
 	AdaptiveI   bool
 	AdaptiveB   bool
 	MBBRC       bool
+	RDO         bool
 }
 
 func qsvMBBRCTestedMode(rateControl string, main10 bool) string {
@@ -2471,7 +2482,32 @@ func qsvMBBRCTestedMode(rateControl string, main10 bool) string {
 	return "qsvMbbrc" + mode + suffix
 }
 
+func qsvRDOTestedMode(rateControl string, main10 bool) string {
+	suffix := "Main8"
+	if main10 {
+		suffix = "Main10"
+	}
+	mode := map[string]string{
+		"icq": "Icq", "la_icq": "LaIcq", "cqp": "Cqp", "vbr": "Vbr", "cbr": "Cbr",
+	}[strings.ToLower(strings.TrimSpace(rateControl))]
+	if mode == "" {
+		return ""
+	}
+	return "qsvRdo" + mode + suffix
+}
+
 func normalizedQSVMBBRCMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "enabled", "on", "true":
+		return "enabled"
+	case "disabled", "off", "false":
+		return "disabled"
+	default:
+		return "auto"
+	}
+}
+
+func normalizedQSVRDOMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "enabled", "on", "true":
 		return "enabled"
@@ -2494,6 +2530,9 @@ func resolveQSVEffectiveFeatures(profile models.Profile, capability capabilities
 	}
 	if testedMode := qsvMBBRCTestedMode(rateControl, main10); testedMode != "" {
 		features.MBBRC = capability.TestedModes[testedMode]
+	}
+	if testedMode := qsvRDOTestedMode(rateControl, main10); testedMode != "" {
+		features.RDO = capability.TestedModes[testedMode]
 	}
 	switch rateControl {
 	case "la_icq":
@@ -2542,6 +2581,14 @@ func qsvWorkerArgsForCapability(profile models.Profile, capability capabilities.
 			args = append(args, "-mbbrc", "1")
 		case "disabled":
 			args = append(args, "-mbbrc", "0")
+		}
+	}
+	if features.RDO {
+		switch normalizedQSVRDOMode(workerStringValue(profile.WorkerConfig["qsvRDOMode"])) {
+		case "enabled":
+			args = append(args, "-rdo", "1")
+		case "disabled":
+			args = append(args, "-rdo", "0")
 		}
 	}
 	frameStructureEnabled := normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "off"

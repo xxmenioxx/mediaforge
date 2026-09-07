@@ -901,10 +901,13 @@ func TestVideoToolboxOnlyOverrideIsNotDiscardedAsEmpty(t *testing.T) {
 	}
 }
 
-func TestAssetConversionOverridePreservesExplicitMBBRCIntent(t *testing.T) {
+func TestAssetConversionOverridePreservesExplicitMBBRCAndRDOIntent(t *testing.T) {
 	for _, mode := range []string{"enabled", "disabled"} {
 		if assetConversionOverrideEmpty(AssetConversionOverrideState{QSVMBBRCMode: mode}) {
 			t.Fatalf("explicit MBBRC %q override was incorrectly treated as empty", mode)
+		}
+		if assetConversionOverrideEmpty(AssetConversionOverrideState{QSVRDOMode: mode}) {
+			t.Fatalf("explicit RDO %q override was incorrectly treated as empty", mode)
 		}
 	}
 	if !assetConversionOverrideEmpty(AssetConversionOverrideState{}) {
@@ -921,37 +924,40 @@ func TestAssetConversionOverridePreservesExplicitMBBRCIntent(t *testing.T) {
 	pathEnabled := filepath.Clean("/media/raw/enabled.mkv")
 	pathDisabled := filepath.Clean("/media/raw/disabled.mkv")
 	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
-		pathEnabled:  {QSVMBBRCMode: "enabled"},
-		pathDisabled: {QSVMBBRCMode: "disabled"},
+		pathEnabled:  {QSVMBBRCMode: "enabled", QSVRDOMode: "disabled"},
+		pathDisabled: {QSVMBBRCMode: "disabled", QSVRDOMode: "enabled"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	restored := assetConversionOverrides(db)
-	if restored[pathEnabled].QSVMBBRCMode != "enabled" || restored[pathDisabled].QSVMBBRCMode != "disabled" {
-		t.Fatalf("MBBRC asset overrides did not round trip: %#v", restored)
+	if restored[pathEnabled].QSVMBBRCMode != "enabled" || restored[pathEnabled].QSVRDOMode != "disabled" ||
+		restored[pathDisabled].QSVMBBRCMode != "disabled" || restored[pathDisabled].QSVRDOMode != "enabled" {
+		t.Fatalf("MBBRC/RDO asset overrides did not round trip: %#v", restored)
 	}
 
-	base := models.Profile{WorkerConfig: models.JSONMap{"qsvMBBRCMode": "enabled"}}
+	base := models.Profile{WorkerConfig: models.JSONMap{"qsvMBBRCMode": "enabled", "qsvRDOMode": "disabled"}}
 	inherited := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{})
-	if workerStringValue(inherited.WorkerConfig["qsvMBBRCMode"]) != "enabled" {
-		t.Fatalf("omitted asset override replaced profile MBBRC: %#v", inherited.WorkerConfig)
+	if workerStringValue(inherited.WorkerConfig["qsvMBBRCMode"]) != "enabled" || workerStringValue(inherited.WorkerConfig["qsvRDOMode"]) != "disabled" {
+		t.Fatalf("omitted asset override replaced profile MBBRC/RDO: %#v", inherited.WorkerConfig)
 	}
-	effective := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{QSVMBBRCMode: "disabled"})
-	if workerStringValue(effective.WorkerConfig["qsvMBBRCMode"]) != "disabled" {
-		t.Fatalf("explicit asset MBBRC override was not applied: %#v", effective.WorkerConfig)
+	effective := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{QSVMBBRCMode: "disabled", QSVRDOMode: "enabled"})
+	if workerStringValue(effective.WorkerConfig["qsvMBBRCMode"]) != "disabled" || workerStringValue(effective.WorkerConfig["qsvRDOMode"]) != "enabled" {
+		t.Fatalf("explicit asset MBBRC/RDO override was not applied: %#v", effective.WorkerConfig)
 	}
 }
 
-func TestCompatiblePreviewMBBRCReachesCapabilityGatedQSVCommand(t *testing.T) {
+func TestCompatiblePreviewMBBRCAndRDOReachCapabilityGatedQSVCommand(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		mode       string
 		mbbrcProbe string
+		rdoProbe   string
 		wantMBBRC  string
+		wantRDO    string
 	}{
-		{name: "supported enabled", mode: "enabled", mbbrcProbe: "ON", wantMBBRC: "-mbbrc 1"},
-		{name: "auto", mode: "auto", mbbrcProbe: "ON"},
-		{name: "unsupported enabled", mode: "enabled", mbbrcProbe: "OFF"},
+		{name: "supported enabled", mode: "enabled", mbbrcProbe: "ON", rdoProbe: "ON", wantMBBRC: "-mbbrc 1", wantRDO: "-rdo 1"},
+		{name: "auto", mode: "auto", mbbrcProbe: "ON", rdoProbe: "ON"},
+		{name: "unsupported enabled", mode: "enabled", mbbrcProbe: "OFF", rdoProbe: "OFF"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			binDir := t.TempDir()
@@ -965,12 +971,15 @@ case " $* " in
 esac
 case " $* " in
   *" -mbbrc 1 "*)
-    printf 'RateControlMethod: ICQ\nMBBRC: %s\n' "$MVFORGE_TEST_MBBRC"
-    ;;
-  *)
-    printf '%s\n' 'RateControlMethod: ICQ'
+    printf 'MBBRC: %s\n' "$MVFORGE_TEST_MBBRC"
     ;;
 esac
+case " $* " in
+  *" -rdo 1 "*)
+    printf 'RateDistortionOpt: %s\n' "$MVFORGE_TEST_RDO"
+    ;;
+esac
+printf '%s\n' 'RateControlMethod: ICQ'
 exit 0
 `
 			if err := os.WriteFile(ffmpegPath, []byte(script), 0o755); err != nil {
@@ -978,18 +987,24 @@ exit 0
 			}
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("MVFORGE_TEST_MBBRC", test.mbbrcProbe)
+			t.Setenv("MVFORGE_TEST_RDO", test.rdoProbe)
 			capabilities.ResetEncoderCache()
 			t.Cleanup(capabilities.ResetEncoderCache)
 
 			args := previewVideoCodecArgs(
 				nil, "", "x265_10bit", "20", "slower", "p010le", "",
-				"hevc_qsv", true, 25, "icq", 40, false, false, false, test.mode, 2,
+				"hevc_qsv", true, 25, "icq", 40, false, false, false, test.mode, test.mode, 2,
 			)
 			command := strings.Join(args, " ")
 			if test.wantMBBRC == "" {
 				assertNotContains(t, command, "-mbbrc")
 			} else {
 				assertContains(t, command, test.wantMBBRC)
+			}
+			if test.wantRDO == "" {
+				assertNotContains(t, command, "-rdo")
+			} else {
+				assertContains(t, command, test.wantRDO)
 			}
 			assertContains(t, command, "-p_strategy 2")
 		})

@@ -55,6 +55,7 @@ type compatiblePreviewRequest struct {
 	QSVAdaptiveI                     bool            `json:"qsvAdaptiveI,omitempty"`
 	QSVAdaptiveB                     bool            `json:"qsvAdaptiveB,omitempty"`
 	QSVMBBRCMode                     string          `json:"qsvMBBRCMode,omitempty"`
+	QSVRDOMode                       string          `json:"qsvRDOMode,omitempty"`
 	QSVPStrategy                     int             `json:"qsvPStrategy,omitempty"`
 	Mode                             string          `json:"mode,omitempty"`
 	PreviewNormalization             string          `json:"previewNormalization,omitempty"`
@@ -106,6 +107,7 @@ func normalizeCompatiblePreviewRequest(input compatiblePreviewRequest) (compatib
 		input.QSVLookAheadDepth = 40
 	}
 	input.QSVMBBRCMode = normalizedQSVMBBRCMode(input.QSVMBBRCMode)
+	input.QSVRDOMode = normalizedQSVRDOMode(input.QSVRDOMode)
 	input.QSVPStrategy = min(2, max(0, input.QSVPStrategy))
 	if input.SubtitleStreamIndex != nil && *input.SubtitleStreamIndex < 0 {
 		return input, fmt.Errorf("subtitleStreamIndex must be a non-negative stream index")
@@ -240,7 +242,7 @@ func compatiblePreviewRequestFromQuery(c *gin.Context) (compatiblePreviewRequest
 	input := compatiblePreviewRequest{
 		Path: c.Query("path"), Start: c.Query("start"), VideoCodec: c.Query("videoCodec"), VideoPreset: c.Query("videoPreset"),
 		PixelFormat: c.Query("pixFmt"), VideoFilters: c.Query("videoFilters"), X265Params: c.Query("x265Params"), VideoEncoder: c.Query("videoEncoder"),
-		QSVRateControl: c.Query("qsvRateControl"), QSVMBBRCMode: c.Query("qsvMBBRCMode"), Mode: c.Query("mode"), PreviewNormalization: c.Query("previewNormalization"),
+		QSVRateControl: c.Query("qsvRateControl"), QSVMBBRCMode: c.Query("qsvMBBRCMode"), QSVRDOMode: c.Query("qsvRDOMode"), Mode: c.Query("mode"), PreviewNormalization: c.Query("previewNormalization"),
 	}
 	profileID, _ := strconv.ParseUint(c.Query("profileId"), 10, 32)
 	input.ProfileID = uint(profileID)

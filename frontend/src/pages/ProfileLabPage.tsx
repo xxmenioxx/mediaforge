@@ -92,7 +92,7 @@ import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileOverride, trackProfileWithConversion, type SubtitleDisposition, type SubtitleSidecarFormat, type TrackProfile } from '../trackProfiles';
-import { normalizedQSVMBBRCMode, qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
+import { normalizedQSVMBBRCMode, normalizedQSVRDOMode, qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
 import { recommendationGOPFramesByStrategy, reliableFrameRateForScan, type GOPStrategy } from '../utils/frameStructureRecommendation';
@@ -744,6 +744,7 @@ export function ProfileLabPage() {
     'icq',
   );
   const qsvMBBRCMode = normalizedQSVMBBRCMode(videoWorkerValue(videoDraft, 'qsvMBBRCMode', 'auto'));
+  const qsvRDOMode = normalizedQSVRDOMode(videoWorkerValue(videoDraft, 'qsvRDOMode', 'auto'));
 
   const qsvFeatures = resolveQSVFeatures(selectedHardwareCapability, {
     main10: qsvMain10Selected,
@@ -755,6 +756,7 @@ export function ProfileLabPage() {
     adaptiveI: videoWorkerBool(videoDraft, 'qsvAdaptiveI'),
     adaptiveB: !qsvBFramesDisabled && videoWorkerBool(videoDraft, 'qsvAdaptiveB'),
     mbbrcMode: qsvMBBRCMode,
+    rdoMode: qsvRDOMode,
   });
   
   const videoToolboxMain10Selected = videoWorkerValue(videoDraft, 'videoToolboxProfile', '').toLowerCase() === 'main10'
@@ -3212,6 +3214,21 @@ export function ProfileLabPage() {
                                   <MenuItem value="disabled" disabled={!qsvFeatures.mbbrc && qsvMBBRCMode !== 'disabled'}>Disabled</MenuItem>
                                 </TextField>
                               </Grid>
+                              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                <TextField
+                                  label="RDO"
+                                  value={qsvRDOMode}
+                                  onChange={(event) => updateVideoWorkerConfig(setVideoDraft, 'qsvRDOMode', event.target.value)}
+                                  helperText="Rate-distortion optimization. Capability depends on QSV rate control and bit depth; Auto leaves the driver default unchanged."
+                                  select
+                                  size="small"
+                                  fullWidth
+                                >
+                                  <MenuItem value="auto">Auto · driver default</MenuItem>
+                                  <MenuItem value="enabled" disabled={!qsvFeatures.rdo && qsvRDOMode !== 'enabled'}>Enabled</MenuItem>
+                                  <MenuItem value="disabled" disabled={!qsvFeatures.rdo && qsvRDOMode !== 'disabled'}>Disabled</MenuItem>
+                                </TextField>
+                              </Grid>
                               {qsvWarnings.map((warning) => <Grid key={warning} size={{ xs: 12 }}><Alert severity="warning">{warning}</Alert></Grid>)}
                             </>
                           ) : null}
@@ -5290,6 +5307,7 @@ function videoPreviewOptions(
       'qsvAdaptiveB',
     ),
     qsvMBBRCMode: normalizedQSVMBBRCMode(videoWorkerValue(draft, 'qsvMBBRCMode', 'auto')),
+    qsvRDOMode: normalizedQSVRDOMode(videoWorkerValue(draft, 'qsvRDOMode', 'auto')),
     qsvPStrategy: Math.min(2, Math.max(0, numberWorkerValue(draft, 'qsvPStrategy', 0))) as 0 | 1 | 2,
 
     // VideoToolbox
@@ -5470,6 +5488,7 @@ function updateVideoWorkerConfig(
       'qsvAdaptiveI',
       'qsvAdaptiveB',
       'qsvMBBRCMode',
+      'qsvRDOMode',
       'qsvPStrategy',
       ...videoToolboxRateKeys,
       'videoToolboxProfile',
@@ -5561,6 +5580,7 @@ function videoDraftForProcessingPreference(
       qsvAdaptiveI: undefined,
       qsvAdaptiveB: undefined,
       qsvMBBRCMode: undefined,
+      qsvRDOMode: undefined,
     },
   });
 }

@@ -103,10 +103,51 @@ func TestQSVMBBRCEvidenceRequiresRequestedRateControlAndEnabledMarker(t *testing
 	}
 }
 
+func TestQSVRDOEnabled(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "enabled", output: "[hevc_qsv] RateDistortionOpt: ON\n", want: true},
+		{name: "disabled", output: "[hevc_qsv] RateDistortionOpt: OFF\n", want: false},
+		{name: "missing", output: "[hevc_qsv] MBBRC: ON\n", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := qsvRDOEnabled([]byte(test.output)); got != test.want {
+				t.Fatalf("qsvRDOEnabled() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestQSVRDOEvidenceRequiresRequestedRateControlAndEnabledMarker(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+		output   string
+		wantOK   bool
+		wantText string
+	}{
+		{name: "matching ICQ", expected: "ICQ", output: "RateControlMethod: ICQ\nRateDistortionOpt: ON\n", wantOK: true},
+		{name: "different rate control", expected: "ICQ", output: "RateControlMethod: VBR\nRateDistortionOpt: ON\n", wantText: "requested QSV rate control ICQ but encoder used VBR"},
+		{name: "missing rate control", expected: "ICQ", output: "RateDistortionOpt: ON\n", wantText: "RateControlMethod was not reported"},
+		{name: "RDO disabled", expected: "ICQ", output: "RateControlMethod: ICQ\nRateDistortionOpt: OFF\n", wantText: "did not enable RDO"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ok, reason := qsvRDOEvidence(test.expected, []byte(test.output))
+			if ok != test.wantOK || (test.wantText != "" && !strings.Contains(reason, test.wantText)) {
+				t.Fatalf("qsvRDOEvidence() = (%t, %q), want ok=%t reason containing %q", ok, reason, test.wantOK, test.wantText)
+			}
+		})
+	}
+}
+
 func TestSummarizedQSVProbeReasonIncludesMBBRC(t *testing.T) {
-	reason := summarizedQSVProbeReason([]byte("RateControlMethod: ICQ\nMBBRC: OFF\n"), errors.New("probe failed"))
-	if !strings.Contains(reason, "RateControlMethod: ICQ") || !strings.Contains(reason, "MBBRC: OFF") {
-		t.Fatalf("MBBRC evidence was omitted from summarized probe failure: %q", reason)
+	reason := summarizedQSVProbeReason([]byte("RateControlMethod: ICQ\nMBBRC: OFF\nRateDistortionOpt: OFF\n"), errors.New("probe failed"))
+	if !strings.Contains(reason, "RateControlMethod: ICQ") || !strings.Contains(reason, "MBBRC: OFF") || !strings.Contains(reason, "RateDistortionOpt: OFF") {
+		t.Fatalf("QSV feature evidence was omitted from summarized probe failure: %q", reason)
 	}
 }
 

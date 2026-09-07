@@ -145,6 +145,24 @@ const largeSavedProfile = {
   },
 } as never;
 
+const qsvSavedProfile = {
+  id: 78,
+  name: 'QSV RDO draft',
+  scope: 'asset',
+  videoCodec: 'x265',
+  qualityValue: 20,
+  workerConfig: {
+    preferredEncoder: 'hardware',
+    useHardwareIfAvailable: true,
+    videoEncoder: 'hevc_qsv',
+    hardwareQualityPreset: 'custom',
+    pixFmt: 'p010le',
+    qsvRateControl: 'icq',
+    qsvMBBRCMode: 'auto',
+    qsvRDOMode: 'auto',
+  },
+} as never;
+
 const frameStructure = {
   framesAnalyzed: 120, iFrames: 2, pFrames: 80, bFrames: 38, bFrameRatio: 0.316,
   averageGopLength: 14.9, medianGopLength: 15, p25GopLength: 15, p75GopLength: 15,
@@ -255,6 +273,29 @@ describe('Profile Lab Process Asset suggestions', () => {
     expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.every(([requestId]) => typeof requestId === 'string' && !requestId.includes('profile='))).toBe(true);
     expect(await screen.findByText('Profile Lab')).toBeTruthy();
   }, 20_000);
+
+  it('shows capability-gated RDO beside MBBRC for QSV profiles', async () => {
+    vi.mocked(api.profiles).mockResolvedValue([qsvSavedProfile]);
+    vi.mocked(api.profilesAdmin).mockResolvedValue([qsvSavedProfile]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&videoProfileId=78&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    expect(await screen.findByLabelText('MBBRC')).toBeTruthy();
+    const rdo = await screen.findByLabelText('RDO');
+    expect(rdo.textContent).toContain('Auto');
+    expect(screen.getByText(/Rate-distortion optimization.*Auto leaves the driver default unchanged/)).toBeTruthy();
+    await userEvent.click(rdo);
+    expect(screen.getByRole('option', { name: /Auto/ })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Enabled' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Disabled' })).toBeTruthy();
+  }, 15_000);
 
   it('renders backend GOP candidates and keeps Manual strategy separate from B-frames', async () => {
     const onChangeMany = vi.fn();

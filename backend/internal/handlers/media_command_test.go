@@ -678,6 +678,41 @@ func TestQSVWorkerArgsGateMBBRCByModeRateControlAndBitDepth(t *testing.T) {
 	}
 }
 
+func TestQSVWorkerArgsGateRDOByModeRateControlAndBitDepth(t *testing.T) {
+	tests := []struct {
+		name        string
+		bitDepth    int
+		rateControl string
+		mode        string
+		tested      map[string]bool
+		want        string
+	}{
+		{name: "auto omits validated RDO", bitDepth: 10, rateControl: "icq", mode: "auto", tested: map[string]bool{"qsvRdoIcqMain10": true}},
+		{name: "enabled emits one for validated context", bitDepth: 10, rateControl: "icq", mode: "enabled", tested: map[string]bool{"qsvRdoIcqMain10": true}, want: "-rdo 1"},
+		{name: "enabled omits unsupported context", bitDepth: 10, rateControl: "icq", mode: "enabled", tested: map[string]bool{}},
+		{name: "disabled emits zero for validated context", bitDepth: 10, rateControl: "icq", mode: "disabled", tested: map[string]bool{"qsvRdoIcqMain10": true}, want: "-rdo 0"},
+		{name: "VBR does not reuse ICQ capability", bitDepth: 10, rateControl: "vbr", mode: "enabled", tested: map[string]bool{"qsvRdoIcqMain10": true, "qsvRdoVbrMain10": false}},
+		{name: "Main8 does not reuse Main10 capability", bitDepth: 8, rateControl: "icq", mode: "enabled", tested: map[string]bool{"qsvRdoIcqMain10": true, "qsvRdoIcqMain8": false}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pixelFormat := "p010le"
+			if test.bitDepth == 8 {
+				pixelFormat = "nv12"
+			}
+			profile := models.Profile{BitDepth: test.bitDepth, WorkerConfig: models.JSONMap{
+				"pixFmt": pixelFormat, "qsvRateControl": test.rateControl, "qsvRDOMode": test.mode,
+			}}
+			command := strings.Join(qsvWorkerArgsForCapability(profile, capabilities.EncoderCapability{TestedModes: test.tested}), " ")
+			if test.want == "" {
+				assertNotContains(t, command, "-rdo")
+			} else {
+				assertContains(t, command, test.want)
+			}
+		})
+	}
+}
+
 func TestQSVBFramesOffDisablesAdaptiveBAndSupportsPyramidPStrategy(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265", BitDepth: 10, WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "qsvRateControl": "icq",
@@ -773,7 +808,8 @@ func TestQSVWorkerArgsUseContextualAdvancedCapabilities(t *testing.T) {
 
 func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	qsv := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
-		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2, "qsvMBBRCMode": "enabled",
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "best_quality", "hardwareQualityPresetScale": 2,
+		"qsvMBBRCMode": "enabled", "qsvRDOMode": "enabled",
 	}})
 	if qsv.WorkerConfig["globalQuality"] != 25 || qsv.WorkerConfig["qsvRateControl"] != "icq" || qsv.WorkerConfig["pixFmt"] != "p010le" {
 		t.Fatalf("unexpected QSV preset normalization: %#v", qsv.WorkerConfig)
@@ -781,8 +817,8 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 	if qsv.WorkerConfig["qsvAdaptiveI"] != false || qsv.WorkerConfig["qsvExtendedBRC"] != false {
 		t.Fatalf("QSV preset must not opt into unverified advanced features: %#v", qsv.WorkerConfig)
 	}
-	if qsv.WorkerConfig["qsvMBBRCMode"] != "auto" {
-		t.Fatalf("named QSV preset must leave MBBRC on Auto: %#v", qsv.WorkerConfig)
+	if qsv.WorkerConfig["qsvMBBRCMode"] != "auto" || qsv.WorkerConfig["qsvRDOMode"] != "auto" {
+		t.Fatalf("named QSV preset must leave MBBRC and RDO on Auto: %#v", qsv.WorkerConfig)
 	}
 	videoToolbox := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_videotoolbox", "hardwareQualityPreset": "recommended", "hardwareQualityPresetScale": 2,
@@ -791,9 +827,10 @@ func TestHardwareQualityPresetsNormalizeBeforeExecution(t *testing.T) {
 		t.Fatalf("unexpected VideoToolbox preset normalization: %#v", videoToolbox.WorkerConfig)
 	}
 	custom := normalizeHardwareQualityPreset(models.Profile{WorkerConfig: models.JSONMap{
-		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "custom", "globalQuality": 19, "qsvMBBRCMode": "enabled",
+		"videoEncoder": "hevc_qsv", "hardwareQualityPreset": "custom", "globalQuality": 19,
+		"qsvMBBRCMode": "enabled", "qsvRDOMode": "disabled",
 	}})
-	if custom.WorkerConfig["globalQuality"] != 19 || custom.WorkerConfig["qsvMBBRCMode"] != "enabled" {
+	if custom.WorkerConfig["globalQuality"] != 19 || custom.WorkerConfig["qsvMBBRCMode"] != "enabled" || custom.WorkerConfig["qsvRDOMode"] != "disabled" {
 		t.Fatalf("custom preset must preserve manual controls: %#v", custom.WorkerConfig)
 	}
 }
