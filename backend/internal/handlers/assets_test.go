@@ -67,6 +67,85 @@ func TestPreviewInterlaceAnalysisUsesPersistedSnapshot(t *testing.T) {
 	}
 }
 
+func TestPreviewFrameStructureRecommendationUsesEffectiveFPS(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:preview-gop-v2?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/movies/short-gop.mkv"
+	if err := db.Create(&models.ScanResult{
+		Path: path,
+		VideoStreams: models.JSONList{
+			map[string]any{"avgFrameRate": "30000/1001"},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"framesAnalyzed":   240,
+			"averageGopLength": 14.9,
+			"medianGopLength":  15.0,
+			"p25GopLength":     15.0,
+			"p75GopLength":     15.0,
+			"completeGops":     8,
+			"variability":      "low",
+			"confidence":       "high",
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{WorkerConfig: models.JSONMap{
+		"effectiveOutputFrameRate": "24000/1001",
+	}}
+	recommendation := previewFrameStructureRecommendation(db, path, &profile)
+	if recommendation == nil {
+		t.Fatal("expected backend Preview recommendation")
+	}
+	if recommendation.Version != 2 || recommendation.AutoStrategy != "balanced" {
+		t.Fatalf("unexpected recommendation metadata: %#v", recommendation)
+	}
+	if recommendation.ByMode["compatible"].TargetGOPFrames != 12 ||
+		recommendation.ByMode["balanced"].TargetGOPFrames != 15 ||
+		recommendation.ByMode["maximum_compression"].TargetGOPFrames != 21 {
+		t.Fatalf("Preview did not scale source GOP duration to effective FPS: %#v", recommendation.ByMode)
+	}
+}
+
+func TestAssetConversionOverridePersistsAndAppliesGOPStrategy(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-gop-strategy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/movies/example.mkv"
+	overrides := map[string]AssetConversionOverrideState{
+		path: {
+			FrameStructureGOPMode:     "recommended",
+			FrameStructureGOPStrategy: "balanced",
+		},
+	}
+	if err := saveAssetConversionOverrides(db, overrides); err != nil {
+		t.Fatal(err)
+	}
+	restored := assetConversionOverrides(db)[filepath.Clean(path)]
+	if restored.FrameStructureGOPMode != "recommended" || restored.FrameStructureGOPStrategy != "balanced" {
+		t.Fatalf("GOP strategy did not survive persistence: %#v", restored)
+	}
+	profile := applyAssetConversionOverrideToProfile(models.Profile{WorkerConfig: models.JSONMap{
+		"frameStructureGopMode":     "recommended",
+		"frameStructureGopStrategy": "compatible",
+	}}, restored)
+	if got := workerStringValue(profile.WorkerConfig["frameStructureGopStrategy"]); got != "balanced" {
+		t.Fatalf("applied strategy=%q want balanced", got)
+	}
+	unchanged := applyAssetConversionOverrideToProfile(profile, AssetConversionOverrideState{})
+	if got := workerStringValue(unchanged.WorkerConfig["frameStructureGopStrategy"]); got != "balanced" {
+		t.Fatalf("missing override strategy erased profile intent: %q", got)
+	}
+}
+
 func TestRenameAssetPreservesPersistedSnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:rename-preserves-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

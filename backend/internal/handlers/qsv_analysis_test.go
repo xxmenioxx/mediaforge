@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -203,7 +205,7 @@ func TestSnapshotFrameStructureRecommendationStoresAllCommonModes(t *testing.T) 
 		},
 	}
 	result := buildFrameStructureRecommendationSet(scan)
-	if result.Version != 1 || result.SourceAnalysisVersion != 2 || result.FPS < 23.9 || result.FPS > 24.1 {
+	if result.Version != 2 || result.SourceAnalysisVersion != 2 || result.FPS < 23.9 || result.FPS > 24.1 {
 		t.Fatalf("unexpected recommendation provenance: %#v", result)
 	}
 	if len(result.ByMode) != 3 || result.ByMode["balanced"].TargetGOPFrames <= 0 || result.ByMode["compatible"].TargetGOPFrames <= 0 || result.ByMode["maximum_compression"].TargetGOPFrames <= 0 {
@@ -211,6 +213,108 @@ func TestSnapshotFrameStructureRecommendationStoresAllCommonModes(t *testing.T) 
 	}
 	if result.RecommendedMaxBFrames != 3 {
 		t.Fatalf("recommended B depth=%d", result.RecommendedMaxBFrames)
+	}
+}
+
+func TestPercentileGOPLength(t *testing.T) {
+	values := []int{40, 10, 30, 20}
+	if got := percentileGOPLength(nil, 0.5); got != 0 {
+		t.Fatalf("empty median=%v", got)
+	}
+	if got := percentileGOPLength([]int{15}, 0.5); got != 15 {
+		t.Fatalf("single median=%v", got)
+	}
+	if got := percentileGOPLength([]int{10, 20, 30}, 0.5); got != 20 {
+		t.Fatalf("odd median=%v", got)
+	}
+	if got := percentileGOPLength(values, 0.25); got != 17.5 {
+		t.Fatalf("p25=%v", got)
+	}
+	if got := percentileGOPLength(values, 0.5); got != 25 {
+		t.Fatalf("even median=%v", got)
+	}
+	if got := percentileGOPLength(values, 0.75); got != 32.5 {
+		t.Fatalf("p75=%v", got)
+	}
+	if values[0] != 40 {
+		t.Fatalf("percentile helper mutated caller data: %v", values)
+	}
+}
+
+func TestFrameStructureAnalysisCapturesGOPPercentilesWithoutPersistingRawLengths(t *testing.T) {
+	frames := make([]frameStructureProbeFrame, 61)
+	for _, index := range []int{0, 10, 30, 60} {
+		frames[index].KeyFrame = 1
+		frames[index].PictureType = "I"
+	}
+	analysis := analyzeFrameStructureProbeFrames(frames)
+	if analysis.MedianGOPLength != 20 || analysis.P25GOPLength != 15 || analysis.P75GOPLength != 25 || len(analysis.GOPLengths) != 3 {
+		t.Fatalf("unexpected GOP statistics: %#v", analysis)
+	}
+	encoded, err := json.Marshal(analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "gopLengths") {
+		t.Fatalf("transient raw GOP lengths were persisted: %s", encoded)
+	}
+}
+
+func TestFrameStructureRecommendationV2UsesShortSourceGOP(t *testing.T) {
+	scan := models.ScanResult{
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{
+			"version": 2, "framesAnalyzed": 2400, "averageGopLength": 14.9, "medianGopLength": 15.0,
+			"p25GopLength": 14.0, "p75GopLength": 16.0, "completeGops": 8,
+			"variability": "low", "confidence": "high", "maxConsecutiveBFrames": 3,
+		},
+	}
+	result := buildFrameStructureRecommendationSetForFPS(scan, 24000.0/1001.0)
+	if result.ByMode["compatible"].TargetGOPFrames != 15 || result.ByMode["balanced"].TargetGOPFrames != 19 || result.ByMode["maximum_compression"].TargetGOPFrames != 26 {
+		t.Fatalf("short source GOP was inflated: %#v", result.ByMode)
+	}
+	if result.AutoStrategy != "balanced" || !result.AnalysisDriven || result.ByMode["compatible"].TargetGOPFrames == 48 || result.ByMode["balanced"].TargetGOPFrames == 66 {
+		t.Fatalf("unexpected Auto v2 decision: %#v", result)
+	}
+}
+
+func TestFrameStructureRecommendationV2RiskAndCadenceScaling(t *testing.T) {
+	risky := models.ScanResult{
+		VideoStreams:           models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "averageGopLength": 27.0, "medianGopLength": 15.0, "completeGops": 8, "variability": "high", "confidence": "medium"},
+	}
+	riskyResult := buildFrameStructureRecommendationSetForFPS(risky, 24000.0/1001.0)
+	if riskyResult.AutoStrategy != "compatible" || riskyResult.ByMode["compatible"].TargetGOPFrames != 15 || riskyResult.ByMode["balanced"].TargetGOPFrames != 15 || riskyResult.ByMode["maximum_compression"].TargetGOPFrames != 19 {
+		t.Fatalf("risky GOP policy is not source-relative: %#v", riskyResult)
+	}
+
+	low := risky
+	low.FrameStructureAnalysis = models.JSONMap{"version": 2, "averageGopLength": 15.0, "medianGopLength": 15.0, "completeGops": 8, "variability": "low", "confidence": "low"}
+	if result := buildFrameStructureRecommendationSetForFPS(low, 24000.0/1001.0); result.AutoStrategy != "compatible" || !result.AnalysisDriven || result.ByMode["compatible"].TargetGOPFrames != 15 {
+		t.Fatalf("low-confidence source anchor was discarded: %#v", result)
+	}
+
+	cadence := models.ScanResult{
+		VideoStreams:           models.JSONList{map[string]any{"avgFrameRate": "30000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{"version": 2, "averageGopLength": 18.0, "medianGopLength": 18.0, "completeGops": 8, "variability": "low", "confidence": "high"},
+	}
+	if got := buildFrameStructureRecommendationSetForFPS(cadence, 24000.0/1001.0).ByMode["compatible"].TargetGOPFrames; got != 14 {
+		t.Fatalf("cadence-scaled compatible GOP=%d, want 14", got)
+	}
+}
+
+func TestFrameStructureRecommendationV2UsesLegacyAverageWithoutReanalysis(t *testing.T) {
+	scan := models.ScanResult{
+		VideoStreams:                 models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis:       models.JSONMap{"version": 2, "averageGopLength": 15.0, "completeGops": 4, "variability": "low", "confidence": "high"},
+		FrameStructureRecommendation: models.JSONMap{"version": 1},
+	}
+	if !ensureFrameStructureRecommendation(&scan) {
+		t.Fatal("v1 recommendation cache was not rebuilt")
+	}
+	result := buildFrameStructureRecommendationSet(scan)
+	if !result.AnalysisDriven || result.SourceAnchorFrames != 15 || result.ByMode["compatible"].TargetGOPFrames != 15 {
+		t.Fatalf("legacy average fallback failed: %#v", result)
 	}
 }
 
@@ -426,10 +530,10 @@ func TestParseHEVCTraceHeaders(t *testing.T) {
 func TestFrameStructureRecommendationAndValidation(t *testing.T) {
 	source := QSVFrameStructureAnalysis{AverageGOPLength: 82.7, MaxConsecutiveBFrames: 3, BFrameRatio: .58, Confidence: "high"}
 	recommendation := recommendFrameStructure(source, 29.97, "anime", "balanced", true, true, false)
-	if recommendation.TargetGOPFrames != 105 || math.Abs(recommendation.TargetGOPSeconds-3.51) > .02 || recommendation.MaxBFrames != 3 || !recommendation.AdaptiveI || recommendation.AdaptiveB {
+	if recommendation.TargetGOPFrames != 75 || math.Abs(recommendation.TargetGOPSeconds-2.50) > .02 || recommendation.MaxBFrames != 3 || !recommendation.AdaptiveI || recommendation.AdaptiveB {
 		t.Fatalf("unexpected recommendation: %#v", recommendation)
 	}
-	safe := QSVFrameStructureAnalysis{AverageGOPLength: 110, MaxConsecutiveBFrames: 3, PFrames: 200, BFrameRatio: .6, WindowCount: 5, Confidence: "high"}
+	safe := QSVFrameStructureAnalysis{AverageGOPLength: 75, MaxConsecutiveBFrames: 3, PFrames: 200, BFrameRatio: .6, WindowCount: 5, Confidence: "high"}
 	if got := validateFrameStructureRecommendation(recommendation, source, safe); got.Verdict != "safe" {
 		t.Fatalf("safe verdict=%#v", got)
 	}
@@ -444,23 +548,23 @@ func TestAssetDerivedGOPRecommendationUsesTimeAndFPS(t *testing.T) {
 	compatible := recommendFrameStructure(rayearth, 23.976, "anime", "compatible", false, false, false)
 	balanced := recommendFrameStructure(rayearth, 23.976, "anime", "balanced", false, false, false)
 	maximum := recommendFrameStructure(rayearth, 23.976, "anime", "maximum_compression", false, false, false)
-	if compatible.TargetGOPFrames != 72 || balanced.TargetGOPFrames != 90 || maximum.TargetGOPFrames != 120 {
+	if compatible.TargetGOPFrames != 48 || balanced.TargetGOPFrames != 60 || maximum.TargetGOPFrames != 84 {
 		t.Fatalf("unexpected Rayearth GOP sequence: compatible=%d balanced=%d maximum=%d", compatible.TargetGOPFrames, balanced.TargetGOPFrames, maximum.TargetGOPFrames)
 	}
 	baccano := QSVFrameStructureAnalysis{AverageGOPLength: 156.4166666667, Confidence: "medium"}
 	baccanoCompatible := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "compatible", false, false, false)
 	baccanoBalanced := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "balanced", false, false, false)
 	baccanoMaximum := recommendFrameStructure(baccano, 24000.0/1001.0, "anime", "maximum_compression", false, false, false)
-	if baccanoCompatible.TargetGOPFrames != 72 || baccanoBalanced.TargetGOPFrames != 96 || baccanoMaximum.TargetGOPFrames != 132 {
+	if baccanoCompatible.TargetGOPFrames != 48 || baccanoBalanced.TargetGOPFrames != 60 || baccanoMaximum.TargetGOPFrames != 84 {
 		t.Fatalf("long source GOP modes must remain distinct: compatible=%d balanced=%d maximum=%d", baccanoCompatible.TargetGOPFrames, baccanoBalanced.TargetGOPFrames, baccanoMaximum.TargetGOPFrames)
 	}
 	arbegas := recommendFrameStructure(QSVFrameStructureAnalysis{AverageGOPLength: 75.4, Confidence: "high"}, 29.97, "anime", "balanced", false, false, false)
-	if arbegas.TargetGOPFrames != 98 {
+	if arbegas.TargetGOPFrames != 75 {
 		t.Fatalf("Arbegas must derive frames from its own FPS/time baseline, got %d", arbegas.TargetGOPFrames)
 	}
 	sixty := recommendFrameStructure(QSVFrameStructureAnalysis{AverageGOPLength: 179.82, Confidence: "high"}, 59.94, "sports", "compatible", false, false, false)
-	if sixty.TargetGOPFrames != 180 || math.Abs(sixty.TargetGOPSeconds-3) > .01 {
-		t.Fatalf("59.94 fps three-second GOP must be about 180 frames: %#v", sixty)
+	if sixty.TargetGOPFrames != 120 || math.Abs(sixty.TargetGOPSeconds-2) > .01 {
+		t.Fatalf("analysis-driven Compatible must cap at two seconds: %#v", sixty)
 	}
 	unknown := recommendFrameStructure(rayearth, 0, "anime", "balanced", false, false, false)
 	if unknown.TargetGOPFrames != 0 || unknown.Confidence != "low" || len(unknown.Warnings) == 0 {

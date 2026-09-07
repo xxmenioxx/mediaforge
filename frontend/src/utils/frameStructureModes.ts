@@ -1,7 +1,7 @@
 export type FrameStructureMode = 'auto' | 'off' | 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
 
 export const frameStructureManagedKeys = new Set([
-  'frameStructureGopMode', 'frameStructureGopFrames', 'frameStructureBFrameMode',
+  'frameStructureGopMode', 'frameStructureGopStrategy', 'frameStructureGopFrames', 'frameStructureBFrameMode',
   'frameStructureMaxBFrames', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy',
 ]);
 
@@ -25,6 +25,7 @@ export function frameStructureModePatch(
       frameStructureMode: 'custom',
 
       frameStructureGopMode: 'custom',
+      frameStructureGopStrategy: 'custom',
       ...(baseGop
         ? { frameStructureGopFrames: baseGop }
         : {}),
@@ -38,6 +39,7 @@ export function frameStructureModePatch(
     return {
       frameStructureMode: selected,
       frameStructureGopMode: 'auto',
+      frameStructureGopStrategy: undefined,
       frameStructureBFrameMode: 'auto',
       qsvAdaptiveI: false,
       qsvAdaptiveB: false,
@@ -48,10 +50,8 @@ export function frameStructureModePatch(
   if (selected === 'compatible') {
     return {
       frameStructureMode: selected,
-      frameStructureGopMode: baseGop ? 'recommended' : 'auto',
-      ...(baseGop
-        ? { frameStructureGopFrames: baseGop }
-        : {}),
+      frameStructureGopMode: 'recommended',
+      frameStructureGopStrategy: 'compatible',
       frameStructureBFrameMode: 'off',
       frameStructureMaxBFrames: 0,
       qsvAdaptiveI: true,
@@ -60,7 +60,6 @@ export function frameStructureModePatch(
     };
   }
 
-  // Auto intentionally uses the same effective policy as Balanced.
   const bFrames =
     selected === 'maximum_compression'
       ? Math.max(3, baseBFrames)
@@ -69,12 +68,9 @@ export function frameStructureModePatch(
   return {
     frameStructureMode: selected,
 
-    frameStructureGopMode:
-      baseGop ? 'recommended' : 'auto',
-
-    ...(baseGop
-      ? { frameStructureGopFrames: baseGop }
-      : {}),
+    frameStructureGopMode: selected === 'auto' ? 'auto' : 'recommended',
+    frameStructureGopStrategy:
+      selected === 'auto' ? undefined : selected,
 
     frameStructureBFrameMode: 'recommended',
     frameStructureMaxBFrames: bFrames,

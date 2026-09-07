@@ -3,12 +3,14 @@ import { frameStructureModePatch, type FrameStructureMode } from '../utils/frame
 
 export type GOPMode = 'auto' | 'recommended' | 'custom';
 export type BFrameMode = 'auto' | 'recommended' | 'custom' | 'off';
+type GOPStrategy = 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
 
 type Props = {
   config: Record<string, unknown>;
   recommendedGop?: number;
   recommendedBFrames?: number;
   recommendedGopByMode?: Partial<Record<Exclude<FrameStructureMode, 'custom' | 'auto' | 'off'>, number>>;
+  autoStrategy?: 'compatible' | 'balanced';
   frameRate?: number;
   onChange: (key: string, value: unknown) => void;
   onChangeMany?: (patch: Record<string, unknown>) => void;
@@ -17,32 +19,12 @@ type Props = {
   compact?: boolean;
 };
 
-export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
+export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, autoStrategy = 'balanced', frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
   const structureMode = mode<FrameStructureMode>(
     config.frameStructureMode,
     ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'],
     'auto',
   );
-
-  const effectiveRecommendedGop = (() => {
-    switch (structureMode) {
-      case 'auto':
-      case 'balanced':
-        return recommendedGopByMode?.balanced ?? recommendedGop;
-
-      case 'compatible':
-        return recommendedGopByMode?.compatible ?? recommendedGop;
-
-      case 'maximum_compression':
-        return (
-          recommendedGopByMode?.maximum_compression ??
-          recommendedGop
-        );
-
-      default:
-        return recommendedGop;
-    }
-  })();
 
   const structureDisabled = disabled || structureMode === 'off';
 
@@ -58,41 +40,50 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
     'auto',
   );
 
-  const calculatedStructureMode =
-    structureMode === 'auto' ||
-    structureMode === 'balanced' ||
+  const legacyGopStrategy =
     structureMode === 'compatible' ||
-    structureMode === 'maximum_compression';
-
-  const gopMode: GOPMode =
-    calculatedStructureMode &&
-    effectiveRecommendedGop &&
-    effectiveRecommendedGop > 0
-      ? 'recommended'
-      : configuredGopMode;
+    structureMode === 'balanced' ||
+    structureMode === 'maximum_compression'
+      ? structureMode
+      : undefined;
+  const configuredGopStrategy = mode<GOPStrategy>(
+    config.frameStructureGopStrategy,
+    ['compatible', 'balanced', 'maximum_compression', 'custom'],
+    configuredGopMode === 'custom'
+      ? 'custom'
+      : legacyGopStrategy ?? autoStrategy,
+  );
+  const gopMode: 'auto' | 'manual' =
+    configuredGopMode === 'auto' && !legacyGopStrategy
+      ? 'auto'
+      : 'manual';
+  const selectedGopStrategy =
+    gopMode === 'auto' ? autoStrategy : configuredGopStrategy;
+  const effectiveRecommendedGop =
+    selectedGopStrategy === 'custom'
+      ? undefined
+      : recommendedGopByMode?.[selectedGopStrategy] ?? recommendedGop;
 
   const bFrameMode: BFrameMode =
-    calculatedStructureMode &&
+    (structureMode === 'auto' ||
+      structureMode === 'balanced' ||
+      structureMode === 'compatible' ||
+      structureMode === 'maximum_compression') &&
     recommendedBFrames &&
     recommendedBFrames > 0
       ? 'recommended'
       : configuredBFrameMode;
 
   const gop =
-    calculatedStructureMode &&
-    effectiveRecommendedGop &&
-    effectiveRecommendedGop > 0
-      ? positiveInt(
-          effectiveRecommendedGop,
-          positiveInt(config.frameStructureGopFrames, 120),
-        )
-      : positiveInt(
-          config.frameStructureGopFrames,
-          effectiveRecommendedGop || 120,
-        );
+    configuredGopStrategy === 'custom'
+      ? positiveInt(config.frameStructureGopFrames, 120)
+      : positiveInt(effectiveRecommendedGop, 120);
 
   const bFrames =
-    calculatedStructureMode &&
+    (structureMode === 'auto' ||
+      structureMode === 'balanced' ||
+      structureMode === 'compatible' ||
+      structureMode === 'maximum_compression') &&
     recommendedBFrames &&
     recommendedBFrames > 0
       ? boundedInt(
@@ -172,20 +163,43 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField select label="GOP" value={gopMode} disabled={structureDisabled || structureMode === 'auto'} onChange={(event) => {
-              const next = event.target.value as GOPMode;
+            <TextField select label="GOP Mode" value={gopMode} disabled={structureDisabled} onChange={(event) => {
+              const next = event.target.value as 'auto' | 'manual';
               const params = { ...x265Params };
-              if (next !== 'custom') delete params.scenecut;
-              commit({ frameStructureMode: 'custom', frameStructureGopMode: next, ...(next === 'recommended' && recommendedGop ? { frameStructureGopFrames: recommendedGop } : {}), ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}) });
-            }} size={compact ? 'small' : 'medium'} fullWidth>
+              if (next === 'auto') delete params.scenecut;
+              commit(next === 'auto'
+                ? { frameStructureGopMode: 'auto', frameStructureGopStrategy: undefined, ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}) }
+                : { frameStructureGopMode: configuredGopStrategy === 'custom' ? 'custom' : 'recommended', frameStructureGopStrategy: configuredGopStrategy });
+            }} helperText={gopMode === 'auto' ? `Auto strategy: ${autoStrategy === 'compatible' ? 'Compatible' : 'Balanced'}` : 'Select an analysis candidate or an exact custom GOP.'} size={compact ? 'small' : 'medium'} fullWidth>
               <MenuItem value="auto">Auto</MenuItem>
-              <MenuItem value="recommended" disabled={!recommendedGop}>Recommended</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
+              <MenuItem value="manual">Manual</MenuItem>
             </TextField>
           </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField label={gopMode === 'recommended' ? 'Recommended GOP' : 'Custom GOP'} type="number" value={gop} disabled={structureDisabled || structureMode === 'auto' || gopMode === 'auto' || gopMode === 'recommended'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureGopMode: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={structureMode === 'off' ? 'Not sent to the encoder' : gopMode === 'auto' ? 'Encoder decides' : `${gop} frames${frameRate && frameRate > 0 ? ` · ~${(gop / frameRate).toFixed(2)} s` : ''}`} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
-          </Grid>
+          {gopMode === 'manual' ? (
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <TextField select label="GOP Strategy" value={configuredGopStrategy} disabled={structureDisabled} onChange={(event) => {
+                const next = event.target.value as GOPStrategy;
+                const params = { ...x265Params };
+                if (next !== 'custom') delete params.scenecut;
+                commit({
+                  frameStructureGopMode: next === 'custom' ? 'custom' : 'recommended',
+                  frameStructureGopStrategy: next,
+                  ...(next === 'custom' ? { frameStructureGopFrames: gop } : { frameStructureGopFrames: undefined }),
+                  ...(encoder === 'libx265' ? { x265Params: serializeX265Params(params) } : {}),
+                });
+              }} size={compact ? 'small' : 'medium'} fullWidth>
+                <MenuItem value="compatible">Compatible{recommendedGopByMode?.compatible ? ` · ${recommendedGopByMode.compatible}` : ''}</MenuItem>
+                <MenuItem value="balanced">Balanced{recommendedGopByMode?.balanced ? ` · ${recommendedGopByMode.balanced}` : ''}</MenuItem>
+                <MenuItem value="maximum_compression">Maximum Compression{recommendedGopByMode?.maximum_compression ? ` · ${recommendedGopByMode.maximum_compression}` : ''}</MenuItem>
+                <MenuItem value="custom">Custom</MenuItem>
+              </TextField>
+            </Grid>
+          ) : null}
+          {gopMode === 'manual' && configuredGopStrategy === 'custom' ? (
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <TextField label="GOP" type="number" value={gop} disabled={structureDisabled} onChange={(event) => commit({ frameStructureGopMode: 'custom', frameStructureGopStrategy: 'custom', frameStructureGopFrames: Math.max(1, Math.min(1000, Number(event.target.value))) })} helperText={`${gop} frames${frameRate && frameRate > 0 ? ` · ~${(gop / frameRate).toFixed(2)} s` : ''}`} inputProps={{ min: 1, max: 1000 }} size={compact ? 'small' : 'medium'} fullWidth />
+            </Grid>
+          ) : null}
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <TextField select label="B-frames" value={bFrameMode} disabled={structureDisabled || structureMode === 'auto'} onChange={(event) => {
               const next = event.target.value as BFrameMode;
@@ -213,11 +227,16 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
             <TextField label={bFrameMode === 'recommended' ? 'Recommended maximum' : 'Maximum B-frames'} type="number" value={bFrames} disabled={structureDisabled || structureMode === 'auto' || bFrameMode === 'auto' || bFrameMode === 'recommended' || bFrameMode === 'off'} onChange={(event) => commit({ frameStructureMode: 'custom', frameStructureBFrameMode: 'custom', frameStructureMaxBFrames: Math.max(1, Math.min(16, Number(event.target.value))) })} helperText={structureMode === 'off' ? 'Not sent to the encoder' : bFrameMode === 'auto' ? 'Encoder decides' : bFrameMode === 'off' ? encoder === 'hevc_qsv' ? 'Requests regular B-frame distance 0; GPB may remain active' : 'Effective request: -bf 0' : bFrameMode === 'recommended' ? `MVForge analysis: ${recommendedBFrames}` : 'User-selected maximum'} inputProps={{ min: 1, max: 16 }} size={compact ? 'small' : 'medium'} fullWidth />
           </Grid>
         </Grid>
-        {structureMode !== 'off' && encoder === 'libx265' && (gopMode === 'custom' || bFrameMode === 'custom') ? (
+        {gopMode === 'auto' && effectiveRecommendedGop ? (
+          <Typography variant="body2" color="text.secondary">
+            Effective GOP: {effectiveRecommendedGop} frames{frameRate && frameRate > 0 ? ` · ~${(effectiveRecommendedGop / frameRate).toFixed(2)} sec` : ''}. Candidates: Compatible {recommendedGopByMode?.compatible ?? '—'} · Balanced {recommendedGopByMode?.balanced ?? '—'} · Maximum Compression {recommendedGopByMode?.maximum_compression ?? '—'}.
+          </Typography>
+        ) : null}
+        {structureMode !== 'off' && encoder === 'libx265' && (configuredGopStrategy === 'custom' || bFrameMode === 'custom') ? (
           <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1.5 }}>
             <Typography variant="body2" fontWeight={700} sx={{ mb: 1 }}>x265 controls for the selected Custom modes</Typography>
             <Grid container spacing={1.5}>
-              {gopMode === 'custom' ? <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Scenecut threshold" type="number" value={x265Params.scenecut ?? ''} onChange={(event) => updateX265Param('scenecut', event.target.value)} placeholder="Encoder default" helperText="0 disables scenecut; x265 commonly defaults to 40." inputProps={{ min: 0, max: 100 }} size={compact ? 'small' : 'medium'} fullWidth /></Grid> : null}
+              {configuredGopStrategy === 'custom' ? <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField label="Scenecut threshold" type="number" value={x265Params.scenecut ?? ''} onChange={(event) => updateX265Param('scenecut', event.target.value)} placeholder="Encoder default" helperText="0 disables scenecut; x265 commonly defaults to 40." inputProps={{ min: 0, max: 100 }} size={compact ? 'small' : 'medium'} fullWidth /></Grid> : null}
               {bFrameMode === 'custom' ? <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField select label="B-frame adaptation" value={x265Params['b-adapt'] ?? ''} onChange={(event) => updateX265Param('b-adapt', event.target.value)} helperText="How x265 selects B-frame placement." size={compact ? 'small' : 'medium'} fullWidth><MenuItem value="">Encoder default</MenuItem><MenuItem value="0">Off</MenuItem><MenuItem value="1">Fast</MenuItem><MenuItem value="2">Full</MenuItem></TextField></Grid> : null}
               {bFrameMode === 'custom' ? <Grid size={{ xs: 12, sm: 6, md: 4 }}><TextField select label="B-pyramid" value={x265Params['b-pyramid'] ?? ''} onChange={(event) => updateX265Param('b-pyramid', event.target.value)} helperText="Allows B-frames to reference other B-frames." size={compact ? 'small' : 'medium'} fullWidth><MenuItem value="">Encoder default</MenuItem><MenuItem value="1">Enabled</MenuItem><MenuItem value="0">Disabled</MenuItem></TextField></Grid> : null}
             </Grid>

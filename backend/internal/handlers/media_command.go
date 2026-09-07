@@ -1013,13 +1013,18 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	if value := normalizedFrameStructureGOPMode(override.FrameStructureGOPMode); value != "" {
 		workerConfig["frameStructureGopMode"] = value
-		if value == "recommended" || value == "custom" {
+		if value == "custom" {
 			frames := override.FrameStructureGOPFrames
 			if frames <= 0 {
 				frames = 120
 			}
 			workerConfig["frameStructureGopFrames"] = min(1000, frames)
+		} else if value == "recommended" {
+			delete(workerConfig, "frameStructureGopFrames")
 		}
+	}
+	if value := normalizedFrameStructureGOPStrategy(override.FrameStructureGOPStrategy); value != "" {
+		workerConfig["frameStructureGopStrategy"] = value
 	}
 	if value := normalizedFrameStructureBFrameMode(override.FrameStructureBFrameMode); value != "" {
 		workerConfig["frameStructureBFrameMode"] = value
@@ -1690,6 +1695,15 @@ func videoCodecArgsForResolvedEncoder(profile models.Profile, source *MediaStrea
 func normalizedFrameStructureGOPMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "auto", "recommended", "custom":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func normalizedFrameStructureGOPStrategy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "compatible", "balanced", "maximum_compression", "custom":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""

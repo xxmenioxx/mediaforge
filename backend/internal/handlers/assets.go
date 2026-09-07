@@ -280,6 +280,7 @@ type AssetConversionOverrideState struct {
 	X265Params                       string                         `json:"x265Params,omitempty"`
 	FrameStructureMode               string                         `json:"frameStructureMode,omitempty"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode,omitempty"`
+	FrameStructureGOPStrategy        string                         `json:"frameStructureGopStrategy,omitempty"`
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames,omitempty"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode,omitempty"`
 	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames,omitempty"`
@@ -433,6 +434,7 @@ type AssetConversionUpdateInput struct {
 	X265Params                       string                         `json:"x265Params"`
 	FrameStructureMode               string                         `json:"frameStructureMode"`
 	FrameStructureGOPMode            string                         `json:"frameStructureGopMode"`
+	FrameStructureGOPStrategy        string                         `json:"frameStructureGopStrategy"`
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode"`
 	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames"`
@@ -2787,6 +2789,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		X265Params:                     strings.TrimSpace(input.X265Params),
 		FrameStructureMode:             normalizedFrameStructureMode(input.FrameStructureMode),
 		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
+		FrameStructureGOPStrategy:      normalizedFrameStructureGOPStrategy(input.FrameStructureGOPStrategy),
 		FrameStructureGOPFrames:        min(1000, max(0, input.FrameStructureGOPFrames)),
 		FrameStructureBFrameMode:       normalizedFrameStructureBFrameMode(input.FrameStructureBFrameMode),
 		FrameStructureMaxBFrames:       min(16, max(0, input.FrameStructureMaxBFrames)),
@@ -3533,7 +3536,12 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 			"requestedQSVRateControl": requestedQSVRateControl,
 			"effectiveQSVRateControl": effectiveQSVRateControl,
 			"effectiveVideoDecision":  resolvedVideoDecision,
-			"ffmpegArgs":              args,
+			"frameStructureRecommendation": previewFrameStructureRecommendation(
+				h.db,
+				path,
+				effectivePreviewProfile,
+			),
+			"ffmpegArgs": args,
 		})
 		return
 	}
@@ -3549,6 +3557,35 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 	c.Header("X-MVForge-Requested-Encoder", requestedVideoEncoder)
 	c.Header("X-MVForge-Effective-Encoder", effectiveVideoEncoder)
 	c.File(cachePath)
+}
+
+func previewFrameStructureRecommendation(
+	db *gorm.DB,
+	path string,
+	profile *models.Profile,
+) *FrameStructureRecommendationSet {
+	if db == nil || profile == nil || !db.Migrator().HasTable(&models.ScanResult{}) {
+		return nil
+	}
+
+	var scan models.ScanResult
+	if err := db.
+		Where("path = ?", path).
+		Order("updated_at desc, id desc").
+		First(&scan).Error; err != nil {
+		return nil
+	}
+
+	fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+	if fps <= 0 {
+		fps = scanFrameRate(scan)
+	}
+	if fps <= 0 {
+		return nil
+	}
+
+	recommendation := buildFrameStructureRecommendationSetForFPS(scan, fps)
+	return &recommendation
 }
 
 func resolvePreviewVideoProfile(db *gorm.DB, path string, profile models.Profile, streams MediaStreamInventory, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) (models.Profile, error) {
@@ -6571,6 +6608,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		strings.TrimSpace(override.CadenceFieldOrder) == "" &&
 		strings.TrimSpace(override.X265Params) == "" &&
 		strings.TrimSpace(override.FrameStructureGOPMode) == "" &&
+		strings.TrimSpace(override.FrameStructureGOPStrategy) == "" &&
 		strings.TrimSpace(override.FrameStructureMode) == "" &&
 		override.FrameStructureGOPFrames == 0 &&
 		strings.TrimSpace(override.FrameStructureBFrameMode) == "" &&

@@ -83,8 +83,8 @@ func TestResolveAutomaticFrameStructureUsesAssetSnapshot(t *testing.T) {
 	if got := workerStringValue(effective.WorkerConfig["frameStructureGopMode"]); got != "recommended" {
 		t.Fatalf("effective GOP mode = %q, want recommended", got)
 	}
-	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 90 {
-		t.Fatalf("effective GOP = %d, want 90", got)
+	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 48 {
+		t.Fatalf("effective GOP = %d, want 48", got)
 	}
 	if got := workerIntValue(effective.WorkerConfig["frameStructureMaxBFrames"], 0); got != 2 {
 		t.Fatalf("effective B-frame maximum = %d, want 2", got)
@@ -109,18 +109,18 @@ func TestResolveAutomaticFrameStructureUsesResolvedCadenceFPS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 90 {
+	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 48 {
 		t.Fatalf("GOP used declared FPS instead of resolved 23.976: %d", got)
 	}
 	recommendation := unknownRecord(effective.WorkerConfig["frameStructureRecommendation"])
 	if recommendation == nil || !nearFPS(workerNumberValue(recommendation["fps"], 0), 24000.0/1001.0, .001) {
 		t.Fatalf("effective GOP evidence did not use resolved cadence FPS: %#v", effective.WorkerConfig)
 	}
-	if seconds := workerNumberValue(recommendation["targetGopSeconds"], 0); math.Abs(seconds-(90/(24000.0/1001.0))) > .001 {
+	if seconds := workerNumberValue(recommendation["targetGopSeconds"], 0); math.Abs(seconds-(48/(24000.0/1001.0))) > .001 {
 		t.Fatalf("effective GOP seconds=%f are inconsistent with frames and FPS", seconds)
 	}
 	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
-	if !strings.Contains(command, "-g 90") {
+	if !strings.Contains(command, "-g 48") {
 		t.Fatalf("effective GOP was not emitted: %s", command)
 	}
 }

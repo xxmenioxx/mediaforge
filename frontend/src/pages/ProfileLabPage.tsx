@@ -66,6 +66,7 @@ import type {
   SnapshotOperation,
   StreamMetadataOverride,
   QSVFrameStructureAnalysis,
+  FrameStructureRecommendationSet,
   QSVFeatureStatus,
   UpscaleMode,
   UpscaleSharpen,
@@ -94,7 +95,7 @@ import { getTrackProfiles, materializeAssetTrackSelection, migrateTrackDispositi
 import { normalizedQSVMBBRCMode, qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
-import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
+import { recommendationGOPFramesByStrategy, reliableFrameRateForScan, type GOPStrategy } from '../utils/frameStructureRecommendation';
 import { labAudioProfileForTestEncode } from '../utils/testEncodeDraft';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { applyMVForgeVideoPreferences, getMVForgePreferences } from '../mvforgePreferences';
@@ -152,6 +153,7 @@ type LabFidelityInspection = {
   requestedQSVRateControl: string;
   effectiveQSVRateControl: string;
   effectiveVideoDecision?: PreviewInspection['effectiveVideoDecision'];
+  frameStructureRecommendation?: FrameStructureRecommendationSet;
   referenceEncoder: string;
   ffmpegArgs: string[];
   normalization: {
@@ -1071,7 +1073,12 @@ export function ProfileLabPage() {
       const conversionInspection = representativeWindow.inspection;
       const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
       const sourceFrameStructure = selectedAssetSnapshot?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
-      const frameRecommendation = frameStructureRecommendationForLab(sourceFrameStructure, selectedAssetSnapshot, conversion.profile);
+      const frameRecommendation = frameStructureRecommendationForLab(
+        sourceFrameStructure,
+        selectedAssetSnapshot,
+        conversion.profile,
+        conversionInspection.frameStructureRecommendation,
+      );
       const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, conversion.profile ?? videoDraft, conversionInspection.qsvFeatureStatus);
       const requestedHEVCLevel = hevcLevelForLab(conversion.profile ?? videoDraft, selectedAssetSnapshot, conversionInspection.effectiveEncoder);
       const measuredHEVCLevel = conversionInspection.output.codec === 'hevc' ? formatHEVCLevel(conversionInspection.output.level) : undefined;
@@ -1103,6 +1110,8 @@ export function ProfileLabPage() {
         requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
         effectiveQSVRateControl: conversionInspection.effectiveQSVRateControl,
         effectiveVideoDecision: conversionInspection.effectiveVideoDecision,
+        frameStructureRecommendation:
+          conversionInspection.frameStructureRecommendation,
         referenceEncoder: referenceInspection.effectiveEncoder,
         ffmpegArgs: conversionInspection.ffmpegArgs,
         normalization: referenceInspection.normalization,
@@ -1775,7 +1784,12 @@ export function ProfileLabPage() {
       mediaType: 'video' as const,
     } : undefined;
     const sourceRecommendation = selectedAssetSnapshot?.frameStructureAnalysis
-      ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft)
+      ? frameStructureRecommendationForLab(
+          selectedAssetSnapshot.frameStructureAnalysis,
+          selectedAssetSnapshot,
+          videoDraft,
+          validatedFidelityInspection?.frameStructureRecommendation,
+        )
       : undefined;
     saveVideoProfileMutation.mutate({
       profileId: savedVideoProfileId,
@@ -3071,16 +3085,22 @@ export function ProfileLabPage() {
                           <Grid size={{ xs: 12 }}>
                             <FrameStructureControls
                               config={videoDraft.workerConfig ?? {}}
-                              recommendedGop={selectedAssetSnapshot ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft).targetGopFrames : undefined}
-                              recommendedBFrames={selectedAssetSnapshot ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft).maxBFrames : undefined}
-                              recommendedGopByMode={selectedAssetSnapshot ? frameStructureGopFramesByMode(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot) : undefined}
-                              frameRate={reliableFrameRateForScan(selectedAssetSnapshot)}
+                              recommendedGop={selectedAssetSnapshot ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft, validatedFidelityInspection?.frameStructureRecommendation).targetGopFrames : undefined}
+                              recommendedBFrames={selectedAssetSnapshot ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft, validatedFidelityInspection?.frameStructureRecommendation).maxBFrames : undefined}
+                              recommendedGopByMode={frameStructureGopFramesByMode(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)}
+                              autoStrategy={(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)?.autoStrategy}
+                              frameRate={(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)?.fps ?? reliableFrameRateForScan(selectedAssetSnapshot)}
                               onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
                               onChangeMany={updateFrameStructurePolicy}
                               encoder={videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)}
                               disabled={videoDraft.videoCodec === 'copy'}
                               compact
                             />
+                            {selectedAssetSnapshot?.frameStructureAnalysis ? (
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                                Source GOP: average {selectedAssetSnapshot.frameStructureAnalysis.averageGopLength.toFixed(1)} · median {selectedAssetSnapshot.frameStructureAnalysis.medianGopLength?.toFixed(1) ?? '—'} · P25 {selectedAssetSnapshot.frameStructureAnalysis.p25GopLength?.toFixed(1) ?? '—'} · P75 {selectedAssetSnapshot.frameStructureAnalysis.p75GopLength?.toFixed(1) ?? '—'} · min {selectedAssetSnapshot.frameStructureAnalysis.minimumGopLength ?? '—'} · max {selectedAssetSnapshot.frameStructureAnalysis.maximumGopLength ?? '—'} · complete {selectedAssetSnapshot.frameStructureAnalysis.completeGops ?? '—'} · variability {selectedAssetSnapshot.frameStructureAnalysis.variability ?? 'unknown'} · confidence {selectedAssetSnapshot.frameStructureAnalysis.confidence ?? 'unknown'}
+                              </Typography>
+                            ) : null}
                           </Grid>
                           {isHEVCEncoder(videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' ? selectedHardwareEncoder : softwareEncoderForLabCodec(videoDraft.videoCodec)) ? (
                             <Grid size={{ xs: 12 }}>
@@ -4318,32 +4338,44 @@ function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStruc
   };
 }
 
-function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | undefined, scan: ScanResult | undefined, profile: ProfileInput | undefined) {
-  const fps = reliableFrameRateForScan(scan);
-  const mode = (profile ? videoWorkerValue(profile, 'frameStructureMode', 'balanced') : 'balanced') as 'auto' | 'off' | 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
-  const recommendationMode = mode === 'auto' || mode === 'off' ? 'balanced' : mode === 'custom' ? 'balanced' : mode;
-  const stored = scan?.frameStructureRecommendation?.byMode?.[recommendationMode];
-  const hasSourceAnalysis = Boolean(source && source.framesAnalyzed > 0);
-  const sourceAverageGop = hasSourceAnalysis ? source?.averageGopLength : undefined;
-  const derived = assetDerivedGopRecommendation({
-    fps,
-    sourceAverageGop,
-    confidence: hasSourceAnalysis ? source?.confidence : 'low',
-    mode: recommendationMode,
-  });
-
+function frameStructureRecommendationForLab(
+  source: QSVFrameStructureAnalysis | undefined,
+  scan: ScanResult | undefined,
+  profile: ProfileInput | undefined,
+  effectiveRecommendation?: FrameStructureRecommendationSet,
+) {
+  const recommendationSet =
+    effectiveRecommendation ?? scan?.frameStructureRecommendation;
+  const fps = recommendationSet?.fps ?? reliableFrameRateForScan(scan);
+  const structureMode = profile
+    ? videoWorkerValue(profile, 'frameStructureMode', 'auto')
+    : 'auto';
+  const gopMode = profile
+    ? videoWorkerValue(profile, 'frameStructureGopMode', 'auto')
+    : 'auto';
+  const configuredStrategy = profile
+    ? videoWorkerValue(profile, 'frameStructureGopStrategy', '')
+    : '';
+  const legacyStrategy =
+    structureMode === 'compatible' ||
+    structureMode === 'balanced' ||
+    structureMode === 'maximum_compression'
+      ? structureMode
+      : undefined;
+  const strategy = (
+    gopMode === 'auto' && !legacyStrategy
+      ? recommendationSet?.autoStrategy ?? 'balanced'
+      : configuredStrategy || legacyStrategy || 'balanced'
+  ) as GOPStrategy;
+  const stored = recommendationSet?.byMode?.[strategy];
   const customFrames = profile
     ? numberWorkerValue(profile, 'frameStructureGopFrames', 0)
     : 0;
-
-  const targetGopFrames =
-    mode === 'custom' && customFrames > 0
-      ? customFrames
-      : derived.targetFrames ?? stored?.targetGopFrames ?? 0;  
-  const targetGopSeconds =
-    fps && targetGopFrames > 0
-      ? targetGopFrames / fps
-      : stored?.targetGopSeconds ?? derived.targetSeconds ?? 0;
+  const custom = gopMode === 'custom';
+  const targetGopFrames = custom ? customFrames : stored?.targetGopFrames ?? 0;
+  const targetGopSeconds = custom && fps && targetGopFrames > 0
+    ? targetGopFrames / fps
+    : stored?.targetGopSeconds ?? 0;
   const bFrameMode = profile ? videoWorkerValue(profile, 'frameStructureBFrameMode', 'auto') : 'auto';
   const configuredBFrames = profile ? numberWorkerValue(profile, 'frameStructureMaxBFrames', 0) : 0;
   const sourceSuggestedBFrames =
@@ -4356,7 +4388,7 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
   const suggestedBFrames =
     sourceSuggestedBFrames ??
     stored?.maxBFrames ??
-    scan?.frameStructureRecommendation?.recommendedMaxBFrames ??
+    recommendationSet?.recommendedMaxBFrames ??
     3;
   const maxBFrames = bFrameMode === 'custom' && configuredBFrames > 0 ? configuredBFrames : suggestedBFrames;
   const encoder = String(profile?.workerConfig?.videoEncoder || 'generic');
@@ -4367,7 +4399,25 @@ function frameStructureRecommendationForLab(source: QSVFrameStructureAnalysis | 
       : encoder === 'libx265'
         ? 'x265 maps common GOP/B intent through keyint and bframes; b-adapt, b-pyramid, and scenecut remain encoder-specific decisions.'
         : 'The selected encoder translates the generic GOP/B targets through its own supported controls.';
-  return { encoder, fps, sourceGopSeconds: derived.sourceSeconds, targetGopFrames, targetGopSeconds, maxBFrames, confidence: derived.confidence, reasons: [derived.sourceSeconds !== undefined && source ? `Source GOP ${source.averageGopLength.toFixed(1)} frames is ~${derived.sourceSeconds.toFixed(2)} seconds; ${mode} targets ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).` : derived.warning || `No source frame-structure sample is stored; using a conservative ${mode} time baseline of ~${targetGopSeconds.toFixed(2)} seconds (${targetGopFrames} frames).`, source ? `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.` : `No source B-run is stored; using conservative maximum B depth ${maxBFrames}.`, encoderReason] };
+  const unavailableReason = fps
+    ? 'No authoritative backend GOP recommendation is available for this asset.'
+    : 'A reliable effective frame rate is required before MVForge can resolve GOP frames.';
+  return {
+    encoder,
+    fps,
+    sourceGopSeconds: recommendationSet?.sourceAnchorSeconds,
+    targetGopFrames,
+    targetGopSeconds,
+    maxBFrames,
+    confidence: stored?.confidence ?? recommendationSet?.confidence ?? 'low',
+    reasons: [
+      ...(stored?.reasons ?? [unavailableReason]),
+      source
+        ? `Source longest B-run ${source.maxConsecutiveBFrames}; bounded recommendation ${maxBFrames}.`
+        : `No source B-run is stored; using conservative maximum B depth ${maxBFrames}.`,
+      encoderReason,
+    ],
+  };
 }
 
 function hevcLevelForLab(profile: ProfileInput | undefined, scan: ScanResult | undefined, encoder: string) {
@@ -4394,59 +4444,9 @@ function validateHEVCLevelForLab(requested: string | undefined, measured: string
 }
 
 function frameStructureGopFramesByMode(
-  source: QSVFrameStructureAnalysis | undefined,
-  scan?: ScanResult,
+  recommendation?: FrameStructureRecommendationSet,
 ) {
-  const fps = reliableFrameRateForScan(scan);
-
-  const hasSourceAnalysis = Boolean(
-    source && source.framesAnalyzed > 0,
-  );
-
-  const sourceAverageGop = hasSourceAnalysis
-    ? source?.averageGopLength
-    : undefined;
-
-  const confidence = hasSourceAnalysis
-    ? source?.confidence
-    : 'low';
-
-  const compatible = assetDerivedGopRecommendation({
-    fps,
-    sourceAverageGop,
-    confidence,
-    mode: 'compatible',
-  });
-
-  const balanced = assetDerivedGopRecommendation({
-    fps,
-    sourceAverageGop,
-    confidence,
-    mode: 'balanced',
-  });
-
-  const maximumCompression = assetDerivedGopRecommendation({
-    fps,
-    sourceAverageGop,
-    confidence,
-    mode: 'maximum_compression',
-  });
-
-  const stored = scan?.frameStructureRecommendation;
-
-  return {
-    compatible:
-      compatible.targetFrames ??
-      stored?.byMode.compatible?.targetGopFrames,
-
-    balanced:
-      balanced.targetFrames ??
-      stored?.byMode.balanced?.targetGopFrames,
-
-    maximum_compression:
-      maximumCompression.targetFrames ??
-      stored?.byMode.maximum_compression?.targetGopFrames,
-  };
+  return recommendationGOPFramesByStrategy(recommendation);
 }
 
 function frameStructureSuggestionLines(scan: ScanResult, profile: ProfileInput): string[] {

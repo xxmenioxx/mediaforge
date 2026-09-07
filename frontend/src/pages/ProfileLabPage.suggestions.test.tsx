@@ -32,6 +32,7 @@ vi.mock('../api/client', async (importOriginal) => {
 
 import { api } from '../api/client';
 import { ProfileLabPage } from './ProfileLabPage';
+import { FrameStructureControls } from '../components/FrameStructureControls';
 
 const assetPath = '/media/raw/movies/Test/Test.mkv';
 
@@ -146,8 +147,27 @@ const largeSavedProfile = {
 
 const frameStructure = {
   framesAnalyzed: 120, iFrames: 2, pFrames: 80, bFrames: 38, bFrameRatio: 0.316,
-  averageGopLength: 60, minimumGopLength: 60, maximumGopLength: 60, maxConsecutiveBFrames: 2,
+  averageGopLength: 14.9, medianGopLength: 15, p25GopLength: 15, p75GopLength: 15,
+  minimumGopLength: 15, maximumGopLength: 15, completeGops: 8, maxConsecutiveBFrames: 2,
   confidence: 'high', variability: 'low', windowCount: 3,
+};
+
+const frameStructureRecommendation = {
+  version: 2,
+  sourceAnalysisVersion: 2,
+  fps: 24000 / 1001,
+  sourceFps: 24000 / 1001,
+  sourceAnchorFrames: 15,
+  sourceAnchorSeconds: 15 / (24000 / 1001),
+  autoStrategy: 'balanced',
+  analysisDriven: true,
+  recommendedMaxBFrames: 2,
+  confidence: 'high',
+  byMode: {
+    compatible: { targetGopFrames: 15, targetGopSeconds: 15 / (24000 / 1001), maxBFrames: 2, confidence: 'high', reasons: [], warnings: [] },
+    balanced: { targetGopFrames: 19, targetGopSeconds: 19 / (24000 / 1001), maxBFrames: 2, confidence: 'high', reasons: [], warnings: [] },
+    maximum_compression: { targetGopFrames: 26, targetGopSeconds: 26 / (24000 / 1001), maxBFrames: 2, confidence: 'high', reasons: [], warnings: [] },
+  },
 };
 
 const previewInspection = {
@@ -158,6 +178,7 @@ const previewInspection = {
   qsvFrameWarnings: [], qsvFeatureStatus: {}, cacheHit: false, previewMode: 'quality', start: '0', seconds: 20,
   generatedPath: '/tmp/preview.mp4', normalization: { mode: 'normalize_bt709', applied: true, reason: 'test', sarPreserved: true },
   requestedEncoder: 'libx265', effectiveEncoder: 'libx265', requestedQSVRateControl: '', effectiveQSVRateControl: '',
+  frameStructureRecommendation,
   ffmpegArgs: ['-vf', 'scale=960:720'],
 } as never;
 
@@ -234,4 +255,69 @@ describe('Profile Lab Process Asset suggestions', () => {
     expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.every(([requestId]) => typeof requestId === 'string' && !requestId.includes('profile='))).toBe(true);
     expect(await screen.findByText('Profile Lab')).toBeTruthy();
   }, 20_000);
+
+  it('renders backend GOP candidates and keeps Manual strategy separate from B-frames', async () => {
+    const onChangeMany = vi.fn();
+    const view = render(
+      <FrameStructureControls
+        config={{ frameStructureMode: 'auto', frameStructureGopMode: 'auto' }}
+        recommendedGop={19}
+        recommendedBFrames={2}
+        recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
+        autoStrategy="balanced"
+        frameRate={24000 / 1001}
+        onChange={vi.fn()}
+        onChangeMany={onChangeMany}
+      />,
+    );
+
+    expect(screen.getByText(/Effective GOP: 19 frames/)).toBeTruthy();
+    expect(screen.getByText(/Candidates: Compatible 15 · Balanced 19 · Maximum Compression 26/)).toBeTruthy();
+    expect(screen.queryByLabelText('GOP Strategy')).toBeNull();
+    await userEvent.click(screen.getByLabelText('GOP Mode'));
+    await userEvent.click(screen.getByRole('option', { name: 'Manual' }));
+    expect(onChangeMany).toHaveBeenCalledWith(expect.objectContaining({
+      frameStructureGopMode: 'recommended',
+      frameStructureGopStrategy: 'balanced',
+    }));
+    expect(onChangeMany.mock.calls.at(-1)?.[0]).not.toHaveProperty('frameStructureBFrameMode');
+
+    view.rerender(
+      <FrameStructureControls
+        config={{ frameStructureMode: 'auto', frameStructureGopMode: 'recommended', frameStructureGopStrategy: 'balanced' }}
+        recommendedGop={19}
+        recommendedBFrames={2}
+        recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
+        autoStrategy="balanced"
+        frameRate={24000 / 1001}
+        onChange={vi.fn()}
+        onChangeMany={onChangeMany}
+      />,
+    );
+    expect(screen.getByLabelText('GOP Strategy')).toBeTruthy();
+    expect(screen.queryByLabelText('GOP')).toBeNull();
+    await userEvent.click(screen.getByLabelText('GOP Strategy'));
+    expect(screen.getByRole('option', { name: 'Compatible · 15' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Balanced · 19' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Maximum Compression · 26' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('option', { name: 'Custom' }));
+    expect(onChangeMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      frameStructureGopMode: 'custom',
+      frameStructureGopStrategy: 'custom',
+    }));
+
+    view.rerender(
+      <FrameStructureControls
+        config={{ frameStructureMode: 'auto', frameStructureGopMode: 'custom', frameStructureGopStrategy: 'custom', frameStructureGopFrames: 48 }}
+        recommendedGop={19}
+        recommendedBFrames={2}
+        recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
+        autoStrategy="balanced"
+        frameRate={24000 / 1001}
+        onChange={vi.fn()}
+        onChangeMany={onChangeMany}
+      />,
+    );
+    expect((screen.getByLabelText('GOP') as HTMLInputElement).value).toBe('48');
+  });
 });

@@ -1,4 +1,9 @@
-import type { FrameStructureMode } from './frameStructureModes';
+import type { FrameStructureRecommendationSet } from '../api/types';
+
+export type GOPStrategy =
+  | 'compatible'
+  | 'balanced'
+  | 'maximum_compression';
 
 export type AssetGopRecommendation = {
   fps?: number;
@@ -7,7 +12,6 @@ export type AssetGopRecommendation = {
   targetFrames?: number;
   targetSeconds?: number;
   confidence: string;
-  mode: FrameStructureMode;
   warning?: string;
 };
 
@@ -26,46 +30,70 @@ export function reliableFrameRateForScan(scan?: {
   rawProbe?: Record<string, unknown>;
 }) {
   const video = scan?.videoStreams?.[0];
-  const summarized = parseReliableFrameRate(video?.avgFrameRate, video?.realFrameRate);
+  const summarized = parseReliableFrameRate(
+    video?.avgFrameRate,
+    video?.realFrameRate,
+  );
   if (summarized) return summarized;
 
-  const streams = Array.isArray(scan?.rawProbe?.streams) ? scan.rawProbe.streams : [];
-  const rawVideo = streams.find((stream): stream is Record<string, unknown> => Boolean(stream) && typeof stream === 'object' && !Array.isArray(stream) && (stream as Record<string, unknown>).codec_type === 'video');
+  const streams = Array.isArray(scan?.rawProbe?.streams)
+    ? scan.rawProbe.streams
+    : [];
+  const rawVideo = streams.find(
+    (stream): stream is Record<string, unknown> =>
+      Boolean(stream) &&
+      typeof stream === 'object' &&
+      !Array.isArray(stream) &&
+      (stream as Record<string, unknown>).codec_type === 'video',
+  );
   if (!rawVideo) return undefined;
   return parseReliableFrameRate(
-    typeof rawVideo.avg_frame_rate === 'string' ? rawVideo.avg_frame_rate : undefined,
-    typeof rawVideo.r_frame_rate === 'string' ? rawVideo.r_frame_rate : undefined,
+    typeof rawVideo.avg_frame_rate === 'string'
+      ? rawVideo.avg_frame_rate
+      : undefined,
+    typeof rawVideo.r_frame_rate === 'string'
+      ? rawVideo.r_frame_rate
+      : undefined,
   );
 }
 
+export function recommendationForGOPStrategy(
+  recommendation: FrameStructureRecommendationSet | undefined,
+  strategy: GOPStrategy,
+) {
+  return recommendation?.byMode?.[strategy];
+}
+
+export function recommendationGOPFramesByStrategy(
+  recommendation: FrameStructureRecommendationSet | undefined,
+) {
+  return {
+    compatible: recommendation?.byMode?.compatible?.targetGopFrames,
+    balanced: recommendation?.byMode?.balanced?.targetGopFrames,
+    maximum_compression:
+      recommendation?.byMode?.maximum_compression?.targetGopFrames,
+  };
+}
+
+// Compatibility formatter for callers that have source facts but no backend
+// recommendation set. It deliberately does not calculate a target policy.
 export function assetDerivedGopRecommendation(input: {
   fps?: number;
   sourceAverageGop?: number;
   confidence?: string;
-  mode?: FrameStructureMode;
-}): AssetGopRecommendation {
-  const mode = input.mode ?? 'balanced';
-  const recommendationMode = mode === 'auto' || mode === 'off' ? 'balanced' : mode;
-  const fps = input.fps && Number.isFinite(input.fps) && input.fps > 0 ? input.fps : undefined;
-  const sourceFrames = input.sourceAverageGop && input.sourceAverageGop > 0 ? input.sourceAverageGop : 0;
-  const confidence = fps ? (input.confidence || (sourceFrames > 0 ? 'medium' : 'low')) : 'low';
-  if (!fps) return { mode, sourceFrames, confidence, warning: 'A reliable asset frame rate is required before MVForge can calculate GOP frames.' };
-  const sourceSeconds = sourceFrames > 0 ? sourceFrames / fps : undefined;
-  const baseline = sourceSeconds === undefined ? undefined : clamp(sourceSeconds, 2, 4);
-  let targetSeconds = baseline === undefined
-    ? ({ compatible: 2.5, balanced: 3.5, maximum_compression: 5, custom: 3 }[recommendationMode])
-    : recommendationMode === 'compatible'
-      ? Math.min(baseline, 3)
-      : recommendationMode === 'maximum_compression'
-        ? Math.min(baseline + 2, 5.5)
-        : recommendationMode === 'balanced'
-          ? Math.min(baseline + 0.75, 4)
-          : baseline;
-  if (confidence.toLowerCase() === 'low') targetSeconds = Math.min(targetSeconds, 3.5);
-  targetSeconds = clamp(targetSeconds, 2, 8);
-  return { mode, fps, sourceFrames, sourceSeconds, targetSeconds, targetFrames: Math.max(1, Math.round(fps * targetSeconds)), confidence };
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.max(minimum, Math.min(maximum, value));
+  mode?: string;
+}) : AssetGopRecommendation {
+  const fps = input.fps && Number.isFinite(input.fps) && input.fps > 0
+    ? input.fps
+    : undefined;
+  const sourceFrames = input.sourceAverageGop && input.sourceAverageGop > 0
+    ? input.sourceAverageGop
+    : 0;
+  return {
+    fps,
+    sourceFrames,
+    sourceSeconds: fps && sourceFrames > 0 ? sourceFrames / fps : undefined,
+    confidence: input.confidence ?? 'low',
+    warning: 'Process Video to obtain an authoritative backend GOP recommendation.',
+  };
 }

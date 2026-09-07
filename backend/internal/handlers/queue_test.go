@@ -63,6 +63,98 @@ func TestAssetHasOpenJobBlocksOnlyActiveLifecycle(t *testing.T) {
 	}
 }
 
+func TestQueueFreezesResolvedGOPAndWorkerPreservesIt(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-gop-v2-freeze?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/anime/short-gop.mkv"
+	scan := models.ScanResult{
+		Path: path,
+		VideoStreams: models.JSONList{
+			map[string]any{"avgFrameRate": "24000/1001", "width": 720, "height": 480},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"framesAnalyzed":   240,
+			"averageGopLength": 14.9,
+			"medianGopLength":  15.0,
+			"p25GopLength":     15.0,
+			"p75GopLength":     15.0,
+			"completeGops":     8,
+			"variability":      "low",
+			"confidence":       "high",
+		},
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{Name: "Auto GOP", VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"frameStructureMode":       "auto",
+		"frameStructureGopMode":    "auto",
+		"effectiveOutputFrameRate": "24000/1001",
+	}}
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewQueueHandler(db)
+	if err := handler.captureInterlaceSnapshot(path, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := scheduler.RestoreProfileSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profileWorkerBool(frozen, "frameStructureGopFrozen", false) {
+		t.Fatalf("Queue snapshot did not mark GOP frozen: %#v", frozen.WorkerConfig)
+	}
+	if got := workerIntValue(frozen.WorkerConfig["frameStructureGopFrames"], 0); got != 19 {
+		t.Fatalf("frozen GOP=%d want 19: %#v", got, frozen.WorkerConfig)
+	}
+
+	if err := db.Model(&scan).Update("frame_structure_analysis", models.JSONMap{
+		"averageGopLength": 96.0,
+		"medianGopLength":  96.0,
+		"completeGops":     8,
+		"variability":      "low",
+		"confidence":       "high",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	frozen.WorkerConfig["frameStructureGopStrategy"] = "maximum_compression"
+	resolved, err := resolveAutomaticFrameStructure(db, path, frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerIntValue(resolved.WorkerConfig["frameStructureGopFrames"], 0); got != 19 {
+		t.Fatalf("Worker recalculated frozen GOP, got %d", got)
+	}
+
+	customProfile := models.Profile{Name: "Custom GOP", VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"frameStructureMode":        "custom",
+		"frameStructureGopMode":     "custom",
+		"frameStructureGopStrategy": "custom",
+		"frameStructureGopFrames":   48,
+	}}
+	customSnapshot, err := scheduler.CaptureProfileSnapshot(customProfile, time.Now(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.captureInterlaceSnapshot(path, customSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	customFrozen, err := scheduler.RestoreProfileSnapshot(customSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerIntValue(customFrozen.WorkerConfig["frameStructureGopFrames"], 0); got != 48 || !profileWorkerBool(customFrozen, "frameStructureGopFrozen", false) {
+		t.Fatalf("custom Queue GOP was not frozen exactly: %#v", customFrozen.WorkerConfig)
+	}
+}
+
 func TestQueueLibraryReplacementRejectsAliasOfActivePublication(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-library-alias?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -1827,7 +1827,9 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 
 	snapshot[assetConversionOverrideSnapshotKey] = frozen
 	snapshot["overrideOnly"] = true
-	h.captureInterlaceSnapshot(job.MediaPath, snapshot)
+	if err := h.captureInterlaceSnapshot(job.MediaPath, snapshot); err != nil {
+		return err
+	}
 
 	job.ProfileID = 0
 	job.ProfileVersion = 1
@@ -1887,7 +1889,9 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 		}
 		snapshot[assetConversionOverrideSnapshotKey] = frozen
 	}
-	h.captureInterlaceSnapshot(job.MediaPath, snapshot)
+	if err := h.captureInterlaceSnapshot(job.MediaPath, snapshot); err != nil {
+		return err
+	}
 	job.ProfileID = profile.ID
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileSnapshot = snapshot
@@ -1934,9 +1938,9 @@ func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *A
 	return nil
 }
 
-func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSONMap) {
+func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSONMap) error {
 	if snapshot == nil {
-		return
+		return nil
 	}
 	var scan models.ScanResult
 	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
@@ -1955,13 +1959,13 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
 	}
-	h.freezeResolvedRestorationSnapshot(snapshot, scan, path)
+	return h.freezeResolvedRestorationSnapshot(snapshot, scan, path)
 }
 
-func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap, scan models.ScanResult, path string) {
+func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap, scan models.ScanResult, path string) error {
 	profile, err := scheduler.RestoreProfileSnapshot(snapshot)
 	if err != nil {
-		return
+		return err
 	}
 	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, path)
 	interlace, _ := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
@@ -1971,6 +1975,15 @@ func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap,
 		recommendation = recommendCadence(cadence)
 	}
 	profile = resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
+	if frameStructureGOPIntentConfigured(profile.WorkerConfig) {
+		profile, err = resolveFrameStructureGOPFromScan(scan, profile)
+		if err != nil {
+			return err
+		}
+		if normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"])) != "off" && workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0) > 0 {
+			profile.WorkerConfig["frameStructureGopFrozen"] = true
+		}
+	}
 	profile = resolveUpscaleProfile(profile, mediaStreamInventoryFromScan(scan), upscaleAnalysisEvidence(scan))
 	streams := mediaStreamInventoryFromScan(scan)
 	if len(streams.Video) > 0 {
@@ -1981,6 +1994,7 @@ func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap,
 		profile = resolveRestorationPlan(profile, nil)
 	}
 	snapshot["workerConfig"] = cloneWorkerConfig(profile.WorkerConfig)
+	return nil
 }
 
 func restorationWorkerConfigForAsset(config models.JSONMap, path string) models.JSONMap {

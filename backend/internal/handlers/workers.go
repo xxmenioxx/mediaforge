@@ -1088,20 +1088,23 @@ func resolveAutomaticFrameStructure(
 	mediaPath string,
 	profile models.Profile,
 ) (models.Profile, error) {
-	if normalizedFrameStructureMode(
-		workerStringValue(profile.WorkerConfig["frameStructureMode"]),
-	) != "auto" {
+	if !frameStructureGOPIntentConfigured(profile.WorkerConfig) {
+		return profile, nil
+	}
+	frameMode := normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"]))
+	if frameMode == "off" {
+		return profile, nil
+	}
+	if profileWorkerBool(profile, "frameStructureGopFrozen", false) && workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0) > 0 {
+		return profile, nil
+	}
+	gopMode := normalizedFrameStructureGOPMode(workerStringValue(profile.WorkerConfig["frameStructureGopMode"]))
+	if gopMode == "custom" {
 		return profile, nil
 	}
 	if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
-		return models.Profile{}, fmt.Errorf("automatic frame structure requires a known effective output frame rate after an explicit FPS transform")
+		return models.Profile{}, fmt.Errorf("frame structure GOP resolution requires a known effective output frame rate after an explicit FPS transform")
 	}
-
-	workerConfig := models.JSONMap{}
-	for key, value := range profile.WorkerConfig {
-		workerConfig[key] = value
-	}
-	profile.WorkerConfig = workerConfig
 
 	scan, err := automaticFrameStructureSnapshot(db, mediaPath)
 	if err != nil {
@@ -1111,16 +1114,71 @@ func resolveAutomaticFrameStructure(
 		)
 	}
 
-	fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+	return resolveFrameStructureGOPFromScan(scan, profile)
+}
+
+func frameStructureGOPIntentConfigured(workerConfig models.JSONMap) bool {
+	return strings.TrimSpace(workerStringValue(workerConfig["frameStructureMode"])) != "" ||
+		strings.TrimSpace(workerStringValue(workerConfig["frameStructureGopMode"])) != "" ||
+		strings.TrimSpace(workerStringValue(workerConfig["frameStructureGopStrategy"])) != "" ||
+		workerIntValue(workerConfig["frameStructureGopFrames"], 0) > 0
+}
+
+func resolveFrameStructureGOPFromScan(scan models.ScanResult, profile models.Profile) (models.Profile, error) {
+	frameMode := normalizedFrameStructureMode(workerStringValue(profile.WorkerConfig["frameStructureMode"]))
+	if frameMode == "off" {
+		return profile, nil
+	}
+	workerConfig := cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig = workerConfig
+	if profileWorkerBool(profile, "frameStructureGopFrozen", false) && workerIntValue(workerConfig["frameStructureGopFrames"], 0) > 0 {
+		return profile, nil
+	}
+
+	gopMode := normalizedFrameStructureGOPMode(workerStringValue(workerConfig["frameStructureGopMode"]))
+	if gopMode == "custom" {
+		if workerIntValue(workerConfig["frameStructureGopFrames"], 0) <= 0 {
+			return models.Profile{}, fmt.Errorf("custom frame structure GOP requires a valid frame count")
+		}
+		return profile, nil
+	}
+	if gopMode == "" {
+		gopMode = "auto"
+	}
+	if gopMode == "auto" && workerStringValue(workerConfig["frameStructureGopStrategy"]) == "" {
+		switch frameMode {
+		case "compatible", "balanced", "maximum_compression":
+			// Profiles created before GOP intent was split from the broad frame
+			// structure mode used these values as their manual GOP selection.
+			gopMode = "recommended"
+			workerConfig["frameStructureGopStrategy"] = frameMode
+		}
+	}
+
+	fps := parseFrameRateValue(workerStringValue(workerConfig["effectiveOutputFrameRate"]))
 	if fps <= 0 {
 		fps = scanFrameRate(scan)
 	}
+	if fps <= 0 {
+		return models.Profile{}, fmt.Errorf("frame structure GOP resolution requires a reliable effective frame rate")
+	}
 	recommendationSet := buildFrameStructureRecommendationSetForFPS(scan, fps)
-
-	recommendation, ok := recommendationSet.ByMode["balanced"]
+	strategy := normalizedFrameStructureGOPStrategy(workerStringValue(workerConfig["frameStructureGopStrategy"]))
+	if gopMode == "auto" {
+		strategy = recommendationSet.AutoStrategy
+	} else if strategy == "" || strategy == "custom" {
+		switch frameMode {
+		case "compatible", "balanced", "maximum_compression":
+			strategy = frameMode
+		default:
+			strategy = "balanced"
+		}
+	}
+	recommendation, ok := recommendationSet.ByMode[strategy]
 	if !ok {
 		return models.Profile{}, fmt.Errorf(
-			"automatic frame structure did not produce a balanced recommendation",
+			"frame structure GOP resolution did not produce a %s recommendation",
+			strategy,
 		)
 	}
 
@@ -1137,20 +1195,26 @@ func resolveAutomaticFrameStructure(
 	}
 
 	workerConfig["frameStructureGopMode"] = "recommended"
+	workerConfig["frameStructureGopStrategy"] = strategy
 	workerConfig["frameStructureGopFrames"] = recommendation.TargetGOPFrames
-	workerConfig["frameStructureBFrameMode"] = "recommended"
-	workerConfig["frameStructureMaxBFrames"] = recommendation.MaxBFrames
-	workerConfig["qsvAdaptiveI"] = true
-	workerConfig["qsvAdaptiveB"] = true
-	workerConfig["frameStructureAutoResolved"] = true
+	if frameMode == "auto" {
+		workerConfig["frameStructureBFrameMode"] = "recommended"
+		workerConfig["frameStructureMaxBFrames"] = recommendation.MaxBFrames
+		workerConfig["qsvAdaptiveI"] = true
+		workerConfig["qsvAdaptiveB"] = true
+	}
+	workerConfig["frameStructureAutoResolved"] = gopMode == "auto"
 	workerConfig["frameStructureAutoConfidence"] = recommendation.Confidence
 	if previous, exists := workerConfig["frameStructureRecommendation"]; exists {
 		workerConfig["sourceFrameStructureRecommendation"] = previous
 	}
 	workerConfig["frameStructureRecommendation"] = models.JSONMap{
-		"fps": fps, "targetGopFrames": recommendation.TargetGOPFrames,
+		"version": recommendationSet.Version, "fps": fps, "targetGopFrames": recommendation.TargetGOPFrames,
 		"targetGopSeconds": recommendation.TargetGOPSeconds, "maxBFrames": recommendation.MaxBFrames,
 		"confidence": recommendation.Confidence, "reasons": recommendation.Reasons, "warnings": recommendation.Warnings,
+		"selectedStrategy": strategy, "autoStrategy": recommendationSet.AutoStrategy,
+		"analysisDriven": recommendationSet.AnalysisDriven, "sourceAnchorFrames": recommendationSet.SourceAnchorFrames,
+		"sourceAnchorSeconds": recommendationSet.SourceAnchorSeconds, "sourceFps": recommendationSet.SourceFPS,
 	}
 
 	return profile, nil

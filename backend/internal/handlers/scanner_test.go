@@ -1060,14 +1060,14 @@ func TestScanResolvedFileReusesExistingSnapshotUntilForced(t *testing.T) {
 	if err != nil || !cached || result.VideoCodec != "cached-codec" {
 		t.Fatalf("snapshot was regenerated without Re-scan: cached=%t result=%#v err=%v", cached, result, err)
 	}
-	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
+	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 2 {
 		t.Fatalf("cached snapshot was not enriched from stored source facts: %#v", result.FrameStructureRecommendation)
 	}
 	if workerIntValue(result.HEVCLevelRecommendation["version"], 0) != 1 {
 		t.Fatalf("cached snapshot was not enriched with an HEVC Level recommendation: %#v", result.HEVCLevelRecommendation)
 	}
 	var stored models.ScanResult
-	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 1 || workerIntValue(stored.HEVCLevelRecommendation["version"], 0) != 1 {
+	if err := db.First(&stored, existing.ID).Error; err != nil || workerIntValue(stored.FrameStructureRecommendation["version"], 0) != 2 || workerIntValue(stored.HEVCLevelRecommendation["version"], 0) != 1 {
 		t.Fatalf("enriched recommendation was not persisted: %#v err=%v", stored.FrameStructureRecommendation, err)
 	}
 	if matches, legacy := snapshotCacheMatches(stored, mediaPath, info); !matches || legacy {
@@ -2019,7 +2019,7 @@ func TestArchivedOriginalInheritsRawSnapshot(t *testing.T) {
 	if !ok || result.Path != archivePath || result.VideoCodec != "h264" || jsonMapInt(result.FrameStructureAnalysis, "framesAnalyzed") != 900 {
 		t.Fatalf("archive did not inherit Raw snapshot: ok=%t result=%#v", ok, result)
 	}
-	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 1 {
+	if workerIntValue(result.FrameStructureRecommendation["version"], 0) != 2 {
 		t.Fatalf("archive did not inherit the derived frame recommendation: %#v", result.FrameStructureRecommendation)
 	}
 	if workerIntValue(result.HEVCLevelRecommendation["version"], 0) != 1 {

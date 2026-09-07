@@ -1904,6 +1904,37 @@ func TestAssetPStrategyDefaultExplicitlyOverridesProfile(t *testing.T) {
 	}
 }
 
+func TestFrameStructureGOPStrategyOverrideAndResolvedRendering(t *testing.T) {
+	base := models.Profile{WorkerConfig: models.JSONMap{
+		"frameStructureMode":      "auto",
+		"frameStructureGopMode":   "recommended",
+		"frameStructureGopFrames": 120,
+	}}
+	manual := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{
+		FrameStructureGOPMode:     "recommended",
+		FrameStructureGOPStrategy: "balanced",
+	})
+	if got := workerStringValue(manual.WorkerConfig["frameStructureGopStrategy"]); got != "balanced" {
+		t.Fatalf("strategy=%q want balanced", got)
+	}
+	if _, exists := manual.WorkerConfig["frameStructureGopFrames"]; exists {
+		t.Fatalf("manual strategy retained stale numeric GOP: %#v", manual.WorkerConfig)
+	}
+
+	manual.WorkerConfig["frameStructureGopFrames"] = 19
+	if command := strings.Join(commonFrameStructureArgs(manual, "hevc_qsv"), " "); !strings.Contains(command, "-g 19") {
+		t.Fatalf("resolved recommendation did not render exact GOP: %q", command)
+	}
+	custom := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{
+		FrameStructureGOPMode:     "custom",
+		FrameStructureGOPStrategy: "custom",
+		FrameStructureGOPFrames:   48,
+	})
+	if command := strings.Join(commonFrameStructureArgs(custom, "hevc_qsv"), " "); !strings.Contains(command, "-g 48") {
+		t.Fatalf("custom GOP did not remain exact: %q", command)
+	}
+}
+
 func TestFFmpegCommandBuilderAllowsAssetToMakeAACCompatibilityDefault(t *testing.T) {
 	makeDefault := true
 	plan := MediaJobPlan{

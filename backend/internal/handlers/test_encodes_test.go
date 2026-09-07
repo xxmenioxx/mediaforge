@@ -242,6 +242,50 @@ func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
 	}
 }
 
+func TestTestEncodeAutoUsesAnalysisDrivenBalancedGOP(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-gop-v2")
+	path := filepath.Clean("/media/raw/short-gop-progressive.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path: path,
+		VideoStreams: models.JSONList{
+			map[string]any{"avgFrameRate": "24000/1001"},
+		},
+		FrameStructureAnalysis: models.JSONMap{
+			"framesAnalyzed":   240,
+			"averageGopLength": 14.9,
+			"medianGopLength":  15.0,
+			"p25GopLength":     15.0,
+			"p75GopLength":     15.0,
+			"completeGops":     8,
+			"variability":      "low",
+			"confidence":       "high",
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"frameStructureMode":    "auto",
+		"frameStructureGopMode": "auto",
+	}}
+	effective, err := resolveTestEncodeVideoProfile(
+		db,
+		path,
+		models.QueueJob{},
+		requested,
+		AssetConversionOverrideState{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0); got != 19 {
+		t.Fatalf("Test Encode Auto GOP=%d want 19: %#v", got, effective.WorkerConfig)
+	}
+	metadata := unknownRecord(effective.WorkerConfig["frameStructureRecommendation"])
+	if metadata == nil || workerStringValue(metadata["selectedStrategy"]) != "balanced" || !boolSetting(metadata["analysisDriven"], false) {
+		t.Fatalf("missing v2 Test Encode decision metadata: %#v", metadata)
+	}
+}
+
 func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testing.T) {
 	db := testEncodeTestDB(t, "effective-decision-consistency")
 	path := filepath.Clean("/media/raw/soft-telecine-hd.mkv")
@@ -339,6 +383,22 @@ func TestSmartUpscaleDecisionMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 		Width: 720, Height: 480, SampleAspectRatio: "32:27", DisplayAspectRatio: "16:9", FrameRate: "30000/1001",
 		ColorSpace: "smpte170m", ColorTransfer: "smpte170m", ColorPrimaries: "smpte170m", ColorRange: "tv",
 	}}}
+	if err := db.Create(&models.ScanResult{
+		Path: path,
+		VideoStreams: models.JSONList{map[string]any{
+			"width": 720, "height": 480, "avgFrameRate": "30000/1001",
+			"sampleAspectRatio": "32:27", "displayAspectRatio": "16:9",
+		}},
+		FrameStructureAnalysis: models.JSONMap{
+			"averageGopLength": 60.0,
+			"medianGopLength":  60.0,
+			"completeGops":     8,
+			"variability":      "low",
+			"confidence":       "high",
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	preview, err := resolvePreviewVideoProfile(db, path, requested, streams, interlace, cadence, recommendation)
 	if err != nil {

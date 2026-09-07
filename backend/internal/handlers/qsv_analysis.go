@@ -27,6 +27,9 @@ type QSVFrameStructureAnalysis struct {
 	HasBFrames            bool                   `json:"hasBFrames"`
 	MaxConsecutiveBFrames int                    `json:"maxConsecutiveBFrames"`
 	AverageGOPLength      float64                `json:"averageGopLength"`
+	MedianGOPLength       float64                `json:"medianGopLength,omitempty"`
+	P25GOPLength          float64                `json:"p25GopLength,omitempty"`
+	P75GOPLength          float64                `json:"p75GopLength,omitempty"`
 	MinimumGOPLength      int                    `json:"minimumGopLength"`
 	MaximumGOPLength      int                    `json:"maximumGopLength"`
 	CompleteGOPs          int                    `json:"completeGops"`
@@ -47,6 +50,7 @@ type QSVFrameStructureAnalysis struct {
 	FrameSignals          FrameSignalSummary     `json:"frameSignals,omitempty"`
 	Assessment            string                 `json:"assessment"`
 	Source                string                 `json:"source"`
+	GOPLengths            []int                  `json:"-"`
 }
 
 type FrameStructureWindow struct {
@@ -226,10 +230,19 @@ type FrameStructureRecommendationSet struct {
 	Confidence            string                                  `json:"confidence"`
 	ByMode                map[string]FrameStructureRecommendation `json:"byMode"`
 	Warnings              []string                                `json:"warnings,omitempty"`
+	AutoStrategy          string                                  `json:"autoStrategy"`
+	AnalysisDriven        bool                                    `json:"analysisDriven"`
+	SourceAnchorFrames    float64                                 `json:"sourceAnchorFrames,omitempty"`
+	SourceAnchorSeconds   float64                                 `json:"sourceAnchorSeconds,omitempty"`
+	SourceFPS             float64                                 `json:"sourceFps,omitempty"`
 }
 
 func buildFrameStructureRecommendationSet(scan models.ScanResult) FrameStructureRecommendationSet {
-	return buildFrameStructureRecommendationSetForFPS(scan, scanFrameRate(scan))
+	fps := scanFrameRate(scan)
+	if fps <= 0 {
+		fps = workerNumberValue(scan.FrameStructureRecommendation["fps"], 0)
+	}
+	return buildFrameStructureRecommendationSetForFPS(scan, fps)
 }
 
 func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps float64) FrameStructureRecommendationSet {
@@ -238,22 +251,55 @@ func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps floa
 		Version:               workerIntValue(analysis["version"], 0),
 		FramesAnalyzed:        workerIntValue(analysis["framesAnalyzed"], 0),
 		AverageGOPLength:      workerNumberValue(analysis["averageGopLength"], 0),
+		MedianGOPLength:       workerNumberValue(analysis["medianGopLength"], 0),
+		P25GOPLength:          workerNumberValue(analysis["p25GopLength"], 0),
+		P75GOPLength:          workerNumberValue(analysis["p75GopLength"], 0),
+		MinimumGOPLength:      workerIntValue(analysis["minimumGopLength"], 0),
+		MaximumGOPLength:      workerIntValue(analysis["maximumGopLength"], 0),
+		CompleteGOPs:          workerIntValue(analysis["completeGops"], 0),
 		MaxConsecutiveBFrames: workerIntValue(analysis["maxConsecutiveBFrames"], 0),
 		BFrameRatio:           workerNumberValue(analysis["bFrameRatio"], 0),
+		Variability:           strings.TrimSpace(stringFromUnknown(analysis["variability"])),
 		Confidence:            strings.TrimSpace(stringFromUnknown(analysis["confidence"])),
+		ConfidenceScore:       workerNumberValue(analysis["confidenceScore"], 0),
+	}
+	sourceFPS := scanFrameRate(scan)
+	if sourceFPS <= 0 {
+		sourceFPS = workerNumberValue(scan.FrameStructureRecommendation["sourceFps"], 0)
+	}
+	if sourceFPS <= 0 {
+		sourceFPS = workerNumberValue(scan.FrameStructureRecommendation["fps"], 0)
+	}
+	anchorFrames := source.MedianGOPLength
+	if anchorFrames <= 0 {
+		anchorFrames = source.AverageGOPLength
+	}
+	analysisDriven := anchorFrames > 0 && sourceFPS > 0 && fps > 0
+	anchorSeconds := 0.0
+	if analysisDriven {
+		anchorSeconds = anchorFrames / sourceFPS
+	}
+	autoStrategy := "balanced"
+	if analysisDriven && (strings.EqualFold(source.Confidence, "low") || strings.EqualFold(source.Variability, "high") || source.CompleteGOPs < 3) {
+		autoStrategy = "compatible"
 	}
 	result := FrameStructureRecommendationSet{
-		Version:               1,
+		Version:               2,
 		SourceAnalysisVersion: source.Version,
 		FPS:                   fps,
 		Confidence:            source.Confidence,
 		ByMode:                map[string]FrameStructureRecommendation{},
+		AutoStrategy:          autoStrategy,
+		AnalysisDriven:        analysisDriven,
+		SourceAnchorFrames:    anchorFrames,
+		SourceAnchorSeconds:   anchorSeconds,
+		SourceFPS:             sourceFPS,
 	}
 	if result.Confidence == "" {
 		result.Confidence = "low"
 	}
 	for _, mode := range []string{"compatible", "balanced", "maximum_compression"} {
-		recommendation := recommendFrameStructure(source, fps, "", mode, false, false, false)
+		recommendation := recommendFrameStructureForFPS(source, sourceFPS, fps, "", mode, false, false, false)
 		result.ByMode[mode] = recommendation
 		if mode == "balanced" {
 			result.RecommendedMaxBFrames = recommendation.MaxBFrames
@@ -274,7 +320,7 @@ func frameStructureRecommendationMap(scan models.ScanResult) models.JSONMap {
 }
 
 func ensureFrameStructureRecommendation(scan *models.ScanResult) bool {
-	if scan == nil || workerIntValue(scan.FrameStructureRecommendation["version"], 0) >= 1 {
+	if scan == nil || len(scan.FrameStructureAnalysis) == 0 || workerIntValue(scan.FrameStructureRecommendation["version"], 0) >= 2 {
 		return false
 	}
 	scan.FrameStructureRecommendation = frameStructureRecommendationMap(*scan)
@@ -287,12 +333,14 @@ func storedFrameStructureRecommendation(
 ) FrameStructureRecommendation {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 
-	if mode == "auto" || mode == "off" || mode == "" {
-		mode = "balanced"
-	}
-
 	if ensureFrameStructureRecommendation(&scan) {
 		// Derived in memory for legacy snapshots.
+	}
+	if mode == "auto" || mode == "off" || mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(stringFromUnknown(scan.FrameStructureRecommendation["autoStrategy"])))
+		if mode != "compatible" && mode != "balanced" {
+			mode = "balanced"
+		}
 	}
 
 	var recommendation FrameStructureRecommendation
@@ -337,15 +385,25 @@ func storedFrameStructureRecommendation(
 }
 
 func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, contentType, policy string, advancedAllowed, adaptiveISupported, adaptiveBSupported bool) FrameStructureRecommendation {
-	if fps <= 0 {
+	return recommendFrameStructureForFPS(source, fps, fps, contentType, policy, advancedAllowed, adaptiveISupported, adaptiveBSupported)
+}
+
+func recommendFrameStructureForFPS(source QSVFrameStructureAnalysis, sourceFPS, effectiveFPS float64, contentType, policy string, advancedAllowed, adaptiveISupported, adaptiveBSupported bool) FrameStructureRecommendation {
+	if effectiveFPS <= 0 {
 		return FrameStructureRecommendation{MaxBFrames: 3, Confidence: "low", Warnings: []string{"A reliable asset frame rate is required before MVForge can calculate an automatic GOP recommendation."}}
 	}
 	mode := strings.ToLower(strings.TrimSpace(policy))
-	seconds := 0.0
-	if source.AverageGOPLength > 0 {
-		seconds = source.AverageGOPLength / fps
+	anchorFrames := source.MedianGOPLength
+	if anchorFrames <= 0 {
+		anchorFrames = source.AverageGOPLength
 	}
-	if seconds <= 0 {
+	anchorSeconds := 0.0
+	if anchorFrames > 0 && sourceFPS > 0 {
+		anchorSeconds = anchorFrames / sourceFPS
+	}
+	analysisDriven := anchorSeconds > 0
+	seconds := anchorSeconds
+	if !analysisDriven {
 		switch mode {
 		case "compatible", "compatibility":
 			seconds = 2.5
@@ -354,35 +412,50 @@ func recommendFrameStructure(source QSVFrameStructureAnalysis, fps float64, cont
 		default:
 			seconds = 3.5
 		}
+		if strings.EqualFold(source.Confidence, "low") {
+			seconds = math.Min(seconds, 3.5)
+		}
+		seconds = math.Max(2, math.Min(8, seconds))
 	} else {
-		seconds = math.Max(2, math.Min(4, seconds))
+		balancedFactor, maximumFactor := 1.10, 1.50
+		if strings.EqualFold(source.Confidence, "high") && strings.EqualFold(source.Variability, "low") {
+			balancedFactor, maximumFactor = 1.25, 1.75
+		} else if strings.EqualFold(source.Confidence, "low") || strings.EqualFold(source.Variability, "high") {
+			balancedFactor, maximumFactor = 1.00, 1.25
+		}
 		switch mode {
 		case "compatible", "compatibility":
-			seconds = math.Min(seconds, 3)
+			seconds = math.Min(anchorSeconds, 2.0)
 		case "maximum_compression":
-			seconds = math.Min(seconds+2, 5.5)
+			seconds = math.Min(anchorSeconds*maximumFactor, 3.5)
 		case "balanced":
-			seconds = math.Min(seconds+0.75, 4)
+			seconds = math.Min(anchorSeconds*balancedFactor, 2.5)
 		}
 	}
-	if strings.EqualFold(source.Confidence, "low") {
-		seconds = math.Min(seconds, 3.5)
+	target := max(1, int(math.Round(effectiveFPS*seconds)))
+	if analysisDriven && mode != "compatible" && mode != "compatibility" {
+		compatible := max(1, int(math.Round(effectiveFPS*math.Min(anchorSeconds, 2.0))))
+		target = max(compatible, target)
+		if mode == "maximum_compression" {
+			balancedFactor := 1.10
+			if strings.EqualFold(source.Confidence, "high") && strings.EqualFold(source.Variability, "low") {
+				balancedFactor = 1.25
+			} else if strings.EqualFold(source.Confidence, "low") || strings.EqualFold(source.Variability, "high") {
+				balancedFactor = 1.00
+			}
+			balanced := max(compatible, int(math.Round(effectiveFPS*math.Min(anchorSeconds*balancedFactor, 2.5))))
+			target = max(balanced, target)
+		}
 	}
-	seconds = math.Max(2, math.Min(8, seconds))
-	target := int(math.Round(fps * seconds))
 	maxB := 3
 	if source.MaxConsecutiveBFrames >= 1 && source.MaxConsecutiveBFrames <= 4 {
 		maxB = source.MaxConsecutiveBFrames
 	}
-	result := FrameStructureRecommendation{TargetGOPFrames: target, TargetGOPSeconds: float64(target) / fps, MaxBFrames: maxB, AdaptiveI: advancedAllowed && adaptiveISupported, AdaptiveB: advancedAllowed && adaptiveBSupported, SourceAverageGOP: source.AverageGOPLength, SourceMaxBRun: source.MaxConsecutiveBFrames, SourceBRatio: source.BFrameRatio, Confidence: source.Confidence}
+	result := FrameStructureRecommendation{TargetGOPFrames: target, TargetGOPSeconds: float64(target) / effectiveFPS, MaxBFrames: maxB, AdaptiveI: advancedAllowed && adaptiveISupported, AdaptiveB: advancedAllowed && adaptiveBSupported, SourceAverageGOP: source.AverageGOPLength, SourceMaxBRun: source.MaxConsecutiveBFrames, SourceBRatio: source.BFrameRatio, Confidence: source.Confidence}
 	if result.Confidence == "" {
 		result.Confidence = "low"
 	}
-	sourceSeconds := 0.0
-	if source.AverageGOPLength > 0 {
-		sourceSeconds = source.AverageGOPLength / fps
-	}
-	result.Reasons = []string{fmt.Sprintf("Source GOP %.1f frames is %.2f seconds; %s targets %.2f seconds (%d frames at %.3f fps).", source.AverageGOPLength, sourceSeconds, mode, seconds, target, fps), fmt.Sprintf("Source longest B-run is %d; recommended maximum B depth is %d.", source.MaxConsecutiveBFrames, maxB)}
+	result.Reasons = []string{fmt.Sprintf("Source GOP anchor %.1f frames is %.2f seconds at %.3f source fps; %s targets %.2f seconds (%d frames at %.3f effective fps).", anchorFrames, anchorSeconds, sourceFPS, mode, result.TargetGOPSeconds, target, effectiveFPS), fmt.Sprintf("Source longest B-run is %d; recommended maximum B depth is %d.", source.MaxConsecutiveBFrames, maxB)}
 	if advancedAllowed && !adaptiveISupported {
 		result.Warnings = append(result.Warnings, "Adaptive I is desirable but unavailable for the active worker combination.")
 	}
@@ -605,6 +678,7 @@ func analyzeFrameStructureProbeFrames(frames []frameStructureProbeFrame) QSVFram
 	}
 
 	if len(gopLengths) > 0 {
+		result.GOPLengths = append([]int(nil), gopLengths...)
 		result.CompleteGOPs = len(gopLengths)
 		result.MinimumGOPLength = gopLengths[0]
 		totalGOPLength := 0
@@ -621,6 +695,9 @@ func analyzeFrameStructureProbeFrames(frames []frameStructureProbeFrame) QSVFram
 
 		result.AverageGOPLength =
 			float64(totalGOPLength) / float64(len(gopLengths))
+		result.P25GOPLength = percentileGOPLength(gopLengths, 0.25)
+		result.MedianGOPLength = percentileGOPLength(gopLengths, 0.50)
+		result.P75GOPLength = percentileGOPLength(gopLengths, 0.75)
 	}
 
 	result.HasBFrames = result.BFrames > 0
@@ -628,6 +705,23 @@ func analyzeFrameStructureProbeFrames(frames []frameStructureProbeFrame) QSVFram
 	applyQSVFrameStructureAssessment(&result)
 
 	return result
+}
+
+func percentileGOPLength(values []int, percentile float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]int(nil), values...)
+	sort.Ints(sorted)
+	percentile = math.Max(0, math.Min(1, percentile))
+	position := percentile * float64(len(sorted)-1)
+	lower := int(math.Floor(position))
+	upper := int(math.Ceil(position))
+	if lower == upper {
+		return float64(sorted[lower])
+	}
+	weight := position - float64(lower)
+	return float64(sorted[lower])*(1-weight) + float64(sorted[upper])*weight
 }
 
 func frameSignalsFromStructureProbe(frames []frameStructureProbeFrame) FrameSignalSummary {
@@ -876,6 +970,7 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 	result := QSVFrameStructureAnalysis{Version: 2, Source: "ffprobe_distributed_windows", AssetDurationSeconds: plan.AssetDurationSeconds, WindowLengthSeconds: plan.WindowSeconds, Positions: append([]float64(nil), plan.Positions...), WindowsRequested: len(plan.Positions)}
 	gopWeightedTotal := 0.0
 	windowGOPs := []float64{}
+	allGOPLengths := []int{}
 	intervals := [][2]float64{}
 	windows := plan.windows(plan.WindowSeconds)
 	selectedWindows := windows
@@ -941,6 +1036,7 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 			result.MaxConsecutiveBFrames = analysis.MaxConsecutiveBFrames
 		}
 		if analysis.CompleteGOPs > 0 {
+			allGOPLengths = append(allGOPLengths, analysis.GOPLengths...)
 			gopWeightedTotal += analysis.AverageGOPLength * float64(analysis.CompleteGOPs)
 			windowGOPs = append(windowGOPs, analysis.AverageGOPLength)
 			if result.MinimumGOPLength == 0 || analysis.MinimumGOPLength < result.MinimumGOPLength {
@@ -957,6 +1053,10 @@ func analyzeVideoFrameStructureWithSamplingPlan(ctx context.Context, path string
 	}
 	if result.CompleteGOPs > 0 {
 		result.AverageGOPLength = gopWeightedTotal / float64(result.CompleteGOPs)
+		result.GOPLengths = append([]int(nil), allGOPLengths...)
+		result.P25GOPLength = percentileGOPLength(allGOPLengths, 0.25)
+		result.MedianGOPLength = percentileGOPLength(allGOPLengths, 0.50)
+		result.P75GOPLength = percentileGOPLength(allGOPLengths, 0.75)
 	}
 	result.HasBFrames = result.BFrames > 0
 	result.WindowCount = len(result.Windows)

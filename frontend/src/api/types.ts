@@ -161,6 +161,7 @@ export type AssetConversionOverrideState = {
   x265Params?: string;
   frameStructureMode?: 'auto' | 'off' | 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   frameStructureGopMode?: 'auto' | 'recommended' | 'custom';
+  frameStructureGopStrategy?: 'compatible' | 'balanced' | 'maximum_compression' | 'custom';
   frameStructureGopFrames?: number;
   frameStructureBFrameMode?: 'auto' | 'recommended' | 'custom' | 'off';
   frameStructureMaxBFrames?: number;
@@ -1396,6 +1397,11 @@ export type FrameStructureRecommendationSet = {
   fps: number;
   recommendedMaxBFrames: number;
   confidence: string;
+  autoStrategy?: 'compatible' | 'balanced';
+  analysisDriven?: boolean;
+  sourceAnchorFrames?: number;
+  sourceAnchorSeconds?: number;
+  sourceFps?: number;
   byMode: Partial<Record<'compatible' | 'balanced' | 'maximum_compression', QSVFrameStructureRecommendation>>;
   warnings?: string[];
 };
@@ -1464,6 +1470,9 @@ export type QSVFrameStructureAnalysis = {
   hasBFrames: boolean;
   maxConsecutiveBFrames: number;
   averageGopLength: number;
+  medianGopLength?: number;
+  p25GopLength?: number;
+  p75GopLength?: number;
   minimumGopLength?: number;
   maximumGopLength?: number;
   completeGops?: number;
@@ -1600,6 +1609,7 @@ export type PreviewInspection = {
   requestedQSVRateControl: string;
   effectiveQSVRateControl: string;
   effectiveVideoDecision?: EffectiveVideoDecision;
+  frameStructureRecommendation?: FrameStructureRecommendationSet;
   ffmpegArgs: string[];
   normalization: {
     mode: 'preserve' | 'normalize_bt709';
