@@ -949,15 +949,17 @@ func TestAssetConversionOverridePreservesExplicitMBBRCAndRDOIntent(t *testing.T)
 func TestCompatiblePreviewMBBRCAndRDOReachCapabilityGatedQSVCommand(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		mode       string
+		mbbrcMode  string
+		rdoMode    string
 		mbbrcProbe string
 		rdoProbe   string
 		wantMBBRC  string
 		wantRDO    string
 	}{
-		{name: "supported enabled", mode: "enabled", mbbrcProbe: "ON", rdoProbe: "ON", wantMBBRC: "-mbbrc 1", wantRDO: "-rdo 1"},
-		{name: "auto", mode: "auto", mbbrcProbe: "ON", rdoProbe: "ON"},
-		{name: "unsupported enabled", mode: "enabled", mbbrcProbe: "OFF", rdoProbe: "OFF"},
+		{name: "MBBRC Auto and RDO Enabled", mbbrcMode: "auto", rdoMode: "enabled", mbbrcProbe: "ON", rdoProbe: "ON", wantRDO: "-rdo 1"},
+		{name: "MBBRC Enabled and RDO Auto", mbbrcMode: "enabled", rdoMode: "auto", mbbrcProbe: "ON", rdoProbe: "ON", wantMBBRC: "-mbbrc 1"},
+		{name: "MBBRC Disabled and RDO Enabled", mbbrcMode: "disabled", rdoMode: "enabled", mbbrcProbe: "ON", rdoProbe: "ON", wantMBBRC: "-mbbrc 0", wantRDO: "-rdo 1"},
+		{name: "RDO unsupported while MBBRC supported", mbbrcMode: "enabled", rdoMode: "enabled", mbbrcProbe: "ON", rdoProbe: "OFF", wantMBBRC: "-mbbrc 1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			binDir := t.TempDir()
@@ -993,7 +995,7 @@ exit 0
 
 			args := previewVideoCodecArgs(
 				nil, "", "x265_10bit", "20", "slower", "p010le", "",
-				"hevc_qsv", true, 25, "icq", 40, false, false, false, test.mode, test.mode, 2,
+				"hevc_qsv", true, 25, "icq", 40, false, false, false, test.mbbrcMode, test.rdoMode, 2,
 			)
 			command := strings.Join(args, " ")
 			if test.wantMBBRC == "" {
