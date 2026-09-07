@@ -20,10 +20,6 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
-vi.mock('../components/MediaSnapshotDetails', () => ({
-  MediaSnapshotDetails: ({ scan, section }: { scan: { videoCodec?: string }; section?: string }) => section === 'general' ? <div>{scan.videoCodec}</div> : null,
-}));
-
 import { api } from '../api/client';
 import { AssetsPage } from './AssetsPage';
 
@@ -434,10 +430,10 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
 
     fireEvent.keyDown(dialog!, { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     fireEvent.click(assetInfoButton!);
-    dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    expect(dialog).not.toBeNull();
-    destinationMode = within(dialog!).getByLabelText('Destination mode');
+    dialog = await screen.findByRole('dialog');
+    destinationMode = within(dialog).getByLabelText('Destination mode');
     expect(destinationMode.textContent).toContain('Inherit');
     expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
   });
