@@ -265,6 +265,7 @@ describe('Profile Lab Process Asset suggestions', () => {
         recommendedBFrames={2}
         recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
         autoStrategy="balanced"
+        analysisDriven
         frameRate={24000 / 1001}
         onChange={vi.fn()}
         onChangeMany={onChangeMany}
@@ -273,6 +274,8 @@ describe('Profile Lab Process Asset suggestions', () => {
 
     expect(screen.getByText(/Effective GOP: 19 frames/)).toBeTruthy();
     expect(screen.getByText(/Candidates: Compatible 15 · Balanced 19 · Maximum Compression 26/)).toBeTruthy();
+    expect(screen.getByText('Analysis-based GOP recommendation')).toBeTruthy();
+    expect(screen.queryByText(/Generic fallback/)).toBeNull();
     expect(screen.queryByLabelText('GOP Strategy')).toBeNull();
     await userEvent.click(screen.getByLabelText('GOP Mode'));
     await userEvent.click(screen.getByRole('option', { name: 'Manual' }));
@@ -289,6 +292,7 @@ describe('Profile Lab Process Asset suggestions', () => {
         recommendedBFrames={2}
         recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
         autoStrategy="balanced"
+        analysisDriven
         frameRate={24000 / 1001}
         onChange={vi.fn()}
         onChangeMany={onChangeMany}
@@ -313,11 +317,28 @@ describe('Profile Lab Process Asset suggestions', () => {
         recommendedBFrames={2}
         recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
         autoStrategy="balanced"
+        analysisDriven={false}
         frameRate={24000 / 1001}
         onChange={vi.fn()}
         onChangeMany={onChangeMany}
       />,
     );
     expect((screen.getByLabelText('GOP') as HTMLInputElement).value).toBe('48');
+
+    view.rerender(
+      <FrameStructureControls
+        config={{ frameStructureMode: 'auto', frameStructureGopMode: 'auto' }}
+        recommendedGop={19}
+        recommendedBFrames={2}
+        recommendedGopByMode={{ compatible: 15, balanced: 19, maximum_compression: 26 }}
+        autoStrategy="balanced"
+        analysisDriven={false}
+        frameRate={24000 / 1001}
+        onChange={vi.fn()}
+        onChangeMany={onChangeMany}
+      />,
+    );
+    expect(screen.getByText(/Generic fallback/)).toBeTruthy();
+    expect(screen.queryByText('Analysis-based GOP recommendation')).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ type Props = {
   recommendedBFrames?: number;
   recommendedGopByMode?: Partial<Record<Exclude<FrameStructureMode, 'custom' | 'auto' | 'off'>, number>>;
   autoStrategy?: 'compatible' | 'balanced';
+  analysisDriven?: boolean;
   frameRate?: number;
   onChange: (key: string, value: unknown) => void;
   onChangeMany?: (patch: Record<string, unknown>) => void;
@@ -19,7 +20,7 @@ type Props = {
   compact?: boolean;
 };
 
-export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, autoStrategy = 'balanced', frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
+export function FrameStructureControls({ config, recommendedGop, recommendedBFrames, recommendedGopByMode, autoStrategy = 'balanced', analysisDriven, frameRate, onChange, onChangeMany, encoder = '', disabled = false, compact = false }: Props) {
   const structureMode = mode<FrameStructureMode>(
     config.frameStructureMode,
     ['auto', 'off', 'compatible', 'balanced', 'maximum_compression', 'custom'],
@@ -228,9 +229,16 @@ export function FrameStructureControls({ config, recommendedGop, recommendedBFra
           </Grid>
         </Grid>
         {gopMode === 'auto' && effectiveRecommendedGop ? (
-          <Typography variant="body2" color="text.secondary">
-            Effective GOP: {effectiveRecommendedGop} frames{frameRate && frameRate > 0 ? ` · ~${(effectiveRecommendedGop / frameRate).toFixed(2)} sec` : ''}. Candidates: Compatible {recommendedGopByMode?.compatible ?? '—'} · Balanced {recommendedGopByMode?.balanced ?? '—'} · Maximum Compression {recommendedGopByMode?.maximum_compression ?? '—'}.
-          </Typography>
+          <Stack spacing={0.25}>
+            <Typography variant="body2" color="text.secondary">
+              Effective GOP: {effectiveRecommendedGop} frames{frameRate && frameRate > 0 ? ` · ~${(effectiveRecommendedGop / frameRate).toFixed(2)} sec` : ''}. Candidates: Compatible {recommendedGopByMode?.compatible ?? '—'} · Balanced {recommendedGopByMode?.balanced ?? '—'} · Maximum Compression {recommendedGopByMode?.maximum_compression ?? '—'}.
+            </Typography>
+            {analysisDriven === true ? (
+              <Typography variant="caption" color="text.secondary">Analysis-based GOP recommendation</Typography>
+            ) : analysisDriven === false ? (
+              <Typography variant="caption" color="warning.main">Generic fallback · usable source GOP evidence is unavailable.</Typography>
+            ) : null}
+          </Stack>
         ) : null}
         {structureMode !== 'off' && encoder === 'libx265' && (configuredGopStrategy === 'custom' || bFrameMode === 'custom') ? (
           <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1.5 }}>

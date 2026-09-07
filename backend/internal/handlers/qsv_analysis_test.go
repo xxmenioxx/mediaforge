@@ -318,6 +318,40 @@ func TestFrameStructureRecommendationV2UsesLegacyAverageWithoutReanalysis(t *tes
 	}
 }
 
+func TestFrameStructureRecommendationV2NormalizesLegacyConfidence(t *testing.T) {
+	legacy := models.ScanResult{
+		VideoStreams: models.JSONList{map[string]any{"avgFrameRate": "24000/1001"}},
+		FrameStructureAnalysis: models.JSONMap{
+			"version": 2, "averageGopLength": 15.0, "completeGops": 4,
+			"variability": "low",
+		},
+	}
+	result := buildFrameStructureRecommendationSetForFPS(legacy, 24000.0/1001.0)
+	if !result.AnalysisDriven || result.SourceAnchorFrames != 15 || result.Confidence != "low" {
+		t.Fatalf("legacy source facts were not normalized conservatively: %#v", result)
+	}
+	if result.AutoStrategy != "compatible" || result.AutoStrategy == "balanced" {
+		t.Fatalf("missing confidence must select Compatible Auto: %#v", result)
+	}
+	if result.ByMode["compatible"].TargetGOPFrames != 15 || result.ByMode["balanced"].TargetGOPFrames != 15 || result.ByMode["maximum_compression"].TargetGOPFrames != 19 {
+		t.Fatalf("missing confidence must use risky factors: %#v", result.ByMode)
+	}
+
+	medium := legacy
+	medium.VideoStreams = models.JSONList{map[string]any{"avgFrameRate": "20/1"}}
+	medium.FrameStructureAnalysis = models.JSONMap{
+		"version": 2, "averageGopLength": 20.0, "completeGops": 4,
+		"variability": "low", "confidence": "medium",
+	}
+	mediumResult := buildFrameStructureRecommendationSetForFPS(medium, 20)
+	if mediumResult.Confidence != "medium" || mediumResult.AutoStrategy != "balanced" {
+		t.Fatalf("explicit medium confidence was not preserved: %#v", mediumResult)
+	}
+	if mediumResult.ByMode["compatible"].TargetGOPFrames != 20 || mediumResult.ByMode["balanced"].TargetGOPFrames != 22 || mediumResult.ByMode["maximum_compression"].TargetGOPFrames != 30 {
+		t.Fatalf("medium confidence must use intermediate factors: %#v", mediumResult.ByMode)
+	}
+}
+
 func TestQSVFrameStructureAssessment(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -3089,6 +3089,7 @@ export function ProfileLabPage() {
                               recommendedBFrames={selectedAssetSnapshot ? frameStructureRecommendationForLab(selectedAssetSnapshot.frameStructureAnalysis, selectedAssetSnapshot, videoDraft, validatedFidelityInspection?.frameStructureRecommendation).maxBFrames : undefined}
                               recommendedGopByMode={frameStructureGopFramesByMode(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)}
                               autoStrategy={(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)?.autoStrategy}
+                              analysisDriven={(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)?.analysisDriven}
                               frameRate={(validatedFidelityInspection?.frameStructureRecommendation ?? selectedAssetSnapshot?.frameStructureRecommendation)?.fps ?? reliableFrameRateForScan(selectedAssetSnapshot)}
                               onChange={(key, value) => updateVideoWorkerConfig(setVideoDraft, key, value)}
                               onChangeMany={updateFrameStructurePolicy}

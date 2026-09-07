@@ -245,6 +245,19 @@ func buildFrameStructureRecommendationSet(scan models.ScanResult) FrameStructure
 	return buildFrameStructureRecommendationSetForFPS(scan, fps)
 }
 
+func normalizedFrameStructureConfidence(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "high":
+		return "high"
+	case "medium":
+		return "medium"
+	case "low":
+		return "low"
+	default:
+		return "low"
+	}
+}
+
 func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps float64) FrameStructureRecommendationSet {
 	analysis := scan.FrameStructureAnalysis
 	source := QSVFrameStructureAnalysis{
@@ -263,6 +276,7 @@ func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps floa
 		Confidence:            strings.TrimSpace(stringFromUnknown(analysis["confidence"])),
 		ConfidenceScore:       workerNumberValue(analysis["confidenceScore"], 0),
 	}
+	source.Confidence = normalizedFrameStructureConfidence(source.Confidence)
 	sourceFPS := scanFrameRate(scan)
 	if sourceFPS <= 0 {
 		sourceFPS = workerNumberValue(scan.FrameStructureRecommendation["sourceFps"], 0)
@@ -294,9 +308,6 @@ func buildFrameStructureRecommendationSetForFPS(scan models.ScanResult, fps floa
 		SourceAnchorFrames:    anchorFrames,
 		SourceAnchorSeconds:   anchorSeconds,
 		SourceFPS:             sourceFPS,
-	}
-	if result.Confidence == "" {
-		result.Confidence = "low"
 	}
 	for _, mode := range []string{"compatible", "balanced", "maximum_compression"} {
 		recommendation := recommendFrameStructureForFPS(source, sourceFPS, fps, "", mode, false, false, false)
@@ -392,6 +403,7 @@ func recommendFrameStructureForFPS(source QSVFrameStructureAnalysis, sourceFPS, 
 	if effectiveFPS <= 0 {
 		return FrameStructureRecommendation{MaxBFrames: 3, Confidence: "low", Warnings: []string{"A reliable asset frame rate is required before MVForge can calculate an automatic GOP recommendation."}}
 	}
+	source.Confidence = normalizedFrameStructureConfidence(source.Confidence)
 	mode := strings.ToLower(strings.TrimSpace(policy))
 	anchorFrames := source.MedianGOPLength
 	if anchorFrames <= 0 {
@@ -452,9 +464,6 @@ func recommendFrameStructureForFPS(source QSVFrameStructureAnalysis, sourceFPS, 
 		maxB = source.MaxConsecutiveBFrames
 	}
 	result := FrameStructureRecommendation{TargetGOPFrames: target, TargetGOPSeconds: float64(target) / effectiveFPS, MaxBFrames: maxB, AdaptiveI: advancedAllowed && adaptiveISupported, AdaptiveB: advancedAllowed && adaptiveBSupported, SourceAverageGOP: source.AverageGOPLength, SourceMaxBRun: source.MaxConsecutiveBFrames, SourceBRatio: source.BFrameRatio, Confidence: source.Confidence}
-	if result.Confidence == "" {
-		result.Confidence = "low"
-	}
 	result.Reasons = []string{fmt.Sprintf("Source GOP anchor %.1f frames is %.2f seconds at %.3f source fps; %s targets %.2f seconds (%d frames at %.3f effective fps).", anchorFrames, anchorSeconds, sourceFPS, mode, result.TargetGOPSeconds, target, effectiveFPS), fmt.Sprintf("Source longest B-run is %d; recommended maximum B depth is %d.", source.MaxConsecutiveBFrames, maxB)}
 	if advancedAllowed && !adaptiveISupported {
 		result.Warnings = append(result.Warnings, "Adaptive I is desirable but unavailable for the active worker combination.")
