@@ -2501,7 +2501,6 @@ function AssetRow({
 }) {
   const queryClient = useQueryClient();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
-  const assetScopeConfigurations = useQuery({ queryKey: ['assetScopeConfigurations'], queryFn: api.assetScopeConfigurations });
   const assetVideoProfiles = profiles.filter((profile) => profile.scope === 'asset');
   const assetAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'asset');
   const assetTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'asset');
@@ -2521,6 +2520,11 @@ function AssetRow({
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
+  const assetScopeConfigurations = useQuery({
+    queryKey: ['assetScopeConfigurations'],
+    queryFn: api.assetScopeConfigurations,
+    enabled: showSnapshotDialog && mode === 'unprocessed',
+  });
   const [snapshotTab, setSnapshotTab] = useState(0);
   const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
@@ -4016,7 +4020,7 @@ async function generateExternalSubtitle(
                               label="Destination mode"
                               value={assetDestinationMode}
                               onChange={(event) => selectAssetDestinationMode(event.target.value as 'inherit' | 'value' | 'disabled')}
-                              disabled={rowLocked || asset.missing || assetScopeConfigurations.isLoading || updateProfileAssignment.isPending || updateAssetDestination.isPending}
+                              disabled={rowLocked || asset.missing || assetScopeConfigurations.isLoading || assetScopeConfigurations.isError || updateProfileAssignment.isPending || updateAssetDestination.isPending}
                             >
                               <MenuItem value="inherit">Inherit</MenuItem>
                               <MenuItem value="value">Override</MenuItem>
@@ -4030,10 +4034,11 @@ async function generateExternalSubtitle(
                               onChange={selectAssetDestination}
                               label="Destination"
                               size="small"
-                              disabled={rowLocked || asset.missing || assetDestinationMode !== 'value' || assetScopeConfigurations.isLoading || updateProfileAssignment.isPending || updateAssetDestination.isPending}
+                              disabled={rowLocked || asset.missing || assetDestinationMode !== 'value' || assetScopeConfigurations.isLoading || assetScopeConfigurations.isError || updateProfileAssignment.isPending || updateAssetDestination.isPending}
                             />
                           </Grid>
                         </Grid>
+                        {assetScopeConfigurations.isError ? <Alert severity="warning">Asset Destination configuration could not be loaded. Retry by reopening Asset Info.</Alert> : null}
                         {updateAssetDestination.isError ? <Alert severity="warning">{updateAssetDestination.error instanceof Error ? updateAssetDestination.error.message : 'Could not save the asset Destination.'}</Alert> : null}
                       </Stack>
                     ) : null}

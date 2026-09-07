@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +31,15 @@ function testAsset(id: number, path: string, missing = false): Asset {
 
 function testPath(id: string, path: string, displayPath: string, root: boolean, assets: Asset[]): AssetPath {
   return { id, name: displayPath, path, relativePath: displayPath, displayPath, isLogicalGroupRoot: root, fileCount: assets.length, assetCount: assets.length, sizeBytes: assets.length * 1024, totalSizeBytes: assets.length * 1024, assets };
+}
+
+function singleAssetInventory(): AssetInventory {
+  const asset = testAsset(1, '/media/raw/movies/Akira/Akira.mkv');
+  const rootPath = testPath('root', '/media/raw/movies/Akira', 'Root', true, [asset]);
+  return {
+    sourceGroups: [{ id: 1, name: 'Movies', relativePath: 'movies', sourcePath: '/media/raw/movies', fileCount: 1, assetCount: 1, titleCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, logicalGroups: [{ id: '/media/raw/movies/Akira', name: 'Akira', path: '/media/raw/movies/Akira', relativePath: 'Akira', fileCount: 1, assetCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, assetPaths: [rootPath] }] }],
+    unprocessed: [asset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [], reports: {}, sync: { lastSyncedAt: '2026-08-28T00:00:00Z', totalRecords: 1, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
+  } as unknown as AssetInventory;
 }
 
 function testSnapshot(path = '/media/raw/movies/Akira/Akira.mkv', videoCodec = 'h264'): ScanResult {
@@ -303,6 +312,100 @@ describe('Unprocessed Assets hierarchy', () => {
 
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
   }, 10000);
+
+  it('does not observe asset scope configuration per AssetRow until Asset Info opens', async () => {
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    expect(await screen.findByRole('heading', { name: 'Akira' })).toBeTruthy();
+    await waitFor(() => expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Akira' }));
+    expect(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' })).toBeTruthy();
+    expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await waitFor(() => expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(2));
+  });
+
+  it('hydrates an explicit asset Destination override in Asset Info', async () => {
+    const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
+    const assetConfigurations = [{
+      id: 5, scopeType: 'asset', scopeKey: '/media/raw/movies/Akira/Akira.mkv',
+      categorySelection: 'inherit', category: '', destinationSelection: 'value', destinationLibraryId: 5,
+      createdAt: '', updatedAt: '',
+    }];
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    vi.mocked(api.assets).mockResolvedValue(singleAssetInventory());
+    vi.mocked(api.libraries).mockResolvedValue([{ id: 5, name: 'Movies', sourcePath: '/media/raw', destinationPath: '/media/library/movies', type: 'movies', validationRules: {}, createdAt: '', updatedAt: '' }]);
+    vi.mocked(api.assetScopeConfigurations).mockResolvedValue(assetConfigurations as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'], snapshotState);
+    queryClient.setQueryData(['assetScopeConfigurations'], assetConfigurations);
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+
+    const dialog = await screen.findByRole('dialog');
+    const destinationMode = await within(dialog).findByLabelText('Destination mode');
+    const destination = await within(dialog).findByLabelText('Destination');
+    await waitFor(() => expect(destinationMode.textContent).toContain('Override'));
+    await waitFor(() => expect((destination as HTMLInputElement).value).toBe('Movies'));
+  });
+
+  it('shows the inherited effective Destination in Asset Info', async () => {
+    const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
+    const assetConfigurations = [{
+      id: 5, scopeType: 'asset', scopeKey: '/media/raw/movies/Akira/Akira.mkv',
+      categorySelection: 'inherit', category: '', destinationSelection: 'inherit', destinationLibraryId: 0,
+      createdAt: '', updatedAt: '',
+    }];
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    vi.mocked(api.assets).mockResolvedValue(singleAssetInventory());
+    vi.mocked(api.libraries).mockResolvedValue([{ id: 5, name: 'Movies', sourcePath: '/media/raw', destinationPath: '/media/library/movies', type: 'movies', validationRules: {}, createdAt: '', updatedAt: '' }]);
+    vi.mocked(api.assetScopeConfigurations).mockResolvedValue(assetConfigurations as never);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
+      configurations: Object.fromEntries(assetIds.map((assetId) => [String(assetId), { assetPath: `/asset/${assetId}`, video: { selection: 'inherit' }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'value', destinationLibraryId: 5 } }])),
+      missingAssetIds: [],
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'], snapshotState);
+    queryClient.setQueryData(['assetScopeConfigurations'], assetConfigurations);
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await waitFor(() => expect(api.effectiveAssetConfigurations).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+
+    const dialog = await screen.findByRole('dialog');
+    const destinationMode = await within(dialog).findByLabelText('Destination mode');
+    await waitFor(() => expect(destinationMode.textContent).toContain('Inherit'));
+    expect(within(dialog).getByText('Destination applied · inherited').parentElement?.textContent).toContain('Movies');
+  });
+
+  it('keeps every Asset Info configuration control locked for an active Queue job', async () => {
+    const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    vi.mocked(api.assets).mockResolvedValue(singleAssetInventory());
+    vi.mocked(api.queueJobs).mockResolvedValue([activeQueueJob(101, '/media/raw/movies/Akira/Akira.mkv')]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'], snapshotState);
+    queryClient.setQueryData(['assetScopeConfigurations'], []);
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByRole('heading', { name: 'Asset information' });
+
+    for (const control of within(dialog).getAllByLabelText('Video profile')) expect(control).toHaveProperty('disabled', true);
+    expect(within(dialog).getByLabelText('Audio profile')).toHaveProperty('disabled', true);
+    expect(within(dialog).getByLabelText('Tracks profile')).toHaveProperty('disabled', true);
+    expect(within(dialog).getByLabelText('Destination mode').getAttribute('aria-disabled')).toBe('true');
+    expect(within(dialog).getByLabelText('Destination')).toHaveProperty('disabled', true);
+  });
 
   it('does not re-arm Rescan after success and snapshot refetch', async () => {
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
