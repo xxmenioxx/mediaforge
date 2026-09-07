@@ -821,6 +821,47 @@ func TestVideoToolboxOnlyOverrideIsNotDiscardedAsEmpty(t *testing.T) {
 	}
 }
 
+func TestAssetConversionOverridePreservesExplicitMBBRCIntent(t *testing.T) {
+	for _, mode := range []string{"enabled", "disabled"} {
+		if assetConversionOverrideEmpty(AssetConversionOverrideState{QSVMBBRCMode: mode}) {
+			t.Fatalf("explicit MBBRC %q override was incorrectly treated as empty", mode)
+		}
+	}
+	if !assetConversionOverrideEmpty(AssetConversionOverrideState{}) {
+		t.Fatal("omitted MBBRC unexpectedly made an empty override meaningful")
+	}
+
+	db, err := gorm.Open(sqlite.Open("file:asset-mbbrc-override?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	pathEnabled := filepath.Clean("/media/raw/enabled.mkv")
+	pathDisabled := filepath.Clean("/media/raw/disabled.mkv")
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		pathEnabled:  {QSVMBBRCMode: "enabled"},
+		pathDisabled: {QSVMBBRCMode: "disabled"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restored := assetConversionOverrides(db)
+	if restored[pathEnabled].QSVMBBRCMode != "enabled" || restored[pathDisabled].QSVMBBRCMode != "disabled" {
+		t.Fatalf("MBBRC asset overrides did not round trip: %#v", restored)
+	}
+
+	base := models.Profile{WorkerConfig: models.JSONMap{"qsvMBBRCMode": "enabled"}}
+	inherited := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{})
+	if workerStringValue(inherited.WorkerConfig["qsvMBBRCMode"]) != "enabled" {
+		t.Fatalf("omitted asset override replaced profile MBBRC: %#v", inherited.WorkerConfig)
+	}
+	effective := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{QSVMBBRCMode: "disabled"})
+	if workerStringValue(effective.WorkerConfig["qsvMBBRCMode"]) != "disabled" {
+		t.Fatalf("explicit asset MBBRC override was not applied: %#v", effective.WorkerConfig)
+	}
+}
+
 func TestBoundedPreviewStartAcceptsFractionalSecondsFromDistributedSampling(t *testing.T) {
 	start, ok := boundedPreviewStart("317.625")
 	if !ok || start != "00:05:17" {

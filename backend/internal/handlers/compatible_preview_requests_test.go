@@ -83,6 +83,47 @@ func TestCompatiblePreviewRequestIdentityIsDeterministicAndSensitive(t *testing.
 	if first == third {
 		t.Fatal("meaningful profile change collided with existing preview request")
 	}
+	autoID, normalizedAuto, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: base.Path}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabledID, normalizedEnabled, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: base.Path, QSVMBBRCMode: "enabled"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalizedAuto.QSVMBBRCMode != "auto" || normalizedEnabled.QSVMBBRCMode != "enabled" || autoID == enabledID {
+		t.Fatalf("MBBRC request identity was not normalized/sensitive: auto=%q enabled=%q autoID=%q enabledID=%q", normalizedAuto.QSVMBBRCMode, normalizedEnabled.QSVMBBRCMode, autoID, enabledID)
+	}
+	loaded, ok := loadCompatiblePreviewRequest(enabledID, now)
+	if !ok || loaded.QSVMBBRCMode != "enabled" {
+		t.Fatalf("stored MBBRC request did not round trip: ok=%t request=%#v", ok, loaded)
+	}
+}
+
+func TestCompatiblePreviewRequestNormalizesAndParsesMBBRCMode(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{{input: "", want: "auto"}, {input: "enabled", want: "enabled"}, {input: "disabled", want: "disabled"}, {input: "unknown", want: "auto"}} {
+		normalized, err := normalizeCompatiblePreviewRequest(compatiblePreviewRequest{Path: "/media/raw/test.mkv", QSVMBBRCMode: test.input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if normalized.QSVMBBRCMode != test.want {
+			t.Fatalf("qsvMBBRCMode %q normalized to %q, want %q", test.input, normalized.QSVMBBRCMode, test.want)
+		}
+	}
+
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodGet, "/preview?path=%2Fmedia%2Fraw%2Ftest.mkv&qsvMBBRCMode=enabled", nil)
+	parsed, err := compatiblePreviewRequestFromQuery(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.QSVMBBRCMode != "enabled" {
+		t.Fatalf("query qsvMBBRCMode=%q, want enabled", parsed.QSVMBBRCMode)
+	}
 }
 
 func TestCompatiblePreviewRequestExpiresWithoutPersistentState(t *testing.T) {

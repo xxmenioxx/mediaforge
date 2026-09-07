@@ -1102,6 +1102,9 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	if override.QSVAdaptiveB != nil {
 		workerConfig["qsvAdaptiveB"] = *override.QSVAdaptiveB
 	}
+	if value := normalizedOptionalQSVMBBRCMode(override.QSVMBBRCMode); value != "" {
+		workerConfig["qsvMBBRCMode"] = value
+	}
 	if override.QSVPStrategy != nil {
 		workerConfig["qsvPStrategy"] = min(2, max(0, *override.QSVPStrategy))
 	}
@@ -1147,6 +1150,13 @@ func applyAssetConversionOverrideToProfile(profile models.Profile, override Asse
 	}
 	profile.WorkerConfig = workerConfig
 	return normalizeHardwareQualityPreset(profile)
+}
+
+func normalizedOptionalQSVMBBRCMode(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return normalizedQSVMBBRCMode(value)
 }
 
 func planHasStreamSelection(override AssetConversionOverrideState) bool {

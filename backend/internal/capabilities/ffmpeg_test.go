@@ -1,6 +1,7 @@
 package capabilities
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -76,6 +77,36 @@ func TestQSVMBBRCEnabled(t *testing.T) {
 				t.Fatalf("qsvMBBRCEnabled() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestQSVMBBRCEvidenceRequiresRequestedRateControlAndEnabledMarker(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+		output   string
+		wantOK   bool
+		wantText string
+	}{
+		{name: "matching ICQ", expected: "ICQ", output: "RateControlMethod: ICQ\nMBBRC: ON\n", wantOK: true},
+		{name: "different rate control", expected: "ICQ", output: "RateControlMethod: VBR\nMBBRC: ON\n", wantText: "requested QSV rate control ICQ but encoder used VBR"},
+		{name: "missing rate control", expected: "ICQ", output: "MBBRC: ON\n", wantText: "RateControlMethod was not reported"},
+		{name: "MBBRC disabled", expected: "ICQ", output: "RateControlMethod: ICQ\nMBBRC: OFF\n", wantText: "did not enable MBBRC"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ok, reason := qsvMBBRCEvidence(test.expected, []byte(test.output))
+			if ok != test.wantOK || (test.wantText != "" && !strings.Contains(reason, test.wantText)) {
+				t.Fatalf("qsvMBBRCEvidence() = (%t, %q), want ok=%t reason containing %q", ok, reason, test.wantOK, test.wantText)
+			}
+		})
+	}
+}
+
+func TestSummarizedQSVProbeReasonIncludesMBBRC(t *testing.T) {
+	reason := summarizedQSVProbeReason([]byte("RateControlMethod: ICQ\nMBBRC: OFF\n"), errors.New("probe failed"))
+	if !strings.Contains(reason, "RateControlMethod: ICQ") || !strings.Contains(reason, "MBBRC: OFF") {
+		t.Fatalf("MBBRC evidence was omitted from summarized probe failure: %q", reason)
 	}
 }
 
