@@ -20,6 +20,10 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
+vi.mock('../components/MediaSnapshotDetails', () => ({
+  MediaSnapshotDetails: ({ scan, section }: { scan: { videoCodec?: string }; section?: string }) => section === 'general' ? <div>{scan.videoCodec}</div> : null,
+}));
+
 import { api } from '../api/client';
 import { AssetsPage } from './AssetsPage';
 
@@ -382,6 +386,60 @@ describe('Unprocessed Assets hierarchy', () => {
     const destinationMode = await within(dialog).findByLabelText('Destination mode');
     await waitFor(() => expect(destinationMode.textContent).toContain('Inherit'));
     expect(within(dialog).getByText('Destination applied · inherited').parentElement?.textContent).toContain('Movies');
+  });
+
+  it('rehydrates persisted Destination after reopening Asset Info', async () => {
+    const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
+    const assetConfigurations = [{
+      id: 5, scopeType: 'asset', scopeKey: '/media/raw/movies/Akira/Akira.mkv',
+      categorySelection: 'inherit', category: '', destinationSelection: 'inherit', destinationLibraryId: 0,
+      createdAt: '', updatedAt: '',
+    }];
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    vi.mocked(api.assets).mockResolvedValue(singleAssetInventory());
+    vi.mocked(api.assetScopeConfigurations).mockResolvedValue(assetConfigurations as never);
+    const inventory = singleAssetInventory();
+    const effectiveConfigurations = {
+      configurations: { '1': { assetPath: '/media/raw/movies/Akira/Akira.mkv', video: { selection: 'inherit' }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'inherit' } } },
+      missingAssetIds: [],
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(['queueJobs'], []);
+    queryClient.setQueryData(['assets'], inventory);
+    queryClient.setQueryData(['profiles'], []);
+    queryClient.setQueryData(['libraries'], []);
+    queryClient.setQueryData(['settings'], []);
+    queryClient.setQueryData(['snapshotOperations'], { operations: [] });
+    queryClient.setQueryData(['profileAssignments'], []);
+    queryClient.setQueryData(['effectiveAssetConfiguration', 'batch', 1], effectiveConfigurations);
+    queryClient.setQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'], snapshotState);
+    queryClient.setQueryData(['assetScopeConfigurations'], assetConfigurations);
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    const expandButton = document.querySelector<HTMLButtonElement>('[aria-label="Expand Akira"]');
+    expect(expandButton).not.toBeNull();
+    fireEvent.click(expandButton!);
+    const assetInfoButton = document.querySelector<HTMLButtonElement>('[aria-label="Asset Info Akira.mkv"]');
+    expect(assetInfoButton).toHaveProperty('disabled', false);
+    fireEvent.click(assetInfoButton!);
+    let dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    let destinationMode = within(dialog!).getByLabelText('Destination mode');
+    expect(destinationMode.textContent).toContain('Inherit');
+
+    const destinationModeInput = destinationMode.parentElement?.querySelector('input');
+    expect(destinationModeInput).not.toBeNull();
+    fireEvent.change(destinationModeInput!, { target: { value: 'value' } });
+    expect(destinationMode.textContent).toContain('Override');
+    expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(dialog!, { key: 'Escape', code: 'Escape' });
+    fireEvent.click(assetInfoButton!);
+    dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    destinationMode = within(dialog!).getByLabelText('Destination mode');
+    expect(destinationMode.textContent).toContain('Inherit');
+    expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
   });
 
   it('keeps every Asset Info configuration control locked for an active Queue job', async () => {

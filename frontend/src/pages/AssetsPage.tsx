@@ -2817,7 +2817,7 @@ function AssetRow({
   }, [profileAssignments.data, asset.path]);
 
   useEffect(() => {
-    if (!assetScopeConfigurations.data) return;
+    if (!showSnapshotDialog || !assetScopeConfigurations.data) return;
     const values = scopeConfigurationEditorValues(
       'asset',
       asset.path,
@@ -2833,7 +2833,7 @@ function AssetRow({
           ? groupLibraryId
           : 0,
     );
-  }, [asset.path, assetScopeConfigurations.data, groupLibraryId, profileAssignments.data]);
+  }, [showSnapshotDialog, asset.path, assetScopeConfigurations.data, groupLibraryId, profileAssignments.data]);
 
   function selectAssetVideoProfile(id: number) {
     setSelectedProfileId(id);
