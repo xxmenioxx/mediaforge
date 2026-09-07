@@ -4487,7 +4487,13 @@ func previewVideoCodecArgs(db *gorm.DB, profileID string, videoCodecOverride str
 		profile.WorkerConfig["qsvMBBRCMode"], _ = hardwareOverrides[8].(string)
 	}
 	if len(hardwareOverrides) > 9 {
-		profile.WorkerConfig["qsvPStrategy"], _ = hardwareOverrides[9].(int)
+		if value, ok := hardwareOverrides[9].(int); ok {
+			profile.WorkerConfig["qsvPStrategy"] = value
+			if value > 0 {
+				profile.WorkerConfig["frameStructureBFrameMode"] = "off"
+				profile.WorkerConfig["frameStructureMaxBFrames"] = 0
+			}
+		}
 	}
 	args := videoCodecArgs(profile)
 	return append(args, videoWorkerArgs(profile)...)

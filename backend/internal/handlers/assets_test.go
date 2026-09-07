@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
@@ -859,6 +860,60 @@ func TestAssetConversionOverridePreservesExplicitMBBRCIntent(t *testing.T) {
 	effective := applyAssetConversionOverrideToProfile(base, AssetConversionOverrideState{QSVMBBRCMode: "disabled"})
 	if workerStringValue(effective.WorkerConfig["qsvMBBRCMode"]) != "disabled" {
 		t.Fatalf("explicit asset MBBRC override was not applied: %#v", effective.WorkerConfig)
+	}
+}
+
+func TestCompatiblePreviewMBBRCReachesCapabilityGatedQSVCommand(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mode       string
+		mbbrcProbe string
+		wantMBBRC  string
+	}{
+		{name: "supported enabled", mode: "enabled", mbbrcProbe: "ON", wantMBBRC: "-mbbrc 1"},
+		{name: "auto", mode: "auto", mbbrcProbe: "ON"},
+		{name: "unsupported enabled", mode: "enabled", mbbrcProbe: "OFF"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			ffmpegPath := filepath.Join(binDir, "ffmpeg")
+			script := `#!/bin/sh
+case " $* " in
+  *" -encoders "*)
+    printf '%s\n' ' V..... hevc_qsv'
+    exit 0
+    ;;
+esac
+case " $* " in
+  *" -mbbrc 1 "*)
+    printf 'RateControlMethod: ICQ\nMBBRC: %s\n' "$MVFORGE_TEST_MBBRC"
+    ;;
+  *)
+    printf '%s\n' 'RateControlMethod: ICQ'
+    ;;
+esac
+exit 0
+`
+			if err := os.WriteFile(ffmpegPath, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("MVFORGE_TEST_MBBRC", test.mbbrcProbe)
+			capabilities.ResetEncoderCache()
+			t.Cleanup(capabilities.ResetEncoderCache)
+
+			args := previewVideoCodecArgs(
+				nil, "", "x265_10bit", "20", "slower", "p010le", "",
+				"hevc_qsv", true, 25, "icq", 40, false, false, false, test.mode, 2,
+			)
+			command := strings.Join(args, " ")
+			if test.wantMBBRC == "" {
+				assertNotContains(t, command, "-mbbrc")
+			} else {
+				assertContains(t, command, test.wantMBBRC)
+			}
+			assertContains(t, command, "-p_strategy 2")
+		})
 	}
 }
 
