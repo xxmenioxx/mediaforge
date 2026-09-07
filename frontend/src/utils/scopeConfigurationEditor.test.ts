@@ -32,8 +32,12 @@ function configuration(scopeType: ConfigurableAssetScope, scopeKey: string): Ass
   };
 }
 
-describe.each<ConfigurableAssetScope>(['logical_group', 'path'])('%s scope configuration editor', (targetType) => {
-  const scopeKey = targetType === 'logical_group' ? '/media/raw/movies/Akira' : '/media/raw/movies/Akira/extras';
+describe.each<ConfigurableAssetScope>(['logical_group', 'path', 'asset'])('%s scope configuration editor', (targetType) => {
+  const scopeKey = targetType === 'logical_group'
+    ? '/media/raw/movies/Akira'
+    : targetType === 'path'
+      ? '/media/raw/movies/Akira/extras'
+      : '/media/raw/movies/Akira/extras/Movie.mkv';
 
   it('loads persisted profile, disabled, inherit, category, and destination states', () => {
     const values = scopeConfigurationEditorValues(targetType, `${scopeKey}/`, [
