@@ -4349,11 +4349,12 @@ function EmbeddedSubtitleActions({
       <Stack spacing={1.25}>
         <Stack>
           <Typography variant="h3">Generate external subtitles</Typography>
-          <Typography color="text.secondary" variant="body2">Create an SRT or ASS sidecar from a selected embedded track. Bitmap tracks use OCR only when you press a generate button; the embedded track is not removed.</Typography>
+          <Typography color="text.secondary" variant="body2">Create an SRT sidecar, or losslessly extract an embedded ASS/SSA track in its original format. Bitmap tracks use OCR only when you press Generate SRT; the embedded track is not removed.</Typography>
         </Stack>
         {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
         {streams.map((stream) => {
           const bitmap = isBitmapSubtitleCodec(stream.codec);
+          const originalStyledFormat = stream.codec.toLowerCase() === 'ssa' ? 'SSA' : stream.codec.toLowerCase() === 'ass' ? 'ASS' : null;
           const streamGenerations = (['srt', 'ass'] as const)
             .map((format) => generations[subtitleGenerationKey(stream.index, format)])
             .filter((value): value is SubtitleGenerationState => Boolean(value));
@@ -4407,7 +4408,7 @@ function EmbeddedSubtitleActions({
                     </TextField>
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
-                  <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  {originalStyledFormat ? <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass')}>Extract {originalStyledFormat}</Button> : null}
                 </Stack>
               </Stack>
               {streamGenerations.map((generation) => (
