@@ -70,6 +70,7 @@ type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fall
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
 type AnalysisMode = 'fast' | 'balanced' | 'thorough' | 'custom';
 type AnalysisPolicyValue = { mode: AnalysisMode; adaptiveAnalysis: boolean; earlyConfidenceEnabled: boolean; earlyConfidenceThreshold: number; initialWindows: number; maximumWindows: number; windowSeconds: number; positions: number[]; interlaceValidation: 'automatic' | 'always'; cropDepth: 'reduced' | 'normal' | 'full'; reuseSnapshots: boolean; incrementalRefresh: boolean; concurrentAssets: number };
+type ProfileSampleEstimatePolicyValue = { hardwareWindows: number; softwareWindows: number; operationTimeoutMinutes: number };
 type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number; testEncodeRetentionHours: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
@@ -858,7 +859,10 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'analysis' ? (
-              <AnalysisPolicyCard key={JSON.stringify(analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value))} value={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })} />
+              <Stack spacing={2}>
+                <AnalysisPolicyCard key={JSON.stringify(analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value))} value={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })} />
+                <ProfileSampleEstimatePolicyCard key={JSON.stringify(profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value))} value={profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'profileSampleEstimatePolicy', value: value as unknown as Record<string, unknown> })} />
+              </Stack>
             ) : null}
 
             {section === 'pipeline' ? (
@@ -1393,6 +1397,27 @@ function AnalysisPolicyCard({ value, saving, onSave }: { value: AnalysisPolicyVa
     </Grid><Stack><FormControlLabel control={<Switch checked={draft.adaptiveAnalysis} onChange={(event) => setDraft({ ...draft, adaptiveAnalysis: event.target.checked })} />} label="Adaptive Analysis" /><Typography color="text.secondary" variant="body2">Start with the initial sampling windows and collect additional windows only when evidence is uncertain. Sampling duration may also adapt to asset length.</Typography></Stack><FormControlLabel control={<Switch checked={draft.earlyConfidenceEnabled} onChange={(event) => setDraft({ ...draft, earlyConfidenceEnabled: event.target.checked })} />} label="Stop early when evidence is stable" />{draft.earlyConfidenceEnabled ? <TextField type="number" label="Early confidence threshold" value={draft.earlyConfidenceThreshold} inputProps={{ min: 0.9, max: 1, step: 0.01 }} onChange={(event) => setDraft({ ...draft, earlyConfidenceThreshold: Math.max(0.9, Math.min(1, Number(event.target.value))) })} /> : null}</> : null}
     <Divider /><Typography variant="h4">Cache and workload</Typography><FormControlLabel control={<Switch checked={draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, reuseSnapshots: event.target.checked })} />} label="Reuse valid snapshots" /><FormControlLabel control={<Switch checked={draft.incrementalRefresh} disabled={!draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, incrementalRefresh: event.target.checked })} />} label="Refresh only stale analysis components" /><TextField type="number" label="Concurrent assets" value={draft.concurrentAssets} inputProps={{ min: 1, max: 4 }} onChange={(event) => setDraft({ ...draft, concurrentAssets: Math.max(1, Math.min(4, Number(event.target.value))) })} helperText="Applies to snapshot operations started from the API. Default: 1." />
     <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (custom && (draft.maximumWindows < draft.initialWindows || draft.positions.length < draft.maximumWindows))} onClick={() => onSave(draft)}>Save analysis policy</Button>
+  </Stack></CardContent></Card>;
+}
+
+function profileSampleEstimatePolicyValue(value: Record<string, unknown> | undefined): ProfileSampleEstimatePolicyValue {
+  return {
+    hardwareWindows: Math.max(1, Math.min(10, numberValue(value?.hardwareWindows, 5))),
+    softwareWindows: Math.max(1, Math.min(10, numberValue(value?.softwareWindows, 3))),
+    operationTimeoutMinutes: Math.max(5, Math.min(120, numberValue(value?.operationTimeoutMinutes, 30))),
+  };
+}
+
+function ProfileSampleEstimatePolicyCard({ value, saving, onSave }: { value: ProfileSampleEstimatePolicyValue; saving: boolean; onSave: (value: ProfileSampleEstimatePolicyValue) => void }) {
+  const [draft, setDraft] = useState(value);
+  return <Card><CardContent><Stack spacing={2}>
+    <Stack><Typography variant="h3">Profile LAB sample estimate</Typography><Typography color="text.secondary" variant="body2">Control distributed sample coverage and the safety limit for background Profile LAB estimates.</Typography></Stack>
+    <Grid container spacing={1.5}>
+      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Hardware sample windows" value={draft.hardwareWindows} inputProps={{ min: 1, max: 10, step: 1 }} onChange={(event) => setDraft({ ...draft, hardwareWindows: Math.max(1, Math.min(10, Number(event.target.value))) })} helperText="Number of distributed samples used with hardware encoders such as QSV." fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Software sample windows" value={draft.softwareWindows} inputProps={{ min: 1, max: 10, step: 1 }} onChange={(event) => setDraft({ ...draft, softwareWindows: Math.max(1, Math.min(10, Number(event.target.value))) })} helperText="Number of distributed samples used with software encoders such as libx265. Fewer samples reduce long CPU-bound LAB estimates." fullWidth /></Grid>
+      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Maximum estimate runtime" value={draft.operationTimeoutMinutes} inputProps={{ min: 5, max: 120, step: 1 }} onChange={(event) => setDraft({ ...draft, operationTimeoutMinutes: Math.max(5, Math.min(120, Number(event.target.value))) })} helperText="Safety watchdog for the complete background sample estimate operation (minutes)." fullWidth /></Grid>
+    </Grid>
+    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Profile LAB estimate policy</Button>
   </Stack></CardContent></Card>;
 }
 

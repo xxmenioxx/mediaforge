@@ -73,6 +73,64 @@ func TestSettingsRejectsInvalidAnalysisPolicy(t *testing.T) {
 	}
 }
 
+func TestSettingsPersistsNormalizedProfileSampleEstimatePolicy(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-profile-sample-estimate-policy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/profileSampleEstimatePolicy", strings.NewReader(`{"value":{"softwareWindows":2}}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	policy := loadProfileSampleEstimatePolicy(db)
+	if policy.HardwareWindows != 5 || policy.SoftwareWindows != 2 || policy.OperationTimeoutMinutes != 30 {
+		t.Fatalf("unexpected normalized policy: %#v", policy)
+	}
+}
+
+func TestSettingsRejectsInvalidProfileSampleEstimatePolicy(t *testing.T) {
+	tests := map[string]string{
+		"zero hardware windows":        `{"hardwareWindows":0}`,
+		"too many hardware windows":    `{"hardwareWindows":11}`,
+		"zero software windows":        `{"softwareWindows":0}`,
+		"too many software windows":    `{"softwareWindows":11}`,
+		"timeout below minimum":        `{"operationTimeoutMinutes":4}`,
+		"timeout above maximum":        `{"operationTimeoutMinutes":121}`,
+		"fractional windows":           `{"softwareWindows":2.5}`,
+		"non-numeric configured value": `{"hardwareWindows":"5"}`,
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open("file:settings-profile-sample-estimate-invalid-"+strings.ReplaceAll(name, " ", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+				t.Fatal(err)
+			}
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/settings/profileSampleEstimatePolicy", strings.NewReader(`{"value":`+value+`}`))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "must be an integer between") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestSettingsPersistsCanonicalCustomAnalysisPolicy(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:settings-custom-analysis-policy?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

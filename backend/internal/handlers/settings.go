@@ -57,6 +57,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		}
 		input.Value = normalizedAnalysisPolicyValue(input.Value)
 	}
+	if key == profileSampleEstimatePolicySettingKey {
+		normalized, err := profileSampleEstimatePolicyValue(input.Value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Value = normalized
+	}
 	if key == "mvforgePreferences" {
 		if err := validateMVForgePreferences(input.Value); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

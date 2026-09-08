@@ -24,9 +24,16 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-const profileSampleEstimateOperationTimeout = 30 * time.Minute
+const profileSampleEstimatePolicySettingKey = "profileSampleEstimatePolicy"
+
+const (
+	defaultProfileSampleEstimateHardwareWindows         = 5
+	defaultProfileSampleEstimateSoftwareWindows         = 3
+	defaultProfileSampleEstimateOperationTimeoutMinutes = 30
+)
 
 const (
 	profileSampleEstimateOperationRetention  = 24 * time.Hour
@@ -69,6 +76,152 @@ type profileSampleEstimateProgress struct {
 	Progress              float64
 	Speed                 float64
 	ETASeconds            int64
+}
+
+type profileSampleEstimatePolicy struct {
+	HardwareWindows         int
+	SoftwareWindows         int
+	OperationTimeoutMinutes int
+}
+
+func defaultProfileSampleEstimatePolicy() profileSampleEstimatePolicy {
+	return profileSampleEstimatePolicy{
+		HardwareWindows:         defaultProfileSampleEstimateHardwareWindows,
+		SoftwareWindows:         defaultProfileSampleEstimateSoftwareWindows,
+		OperationTimeoutMinutes: defaultProfileSampleEstimateOperationTimeoutMinutes,
+	}
+}
+
+func profileSampleEstimateInteger(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int8:
+		return int(typed), true
+	case int16:
+		return int(typed), true
+	case int32:
+		return int(typed), true
+	case int64:
+		converted := int(typed)
+		return converted, int64(converted) == typed
+	case uint:
+		converted := int(typed)
+		return converted, converted >= 0 && uint(converted) == typed
+	case uint8:
+		return int(typed), true
+	case uint16:
+		return int(typed), true
+	case uint32:
+		converted := int(typed)
+		return converted, converted >= 0 && uint32(converted) == typed
+	case uint64:
+		converted := int(typed)
+		return converted, converted >= 0 && uint64(converted) == typed
+	case float32:
+		value := float64(typed)
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+			return 0, false
+		}
+		converted := int(value)
+		return converted, float64(converted) == value
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Trunc(typed) != typed {
+			return 0, false
+		}
+		converted := int(typed)
+		return converted, float64(converted) == typed
+	default:
+		return 0, false
+	}
+}
+
+func profileSampleEstimatePolicyFromValue(value models.JSONMap, strict bool) (profileSampleEstimatePolicy, error) {
+	policy := defaultProfileSampleEstimatePolicy()
+	fields := []struct {
+		key         string
+		minimum     int
+		maximum     int
+		destination *int
+	}{
+		{key: "hardwareWindows", minimum: 1, maximum: 10, destination: &policy.HardwareWindows},
+		{key: "softwareWindows", minimum: 1, maximum: 10, destination: &policy.SoftwareWindows},
+		{key: "operationTimeoutMinutes", minimum: 5, maximum: 120, destination: &policy.OperationTimeoutMinutes},
+	}
+	for _, field := range fields {
+		raw, present := value[field.key]
+		if !present {
+			continue
+		}
+		parsed, valid := profileSampleEstimateInteger(raw)
+		if !valid || parsed < field.minimum || parsed > field.maximum {
+			if strict {
+				return profileSampleEstimatePolicy{}, fmt.Errorf("%s must be an integer between %d and %d", field.key, field.minimum, field.maximum)
+			}
+			continue
+		}
+		*field.destination = parsed
+	}
+	return policy, nil
+}
+
+func profileSampleEstimatePolicyValue(value models.JSONMap) (models.JSONMap, error) {
+	policy, err := profileSampleEstimatePolicyFromValue(value, true)
+	if err != nil {
+		return nil, err
+	}
+	return models.JSONMap{
+		"hardwareWindows":         policy.HardwareWindows,
+		"softwareWindows":         policy.SoftwareWindows,
+		"operationTimeoutMinutes": policy.OperationTimeoutMinutes,
+	}, nil
+}
+
+func loadProfileSampleEstimatePolicy(db *gorm.DB) profileSampleEstimatePolicy {
+	defaults := defaultProfileSampleEstimatePolicy()
+	if db == nil {
+		return defaults
+	}
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", profileSampleEstimatePolicySettingKey).Error; err != nil {
+		return defaults
+	}
+	policy, _ := profileSampleEstimatePolicyFromValue(setting.Value, false)
+	return policy
+}
+
+func profileSampleEstimateUsesSoftwareEncoder(encoder string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(encoder)), "lib")
+}
+
+func profileSampleEstimateWindowCount(policy profileSampleEstimatePolicy, effectiveEncoder string) int {
+	if profileSampleEstimateUsesSoftwareEncoder(effectiveEncoder) {
+		return policy.SoftwareWindows
+	}
+	return policy.HardwareWindows
+}
+
+func distributedProfileSampleStarts(duration float64, sampleSeconds int, count int) []float64 {
+	if duration <= 0 || sampleSeconds <= 0 || count <= 0 {
+		return []float64{}
+	}
+	maxStart := math.Max(0, duration-float64(sampleSeconds))
+	if maxStart == 0 || count == 1 {
+		return []float64{math.Round(maxStart*0.5*1000) / 1000}
+	}
+	margin := 0.08
+	if count <= 3 {
+		margin = 0.20
+	}
+	starts := make([]float64, 0, count)
+	for index := 0; index < count; index++ {
+		position := margin + (1-2*margin)*float64(index)/float64(count-1)
+		start := math.Round(position*maxStart*1000) / 1000
+		if len(starts) == 0 || start != starts[len(starts)-1] {
+			starts = append(starts, start)
+		}
+	}
+	return starts
 }
 
 type profileSampleEstimateOperationStore struct {
@@ -311,7 +464,7 @@ func finishProfileSampleEstimateContext(store *profileSampleEstimateOperationSto
 		}
 		operation.Status = profileSampleEstimateFailed
 		operation.Phase = profileSampleEstimateFailed
-		operation.Error = "sample estimate operation exceeded 30 minutes"
+		operation.Error = "sample estimate operation exceeded configured runtime limit"
 	})
 }
 
@@ -321,11 +474,12 @@ func (h AssetHandler) StartProfileSampleEstimateOperation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path and profile are required"})
 		return
 	}
+	policy := loadProfileSampleEstimatePolicy(h.db)
 	operation := launchProfileSampleEstimateOperation(
 		&profileSampleEstimateOperations,
 		profileSampleEstimateSlot,
 		input,
-		profileSampleEstimateOperationTimeout,
+		time.Duration(policy.OperationTimeoutMinutes)*time.Minute,
 		h.runProfileSampleEstimate,
 	)
 	c.JSON(http.StatusAccepted, operation)
@@ -392,13 +546,19 @@ func (h AssetHandler) runProfileSampleEstimate(
 	profile = resolveHEVCLevel(profile, streams)
 	profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
 	codecArgs := videoCodecArgsForSource(profile, &streams.Video[0])
+	effectiveEncoder := argumentValue(codecArgs, "-c:v")
 	workerArgs := videoWorkerArgsForSource(profile, &streams.Video[0])
 	dir, err := os.MkdirTemp("", "mvforge-sample-estimate-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	starts := distributedInterlaceStarts(streams.Duration, seconds)
+	policy := loadProfileSampleEstimatePolicy(h.db)
+	starts := distributedProfileSampleStarts(
+		streams.Duration,
+		seconds,
+		profileSampleEstimateWindowCount(policy, effectiveEncoder),
+	)
 	totalSampleSeconds := float64(len(starts) * seconds)
 	encodingStartedAt := time.Now()
 	emit := func(value profileSampleEstimateProgress) {
@@ -433,7 +593,7 @@ func (h AssetHandler) runProfileSampleEstimate(
 		return nil, fmt.Errorf("sample estimate produced no output")
 	}
 	videoBytes := int64(float64(totalBytes) / measuredSeconds * streams.Duration)
-	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "five_distributed_profile_samples", "effectiveEncoder": argumentValue(codecArgs, "-c:v"), "hardwareQualityPreset": workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "sourceVideoBitrate": streams.Video[0].Bitrate, "sourceWidth": streams.Video[0].Width, "sourceHeight": streams.Video[0].Height, "persisted": false}
+	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "distributed_profile_samples", "effectiveEncoder": effectiveEncoder, "hardwareQualityPreset": workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "sourceVideoBitrate": streams.Video[0].Bitrate, "sourceWidth": streams.Video[0].Width, "sourceHeight": streams.Video[0].Height, "persisted": false}
 	if input.ProfileID > 0 {
 		var saved models.Profile
 		if h.db.First(&saved, input.ProfileID).Error == nil && scheduler.ProfileEstimateFingerprint(saved) == scheduler.ProfileEstimateFingerprint(input.Profile) {

@@ -3617,7 +3617,7 @@ func profileWithPreviewDisplayNormalization(profile models.Profile, displayFilte
 }
 
 // SampleEstimate deliberately runs only when requested from LAB. It encodes
-// five distributed, short video-only samples using the current draft options,
+// distributed, short video-only samples using the current draft options,
 // then extrapolates their measured bitrate to the complete duration.
 type profileSampleEstimateInput struct {
 	Path      string         `json:"path"`

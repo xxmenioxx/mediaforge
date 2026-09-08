@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func newProfileSampleEstimateTestStore() *profileSampleEstimateOperationStore {
@@ -70,6 +73,95 @@ func TestProfileSampleEstimateProgressLineParsesTimeAndSpeed(t *testing.T) {
 	seconds, speed, ok = profileSampleEstimateProgressLine("speed=0.31x", seconds, speed)
 	if !ok || seconds != 8 || speed != 0.31 {
 		t.Fatalf("unexpected speed parse: seconds=%v speed=%v ok=%v", seconds, speed, ok)
+	}
+}
+
+func TestProfileSampleEstimatePolicyDefaults(t *testing.T) {
+	policy := loadProfileSampleEstimatePolicy(nil)
+	if policy.HardwareWindows != 5 || policy.SoftwareWindows != 3 || policy.OperationTimeoutMinutes != 30 {
+		t.Fatalf("unexpected defaults: %#v", policy)
+	}
+}
+
+func TestProfileSampleEstimatePolicyLoadsPersistedOverrides(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:profile-sample-estimate-policy?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: profileSampleEstimatePolicySettingKey, Value: models.JSONMap{
+		"hardwareWindows": 6, "softwareWindows": 2, "operationTimeoutMinutes": 45,
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	policy := loadProfileSampleEstimatePolicy(db)
+	if policy.HardwareWindows != 6 || policy.SoftwareWindows != 2 || policy.OperationTimeoutMinutes != 45 {
+		t.Fatalf("unexpected persisted policy: %#v", policy)
+	}
+}
+
+func TestProfileSampleEstimateEncoderUsesEffectiveHardwareWindows(t *testing.T) {
+	policy := profileSampleEstimatePolicy{HardwareWindows: 6, SoftwareWindows: 2, OperationTimeoutMinutes: 30}
+	tests := map[string]struct {
+		software bool
+		windows  int
+	}{
+		"libx265":    {software: true, windows: 2},
+		"libx264":    {software: true, windows: 2},
+		"libsvtav1":  {software: true, windows: 2},
+		"hevc_qsv":   {windows: 6},
+		"h264_qsv":   {windows: 6},
+		"hevc_nvenc": {windows: 6},
+	}
+	for encoder, test := range tests {
+		t.Run(encoder, func(t *testing.T) {
+			software := profileSampleEstimateUsesSoftwareEncoder(encoder)
+			if software != test.software {
+				t.Fatalf("software classification = %v, want %v", software, test.software)
+			}
+			if windows := profileSampleEstimateWindowCount(policy, encoder); windows != test.windows {
+				t.Fatalf("window count = %d, want %d", windows, test.windows)
+			}
+		})
+	}
+}
+
+func TestProfileSampleEstimateDefaultWindowSelection(t *testing.T) {
+	policy := defaultProfileSampleEstimatePolicy()
+	if got := profileSampleEstimateWindowCount(policy, "hevc_qsv"); got != 5 {
+		t.Fatalf("hevc_qsv windows = %d, want 5", got)
+	}
+	if got := profileSampleEstimateWindowCount(policy, "libx265"); got != 3 {
+		t.Fatalf("libx265 windows = %d, want 3", got)
+	}
+}
+
+func TestDistributedProfileSampleStarts(t *testing.T) {
+	three := distributedProfileSampleStarts(7200, 20, 3)
+	if len(three) != 3 || three[0] != 1436 || three[1] != 3590 || three[2] != 5744 {
+		t.Fatalf("unexpected three-window distribution: %v", three)
+	}
+	five := distributedProfileSampleStarts(7200, 20, 5)
+	if len(five) != 5 || five[0] != 574.4 || five[4] != 6605.6 {
+		t.Fatalf("unexpected five-window coverage: %v", five)
+	}
+	for index := 1; index < len(five); index++ {
+		if five[index] <= five[index-1] || five[index] > 7180 {
+			t.Fatalf("starts are not unique, sorted and bounded: %v", five)
+		}
+	}
+	short := distributedProfileSampleStarts(10, 20, 5)
+	if len(short) != 1 || short[0] != 0 {
+		t.Fatalf("unexpected short-asset distribution: %v", short)
+	}
+}
+
+func TestProfileSampleEstimateProgressUsesSoftwareWindowCount(t *testing.T) {
+	progress := profileSampleEstimateProgressValues(1, 2, 3, 20, 8, 0, time.Minute)
+	if math.Abs(progress.Progress-46.6666666667) > 0.0001 || progress.EncodedSeconds != 28 || progress.TotalSampleSeconds != 60 {
+		t.Fatalf("unexpected software-window progress: %#v", progress)
 	}
 }
 
