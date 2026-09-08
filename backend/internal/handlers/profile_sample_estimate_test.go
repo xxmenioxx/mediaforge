@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,6 +201,117 @@ func TestProfileSampleEstimateOperationDoesNotUseRequestContext(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if current, _ := store.copy(operation.ID); current.Status != profileSampleEstimateRunning {
 		t.Fatalf("operation inherited request cancellation: %#v", current)
+	}
+	close(release)
+	waitForProfileSampleEstimateOperation(t, store, operation.ID, func(item ProfileSampleEstimateOperation) bool {
+		return item.Status == profileSampleEstimateCompleted
+	})
+}
+
+func TestProfileSampleEstimateOperationContextOwnsTheFullWatchdog(t *testing.T) {
+	store := newProfileSampleEstimateTestStore()
+	slot := make(chan struct{}, 1)
+	watchdog := 5 * time.Minute
+	deadlineSeen := make(chan time.Duration, 1)
+	operation := launchProfileSampleEstimateOperation(store, slot, profileSampleEstimateInput{Seconds: 5}, watchdog, func(ctx context.Context, _ profileSampleEstimateInput, _ func(profileSampleEstimateProgress)) (models.JSONMap, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil, errors.New("operation context has no deadline")
+		}
+		deadlineSeen <- time.Until(deadline)
+		return models.JSONMap{"ok": true}, nil
+	})
+	remaining := <-deadlineSeen
+	if remaining < watchdog-time.Second {
+		t.Fatalf("runner received a shortened per-sample deadline: %s", remaining)
+	}
+	waitForProfileSampleEstimateOperation(t, store, operation.ID, func(item ProfileSampleEstimateOperation) bool {
+		return item.Status == profileSampleEstimateCompleted
+	})
+}
+
+func TestProfileSampleEstimateOperationCleanupRetentionAndHistoryLimit(t *testing.T) {
+	store := newProfileSampleEstimateTestStore()
+	now := time.Date(2026, time.September, 7, 12, 0, 0, 0, time.UTC)
+	activeCancel := func() {}
+	store.items["queued"] = &ProfileSampleEstimateOperation{ID: "queued", Status: profileSampleEstimateQueued, UpdatedAt: now.Add(-48 * time.Hour)}
+	store.items["running"] = &ProfileSampleEstimateOperation{ID: "running", Status: profileSampleEstimateRunning, UpdatedAt: now.Add(-48 * time.Hour)}
+	store.cancels["queued"] = activeCancel
+	store.cancels["running"] = activeCancel
+	store.items["expired"] = &ProfileSampleEstimateOperation{ID: "expired", Status: profileSampleEstimateCompleted, UpdatedAt: now.Add(-25 * time.Hour)}
+	store.cancels["expired"] = activeCancel
+	store.items["recent"] = &ProfileSampleEstimateOperation{ID: "recent", Status: profileSampleEstimateFailed, UpdatedAt: now.Add(-time.Hour)}
+
+	for index := 0; index < profileSampleEstimateOperationMaxHistory+5; index++ {
+		id := fmt.Sprintf("terminal-%03d", index)
+		store.items[id] = &ProfileSampleEstimateOperation{
+			ID: id, Status: profileSampleEstimateCanceled, UpdatedAt: now.Add(-time.Duration(index+2) * time.Minute),
+		}
+		store.cancels[id] = activeCancel
+	}
+
+	store.cleanup(now)
+
+	if _, ok := store.items["queued"]; !ok {
+		t.Fatal("cleanup removed queued operation")
+	}
+	if _, ok := store.items["running"]; !ok {
+		t.Fatal("cleanup removed running operation")
+	}
+	if _, ok := store.items["expired"]; ok {
+		t.Fatal("cleanup retained expired terminal operation")
+	}
+	if _, ok := store.cancels["expired"]; ok {
+		t.Fatal("cleanup retained expired cancel entry")
+	}
+	if _, ok := store.items["recent"]; !ok {
+		t.Fatal("cleanup removed recent terminal operation")
+	}
+
+	terminalCount := 0
+	for _, operation := range store.items {
+		if profileSampleEstimateTerminal(operation.Status) {
+			terminalCount++
+		}
+	}
+	if terminalCount != profileSampleEstimateOperationMaxHistory {
+		t.Fatalf("terminal history count = %d, want %d", terminalCount, profileSampleEstimateOperationMaxHistory)
+	}
+	if _, ok := store.items["terminal-000"]; !ok {
+		t.Fatal("cleanup did not retain newest terminal operation")
+	}
+	if _, ok := store.items["terminal-504"]; ok {
+		t.Fatal("cleanup retained oldest terminal operation above history cap")
+	}
+	if _, ok := store.cancels["terminal-504"]; ok {
+		t.Fatal("cleanup retained cancel entry for history-capped operation")
+	}
+	if store.cancels["queued"] == nil || store.cancels["running"] == nil {
+		t.Fatal("cleanup disturbed active cancel entries")
+	}
+}
+
+func TestProfileSampleEstimateOperationCleanupDoesNotDisturbCapacityExecution(t *testing.T) {
+	store := newProfileSampleEstimateTestStore()
+	slot := make(chan struct{}, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	operation := launchProfileSampleEstimateOperation(store, slot, profileSampleEstimateInput{}, time.Minute, func(ctx context.Context, _ profileSampleEstimateInput, _ func(profileSampleEstimateProgress)) (models.JSONMap, error) {
+		close(started)
+		select {
+		case <-release:
+			return models.JSONMap{"ok": true}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	<-started
+	store.cleanup(time.Now().Add(48 * time.Hour))
+	if current, ok := store.copy(operation.ID); !ok || current.Status != profileSampleEstimateRunning {
+		t.Fatalf("cleanup disturbed active operation: %#v", current)
+	}
+	if len(slot) != 1 {
+		t.Fatal("cleanup disturbed acquired capacity slot")
 	}
 	close(release)
 	waitForProfileSampleEstimateOperation(t, store, operation.ID, func(item ProfileSampleEstimateOperation) bool {

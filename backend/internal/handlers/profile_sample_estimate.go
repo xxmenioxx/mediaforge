@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,11 @@ import (
 )
 
 const profileSampleEstimateOperationTimeout = 30 * time.Minute
+
+const (
+	profileSampleEstimateOperationRetention  = 24 * time.Hour
+	profileSampleEstimateOperationMaxHistory = 500
+)
 
 const (
 	profileSampleEstimateQueued    = "queued"
@@ -149,6 +155,41 @@ func (store *profileSampleEstimateOperationStore) cancel(id string) (ProfileSamp
 	return *operation, true, true
 }
 
+func (store *profileSampleEstimateOperationStore) cleanup(now time.Time) {
+	store.Lock()
+	defer store.Unlock()
+
+	type terminalOperation struct {
+		id        string
+		updatedAt time.Time
+	}
+	terminal := make([]terminalOperation, 0, len(store.items))
+	for id, operation := range store.items {
+		if operation == nil || !profileSampleEstimateTerminal(operation.Status) {
+			continue
+		}
+		if now.Sub(operation.UpdatedAt) > profileSampleEstimateOperationRetention {
+			delete(store.items, id)
+			delete(store.cancels, id)
+			continue
+		}
+		terminal = append(terminal, terminalOperation{id: id, updatedAt: operation.UpdatedAt})
+	}
+	if len(terminal) <= profileSampleEstimateOperationMaxHistory {
+		return
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		if terminal[i].updatedAt.Equal(terminal[j].updatedAt) {
+			return terminal[i].id > terminal[j].id
+		}
+		return terminal[i].updatedAt.After(terminal[j].updatedAt)
+	})
+	for _, operation := range terminal[profileSampleEstimateOperationMaxHistory:] {
+		delete(store.items, operation.id)
+		delete(store.cancels, operation.id)
+	}
+}
+
 func profileSampleEstimateTerminal(status string) bool {
 	return status == profileSampleEstimateCompleted || status == profileSampleEstimateFailed || status == profileSampleEstimateCanceled
 }
@@ -161,6 +202,7 @@ func launchProfileSampleEstimateOperation(
 	run profileSampleEstimateRunner,
 ) ProfileSampleEstimateOperation {
 	now := time.Now()
+	store.cleanup(now)
 	id := fmt.Sprintf("profile-sample-estimate-%d-%d", now.UnixNano(), profileSampleEstimateSequence.Add(1))
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	operation := &ProfileSampleEstimateOperation{
@@ -189,6 +231,7 @@ func executeProfileSampleEstimateOperation(
 		store.Lock()
 		delete(store.cancels, id)
 		store.Unlock()
+		store.cleanup(time.Now())
 	}()
 
 	select {
@@ -289,6 +332,7 @@ func (h AssetHandler) StartProfileSampleEstimateOperation(c *gin.Context) {
 }
 
 func (h AssetHandler) GetProfileSampleEstimateOperation(c *gin.Context) {
+	profileSampleEstimateOperations.cleanup(time.Now())
 	operation, ok := profileSampleEstimateOperations.copy(c.Param("id"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "profile sample estimate operation not found"})
@@ -371,11 +415,9 @@ func (h AssetHandler) runProfileSampleEstimate(
 		args = append(args, codecArgs...)
 		args = append(args, workerArgs...)
 		args = append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-f", "matroska", "-y", output)
-		sampleCtx, cancel := context.WithTimeout(ctx, time.Duration(seconds+90)*time.Second)
-		err := runProfileSampleEstimateFFmpeg(sampleCtx, args, float64(seconds), func(encodedSeconds, speed float64) {
+		err := runProfileSampleEstimateFFmpeg(ctx, args, float64(seconds), func(encodedSeconds, speed float64) {
 			emit(profileSampleEstimateProgressValues(index, index+1, len(starts), float64(seconds), encodedSeconds, speed, time.Since(encodingStartedAt)))
 		})
-		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("sample estimate failed: %w", err)
 		}
