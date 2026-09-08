@@ -12,7 +12,7 @@ export type SubtitleTransform = {
 };
 
 export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extract';
-export type SubtitleSidecarFormat = 'original' | 'srt';
+export type SubtitleSidecarFormat = 'original' | 'srt' | 'ass';
 export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' };
 
 export type TrackProfile = {
@@ -142,7 +142,7 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
   };
 	const disposition = (entry: unknown): SubtitleDisposition => entry === 'remove' || entry === 'extract' || entry === 'keep_and_extract' ? entry : 'keep';
 	const sidecarFormats = (entry: unknown): SubtitleSidecarFormat[] => Array.isArray(entry)
-		? Array.from(new Set(entry.filter((value): value is SubtitleSidecarFormat => value === 'original' || value === 'srt')))
+		? Array.from(new Set(entry.filter((value): value is SubtitleSidecarFormat => value === 'original' || value === 'srt' || value === 'ass')))
 		: [];
 	const rules = (entry: unknown): SubtitleRule[] => Array.isArray(entry) ? entry.flatMap((raw) => {
 		if (!raw || typeof raw !== 'object') return [];

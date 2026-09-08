@@ -321,7 +321,7 @@ describe('Profile Lab asynchronous sample estimate', () => {
     expect(window.sessionStorage.getItem(storageKey)).toContain('estimate-1');
 
     expect(
-      screen.getByRole('button', { name: 'Cancel' }),
+      screen.getByRole('button', { name: 'Cancel', hidden: true }),
     ).toBeTruthy();
 
     expect(

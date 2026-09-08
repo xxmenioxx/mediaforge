@@ -1040,7 +1040,7 @@ func TestSubtitleExtractionPlansPreserveASSAndConvertOtherTextTracksToSRT(t *tes
 	if plans[1].Mode != "original" || plans[1].Format != "srt" || plans[1].OutputPath != "/media/library/Movie.eng.3.srt" {
 		t.Fatalf("unexpected SRT extraction plan: %#v", plans[1])
 	}
-	if len(unsupported) != 1 || unsupported[0] != "stream 4 (hdmv_pgs_subtitle)" {
+	if len(unsupported) != 0 {
 		t.Fatalf("unexpected unsupported subtitle tracks: %#v", unsupported)
 	}
 }
@@ -1067,7 +1067,7 @@ func TestSubtitleExtractionPlansUseCanonicalASSOutputSelection(t *testing.T) {
 		wantPath   string
 	}{
 		{name: "ass", codec: "ass", wantFormat: "ass", wantPath: "/media/library/Movie.spa.3.ass"},
-		{name: "ssa", codec: "ssa", wantFormat: "ssa", wantPath: "/media/library/Movie.spa.3.ssa"},
+		{name: "ssa", codec: "ssa", wantFormat: "ass", wantPath: "/media/library/Movie.spa.3.ass"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			streamIndex := 3
@@ -1078,21 +1078,38 @@ func TestSubtitleExtractionPlansUseCanonicalASSOutputSelection(t *testing.T) {
 			if len(unsupported) != 0 || len(plans) != 1 {
 				t.Fatalf("unexpected plans=%#v unsupported=%#v", plans, unsupported)
 			}
-			if plans[0].Mode != "original" || plans[0].Format != test.wantFormat || plans[0].OutputPath != test.wantPath {
+			if plans[0].Mode != "converted" || plans[0].Format != test.wantFormat || plans[0].OutputPath != test.wantPath {
 				t.Fatalf("unexpected selected plan: %#v", plans[0])
 			}
 		})
 	}
 }
 
-func TestSubtitleExtractionPlansRejectNonCanonicalASSConversion(t *testing.T) {
+func TestSubtitleExtractionPlansUseCanonicalTextToASSConversion(t *testing.T) {
 	streamIndex := 3
 	plans, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", []FFProbeStream{
 		{Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}},
 	}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "ass"})
 
-	if len(plans) != 0 || len(unsupported) != 1 || unsupported[0] != "stream 3 (subrip)" {
+	if len(unsupported) != 0 || len(plans) != 1 || plans[0].Mode != "converted" || plans[0].Format != "ass" || plans[0].OutputPath != "/media/library/Movie.eng.3.ass" {
 		t.Fatalf("unexpected plans=%#v unsupported=%#v", plans, unsupported)
+	}
+}
+
+func TestSubtitleExtractionPlansAcceptCanonicalBitmapASSOCRIntent(t *testing.T) {
+	streamIndex := 3
+	streams := []FFProbeStream{
+		{Index: 3, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "eng"}},
+	}
+	plans, unsupported := subtitleExtractionPlansForRequest(
+		"/media/library/Movie.mkv",
+		streams,
+		SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "ass"},
+	)
+	bitmapStreams := selectedBitmapSubtitleStreams(streams, &streamIndex)
+
+	if len(plans) != 0 || len(unsupported) != 0 || len(bitmapStreams) != 1 || bitmapStreams[0].Index != streamIndex {
+		t.Fatalf("plans=%#v unsupported=%#v bitmap=%#v", plans, unsupported, bitmapStreams)
 	}
 }
 

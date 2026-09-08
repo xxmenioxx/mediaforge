@@ -1293,10 +1293,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
-	bitmapStreams := []FFProbeStream{}
-	if !strings.EqualFold(strings.TrimSpace(input.Format), "ass") {
-		bitmapStreams = selectedBitmapSubtitleStreams(streams, input.StreamIndex)
-	}
+	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
 	if len(plans) == 0 && len(bitmapStreams) == 0 {
 		if len(unsupported) > 0 {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
@@ -2555,6 +2552,7 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 	base := strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath))
 	plans := []subtitleExtractionPlan{}
 	unsupported := []string{}
+	matched := false
 	requestedFormat := strings.ToLower(strings.TrimSpace(input.Format))
 	if requestedFormat != "" && requestedFormat != "srt" && requestedFormat != "ass" {
 		return plans, []string{"requested output format must be srt or ass"}
@@ -2566,26 +2564,20 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 		if input.StreamIndex != nil && stream.Index != *input.StreamIndex {
 			continue
 		}
-		if !subtitleCanConvertText(stream.CodecName) {
+		matched = true
+		requested := requestedFormat
+		if requested == "" {
+			originalFormat, _, supportsOriginal := originalSubtitleExtractionFormat(stream.CodecName)
+			if supportsOriginal && (originalFormat == "ass" || originalFormat == "ssa" || originalFormat == "srt") {
+				requested = "original"
+			}
+		}
+		format, mode, err := resolveSubtitleSidecarFormat(stream.CodecName, requested)
+		if err != nil {
 			unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
 			continue
 		}
-		originalFormat, _, supportsOriginal := originalSubtitleExtractionFormat(stream.CodecName)
-		format := requestedFormat
-		mode := "converted"
-		if format == "" {
-			format = "srt"
-			if supportsOriginal && (originalFormat == "ass" || originalFormat == "ssa" || originalFormat == "srt") {
-				format = originalFormat
-				mode = "original"
-			}
-		} else if format == "ass" && (originalFormat == "ass" || originalFormat == "ssa") {
-			format = originalFormat
-			mode = "original"
-		} else if supportsOriginal && format == originalFormat {
-			mode = "original"
-		} else if format != "srt" {
-			unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
+		if isBitmapSubtitleCodecName(stream.CodecName) {
 			continue
 		}
 		language := safeSubtitleFilenamePart(stream.Tags["language"])
@@ -2599,7 +2591,7 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 			OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
 		})
 	}
-	if input.StreamIndex != nil && len(plans) == 0 && len(unsupported) == 0 {
+	if input.StreamIndex != nil && !matched {
 		unsupported = append(unsupported, fmt.Sprintf("subtitle stream %d was not found", *input.StreamIndex))
 	}
 	return plans, unsupported

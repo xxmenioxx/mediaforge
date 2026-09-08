@@ -281,7 +281,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 				return artifacts, fmt.Errorf("%s", current.Error)
 			}
 			format = originalFormat
-		} else if format != "srt" || executionKind == "unsupported" {
+		} else if !convertedSubtitleFormatSupported(format) || executionKind == "unsupported" {
 			current.Status = "unsupported"
 			current.Error = fmt.Sprintf("subtitle stream %d codec %s cannot generate converted %s sidecar", stream.Index, stream.Codec, format)
 			return artifacts, fmt.Errorf("%s", current.Error)
@@ -374,6 +374,11 @@ func resolvedSubtitleExecutionKind(codec, mode string) string {
 		return "text_ffmpeg"
 	}
 	return "unsupported"
+}
+
+func convertedSubtitleFormatSupported(format string) bool {
+	format = strings.ToLower(strings.TrimSpace(format))
+	return format == "srt" || format == "ass"
 }
 
 func bitmapSubtitleStreamByIndex(ctx context.Context, inputPath string, streamIndex int, cached *map[int]FFProbeStream) (FFProbeStream, error) {

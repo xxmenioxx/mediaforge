@@ -77,18 +77,18 @@ func TestResolveTrackPlanASSCompatibilitySidecars(t *testing.T) {
 	plan, err := resolveTrackPlan(scan, map[string]any{
 		"trackDispositionVersion": 1,
 		"subtitleDisposition":     "keep_and_extract",
-		"subtitleSidecarFormats":  []string{"original", "srt"},
+		"subtitleSidecarFormats":  []string{"original", "srt", "ass"},
 		"attachmentPolicy":        "auto",
 		"chapterPolicy":           "keep",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.SidecarOutputs) != 4 {
+	if len(plan.SidecarOutputs) != 6 {
 		t.Fatalf("sidecars=%#v", plan.SidecarOutputs)
 	}
-	wantFormats := []string{"ass", "srt", "ass", "srt"}
-	wantModes := []string{"original", "converted", "original", "converted"}
+	wantFormats := []string{"ass", "srt", "ass", "ass", "srt", "ass"}
+	wantModes := []string{"original", "converted", "converted", "original", "converted", "converted"}
 	for index := range wantFormats {
 		if plan.SidecarOutputs[index].Format != wantFormats[index] || plan.SidecarOutputs[index].Mode != wantModes[index] {
 			t.Fatalf("sidecars=%#v", plan.SidecarOutputs)
@@ -119,21 +119,31 @@ func TestResolveTrackPlanAssetSidecarFormatOverride(t *testing.T) {
 
 func TestResolveTrackPlanAcceptsBitmapCompatibilitySidecarsThroughOCR(t *testing.T) {
 	for _, codec := range []string{"hdmv_pgs_subtitle", "dvd_subtitle"} {
-		t.Run(codec, func(t *testing.T) {
-			scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": codec, "language": "spa"}}}
-			plan, err := resolveTrackPlan(scan, map[string]any{
-				"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{"srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+		for _, format := range []string{"srt", "ass"} {
+			t.Run(codec+"_"+format, func(t *testing.T) {
+				scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": codec, "language": "spa"}}}
+				plan, err := resolveTrackPlan(scan, map[string]any{
+					"trackDispositionVersion": 1, "subtitleDisposition": "extract", "subtitleSidecarFormats": []string{format}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(plan.SidecarOutputs) != 1 || plan.SidecarOutputs[0].Format != format || plan.SidecarOutputs[0].Mode != "converted" || plan.SidecarOutputs[0].OCRLanguage != "auto" || plan.SidecarOutputs[0].OCRMode != "accurate" {
+					t.Fatalf("OCR sidecar=%#v", plan.SidecarOutputs)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(plan.SidecarOutputs) != 1 || plan.SidecarOutputs[0].Format != "srt" || plan.SidecarOutputs[0].Mode != "converted" || plan.SidecarOutputs[0].OCRLanguage != "auto" || plan.SidecarOutputs[0].OCRMode != "accurate" {
-				t.Fatalf("OCR sidecar=%#v", plan.SidecarOutputs)
-			}
-		})
+		}
 	}
-	if _, _, err := resolveSubtitleSidecarFormat("unknown_bitmap", "srt"); err == nil {
-		t.Fatal("unsupported subtitle codec was accepted for SRT")
+	for _, format := range []string{"srt", "ass"} {
+		if _, _, err := resolveSubtitleSidecarFormat("unknown_bitmap", format); err == nil {
+			t.Fatalf("unsupported subtitle codec was accepted for %s", strings.ToUpper(format))
+		}
+	}
+	if format, mode, err := resolveSubtitleSidecarFormat("ass", ""); err != nil || format != "srt" || mode != "converted" {
+		t.Fatalf("default converted format=%q mode=%q err=%v", format, mode, err)
+	}
+	if _, _, err := resolveSubtitleSidecarFormat("ass", "vtt"); err == nil {
+		t.Fatal("unsupported converted format was accepted")
 	}
 }
 
@@ -413,6 +423,8 @@ func TestResolveFontAttachmentExportActivationMatrix(t *testing.T) {
 		{name: "SSA original all", codec: "ssa", disposition: "extract", formats: []string{"original"}, policy: "all", wantFonts: 1},
 		{name: "SRT original all", codec: "subrip", disposition: "extract", formats: []string{"original"}, policy: "all"},
 		{name: "ASS compatibility only", codec: "ass", disposition: "extract", formats: []string{"srt"}, policy: "all"},
+		{name: "ASS converted ASS", codec: "ass", disposition: "extract", formats: []string{"ass"}, policy: "all"},
+		{name: "PGS OCR ASS", codec: "hdmv_pgs_subtitle", disposition: "extract", formats: []string{"ass"}, policy: "all"},
 		{name: "ASS original and compatibility", codec: "ass", disposition: "extract", formats: []string{"original", "srt"}, policy: "all", wantFonts: 1},
 		{name: "ASS embedded only", codec: "ass", disposition: "keep", formats: []string{"original"}, policy: "all"},
 	}

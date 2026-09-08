@@ -19,6 +19,8 @@ func TestTextSubtitleExtractionUsesTestEncodeWindowOnlyWhenRequested(t *testing.
 	normal := shellJoin(textSubtitleExtractionArgs(MediaJobPlan{InputPath: "/raw/movie.mkv"}, 3, "srt", "/staging/full.srt"))
 	assertNotContains(t, normal, "-ss")
 	assertNotContains(t, normal, "-t 20")
+	ass := shellJoin(textSubtitleExtractionArgs(MediaJobPlan{InputPath: "/raw/movie.mkv"}, 3, "ass", "/staging/full.ass"))
+	assertContains(t, ass, "-map 0:3 -vn -an -c:s ass -f ass /staging/full.ass")
 }
 
 func TestBitmapSubtitleExtractionUsesSameAccurateTestEncodeWindow(t *testing.T) {
@@ -183,6 +185,25 @@ func TestResolvedSubtitleExecutionRoutesTextBitmapAndOriginalSeparately(t *testi
 		if got := resolvedSubtitleExecutionKind(test.codec, test.mode); got != test.want {
 			t.Fatalf("codec=%s mode=%s got=%s want=%s", test.codec, test.mode, got, test.want)
 		}
+	}
+}
+
+func TestConvertedSubtitleFormatSupportIsCanonicalAndFinite(t *testing.T) {
+	for _, format := range []string{"srt", "ass", " SRT ", "ASS"} {
+		if !convertedSubtitleFormatSupported(format) {
+			t.Fatalf("supported converted subtitle format %q was rejected", format)
+		}
+	}
+	for _, format := range []string{"", "ssa", "vtt", "sup"} {
+		if convertedSubtitleFormatSupported(format) {
+			t.Fatalf("unsupported converted subtitle format %q was accepted", format)
+		}
+	}
+	if got := seconvFormat("ass"); got != "assa" {
+		t.Fatalf("ASS OCR format selector=%q", got)
+	}
+	if got := seconvFormat("srt"); got != "subrip" {
+		t.Fatalf("SRT OCR format selector=%q", got)
 	}
 }
 

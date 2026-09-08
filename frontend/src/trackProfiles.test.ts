@@ -100,13 +100,13 @@ describe('trackProfileWithConversion', () => {
   it('round-trips semantic and stream-specific subtitle sidecar formats', () => {
     const settings = [{ key: 'trackProfiles', value: { profiles: [{
       ...emptyTrackProfile,
-      key: 'compatibility', name: 'Compatibility', subtitleSidecarFormats: ['original', 'srt'],
-	  subtitleRules: [{ streamIndex: 4, action: 'keep_and_extract', sidecarFormats: ['srt'], ocrLanguage: 'spa', ocrMode: 'accurate' }],
+      key: 'compatibility', name: 'Compatibility', subtitleSidecarFormats: ['original', 'srt', 'ass', 'vtt'],
+	  subtitleRules: [{ streamIndex: 4, action: 'keep_and_extract', sidecarFormats: ['srt', 'ass'], ocrLanguage: 'spa', ocrMode: 'accurate' }],
     }] } }] as unknown as AppSetting[];
     const [profile] = getTrackProfiles(settings);
 
-    expect(profile.subtitleSidecarFormats).toEqual(['original', 'srt']);
-    expect(profile.subtitleRules[0].sidecarFormats).toEqual(['srt']);
+    expect(profile.subtitleSidecarFormats).toEqual(['original', 'srt', 'ass']);
+	 expect(profile.subtitleRules[0].sidecarFormats).toEqual(['srt', 'ass']);
 	 expect(profile.subtitleRules[0].ocrLanguage).toBe('spa');
 	 expect(profile.subtitleRules[0].ocrMode).toBe('accurate');
   });

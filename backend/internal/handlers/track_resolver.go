@@ -308,7 +308,7 @@ func normalizedSubtitleSidecarFormats(raw any) []string {
 	}
 	for _, value := range values {
 		format := strings.ToLower(strings.TrimSpace(workerStringValue(value)))
-		if (format == "original" || format == "srt") && !seen[format] {
+		if (format == "original" || format == "srt" || format == "ass") && !seen[format] {
 			seen[format] = true
 			result = append(result, format)
 		}
@@ -319,6 +319,9 @@ func normalizedSubtitleSidecarFormats(raw any) []string {
 func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string, err error) {
 	codec = strings.ToLower(strings.TrimSpace(codec))
 	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		requested = "srt"
+	}
 	if requested == "original" {
 		format = subtitleSidecarFormat(codec)
 		if format == "" {
@@ -326,18 +329,11 @@ func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string,
 		}
 		return format, "original", nil
 	}
-	if requested == "srt" {
-		switch codec {
-		case "subrip", "srt":
-			return "srt", "original", nil
-		case "ass", "ssa":
-			return "srt", "converted", nil
-		default:
-			if isBitmapSubtitleCodecName(codec) {
-				return "srt", "converted", nil
-			}
-			return "", "", fmt.Errorf("codec %s cannot be converted to SRT", codec)
+	if requested == "srt" || requested == "ass" {
+		if isBitmapSubtitleCodecName(codec) || subtitleCanConvertText(codec) {
+			return requested, "converted", nil
 		}
+		return "", "", fmt.Errorf("codec %s cannot be converted to %s", codec, strings.ToUpper(requested))
 	}
 	return "", "", fmt.Errorf("unsupported sidecar format %q", requested)
 }
