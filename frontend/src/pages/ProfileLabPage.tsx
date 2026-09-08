@@ -1366,7 +1366,6 @@ export function ProfileLabPage() {
     storedProfileSampleEstimateOperation?.profileSignature ===
       currentProfileSampleEstimateSignature;
   const sampleEstimateActive =
-    sampleEstimateOperationMatchesCurrent &&
     profileSampleEstimateOperationActive(sampleEstimateOperation);
   const currentProfileSampleEstimate =
     sampleEstimateOperationMatchesCurrent &&
@@ -1385,16 +1384,23 @@ export function ProfileLabPage() {
     ) {
       return;
     }
+
     const timer = window.setTimeout(() => {
-      if (
+      const operationNoLongerMatches =
         storedProfileSampleEstimateOperation.assetPath !== assetPath ||
         storedProfileSampleEstimateOperation.profileSignature !==
-          currentProfileSampleEstimateSignature
-      ) {
+          currentProfileSampleEstimateSignature;
+
+      const operationIsKnownAndTerminal =
+        sampleEstimateOperation &&
+        !profileSampleEstimateOperationActive(sampleEstimateOperation);
+
+      if (operationNoLongerMatches && operationIsKnownAndTerminal) {
         setStoredProfileSampleEstimateOperation(null);
         writeStoredProfileSampleEstimateOperation(null);
       }
     }, 750);
+
     return () => window.clearTimeout(timer);
   }, [
     adminProfiles.isPending,
@@ -1402,6 +1408,7 @@ export function ProfileLabPage() {
     assets.isPending,
     currentProfileSampleEstimateSignature,
     profiles.isPending,
+    sampleEstimateOperation,
     storedProfileSampleEstimateOperation,
   ]);
 
@@ -2583,6 +2590,12 @@ export function ProfileLabPage() {
               />
               {sampleEstimateActive && sampleEstimateOperation ? (
                 <Stack spacing={0.35}>
+                  {!sampleEstimateOperationMatchesCurrent ? (
+                    <Alert severity="info">
+                      This sample estimate is still running for the previous asset or profile.
+                      Its result will not be applied to the current draft.
+                    </Alert>
+                  ) : null}
                   {['encoding', 'finalizing'].includes(sampleEstimateOperation.phase) ? (
                     <Typography variant="body2">
                       {Math.min(100, Math.max(0, sampleEstimateOperation.progress)).toFixed(1)}%

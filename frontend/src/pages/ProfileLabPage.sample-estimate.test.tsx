@@ -277,6 +277,62 @@ describe('Profile Lab asynchronous sample estimate', () => {
     expect((await openSampleEstimate() as HTMLButtonElement).disabled).toBe(false);
   }, 10_000);
 
+  it('keeps ownership of a running estimate when the draft changes', async () => {
+    const running = operation({
+      status: 'running',
+      phase: 'encoding',
+      progress: 46.7,
+      currentSample: 2,
+      sampleCount: 3,
+      currentSampleProgress: 40,
+      encodedSeconds: 28,
+      totalSampleSeconds: 60,
+      speed: 0.31,
+      etaSeconds: 198,
+    });
+
+    vi.mocked(api.startProfileSampleEstimateOperation).mockResolvedValue(
+      operation({}),
+    );
+    vi.mocked(api.profileSampleEstimateOperation).mockResolvedValue(running);
+
+    renderLab();
+
+    await userEvent.click(await openSampleEstimate());
+
+    expect(
+      await screen.findByText('Sample 2 of 3', {}, { timeout: 2_500 }),
+    ).toBeTruthy();
+
+    expect(window.sessionStorage.getItem(storageKey)).toContain('estimate-1');
+
+    fireEvent.change(screen.getByLabelText('New video profile name'), {
+      target: { value: 'Changed while estimate is running' },
+    });
+
+    expect(
+      await screen.findByText(
+        /This sample estimate is still running for the previous asset or profile/,
+      ),
+    ).toBeTruthy();
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+
+    expect(window.sessionStorage.getItem(storageKey)).toContain('estimate-1');
+
+    expect(
+      screen.getByRole('button', { name: 'Cancel' }),
+    ).toBeTruthy();
+
+    expect(
+      (screen.getByRole('button', {
+        name: 'Measure samples',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    expect(api.startProfileSampleEstimateOperation).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
   it('reconnects after reload without creating a duplicate operation', async () => {
     const running = operation({
       status: 'running',
