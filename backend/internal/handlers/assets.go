@@ -1294,7 +1294,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 	}
 	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
 	bitmapStreams := []FFProbeStream{}
-	if input.Format != "ass" {
+	if !strings.EqualFold(strings.TrimSpace(input.Format), "ass") {
 		bitmapStreams = selectedBitmapSubtitleStreams(streams, input.StreamIndex)
 	}
 	if len(plans) == 0 && len(bitmapStreams) == 0 {
