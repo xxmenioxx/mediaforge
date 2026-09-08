@@ -71,7 +71,6 @@ import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from 
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { encoderNamesForWorker, selectedWorker as resolveSelectedWorker } from '../utils/workerEncoders';
 import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgePreferences';
-import { assetDerivedGopRecommendation, reliableFrameRateForScan } from '../utils/frameStructureRecommendation';
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
@@ -2550,7 +2549,6 @@ function AssetRow({
   const persistedConversionSignature = JSON.stringify(
     normalizeAssetConversionOverride(asset.conversion),
   );
-  const profileSuggestion = useMutation({ mutationFn: api.suggestProfile });
   const storedSnapshot = useQuery({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
@@ -2579,14 +2577,22 @@ function AssetRow({
         requiresAnalysis: false,
         staleComponents: [],
       });
-      if (asset.status !== 'converted' && asset.status !== 'archive' && asset.status !== 'accepted') {
-        profileSuggestion.mutate(scan.path);
-      }
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
       await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
     },
   });
   const snapshotData = storedSnapshot.data?.snapshot ?? snapshot.data ?? null;
+  const profileSuggestion = useQuery({
+    queryKey: ['profileSuggestion', asset.path, snapshotData?.updatedAt ?? ''],
+    queryFn: () => api.suggestProfile(asset.path),
+    enabled:
+      showSnapshotDialog &&
+      Boolean(snapshotData) &&
+      !asset.missing &&
+      asset.status !== 'converted' &&
+      asset.status !== 'archive' &&
+      asset.status !== 'accepted',
+  });
   const storedSnapshotExists = snapshotData !== null;
   const refreshRequired = storedSnapshot.data?.snapshot != null && storedSnapshot.data.requiresAnalysis;
   const operationPending = snapshot.isPending;
@@ -5169,6 +5175,8 @@ function AssetConversionOverridePanel({
                     recommendedGop={assetFrameRecommendation?.gop}
                     recommendedBFrames={assetFrameRecommendation?.bFrames}
                     recommendedGopByMode={assetFrameRecommendation?.gopByMode}
+                    autoStrategy={assetFrameRecommendation?.autoStrategy}
+                    analysisDriven={assetFrameRecommendation?.analysisDriven}
                     frameRate={assetFrameRecommendation?.fps}
                     onChange={(key, value) => onChange(key as keyof AssetConversionOverrideState, value as never)}
                     onChangeMany={updateFrameStructurePolicy}
@@ -6321,67 +6329,24 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 }
 
 function recommendedFrameStructureForAsset(scan?: ScanResult) {
-  if (!scan) return undefined;
+  const recommendation = scan?.frameStructureRecommendation;
+  if (!recommendation) return undefined;
 
-  const analysis = scan.frameStructureAnalysis;
-  const fps = reliableFrameRateForScan(scan);
-
-  if (!fps) return undefined;
-
-  const sourceAverageGop =
-    analysis && analysis.framesAnalyzed > 0
-      ? analysis.averageGopLength
-      : undefined;
-
-  const confidence =
-    analysis && analysis.framesAnalyzed > 0
-      ? analysis.confidence
-      : 'low';
-
-  const recommendations = {
-    compatible: assetDerivedGopRecommendation({
-      fps,
-      sourceAverageGop,
-      confidence,
-      mode: 'compatible',
-    }),
-
-    balanced: assetDerivedGopRecommendation({
-      fps,
-      sourceAverageGop,
-      confidence,
-      mode: 'balanced',
-    }),
-
-    maximum_compression: assetDerivedGopRecommendation({
-      fps,
-      sourceAverageGop,
-      confidence,
-      mode: 'maximum_compression',
-    }),
-  };
-
-  const bFrames =
-    analysis &&
-    analysis.maxConsecutiveBFrames >= 1 &&
-    analysis.maxConsecutiveBFrames <= 4
-      ? analysis.maxConsecutiveBFrames
-      : 3;
+  const autoStrategy = recommendation.autoStrategy;
+  const autoGop = autoStrategy
+    ? recommendation.byMode?.[autoStrategy]?.targetGopFrames
+    : undefined;
 
   return {
-    fps,
-
-    // AUTO intentionally uses Balanced.
-    gop: recommendations.balanced.targetFrames,
-    gopSeconds: recommendations.balanced.targetSeconds,
-
-    bFrames,
-
+    fps: recommendation.fps,
+    gop: autoGop,
+    bFrames: recommendation.recommendedMaxBFrames,
+    autoStrategy,
+    analysisDriven: recommendation.analysisDriven,
     gopByMode: {
-      compatible: recommendations.compatible.targetFrames,
-      balanced: recommendations.balanced.targetFrames,
-      maximum_compression:
-        recommendations.maximum_compression.targetFrames,
+      compatible: recommendation.byMode?.compatible?.targetGopFrames,
+      balanced: recommendation.byMode?.balanced?.targetGopFrames,
+      maximum_compression: recommendation.byMode?.maximum_compression?.targetGopFrames,
     },
   };
 }
