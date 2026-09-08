@@ -54,6 +54,7 @@ import type {
   MediaStreamInfo,
   Profile,
   ProfileInput,
+  ProfileSampleEstimateOperation,
   ProfileSuggestion,
   AdvisorFinding,
 	RestorationRecommendationPlan,
@@ -106,6 +107,60 @@ import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 const eqFrequencies = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000] as const;
 
 type LabSection = 'video' | 'audio' | 'tracks';
+
+const profileSampleEstimateOperationStorageKey =
+  'mvforge.profileLab.sampleEstimateOperation';
+
+type StoredProfileSampleEstimateOperation = {
+  operationId: string;
+  assetPath: string;
+  profileSignature: string;
+};
+
+function readStoredProfileSampleEstimateOperation(): StoredProfileSampleEstimateOperation | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = JSON.parse(
+      window.sessionStorage.getItem(
+        profileSampleEstimateOperationStorageKey,
+      ) ?? 'null',
+    ) as Partial<StoredProfileSampleEstimateOperation> | null;
+    return value &&
+      typeof value.operationId === 'string' &&
+      typeof value.assetPath === 'string' &&
+      typeof value.profileSignature === 'string'
+      ? {
+          operationId: value.operationId,
+          assetPath: value.assetPath,
+          profileSignature: value.profileSignature,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredProfileSampleEstimateOperation(
+  value: StoredProfileSampleEstimateOperation | null,
+) {
+  if (typeof window === 'undefined') return;
+  if (value) {
+    window.sessionStorage.setItem(
+      profileSampleEstimateOperationStorageKey,
+      JSON.stringify(value),
+    );
+  } else {
+    window.sessionStorage.removeItem(
+      profileSampleEstimateOperationStorageKey,
+    );
+  }
+}
+
+function profileSampleEstimateOperationActive(
+  operation?: ProfileSampleEstimateOperation,
+) {
+  return operation?.status === 'queued' || operation?.status === 'running';
+}
 
 type LabRecommendationReport = {
   summary: string;
@@ -695,7 +750,6 @@ export function ProfileLabPage() {
   const [selectedVideoStarterPreset, setSelectedVideoStarterPreset] = useState('');
   const [videoAdvancedOpen, setVideoAdvancedOpen] = useState(false);
   const fidelityAbortRef = useRef<AbortController | null>(null);
-  const estimateAbortRef = useRef<AbortController | null>(null);
   const qualityRecommendationAbortRef = useRef<AbortController | null>(null);
   const videoPreviewCancelRef = useRef<AbortController | null>(null);
   const audioPreviewCancelRef = useRef<AbortController | null>(null);
@@ -719,6 +773,10 @@ export function ProfileLabPage() {
   const [recommendationOpen, setRecommendationOpen] = useState(false);
   const [recommendationApplied, setRecommendationApplied] = useState<RecommendationSectionState>({ video: false, audio: false, tracks: false });
   const [recommendationSelected, setRecommendationSelected] = useState<string[]>([]);
+  const [storedProfileSampleEstimateOperation, setStoredProfileSampleEstimateOperation] =
+    useState<StoredProfileSampleEstimateOperation | null>(
+      readStoredProfileSampleEstimateOperation,
+    );
   const [videoSaveReviewOpen, setVideoSaveReviewOpen] = useState(false);
   const [audioSaveReviewOpen, setAudioSaveReviewOpen] = useState(false);
   const [trackSaveReviewOpen, setTrackSaveReviewOpen] = useState(false);
@@ -1242,17 +1300,137 @@ export function ProfileLabPage() {
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
-  const profileSampleEstimate = useMutation({
-    mutationFn: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number; signal?: AbortSignal }) =>
-      api.estimateCompatibleAssetProfile(input, input.signal),
-  });
-  const currentProfileSampleEstimate = profileSampleEstimate.data?.assetPath === assetPath
-    && profileSampleEstimate.variables?.path === assetPath
-    && JSON.stringify(profileSampleEstimate.variables.profile) === JSON.stringify(videoDraft)
-    ? profileSampleEstimate.data
-    : undefined;
-
   const currentVideoDraftSignature = JSON.stringify(videoDraft);
+  const currentProfileSampleEstimateSignature = JSON.stringify({
+    profileId: savedVideoProfileId ?? 0,
+    profile: videoDraft,
+  });
+  const profileSampleEstimateOperation = useQuery({
+    queryKey: [
+      'profileSampleEstimateOperation',
+      storedProfileSampleEstimateOperation?.operationId ?? '',
+    ],
+    queryFn: () =>
+      api.profileSampleEstimateOperation(
+        storedProfileSampleEstimateOperation!.operationId,
+      ),
+    enabled: Boolean(storedProfileSampleEstimateOperation?.operationId),
+    refetchInterval: (query) =>
+      profileSampleEstimateOperationActive(query.state.data)
+        ? 850
+        : false,
+    retry: (failureCount, error) =>
+      !(error instanceof ApiRequestError && error.status === 404) &&
+      failureCount < 2,
+  });
+  const startProfileSampleEstimate = useMutation({
+    mutationFn: (variables: {
+      path: string;
+      profileId?: number;
+      profile: ProfileInput;
+      seconds?: number;
+      profileSignature: string;
+    }) => api.startProfileSampleEstimateOperation({
+      path: variables.path,
+      profileId: variables.profileId,
+      profile: variables.profile,
+      seconds: variables.seconds,
+    }),
+    onSuccess: (operation, variables) => {
+      const stored = {
+        operationId: operation.id,
+        assetPath: variables.path,
+        profileSignature: variables.profileSignature,
+      };
+      setStoredProfileSampleEstimateOperation(stored);
+      writeStoredProfileSampleEstimateOperation(stored);
+      queryClient.setQueryData(
+        ['profileSampleEstimateOperation', operation.id],
+        operation,
+      );
+    },
+  });
+  const cancelProfileSampleEstimate = useMutation({
+    mutationFn: (operationId: string) =>
+      api.cancelProfileSampleEstimateOperation(operationId),
+    onSuccess: (operation) => {
+      queryClient.setQueryData(
+        ['profileSampleEstimateOperation', operation.id],
+        operation,
+      );
+    },
+  });
+  const sampleEstimateOperation = profileSampleEstimateOperation.data;
+  const sampleEstimateOperationMatchesCurrent =
+    storedProfileSampleEstimateOperation?.assetPath === assetPath &&
+    storedProfileSampleEstimateOperation?.profileSignature ===
+      currentProfileSampleEstimateSignature;
+  const sampleEstimateActive =
+    sampleEstimateOperationMatchesCurrent &&
+    profileSampleEstimateOperationActive(sampleEstimateOperation);
+  const currentProfileSampleEstimate =
+    sampleEstimateOperationMatchesCurrent &&
+    sampleEstimateOperation?.status === 'completed' &&
+    sampleEstimateOperation.result?.assetPath === assetPath
+      ? sampleEstimateOperation.result
+      : undefined;
+
+  useEffect(() => {
+    if (
+      !storedProfileSampleEstimateOperation ||
+      !assetPath ||
+      assets.isPending ||
+      profiles.isPending ||
+      adminProfiles.isPending
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (
+        storedProfileSampleEstimateOperation.assetPath !== assetPath ||
+        storedProfileSampleEstimateOperation.profileSignature !==
+          currentProfileSampleEstimateSignature
+      ) {
+        setStoredProfileSampleEstimateOperation(null);
+        writeStoredProfileSampleEstimateOperation(null);
+      }
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [
+    adminProfiles.isPending,
+    assetPath,
+    assets.isPending,
+    currentProfileSampleEstimateSignature,
+    profiles.isPending,
+    storedProfileSampleEstimateOperation,
+  ]);
+
+  useEffect(() => {
+    const operation = profileSampleEstimateOperation.data;
+    if (
+      operation &&
+      !profileSampleEstimateOperationActive(operation) &&
+      storedProfileSampleEstimateOperation?.operationId === operation.id
+    ) {
+      writeStoredProfileSampleEstimateOperation(null);
+    }
+  }, [
+    profileSampleEstimateOperation.data,
+    storedProfileSampleEstimateOperation,
+  ]);
+
+  useEffect(() => {
+    if (
+      profileSampleEstimateOperation.error instanceof ApiRequestError &&
+      profileSampleEstimateOperation.error.status === 404
+    ) {
+      const timer = window.setTimeout(() => {
+        setStoredProfileSampleEstimateOperation(null);
+        writeStoredProfileSampleEstimateOperation(null);
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [profileSampleEstimateOperation.error]);
 
   const currentEncoderRecommendation =
   lastEncoderRecommendation &&
@@ -1384,7 +1562,14 @@ export function ProfileLabPage() {
     ? audioPreviewStreamIndex ?? undefined
     : availableAudioStreams.find((stream) => stream.default)?.index ?? availableAudioStreams[0]?.index;
   const previewStartValid = isValidPreviewStart(start);
-  const labAnalysisPending = trackSnapshot.isPending || autoRecommendation.isPending || fidelityInspection.isPending || profileSampleEstimate.isPending || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading';
+  const sampleEstimatePhase = sampleEstimateOperation?.status === 'queued' || sampleEstimateOperation?.phase === 'waiting_for_capacity'
+    ? 'Waiting for LAB sample capacity…'
+    : sampleEstimateOperation?.phase === 'preparing'
+      ? 'Preparing sample estimate…'
+      : sampleEstimateOperation?.phase === 'finalizing'
+        ? 'Finalizing estimate…'
+        : 'Estimating output size';
+  const labAnalysisPending = trackSnapshot.isPending || autoRecommendation.isPending || fidelityInspection.isPending || startProfileSampleEstimate.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading';
   const labAnalysisPhase = fidelityInspection.isPending
     ? 'Encoding preview windows and validating output structure'
     : videoPreviewStatus === 'loading'
@@ -1393,8 +1578,8 @@ export function ProfileLabPage() {
         ? 'Encoding and analyzing the audio preview'
     : autoRecommendation.isPending
       ? 'Analyzing the asset and preparing MVForge Suggestions'
-      : profileSampleEstimate.isPending
-        ? 'Measuring five distributed output samples'
+      : startProfileSampleEstimate.isPending || sampleEstimateActive
+        ? sampleEstimatePhase
         : 'Reading tracks and technical snapshot';
 
   useEffect(() => {
@@ -2263,11 +2448,14 @@ export function ProfileLabPage() {
   }
 
   function measureProfileSamples() {
-    if (!assetPath) return;
-    estimateAbortRef.current?.abort();
-    const controller = new AbortController();
-    estimateAbortRef.current = controller;
-    profileSampleEstimate.mutate({ path: assetPath, profileId: savedVideoProfileId ?? 0, profile: videoDraft, seconds: 20, signal: controller.signal });
+    if (!assetPath || startProfileSampleEstimate.isPending || sampleEstimateActive) return;
+    startProfileSampleEstimate.mutate({
+      path: assetPath,
+      profileId: savedVideoProfileId ?? 0,
+      profile: videoDraft,
+      seconds: 20,
+      profileSignature: currentProfileSampleEstimateSignature,
+    });
   }
 
   async function cancelActiveLabAnalysis() {
@@ -2275,7 +2463,9 @@ export function ProfileLabPage() {
       setLabSnapshotOperation(await api.cancelSnapshotOperation(labSnapshotOperation.id));
     }
     if (fidelityInspection.isPending) fidelityAbortRef.current?.abort();
-    if (profileSampleEstimate.isPending) estimateAbortRef.current?.abort();
+    if (sampleEstimateActive && sampleEstimateOperation) {
+      await cancelProfileSampleEstimate.mutateAsync(sampleEstimateOperation.id);
+    }
     if (videoPreviewStatus === 'loading') videoPreviewCancelRef.current?.abort();
     if (audioPreviewStatus === 'loading') audioPreviewCancelRef.current?.abort();
     setVideoPreviewStatus((current) => current === 'loading' ? 'idle' : current);
@@ -2382,19 +2572,63 @@ export function ProfileLabPage() {
                 <Typography variant="body2" color="text.secondary">{labAnalysisPhase}</Typography>
               </Stack>
               <LinearProgress
-                variant={labSnapshotOperation?.status === 'running' && labSnapshotOperation.progress > 0 ? 'determinate' : 'indeterminate'}
-                value={labSnapshotOperation?.progress ?? 0}
+                variant={sampleEstimateActive && ['encoding', 'finalizing'].includes(sampleEstimateOperation?.phase ?? '')
+                  ? 'determinate'
+                  : labSnapshotOperation?.status === 'running' && labSnapshotOperation.progress > 0
+                    ? 'determinate'
+                    : 'indeterminate'}
+                value={sampleEstimateActive
+                  ? Math.min(100, Math.max(0, sampleEstimateOperation?.progress ?? 0))
+                  : labSnapshotOperation?.progress ?? 0}
               />
+              {sampleEstimateActive && sampleEstimateOperation ? (
+                <Stack spacing={0.35}>
+                  {['encoding', 'finalizing'].includes(sampleEstimateOperation.phase) ? (
+                    <Typography variant="body2">
+                      {Math.min(100, Math.max(0, sampleEstimateOperation.progress)).toFixed(1)}%
+                    </Typography>
+                  ) : null}
+                  {sampleEstimateOperation.sampleCount > 0 ? (
+                    <Typography variant="body2">
+                      Sample {sampleEstimateOperation.currentSample} of {sampleEstimateOperation.sampleCount}
+                    </Typography>
+                  ) : null}
+                  {sampleEstimateOperation.phase === 'encoding' ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Current sample: {Math.min(100, Math.max(0, sampleEstimateOperation.currentSampleProgress)).toFixed(1)}%
+                    </Typography>
+                  ) : null}
+                  {sampleEstimateOperation.totalSampleSeconds > 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      {sampleEstimateOperation.encodedSeconds.toFixed(1)} / {sampleEstimateOperation.totalSampleSeconds.toFixed(1)} s encoded
+                    </Typography>
+                  ) : null}
+                  {sampleEstimateOperation.speed > 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Speed: {sampleEstimateOperation.speed.toFixed(2)}x
+                    </Typography>
+                  ) : null}
+                  {sampleEstimateOperation.etaSeconds > 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Estimated remaining: ~{formatEstimateETA(sampleEstimateOperation.etaSeconds)}
+                    </Typography>
+                  ) : null}
+                  {profileSampleEstimateOperation.isError && !(profileSampleEstimateOperation.error instanceof ApiRequestError && profileSampleEstimateOperation.error.status === 404) ? (
+                    <Alert severity="warning">Operation status is temporarily unavailable; polling will retry.</Alert>
+                  ) : null}
+                </Stack>
+              ) : null}
               <Stack direction="row" justifyContent="space-between" spacing={2}>
                 <Typography variant="caption" color="text.secondary">The analysis may take several minutes on a slower NAS.</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                <Typography variant="caption">Keep this page open. Controls will return automatically when the current analysis finishes.</Typography>
-                {(trackSnapshot.isPending && labSnapshotOperation?.status === 'running') || fidelityInspection.isPending || profileSampleEstimate.isPending || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading' ? (
+                <Typography variant="caption">The backend owns the active operation; this page can reconnect after a reload.</Typography>
+                {(trackSnapshot.isPending && labSnapshotOperation?.status === 'running') || fidelityInspection.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading' ? (
                   <Button
                     size="small"
                     color="inherit"
+                    disabled={cancelProfileSampleEstimate.isPending}
                     onClick={cancelActiveLabAnalysis}
                   >
                     Cancel
@@ -2853,11 +3087,14 @@ export function ProfileLabPage() {
                       </Stack>
                       {fidelityInspection.isPending ? <Alert severity="info">Generating both previews and validating their video characteristics…</Alert> : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                        <Button size="small" variant="outlined" disabled={profileSampleEstimate.isPending || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure 5 samples</Button>
-                        {profileSampleEstimate.isPending ? <Typography variant="body2" color="text.secondary">Encoding five distributed samples…</Typography> : null}
+                        <Button size="small" variant="outlined" disabled={startProfileSampleEstimate.isPending || sampleEstimateActive || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure samples</Button>
+                        {startProfileSampleEstimate.isPending || sampleEstimateActive ? <Typography variant="body2" color="text.secondary">{sampleEstimatePhase}</Typography> : null}
                         {currentProfileSampleEstimate ? <Chip size="small" color={currentProfileSampleEstimate.persisted ? 'success' : 'warning'} label={`Video estimate ${formatBytes(currentProfileSampleEstimate.estimatedVideoBytes)} · ${currentProfileSampleEstimate.effectiveEncoder}${currentProfileSampleEstimate.persisted ? ' · saved for Queue' : ' · profile changed or is not saved'}`} /> : null}
                       </Stack>
-                      {profileSampleEstimate.isError && profileSampleEstimate.variables?.path === assetPath ? <Alert severity="warning">Sample estimate failed: {profileSampleEstimate.error instanceof Error ? profileSampleEstimate.error.message : 'unknown error'}</Alert> : null}
+                      {startProfileSampleEstimate.isError ? <Alert severity="warning">Could not start sample estimate: {startProfileSampleEstimate.error instanceof Error ? startProfileSampleEstimate.error.message : 'unknown error'}</Alert> : null}
+                      {sampleEstimateOperation?.status === 'failed' && sampleEstimateOperationMatchesCurrent ? <Alert severity="warning">Sample estimate failed: {sampleEstimateOperation.error || 'unknown backend error'}</Alert> : null}
+                      {sampleEstimateOperation?.status === 'canceled' && sampleEstimateOperationMatchesCurrent ? <Alert severity="info">Sample estimate canceled.</Alert> : null}
+                      {profileSampleEstimateOperation.isError && !(profileSampleEstimateOperation.error instanceof ApiRequestError && profileSampleEstimateOperation.error.status === 404) ? <Alert severity="warning">Sample estimate status is temporarily unavailable: {profileSampleEstimateOperation.error instanceof Error ? profileSampleEstimateOperation.error.message : 'network error'}</Alert> : null}
                       {fidelityInspection.isError && !isCanceledFidelityRequest(fidelityInspection.error) ? (
                         <Alert severity="warning">
                           Fidelity validation failed: {fidelityInspection.error instanceof Error ? fidelityInspection.error.message : 'unknown backend error'}
@@ -6311,6 +6548,16 @@ function formatElapsedTime(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')} elapsed`;
+}
+
+function formatEstimateETA(totalSeconds: number) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return `${seconds}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+  return `${minutes}m ${String(remainder).padStart(2, '0')}s`;
 }
 
 function AudioProfileSaveReview({ profile, source, asset }: { profile: AudioEnhancementProfile; source?: ScanResult; asset: Asset | null }) {

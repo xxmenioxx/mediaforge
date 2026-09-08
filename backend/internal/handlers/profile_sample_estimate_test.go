@@ -138,6 +138,54 @@ func TestProfileSampleEstimateDefaultWindowSelection(t *testing.T) {
 	}
 }
 
+func TestProfileSampleEstimateOperationFreezesPolicyWhileQueued(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:profile-sample-estimate-policy-freeze?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	setting := models.AppSetting{Key: profileSampleEstimatePolicySettingKey, Value: models.JSONMap{
+		"hardwareWindows": 5, "softwareWindows": 2, "operationTimeoutMinutes": 30,
+	}}
+	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	frozen := loadProfileSampleEstimatePolicy(db)
+	store := newProfileSampleEstimateTestStore()
+	slot := make(chan struct{}, 1)
+	slot <- struct{}{}
+	policySeen := make(chan profileSampleEstimatePolicy, 1)
+	runner := profileSampleEstimateRunnerWithPolicy(frozen, func(_ context.Context, _ profileSampleEstimateInput, policy profileSampleEstimatePolicy, _ func(profileSampleEstimateProgress)) (models.JSONMap, error) {
+		policySeen <- policy
+		return models.JSONMap{"sampleCount": profileSampleEstimateWindowCount(policy, "libx265")}, nil
+	})
+	operation := launchProfileSampleEstimateOperation(store, slot, profileSampleEstimateInput{}, time.Minute, runner)
+
+	setting.Value = models.JSONMap{"hardwareWindows": 6, "softwareWindows": 4, "operationTimeoutMinutes": 45}
+	if err := db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	<-slot
+
+	completed := waitForProfileSampleEstimateOperation(t, store, operation.ID, func(item ProfileSampleEstimateOperation) bool {
+		return item.Status == profileSampleEstimateCompleted
+	})
+	seen := <-policySeen
+	if seen.SoftwareWindows != 2 || seen.HardwareWindows != 5 || seen.OperationTimeoutMinutes != 30 {
+		t.Fatalf("operation policy changed while queued: %#v", seen)
+	}
+	if completed.Result["sampleCount"] != 2 {
+		t.Fatalf("operation used changed sample-window policy: %#v", completed.Result)
+	}
+	current := loadProfileSampleEstimatePolicy(db)
+	if current.SoftwareWindows != 4 || current.HardwareWindows != 6 || current.OperationTimeoutMinutes != 45 {
+		t.Fatalf("test did not update persisted policy: %#v", current)
+	}
+}
+
 func TestDistributedProfileSampleStarts(t *testing.T) {
 	three := distributedProfileSampleStarts(7200, 20, 3)
 	if len(three) != 3 || three[0] != 1436 || three[1] != 3590 || three[2] != 5744 {

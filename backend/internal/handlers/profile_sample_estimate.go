@@ -239,6 +239,14 @@ var profileSampleEstimateSequence atomic.Uint64
 
 type profileSampleEstimateRunner func(context.Context, profileSampleEstimateInput, func(profileSampleEstimateProgress)) (models.JSONMap, error)
 
+type profileSampleEstimatePolicyRunner func(context.Context, profileSampleEstimateInput, profileSampleEstimatePolicy, func(profileSampleEstimateProgress)) (models.JSONMap, error)
+
+func profileSampleEstimateRunnerWithPolicy(policy profileSampleEstimatePolicy, run profileSampleEstimatePolicyRunner) profileSampleEstimateRunner {
+	return func(ctx context.Context, input profileSampleEstimateInput, progress func(profileSampleEstimateProgress)) (models.JSONMap, error) {
+		return run(ctx, input, policy, progress)
+	}
+}
+
 type profileSampleEstimateError struct {
 	status int
 	err    error
@@ -480,7 +488,7 @@ func (h AssetHandler) StartProfileSampleEstimateOperation(c *gin.Context) {
 		profileSampleEstimateSlot,
 		input,
 		time.Duration(policy.OperationTimeoutMinutes)*time.Minute,
-		h.runProfileSampleEstimate,
+		profileSampleEstimateRunnerWithPolicy(policy, h.runProfileSampleEstimateWithPolicy),
 	)
 	c.JSON(http.StatusAccepted, operation)
 }
@@ -511,6 +519,15 @@ func (h AssetHandler) CancelProfileSampleEstimateOperation(c *gin.Context) {
 func (h AssetHandler) runProfileSampleEstimate(
 	ctx context.Context,
 	input profileSampleEstimateInput,
+	progress func(profileSampleEstimateProgress),
+) (models.JSONMap, error) {
+	return h.runProfileSampleEstimateWithPolicy(ctx, input, loadProfileSampleEstimatePolicy(h.db), progress)
+}
+
+func (h AssetHandler) runProfileSampleEstimateWithPolicy(
+	ctx context.Context,
+	input profileSampleEstimateInput,
+	policy profileSampleEstimatePolicy,
 	progress func(profileSampleEstimateProgress),
 ) (models.JSONMap, error) {
 	path := strings.TrimSpace(input.Path)
@@ -553,7 +570,6 @@ func (h AssetHandler) runProfileSampleEstimate(
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	policy := loadProfileSampleEstimatePolicy(h.db)
 	starts := distributedProfileSampleStarts(
 		streams.Duration,
 		seconds,

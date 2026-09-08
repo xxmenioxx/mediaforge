@@ -1720,6 +1720,24 @@ export type ProfileSampleEstimate = {
   persisted: boolean;
 };
 
+export type ProfileSampleEstimateOperation = {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+  phase: string;
+  progress: number;
+  currentSample: number;
+  sampleCount: number;
+  currentSampleProgress: number;
+  encodedSeconds: number;
+  totalSampleSeconds: number;
+  speed: number;
+  etaSeconds: number;
+  result?: ProfileSampleEstimate;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type EncoderRecommendation = {
   encoder: string;
   requestedRateControl: string;

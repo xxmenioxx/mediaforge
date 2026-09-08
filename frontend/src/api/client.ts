@@ -41,6 +41,7 @@ import type {
   CompatiblePreviewOptions,
   CompatiblePreviewRequest,
   ProfileSampleEstimate,
+  ProfileSampleEstimateOperation,
   QualityRecommendationResponse,
   PreviewInspection,
   PreviewFrameMetrics,
@@ -517,6 +518,12 @@ export const api = {
     request<PreviewInspection>(compatiblePreviewRequestPath(requestId, 'inspect'), { signal }),
   estimateCompatibleAssetProfile: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }, signal?: AbortSignal) =>
     request<ProfileSampleEstimate>('/api/assets/preview/estimate', { method: 'POST', body: JSON.stringify(input), signal }),
+  startProfileSampleEstimateOperation: (input: { path: string; profileId?: number; profile: ProfileInput; seconds?: number }) =>
+    request<ProfileSampleEstimateOperation>('/api/assets/preview/estimate/operations', { method: 'POST', body: JSON.stringify(input) }),
+  profileSampleEstimateOperation: (operationId: string) =>
+    request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}`),
+  cancelProfileSampleEstimateOperation: (operationId: string) =>
+    request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
   recommendEncoderQuality: ({ signal, ...input }: { path?: string; profile: ProfileInput; signal?: AbortSignal }) =>
     request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input), signal }),
   audioPreviewUrl: ({
