@@ -219,7 +219,7 @@ export const api = {
       | {
           path: string;
           streamIndex?: number;
-          format?: 'srt' | 'ass';
+          format?: 'original' | 'srt' | 'ass';
           ocrLanguage?: string;
           ocrMode?: 'raw' | 'clean' | 'accurate';
         },
@@ -234,7 +234,7 @@ export const api = {
           phase: string;
           progress: number;
           streamIndex: number;
-          format: 'srt' | 'ass';
+          format: 'original' | 'srt' | 'ass';
         }
     >(`/api/assets/extract-subtitles?path=${encodeURIComponent(value.path)}`, {
       method: 'POST',

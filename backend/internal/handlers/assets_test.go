@@ -1085,6 +1085,55 @@ func TestSubtitleExtractionPlansUseCanonicalASSOutputSelection(t *testing.T) {
 	}
 }
 
+func TestSubtitleExtractionPlansPreserveExplicitOriginalASSAndSSA(t *testing.T) {
+    for _, test := range []struct {
+        name       string
+        codec      string
+        wantFormat string
+        wantPath   string
+    }{
+        {
+            name:       "ass",
+            codec:      "ass",
+            wantFormat: "ass",
+            wantPath:   "/media/library/Movie.spa.3.ass",
+        },
+        {
+            name:       "ssa",
+            codec:      "ssa",
+            wantFormat: "ssa",
+            wantPath:   "/media/library/Movie.spa.3.ssa",
+        },
+    } {
+        t.Run(test.name, func(t *testing.T) {
+            streamIndex := 3
+            plans, unsupported := subtitleExtractionPlansForRequest(
+                "/media/library/Movie.mkv",
+                []FFProbeStream{{
+                    Index:     3,
+                    CodecType: "subtitle",
+                    CodecName: test.codec,
+                    Tags:      map[string]string{"language": "spa"},
+                }},
+                SubtitleExtractionInput{
+                    StreamIndex: &streamIndex,
+                    Format:      "original",
+                },
+            )
+
+            if len(unsupported) != 0 || len(plans) != 1 {
+                t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
+            }
+
+            if plans[0].Mode != "original" ||
+                plans[0].Format != test.wantFormat ||
+                plans[0].OutputPath != test.wantPath {
+                t.Fatalf("unexpected original plan: %#v", plans[0])
+            }
+        })
+    }
+}
+
 func TestSubtitleExtractionPlansUseCanonicalTextToASSConversion(t *testing.T) {
 	streamIndex := 3
 	plans, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", []FFProbeStream{
