@@ -226,6 +226,108 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.recommendEncoderQuality).mockResolvedValue(undefined as never);
   });
 
+  function referencePreviewRequests() {
+    return vi
+      .mocked(api.createCompatiblePreviewRequest)
+      .mock.calls
+      .map(([options]) => options)
+      .filter(
+        (options) =>
+          options.videoCodec === 'x264' &&
+          options.videoEncoder === 'libx264' &&
+          options.useHardwareIfAvailable ===
+            false &&
+          !options.profile,
+      );
+  }
+
+  it(
+    'reuses Sample A when Process Video runs again with the same reference inputs',
+    async () => {
+      vi.mocked(api.profiles).mockResolvedValue([
+        qsvSavedProfile,
+      ]);
+
+      vi.mocked(api.profilesAdmin).mockResolvedValue([
+        qsvSavedProfile,
+      ]);
+
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: false },
+        },
+      });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter
+            initialEntries={[
+              `/lab?assetPath=${encodeURIComponent(
+                assetPath,
+              )}&videoProfileId=78&section=video`,
+            ]}
+          >
+            <ProfileLabPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+
+      const processVideo =
+        await screen.findByRole(
+          'button',
+          { name: 'Process Video' },
+          { timeout: 12_000 },
+        );
+
+      await waitFor(() =>
+        expect(
+          (processVideo as HTMLButtonElement)
+            .disabled,
+        ).toBe(false),
+      );
+
+      await userEvent.click(processVideo);
+
+      await waitFor(
+        () =>
+          expect(
+            referencePreviewRequests(),
+          ).toHaveLength(1),
+        { timeout: 12_000 },
+      );
+
+      await waitFor(() =>
+        expect(
+          (processVideo as HTMLButtonElement)
+            .disabled,
+        ).toBe(false),
+      );
+
+      const requestCountAfterFirstProcess =
+        vi.mocked(
+          api.createCompatiblePreviewRequest,
+        ).mock.calls.length;
+
+      await userEvent.click(processVideo);
+
+      await waitFor(() =>
+        expect(
+          vi.mocked(
+            api.createCompatiblePreviewRequest,
+          ).mock.calls.length,
+        ).toBeGreaterThan(
+          requestCountAfterFirstProcess,
+        ),
+      );
+
+      expect(
+        referencePreviewRequests(),
+      ).toHaveLength(1);
+    },
+    20_000,
+  );
+
   it('keeps Lab mounted and opens Suggestions when legacy collection fields are null', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(

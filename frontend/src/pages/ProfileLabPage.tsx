@@ -180,6 +180,12 @@ type LabFidelityInspection = {
   completedAt: number;
 };
 
+type CachedLabReferencePreview = {
+  signature: string;
+  requestId: string;
+  inspection: PreviewInspection;
+};
+
 const languageOptions = [
   { value: 'jpn', label: 'Japanese' },
   { value: 'spa', label: 'Spanish' },
@@ -668,6 +674,8 @@ export function ProfileLabPage() {
   const qualityRecommendationAbortRef = useRef<AbortController | null>(null);
   const videoPreviewCancelRef = useRef<AbortController | null>(null);
   const audioPreviewCancelRef = useRef<AbortController | null>(null);
+  const referencePreviewCacheRef =
+  useRef<CachedLabReferencePreview | null>(null);
   const hardwareDefaultAppliedRef = useRef(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
   const [savedAudioProfileKey, setSavedAudioProfileKey] = useState<string | null>(null);
@@ -785,7 +793,24 @@ export function ProfileLabPage() {
   }, [savedVideoProfileId, selectedVideoStarterPreset, settings.data, videoDraft.name, workerNodes.data]);
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
   const previewAudioFilters = audioFilterChain.trim() || 'anull';
-  const currentVideoRequestSignature = labVideoRequestSignature(assetPath, start, seconds, previewNormalization, videoDraft);
+
+  const currentReferenceRequestSignature =
+    labReferenceRequestSignature(
+      assetPath,
+      start,
+      seconds,
+      previewNormalization,
+    );
+
+  const currentVideoRequestSignature =
+    labVideoRequestSignature(
+      assetPath,
+      start,
+      seconds,
+      previewNormalization,
+      videoDraft,
+    );
+
   const videoPreviewStale = videoPreviewNonce > 0 && videoPreviewStatus !== 'loading' && (
     processedPreviewNormalization !== previewNormalization ||
     processedVideoDraftSignature !== JSON.stringify(videoDraft) ||
@@ -1039,21 +1064,71 @@ export function ProfileLabPage() {
   const fidelityInspection = useMutation({
     mutationFn: async ({
       reference,
+      referenceSignature,
       conversion,
       signal,
       onPrepared,
     }: {
       reference: CompatiblePreviewOptions;
+      referenceSignature: string;
       conversion: CompatiblePreviewOptions;
       signal?: AbortSignal;
       onPrepared?: (referenceRequestId: string, conversionRequestId: string) => void;
     }): Promise<LabFidelityInspection> => {
-      const [referenceRequest, conversionRequest] = await Promise.all([
-        api.createCompatiblePreviewRequest(reference, signal),
-        api.createCompatiblePreviewRequest(conversion, signal),
-      ]);
-      onPrepared?.(referenceRequest.requestId, conversionRequest.requestId);
-      const referenceInspection = await api.inspectCompatibleAssetPreview(referenceRequest.requestId, signal);
+
+      const cachedReference =
+        referencePreviewCacheRef.current?.signature ===
+        referenceSignature
+          ? referencePreviewCacheRef.current
+          : null;
+
+      const referenceRequestPromise = cachedReference
+        ? Promise.resolve({
+            requestId: cachedReference.requestId,
+          })
+        : api.createCompatiblePreviewRequest(
+            reference,
+            signal,
+          );
+
+      const conversionRequestPromise =
+        api.createCompatiblePreviewRequest(
+          conversion,
+          signal,
+        );
+
+      const [referenceRequest, conversionRequest] =
+        await Promise.all([
+          referenceRequestPromise,
+          conversionRequestPromise,
+        ]);
+
+      onPrepared?.(
+        referenceRequest.requestId,
+        conversionRequest.requestId,
+      );
+
+      let referenceInspection: PreviewInspection;
+
+      if (cachedReference) {
+        referenceInspection =
+          cachedReference.inspection;
+      } else {
+        referenceInspection =
+          await api.inspectCompatibleAssetPreview(
+            referenceRequest.requestId,
+            signal,
+          );
+
+        if (!signal?.aborted) {
+          referencePreviewCacheRef.current = {
+            signature: referenceSignature,
+            requestId: referenceRequest.requestId,
+            inspection: referenceInspection,
+          };
+        }
+      }
+
       const duration = selectedAssetSnapshot?.duration ?? 0;
       const sampling = labFrameSamplingPolicy(settings.data, duration);
       const { windowSeconds, positions } = sampling;
@@ -1308,6 +1383,7 @@ export function ProfileLabPage() {
   }, [labAnalysisPending]);
 
   useEffect(() => {
+    referencePreviewCacheRef.current = null;
     // Sample A is generated automatically when an asset is selected. The old
     // Preview button used to initialize this nonce; without it the entire
     // Fidelity workbench remained hidden and Sample B actions stayed disabled.
@@ -2093,6 +2169,11 @@ export function ProfileLabPage() {
 
   function processVideoPreview() {
     if (!assetPath || !isValidPreviewStart(start)) return;
+
+    const referenceCacheIsCurrent =
+      referencePreviewCacheRef.current?.signature ===
+      currentReferenceRequestSignature;
+      
     fidelityAbortRef.current?.abort();
     videoPreviewCancelRef.current?.abort();
     const controller = new AbortController();
@@ -2103,8 +2184,15 @@ export function ProfileLabPage() {
     setFidelityTab('previews');
     setProcessedVideoDraftSignature(JSON.stringify(videoDraft));
     setProcessedVideoRequestSignature(currentVideoRequestSignature);
-    setProcessedPreviewNormalization(previewNormalization);
-    setProcessedReferencePreviewRequestId('');
+
+    setProcessedPreviewNormalization(
+      previewNormalization,
+    );
+
+    if (!referenceCacheIsCurrent) {
+      setProcessedReferencePreviewRequestId('');
+    }
+
     setProcessedVideoPreviewRequestId('');
     setVideoPreviewStatus('loading');
     if (assetPath) {
@@ -2123,6 +2211,8 @@ export function ProfileLabPage() {
           globalQuality: 21,
           previewNormalization,
         },
+        referenceSignature:
+          currentReferenceRequestSignature,
         conversion: {
           path: assetPath,
           start,
@@ -2175,6 +2265,8 @@ export function ProfileLabPage() {
   }
 
   function resetProcessedVideoPreview() {
+    referencePreviewCacheRef.current = null;
+
     setVideoPreviewNonce(0);
     setVideoPreviewStatus('idle');
     setProcessedReferencePreviewRequestId('');
@@ -5383,6 +5475,20 @@ function videoPreviewOptions(
       'x265Params',
     ),
   };
+}
+
+function labReferenceRequestSignature(
+  path: string,
+  start: string,
+  seconds: number,
+  normalization: 'preserve' | 'normalize_bt709',
+) {
+  return JSON.stringify({
+    path,
+    start: start.trim(),
+    seconds,
+    normalization,
+  });
 }
 
 function labVideoRequestSignature(
