@@ -108,11 +108,36 @@ const initialProfile: ProfileInput = {
 };
 
 const encoderPresetOptions = [
-  { value: 'veryfast', label: 'Fast preview', description: 'Faster conversions, larger files. Useful while testing.' },
-  { value: 'fast', label: 'Fast', description: 'Faster than Balanced while retaining more compression efficiency than Fast preview.' },
-  { value: 'medium', label: 'Balanced', description: 'Recommended default for quality, size, and speed.' },
-  { value: 'slow', label: 'Higher compression', description: 'Slower, usually smaller files at the same quality.' },
-  { value: 'slower', label: 'Archive patience', description: 'Very slow. Use only when size matters more than time.' },
+  {
+    value: 'veryfast',
+    label: 'Fast preview',
+    description: 'Faster conversions, larger files. Useful for quick tests.',
+  },
+  {
+    value: 'fast',
+    label: 'Fast',
+    description: 'Faster than Balanced while retaining more compression efficiency than Fast preview.',
+  },
+  {
+    value: 'medium',
+    label: 'Balanced',
+    description: 'Recommended default for quality, size, and speed.',
+  },
+  {
+    value: 'slow',
+    label: 'Higher compression',
+    description: 'Slower, usually smaller files at the same quality.',
+  },
+  {
+    value: 'slower',
+    label: 'Archive patience',
+    description: 'Very slow. Use when compression efficiency matters more than speed.',
+  },
+  {
+    value: 'veryslow',
+    label: 'Maximum quality',
+    description: 'Slowest preset. QSV uses TargetUsage 1 / best quality. Use for quality-focused tests and archive encodes.',
+  },
 ] as const;
 
 const pixelFormatOptions = [
