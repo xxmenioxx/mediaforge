@@ -21,7 +21,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
@@ -3640,86 +3639,11 @@ func (h AssetHandler) SampleEstimate(c *gin.Context) {
 		c.JSON(http.StatusRequestTimeout, gin.H{"error": "sample estimate canceled while waiting for capacity"})
 		return
 	}
-	path := strings.TrimSpace(input.Path)
-	resolvedPath, err := h.resolveMediaPath(path)
-	if path == "" || err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "a readable media path is required"})
-		return
-	}
-	allowed, err := h.pathBelongsToReadableMediaRoot(resolvedPath)
-	if err != nil || !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
-		return
-	}
-	streams, err := probeMediaStreams(resolvedPath)
-	if err != nil || streams.Duration <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "could not determine media duration"})
-		return
-	}
-	seconds := min(60, max(5, input.Seconds))
-	if input.Seconds == 0 {
-		seconds = 20
-	}
-	profile := normalizeHardwareQualityPreset(input.Profile)
-	if len(streams.Video) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "asset has no video stream"})
-		return
-	}
-	if streams.Video[0].Bitrate <= 0 {
-		streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
-	}
-	qualityIntent := qualityIntentForMedia(profile, resolvedPath, streams)
-	profile = applyVideoToolboxQualityRecommendation(profile, qualityIntent)
-	profile = applyQSVQualityRecommendation(profile, qualityIntent, capabilities.CheckEncoder("hevc_qsv"))
-	profile = resolveHEVCLevel(profile, streams)
-	profile = profileWithFinalColorPolicy(profile, streams.Video[0], resolvedVideoEncoder(profile))
-	codecArgs := videoCodecArgsForSource(profile, &streams.Video[0])
-	workerArgs := videoWorkerArgsForSource(profile, &streams.Video[0])
-	dir, err := os.MkdirTemp("", "mvforge-sample-estimate-")
+	result, err := h.runProfileSampleEstimate(c.Request.Context(), input, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(profileSampleEstimateHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	defer os.RemoveAll(dir)
-	starts := distributedInterlaceStarts(streams.Duration, seconds)
-	totalBytes := int64(0)
-	completed := []float64{}
-	for index, start := range starts {
-		output := filepath.Join(dir, fmt.Sprintf("sample-%d.mkv", index))
-		args := []string{"-hide_banner", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start), "-i", resolvedPath, "-t", strconv.Itoa(seconds), "-map", "0:v:0?"}
-		args = append(args, codecArgs...)
-		args = append(args, workerArgs...)
-		args = append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-f", "matroska", "-y", output)
-		ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(seconds+90)*time.Second)
-		err := exec.CommandContext(ctx, "ffmpeg", args...).Run()
-		cancel()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "sample estimate failed: " + err.Error()})
-			return
-		}
-		if info, statErr := os.Stat(output); statErr == nil && info.Size() > 0 {
-			totalBytes += info.Size()
-			completed = append(completed, start)
-		}
-	}
-	measuredSeconds := float64(len(completed) * seconds)
-	if measuredSeconds <= 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "sample estimate produced no output"})
-		return
-	}
-	videoBytes := int64(float64(totalBytes) / measuredSeconds * streams.Duration)
-	result := models.JSONMap{"assetPath": resolvedPath, "durationSeconds": streams.Duration, "sampleSeconds": seconds, "sampleStarts": completed, "sampleCount": len(completed), "measuredVideoBytes": totalBytes, "estimatedVideoBytes": videoBytes, "measuredVideoBitrate": int64(float64(totalBytes) * 8 / measuredSeconds), "confidence": "high", "source": "five_distributed_profile_samples", "effectiveEncoder": argumentValue(codecArgs, "-c:v"), "hardwareQualityPreset": workerStringValue(profile.WorkerConfig["hardwareQualityPreset"]), "sourceVideoBitrate": streams.Video[0].Bitrate, "sourceWidth": streams.Video[0].Width, "sourceHeight": streams.Video[0].Height, "persisted": false}
-	if input.ProfileID > 0 {
-		var saved models.Profile
-		if h.db.First(&saved, input.ProfileID).Error == nil && scheduler.ProfileEstimateFingerprint(saved) == scheduler.ProfileEstimateFingerprint(input.Profile) {
-			if err := persistProfileSampleEstimate(h.db, resolvedPath, saved, result); err != nil {
-				applog.Event("warn", "analysis", "profile_sample_estimate_persist_failed", map[string]any{"path": resolvedPath, "profileId": input.ProfileID}, err)
-			} else {
-				result["persisted"] = true
-			}
-		}
-	}
-	applog.Event("info", "analysis", "profile_sample_estimate", map[string]any{"path": resolvedPath, "profileId": input.ProfileID, "estimatedVideoBytes": videoBytes, "effectiveEncoder": result["effectiveEncoder"], "sampleCount": len(completed), "persisted": result["persisted"]}, nil)
 	c.JSON(http.StatusOK, result)
 }
 
