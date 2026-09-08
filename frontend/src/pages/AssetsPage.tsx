@@ -3026,7 +3026,7 @@ function AssetRow({
   operationId: string,
   key: string,
   streamIndex: number,
-  format: 'srt' | 'ass',
+  format: 'original' | 'srt' | 'ass',
 ) {
   if (subtitleOperationPollers.current.has(operationId)) {
     return;
@@ -3115,7 +3115,7 @@ async function restoreSubtitleOperations() {
 
 async function generateExternalSubtitle(
   streamIndex: number,
-  format: 'srt' | 'ass',
+  format: 'original' | 'srt' | 'ass',
   ocrLanguage?: string,
   ocrMode?: 'raw' | 'clean' | 'accurate',
 ) {
@@ -4336,7 +4336,7 @@ function EmbeddedSubtitleActions({
   generations: Record<string, SubtitleGenerationState>;
   onGenerate: (
     streamIndex: number,
-    format: 'srt' | 'ass',
+    format: 'original' | 'srt' | 'ass',
     ocrLanguage?: string,
     ocrMode?: 'raw' | 'clean' | 'accurate',
   ) => void;
@@ -4354,7 +4354,13 @@ function EmbeddedSubtitleActions({
         {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
         {streams.map((stream) => {
           const bitmap = isBitmapSubtitleCodec(stream.codec);
-          const streamGenerations = (['srt', 'ass'] as const)
+           const originalStyledFormat =
+            stream.codec.toLowerCase() === 'ssa'
+              ? 'SSA'
+              : stream.codec.toLowerCase() === 'ass'
+                ? 'ASS'
+                : null;
+          const streamGenerations = (['original', 'srt', 'ass'] as const)
             .map((format) => generations[subtitleGenerationKey(stream.index, format)])
             .filter((value): value is SubtitleGenerationState => Boolean(value));
           return (
@@ -4408,6 +4414,19 @@ function EmbeddedSubtitleActions({
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  {originalStyledFormat ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={
+                        disabled ||
+                        generations[subtitleGenerationKey(stream.index, 'original')]?.status === 'running'
+                      }
+                      onClick={() => onGenerate(stream.index, 'original')}
+                    >
+                      Extract {originalStyledFormat}
+                    </Button>
+                  ) : null}
                 </Stack>
               </Stack>
               {streamGenerations.map((generation) => (
@@ -4463,7 +4482,7 @@ function EmbeddedSubtitleActions({
 type SubtitleGenerationState = {
   status: 'running' | 'success' | 'error';
   streamIndex: number;
-  format: 'srt' | 'ass';
+  format: 'original' | 'srt' | 'ass';
   message?: string;
 
   progress?: number;
@@ -4479,7 +4498,7 @@ type SubtitleGenerationState = {
   total?: number;
 };
 
-function subtitleGenerationKey(streamIndex: number, format: 'srt' | 'ass') {
+function subtitleGenerationKey(streamIndex: number, format:  'original' | 'srt' | 'ass') {
   return `${streamIndex}:${format}`;
 }
 

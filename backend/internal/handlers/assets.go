@@ -2554,8 +2554,11 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 	unsupported := []string{}
 	matched := false
 	requestedFormat := strings.ToLower(strings.TrimSpace(input.Format))
-	if requestedFormat != "" && requestedFormat != "srt" && requestedFormat != "ass" {
-		return plans, []string{"requested output format must be srt or ass"}
+	if requestedFormat != "" &&
+		requestedFormat != "original" &&
+		requestedFormat != "srt" &&
+		requestedFormat != "ass" {
+		return plans, []string{"requested output format must be original, srt, or ass"}
 	}
 	for _, stream := range streams {
 		if stream.CodecType != "subtitle" {
