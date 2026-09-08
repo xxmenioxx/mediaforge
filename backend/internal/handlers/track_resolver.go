@@ -49,6 +49,11 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		defaultDisposition = parsed
 	}
 	selectedSubtitles, explicitSubtitleSelection := profileIndexSet(profile, "keepSubtitleStreams")
+	resolvedCanonicalPathSelection :=
+		canonicalDisposition &&
+			storedSettingProfileScope(profile) == "path" &&
+			strings.TrimSpace(workerStringValue(profile["resolvedForAsset"])) != "" &&
+			explicitSubtitleSelection
 	transforms := subtitleTransformsByIndex(profile["subtitleTransforms"])
 	subtitles := make([]ResolvedSubtitleTrack, 0, len(scan.SubtitleStreams))
 	sidecars := []ResolvedTrackSidecar{}
@@ -62,8 +67,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		codec := strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec"])))
 		language := normalizedTrackLanguage(workerStringValue(stream["language"]))
 		action := defaultDisposition
-		if !canonicalDisposition &&
-			explicitSubtitleSelection &&
+		if explicitSubtitleSelection &&
+			(!canonicalDisposition || resolvedCanonicalPathSelection) &&
 			!selectedSubtitles[index] {
 			action = SubtitleDispositionRemove
 		}
@@ -76,7 +81,14 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 				}
 			}
 		}
-		action = matchingSubtitleRuleAction(profile, index, language, action)
+		if !resolvedCanonicalPathSelection || selectedSubtitles[index] {
+			action = matchingSubtitleRuleAction(
+				profile,
+				index,
+				language,
+				action,
+			)
+		}
 		resolved := ResolvedSubtitleTrack{StreamIndex: index, Codec: codec, Language: language, Action: action}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {

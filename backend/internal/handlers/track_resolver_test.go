@@ -719,3 +719,42 @@ func TestResolveTrackPlanV1IgnoresLegacySubtitleSelectionAndTransforms(t *testin
 		)
 	}
 }
+
+func TestResolveTrackPlanV1HonorsResolvedPathSubtitleSelection(t *testing.T) {
+	scan := trackResolverScan()
+
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1,
+		"scope":                   "path",
+		"resolvedForAsset":        "/media/raw/show/episode.mkv",
+		"subtitleDisposition":     "keep",
+		"subtitleRules":           []any{},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+		"keepSubtitleStreams":     []int{3, 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := map[int]SubtitleDisposition{
+		3: SubtitleDispositionKeep,
+		4: SubtitleDispositionKeep,
+		5: SubtitleDispositionRemove,
+		6: SubtitleDispositionRemove,
+	}
+
+	for _, subtitle := range plan.SubtitleStreams {
+		want := expected[subtitle.StreamIndex]
+
+		if subtitle.Action != want {
+			t.Fatalf(
+				"subtitle stream %d action=%q want=%q; plan=%#v",
+				subtitle.StreamIndex,
+				subtitle.Action,
+				want,
+				plan.SubtitleStreams,
+			)
+		}
+	}
+}
