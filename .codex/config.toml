@@ -1,0 +1,45 @@
+# Serena can occasionally take more than 1 second to initialize,
+# especially while language servers are starting.
+mcp_optional_startup_grace_ms = 0
+
+[mcp_servers.serena]
+command = "serena"
+args = [
+    "start-mcp-server",
+    "--project-from-cwd",
+    "--context=codex"
+]
+
+startup_timeout_sec = 15
+tool_timeout_sec = 60
+enabled = true
+required = false
+
+# Semantic navigation only.
+# Codex already provides filesystem, grep, shell and editing tools.
+enabled_tools = [
+    "get_symbols_overview",
+    "find_symbol",
+    "find_referencing_symbols",
+    "find_declaration",
+    "find_implementations",
+    "get_diagnostics_for_file"
+]
+
+[mcp_servers.serena.tools.get_symbols_overview]
+output_token_limit = 4000
+
+[mcp_servers.serena.tools.find_symbol]
+output_token_limit = 6000
+
+[mcp_servers.serena.tools.find_referencing_symbols]
+output_token_limit = 5000
+
+[mcp_servers.serena.tools.find_declaration]
+output_token_limit = 3000
+
+[mcp_servers.serena.tools.find_implementations]
+output_token_limit = 4000
+
+[mcp_servers.serena.tools.get_diagnostics_for_file]
+output_token_limit = 4000

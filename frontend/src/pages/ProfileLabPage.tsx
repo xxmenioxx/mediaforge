@@ -6672,6 +6672,12 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
   const sourceSummary = (streams: MediaStreamInfo[] | undefined) => streams?.length
     ? streams.map(streamLabel).join(' | ')
     : 'None detected';
+  const removedVideoStreams = (source?.videoStreams ?? []).filter(
+    (stream) =>
+      !plan.videoStreams.some(
+        (resolved) => resolved.streamIndex === stream.index,
+      ),
+  );
   const resolvedSubtitles = plan.subtitleStreams.map((resolved) => ({
     resolved,
     stream: source?.subtitleStreams?.find(
@@ -6698,13 +6704,18 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
   const defaultResult = (
     decision: TrackProfileResolutionPreviewResponse['resolvedTrackPlan']['defaultAudio'],
     sourceStreams: MediaStreamInfo[] | undefined,
-    kind: string,
+    missingLabel: string,
   ) => {
     if (decision.status === 'unchanged') return 'Unchanged';
+
     if (decision.status === 'resolved' && decision.streamIndex !== undefined) {
-      return resolvedStreamLabel({ streamIndex: decision.streamIndex }, sourceStreams);
+      return resolvedStreamLabel(
+        { streamIndex: decision.streamIndex },
+        sourceStreams,
+      );
     }
-    return `Requested ${(decision.requestedLanguage || 'unknown').toUpperCase()} — no matching kept ${kind} track`;
+
+    return `Requested ${(decision.requestedLanguage || 'unknown').toUpperCase()} — ${missingLabel}`;
   };
 
   const metadataActions = ([
@@ -6721,6 +6732,9 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     return `${type} #${index}: ${changes.join(' · ') || 'no effective metadata change'}`;
   }));
   const removalActions = [
+    ...removedVideoStreams.map(
+      (stream) => `Remove video ${streamLabel(stream)}`,
+    ),
     ...plan.removedAudioStreams.map(
       (stream) => `Remove audio ${resolvedStreamLabel(stream, source?.audioStreams)}`,
     ),
@@ -6755,7 +6769,14 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     keptResultSummary(plan.audioStreams, source?.audioStreams),
     `Remove: ${plan.removedAudioStreams.length ? resolvedStreamSummary(plan.removedAudioStreams, source?.audioStreams) : 'none'}`,
   ].join(' — ');
-  
+  const videoResultSummary = [
+    keptResultSummary(plan.videoStreams, source?.videoStreams),
+    `Remove: ${
+      removedVideoStreams.length
+        ? removedVideoStreams.map(streamLabel).join(' | ')
+        : 'none'
+    }`,
+  ].join(' — ');
   const canonicalSubtitleResult = [
     `Embedded: ${
       embeddedSubtitles.length
@@ -6795,7 +6816,12 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
   });
 
   const rows = [
-    ['Video streams', sourceSummary(source?.videoStreams), keptResultSummary(plan.videoStreams, source?.videoStreams), `Configured selection mode: ${profile.videoMode}`],
+    [
+      'Video streams',
+      sourceSummary(source?.videoStreams),
+      videoResultSummary,
+      `Configured selection mode: ${profile.videoMode}`,
+    ],
     ['Audio streams', sourceSummary(source?.audioStreams), audioResultSummary, `Configured mode: ${profile.audioMode} · languages ${profile.audioLanguages.join(', ') || 'none'}`],
     [
       'Subtitle streams',
@@ -6826,7 +6852,11 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
         .map(streamLabel)
         .join(' | ') || 'Unknown',
 
-      defaultResult(plan.defaultAudio, source?.audioStreams, 'audio'),
+      defaultResult(
+        plan.defaultAudio,
+        source?.audioStreams,
+        'no matching kept audio track',
+      ),
 
       profile.audioRequired ? 'Required track/language' : 'Optional',
     ],
@@ -6837,7 +6867,11 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
         .map(streamLabel)
         .join(' | ') || 'Unknown',
 
-      defaultResult(plan.defaultSubtitle, source?.subtitleStreams, 'subtitle'),
+      defaultResult(
+        plan.defaultSubtitle,
+        source?.subtitleStreams,
+        'no matching embedded subtitle',
+      ),
 
       profile.subtitlesRequired ? 'Required track/language' : 'Optional',
     ],
