@@ -706,6 +706,12 @@ export type TrackProfilePreviewDecision = {
   reason: string;
 };
 
+export type ResolvedDefaultTrack = {
+  requestedLanguage?: string;
+  streamIndex?: number;
+  status: 'unchanged' | 'resolved' | 'missing';
+};
+
 export type TrackProfileResolutionPreview = {
   assetPath: string;
   keepVideoStreams: number[];
@@ -728,6 +734,8 @@ export type TrackProfileResolutionPreview = {
 		fontAttachments: ResolvedFontAttachment[];
 		fontAttachmentsExported: boolean;
 		chapterPolicy: 'keep' | 'remove';
+    defaultAudio: ResolvedDefaultTrack;
+    defaultSubtitle: ResolvedDefaultTrack;
 		chaptersKept: boolean;
 		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }>;
 		warnings?: string[];

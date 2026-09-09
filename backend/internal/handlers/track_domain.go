@@ -255,6 +255,12 @@ type ResolvedTrackSidecar struct {
 	OCRMode     string `json:"ocrMode,omitempty"`
 }
 
+type ResolvedDefaultTrack struct {
+	RequestedLanguage string `json:"requestedLanguage,omitempty"`
+	StreamIndex        *int   `json:"streamIndex,omitempty"`
+	Status             string `json:"status"`
+}
+
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
 // decisions. Task 2 wires this model into Queue snapshots and execution plans.
 type ResolvedTrackPlan struct {
@@ -274,9 +280,73 @@ type ResolvedTrackPlan struct {
 	ChaptersKept               bool                       `json:"chaptersKept"`
 	SidecarOutputs             []ResolvedTrackSidecar     `json:"sidecarOutputs"`
 	Warnings                   []string                   `json:"warnings,omitempty"`
+	DefaultAudio    		   ResolvedDefaultTrack 	  `json:"defaultAudio"`
+	DefaultSubtitle 		   ResolvedDefaultTrack       `json:"defaultSubtitle"`
 }
 
 const resolvedTrackPlanSnapshotKey = "resolvedTrackPlan"
+
+func resolveDefaultAudioTrack(
+	profile map[string]any,
+	streams []ResolvedTrackStream,
+) ResolvedDefaultTrack {
+	requested := strings.ToLower(strings.TrimSpace(
+		workerStringValue(profile["defaultAudioLanguage"]),
+	))
+
+	if requested == "" {
+		return ResolvedDefaultTrack{Status: "unchanged"}
+	}
+
+	for _, stream := range streams {
+		if normalizedTrackLanguage(stream.Language) == requested {
+			index := stream.StreamIndex
+			return ResolvedDefaultTrack{
+				RequestedLanguage: requested,
+				StreamIndex:        &index,
+				Status:             "resolved",
+			}
+		}
+	}
+
+	return ResolvedDefaultTrack{
+		RequestedLanguage: requested,
+		Status:             "missing",
+	}
+}
+
+func resolveDefaultSubtitleTrack(
+	profile map[string]any,
+	streams []ResolvedSubtitleTrack,
+) ResolvedDefaultTrack {
+	requested := strings.ToLower(strings.TrimSpace(
+		workerStringValue(profile["defaultSubtitleLanguage"]),
+	))
+
+	if requested == "" {
+		return ResolvedDefaultTrack{Status: "unchanged"}
+	}
+
+	for _, stream := range streams {
+		if !stream.Action.KeepsEmbedded() {
+			continue
+		}
+
+		if normalizedTrackLanguage(stream.Language) == requested {
+			index := stream.StreamIndex
+			return ResolvedDefaultTrack{
+				RequestedLanguage: requested,
+				StreamIndex:        &index,
+				Status:             "resolved",
+			}
+		}
+	}
+
+	return ResolvedDefaultTrack{
+		RequestedLanguage: requested,
+		Status:             "missing",
+	}
+}
 
 // ResolvedTrackPlanFromSnapshot reads the canonical decision frozen by Queue.
 // A missing plan is expected for jobs created before the track-plan migration.

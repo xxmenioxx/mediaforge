@@ -170,7 +170,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		}
 		chapterPolicy = parsed
 	}
-
+	defaultAudio := resolveDefaultAudioTrack(profile, audio)
+	defaultSubtitle := resolveDefaultSubtitleTrack(profile, subtitles)
 	return ResolvedTrackPlan{
 		VideoStreams: video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
 		AttachmentPolicy: attachmentPolicy, AttachmentsKept: attachmentsKept, AttachmentReason: attachmentReason,
@@ -178,6 +179,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		FontAttachments: fontAttachments, FontAttachmentsExported: len(fontAttachments) > 0,
 		ChapterPolicy: chapterPolicy, ChaptersKept: chapterPolicy == ChapterPolicyKeep,
 		SidecarOutputs: sidecars, Warnings: warnings,
+		DefaultAudio:    defaultAudio,
+		DefaultSubtitle: defaultSubtitle,
 	}, nil
 }
 

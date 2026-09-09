@@ -32,6 +32,13 @@ describe('TrackProfileResolutionPreview', () => {
         subtitleStreams: [{ streamIndex: 4, action: 'keep_and_extract' }], attachmentPolicy: 'auto', attachmentsKept: false,
         attachmentReason: 'no embedded ASS/SSA subtitles remain', attachmentStreams: [], fontAttachmentExportPolicy: 'none', fontAttachments: [], fontAttachmentsExported: false,
         chapterPolicy: 'keep', chaptersKept: true,
+        defaultAudio: {
+          status: 'unchanged',
+        },
+
+        defaultSubtitle: {
+          status: 'unchanged',
+        },
         sidecarOutputs: [
           { streamIndex: 4, format: 'ass', mode: 'original', forced: false, default: false },
           { streamIndex: 4, format: 'srt', mode: 'converted', forced: false, default: false },
@@ -135,6 +142,13 @@ function attachmentPreview(
       attachmentReason: kept ? 'attachments explicitly kept' : 'attachments explicitly removed',
       attachmentStreams: attachments, fontAttachmentExportPolicy: 'none', fontAttachments: [], fontAttachmentsExported: false,
       chapterPolicy: 'keep', chaptersKept: true, sidecarOutputs: [],
+      defaultAudio: {
+        status: 'unchanged',
+      },
+
+      defaultSubtitle: {
+        status: 'unchanged',
+      },
     },
   };
 }

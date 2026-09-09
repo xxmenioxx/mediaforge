@@ -770,3 +770,161 @@ func TestResolveTrackPlanV1HonorsResolvedPathSubtitleSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveTrackPlanDefaultTrackResolution(t *testing.T) {
+	t.Run("resolves kept default audio", func(t *testing.T) {
+		scan := models.ScanResult{
+			AudioStreams: models.JSONList{
+				map[string]any{
+					"index":    1,
+					"codec":    "aac",
+					"language": "jpn",
+				},
+				map[string]any{
+					"index":    2,
+					"codec":    "ac3",
+					"language": "eng",
+				},
+			},
+		}
+
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"keepAudioStreams":     []int{1},
+			"defaultAudioLanguage": "jpn",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if plan.DefaultAudio.Status != "resolved" {
+			t.Fatalf("default audio status=%q plan=%#v", plan.DefaultAudio.Status, plan.DefaultAudio)
+		}
+		if plan.DefaultAudio.RequestedLanguage != "jpn" {
+			t.Fatalf("default audio requested language=%q", plan.DefaultAudio.RequestedLanguage)
+		}
+		if plan.DefaultAudio.StreamIndex == nil || *plan.DefaultAudio.StreamIndex != 1 {
+			t.Fatalf("default audio stream=%v", plan.DefaultAudio.StreamIndex)
+		}
+	})
+
+	t.Run("does not resolve extracted subtitle as embedded default", func(t *testing.T) {
+		scan := models.ScanResult{
+			SubtitleStreams: models.JSONList{
+				map[string]any{
+					"index":    2,
+					"codec":    "ass",
+					"language": "eng",
+				},
+				map[string]any{
+					"index":    4,
+					"codec":    "ass",
+					"language": "spa",
+				},
+			},
+		}
+
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"trackDispositionVersion": 1,
+			"subtitleDisposition":     "keep",
+			"subtitleRules": []any{
+				map[string]any{
+					"streamIndex": 4,
+					"action":      "extract",
+				},
+			},
+			"defaultSubtitleLanguage": "spa",
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if plan.DefaultSubtitle.Status != "missing" {
+			t.Fatalf(
+				"default subtitle status=%q want=missing plan=%#v",
+				plan.DefaultSubtitle.Status,
+				plan.DefaultSubtitle,
+			)
+		}
+		if plan.DefaultSubtitle.RequestedLanguage != "spa" {
+			t.Fatalf(
+				"default subtitle requested language=%q",
+				plan.DefaultSubtitle.RequestedLanguage,
+			)
+		}
+		if plan.DefaultSubtitle.StreamIndex != nil {
+			t.Fatalf(
+				"extracted subtitle was resolved as embedded default: %v",
+				*plan.DefaultSubtitle.StreamIndex,
+			)
+		}
+	})
+
+	t.Run("resolves kept subtitle as default", func(t *testing.T) {
+		scan := models.ScanResult{
+			SubtitleStreams: models.JSONList{
+				map[string]any{
+					"index":    2,
+					"codec":    "ass",
+					"language": "eng",
+				},
+				map[string]any{
+					"index":    4,
+					"codec":    "ass",
+					"language": "spa",
+				},
+			},
+		}
+
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"trackDispositionVersion": 1,
+			"subtitleDisposition":     "keep",
+			"defaultSubtitleLanguage": "eng",
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if plan.DefaultSubtitle.Status != "resolved" {
+			t.Fatalf(
+				"default subtitle status=%q plan=%#v",
+				plan.DefaultSubtitle.Status,
+				plan.DefaultSubtitle,
+			)
+		}
+		if plan.DefaultSubtitle.RequestedLanguage != "eng" {
+			t.Fatalf(
+				"default subtitle requested language=%q",
+				plan.DefaultSubtitle.RequestedLanguage,
+			)
+		}
+		if plan.DefaultSubtitle.StreamIndex == nil || *plan.DefaultSubtitle.StreamIndex != 2 {
+			t.Fatalf(
+				"default subtitle stream=%v",
+				plan.DefaultSubtitle.StreamIndex,
+			)
+		}
+	})
+
+	t.Run("leaves empty defaults unchanged", func(t *testing.T) {
+		plan, err := resolveTrackPlan(trackResolverScan(), map[string]any{
+			"trackDispositionVersion": 1,
+			"subtitleDisposition":     "keep",
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if plan.DefaultAudio.Status != "unchanged" {
+			t.Fatalf("default audio=%#v", plan.DefaultAudio)
+		}
+		if plan.DefaultSubtitle.Status != "unchanged" {
+			t.Fatalf("default subtitle=%#v", plan.DefaultSubtitle)
+		}
+	})
+}

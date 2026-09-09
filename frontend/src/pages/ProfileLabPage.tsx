@@ -871,7 +871,6 @@ export function ProfileLabPage() {
       audioLanguages: preferences.preferredLanguages,
       subtitleLanguages: preferences.preferredLanguages,
       defaultAudioLanguage: preferences.preferredLanguages[0] ?? '',
-      defaultSubtitleLanguage: preferences.preferredLanguages[0] ?? '',
     });
   }, [savedVideoProfileId, selectedVideoStarterPreset, settings.data, videoDraft.name, workerNodes.data]);
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
@@ -1107,6 +1106,31 @@ export function ProfileLabPage() {
     queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft, trackConversionDraft],
     queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: normalizedTrackProfileDraft() as unknown as Record<string, unknown> }),
     enabled: labSection === 'tracks' && Boolean(assetPath) && Boolean(selectedAssetSnapshot),
+  });
+  const trackSaveReviewPreview = useQuery({
+    queryKey: [
+      'trackProfileSaveReviewPreview',
+      assetPath,
+      pendingTrackProfileSave,
+    ],
+
+    queryFn: () => {
+      if (!pendingTrackProfileSave) {
+        throw new Error('Track profile review is unavailable.');
+      }
+
+      return api.resolveTrackProfilePreview({
+        assetPath,
+        profile:
+          pendingTrackProfileSave as unknown as Record<string, unknown>,
+      });
+    },
+
+    enabled:
+      trackSaveReviewOpen &&
+      Boolean(assetPath) &&
+      Boolean(selectedAssetSnapshot) &&
+      Boolean(pendingTrackProfileSave),
   });
   const autoRecommendation = useMutation({
     mutationFn: async (path: string) => {
@@ -6685,6 +6709,29 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
     ({ action }) => action === 'remove',
   );
 
+  const normalizeLanguage = (value?: string) =>
+  (value ?? '').trim().toLowerCase();
+
+  const requestedDefaultAudio =
+    normalizeLanguage(profile.defaultAudioLanguage);
+
+  const requestedDefaultSubtitle =
+    normalizeLanguage(profile.defaultSubtitleLanguage);
+
+  const resolvedDefaultAudio = requestedDefaultAudio
+    ? audioDelta.kept.find(
+        (stream) =>
+          normalizeLanguage(stream.language) === requestedDefaultAudio,
+      )
+    : undefined;
+
+  const resolvedDefaultSubtitle = requestedDefaultSubtitle
+    ? embeddedSubtitles.find(
+        ({ stream }) =>
+          normalizeLanguage(stream.language) === requestedDefaultSubtitle,
+      )?.stream
+    : undefined;
+
   const metadataActions = ([
     ['Video', clean.videoMetadata],
     ['Audio', clean.audioMetadata],
@@ -6854,8 +6901,36 @@ function TrackProfileSaveReview({ profile, conversion, source, asset }: { profil
           }`,
     ],
     ['Commentary tracks', audioDelta.kept.concat(audioDelta.removed).filter(isCommentaryStream).map(streamLabel).join(' | ') || 'None identified', profile.dropCommentary ? 'Remove identified commentary' : 'Keep', 'Metadata-based detection; validate against the source snapshot'],
-    ['Default audio', source?.audioStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultAudioLanguage || 'Unchanged', profile.audioRequired ? 'Required track/language' : 'Optional'],
-    ['Default subtitle', source?.subtitleStreams?.filter((stream) => stream.default).map(streamLabel).join(' | ') || 'Unknown', profile.defaultSubtitleLanguage || 'Unchanged', profile.subtitlesRequired ? 'Required track/language' : 'Optional'],
+    [
+      'Default audio',
+      source?.audioStreams
+        ?.filter((stream) => stream.default)
+        .map(streamLabel)
+        .join(' | ') || 'Unknown',
+
+      !requestedDefaultAudio
+        ? 'Unchanged'
+        : resolvedDefaultAudio
+          ? streamLabel(resolvedDefaultAudio)
+          : `Requested ${requestedDefaultAudio.toUpperCase()} — no matching kept audio track`,
+
+      profile.audioRequired ? 'Required track/language' : 'Optional',
+    ],
+    [
+      'Default subtitle',
+      source?.subtitleStreams
+        ?.filter((stream) => stream.default)
+        .map(streamLabel)
+        .join(' | ') || 'Unknown',
+
+      !requestedDefaultSubtitle
+        ? 'Unchanged'
+        : resolvedDefaultSubtitle
+          ? streamLabel(resolvedDefaultSubtitle)
+          : `Requested ${requestedDefaultSubtitle.toUpperCase()} — no matching embedded subtitle`,
+
+      profile.subtitlesRequired ? 'Required track/language' : 'Optional',
+    ],
     [
       'Subtitle exports',
 
