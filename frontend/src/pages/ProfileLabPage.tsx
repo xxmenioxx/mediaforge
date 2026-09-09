@@ -67,7 +67,7 @@ import type {
   SnapshotOperation,
   StreamMetadataOverride,
   QSVFrameStructureAnalysis,
-  TrackProfileResolutionPreview,
+  TrackProfileResolutionPreview as TrackProfileResolutionPreviewResponse,
   FrameStructureRecommendationSet,
   QSVFeatureStatus,
   UpscaleMode,
@@ -1107,30 +1107,6 @@ export function ProfileLabPage() {
     queryKey: ['trackProfileResolutionPreview', assetPath, trackDraft, trackConversionDraft],
     queryFn: () => api.resolveTrackProfilePreview({ assetPath, profile: normalizedTrackProfileDraft() as unknown as Record<string, unknown> }),
     enabled: labSection === 'tracks' && Boolean(assetPath) && Boolean(selectedAssetSnapshot),
-  });
-  const trackSaveReviewPreview = useQuery({
-    queryKey: [
-      'trackProfileSaveReviewPreview',
-      assetPath,
-      pendingTrackProfileSave,
-    ],
-
-    queryFn: () => {
-      if (!pendingTrackProfileSave) {
-        throw new Error('Track profile review is unavailable.');
-      }
-
-      return api.resolveTrackProfilePreview({
-        assetPath,
-        profile: pendingTrackProfileSave as unknown as Record<string, unknown>,
-      });
-    },
-
-    enabled:
-      trackSaveReviewOpen &&
-      Boolean(assetPath) &&
-      Boolean(selectedAssetSnapshot) &&
-      Boolean(pendingTrackProfileSave),
   });
   const trackSaveReviewPreview = useQuery({
     queryKey: [
@@ -6677,40 +6653,25 @@ function AudioProfileSaveReview({ profile, source, asset }: { profile: AudioEnha
   );
 }
 
-function TrackProfileSaveReview({ profile, conversion, source, asset, resolution }: { profile: TrackProfile; conversion: AssetConversionOverrideState; source?: ScanResult; asset: Asset | null; resolution: TrackProfileResolutionPreview; }) {
+function TrackProfileSaveReview({ profile, conversion, source, asset, resolution }: { profile: TrackProfile; conversion: AssetConversionOverrideState; source?: ScanResult; asset: Asset | null; resolution: TrackProfileResolutionPreviewResponse; }) {
   const plan = resolution.resolvedTrackPlan;
   const clean = cleanTrackConversionOverride(conversion);
   const streamLabel = (stream: MediaStreamInfo) => `#${stream.index} ${stream.codec}${stream.language ? ` · ${stream.language}` : ''}${stream.title ? ` · ${stream.title}` : ''}`;
-  const streamDelta = (streams: MediaStreamInfo[] | undefined, kept: number[] | null | undefined) => {
-    const available = streams ?? [];
-    const keptSet = kept == null ? new Set(available.map((stream) => stream.index)) : new Set(kept);
-    return {
-      kept: available.filter((stream) => keptSet.has(stream.index)),
-      removed: available.filter((stream) => !keptSet.has(stream.index)),
-    };
-  };
-  const resolvedStreamDelta = (
+  const resolvedStreamLabel = (
+    resolved: { streamIndex: number; codec?: string; language?: string },
     sourceStreams: MediaStreamInfo[] | undefined,
-    keptStreams: Array<{ streamIndex: number }>,
   ) => {
-    const available = sourceStreams ?? [];
-    const kept = new Set(keptStreams.map((stream) => stream.streamIndex));
-
-    return {
-      kept: available.filter((stream) => kept.has(stream.index)),
-      removed: available.filter((stream) => !kept.has(stream.index)),
-    };
+    const sourceStream = sourceStreams?.find((stream) => stream.index === resolved.streamIndex);
+    if (sourceStream) return streamLabel(sourceStream);
+    return `#${resolved.streamIndex} ${resolved.codec ?? 'unknown'}${resolved.language ? ` · ${resolved.language}` : ''}`;
   };
-
-  const videoDelta = resolvedStreamDelta(
-    source?.videoStreams,
-    plan.videoStreams,
-  );
-
-  const audioDelta = resolvedStreamDelta(
-    source?.audioStreams,
-    plan.audioStreams,
-  );
+  const resolvedStreamSummary = (
+    streams: Array<{ streamIndex: number; codec?: string; language?: string }>,
+    sourceStreams: MediaStreamInfo[] | undefined,
+  ) => streams.length ? streams.map((stream) => resolvedStreamLabel(stream, sourceStreams)).join(' | ') : 'none';
+  const sourceSummary = (streams: MediaStreamInfo[] | undefined) => streams?.length
+    ? streams.map(streamLabel).join(' | ')
+    : 'None detected';
   const resolvedSubtitles = plan.subtitleStreams.map((resolved) => ({
     resolved,
     stream: source?.subtitleStreams?.find(
@@ -6734,28 +6695,17 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     ({ resolved }) => resolved.action === 'remove',
   );
 
-  const normalizeLanguage = (value?: string) =>
-  (value ?? '').trim().toLowerCase();
-
-  const requestedDefaultAudio =
-    normalizeLanguage(profile.defaultAudioLanguage);
-
-  const requestedDefaultSubtitle =
-    normalizeLanguage(profile.defaultSubtitleLanguage);
-
-  const resolvedDefaultAudio = requestedDefaultAudio
-    ? audioDelta.kept.find(
-        (stream) =>
-          normalizeLanguage(stream.language) === requestedDefaultAudio,
-      )
-    : undefined;
-
-  const resolvedDefaultSubtitle = requestedDefaultSubtitle
-    ? embeddedSubtitles.find(
-        ({ stream }) =>
-          normalizeLanguage(stream.language) === requestedDefaultSubtitle,
-      )?.stream
-    : undefined;
+  const defaultResult = (
+    decision: TrackProfileResolutionPreviewResponse['resolvedTrackPlan']['defaultAudio'],
+    sourceStreams: MediaStreamInfo[] | undefined,
+    kind: string,
+  ) => {
+    if (decision.status === 'unchanged') return 'Unchanged';
+    if (decision.status === 'resolved' && decision.streamIndex !== undefined) {
+      return resolvedStreamLabel({ streamIndex: decision.streamIndex }, sourceStreams);
+    }
+    return `Requested ${(decision.requestedLanguage || 'unknown').toUpperCase()} — no matching kept ${kind} track`;
+  };
 
   const metadataActions = ([
     ['Video', clean.videoMetadata],
@@ -6771,12 +6721,8 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     return `${type} #${index}: ${changes.join(' · ') || 'no effective metadata change'}`;
   }));
   const removalActions = [
-    ...videoDelta.removed.map(
-      (stream) => `Remove video ${streamLabel(stream)}`,
-    ),
-
-    ...audioDelta.removed.map(
-      (stream) => `Remove audio ${streamLabel(stream)}`,
+    ...plan.removedAudioStreams.map(
+      (stream) => `Remove audio ${resolvedStreamLabel(stream, source?.audioStreams)}`,
     ),
 
     ...removedSubtitles.map(({ resolved, stream }) =>
@@ -6800,57 +6746,21 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
       } subtitle ${label}`;
     },
   );
-  const ruleActions = [
-    profile.dropCommentary
-      ? 'Rule: remove tracks identified as commentary'
-      : '',
-
-    profile.audioMode === 'none'
-      ? 'Rule: remove all audio tracks'
-      : '',
-
-    profile.audioMode === 'default'
-      ? 'Rule: keep only the default audio track'
-      : '',
-
-    profile.audioMode === 'languages'
-      ? `Rule: keep audio languages ${profile.audioLanguages.join(', ') || 'none configured'}`
-      : '',
-
-    !canonicalTrackDisposition && profile.subtitleMode === 'none'
-      ? 'Rule: remove all embedded subtitle tracks'
-      : '',
-
-    !canonicalTrackDisposition && profile.subtitleMode === 'forced'
-      ? 'Rule: keep only forced subtitles'
-      : '',
-
-    !canonicalTrackDisposition &&
-    (profile.subtitleMode === 'languages' ||
-      profile.subtitleMode === 'forced-or-languages')
-      ? `Rule: keep subtitle languages ${
-          profile.subtitleLanguages.join(', ') || 'none configured'
-        }${
-          profile.subtitleMode === 'forced-or-languages'
-            ? ' plus forced tracks'
-            : ''
-        }`
-      : '',
-  ].filter(Boolean);
-  const effectiveActions = [...removalActions, ...subtitleActions, ...metadataActions, ...ruleActions];
-  const sourceSummary = (delta: { kept: MediaStreamInfo[]; removed: MediaStreamInfo[] }) => [...delta.kept, ...delta.removed].length
-    ? [...delta.kept, ...delta.removed].sort((left, right) => left.index - right.index).map(streamLabel).join(' | ')
-    : 'None detected';
-  const resultSummary = (delta: { kept: MediaStreamInfo[]; removed: MediaStreamInfo[] }) => [
-    `Keep: ${delta.kept.length ? delta.kept.map(streamLabel).join(' | ') : 'none'}`,
-    `Remove: ${delta.removed.length ? delta.removed.map(streamLabel).join(' | ') : 'none'}`,
+  const effectiveActions = [...removalActions, ...subtitleActions, ...metadataActions];
+  const keptResultSummary = (
+    streams: Array<{ streamIndex: number; codec?: string; language?: string }>,
+    sourceStreams: MediaStreamInfo[] | undefined,
+  ) => `Keep: ${streams.length ? resolvedStreamSummary(streams, sourceStreams) : 'none'}`;
+  const audioResultSummary = [
+    keptResultSummary(plan.audioStreams, source?.audioStreams),
+    `Remove: ${plan.removedAudioStreams.length ? resolvedStreamSummary(plan.removedAudioStreams, source?.audioStreams) : 'none'}`,
   ].join(' — ');
   
   const canonicalSubtitleResult = [
     `Embedded: ${
       embeddedSubtitles.length
         ? embeddedSubtitles
-            .map(({ stream }) => streamLabel(stream))
+            .map(({ resolved }) => resolvedStreamLabel(resolved, source?.subtitleStreams))
             .join(' | ')
         : 'none'
     }`,
@@ -6858,7 +6768,7 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     `Extracted: ${
       extractedSubtitles.length
         ? extractedSubtitles
-            .map(({ stream }) => streamLabel(stream))
+            .map(({ resolved }) => resolvedStreamLabel(resolved, source?.subtitleStreams))
             .join(' | ')
         : 'none'
     }`,
@@ -6866,7 +6776,7 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
     `Removed: ${
       removedSubtitles.length
         ? removedSubtitles
-            .map(({ stream }) => streamLabel(stream))
+            .map(({ resolved }) => resolvedStreamLabel(resolved, source?.subtitleStreams))
             .join(' | ')
         : 'none'
     }`,
@@ -6881,12 +6791,12 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
       ? streamLabel(stream)
       : `#${sidecar.streamIndex}`;
 
-    return `${label} → ${sidecar.format.toUpperCase()} (${sidecar.mode})`;
+    return `${label} → ${(sidecar.format || 'unknown').toUpperCase()} (${sidecar.mode || 'unknown'})`;
   });
 
   const rows = [
-    ['Video streams', sourceSummary(videoDelta), resultSummary(videoDelta), `Selection mode: ${profile.videoMode}`],
-    ['Audio streams', sourceSummary(audioDelta), resultSummary(audioDelta), `${profile.audioMode} · languages ${profile.audioLanguages.join(', ') || 'none'}`],
+    ['Video streams', sourceSummary(source?.videoStreams), keptResultSummary(plan.videoStreams, source?.videoStreams), `Configured selection mode: ${profile.videoMode}`],
+    ['Audio streams', sourceSummary(source?.audioStreams), audioResultSummary, `Configured mode: ${profile.audioMode} · languages ${profile.audioLanguages.join(', ') || 'none'}`],
     [
       'Subtitle streams',
 
@@ -6896,17 +6806,19 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
             .join(' | ')
         : 'None detected',
 
-      canonicalTrackDisposition
-        ? canonicalSubtitleResult
-        : resultSummary(legacySubtitleDelta),
+      canonicalSubtitleResult,
 
-      canonicalTrackDisposition
-        ? `Default ${profile.subtitleDisposition} · ${profile.subtitleRules.length} specific rule(s)`
-        : `${profile.subtitleMode} · languages ${
-            profile.subtitleLanguages.join(', ') || 'none'
-          }`,
+      `Configured default ${profile.subtitleDisposition} · ${profile.subtitleRules.length} specific rule(s) · legacy mode ${profile.subtitleMode}`,
     ],
-    ['Commentary tracks', audioDelta.kept.concat(audioDelta.removed).filter(isCommentaryStream).map(streamLabel).join(' | ') || 'None identified', profile.dropCommentary ? 'Remove identified commentary' : 'Keep', 'Metadata-based detection; validate against the source snapshot'],
+    [
+      'Commentary tracks',
+      source?.audioStreams?.filter(isCommentaryStream).map(streamLabel).join(' | ') || 'None identified',
+      [
+        `Keep: ${plan.audioStreams.filter((resolved) => source?.audioStreams?.some((stream) => stream.index === resolved.streamIndex && isCommentaryStream(stream))).map((resolved) => resolvedStreamLabel(resolved, source?.audioStreams)).join(' | ') || 'none'}`,
+        `Remove: ${plan.removedAudioStreams.filter((resolved) => source?.audioStreams?.some((stream) => stream.index === resolved.streamIndex && isCommentaryStream(stream))).map((resolved) => resolvedStreamLabel(resolved, source?.audioStreams)).join(' | ') || 'none'}`,
+      ].join(' — '),
+      `Configured commentary rule: ${profile.dropCommentary ? 'remove identified' : 'keep'}`,
+    ],
     [
       'Default audio',
       source?.audioStreams
@@ -6914,11 +6826,7 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
         .map(streamLabel)
         .join(' | ') || 'Unknown',
 
-      !requestedDefaultAudio
-        ? 'Unchanged'
-        : resolvedDefaultAudio
-          ? streamLabel(resolvedDefaultAudio)
-          : `Requested ${requestedDefaultAudio.toUpperCase()} — no matching kept audio track`,
+      defaultResult(plan.defaultAudio, source?.audioStreams, 'audio'),
 
       profile.audioRequired ? 'Required track/language' : 'Optional',
     ],
@@ -6929,11 +6837,7 @@ function TrackProfileSaveReview({ profile, conversion, source, asset, resolution
         .map(streamLabel)
         .join(' | ') || 'Unknown',
 
-      !requestedDefaultSubtitle
-        ? 'Unchanged'
-        : resolvedDefaultSubtitle
-          ? streamLabel(resolvedDefaultSubtitle)
-          : `Requested ${requestedDefaultSubtitle.toUpperCase()} — no matching embedded subtitle`,
+      defaultResult(plan.defaultSubtitle, source?.subtitleStreams, 'subtitle'),
 
       profile.subtitlesRequired ? 'Required track/language' : 'Optional',
     ],
