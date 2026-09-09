@@ -1,6 +1,6 @@
 # Implementation Plan — Canonical Converted Subtitle Output: ASS
 
-**Status:** Draft  
+**Status:** Implemented
 **Depends on:** `spec.md`
 
 ## 1. Current state

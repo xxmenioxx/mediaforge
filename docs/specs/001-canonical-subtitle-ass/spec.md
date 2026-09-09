@@ -253,3 +253,26 @@ The feature is complete only when:
 6. focused tests cover the acceptance matrix at the appropriate resolver, planning, command, and OCR boundaries;
 7. `./scripts/verify.sh --auto` reports `ALL CHECKS PASSED`;
 8. implementation is compared against this spec and no requirement is left silently unmet.
+
+## Implementation status
+
+**Status:** Implemented
+**Implemented in:** `a19b99f`
+**Hardened in:** `3b9c869`
+
+### Deferred follow-up
+
+The generalized ASS/SSA font dependency resolver is intentionally deferred.
+
+Future work may resolve:
+
+ASS/SSA font-family reference
+→ asset font attachment inventory
+→ explicit subtitle → attachment dependency
+
+The current implementation preserves existing attachment policy and provenance,
+does not associate unrelated attachments with subtitles, and does not implicitly
+attach source fonts to converted/OCR-generated ASS.
+
+This follow-up is related to R12 but is not required for canonical
+`converted/ass` support.
