@@ -211,6 +211,10 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 			return nil, fmt.Errorf("subtitle stream %d produced an empty sidecar", stream.Index)
 		}
 		content, err := os.ReadFile(stagedPath)
+		if err == nil && cueFreeSubtitleArtifactCanBeSkipped(plan, transform.Format, content) {
+			_ = os.Remove(stagedPath)
+			continue
+		}
 		if err != nil || !validSubtitleSidecar(transform.Format, content) {
 			_ = os.Remove(stagedPath)
 			return nil, fmt.Errorf("subtitle stream %d produced an invalid %s sidecar", stream.Index, strings.ToUpper(transform.Format))
@@ -347,6 +351,11 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			return artifacts, fmt.Errorf("%s", current.Error)
 		}
 		content, readErr := os.ReadFile(current.StagedPath)
+		if readErr == nil && cueFreeSubtitleArtifactCanBeSkipped(plan, format, content) {
+			_ = os.Remove(current.StagedPath)
+			artifacts = artifacts[:len(artifacts)-1]
+			continue
+		}
 		if readErr != nil || !validOriginalSubtitleSidecar(format, content) {
 			current.Status, current.Error = "failed", fmt.Sprintf("subtitle stream %d produced an invalid %s sidecar", stream.Index, strings.ToUpper(format))
 			return artifacts, fmt.Errorf("%s", current.Error)
@@ -585,6 +594,23 @@ func validOriginalSubtitleSidecar(format string, content []byte) bool {
 
 func emptySubtitleArtifactCanBeSkipped(plan MediaJobPlan) bool {
 	return plan.AllowEmptySubtitleArtifacts && plan.SegmentDurationSeconds > 0
+}
+
+func cueFreeSubtitleArtifactCanBeSkipped(plan MediaJobPlan, format string, content []byte) bool {
+	if !emptySubtitleArtifactCanBeSkipped(plan) {
+		return false
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format != "ass" && format != "ssa" {
+		return false
+	}
+	text := string(content)
+	eventsIndex := strings.Index(text, "[Events]")
+	if eventsIndex < 0 || !strings.Contains(text[:eventsIndex], "[Script Info]") {
+		return false
+	}
+	events := text[eventsIndex+len("[Events]"):]
+	return strings.Contains(events, "Format:") && !strings.Contains(events, "Dialogue:")
 }
 
 func textSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, format, outputPath string) []string {

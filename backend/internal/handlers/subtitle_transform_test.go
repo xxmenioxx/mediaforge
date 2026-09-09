@@ -58,6 +58,37 @@ func TestEmptySubtitleArtifactPolicyIsLimitedToSegmentedTestEncodes(t *testing.T
 	}
 }
 
+func TestCueFreeASSArtifactPolicyIsLimitedToSegmentedTestEncodes(t *testing.T) {
+	segmentedTest := MediaJobPlan{SegmentDurationSeconds: 20, AllowEmptySubtitleArtifacts: true}
+	cueFree := []byte("[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n")
+	withCue := append(append([]byte(nil), cueFree...), []byte("Dialogue: 0,0:00:01.00,0:00:02.00,Default,Hola\n")...)
+
+	for _, format := range []string{"ass", "ssa"} {
+		if !cueFreeSubtitleArtifactCanBeSkipped(segmentedTest, format, cueFree) {
+			t.Fatalf("segmented Test Encode should skip cue-free %s", strings.ToUpper(format))
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		plan    MediaJobPlan
+		format  string
+		content []byte
+	}{
+		{name: "full processing", plan: MediaJobPlan{AllowEmptySubtitleArtifacts: true}, format: "ass", content: cueFree},
+		{name: "ordinary segment", plan: MediaJobPlan{SegmentDurationSeconds: 20}, format: "ass", content: cueFree},
+		{name: "subtitle with cue", plan: segmentedTest, format: "ass", content: withCue},
+		{name: "missing script info", plan: segmentedTest, format: "ass", content: []byte("[Events]\nFormat: Layer, Start, End, Style, Text\n")},
+		{name: "missing events format", plan: segmentedTest, format: "ass", content: []byte("[Script Info]\nScriptType: v4.00+\n[Events]\n")},
+		{name: "non ASS", plan: segmentedTest, format: "srt", content: cueFree},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if cueFreeSubtitleArtifactCanBeSkipped(test.plan, test.format, test.content) {
+				t.Fatal("artifact was incorrectly treated as an empty ASS/SSA window")
+			}
+		})
+	}
+}
+
 func TestOriginalSubtitleExtractionFormats(t *testing.T) {
 	tests := []struct {
 		codec, format, muxer string
