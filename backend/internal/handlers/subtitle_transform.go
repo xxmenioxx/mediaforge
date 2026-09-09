@@ -119,7 +119,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 	// and may intentionally request OCR or text conversion. Preserve that
 	// compatibility path; new canonical sidecar decisions never synthesize a
 	// transform and use stream-copy extraction below.
-	if len(plan.Override.SubtitleTransforms) == 0 && plan.ResolvedTracks != nil {
+	if plan.ResolvedTracks != nil {
 		return generateResolvedSubtitleArtifacts(ctx, plan, progress)
 	}
 	if len(plan.Override.SubtitleTransforms) == 0 {

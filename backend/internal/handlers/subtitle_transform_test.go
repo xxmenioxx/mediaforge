@@ -702,3 +702,78 @@ func TestMergeFontAttachmentArtifactProgressPreservesFrozenFields(t *testing.T) 
 		t.Fatalf("Status not updated: %q", artifact.Status)
 	}
 }
+
+func TestResolvedTrackPlanTakesPrecedenceOverLegacySubtitleTransforms(t *testing.T) {
+	temp := t.TempDir()
+	ffmpeg := filepath.Join(temp, "ffmpeg")
+	if err := os.WriteFile(
+		ffmpeg,
+		[]byte("#!/bin/sh\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' '[Events]' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hola' > \"$output\"\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", temp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	override := AssetConversionOverrideState{
+		SubtitleTransforms: []SubtitleTransform{{
+			StreamIndex:    2,
+			Format:         "ass",
+			Language:       "eng",
+			RemoveEmbedded: true,
+		}},
+	}
+
+	plan := MediaJobPlan{
+		InputPath:  "/raw/Movie.mkv",
+		OutputPath: filepath.Join(temp, "Movie.mkv"),
+		Streams: MediaStreamInventory{
+			Subtitle: []MediaStream{
+				{Index: 2, Codec: "ass", Language: "eng"},
+				{Index: 4, Codec: "ass", Language: "spa"},
+			},
+		},
+		Override: override,
+		ResolvedTracks: &ResolvedTrackPlan{
+			SidecarOutputs: []ResolvedTrackSidecar{{
+				StreamIndex: 4,
+				Codec:       "ass",
+				Language:    "spa",
+				Format:      "ass",
+				Mode:        "original",
+			}},
+		},
+	}
+
+	artifacts, err := generateSubtitleArtifactsWithProgress(
+		context.Background(),
+		plan,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 ||
+		artifacts[0].StreamIndex != 4 ||
+		artifacts[0].Language != "spa" {
+		t.Fatalf("canonical plan did not win over legacy transforms: %#v", artifacts)
+	}
+
+	legacyPlan := plan
+	legacyPlan.OutputPath = filepath.Join(temp, "Legacy.mkv")
+	legacyPlan.ResolvedTracks = nil
+
+	legacyArtifacts, err := generateSubtitleArtifactsWithProgress(
+		context.Background(),
+		legacyPlan,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyArtifacts) != 1 ||
+		legacyArtifacts[0].StreamIndex != 2 ||
+		legacyArtifacts[0].Language != "eng" {
+		t.Fatalf("legacy-only transform stopped working: %#v", legacyArtifacts)
+	}
+}
