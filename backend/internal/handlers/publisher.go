@@ -316,8 +316,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 		}
 	}
 	publishedExternalSubtitles, err :=
-		copyExternalSubtitleSidecars(
-			job.MediaPath,
+		copyExternalSubtitleSidecarsForJob(
+			job,
 			destinationPath,
 			overwrite,
 			&publishBackups,
@@ -1300,6 +1300,18 @@ func copyExternalSubtitleSidecars(
 		}
 	}
 	return copied, nil
+}
+
+func copyExternalSubtitleSidecarsForJob(
+	job models.QueueJob,
+	destinationMediaPath string,
+	overwrite bool,
+	backups *[]publishBackup,
+) ([]string, error) {
+	if _, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		return nil, nil
+	}
+	return copyExternalSubtitleSidecars(job.MediaPath, destinationMediaPath, overwrite, backups)
 }
 
 func resolveSidecarDestination(sourcePath string, destinationBase string, suffix string) (string, bool, error) {

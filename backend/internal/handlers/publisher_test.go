@@ -420,6 +420,63 @@ func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	}
 }
 
+func TestCopyExternalSubtitleSidecarsForJobHonorsCanonicalPlan(t *testing.T) {
+	root := t.TempDir()
+	rawMedia := filepath.Join(root, "raw", "Episode.mkv")
+	libraryMedia := filepath.Join(root, "library", "Episode.mkv")
+	for _, mediaPath := range []string{rawMedia, libraryMedia} {
+		if err := os.MkdirAll(filepath.Dir(mediaPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mediaPath, []byte("video"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawSidecar := strings.TrimSuffix(rawMedia, filepath.Ext(rawMedia)) + ".eng.srt"
+	if err := os.WriteFile(rawSidecar, []byte("english"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := models.QueueJob{
+		MediaPath: rawMedia,
+		TrackProfileSnapshot: models.JSONMap{
+			resolvedTrackPlanSnapshotKey: models.JSONMap{
+				"videoStreams":        models.JSONList{},
+				"audioStreams":        models.JSONList{},
+				"removedAudioStreams": models.JSONList{},
+				"subtitleStreams":     models.JSONList{},
+				"attachmentPolicy":    "keep",
+				"attachmentStreams":   models.JSONList{},
+				"chapterPolicy":       "keep",
+				"sidecarOutputs":      models.JSONList{},
+			},
+		},
+	}
+	if _, ok := ResolvedTrackPlanFromSnapshot(canonical.TrackProfileSnapshot); !ok {
+		t.Fatal("test fixture does not contain a canonical resolved track plan")
+	}
+	copied, err := copyExternalSubtitleSidecarsForJob(canonical, libraryMedia, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 0 {
+		t.Fatalf("canonical plan copied unrelated source sidecars: %#v", copied)
+	}
+	librarySidecar := strings.TrimSuffix(libraryMedia, filepath.Ext(libraryMedia)) + ".eng.srt"
+	if _, err := os.Stat(librarySidecar); !os.IsNotExist(err) {
+		t.Fatalf("canonical plan published unrelated source sidecar: %v", err)
+	}
+
+	legacy := models.QueueJob{MediaPath: rawMedia}
+	copied, err = copyExternalSubtitleSidecarsForJob(legacy, libraryMedia, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 1 || copied[0] != librarySidecar {
+		t.Fatalf("legacy sidecar behavior changed: %#v", copied)
+	}
+}
+
 func TestPathIsInsideRejectsSiblingPrefix(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "library")
 	if !pathIsInside(filepath.Join(root, "movie.mkv"), root) {

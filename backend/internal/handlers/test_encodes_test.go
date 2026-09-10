@@ -876,6 +876,35 @@ func TestGenerateTestExternalSubtitleArtifactsUsesTestBasename(t *testing.T) {
 	}
 }
 
+func TestGenerateTestExternalSubtitleArtifactsSkipsDiscoveryForCanonicalPlan(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	source := filepath.Join(root, "Episode.mkv")
+	sidecar := filepath.Join(root, "Episode.eng.srt")
+	output := filepath.Join(root, "Episode - MVForge Test T9.mkv")
+	if err := os.WriteFile(source, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sidecar, []byte("1\n00:00:01,000 --> 00:00:02,000\nEnglish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, err := generateTestExternalSubtitleArtifacts(context.Background(), MediaJobPlan{
+		SourceAssetPath: source,
+		OutputPath:      output,
+		ResolvedTracks:  &ResolvedTrackPlan{},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("canonical plan rediscovered external subtitle artifacts: %#v", artifacts)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Episode - MVForge Test T9.eng.srt")); !os.IsNotExist(err) {
+		t.Fatalf("canonical plan exposed unrelated external subtitle: %v", err)
+	}
+}
+
 func TestActivateTestSubtitleArtifactsMovesTemporarySidecarsAtomically(t *testing.T) {
 	temp := t.TempDir()
 	temporaryMedia := filepath.Join(temp, ".Movie - MVForge Test T1.partial.mkv")

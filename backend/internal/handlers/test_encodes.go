@@ -791,6 +791,9 @@ func testEncodeValidationReportWithTiming(plan MediaJobPlan, streams MediaStream
 }
 
 func generateTestExternalSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, existing []SubtitleArtifact) ([]SubtitleArtifact, error) {
+	if plan.ResolvedTracks != nil {
+		return nil, nil
+	}
 	sidecars, err := externalSubtitlesForMedia(plan.SourceAssetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
