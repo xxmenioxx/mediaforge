@@ -29,7 +29,7 @@ export function structuredRestorationStages(config: RestorationConfig): Structur
 
 export function withStructuredRestorationFilters(config: RestorationConfig): RestorationConfig {
   const existing = splitFilterChain(stringValue(config.videoFilters));
-  const preserved = existing.filter((filter) => !controlledFilterNames.has(filterName(filter)));
+  const preserved = existing.filter((filter) => !isControlledRestorationFilter(filter));
   return {
     ...config,
     videoFilters: [...preserved, ...structuredRestorationFilters(config)].join(','),
@@ -100,23 +100,8 @@ export function restorationConfigFromLegacyFilters(config: RestorationConfig): R
       }
     }
     if (name === 'noise' && result.regrain === undefined) {
-      if (value === 'c0s=1:c0f=t') result.regrain = 'light';
-      else if (value === 'c0s=2:c0f=t') result.regrain = 'medium';
-      else if (value === 'c0s=3:c0f=t') result.regrain = 'strong';
-      else {
-        const options = Object.fromEntries(value.split(':').map((entry) => entry.split('=', 2)));
-        const luma = Number(options.c0s);
-        const chroma1 = Number(options.c1s ?? 0);
-        const chroma2 = Number(options.c2s ?? chroma1);
-        if (Number.isFinite(luma) && Number.isFinite(chroma1) && Number.isFinite(chroma2) && chroma1 === chroma2) {
-          const flags = String(options.c0f ?? '');
-          result.regrain = 'custom';
-          result.regrainLumaStrength = luma;
-          result.regrainChromaStrength = chroma1;
-          result.regrainTemporal = flags.includes('t');
-          result.regrainDistribution = flags.includes('u') ? 'uniform' : 'gaussian';
-        }
-      }
+      const regrain = canonicalRegrainConfig(filter);
+      if (regrain) Object.assign(result, regrain);
     }
   }
   return result;
@@ -141,6 +126,35 @@ function renderRegrain(config: RestorationConfig) {
     }
     default: return '';
   }
+}
+
+function isControlledRestorationFilter(filter: string) {
+  const name = filterName(filter);
+  return controlledFilterNames.has(name) && (name !== 'noise' || isCanonicalRegrainFilter(filter));
+}
+
+function isCanonicalRegrainFilter(filter: string) {
+  return canonicalRegrainConfig(filter) !== null;
+}
+
+function canonicalRegrainConfig(filter: string): RestorationConfig | null {
+  if (filter === 'noise=c0s=1:c0f=t') return { regrain: 'light' };
+  if (filter === 'noise=c0s=2:c0f=t') return { regrain: 'medium' };
+  if (filter === 'noise=c0s=3:c0f=t') return { regrain: 'strong' };
+  const match = /^noise=c0s=([^:]+):c1s=([^:]+):c2s=([^:]+)(?::c0f=(t|u|tu):c1f=\4:c2f=\4)?$/.exec(filter);
+  if (!match) return null;
+  const luma = strictNumberValue(match[1], 0, 100);
+  const chroma = strictNumberValue(match[2], 0, 100);
+  if (luma === null || chroma === null || match[2] !== match[3]) return null;
+  const flags = match[4] ?? '';
+  const config: RestorationConfig = {
+    regrain: 'custom',
+    regrainLumaStrength: luma,
+    regrainChromaStrength: chroma,
+    regrainTemporal: flags.includes('t'),
+    regrainDistribution: flags.includes('u') ? 'uniform' : 'gaussian',
+  };
+  return renderRegrain(config) === filter ? config : null;
 }
 
 function strictNumberValue(value: unknown, min: number, max: number) {

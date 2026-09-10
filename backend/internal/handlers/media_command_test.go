@@ -303,6 +303,36 @@ func TestCanonicalRestorationFilterChainPreservesUnknownBarriers(t *testing.T) {
 	}
 }
 
+func TestCanonicalRegrainRecognitionPreservesAdvancedNoiseAsAnUnknownBarrier(t *testing.T) {
+	for _, filter := range []string{
+		"noise=c0s=1:c0f=t",
+		"noise=c0s=2:c0f=t",
+		"noise=c0s=3:c0f=t",
+		"noise=c0s=2.5:c1s=0.5:c2s=0.5:c0f=tu:c1f=tu:c2f=tu",
+		"noise=c0s=2.5:c1s=0.5:c2s=0.5",
+	} {
+		if !isCanonicalRegrainFilter(filter) {
+			t.Fatalf("canonical Regrain filter was not recognized: %q", filter)
+		}
+	}
+	for _, filter := range []string{
+		"noise=alls=10:allf=t",
+		"noise=c0s=2:c0f=u",
+		"noise=c0s=02:c1s=0:c2s=0",
+		"noise=c0s=2:c1s=1:c2s=2",
+	} {
+		if isCanonicalRegrainFilter(filter) {
+			t.Fatalf("Advanced noise filter was treated as canonical Regrain: %q", filter)
+		}
+	}
+
+	filter := canonicalizeRestorationFilterChain("cas=strength=0.1,noise=alls=10:allf=t,hqdn3d=2:2:7:7")
+	want := "cas=strength=0.1,noise=alls=10:allf=t,hqdn3d=2:2:7:7"
+	if filter != want {
+		t.Fatalf("Advanced noise did not remain an unknown barrier: %q", filter)
+	}
+}
+
 func TestSmartUpscaleSquarePixelTargetOverridesCropPreserveDAR(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
 		"videoEncoder":     "libx265",

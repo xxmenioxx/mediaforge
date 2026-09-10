@@ -176,7 +176,10 @@ func annotateCurrentRestorationValues(recommendations []RestorationRecommendatio
 	configured := map[string]bool{}
 	for _, raw := range splitVideoFilterChain(filters) {
 		name, _, _ := strings.Cut(strings.TrimSpace(raw), "=")
-		configured[strings.ToLower(strings.TrimSpace(name))] = true
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "noise" || isCanonicalRegrainFilter(raw) {
+			configured[name] = true
+		}
 	}
 	filterByID := map[string]string{"deflicker": "deflicker", "deblock": "deblock", "denoise": "hqdn3d", "regrain": "noise", "chroma_nr": "chromanr", "deband": "deband", "exposure": "exposure", "eq": "eq"}
 	for index := range recommendations {

@@ -64,6 +64,26 @@ describe('structured restoration filters', () => {
     expect(config.videoFilters).toBe('mystery_filter=keep,noise=c0s=2:c0f=t');
   });
 
+  it('preserves Advanced noise without hydrating or controlling it as Regrain', () => {
+    const advanced = 'noise=alls=10:allf=t';
+    expect(restorationConfigFromLegacyFilters({ videoFilters: advanced }).regrain).toBeUndefined();
+    expect(withStructuredRestorationFilters({ videoFilters: advanced }).videoFilters).toBe(advanced);
+    expect(withStructuredRestorationFilters({ videoFilters: advanced, regrain: 'light' }).videoFilters)
+      .toBe(`${advanced},noise=c0s=1:c0f=t`);
+  });
+
+  it('hydrates only deterministic Custom Regrain output', () => {
+    const canonical = 'noise=c0s=2.5:c1s=0.5:c2s=0.5:c0f=tu:c1f=tu:c2f=tu';
+    expect(restorationConfigFromLegacyFilters({ videoFilters: canonical })).toMatchObject({
+      regrain: 'custom',
+      regrainLumaStrength: 2.5,
+      regrainChromaStrength: 0.5,
+      regrainTemporal: true,
+      regrainDistribution: 'uniform',
+    });
+    expect(restorationConfigFromLegacyFilters({ videoFilters: 'noise=c0s=2:c0f=u' }).regrain).toBeUndefined();
+  });
+
   it('replaces only controlled filters and keeps the advanced escape hatch', () => {
     const config = withStructuredRestorationFilters({
       videoFilters: 'bwdif=mode=send_frame,mystery_filter=keep,hqdn3d=1.5:1.5:6:6,deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018',

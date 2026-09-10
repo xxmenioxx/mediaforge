@@ -248,6 +248,18 @@ func TestRestorationPlanRecommendsRegrainWithoutChangingOtherDomains(t *testing.
 	}
 }
 
+func TestAdvancedNoiseIsNotReportedAsConfiguredRegrain(t *testing.T) {
+	recommendations := []RestorationRecommendation{{ID: "regrain"}}
+	annotateCurrentRestorationValues(recommendations, "noise=alls=10:allf=t")
+	if recommendations[0].CurrentValue != "off" {
+		t.Fatalf("Advanced noise was reported as configured Regrain: %#v", recommendations[0])
+	}
+	annotateCurrentRestorationValues(recommendations, "noise=c0s=2:c0f=t")
+	if recommendations[0].CurrentValue != "configured" {
+		t.Fatalf("canonical Regrain was not reported as configured: %#v", recommendations[0])
+	}
+}
+
 func TestApplyRestorationRecommendationsOnlyAppliesActionableSelection(t *testing.T) {
 	plan := RestorationRecommendationPlan{Recommendations: []RestorationRecommendation{
 		{ID: "frame_structure", State: RestorationRecommendationRecommended, Patch: models.JSONMap{"deinterlaceMode": "force"}},

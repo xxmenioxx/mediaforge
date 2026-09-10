@@ -2232,12 +2232,64 @@ func restorationStageForFilter(filter string) (restorationFilterStage, bool) {
 	case "cas", "unsharp":
 		return restorationStageFinalSharpen, true
 	case "noise":
-		return restorationStageRegrain, true
+		if isCanonicalRegrainFilter(filter) {
+			return restorationStageRegrain, true
+		}
+		return 0, false
 	case "setfield":
 		return restorationStageFieldMetadata, true
 	default:
 		return 0, false
 	}
+}
+
+func isCanonicalRegrainFilter(filter string) bool {
+	filter = strings.TrimSpace(filter)
+	switch filter {
+	case "noise=c0s=1:c0f=t", "noise=c0s=2:c0f=t", "noise=c0s=3:c0f=t":
+		return true
+	}
+	value, ok := strings.CutPrefix(filter, "noise=")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 && len(parts) != 6 {
+		return false
+	}
+	strengths := []string{"c0s", "c1s", "c2s"}
+	strengthValues := make([]string, len(strengths))
+	for index, key := range strengths {
+		name, raw, found := strings.Cut(parts[index], "=")
+		parsed, err := strconv.ParseFloat(raw, 64)
+		if !found || name != key || err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 100 {
+			return false
+		}
+		encoded, err := json.Marshal(parsed)
+		if err != nil || raw != string(encoded) {
+			return false
+		}
+		strengthValues[index] = raw
+	}
+	if strengthValues[1] != strengthValues[2] {
+		return false
+	}
+	if len(parts) == 3 {
+		return true
+	}
+	flagValue := ""
+	for index, key := range []string{"c0f", "c1f", "c2f"} {
+		name, raw, found := strings.Cut(parts[index+3], "=")
+		if !found || name != key || (raw != "t" && raw != "u" && raw != "tu") {
+			return false
+		}
+		if index == 0 {
+			flagValue = raw
+		} else if raw != flagValue {
+			return false
+		}
+	}
+	return true
 }
 
 func deduplicateRestorationAuthorities(parts []string) []string {
