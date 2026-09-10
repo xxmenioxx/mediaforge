@@ -276,8 +276,8 @@ func TestCanonicalRestorationFilterChainDeduplicatesKnownAuthorities(t *testing.
 }
 
 func TestCanonicalRestorationFilterChainOrdersEveryKnownStage(t *testing.T) {
-	filter := canonicalizeRestorationFilterChain("setfield=prog,cas=strength=0.1,setsar=1,scale=1280:720,colorspace=space=bt709,eq=gamma=0.94,deband=1thr=0.024,hqdn3d=4:3:6:4.5,chromanr=thres=25,crop=704:448:8:16,deblock=filter=strong:block=8,deflicker=size=5:mode=pm,bwdif=mode=send_frame:parity=bff:deint=all")
-	want := "bwdif=mode=send_frame:parity=bff:deint=all,deflicker=size=5:mode=pm,deblock=filter=strong:block=8,crop=704:448:8:16,chromanr=thres=25,hqdn3d=4:3:6:4.5,deband=1thr=0.024,eq=gamma=0.94,colorspace=space=bt709,scale=1280:720,setsar=1,cas=strength=0.1,setfield=prog"
+	filter := canonicalizeRestorationFilterChain("setfield=prog,noise=c0s=2:c0f=t,cas=strength=0.1,setsar=1,scale=1280:720,colorspace=space=bt709,eq=gamma=0.94,deband=1thr=0.024,hqdn3d=4:3:6:4.5,chromanr=thres=25,crop=704:448:8:16,deblock=filter=strong:block=8,deflicker=size=5:mode=pm,bwdif=mode=send_frame:parity=bff:deint=all")
+	want := "bwdif=mode=send_frame:parity=bff:deint=all,deflicker=size=5:mode=pm,deblock=filter=strong:block=8,crop=704:448:8:16,chromanr=thres=25,hqdn3d=4:3:6:4.5,deband=1thr=0.024,eq=gamma=0.94,colorspace=space=bt709,scale=1280:720,setsar=1,cas=strength=0.1,noise=c0s=2:c0f=t,setfield=prog"
 	if filter != want {
 		t.Fatalf("canonical stage order=%q want %q", filter, want)
 	}
@@ -296,8 +296,8 @@ func TestFFmpegCommandBuilderRendersStructuredRestorationExamplesCanonically(t *
 }
 
 func TestCanonicalRestorationFilterChainPreservesUnknownBarriers(t *testing.T) {
-	filter := canonicalizeRestorationFilterChain("hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8")
-	want := "hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,deblock=filter=strong:block=8"
+	filter := canonicalizeRestorationFilterChain("noise=c0s=2:c0f=t,hqdn3d=2:2:7:7,mystery_filter=keep:eq=1,noise=c0s=3:c0f=t,deblock=filter=strong:block=8")
+	want := "hqdn3d=2:2:7:7,noise=c0s=2:c0f=t,mystery_filter=keep:eq=1,deblock=filter=strong:block=8,noise=c0s=3:c0f=t"
 	if filter != want {
 		t.Fatalf("unknown advanced filter was moved or changed: %q", filter)
 	}

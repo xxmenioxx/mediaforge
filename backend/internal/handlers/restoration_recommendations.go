@@ -52,7 +52,7 @@ type RestorationRecommendationPlan struct {
 func buildRestorationRecommendationPlan(scan models.ScanResult, proposal ProfileInput, applyLocked bool) RestorationRecommendationPlan {
 	plan := RestorationRecommendationPlan{
 		Version: 1, ApplyLocked: applyLocked,
-		Recommendations:     make([]RestorationRecommendation, 0, 10),
+		Recommendations:     make([]RestorationRecommendation, 0, 11),
 		RestorationEvidence: decodeRestorationAnalysis(scan.RestorationAnalysis),
 	}
 	if applyLocked {
@@ -81,15 +81,20 @@ func buildRestorationRecommendationPlan(scan models.ScanResult, proposal Profile
 	delete(upscaleRequest, "resolvedUpscaleDecision")
 	resolvedMotion.WorkerConfig = upscaleRequest
 	resolvedUpscale := resolveUpscaleProfile(resolvedMotion, mediaStreamInventoryFromScan(scan), upscaleAnalysisEvidence(scan))
+	upscaleApplied := false
 	if decision, ok := resolvedUpscaleDecisionFromProfile(resolvedUpscale); ok {
+		upscaleApplied = decision.UpscaleApplied
 		plan.Recommendations = append(plan.Recommendations, smartUpscaleRestorationRecommendation(*decision), smartUpscaleSharpenRecommendation(*decision))
 	}
 
 	evidence := plan.RestorationEvidence
+	denoiseRecommendation := combinedAmbiguousRecommendation("denoise", "Denoise", evidence.Noise, evidence.Grain)
+	denoiseActive := restorationFilterConfigured(workerStringValue(profile.WorkerConfig["videoFilters"]), "hqdn3d", "nlmeans")
 	plan.Recommendations = append(plan.Recommendations,
 		noAutomaticRestorationRecommendation("deflicker", "Deflicker", "No calibrated flicker analysis is available."),
 		signalRestorationRecommendation("deblock", "Deblock", evidence.Blocking),
-		combinedAmbiguousRecommendation("denoise", "Denoise", evidence.Noise, evidence.Grain),
+		denoiseRecommendation,
+		regrainRestorationRecommendation(evidence.Grain, denoiseActive || denoiseRecommendation.Actionable(), upscaleApplied),
 		signalRestorationRecommendation("chroma_nr", "Chroma NR", evidence.ChromaNoise),
 		signalRestorationRecommendation("deband", "Deband", evidence.Banding),
 		signalRestorationRecommendation("ringing", "Ringing", evidence.Ringing),
@@ -173,7 +178,7 @@ func annotateCurrentRestorationValues(recommendations []RestorationRecommendatio
 		name, _, _ := strings.Cut(strings.TrimSpace(raw), "=")
 		configured[strings.ToLower(strings.TrimSpace(name))] = true
 	}
-	filterByID := map[string]string{"deflicker": "deflicker", "deblock": "deblock", "denoise": "hqdn3d", "chroma_nr": "chromanr", "deband": "deband", "exposure": "exposure", "eq": "eq"}
+	filterByID := map[string]string{"deflicker": "deflicker", "deblock": "deblock", "denoise": "hqdn3d", "regrain": "noise", "chroma_nr": "chromanr", "deband": "deband", "exposure": "exposure", "eq": "eq"}
 	for index := range recommendations {
 		filter, ok := filterByID[recommendations[index].ID]
 		if !ok {
@@ -284,6 +289,62 @@ func signalRestorationRecommendation(id, domain string, signal RestorationSignal
 		result.Reasons = []string{fmt.Sprintf("%s analysis is unavailable; this is not evidence that the artifact is absent.", domain)}
 	}
 	return result
+}
+
+func regrainRestorationRecommendation(signal RestorationSignalEvidence, denoiseReady, upscaleReady bool) RestorationRecommendation {
+	result := RestorationRecommendation{
+		ID:                 "regrain",
+		Domain:             "Regrain",
+		Confidence:         fallback(signal.Confidence, "unavailable"),
+		SupportingEvidence: append([]string(nil), signal.SupportingEvidence...),
+	}
+	availability := strings.ToLower(strings.TrimSpace(signal.Availability))
+	if availability == "unavailable" || availability == "" {
+		result.State = RestorationRecommendationNone
+		result.Reasons = []string{"Grain analysis is unavailable; this is not evidence that regrain is unnecessary."}
+		return result
+	}
+	if availability != "available" {
+		result.State = RestorationRecommendationManualReview
+		result.Reasons = []string{"Grain evidence is ambiguous and cannot safely select a Regrain strength."}
+		return result
+	}
+	confidence := strings.ToLower(strings.TrimSpace(signal.Confidence))
+	if confidence != "medium" && confidence != "high" {
+		result.State = RestorationRecommendationManualReview
+		result.Reasons = []string{"Grain evidence confidence is too low to safely select a Regrain strength."}
+		return result
+	}
+	preset, ok := map[string]string{"low": "light", "medium": "medium", "high": "strong"}[strings.ToLower(strings.TrimSpace(signal.Severity))]
+	if !ok {
+		result.State = RestorationRecommendationManualReview
+		result.Reasons = []string{"Grain evidence severity is not calibrated to a Regrain preset."}
+		return result
+	}
+	if !denoiseReady || !upscaleReady {
+		result.State = RestorationRecommendationManualReview
+		result.Reasons = []string{"Regrain is recommended automatically only when denoise and Smart Upscale are also active or recommended."}
+		return result
+	}
+	result.State = RestorationRecommendationRecommended
+	result.RecommendedValue = preset
+	result.Reasons = []string{"Calibrated grain evidence supports restoring texture after denoise and Smart Upscale."}
+	result.Patch = models.JSONMap{"regrain": preset}
+	return result
+}
+
+func restorationFilterConfigured(filters string, names ...string) bool {
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	for _, raw := range splitVideoFilterChain(filters) {
+		name, _, _ := strings.Cut(strings.TrimSpace(raw), "=")
+		if wanted[strings.ToLower(strings.TrimSpace(name))] {
+			return true
+		}
+	}
+	return false
 }
 
 func combinedAmbiguousRecommendation(id, domain string, signals ...RestorationSignalEvidence) RestorationRecommendation {

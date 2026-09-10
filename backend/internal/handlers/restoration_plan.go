@@ -145,5 +145,5 @@ func restorationStagesFromFilterChain(filters string) []ResolvedRestorationStage
 }
 
 func restorationStageName(stage restorationFilterStage) string {
-	return []string{"motion", "deflicker", "deblock", "crop", "chroma_cleanup", "denoise", "deband", "image_adjustments", "color_normalization", "smart_upscale", "sar_normalization", "final_sharpen", "field_metadata"}[int(stage)]
+	return []string{"motion", "deflicker", "deblock", "crop", "chroma_cleanup", "denoise", "deband", "image_adjustments", "color_normalization", "smart_upscale", "sar_normalization", "final_sharpen", "regrain", "field_metadata"}[int(stage)]
 }

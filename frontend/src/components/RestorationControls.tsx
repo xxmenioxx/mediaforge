@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { FormControlLabel, Grid, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import { chromaNRWindowError, type RestorationConfig } from '../utils/restorationFilters';
 
 const standardOptions = [
@@ -18,6 +18,14 @@ const denoiseOptions = [
   { value: 'medium', label: 'Medium' },
   { value: 'strong', label: 'Strong' },
   { value: 'custom', label: 'Custom HQDN3D' },
+] as const;
+
+const regrainOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'light', label: 'Fine · Light' },
+  { value: 'medium', label: 'Fine · Medium' },
+  { value: 'strong', label: 'Fine · Strong' },
+  { value: 'custom', label: 'Custom' },
 ] as const;
 
 export function RestorationControls({
@@ -55,6 +63,12 @@ export function RestorationControls({
       if (config.chromaNRWindowHeight === undefined) patch.chromaNRWindowHeight = 3;
     }
     if (value === 'custom' && key === 'deband' && config.debandThreshold === undefined) patch.debandThreshold = 0.024;
+    if (value === 'custom' && key === 'regrain') {
+      if (config.regrainLumaStrength === undefined) patch.regrainLumaStrength = 2;
+      if (config.regrainChromaStrength === undefined) patch.regrainChromaStrength = 0;
+      if (config.regrainTemporal === undefined) patch.regrainTemporal = true;
+      if (config.regrainDistribution === undefined) patch.regrainDistribution = 'gaussian';
+    }
     onChange(patch);
   };
   const numericField = (label: string, key: string, fallback: number, min: number, max: number, step: number) => (
@@ -96,6 +110,11 @@ export function RestorationControls({
             {standardOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
           </TextField>
         </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <TextField label="Regrain" value={mode('regrain')} onChange={(event) => changeMode('regrain', event.target.value)} disabled={disabled} select fullWidth>
+            {regrainOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
+          </TextField>
+        </Grid>
 
         {mode('deblockFilter') === 'custom' ? (
           <>
@@ -124,6 +143,21 @@ export function RestorationControls({
           </>
         ) : null}
         {mode('deband') === 'custom' ? numericField('Deband threshold', 'debandThreshold', 0.024, 0.001, 1, 0.001) : null}
+        {mode('regrain') === 'custom' ? (
+          <>
+            {numericField('Regrain luma strength', 'regrainLumaStrength', 2, 0, 100, 0.1)}
+            {numericField('Regrain chroma strength', 'regrainChromaStrength', 0, 0, 100, 0.1)}
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <FormControlLabel control={<Switch checked={config.regrainTemporal === undefined ? true : config.regrainTemporal === true} onChange={(event) => onChange({ regrainTemporal: event.target.checked })} disabled={disabled} />} label="Temporal" />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <TextField label="Distribution" value={mode('regrainDistribution') === 'uniform' ? 'uniform' : 'gaussian'} onChange={(event) => onChange({ regrainDistribution: event.target.value })} disabled={disabled} select size="small" fullWidth>
+                <MenuItem value="gaussian">Gaussian</MenuItem>
+                <MenuItem value="uniform">Uniform</MenuItem>
+              </TextField>
+            </Grid>
+          </>
+        ) : null}
       </Grid>
     </Stack>
   );

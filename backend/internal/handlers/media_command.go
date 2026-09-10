@@ -2156,6 +2156,7 @@ const (
 	restorationStageSmartUpscale
 	restorationStageSARNormalization
 	restorationStageFinalSharpen
+	restorationStageRegrain
 	restorationStageFieldMetadata
 )
 
@@ -2230,6 +2231,8 @@ func restorationStageForFilter(filter string) (restorationFilterStage, bool) {
 		return restorationStageSARNormalization, true
 	case "cas", "unsharp":
 		return restorationStageFinalSharpen, true
+	case "noise":
+		return restorationStageRegrain, true
 	case "setfield":
 		return restorationStageFieldMetadata, true
 	default:

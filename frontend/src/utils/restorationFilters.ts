@@ -7,13 +7,14 @@ export type StructuredRestorationStages = {
   chromaCleanup: string;
   denoise: string;
   deband: string;
+  regrain: string;
 };
 
-const controlledFilterNames = new Set(['deblock', 'hqdn3d', 'nlmeans', 'chromanr', 'deband']);
+const controlledFilterNames = new Set(['deblock', 'hqdn3d', 'nlmeans', 'chromanr', 'deband', 'noise']);
 
 export function structuredRestorationFilters(config: RestorationConfig): string[] {
   const stages = structuredRestorationStages(config);
-  return [stages.deblock, stages.chromaCleanup, stages.denoise, stages.deband].filter((value): value is string => Boolean(value));
+  return [stages.deblock, stages.chromaCleanup, stages.denoise, stages.deband, stages.regrain].filter((value): value is string => Boolean(value));
 }
 
 export function structuredRestorationStages(config: RestorationConfig): StructuredRestorationStages {
@@ -22,6 +23,7 @@ export function structuredRestorationStages(config: RestorationConfig): Structur
     chromaCleanup: renderChromaNR(config),
     denoise: renderDenoise(config),
     deband: renderDeband(config),
+    regrain: renderRegrain(config),
   };
 }
 
@@ -97,8 +99,53 @@ export function restorationConfigFromLegacyFilters(config: RestorationConfig): R
         result.debandThreshold = Number(match[1]);
       }
     }
+    if (name === 'noise' && result.regrain === undefined) {
+      if (value === 'c0s=1:c0f=t') result.regrain = 'light';
+      else if (value === 'c0s=2:c0f=t') result.regrain = 'medium';
+      else if (value === 'c0s=3:c0f=t') result.regrain = 'strong';
+      else {
+        const options = Object.fromEntries(value.split(':').map((entry) => entry.split('=', 2)));
+        const luma = Number(options.c0s);
+        const chroma1 = Number(options.c1s ?? 0);
+        const chroma2 = Number(options.c2s ?? chroma1);
+        if (Number.isFinite(luma) && Number.isFinite(chroma1) && Number.isFinite(chroma2) && chroma1 === chroma2) {
+          const flags = String(options.c0f ?? '');
+          result.regrain = 'custom';
+          result.regrainLumaStrength = luma;
+          result.regrainChromaStrength = chroma1;
+          result.regrainTemporal = flags.includes('t');
+          result.regrainDistribution = flags.includes('u') ? 'uniform' : 'gaussian';
+        }
+      }
+    }
   }
   return result;
+}
+
+function renderRegrain(config: RestorationConfig) {
+  switch (stringValue(config.regrain)) {
+    case 'light': return 'noise=c0s=1:c0f=t';
+    case 'medium': return 'noise=c0s=2:c0f=t';
+    case 'strong': return 'noise=c0s=3:c0f=t';
+    case 'custom': {
+      const luma = strictNumberValue(config.regrainLumaStrength, 0, 100);
+      const chroma = strictNumberValue(config.regrainChromaStrength, 0, 100);
+      if (luma === null || chroma === null) return '';
+      const temporal = config.regrainTemporal === undefined ? true : config.regrainTemporal === true;
+      const distribution = stringValue(config.regrainDistribution) || 'gaussian';
+      if (distribution !== 'gaussian' && distribution !== 'uniform') return '';
+      const flags = `${temporal ? 't' : ''}${distribution === 'uniform' ? 'u' : ''}`;
+      const strengths = [`c0s=${luma}`, `c1s=${chroma}`, `c2s=${chroma}`];
+      if (!flags) return `noise=${strengths.join(':')}`;
+      return `noise=${[...strengths, `c0f=${flags}`, `c1f=${flags}`, `c2f=${flags}`].join(':')}`;
+    }
+    default: return '';
+  }
+}
+
+function strictNumberValue(value: unknown, min: number, max: number) {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : null;
 }
 
 function renderDeblock(config: RestorationConfig) {

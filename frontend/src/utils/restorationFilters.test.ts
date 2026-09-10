@@ -46,6 +46,24 @@ describe('structured restoration filters', () => {
     ]);
   });
 
+  it('renders Regrain presets exactly and keeps missing configuration off', () => {
+    expect(structuredRestorationFilters({})).not.toContain(expect.stringContaining('noise='));
+    expect(structuredRestorationFilters({ regrain: 'light' })).toEqual(['noise=c0s=1:c0f=t']);
+    expect(structuredRestorationFilters({ regrain: 'medium' })).toEqual(['noise=c0s=2:c0f=t']);
+    expect(structuredRestorationFilters({ regrain: 'strong' })).toEqual(['noise=c0s=3:c0f=t']);
+  });
+
+  it('renders Custom Regrain deterministically and rejects invalid values', () => {
+    expect(structuredRestorationFilters({ regrain: 'custom', regrainLumaStrength: 2.5, regrainChromaStrength: 0.5, regrainTemporal: true, regrainDistribution: 'uniform' }))
+      .toEqual(['noise=c0s=2.5:c1s=0.5:c2s=0.5:c0f=tu:c1f=tu:c2f=tu']);
+    expect(structuredRestorationFilters({ regrain: 'custom', regrainLumaStrength: Number.NaN, regrainChromaStrength: 0, regrainTemporal: true, regrainDistribution: 'gaussian' })).toEqual([]);
+  });
+
+  it('replaces duplicate canonical noise while preserving unknown filters', () => {
+    const config = withStructuredRestorationFilters({ videoFilters: 'noise=c0s=1:c0f=t,mystery_filter=keep,noise=c0s=3:c0f=t', regrain: 'medium' });
+    expect(config.videoFilters).toBe('mystery_filter=keep,noise=c0s=2:c0f=t');
+  });
+
   it('replaces only controlled filters and keeps the advanced escape hatch', () => {
     const config = withStructuredRestorationFilters({
       videoFilters: 'bwdif=mode=send_frame,mystery_filter=keep,hqdn3d=1.5:1.5:6:6,deband=1thr=0.018:2thr=0.018:3thr=0.018:4thr=0.018',

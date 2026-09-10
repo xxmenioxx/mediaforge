@@ -12,7 +12,7 @@ import (
 
 func exactRestorationProfile() models.Profile {
 	return models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
-		"videoFilters": "setfield=prog,cas=strength=0.16,exposure=exposure=0.12,eq=brightness=0:contrast=1:saturation=0.96:gamma=0.94,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,hqdn3d=4:3:6:4.5,chromanr=thres=25:sizew=3:sizeh=3,crop=704:448:8:16,deblock=filter=strong:block=8,bwdif=mode=send_frame:parity=bff:deint=all,zscale=matrix=bt709",
+		"videoFilters": "setfield=prog,noise=c0s=2:c0f=t,cas=strength=0.16,exposure=exposure=0.12,eq=brightness=0:contrast=1:saturation=0.96:gamma=0.94,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,hqdn3d=4:3:6:4.5,chromanr=thres=25:sizew=3:sizeh=3,crop=704:448:8:16,deblock=filter=strong:block=8,bwdif=mode=send_frame:parity=bff:deint=all,zscale=matrix=bt709",
 		"resolvedUpscaleDecision": ResolvedUpscaleDecision{
 			RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p,
 			SourceWidth: 704, SourceHeight: 448, SourceSAR: "40:33", SourceDAR: "4:3",
@@ -30,20 +30,23 @@ func TestResolvedRestorationPlanRendersExactStructuredChainInCanonicalOrder(t *t
 	if !ok {
 		t.Fatal("resolved restoration plan missing")
 	}
-	want := "bwdif=mode=send_frame:parity=bff:deint=all,deblock=filter=strong:block=8,crop=704:448:8:16,chromanr=thres=25:sizew=3:sizeh=3,hqdn3d=4:3:6:4.5,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,exposure=exposure=0.12,eq=brightness=0:contrast=1:saturation=0.96:gamma=0.94,zscale=w=960:h=720:filter=lanczos:matrix=bt709,setsar=1,cas=strength=0.16,setfield=prog"
+	want := "bwdif=mode=send_frame:parity=bff:deint=all,deblock=filter=strong:block=8,crop=704:448:8:16,chromanr=thres=25:sizew=3:sizeh=3,hqdn3d=4:3:6:4.5,deband=1thr=0.024:2thr=0.024:3thr=0.024:4thr=0.024,exposure=exposure=0.12,eq=brightness=0:contrast=1:saturation=0.96:gamma=0.94,zscale=w=960:h=720:filter=lanczos:matrix=bt709,setsar=1,cas=strength=0.16,noise=c0s=2:c0f=t,setfield=prog"
 	if plan.ResolvedFilterChain != want {
 		t.Fatalf("resolved chain:\n%s\nwant:\n%s", plan.ResolvedFilterChain, want)
 	}
 	if got := argumentValue(videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480}), "-vf"); got != want {
 		t.Fatalf("worker did not consume resolved plan: %s", got)
 	}
-	wantStages := []string{"motion", "deblock", "crop", "chroma_cleanup", "denoise", "deband", "image_adjustments", "image_adjustments", "smart_upscale", "sar_normalization", "final_sharpen", "field_metadata"}
+	wantStages := []string{"motion", "deblock", "crop", "chroma_cleanup", "denoise", "deband", "image_adjustments", "image_adjustments", "smart_upscale", "sar_normalization", "final_sharpen", "regrain", "field_metadata"}
 	gotStages := make([]string, 0, len(plan.Stages))
 	for _, stage := range plan.Stages {
 		gotStages = append(gotStages, stage.Stage)
 	}
 	if !reflect.DeepEqual(gotStages, wantStages) {
 		t.Fatalf("stages=%v want=%v", gotStages, wantStages)
+	}
+	if plan.ResolvedOutput.Width != 960 || plan.ResolvedOutput.Height != 720 || plan.ResolvedOutput.SAR != "1:1" {
+		t.Fatalf("Regrain changed Smart Upscale geometry: %#v", plan.ResolvedOutput)
 	}
 }
 
@@ -66,7 +69,7 @@ func TestQueueSnapshotFreezesRestorationPlanAndWorkerConsumesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := resolvedRestorationPlanFromProfile(frozenProfile)
-	if !ok || !strings.Contains(frozen.ResolvedFilterChain, "hqdn3d=4:3:6:4.5") || !strings.Contains(frozen.ResolvedFilterChain, "cas=strength=0.16") || frozen.RecommendationProvenance == nil {
+	if !ok || !strings.Contains(frozen.ResolvedFilterChain, "hqdn3d=4:3:6:4.5") || !strings.Contains(frozen.ResolvedFilterChain, "cas=strength=0.16") || !strings.Contains(frozen.ResolvedFilterChain, "noise=c0s=2:c0f=t") || frozen.RecommendationProvenance == nil {
 		t.Fatalf("Queue restoration snapshot incomplete: %#v", frozen)
 	}
 
@@ -148,7 +151,7 @@ func TestRestorationPlanVideoCopyIsExplicitlyBlockedAndCommandSafe(t *testing.T)
 		t.Fatalf("Copy restoration safety was not explicit: %#v", plan)
 	}
 	args := videoWorkerArgsForSource(profile, &MediaStream{Width: 720, Height: 480})
-	if argumentValue(args, "-vf") != "" || strings.Contains(strings.Join(args, " "), "cas=") {
+	if argumentValue(args, "-vf") != "" || strings.Contains(strings.Join(args, " "), "cas=") || strings.Contains(strings.Join(args, " "), "noise=") {
 		t.Fatalf("Copy command contains restoration filters: %v", args)
 	}
 }

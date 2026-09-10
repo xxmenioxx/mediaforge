@@ -171,7 +171,7 @@ func TestRestorationRecommendationsDoNotInventEvidenceThresholds(t *testing.T) {
 	scan.RestorationAnalysis = recommendationJSONMap(analysis)
 	plan := buildRestorationRecommendationPlan(scan, proposedProfileForScan(scan), false)
 
-	for _, id := range []string{"deblock", "denoise", "chroma_nr"} {
+	for _, id := range []string{"deblock", "denoise", "regrain", "chroma_nr"} {
 		item := recommendationByID(t, plan, id)
 		if item.State != RestorationRecommendationManualReview || item.RecommendedValue != "" || len(item.Patch) != 0 {
 			t.Fatalf("%s must remain manual review without a preset: %#v", id, item)
@@ -185,6 +185,66 @@ func TestRestorationRecommendationsDoNotInventEvidenceThresholds(t *testing.T) {
 	}
 	if got := plan.RestorationEvidence.Blocking.Value; got == nil || *got != value || plan.RestorationEvidence.Windows != 3 || plan.RestorationEvidence.SampledFrames != 9 {
 		t.Fatalf("calibration evidence was not preserved: %#v", plan.RestorationEvidence)
+	}
+}
+
+func TestRegrainRecommendationRequiresCalibratedEvidenceAndProcessingContext(t *testing.T) {
+	eligible := RestorationSignalEvidence{
+		Availability: "available", Severity: "medium", Confidence: "high",
+		SupportingEvidence: []string{"grain evidence"},
+	}
+	for severity, preset := range map[string]string{"low": "light", "medium": "medium", "high": "strong"} {
+		signal := eligible
+		signal.Severity = severity
+		item := regrainRestorationRecommendation(signal, true, true)
+		if item.ID != "regrain" || item.Domain != "Regrain" || item.State != RestorationRecommendationRecommended || item.RecommendedValue != preset || !reflect.DeepEqual(item.Patch, models.JSONMap{"regrain": preset}) {
+			t.Fatalf("eligible %s Regrain recommendation=%#v", severity, item)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		signal       RestorationSignalEvidence
+		denoiseReady bool
+		upscaleReady bool
+	}{
+		"ambiguous":        {RestorationSignalEvidence{Availability: "ambiguous", Severity: "medium", Confidence: "high"}, true, true},
+		"low confidence":   {RestorationSignalEvidence{Availability: "available", Severity: "medium", Confidence: "low"}, true, true},
+		"unknown severity": {RestorationSignalEvidence{Availability: "available", Severity: "unknown", Confidence: "high"}, true, true},
+		"no denoise":       {eligible, false, true},
+		"no upscale":       {eligible, true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			item := regrainRestorationRecommendation(tc.signal, tc.denoiseReady, tc.upscaleReady)
+			if item.State != RestorationRecommendationManualReview || item.RecommendedValue != "" || len(item.Patch) != 0 {
+				t.Fatalf("ineligible Regrain recommendation must not be actionable: %#v", item)
+			}
+		})
+	}
+
+	unavailable := regrainRestorationRecommendation(RestorationSignalEvidence{Availability: "unavailable", Confidence: "unavailable"}, true, true)
+	if unavailable.State != RestorationRecommendationNone || len(unavailable.Patch) != 0 {
+		t.Fatalf("unavailable grain evidence=%#v", unavailable)
+	}
+}
+
+func TestRestorationPlanRecommendsRegrainWithoutChangingOtherDomains(t *testing.T) {
+	scan := recommendationScan(InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "progressive", Confidence: .95}, CadenceAnalysis{}, CadenceRecommendation{})
+	analysis := decodeRestorationAnalysis(nil)
+	analysis.Grain = RestorationSignalEvidence{Availability: "available", Severity: "high", Confidence: "medium", SupportingEvidence: []string{"calibrated grain"}}
+	scan.RestorationAnalysis = recommendationJSONMap(analysis)
+	proposal := proposedProfileForScan(scan)
+	proposal.WorkerConfig["videoFilters"] = "hqdn3d=1.5:1.5:6:6"
+
+	plan := buildRestorationRecommendationPlan(scan, proposal, false)
+	item := recommendationByID(t, plan, "regrain")
+	if item.State != RestorationRecommendationRecommended || item.RecommendedValue != "strong" || !reflect.DeepEqual(item.Patch, models.JSONMap{"regrain": "strong"}) {
+		t.Fatalf("Regrain plan recommendation=%#v", item)
+	}
+
+	current := models.JSONMap{"videoFilters": "hqdn3d=1.5:1.5:6:6", "upscaleMode": "custom", "unrelated": "preserved"}
+	applied := applyRestorationRecommendations(current, plan, []string{"regrain"})
+	if applied["regrain"] != "strong" || applied["videoFilters"] != current["videoFilters"] || applied["upscaleMode"] != "custom" || applied["unrelated"] != "preserved" || len(applied) != len(current)+1 {
+		t.Fatalf("applying Regrain changed another domain: %#v", applied)
 	}
 }
 
