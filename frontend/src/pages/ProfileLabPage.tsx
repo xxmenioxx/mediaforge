@@ -6216,7 +6216,7 @@ function resetImageAdjustmentControls(setVideoDraft: Dispatch<SetStateAction<Pro
   });
 }
 
-function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
+export function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   const filters: string[] = [];
   const correctProgressiveFieldMetadata = workerConfig.correctProgressiveFieldMetadata === true;
   const deflicker = stringValue(workerConfig.deflicker, 'off');
@@ -6282,6 +6282,7 @@ function buildVideoFilterChain(workerConfig: Record<string, unknown>) {
   } else if (unsharp === 'light') {
     filters.push('unsharp=5:5:0.25:5:5:0.0');
   }
+  if (restoration.regrain) filters.push(restoration.regrain);
   if (correctProgressiveFieldMetadata) filters.push('setfield=prog');
   return filters.join(',');
 }
