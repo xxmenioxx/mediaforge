@@ -3006,14 +3006,8 @@ function AssetRow({
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
   }
 
-  async function openAssetTestEncode() {
-    try {
-      await updateConversion.mutateAsync({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
-      setShowTestEncodeDialog(true);
-    } catch {
-      // The existing mutation alert reports the save error. Do not generate a
-      // sample from a stale persisted override.
-    }
+  function openAssetTestEncode() {
+    setShowTestEncodeDialog(true);
   }
 
   function delay(ms: number) {
@@ -4115,7 +4109,7 @@ async function generateExternalSubtitle(
                     <Stack spacing={0.5}>
                       <Typography variant="h3">Test Encode</Typography>
                       <Typography color="text.secondary" variant="body2">
-                        Generate a short real encode with the same effective pipeline that this asset would use in Queue. Current Asset Overrides are saved before the test snapshot is created. The original is not archived or modified.
+                        Generate a short real encode with the persisted effective pipeline that this asset would use in Queue. Unsaved Asset Override changes are not included. The original is not archived or modified.
                       </Typography>
                     </Stack>
                     <Grid container spacing={1.5}>
@@ -4137,16 +4131,16 @@ async function generateExternalSubtitle(
                     {!canGenerateTestEncode ? (
                       <Alert severity="info">Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.</Alert>
                     ) : (
-                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateConversion.isPending || updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Save current overrides and generate a short real encode for playback testing'}>
+                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Generate a short real encode from the persisted effective asset configuration'}>
                         <span style={{ alignSelf: 'flex-start' }}>
                           <Button
                             startIcon={<ScienceIcon />}
                             variant="contained"
                             color="secondary"
                             onClick={openAssetTestEncode}
-                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateConversion.isPending || updateProfileAssignment.isPending}
+                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateProfileAssignment.isPending}
                           >
-                            {updateConversion.isPending ? 'Saving overrides…' : 'Generate Test Encode'}
+                            Generate Test Encode
                           </Button>
                         </span>
                       </Tooltip>

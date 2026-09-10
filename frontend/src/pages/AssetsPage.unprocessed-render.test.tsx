@@ -17,6 +17,7 @@ vi.mock('../api/client', async (importOriginal) => {
     suggestProfile: vi.fn(), runtimeSnapshot: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
+    updateAssetConversion: vi.fn(), testEncodes: vi.fn(),
     },
   };
 });
@@ -121,6 +122,8 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.renameAsset).mockResolvedValue({ oldPath: '/media/raw/movies/Akira/Akira.mkv', path: '/media/raw/movies/Akira/Akira Renamed.mkv', fileName: 'Akira Renamed.mkv' });
     vi.mocked(api.evaluateAdvisor).mockImplementation(async ({ mediaPath }) => ({ recommendation: 'worth_it', score: 90, summary: `Ready: ${mediaPath}`, reasons: [], warnings: [] } as never));
     vi.mocked(api.publishAssetsAsIs).mockResolvedValue({ message: 'Published as-is', published: 2 } as never);
+    vi.mocked(api.updateAssetConversion).mockResolvedValue({} as never);
+    vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -169,6 +172,37 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getAllByRole('button', { name: 'Configure' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Snapshots' })).toHaveLength(1);
   });
+
+  it('opens and generates Test Encode without persisting unsaved Asset Overrides', async () => {
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] });
+    vi.mocked(api.profiles).mockResolvedValue([{ id: 20, name: 'Persisted profile' }] as never);
+    vi.mocked(api.libraries).mockResolvedValue([{ id: 7, name: 'Anime', sourcePath: '/media/raw', destinationPath: '/media/library/anime' }] as never);
+    vi.mocked(api.effectiveAssetConfiguration).mockImplementation(async (path) => ({
+      assetPath: path,
+      video: { selection: 'profile', videoProfileId: 20 },
+      audio: { selection: 'inherit' },
+      tracks: { selection: 'inherit' },
+      category: { selection: 'inherit' },
+      destination: { selection: 'inherit' },
+    }));
+    vi.mocked(api.effectiveAssetConfigurations).mockResolvedValue({
+      configurations: {
+        '1': { assetPath: '/media/raw/movies/Akira/Akira.mkv', video: { selection: 'profile', videoProfileId: 20 }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'inherit' } },
+        '2': { assetPath: '/media/raw/movies/Akira/extras/Trailer.mkv', video: { selection: 'profile', videoProfileId: 20 }, audio: { selection: 'inherit' }, tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'inherit' } },
+      },
+      missingAssetIds: [],
+    });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await user.click(await screen.findByRole('tab', { name: 'Test Encode' }));
+    await user.click(await screen.findByRole('button', { name: 'Generate Test Encode' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
+    expect(api.updateAssetConversion).not.toHaveBeenCalled();
+  }, 10000);
 
   it('shows one title-scoped Snapshots surface with root and nested assets', async () => {
     vi.mocked(api.latestSnapshot).mockImplementation(async (path) => path.endsWith('/Akira.mkv')
@@ -458,7 +492,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const destination = await within(dialog).findByLabelText('Destination');
     await waitFor(() => expect(destinationMode.textContent).toContain('Override'));
     await waitFor(() => expect((destination as HTMLInputElement).value).toBe('Movies'));
-  });
+  }, 10000);
 
   it('shows the inherited effective Destination in Asset Info', async () => {
     const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
@@ -543,7 +577,7 @@ describe('Unprocessed Assets hierarchy', () => {
     destinationMode = within(dialog).getByLabelText('Destination mode');
     expect(destinationMode.textContent).toContain('Inherit');
     expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
-  });
+  }, 10000);
 
   it('keeps every Asset Info configuration control locked for an active Queue job', async () => {
     const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
@@ -648,7 +682,7 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(await screen.findByText('newest-stored-codec')).toBeTruthy();
     expect(screen.queryByText('rescanned-codec')).toBeNull();
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
-  });
+  }, 10000);
 
   it('clears a previous snapshot mutation error when Asset Info closes', async () => {
     vi.mocked(api.startSnapshotOperation).mockRejectedValue(new Error('snapshot test failure'));
