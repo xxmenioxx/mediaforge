@@ -1423,6 +1423,16 @@ func TestSeasonFolderNumericAssetsUseOrdinalEpisodePosition(t *testing.T) {
 	}
 }
 
+func TestEpisodeSeriesTitleFallsBackFromSeasonOnlyBatchName(t *testing.T) {
+	mediaPath := "/media/raw/series/Doctor Who/Season2/DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t02.mkv"
+	if got := episodeSeriesTitle("Season2", mediaPath); got != "Doctor Who" {
+		t.Fatalf("season-only batch title=%q want=%q", got, "Doctor Who")
+	}
+	if got := episodeSeriesTitle("My Show/Season2", mediaPath); got != "My Show" {
+		t.Fatalf("usable batch title=%q want=%q", got, "My Show")
+	}
+}
+
 func TestSeasonFolderOrdinalPositionWinsOverSourceTrackMetadata(t *testing.T) {
 	db := queueJobTestDB(t)
 

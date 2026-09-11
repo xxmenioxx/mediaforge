@@ -1775,6 +1775,12 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: records[3].LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.QueueJob{MediaPath: "/media/raw/Other/Open.mkv", Status: JobStatusRunning}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetMaintenanceOperation{AssetPath: "/media/raw/Other/Maintenance.mkv", Status: maintenanceStatusRunning}).Error; err != nil {
+		t.Fatal(err)
+	}
 	queryCounts := map[string]int{}
 	callbackName := "test:count-selected-queue-effective-scans"
 	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
@@ -1788,6 +1794,9 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 		AssetIDs: []uint{records[1].ID, records[0].ID, records[2].ID, records[3].ID, 999999, records[0].ID},
 		Commit:   false,
 	})
+	if queryCounts["queue_jobs"] != 1 || queryCounts["asset_maintenance_operations"] != 1 {
+		t.Fatalf("Queue Selected repeated open-job or maintenance scans: %#v", queryCounts)
+	}
 	if response.Summary.Selected != 5 || response.Summary.Eligible != 2 || response.Summary.Skipped != 1 || response.Summary.Failed != 2 {
 		t.Fatalf("unexpected plan summary: %#v", response.Summary)
 	}
@@ -1809,10 +1818,10 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 			t.Fatalf("eligible result lacks backend batch plan: %#v", result)
 		}
 	}
-	for _, model := range []any{&models.QueueJob{}, &models.SchedulerReservation{}, &models.ExecutionPlan{}} {
+	for model, expected := range map[any]int64{&models.QueueJob{}: 1, &models.SchedulerReservation{}: 0, &models.ExecutionPlan{}: 0} {
 		var count int64
-		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
-			t.Fatalf("planning persisted %T count=%d err=%v", model, count, err)
+		if err := db.Model(model).Count(&count).Error; err != nil || count != expected {
+			t.Fatalf("planning persisted %T count=%d want=%d err=%v", model, count, expected, err)
 		}
 	}
 	for _, table := range []string{"profile_assignments", "asset_scope_configurations"} {
@@ -1925,6 +1934,79 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 	var plans int64
 	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 0 {
 		t.Fatalf("execution plans=%d err=%v", plans, err)
+	}
+}
+
+func TestQueueSelectedSeasonOnlyBatchUsesSeriesTitleAndCompleteGroupOrdinals(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{
+		Name:            "Series",
+		SourcePath:      "/media/raw",
+		DestinationPath: "/media/library/series",
+		Type:            "tv",
+		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
+	}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	logicalPath := "/media/raw/series/Doctor Who"
+	groupPath := "series/Doctor Who/Season2"
+	names := []string{
+		"DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t02.mkv",
+		"DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t03.mkv",
+		"DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t05.mkv",
+		"DR_WHO_COMPLETE_SERIES_2018_D04_Ttitle_t00.mkv",
+	}
+	records := make([]models.AssetRecord, 0, len(names))
+	for _, name := range names {
+		mediaPath := filepath.Join("/media/raw", groupPath, name)
+		records = append(records, models.AssetRecord{
+			Path:             mediaPath,
+			SourcePath:       mediaPath,
+			RootPath:         "/media/raw",
+			GroupPath:        groupPath,
+			LogicalGroupPath: logicalPath,
+			RelativePath:     filepath.Join(groupPath, name),
+			FileName:         name,
+			Status:           "unprocessed",
+		})
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{
+		AssetIDs: []uint{records[3].ID, records[1].ID, records[0].ID},
+		Commit:   true,
+	})
+	if response.Summary.Queued != 3 || response.Summary.Failed != 0 {
+		t.Fatalf("unexpected Queue Selected response: %#v", response)
+	}
+
+	var jobs []models.QueueJob
+	if err := db.Where("batch_id = ?", response.Batches[0].BatchID).Order("batch_position asc").Find(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 3 || jobs[0].BatchName != "Season2" {
+		t.Fatalf("unexpected Queue Selected job shape: %#v", jobs)
+	}
+	wantEpisodes := []int{1, 2, 4}
+	for index, job := range jobs {
+		want := fmt.Sprintf("/media/library/series/Doctor Who/Season2/Doctor Who - S02E%02d.mkv", wantEpisodes[index])
+		if got := plannedOutputPathForJob(db, job, library, profile); got != want {
+			t.Fatalf("job %d output=%q want=%q", job.ID, got, want)
+		}
 	}
 }
 

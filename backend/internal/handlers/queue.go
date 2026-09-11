@@ -38,6 +38,102 @@ type QueueJobInput struct {
 	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
 	resolvedProfileResolution models.JSONMap
 	deferFreeze               bool
+	validationContext         *queueBatchValidationContext
+}
+
+type queuePathStat struct {
+	info os.FileInfo
+	err  error
+}
+
+type queueOpenJobValidationKey struct {
+	path      string
+	excludeID uint
+}
+
+type queueBatchValidationContext struct {
+	reviews            map[string]AssetReviewState
+	openJobs           []models.QueueJob
+	maintenance        []models.AssetMaintenanceOperation
+	pathStats          map[string]queuePathStat
+	openJobResults     map[queueOpenJobValidationKey]bool
+	maintenanceResults map[string]bool
+}
+
+func newQueueBatchValidationContext(db *gorm.DB) (*queueBatchValidationContext, error) {
+	validation := &queueBatchValidationContext{
+		reviews:            assetReviewOverrides(db),
+		pathStats:          map[string]queuePathStat{},
+		openJobResults:     map[queueOpenJobValidationKey]bool{},
+		maintenanceResults: map[string]bool{},
+	}
+	if err := db.
+		Where("dismissed_at IS NULL").
+		Where("status IN ?", []string{JobStatusQueued, JobStatusRunning, JobStatusCompleted}).
+		Where("published_at IS NULL").
+		Find(&validation.openJobs).Error; err != nil {
+		return nil, err
+	}
+	if db != nil && db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) {
+		if err := db.Where("status IN ?", []string{maintenanceStatusQueued, maintenanceStatusRunning}).Find(&validation.maintenance).Error; err != nil {
+			return nil, err
+		}
+	}
+	return validation, nil
+}
+
+func (validation *queueBatchValidationContext) stat(path string) queuePathStat {
+	cleanPath := filepath.Clean(path)
+	if cached, ok := validation.pathStats[cleanPath]; ok {
+		return cached
+	}
+	info, err := os.Stat(cleanPath)
+	result := queuePathStat{info: info, err: err}
+	validation.pathStats[cleanPath] = result
+	return result
+}
+
+func (validation *queueBatchValidationContext) sameFile(leftPath, rightPath string) bool {
+	leftPath = filepath.Clean(leftPath)
+	rightPath = filepath.Clean(rightPath)
+	if leftPath == rightPath {
+		return true
+	}
+	left := validation.stat(leftPath)
+	right := validation.stat(rightPath)
+	return left.err == nil && right.err == nil && os.SameFile(left.info, right.info)
+}
+
+func (validation *queueBatchValidationContext) assetHasOpenJob(mediaPath string, excludeID uint) bool {
+	key := queueOpenJobValidationKey{path: filepath.Clean(mediaPath), excludeID: excludeID}
+	if active, ok := validation.openJobResults[key]; ok {
+		return active
+	}
+	active := false
+	for _, job := range validation.openJobs {
+		if job.ID != excludeID && validation.sameFile(key.path, job.MediaPath) {
+			active = true
+			break
+		}
+	}
+	validation.openJobResults[key] = active
+	return active
+}
+
+func (validation *queueBatchValidationContext) activeMaintenance(path string) bool {
+	cleanPath := filepath.Clean(path)
+	if active, ok := validation.maintenanceResults[cleanPath]; ok {
+		return active
+	}
+	active := false
+	for _, operation := range validation.maintenance {
+		if validation.sameFile(cleanPath, operation.AssetPath) {
+			active = true
+			break
+		}
+	}
+	validation.maintenanceResults[cleanPath] = active
+	return active
 }
 
 type QueueBatchInput struct {
@@ -432,26 +528,30 @@ func (h QueueHandler) prepareBatchQueueJob(
 	input QueueJobInput,
 ) (models.QueueJob, int, error) {
 	input.MediaPath = filepath.Clean(input.MediaPath)
+	validation := input.validationContext
+	if validation == nil {
+		var err error
+		validation, err = newQueueBatchValidationContext(h.db)
+		if err != nil {
+			return models.QueueJob{}, http.StatusInternalServerError, err
+		}
+	}
 
 	if review := reviewForPath(
 		input.MediaPath,
-		assetReviewOverrides(h.db),
+		validation.reviews,
 	); review.RequiresReview {
 		return models.QueueJob{},
 			http.StatusConflict,
 			fmt.Errorf("asset requires review before queueing")
 	}
 
-	if active, err := h.assetHasOpenJob(input.MediaPath, 0); err != nil {
-		return models.QueueJob{}, http.StatusInternalServerError, err
-	} else if active {
+	if validation.assetHasOpenJob(input.MediaPath, 0) {
 		return models.QueueJob{},
 			http.StatusConflict,
 			fmt.Errorf("asset already has an open queue job")
 	}
-	if active, err := activeAssetMaintenance(h.db, input.MediaPath); err != nil {
-		return models.QueueJob{}, http.StatusInternalServerError, err
-	} else if active {
+	if validation.activeMaintenance(input.MediaPath) {
 		return models.QueueJob{}, http.StatusConflict, fmt.Errorf("asset has an active maintenance operation")
 	}
 
@@ -839,7 +939,10 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 	if err != nil {
 		return response, fmt.Errorf("load effective configuration batch: %w", err)
 	}
-	reviews := assetReviewOverrides(h.db)
+	validation, err := newQueueBatchValidationContext(h.db)
+	if err != nil {
+		return response, fmt.Errorf("load Queue validation context: %w", err)
+	}
 	for _, record := range records {
 		found[record.ID] = true
 		titlePath := filepath.Clean(record.LogicalGroupPath)
@@ -859,21 +962,17 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			response.Results = append(response.Results, result)
 			continue
 		}
-		if reviewForPath(filepath.Clean(record.Path), reviews).RequiresReview {
+		if reviewForPath(filepath.Clean(record.Path), validation.reviews).RequiresReview {
 			result.Outcome, result.Reason, result.Message = "skipped", "needs_review", "Asset requires review before queueing"
 			response.Results = append(response.Results, result)
 			continue
 		}
-		if active, err := h.assetHasOpenJob(record.Path, 0); err != nil {
-			return response, fmt.Errorf("check open queue job for asset %d: %w", record.ID, err)
-		} else if active {
+		if validation.assetHasOpenJob(record.Path, 0) {
 			result.Outcome, result.Reason, result.Message = "skipped", "already_queued", "Asset already has an open Queue job"
 			response.Results = append(response.Results, result)
 			continue
 		}
-		if active, err := activeAssetMaintenance(h.db, record.Path); err != nil {
-			return response, fmt.Errorf("check maintenance for asset %d: %w", record.ID, err)
-		} else if active {
+		if validation.activeMaintenance(record.Path) {
 			result.Outcome, result.Reason, result.Message = "skipped", "active_maintenance", "Asset has an active maintenance operation"
 			response.Results = append(response.Results, result)
 			continue
@@ -912,6 +1011,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			Notes:                     "Queued from selected titles",
 			ResolveProfileAssignments: false,
 			deferFreeze:               true,
+			validationContext:         validation,
 		}
 		queueInput.resolvedProfileResolution = resolveProfileAssignmentsFromEffective(&queueInput, effective)
 		job, status, err := h.prepareBatchQueueJob(queueInput)

@@ -2576,17 +2576,21 @@ func applyEpisodeVideoTrackTitle(db *gorm.DB, plan *MediaJobPlan, job models.Que
 }
 
 func episodeSeriesTitle(batchName string, mediaPath string) string {
-	candidate := strings.TrimSpace(batchName)
-	if candidate == "" {
-		candidate = path.Dir(strings.ReplaceAll(mediaPath, "\\", "/"))
+	candidates := []string{
+		strings.TrimSpace(batchName),
+		path.Dir(strings.ReplaceAll(mediaPath, "\\", "/")),
 	}
-
-	parts := pathSegments(candidate)
-	for index := len(parts) - 1; index >= 0; index-- {
-		if seasonNumberFromPath(parts[index]) > 0 {
+	for _, candidate := range candidates {
+		if candidate == "" || candidate == "." {
 			continue
 		}
-		return strings.TrimSpace(parts[index])
+		parts := pathSegments(candidate)
+		for index := len(parts) - 1; index >= 0; index-- {
+			if seasonNumberFromPath(parts[index]) > 0 {
+				continue
+			}
+			return strings.TrimSpace(parts[index])
+		}
 	}
 	return ""
 }
