@@ -145,7 +145,8 @@ detect_auto_scope() {
         return
     fi
 
-    for file in "${CHANGED_FILES[@]}"; do
+    for file in "${CHANGED_FILES[@]:-}"; do
+        [[ -z "$file" ]] && continue
         case "$file" in
             backend/*)  backend=true ;;
             frontend/*) frontend=true ;;
@@ -170,7 +171,9 @@ detect_auto_scope() {
 detect_focused_checks() {
     local file relative_test
 
-    for file in "${CHANGED_FILES[@]}"; do
+    for file in "${CHANGED_FILES[@]:-}"; do
+        [[ -z "$file" ]] && continue
+    
         case "$file" in
             backend/internal/handlers/*)
                 FOCUSED_BACKEND_HANDLERS=true
