@@ -6237,10 +6237,12 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
   }
   const activeJob = job?.publishedAt && !job.publicationRetiredAt ? undefined : job;
   if (activeJob?.status === 'running') {
-    return { label: 'Worker', color: 'primary' };
+    return activeJob.stage === 'claimed'
+      ? { label: 'PREPARING', color: 'primary' }
+      : { label: 'PROCESSING', color: 'primary' };
   }
   if (activeJob?.status === 'queued') {
-    return { label: 'Queued', color: 'primary' };
+    return { label: 'QUEUED', color: 'primary' };
   }
   if (activeJob?.status === 'failed') {
     return { label: 'Failed', color: 'error' };

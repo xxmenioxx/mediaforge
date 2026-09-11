@@ -602,6 +602,21 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(dialog).getByLabelText('Destination')).toHaveProperty('disabled', true);
   });
 
+	it.each([
+		['queued', 'queued', 'QUEUED'],
+		['running', 'claimed', 'PREPARING'],
+		['running', 'converting', 'PROCESSING'],
+	] as const)('shows Queue execution state %s/%s as %s without changing inventory state', async (status, stage, label) => {
+		const inventory = singleAssetInventory();
+		vi.mocked(api.assets).mockResolvedValue(inventory);
+		vi.mocked(api.queueJobs).mockResolvedValue([{ ...activeQueueJob(101, '/media/raw/movies/Akira/Akira.mkv'), status, stage }]);
+		render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+		fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+		expect(await screen.findByText(label)).toBeTruthy();
+		expect(inventory.unprocessed[0].status).toBe('unprocessed');
+	});
+
   it('does not re-arm Rescan after success and snapshot refetch', async () => {
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(), status: 'stale', requiresAnalysis: true, staleComponents: ['interlace'] });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -31,13 +31,53 @@ const (
 	JobStatusCanceled  = "canceled"
 )
 
+type claimPreparationLockKey struct {
+	db    *gorm.DB
+	jobID uint
+}
+
+type claimPreparationLockEntry struct {
+	mutex sync.Mutex
+	refs  int
+}
+
+type claimPreparationLockRegistry struct {
+	mutex   sync.Mutex
+	entries map[claimPreparationLockKey]*claimPreparationLockEntry
+}
+
+func (registry *claimPreparationLockRegistry) lock(key claimPreparationLockKey) func() {
+	registry.mutex.Lock()
+	if registry.entries == nil {
+		registry.entries = make(map[claimPreparationLockKey]*claimPreparationLockEntry)
+	}
+	entry := registry.entries[key]
+	if entry == nil {
+		entry = &claimPreparationLockEntry{}
+		registry.entries[key] = entry
+	}
+	entry.refs++
+	registry.mutex.Unlock()
+
+	entry.mutex.Lock()
+	return func() {
+		entry.mutex.Unlock()
+		registry.mutex.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(registry.entries, key)
+		}
+		registry.mutex.Unlock()
+	}
+}
+
 var (
 	errWorkerLimitReached        = errors.New("worker claim limit reached")
 	errWorkerDelayActive         = errors.New("worker delay between jobs is still active")
 	errWorkerBatchCooldownActive = errors.New("worker batch cooldown is still active")
 	errClaimedJobDeferred        = errors.New("claimed job was frozen and returned to scheduler review")
 	claimJobMu                   sync.Mutex
-	claimPreparationLocks        sync.Map
+	claimPreparationLocks        claimPreparationLockRegistry
 )
 
 type WorkerHandler struct {
@@ -444,14 +484,8 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 	if queueJobFreezeComplete(job) {
 		return job, nil
 	}
-	lockKey := struct {
-		db    *gorm.DB
-		jobID uint
-	}{h.db, job.ID}
-	lockValue, _ := claimPreparationLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	preparationLock := lockValue.(*sync.Mutex)
-	preparationLock.Lock()
-	defer preparationLock.Unlock()
+	unlockPreparation := claimPreparationLocks.lock(claimPreparationLockKey{db: h.db, jobID: job.ID})
+	defer unlockPreparation()
 
 	var current models.QueueJob
 	if err := h.db.First(&current, job.ID).Error; err != nil {

@@ -13,6 +13,53 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestClaimPreparationLockRegistrySerializesPerJobAndReleasesEntries(t *testing.T) {
+	registry := claimPreparationLockRegistry{}
+	firstKey := claimPreparationLockKey{jobID: 1}
+	secondKey := claimPreparationLockKey{jobID: 2}
+	unlockFirst := registry.lock(firstKey)
+
+	sameStarted := make(chan struct{})
+	sameAcquired := make(chan func(), 1)
+	go func() {
+		close(sameStarted)
+		sameAcquired <- registry.lock(firstKey)
+	}()
+	<-sameStarted
+	select {
+	case unlock := <-sameAcquired:
+		unlock()
+		t.Fatal("same job preparation was not serialized")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	differentAcquired := make(chan func(), 1)
+	go func() {
+		differentAcquired <- registry.lock(secondKey)
+	}()
+	select {
+	case unlock := <-differentAcquired:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("different job preparation was unnecessarily serialized")
+	}
+
+	unlockFirst()
+	select {
+	case unlock := <-sameAcquired:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("same job preparation did not continue after release")
+	}
+
+	registry.mutex.Lock()
+	remaining := len(registry.entries)
+	registry.mutex.Unlock()
+	if remaining != 0 {
+		t.Fatalf("preparation lock entries=%d want=0", remaining)
+	}
+}
+
 func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
 	dsn := fmt.Sprintf("file:claim-concurrent-%d?mode=memory&cache=shared&_busy_timeout=5000", time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
