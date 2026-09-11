@@ -35,7 +35,9 @@ var (
 	errWorkerLimitReached        = errors.New("worker claim limit reached")
 	errWorkerDelayActive         = errors.New("worker delay between jobs is still active")
 	errWorkerBatchCooldownActive = errors.New("worker batch cooldown is still active")
+	errClaimedJobDeferred        = errors.New("claimed job was frozen and returned to scheduler review")
 	claimJobMu                   sync.Mutex
+	claimPreparationLocks        sync.Map
 )
 
 type WorkerHandler struct {
@@ -350,75 +352,285 @@ func (h WorkerHandler) claimNextJob(workerName string, reportedEncoders models.J
 	// reservation activation, and the job transition must be atomic from the
 	// perspective of every manual and automatic worker in this process.
 	claimJobMu.Lock()
-	defer claimJobMu.Unlock()
+	claimed, err := func() (models.QueueJob, error) {
+		defer claimJobMu.Unlock()
 
-	limits, err := h.workerLimits()
+		limits, err := h.workerLimits()
+		if err != nil {
+			return models.QueueJob{}, err
+		}
+		if workerName == "" {
+			workerName = limits.DefaultWorkerName
+		}
+		if err := h.heartbeatWorker(workerName, limits, reportedEncoders, reportedRuntimeProfile); err != nil {
+			return models.QueueJob{}, err
+		}
+		if workerName == "" {
+			workerName = "local-worker"
+		}
+
+		var claimed models.QueueJob
+		err = h.db.Transaction(func(tx *gorm.DB) error {
+			if err := canClaimJob(tx, limits); err != nil {
+				return err
+			}
+
+			job, err := nextClaimableJob(tx, limits)
+			if err != nil {
+				return err
+			}
+			plan := models.ExecutionPlan{}
+			if job.ActiveExecutionPlanID != nil {
+				if err := tx.First(&plan, *job.ActiveExecutionPlanID).Error; err != nil {
+					return err
+				}
+			}
+			if err := scheduler.ActivateReservation(tx, job, plan, workerName); err != nil {
+				return err
+			}
+
+			now := time.Now()
+			if err := assignExecutionNumber(tx, &job); err != nil {
+				return err
+			}
+			job.Status = JobStatusRunning
+			job.Progress = 1
+			job.WorkerName = workerName
+			job.ErrorMessage = ""
+			job.StartedAt = &now
+			job.FinishedAt = nil
+
+			if err := tx.Save(&job).Error; err != nil {
+				return err
+			}
+			if err := transitionJobStage(tx, &job, JobStageClaimed); err != nil {
+				return err
+			}
+			if job.ActiveExecutionPlanID != nil {
+				if err := tx.Model(&models.ExecutionPlan{}).Where("id = ?", *job.ActiveExecutionPlanID).Updates(map[string]any{"status": scheduler.ExecutionPlanDispatched, "waiting_state": ""}).Error; err != nil {
+					return err
+				}
+			}
+
+			claimed = job
+			return nil
+		})
+		if err != nil {
+			if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
+				return models.QueueJob{}, gorm.ErrRecordNotFound
+			}
+			return models.QueueJob{}, err
+		}
+		return claimed, nil
+	}()
 	if err != nil {
 		return models.QueueJob{}, err
 	}
-	if workerName == "" {
-		workerName = limits.DefaultWorkerName
+	if queueJobFreezeComplete(claimed) || claimed.ActiveExecutionPlanID != nil {
+		return claimed, nil
 	}
-	if err := h.heartbeatWorker(workerName, limits, reportedEncoders, reportedRuntimeProfile); err != nil {
+	prepared, err := h.prepareClaimedQueueJob(claimed)
+	if err != nil {
+		if errors.Is(err, errClaimedJobDeferred) {
+			return models.QueueJob{}, gorm.ErrRecordNotFound
+		}
+		h.failClaimedJobExecution(claimed.ID, err)
 		return models.QueueJob{}, err
 	}
-	if workerName == "" {
-		workerName = "local-worker"
+	return prepared, nil
+}
+
+func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.QueueJob, error) {
+	if queueJobFreezeComplete(job) {
+		return job, nil
+	}
+	lockKey := struct {
+		db    *gorm.DB
+		jobID uint
+	}{h.db, job.ID}
+	lockValue, _ := claimPreparationLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	preparationLock := lockValue.(*sync.Mutex)
+	preparationLock.Lock()
+	defer preparationLock.Unlock()
+
+	var current models.QueueJob
+	if err := h.db.First(&current, job.ID).Error; err != nil {
+		return job, err
+	}
+	if queueJobFreezeComplete(current) {
+		return current, nil
+	}
+	job = current
+	if job.Status != JobStatusRunning {
+		return job, fmt.Errorf("queue freeze requires a claimed running job")
 	}
 
-	var claimed models.QueueJob
+	var record models.AssetRecord
+	if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).First(&record).Error; err != nil {
+		return job, fmt.Errorf("load claimed asset: %w", err)
+	}
+	configurationResolver, err := loadAssetConfigurationResolver(h.db)
+	if err != nil {
+		return job, fmt.Errorf("load claim-time effective configuration: %w", err)
+	}
+	effective := configurationResolver.resolve(record)
+	hasOperation := effective.Video.VideoProfileID > 0 ||
+		effective.Video.Selection == VideoAssignmentOverrideOnly ||
+		effective.Video.Selection == VideoAssignmentAudioOnly ||
+		strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
+		strings.TrimSpace(effective.Tracks.ProfileKey) != ""
+	if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
+		return job, fmt.Errorf("claimed asset no longer has a complete effective processing configuration")
+	}
+
+	input := QueueJobInput{
+		MediaPath:       job.MediaPath,
+		PublishMode:     job.PublishMode,
+		LibraryID:       effective.Destination.DestinationLibraryID,
+		ProfileID:       effective.Video.VideoProfileID,
+		AudioProfileKey: effective.Audio.ProfileKey,
+		TrackProfileKey: effective.Tracks.ProfileKey,
+		ProcessingMode:  ProcessingModeAudioOnly,
+		Priority:        job.Priority,
+		Notes:           job.Notes,
+	}
+	if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly {
+		input.ProcessingMode = ProcessingModeFullEncode
+	}
+	resolution := resolveProfileAssignmentsFromEffective(&input, effective)
+	if normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly && input.ProfileID == 0 {
+		var fallback models.Profile
+		if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
+			return job, fmt.Errorf("resolve claim-time audio-only fallback profile: %w", err)
+		}
+		input.ProfileID = fallback.ID
+	}
+
+	prepared := job
+	prepared.LibraryID = input.LibraryID
+	prepared.ProfileID = input.ProfileID
+	prepared.AudioProfileKey = input.AudioProfileKey
+	prepared.TrackProfileKey = input.TrackProfileKey
+	prepared.ProfileResolution = resolution
+	prepared.ProcessingMode = normalizeQueueProcessingMode(input.ProcessingMode)
+	prepared.ProfileSnapshot = nil
+	prepared.AudioProfileSnapshot = nil
+	prepared.TrackProfileSnapshot = nil
+	prepared.ProfileCapturedAt = nil
+
+	var scan models.ScanResult
+	scanErr := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error
+	if forceFreshSnapshotBeforeExecution(h.db) || errors.Is(scanErr, gorm.ErrRecordNotFound) {
+		if _, err := refreshSnapshotBeforeExecution(h.db, job.MediaPath); err != nil {
+			return job, fmt.Errorf("prepare claimed asset snapshot: %w", err)
+		}
+		prepared.Notes = appendNote(prepared.Notes, "Asset snapshot generated during claim preparation")
+	} else if scanErr != nil {
+		return job, fmt.Errorf("load claimed asset snapshot: %w", scanErr)
+	}
+
+	queue := NewQueueHandler(h.db)
+	if err := queue.captureSupplementalProfiles(&prepared); err != nil {
+		return job, err
+	}
+	if queueUsesOverrideOnlyVideo(prepared.ProfileResolution) {
+		if err := queue.captureOverrideOnlyProfile(&prepared, "queue_claim_override_only"); err != nil {
+			return job, err
+		}
+	} else if err := queue.captureProfile(&prepared, prepared.ProfileID, "queue_claim"); err != nil {
+		return job, err
+	}
+	if !queueJobFreezeComplete(prepared) {
+		return job, fmt.Errorf("claim-time queue freeze is incomplete")
+	}
+
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		if err := canClaimJob(tx, limits); err != nil {
+		var current models.QueueJob
+		if err := tx.First(&current, job.ID).Error; err != nil {
 			return err
 		}
+		if queueJobFreezeComplete(current) {
+			prepared = current
+			return nil
+		}
+		if current.Status != JobStatusRunning {
+			return fmt.Errorf("claimed job changed status before freeze completed")
+		}
+		updates := map[string]any{
+			"library_id": prepared.LibraryID,
+			"profile_id": prepared.ProfileID, "profile_version": prepared.ProfileVersion,
+			"profile_snapshot": prepared.ProfileSnapshot, "profile_captured_at": prepared.ProfileCapturedAt,
+			"audio_profile_key": prepared.AudioProfileKey, "audio_profile_snapshot": prepared.AudioProfileSnapshot,
+			"track_profile_key": prepared.TrackProfileKey, "track_profile_snapshot": prepared.TrackProfileSnapshot,
+			"profile_resolution": prepared.ProfileResolution, "processing_mode": prepared.ProcessingMode,
+			"subtitle_artifacts": prepared.SubtitleArtifacts, "notes": prepared.Notes,
+		}
+		if err := tx.Model(&current).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&prepared, job.ID).Error; err != nil {
+			return err
+		}
+		_, err := scheduler.CreatePendingExecutionPlan(tx, &prepared, "Execution plan created after claim-time freeze")
+		return err
+	})
+	if err != nil {
+		return job, err
+	}
+	if prepared.ActiveExecutionPlanID == nil {
+		return job, fmt.Errorf("claim-time queue freeze did not create an execution plan")
+	}
 
-		job, err := nextClaimableJob(tx, limits)
-		if err != nil {
+	var plan models.ExecutionPlan
+	if err := h.db.First(&plan, *prepared.ActiveExecutionPlanID).Error; err != nil {
+		return job, err
+	}
+	if plan.Status == scheduler.ExecutionPlanPendingEvaluation {
+		if err := scheduler.EvaluateReviewPlan(h.db, &plan); err != nil {
+			return job, fmt.Errorf("evaluate claim-time execution plan: %w", err)
+		}
+	}
+	if plan.Status != scheduler.ExecutionPlanReady {
+		if err := h.returnPreparedJobToQueue(prepared.ID); err != nil {
+			return job, err
+		}
+		return models.QueueJob{}, errClaimedJobDeferred
+	}
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := scheduler.ActivateReservation(tx, prepared, plan, prepared.WorkerName); err != nil {
 			return err
 		}
-		plan := models.ExecutionPlan{}
-		if job.ActiveExecutionPlanID != nil {
-			if err := tx.First(&plan, *job.ActiveExecutionPlanID).Error; err != nil {
-				return err
-			}
-		}
-		if err := scheduler.ActivateReservation(tx, job, plan, workerName); err != nil {
+		if err := tx.Model(&models.ExecutionPlan{}).Where("id = ?", plan.ID).Updates(map[string]any{"status": scheduler.ExecutionPlanDispatched, "waiting_state": ""}).Error; err != nil {
 			return err
 		}
+		return tx.First(&prepared, prepared.ID).Error
+	}); err != nil {
+		return job, err
+	}
+	return prepared, nil
+}
 
-		now := time.Now()
-		if err := assignExecutionNumber(tx, &job); err != nil {
+func (h WorkerHandler) returnPreparedJobToQueue(jobID uint) error {
+	return h.db.Transaction(func(tx *gorm.DB) error {
+		var job models.QueueJob
+		if err := tx.First(&job, jobID).Error; err != nil {
 			return err
 		}
-		job.Status = JobStatusRunning
-		job.Progress = 1
-		job.WorkerName = workerName
-		job.ErrorMessage = ""
-		job.StartedAt = &now
-		job.FinishedAt = nil
-
+		if job.Status != JobStatusRunning {
+			return nil
+		}
+		job.Status = JobStatusQueued
+		job.Progress = 0
+		job.WorkerName = ""
+		job.StartedAt = nil
 		if err := tx.Save(&job).Error; err != nil {
 			return err
 		}
-		if err := transitionJobStage(tx, &job, JobStageClaimed); err != nil {
+		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {
 			return err
 		}
-		if job.ActiveExecutionPlanID != nil {
-			if err := tx.Model(&models.ExecutionPlan{}).Where("id = ?", *job.ActiveExecutionPlanID).Updates(map[string]any{"status": scheduler.ExecutionPlanDispatched, "waiting_state": ""}).Error; err != nil {
-				return err
-			}
-		}
-
-		claimed = job
-		return nil
+		return scheduler.DeactivateReservationResources(tx, job.ID)
 	})
-	if err != nil {
-		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
-			return models.QueueJob{}, gorm.ErrRecordNotFound
-		}
-		return models.QueueJob{}, err
-	}
-	return claimed, nil
 }
 
 func assignExecutionNumber(tx *gorm.DB, job *models.QueueJob) error {
@@ -681,6 +893,22 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if job.Status != JobStatusRunning {
 		return job, http.StatusBadRequest, fmt.Errorf("job must be running before conversion execution")
 	}
+	legacyUnfrozenExecution := false
+	if !queueJobFreezeComplete(job) {
+		var record models.AssetRecord
+		err := h.db.Select("id").Where("path = ?", filepath.Clean(job.MediaPath)).First(&record).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			legacyUnfrozenExecution = true
+		} else if err != nil {
+			return job, http.StatusInternalServerError, err
+		} else {
+			prepared, err := h.prepareClaimedQueueJob(job)
+			if err != nil {
+				return job, http.StatusUnprocessableEntity, err
+			}
+			job = prepared
+		}
+	}
 
 	if _, err := os.Stat(job.MediaPath); err != nil {
 		return job, http.StatusBadRequest, fmt.Errorf("input media is not readable: %v", err)
@@ -706,25 +934,11 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
-
-	if forceFreshSnapshotBeforeExecution(h.db) {
-		if _, err := refreshSnapshotBeforeExecution(
-			h.db,
-			job.MediaPath,
-		); err != nil {
-			return job,
-				http.StatusUnprocessableEntity,
-				fmt.Errorf(
-					"forced fresh snapshot before execution: %w",
-					err,
-				)
+	if legacyUnfrozenExecution && forceFreshSnapshotBeforeExecution(h.db) {
+		if _, err := refreshSnapshotBeforeExecution(h.db, job.MediaPath); err != nil {
+			return job, http.StatusUnprocessableEntity, fmt.Errorf("forced fresh snapshot before execution: %w", err)
 		}
-
-		job.Notes = appendNote(
-			job.Notes,
-			"Fresh asset snapshot generated before execution",
-		)
-
+		job.Notes = appendNote(job.Notes, "Fresh asset snapshot generated before execution")
 		if err := h.db.Save(&job).Error; err != nil {
 			return job, http.StatusInternalServerError, err
 		}

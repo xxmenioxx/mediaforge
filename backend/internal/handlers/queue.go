@@ -37,6 +37,7 @@ type QueueJobInput struct {
 	Notes                     string `json:"notes"`
 	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
 	resolvedProfileResolution models.JSONMap
+	deferFreeze               bool
 }
 
 type QueueBatchInput struct {
@@ -555,6 +556,9 @@ func (h QueueHandler) prepareBatchQueueJob(
 		Notes:             input.Notes,
 	}
 
+	if input.deferFreeze {
+		return job, http.StatusOK, nil
+	}
 	if err := h.captureSupplementalProfiles(&job); err != nil {
 		return models.QueueJob{}, http.StatusBadRequest, err
 	}
@@ -615,8 +619,10 @@ func (h QueueHandler) persistPreparedQueueBatch(batchID, batchName string, prepa
 			if err := transitionJobStage(tx, job, JobStageQueued); err != nil {
 				return err
 			}
-			if _, err := scheduler.CreatePendingExecutionPlan(tx, job, "Execution plan created from atomic queue batch"); err != nil {
-				return err
+			if queueJobFreezeComplete(*job) {
+				if _, err := scheduler.CreatePendingExecutionPlan(tx, job, "Execution plan created from atomic queue batch"); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -905,6 +911,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			Priority:                  5,
 			Notes:                     "Queued from selected titles",
 			ResolveProfileAssignments: false,
+			deferFreeze:               true,
 		}
 		queueInput.resolvedProfileResolution = resolveProfileAssignmentsFromEffective(&queueInput, effective)
 		job, status, err := h.prepareBatchQueueJob(queueInput)
@@ -1001,6 +1008,19 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		}
 	}
 	return response, nil
+}
+
+func queueJobFreezeComplete(job models.QueueJob) bool {
+	if len(job.ProfileSnapshot) == 0 {
+		return false
+	}
+	if strings.TrimSpace(job.AudioProfileKey) != "" && len(job.AudioProfileSnapshot) == 0 {
+		return false
+	}
+	if strings.TrimSpace(job.TrackProfileKey) != "" && len(job.TrackProfileSnapshot) == 0 {
+		return false
+	}
+	return true
 }
 
 func selectedAssetPhysicalGroup(record models.AssetRecord) string {

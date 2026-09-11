@@ -841,10 +841,14 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter initialEntries={['/assets?tab=unprocessed']}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
+    const assetCallsBeforeQueue = vi.mocked(api.assets).mock.calls.length;
+    const scopeCallsBeforeQueue = vi.mocked(api.assetScopeConfigurations).mock.calls.length;
     await user.click(screen.getByRole('button', { name: 'Queue selected' }));
     await user.click(await screen.findByRole('button', { name: 'Queue 2 assets' }));
 
     expect(await screen.findByText('2 queued · 0 skipped · 0 failed')).toBeTruthy();
+    await waitFor(() => expect(vi.mocked(api.assets).mock.calls.length).toBeGreaterThan(assetCallsBeforeQueue));
+    expect(vi.mocked(api.assetScopeConfigurations).mock.calls.length).toBe(scopeCallsBeforeQueue);
     await user.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Queue selected titles' })).toBeNull());
     expect(screen.getByRole('checkbox', { name: 'Select title Akira' })).toHaveProperty('checked', true);

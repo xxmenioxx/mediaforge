@@ -4,16 +4,14 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvforge-verify.XXXXXX")"
-
 GO_CACHE_DIR="${MVFORGE_GOCACHE:-${TMPDIR:-/tmp}/mvforge-go-build-cache}"
 GO_TMP_DIR="${MVFORGE_GOTMPDIR:-${TMPDIR:-/tmp}/mvforge-go-tmp}"
 
 mkdir -p "$GO_CACHE_DIR" "$GO_TMP_DIR"
-
 export GOCACHE="$GO_CACHE_DIR"
 export GOTMPDIR="$GO_TMP_DIR"
 
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap '[[ -d "$TMP_DIR" ]] && rm -r -- "$TMP_DIR"' EXIT
 
 TOTAL=0
 PASSED=0
@@ -42,51 +40,29 @@ Modes:
   --help       Show this help
 
 Default:
-  --full
+  --auto
 EOF
 }
 
 format_command() {
-    local arg
-    local output=""
+    local arg output=""
 
     for arg in "$@"; do
         printf -v arg '%q' "$arg"
-
-        if [[ -n "$output" ]]; then
-            output+=" "
-        fi
-
+        [[ -n "$output" ]] && output+=" "
         output+="$arg"
     done
 
     printf '%s' "$output"
 }
 
-run_check() {
+record_check_result() {
     local name="$1"
-    shift
-
-    local log_file="$TMP_DIR/${name}.log"
-    local start
-    local end
-    local duration
-    local exit_code
-    local command_text
-
-    command_text="$(format_command "$@")"
+    local log_file="$2"
+    local command_text="$3"
+    local exit_code="$4"
 
     TOTAL=$((TOTAL + 1))
-    start="$(date +%s)"
-
-    if "$@" >"$log_file" 2>&1; then
-        exit_code=0
-    else
-        exit_code=$?
-    fi
-
-    end="$(date +%s)"
-    duration=$((end - start))
 
     if [[ "$exit_code" -eq 0 ]]; then
         PASSED=$((PASSED + 1))
@@ -97,8 +73,44 @@ run_check() {
     FAILED_CHECKS+=("$name")
     FAILED_LOGS+=("$log_file")
     FAILED_COMMANDS+=("$command_text")
-
     return "$exit_code"
+}
+
+run_check() {
+    local name="$1"
+    shift
+
+    local log_file="$TMP_DIR/${name}.log"
+    local command_text exit_code
+
+    command_text="$(format_command "$@")"
+
+    if "$@" >"$log_file" 2>&1; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+
+    record_check_result "$name" "$log_file" "$command_text" "$exit_code"
+}
+
+run_check_in_dir() {
+    local name="$1"
+    local dir="$2"
+    shift 2
+
+    local log_file="$TMP_DIR/${name}.log"
+    local command_text exit_code
+
+    command_text="cd $(printf '%q' "$dir") && $(format_command "$@")"
+
+    if (cd "$dir" && "$@") >"$log_file" 2>&1; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+
+    record_check_result "$name" "$log_file" "$command_text" "$exit_code"
 }
 
 append_frontend_test() {
@@ -106,9 +118,7 @@ append_frontend_test() {
     local existing
 
     for existing in "${FOCUSED_FRONTEND_TESTS[@]:-}"; do
-        if [[ "$existing" == "$candidate" ]]; then
-            return
-        fi
+        [[ "$existing" == "$candidate" ]] && return
     done
 
     FOCUSED_FRONTEND_TESTS+=("$candidate")
@@ -118,8 +128,7 @@ collect_changed_files() {
     local file
 
     while IFS= read -r file; do
-        [[ -z "$file" ]] && continue
-        CHANGED_FILES+=("$file")
+        [[ -n "$file" ]] && CHANGED_FILES+=("$file")
     done < <(
         {
             git -C "$ROOT_DIR" diff --name-only HEAD --
@@ -129,10 +138,7 @@ collect_changed_files() {
 }
 
 detect_auto_scope() {
-    local backend_changed=false
-    local frontend_changed=false
-    local global_changed=false
-    local file
+    local backend=false frontend=false docs=false global=false file
 
     if [[ "${#CHANGED_FILES[@]}" -eq 0 ]]; then
         echo "full"
@@ -141,48 +147,34 @@ detect_auto_scope() {
 
     for file in "${CHANGED_FILES[@]}"; do
         case "$file" in
-            backend/*)
-                backend_changed=true
-                ;;
-
-            frontend/*)
-                frontend_changed=true
-                ;;
-
-            *)
-                # Root-level files, scripts, CI, Docker, shared
-                # configuration, etc. are conservatively cross-cutting.
-                global_changed=true
-                ;;
+            backend/*)  backend=true ;;
+            frontend/*) frontend=true ;;
+            docs/*)     docs=true ;;
+            *)          global=true ;;
         esac
     done
 
-    if [[ "$global_changed" == true ]]; then
+    if [[ "$global" == true || ( "$backend" == true && "$frontend" == true ) ]]; then
         echo "full"
-    elif [[ "$backend_changed" == true && "$frontend_changed" == true ]]; then
-        echo "full"
-    elif [[ "$backend_changed" == true ]]; then
+    elif [[ "$backend" == true ]]; then
         echo "backend"
-    elif [[ "$frontend_changed" == true ]]; then
+    elif [[ "$frontend" == true ]]; then
         echo "frontend"
+    elif [[ "$docs" == true ]]; then
+        echo "docs"
     else
         echo "full"
     fi
 }
 
 detect_focused_checks() {
-    local file
-    local relative_test
+    local file relative_test
 
     for file in "${CHANGED_FILES[@]}"; do
         case "$file" in
-
-            # Any backend handler change gets the handlers package test first.
             backend/internal/handlers/*)
                 FOCUSED_BACKEND_HANDLERS=true
                 ;;
-
-            # Any changed frontend test is executed directly first.
             frontend/*.test.ts|frontend/*.test.tsx)
                 relative_test="${file#frontend/}"
                 append_frontend_test "$relative_test"
@@ -195,65 +187,49 @@ run_focused_checks() {
     local test_file
 
     if [[ "$FOCUSED_BACKEND_HANDLERS" == true ]]; then
-        if ! run_check \
+        run_check_in_dir \
             "focused-go-test-handlers" \
-            bash -lc "cd '$ROOT_DIR/backend' && go test ./internal/handlers"; then
-            return 1
-        fi
+            "$ROOT_DIR/backend" \
+            go test ./internal/handlers || return 1
 
-        # The exact same package check already passed.
-        # Avoid executing it again during canonical validation.
         SKIP_CANONICAL_HANDLER_TEST=true
     fi
 
     for test_file in "${FOCUSED_FRONTEND_TESTS[@]:-}"; do
-        [[ -z "$test_file" ]] && continue
+        [[ -z "$test_file" || ! -f "$ROOT_DIR/frontend/$test_file" ]] && continue
 
-        if [[ ! -f "$ROOT_DIR/frontend/$test_file" ]]; then
-            continue
-        fi
-
-        if ! run_check \
+        run_check_in_dir \
             "focused-$(basename "$test_file")" \
-            bash -lc \
-                "cd '$ROOT_DIR/frontend' && npx --no-install vitest run '$test_file'"; then
-            return 1
-        fi
+            "$ROOT_DIR/frontend" \
+            npx --no-install vitest run "$test_file" || return 1
     done
-
-    return 0
 }
 
 run_backend_checks() {
     if [[ "$SKIP_CANONICAL_HANDLER_TEST" != true ]]; then
-        run_check \
+        run_check_in_dir \
             "go-test-handlers" \
-            bash -lc "cd '$ROOT_DIR/backend' && go test ./internal/handlers"
+            "$ROOT_DIR/backend" \
+            go test ./internal/handlers || return 1
     fi
 
-    run_check \
-        "go-test-all" \
-        bash -lc "cd '$ROOT_DIR/backend' && go test ./..."
-
-    run_check \
-        "go-vet" \
-        bash -lc "cd '$ROOT_DIR/backend' && go vet ./..."
-
-    run_check \
-        "go-build" \
-        bash -lc "cd '$ROOT_DIR/backend' && go build ./..."
+    run_check_in_dir "go-test-all" "$ROOT_DIR/backend" go test ./... || return 1
+    run_check_in_dir "go-vet" "$ROOT_DIR/backend" go vet ./... || return 1
+    run_check_in_dir "go-build" "$ROOT_DIR/backend" go build ./... || return 1
 }
 
 run_frontend_checks() {
-    run_check \
+    run_check_in_dir \
         "frontend-build" \
-        bash -lc "cd '$ROOT_DIR/frontend' && npm run build"
+        "$ROOT_DIR/frontend" \
+        npm run build
 }
 
 run_diff_check() {
-    run_check \
+    run_check_in_dir \
         "git-diff-check" \
-        bash -lc "cd '$ROOT_DIR' && git diff --check"
+        "$ROOT_DIR" \
+        git diff --check
 }
 
 print_failure_details() {
@@ -263,7 +239,6 @@ print_failure_details() {
         echo
         printf 'Failed check: %s\n' "${FAILED_CHECKS[$i]}"
         printf 'Command:      %s\n' "${FAILED_COMMANDS[$i]}"
-
         echo
         echo "---- failure output (last 60 lines) ----"
         tail -n 60 "${FAILED_LOGS[$i]}"
@@ -272,8 +247,7 @@ print_failure_details() {
 }
 
 print_summary() {
-    local end_time
-    local total_duration
+    local end_time total_duration
 
     end_time="$(date +%s)"
     total_duration=$((end_time - START_TIME))
@@ -290,15 +264,13 @@ print_summary() {
     echo
     echo "========================================"
     printf 'Scope:    %s\n' "$SCOPE"
-    printf 'Tests:    %d/%d\n' "$PASSED" "$TOTAL"
+    printf 'Checks:   %d/%d\n' "$PASSED" "$TOTAL"
     printf 'Duration: %ss\n' "$total_duration"
 
     if [[ "$FAILED" -gt 0 ]]; then
         echo
         printf 'Failed:   %s\n' "${FAILED_CHECKS[*]}"
-
         print_failure_details
-
         echo
         echo "VALIDATION FAILED"
         return 1
@@ -306,35 +278,29 @@ print_summary() {
 
     echo
     echo "ALL CHECKS PASSED"
-    return 0
 }
 
-MODE="${1:---full}"
+MODE="${1:---auto}"
 
 case "$MODE" in
     --help|-h)
         usage
         exit 0
         ;;
-
     --full)
         SCOPE="full"
         ;;
-
     --backend)
         SCOPE="backend"
         ;;
-
     --frontend)
         SCOPE="frontend"
         ;;
-
     --auto)
         collect_changed_files
         SCOPE="$(detect_auto_scope)"
         detect_focused_checks
         ;;
-
     *)
         echo "Unknown mode: $MODE"
         echo
@@ -343,42 +309,37 @@ case "$MODE" in
         ;;
 esac
 
-#
-# Focused validation is used only by --auto.
-#
-# If a focused check fails, stop immediately. Broader validation
-# would only consume additional time and context before the local
-# failure is fixed.
-#
-if [[ "$MODE" == "--auto" ]]; then
-    if [[ "$FOCUSED_BACKEND_HANDLERS" == true ||
-          "${#FOCUSED_FRONTEND_TESTS[@]}" -gt 0 ]]; then
-
-        if ! run_focused_checks; then
-            print_summary
-            exit 1
-        fi
+if [[ "$MODE" == "--auto" &&
+      ( "$FOCUSED_BACKEND_HANDLERS" == true ||
+        "${#FOCUSED_FRONTEND_TESTS[@]}" -gt 0 ) ]]; then
+    if ! run_focused_checks; then
+        print_summary
+        exit 1
     fi
 fi
 
 case "$SCOPE" in
     backend)
-        run_backend_checks
+        run_backend_checks &&
         run_diff_check
         ;;
-
     frontend)
-        run_frontend_checks
+        run_frontend_checks &&
         run_diff_check
         ;;
-
+    docs)
+        run_diff_check
+        ;;
     full)
-        run_backend_checks
-        run_frontend_checks
+        run_backend_checks &&
+        run_frontend_checks &&
         run_diff_check
         ;;
 esac
 
-if ! print_summary; then
+if [[ "$?" -ne 0 ]]; then
+    print_summary
     exit 1
 fi
+
+print_summary

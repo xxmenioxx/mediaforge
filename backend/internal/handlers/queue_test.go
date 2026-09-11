@@ -1820,9 +1820,12 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 			t.Fatalf("Queue prepare scanned %s %d times, want once: %#v", table, queryCounts[table], queryCounts)
 		}
 	}
+	if queryCounts["scan_results"] != 0 {
+		t.Fatalf("Queue preview read execution ScanResult data: %#v", queryCounts)
+	}
 }
 
-func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrder(t *testing.T) {
+func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
@@ -1903,12 +1906,12 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrde
 	if len(jobs) != 2 || filepath.Base(jobs[0].MediaPath) != "Episode 2.mkv" || filepath.Base(jobs[1].MediaPath) != "Episode 10.mkv" {
 		t.Fatalf("queued jobs lost natural order: %#v", jobs)
 	}
-	if jobs[0].ProfileID != profile.ID || jobs[1].ProfileID != alternateProfile.ID || snapshotQualityValue(jobs[0].ProfileSnapshot) == snapshotQualityValue(jobs[1].ProfileSnapshot) {
-		t.Fatalf("mixed effective profiles did not produce distinct snapshots: %#v", jobs)
+	if jobs[0].ProfileID != profile.ID || jobs[1].ProfileID != alternateProfile.ID {
+		t.Fatalf("mixed effective profiles did not preserve queue intent: %#v", jobs)
 	}
 	for index, job := range jobs {
-		if job.ProfileCapturedAt == nil || job.ProfileSnapshot == nil || job.AudioProfileSnapshot == nil || job.TrackProfileSnapshot == nil || job.ProfileResolution == nil {
-			t.Fatalf("job lacks immutable effective snapshots: %#v", job)
+		if job.ProfileCapturedAt != nil || len(job.ProfileSnapshot) != 0 || len(job.AudioProfileSnapshot) != 0 || len(job.TrackProfileSnapshot) != 0 {
+			t.Fatalf("Queue Selected performed claim-time freeze during enqueue: %#v", job)
 		}
 		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
 		expectedSource := assetScopeLogicalGroup
@@ -1920,8 +1923,96 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessSnapshotsAndNaturalOrde
 		}
 	}
 	var plans int64
-	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 2 {
+	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 0 {
 		t.Fatalf("execution plans=%d err=%v", plans, err)
+	}
+}
+
+func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	mediaPath := filepath.Join(sourceDir, "Episode 1.mkv")
+	if err := os.WriteFile(mediaPath, []byte("test media placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Test Library", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	first := authoritativeTestProfile()
+	first.QualityValue = 18
+	second := authoritativeTestProfile()
+	second.Name = "Claim-time profile"
+	second.QualityValue = 21
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&second).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: mediaPath, SourcePath: mediaPath, LogicalGroupPath: sourceDir, FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignment := models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "video", Selection: "profile", VideoProfileID: first.ID}
+	if err := db.Create(&assignment).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"reviewMode": "automatic"}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
+	if response.Summary.Queued != 1 {
+		t.Fatalf("selected asset was not queued: %#v", response)
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil {
+		t.Fatalf("Queue commit froze execution state: %#v", job)
+	}
+	if err := db.Model(&assignment).Update("video_profile_id", second.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := db.Model(&job).Updates(map[string]any{"status": JobStatusRunning, "stage": JobStageClaimed, "worker_name": "test-worker", "started_at": &now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.ProfileID != second.ID || snapshotQualityValue(prepared.ProfileSnapshot) != 21 || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil {
+		t.Fatalf("claim did not freeze the latest effective configuration: %#v", prepared)
+	}
+	second.QualityValue = 30
+	if err := db.Save(&second).Error; err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewWorkerHandler(db).prepareClaimedQueueJob(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotQualityValue(again.ProfileSnapshot) != 21 {
+		t.Fatalf("completed freeze changed after profile edit: %#v", again.ProfileSnapshot)
+	}
+	var scans int64
+	if err := db.Model(&models.ScanResult{}).Where("path = ?", mediaPath).Count(&scans).Error; err != nil || scans != 1 {
+		t.Fatalf("valid ScanResult was not reused: count=%d err=%v", scans, err)
 	}
 }
 
@@ -1987,7 +2078,7 @@ func TestQueueSelectedAssetsSkipsNonUnprocessedRecords(t *testing.T) {
 	}
 }
 
-func TestQueueSelectedAssetsUsesBackendFallbackForInheritedAudioOnlyJob(t *testing.T) {
+func TestQueueSelectedAssetsDefersInheritedAudioOnlySnapshot(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	fallback := authoritativeTestProfile()
 	if err := db.Create(&fallback).Error; err != nil {
@@ -2021,8 +2112,8 @@ func TestQueueSelectedAssetsUsesBackendFallbackForInheritedAudioOnlyJob(t *testi
 		t.Fatal(err)
 	}
 	videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
-	if job.ProcessingMode != ProcessingModeAudioOnly || job.ProfileID != fallback.ID || job.AudioProfileSnapshot["filters"] != "volume=0.9" || videoResolution["selection"] != VideoAssignmentAudioOnly {
-		t.Fatalf("audio-only fallback or provenance was not frozen: %#v", job)
+	if job.ProcessingMode != ProcessingModeAudioOnly || job.ProfileID != fallback.ID || len(job.AudioProfileSnapshot) != 0 || job.ProfileCapturedAt != nil || videoResolution["selection"] != VideoAssignmentAudioOnly {
+		t.Fatalf("audio-only queue intent was not deferred correctly: %#v", job)
 	}
 }
 
@@ -2035,7 +2126,7 @@ func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
-		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{},
+		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}, &models.Library{}, &models.RuntimeSnapshot{},
 	); err != nil {
 		t.Fatal(err)
 	}

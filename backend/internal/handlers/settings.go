@@ -277,8 +277,17 @@ func validateSettingProfileAssignments(db *gorm.DB, mediaType string, value mode
 		if !exists {
 			return fmt.Errorf("profile %q is assigned and cannot be removed", assignment.ProfileKey)
 		}
-		if storedSettingProfileScope(profile) != assignment.TargetType {
-			return fmt.Errorf("profile %q scope cannot change while assigned to a %s", assignment.ProfileKey, assignment.TargetType)
+		expectedScope := "path"
+		if assignment.TargetType == assetScopeAsset {
+			expectedScope = "asset"
+		}
+
+		if storedSettingProfileScope(profile) != expectedScope {
+			return fmt.Errorf(
+				"profile %q scope cannot change while assigned to a %s",
+				assignment.ProfileKey,
+				assignment.TargetType,
+			)
 		}
 		disabled, _ := profile["disabled"].(bool)
 		if disabled || strings.TrimSpace(stringFromUnknown(profile["deletedAt"])) != "" {
