@@ -600,6 +600,60 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(dialog).getByLabelText('Tracks profile')).toHaveProperty('disabled', true);
     expect(within(dialog).getByLabelText('Destination mode').getAttribute('aria-disabled')).toBe('true');
     expect(within(dialog).getByLabelText('Destination')).toHaveProperty('disabled', true);
+    expect(within(dialog).getByLabelText('Rename file')).toHaveProperty('disabled', true);
+  });
+
+  it('renames a published converted asset when only a different asset has an active Queue job', async () => {
+    const path = '/media/library/series/Akira/Converted Episode.mkv';
+    const convertedAsset = {
+      ...testAsset(11, path),
+      libraryId: 1,
+      libraryName: 'Series',
+      relativePath: 'Akira/Converted Episode.mkv',
+      groupPath: 'Akira',
+      fileName: 'Converted Episode.mkv',
+      status: 'converted',
+    } as Asset;
+    const convertedGroup = {
+      id: 'converted-akira',
+      libraryId: 1,
+      libraryName: 'Series',
+      path: '/media/library/series/Akira',
+      relativePath: 'Akira',
+      status: 'converted',
+      fileCount: 1,
+      sizeBytes: convertedAsset.sizeBytes,
+      modifiedAt: convertedAsset.modifiedAt,
+      assets: [convertedAsset],
+      review: convertedAsset.review,
+      pathReview: convertedAsset.review,
+      metadata: convertedAsset.metadata,
+      pathMetadata: convertedAsset.metadata,
+    };
+    const inventory = {
+      ...singleAssetInventory(),
+      sourceGroups: [],
+      unprocessed: [],
+      converted: [convertedAsset],
+      convertedGroups: [convertedGroup],
+    } as unknown as AssetInventory;
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    vi.mocked(api.queueJobs).mockResolvedValue([activeQueueJob(202, '/media/library/series/Other/Other.mkv')]);
+    vi.mocked(api.renameAsset).mockResolvedValue({ oldPath: path, path: '/media/library/series/Akira/Akira - S01E01.mkv', fileName: 'Akira - S01E01.mkv' });
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('tab', { name: /Converted/ }));
+    await user.click(await screen.findByText('/media/library/series/Akira'));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Converted Episode.mkv' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('tab', { name: 'Asset Information' }));
+    const renameInput = within(dialog).getByLabelText('Rename file');
+    expect(renameInput).toHaveProperty('disabled', false);
+    fireEvent.change(renameInput, { target: { value: 'Akira - S01E01.mkv' } });
+    await user.click(within(dialog).getByRole('button', { name: 'Rename' }));
+
+    await waitFor(() => expect(api.renameAsset).toHaveBeenCalledWith({ path, fileName: 'Akira - S01E01.mkv' }));
   });
 
 	it.each([

@@ -201,6 +201,185 @@ func TestRenameAssetPreservesPersistedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRenamePublishedConvertedAssetReconcilesCurrentPublicationOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-current-publication?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.Library{}, &models.AssetRecord{}, &models.ScanResult{}, &models.QueueJob{},
+		&models.DirectPublication{}, &models.AppSetting{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Converted Episode.mkv")
+	newPath := filepath.Join(root, "Show - S01E01.mkv")
+	writeTestFile(t, oldPath, "converted media")
+	library := models.Library{Name: "Series", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset := models.AssetRecord{Path: oldPath, RootPath: root, RelativePath: filepath.Base(oldPath), FileName: filepath.Base(oldPath), LibraryID: library.ID, LibraryName: library.Name, Status: "converted"}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	retiredAt := now.Add(-time.Hour)
+	currentJob := models.QueueJob{MediaPath: "/media/archive/source.mkv", OutputPath: oldPath, PublishedPath: oldPath, ReplacementTargetPath: oldPath, Status: JobStatusCompleted, PublishedAt: &now}
+	historicalJob := models.QueueJob{MediaPath: oldPath, OutputPath: oldPath, PublishedPath: oldPath, ReplacementTargetPath: oldPath, Status: JobStatusCompleted, PublishedAt: &now, PublicationRetiredAt: &retiredAt}
+	if err := db.Create(&currentJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&historicalJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentPublication := models.DirectPublication{SourcePath: "/media/raw/current.mkv", PublishedPath: oldPath, LibraryID: library.ID, PublishedAt: now}
+	if err := db.Create(&currentPublication).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/rename", NewAssetHandler(db).Rename)
+	body := fmt.Sprintf(`{"path":%q,"fileName":%q}`, oldPath, filepath.Base(newPath))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	if err := db.First(&currentJob, currentJob.ID).Error; err != nil || currentJob.PublishedPath != newPath || currentJob.ReplacementTargetPath != newPath {
+		t.Fatalf("current Queue publication was not reconciled: %#v err=%v", currentJob, err)
+	}
+	if err := db.First(&historicalJob, historicalJob.ID).Error; err != nil || historicalJob.MediaPath != oldPath || historicalJob.OutputPath != oldPath || historicalJob.PublishedPath != oldPath || historicalJob.ReplacementTargetPath != oldPath {
+		t.Fatalf("historical Queue provenance changed: %#v err=%v", historicalJob, err)
+	}
+	if err := db.First(&currentPublication, currentPublication.ID).Error; err != nil || currentPublication.PublishedPath != newPath {
+		t.Fatalf("current direct publication was not reconciled: %#v err=%v", currentPublication, err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("renamed converted asset missing: %v", err)
+	}
+}
+
+func TestRenameAssetPreservesReturnedDirectPublicationProvenance(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-returned-publication?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.DirectPublication{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Returned Episode.mkv")
+	newPath := filepath.Join(root, "Renamed Episode.mkv")
+	writeTestFile(t, oldPath, "library media")
+	library := models.Library{Name: "Series", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: oldPath, FileName: filepath.Base(oldPath), LibraryID: library.ID, Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	returnedAt := now.Add(-time.Hour)
+	historical := models.DirectPublication{SourcePath: "/media/raw/historical.mkv", PublishedPath: oldPath, LibraryID: library.ID, PublishedAt: now, ReturnedAt: &returnedAt}
+	if err := db.Create(&historical).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/rename", NewAssetHandler(db).Rename)
+	body := fmt.Sprintf(`{"path":%q,"fileName":%q}`, oldPath, filepath.Base(newPath))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := db.First(&historical, historical.ID).Error; err != nil || historical.PublishedPath != oldPath {
+		t.Fatalf("returned direct-publication provenance changed: %#v err=%v", historical, err)
+	}
+}
+
+func TestRenameAssetRejectsActiveWorkForThatAsset(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*gorm.DB, string) error
+		want string
+	}{
+		{
+			name: "Queue",
+			seed: func(db *gorm.DB, path string) error {
+				return db.Create(&models.QueueJob{MediaPath: path, Status: JobStatusQueued}).Error
+			},
+			want: "open Queue job",
+		},
+		{
+			name: "maintenance",
+			seed: func(db *gorm.DB, path string) error {
+				return db.Create(&models.AssetMaintenanceOperation{ID: "rename-active-maintenance", AssetPath: path, Status: maintenanceStatusRunning, Phase: "running"}).Error
+			},
+			want: "active maintenance",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared"
+			db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AssetMaintenanceOperation{}, &models.AppSetting{}); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			oldPath := filepath.Join(root, "Converted Episode.mkv")
+			newPath := filepath.Join(root, "Renamed Episode.mkv")
+			writeTestFile(t, oldPath, "converted media")
+			library := models.Library{Name: "Series", DestinationPath: root}
+			if err := db.Create(&library).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.AssetRecord{Path: oldPath, FileName: filepath.Base(oldPath), LibraryID: library.ID, Status: "converted"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := test.seed(db, oldPath); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "maintenance" {
+				active, err := activeAssetMaintenance(db, oldPath)
+				if err != nil || !active {
+					t.Fatalf("maintenance fixture is not active: active=%t err=%v", active, err)
+				}
+			}
+
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.POST("/api/assets/rename", AssetHandler{db: db}.Rename)
+			body := fmt.Sprintf(`{"path":%q,"fileName":%q}`, oldPath, filepath.Base(newPath))
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), test.want) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if _, err := os.Stat(oldPath); err != nil {
+				t.Fatalf("blocked rename changed source: %v", err)
+			}
+			if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+				t.Fatalf("blocked rename created target: %v", err)
+			}
+		})
+	}
+}
+
 func TestAssetGroupsPreserveImmediateContainingSubpath(t *testing.T) {
 	records := []models.AssetRecord{
 		{
@@ -1646,52 +1825,52 @@ func TestSubtitleExtractionPlansUseCanonicalASSOutputSelection(t *testing.T) {
 }
 
 func TestSubtitleExtractionPlansPreserveExplicitOriginalASSAndSSA(t *testing.T) {
-    for _, test := range []struct {
-        name       string
-        codec      string
-        wantFormat string
-        wantPath   string
-    }{
-        {
-            name:       "ass",
-            codec:      "ass",
-            wantFormat: "ass",
-            wantPath:   "/media/library/Movie.spa.3.ass",
-        },
-        {
-            name:       "ssa",
-            codec:      "ssa",
-            wantFormat: "ssa",
-            wantPath:   "/media/library/Movie.spa.3.ssa",
-        },
-    } {
-        t.Run(test.name, func(t *testing.T) {
-            streamIndex := 3
-            plans, unsupported := subtitleExtractionPlansForRequest(
-                "/media/library/Movie.mkv",
-                []FFProbeStream{{
-                    Index:     3,
-                    CodecType: "subtitle",
-                    CodecName: test.codec,
-                    Tags:      map[string]string{"language": "spa"},
-                }},
-                SubtitleExtractionInput{
-                    StreamIndex: &streamIndex,
-                    Format:      "original",
-                },
-            )
+	for _, test := range []struct {
+		name       string
+		codec      string
+		wantFormat string
+		wantPath   string
+	}{
+		{
+			name:       "ass",
+			codec:      "ass",
+			wantFormat: "ass",
+			wantPath:   "/media/library/Movie.spa.3.ass",
+		},
+		{
+			name:       "ssa",
+			codec:      "ssa",
+			wantFormat: "ssa",
+			wantPath:   "/media/library/Movie.spa.3.ssa",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			streamIndex := 3
+			plans, unsupported := subtitleExtractionPlansForRequest(
+				"/media/library/Movie.mkv",
+				[]FFProbeStream{{
+					Index:     3,
+					CodecType: "subtitle",
+					CodecName: test.codec,
+					Tags:      map[string]string{"language": "spa"},
+				}},
+				SubtitleExtractionInput{
+					StreamIndex: &streamIndex,
+					Format:      "original",
+				},
+			)
 
-            if len(unsupported) != 0 || len(plans) != 1 {
-                t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
-            }
+			if len(unsupported) != 0 || len(plans) != 1 {
+				t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
+			}
 
-            if plans[0].Mode != "original" ||
-                plans[0].Format != test.wantFormat ||
-                plans[0].OutputPath != test.wantPath {
-                t.Fatalf("unexpected original plan: %#v", plans[0])
-            }
-        })
-    }
+			if plans[0].Mode != "original" ||
+				plans[0].Format != test.wantFormat ||
+				plans[0].OutputPath != test.wantPath {
+				t.Fatalf("unexpected original plan: %#v", plans[0])
+			}
+		})
+	}
 }
 
 func TestSubtitleExtractionPlansUseCanonicalTextToASSConversion(t *testing.T) {

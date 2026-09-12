@@ -2817,6 +2817,7 @@ function AssetRow({
       : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForAsset(asset, queueJobs);
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs || isAccepted;
+  const renameLocked = hasOpenJob || createJob.isPending || isArchive || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const isOverrideOnly =
     selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
@@ -3993,8 +3994,8 @@ async function generateExternalSubtitle(
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={rowLocked || asset.missing || isArchive || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
-                          <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ rowLocked || asset.missing || isArchive || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ renameLocked || asset.missing || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
                           }>Rename</Button>
                         </Stack>
                       </Grid>

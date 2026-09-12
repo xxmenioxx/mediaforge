@@ -3494,6 +3494,24 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		hasOpenJob, checkErr := (QueueHandler{db: h.db}).assetHasOpenJob(resolvedPath, 0)
+		if checkErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
+			return
+		}
+		if hasOpenJob {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset has an open Queue job"})
+			return
+		}
+	}
+	if active, checkErr := activeAssetMaintenance(h.db, resolvedPath); checkErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active maintenance"})
+		return
+	}
 	fileName := strings.TrimSpace(input.FileName)
 	if fileName == "" || fileName != filepath.Base(fileName) || fileName == "." || fileName == ".." {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "fileName must be a plain file name"})
@@ -3560,8 +3578,22 @@ func (h AssetHandler) Rename(c *gin.Context) {
 				return err
 			}
 		}
-		for column, value := range map[string]string{"media_path": resolvedPath, "output_path": resolvedPath, "published_path": resolvedPath} {
-			if err := tx.Model(&models.QueueJob{}).Where(column+" = ?", value).Update(column, target).Error; err != nil {
+		if tx.Migrator().HasTable(&models.QueueJob{}) {
+			if err := tx.Model(&models.QueueJob{}).
+				Where("publication_retired_at IS NULL AND published_path = ?", resolvedPath).
+				Update("published_path", target).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.QueueJob{}).
+				Where("publication_retired_at IS NULL AND replacement_target_path = ?", resolvedPath).
+				Update("replacement_target_path", target).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&models.DirectPublication{}) {
+			if err := tx.Model(&models.DirectPublication{}).
+				Where("returned_at IS NULL AND published_path = ?", resolvedPath).
+				Update("published_path", target).Error; err != nil {
 				return err
 			}
 		}
