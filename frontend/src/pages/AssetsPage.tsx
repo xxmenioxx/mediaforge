@@ -56,6 +56,7 @@ import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
+import { LibraryPathRenameDialog } from '../components/LibraryPathRenameDialog';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
@@ -1665,6 +1666,7 @@ function AssetGroupRow({
 		: (mode === 'library' ? group.libraryId : 0);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(configuredPathDestination);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
+  const [renamePathOpen, setRenamePathOpen] = useState(false);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
   const [pathAdvisorOpen, setPathAdvisorOpen] = useState(false);
   const [pathAdvisorCurrent, setPathAdvisorCurrent] = useState('');
@@ -1969,6 +1971,16 @@ function AssetGroupRow({
         sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
       >
         {migratePath.isPending ? 'Moving...' : 'Move path'}
+      </Button>
+      <Button
+        variant="outlined"
+        size="small"
+        startIcon={<DriveFileRenameOutlineIcon />}
+        disabled={!group.libraryId || groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+        onClick={() => setRenamePathOpen(true)}
+        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+      >
+        Rename path
       </Button>
     </Stack>
   ) : null;
@@ -2358,6 +2370,20 @@ function AssetGroupRow({
           </Collapse>
         </TableCell>
       </TableRow>
+      <LibraryPathRenameDialog
+        open={renamePathOpen}
+        libraryId={group.libraryId}
+        path={group.path}
+        onClose={() => setRenamePathOpen(false)}
+        onApplied={async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['assets'] }),
+            queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+            queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
+            queryClient.invalidateQueries({ queryKey: ['settings'] }),
+          ]);
+        }}
+      />
       <Dialog
         open={pathAdvisorOpen}
         onClose={() => {

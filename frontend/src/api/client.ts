@@ -1,6 +1,8 @@
 import type {
   Library,
   LibraryInput,
+  LibraryRenameApplyResponse,
+  LibraryRenamePlan,
   LogFile,
   LogFileContent,
   MWPImportSummary,
@@ -285,6 +287,16 @@ export const api = {
     }),
   migrateAssetPath: (input: { sourcePath: string; destinationLibraryId: number }) =>
     request<{ status: string; sourcePath: string; destinationPath: string; sourceLibraryId: number; destinationLibraryId: number; assetsMoved: number }>('/api/assets/migrate-path', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  previewLibraryPathRename: (input: { libraryId: number; path: string }) =>
+    request<LibraryRenamePlan>('/api/assets/library-rename/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  applyLibraryPathRename: (input: { libraryId: number; path: string; planHash: string }) =>
+    request<LibraryRenameApplyResponse>('/api/assets/library-rename/apply', {
       method: 'POST',
       body: JSON.stringify(input),
     }),

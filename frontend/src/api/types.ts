@@ -106,6 +106,39 @@ export type AssetGroup = {
   pathMetadata: AssetMetadataState;
 };
 
+export type LibraryRenameSidecarPlan = {
+  sourcePath: string;
+  targetPath: string;
+};
+
+export type LibraryRenameAssetPlan = {
+  assetId: number;
+  sourcePath: string;
+  targetPath: string;
+  sidecars: LibraryRenameSidecarPlan[];
+};
+
+export type LibraryRenameConflict = {
+  code: string;
+  sourcePath?: string;
+  targetPath?: string;
+};
+
+export type LibraryRenamePlan = {
+  libraryId: number;
+  sourcePath: string;
+  targetPath: string;
+  assets: LibraryRenameAssetPlan[];
+  warnings: string[];
+  conflicts: LibraryRenameConflict[];
+  planHash: string;
+};
+
+export type LibraryRenameApplyResponse = {
+  status: string;
+  plan: LibraryRenamePlan;
+};
+
 export type AssetReviewState = {
   requiresReview: boolean;
   reason: string;
