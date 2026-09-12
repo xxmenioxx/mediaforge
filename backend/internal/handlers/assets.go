@@ -2321,9 +2321,9 @@ func (h AssetHandler) validateLibraryRenameHasNoActiveWork(plan LibraryRenamePla
 	return nil
 }
 
-func applyLibraryRenamePlan(plan LibraryRenamePlan, library models.Library, renameFile func(string, string) error) error {
+func applyLibraryRenamePlan(plan LibraryRenamePlan, library models.Library, renameFile func(string, string) error) (func() error, error) {
 	if err := validateLibraryRenamePlanForApply(plan, library); err != nil {
-		return err
+		return func() error { return nil }, err
 	}
 	pairs := libraryRenamePairs(plan)
 	createdDirectories := []string{}
@@ -2337,14 +2337,14 @@ func applyLibraryRenamePlan(plan LibraryRenamePlan, library models.Library, rena
 			if _, err := os.Stat(directory); os.IsNotExist(err) {
 				createdDirectories = append(createdDirectories, directory)
 			} else if err != nil {
-				return err
+				return func() error { return nil }, err
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(pair.to), 0o755); err != nil {
 			for _, directory := range createdDirectories {
 				_ = os.Remove(directory)
 			}
-			return err
+			return func() error { return nil }, err
 		}
 	}
 
@@ -2365,26 +2365,183 @@ func applyLibraryRenamePlan(plan LibraryRenamePlan, library models.Library, rena
 		if _, err := os.Stat(pair.to); err == nil {
 			applyErr := fmt.Errorf("rename target appeared during Apply: %s", pair.to)
 			if rollbackErr := rollback(); rollbackErr != nil {
-				return fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
+				return func() error { return nil }, fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
 			}
-			return applyErr
+			return func() error { return nil }, applyErr
 		} else if !os.IsNotExist(err) {
 			applyErr := fmt.Errorf("rename target became unavailable: %s: %w", pair.to, err)
 			if rollbackErr := rollback(); rollbackErr != nil {
-				return fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
+				return func() error { return nil }, fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
 			}
-			return applyErr
+			return func() error { return nil }, applyErr
 		}
 		if err := renameFile(pair.from, pair.to); err != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
-				return fmt.Errorf("rename failed: %w; rollback failed: %v", err, rollbackErr)
+				return func() error { return nil }, fmt.Errorf("rename failed: %w; rollback failed: %v", err, rollbackErr)
 			}
-			return fmt.Errorf("rename failed: %w", err)
+			return func() error { return nil }, fmt.Errorf("rename failed: %w", err)
 		}
 		completed = append(completed, pair)
 	}
-	if filepath.Clean(plan.SourcePath) != filepath.Clean(plan.TargetPath) {
-		_ = os.Remove(plan.SourcePath)
+	return rollback, nil
+}
+
+func libraryRenameAssetTargets(plan LibraryRenamePlan) map[string]string {
+	targets := make(map[string]string, len(plan.Assets))
+	for _, asset := range plan.Assets {
+		targets[filepath.Clean(asset.SourcePath)] = filepath.Clean(asset.TargetPath)
+	}
+	return targets
+}
+
+func remapLibraryRenameAssignmentPath(plan LibraryRenamePlan, targets map[string]string, current string) (string, bool, error) {
+	clean := filepath.Clean(current)
+	if target := targets[clean]; target != "" {
+		return target, target != clean, nil
+	}
+	if clean != filepath.Clean(plan.SourcePath) && !pathIsInside(clean, plan.SourcePath) {
+		return current, false, nil
+	}
+	relative, err := filepath.Rel(plan.SourcePath, clean)
+	if err != nil {
+		return "", false, err
+	}
+	target := filepath.Join(plan.TargetPath, relative)
+	return target, filepath.Clean(target) != clean, nil
+}
+
+func reconcileLibraryRenameState(tx *gorm.DB, plan LibraryRenamePlan, library models.Library) error {
+	targets := libraryRenameAssetTargets(plan)
+	for _, asset := range plan.Assets {
+		oldPath := filepath.Clean(asset.SourcePath)
+		newPath := filepath.Clean(asset.TargetPath)
+		relative, err := filepath.Rel(library.DestinationPath, newPath)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("renamed asset is outside the Library: %s", newPath)
+		}
+		result := tx.Model(&models.AssetRecord{}).
+			Where("id = ? AND path = ? AND library_id = ?", asset.AssetID, oldPath, library.ID).
+			Updates(map[string]interface{}{
+				"path":          newPath,
+				"root_path":     filepath.Clean(library.DestinationPath),
+				"relative_path": filepath.ToSlash(relative),
+				"group_path":    filepath.ToSlash(logicalAssetGroupPath(relative)),
+				"file_name":     filepath.Base(newPath),
+				"extension":     strings.ToLower(filepath.Ext(newPath)),
+				"library_name":  library.Name,
+				"missing":       false,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("current AssetRecord changed before reconciliation: %s", oldPath)
+		}
+		if tx.Migrator().HasTable(&models.ScanResult{}) {
+			if err := tx.Model(&models.ScanResult{}).Where("path = ?", oldPath).UpdateColumns(map[string]interface{}{
+				"path": newPath, "file_name": filepath.Base(newPath),
+			}).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	if tx.Migrator().HasTable(&models.AppSetting{}) {
+		metadata := assetMetadataOverrides(tx)
+		metadataChanged := false
+		for oldPath, newPath := range targets {
+			if value, ok := metadata[oldPath]; ok {
+				if _, exists := metadata[newPath]; exists && newPath != oldPath {
+					return fmt.Errorf("metadata override target already exists: %s", newPath)
+				}
+				delete(metadata, oldPath)
+				metadata[newPath] = value
+				metadataChanged = true
+			}
+		}
+		if metadataChanged {
+			if err := saveAssetMetadataOverrides(tx, metadata); err != nil {
+				return err
+			}
+		}
+
+		reviews := assetReviewOverrides(tx)
+		reviewsChanged := false
+		for oldPath, newPath := range targets {
+			if value, ok := reviews[oldPath]; ok {
+				if _, exists := reviews[newPath]; exists && newPath != oldPath {
+					return fmt.Errorf("review override target already exists: %s", newPath)
+				}
+				delete(reviews, oldPath)
+				reviews[newPath] = value
+				reviewsChanged = true
+			}
+		}
+		if reviewsChanged {
+			if err := saveAssetReviewOverrides(tx, reviews); err != nil {
+				return err
+			}
+		}
+
+		conversions := assetConversionOverrides(tx)
+		conversionsChanged := false
+		for oldPath, newPath := range targets {
+			if value, ok := conversions[oldPath]; ok {
+				if _, exists := conversions[newPath]; exists && newPath != oldPath {
+					return fmt.Errorf("conversion override target already exists: %s", newPath)
+				}
+				delete(conversions, oldPath)
+				conversions[newPath] = value
+				conversionsChanged = true
+			}
+		}
+		if conversionsChanged {
+			if err := saveAssetConversionOverrides(tx, conversions); err != nil {
+				return err
+			}
+		}
+	}
+
+	if tx.Migrator().HasTable(&models.ProfileAssignment{}) {
+		var assignments []models.ProfileAssignment
+		if err := tx.Find(&assignments).Error; err != nil {
+			return err
+		}
+		for index := range assignments {
+			target, changed, err := remapLibraryRenameAssignmentPath(plan, targets, assignments[index].TargetPath)
+			if err != nil {
+				return err
+			}
+			if changed {
+				if err := tx.Model(&models.ProfileAssignment{}).Where("id = ?", assignments[index].ID).Update("target_path", target).Error; err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if tx.Migrator().HasTable(&models.QueueJob{}) {
+		for oldPath, newPath := range targets {
+			if err := tx.Model(&models.QueueJob{}).
+				Where("publication_retired_at IS NULL AND published_path = ?", oldPath).
+				Update("published_path", newPath).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.QueueJob{}).
+				Where("publication_retired_at IS NULL AND replacement_target_path = ?", oldPath).
+				Update("replacement_target_path", newPath).Error; err != nil {
+				return err
+			}
+		}
+	}
+	if tx.Migrator().HasTable(&models.DirectPublication{}) {
+		for oldPath, newPath := range targets {
+			if err := tx.Model(&models.DirectPublication{}).
+				Where("returned_at IS NULL AND published_path = ?", oldPath).
+				Update("published_path", newPath).Error; err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -2416,9 +2573,23 @@ func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
-	if err := applyLibraryRenamePlan(plan, library, os.Rename); err != nil {
+	rollback, err := applyLibraryRenamePlan(plan, library, os.Rename)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		return reconcileLibraryRenameState(tx, plan, library)
+	}); err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("reconcile renamed Library state: %v; filesystem rollback failed: %v", err, rollbackErr)})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "reconcile renamed Library state: " + err.Error()})
+		return
+	}
+	if filepath.Clean(plan.SourcePath) != filepath.Clean(plan.TargetPath) {
+		_ = os.Remove(plan.SourcePath)
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "applied", "plan": plan})
 }

@@ -939,7 +939,7 @@ func TestApplyLibraryRenamePlanMovesMediaAndOwnedSidecars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := applyLibraryRenamePlan(plan, library, os.Rename); err != nil {
+	if _, err := applyLibraryRenamePlan(plan, library, os.Rename); err != nil {
 		t.Fatal(err)
 	}
 
@@ -986,7 +986,7 @@ func TestApplyLibraryRenamePlanRollsBackCompletedMoves(t *testing.T) {
 		}
 		return os.Rename(from, to)
 	}
-	if err := applyLibraryRenamePlan(plan, library, renameFile); err == nil || !strings.Contains(err.Error(), "injected rename failure") {
+	if _, err := applyLibraryRenamePlan(plan, library, renameFile); err == nil || !strings.Contains(err.Error(), "injected rename failure") {
 		t.Fatalf("unexpected apply error: %v", err)
 	}
 	for _, source := range []string{first, second} {
@@ -1083,6 +1083,212 @@ func TestApplyLibraryPathRenameRejectsStalePlanAndActiveWork(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	})
+}
+
+func TestApplyLibraryPathRenameReconcilesCurrentStateAndPreservesHistory(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+	first := filepath.Join(sourcePath, "episode-a.mkv")
+	second := filepath.Join(sourcePath, "episode-b.mkv")
+	for _, path := range []string{first, second} {
+		writeTestFile(t, path, "video")
+	}
+	db, err := gorm.Open(sqlite.Open("file:library-rename-state?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.Library{}, &models.AssetRecord{}, &models.ScanResult{}, &models.AppSetting{},
+		&models.ProfileAssignment{}, &models.QueueJob{}, &models.DirectPublication{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Series", DestinationPath: libraryRoot, Type: "series", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := []models.AssetRecord{
+		{Path: first, RootPath: libraryRoot, RelativePath: "Doctor Who/Season2/episode-a.mkv", GroupPath: "Doctor Who/Season2", FileName: filepath.Base(first), Status: "library", LibraryID: library.ID, LibraryName: library.Name},
+		{Path: second, RootPath: libraryRoot, RelativePath: "Doctor Who/Season2/episode-b.mkv", GroupPath: "Doctor Who/Season2", FileName: filepath.Base(second), Status: "library", LibraryID: library.ID, LibraryName: library.Name},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]models.ScanResult{{Path: first, FileName: filepath.Base(first)}, {Path: second, FileName: filepath.Base(second)}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := saveAssetMetadataOverrides(db, map[string]AssetMetadataState{first: {Categories: []string{"tv"}, UpdatedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetReviewOverrides(db, map[string]AssetReviewState{first: {RequiresReview: true, Reason: "check", UpdatedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{first: {VideoCodec: "copy", UpdatedAt: &now}}); err != nil {
+		t.Fatal(err)
+	}
+	assignments := []models.ProfileAssignment{
+		{TargetType: "asset", TargetPath: first, MediaType: "video", Selection: "profile", ProfileKey: "asset-profile"},
+		{TargetType: "path", TargetPath: sourcePath, MediaType: "video", Selection: "profile", ProfileKey: "path-profile"},
+	}
+	if err := db.Create(&assignments).Error; err != nil {
+		t.Fatal(err)
+	}
+	retiredAt := now.Add(-time.Hour)
+	currentJob := models.QueueJob{MediaPath: "/archive/doctor-who-1.mkv", LibraryID: library.ID, Status: JobStatusCompleted, PublishedPath: first, ReplacementTargetPath: second, PublishedAt: &now}
+	historicalJob := models.QueueJob{MediaPath: "/archive/doctor-who-2.mkv", LibraryID: library.ID, Status: JobStatusCompleted, PublishedPath: second, PublishedAt: &now, PublicationRetiredAt: &retiredAt}
+	if err := db.Create(&currentJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&historicalJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentPublication := models.DirectPublication{SourcePath: "/raw/doctor-who-1.mkv", PublishedPath: first, LibraryID: library.ID, PublishedAt: now}
+	historicalPublication := models.DirectPublication{SourcePath: "/raw/doctor-who-2.mkv", PublishedPath: second, LibraryID: library.ID, PublishedAt: now, ReturnedAt: &retiredAt}
+	if err := db.Create(&currentPublication).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&historicalPublication).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildLibraryRenamePlan(library, sourcePath, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(LibraryRenameApplyInput{LibraryID: library.ID, Path: sourcePath, PlanHash: plan.PlanHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/library-rename/apply", AssetHandler{db: db}.ApplyLibraryPathRename)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/library-rename/apply", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	firstTarget := filepath.Join(libraryRoot, "Doctor Who", "Season 02", "Doctor Who - S02E01.mkv")
+	secondTarget := filepath.Join(libraryRoot, "Doctor Who", "Season 02", "Doctor Who - S02E02.mkv")
+	for _, target := range []string{firstTarget, secondTarget} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("renamed media missing %q: %v", target, err)
+		}
+	}
+	for index, target := range []string{firstTarget, secondTarget} {
+		var record models.AssetRecord
+		if err := db.First(&record, records[index].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if record.Path != target || record.FileName != filepath.Base(target) || record.GroupPath != "Doctor Who/Season 02" {
+			t.Fatalf("AssetRecord was not reconciled: %#v", record)
+		}
+		var scans int64
+		if err := db.Model(&models.ScanResult{}).Where("path = ? AND file_name = ?", target, filepath.Base(target)).Count(&scans).Error; err != nil || scans != 1 {
+			t.Fatalf("ScanResult was not reconciled for %q: count=%d err=%v", target, scans, err)
+		}
+	}
+	if _, ok := assetMetadataOverrides(db)[firstTarget]; !ok {
+		t.Fatal("metadata override did not follow renamed asset")
+	}
+	if _, ok := assetReviewOverrides(db)[firstTarget]; !ok {
+		t.Fatal("review override did not follow renamed asset")
+	}
+	if _, ok := assetConversionOverrides(db)[firstTarget]; !ok {
+		t.Fatal("conversion override did not follow renamed asset")
+	}
+	if err := db.First(&assignments[0], assignments[0].ID).Error; err != nil || assignments[0].TargetPath != firstTarget {
+		t.Fatalf("asset ProfileAssignment was not reconciled: %#v err=%v", assignments[0], err)
+	}
+	if err := db.First(&assignments[1], assignments[1].ID).Error; err != nil || assignments[1].TargetPath != filepath.Dir(firstTarget) {
+		t.Fatalf("path ProfileAssignment was not reconciled: %#v err=%v", assignments[1], err)
+	}
+	if err := db.First(&currentJob, currentJob.ID).Error; err != nil || currentJob.PublishedPath != firstTarget || currentJob.ReplacementTargetPath != secondTarget {
+		t.Fatalf("current Queue publication references were not reconciled: %#v err=%v", currentJob, err)
+	}
+	if err := db.First(&historicalJob, historicalJob.ID).Error; err != nil || historicalJob.PublishedPath != second {
+		t.Fatalf("historical Queue publication path changed: %#v err=%v", historicalJob, err)
+	}
+	if err := db.First(&currentPublication, currentPublication.ID).Error; err != nil || currentPublication.PublishedPath != firstTarget {
+		t.Fatalf("current DirectPublication was not reconciled: %#v err=%v", currentPublication, err)
+	}
+	if err := db.First(&historicalPublication, historicalPublication.ID).Error; err != nil || historicalPublication.PublishedPath != second {
+		t.Fatalf("historical DirectPublication path changed: %#v err=%v", historicalPublication, err)
+	}
+}
+
+func TestApplyLibraryPathRenameRollsBackFilesystemWhenStateReconciliationFails(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+	first := filepath.Join(sourcePath, "episode-a.mkv")
+	second := filepath.Join(sourcePath, "episode-b.mkv")
+	for _, path := range []string{first, second} {
+		writeTestFile(t, path, "video")
+	}
+	db, err := gorm.Open(sqlite.Open("file:library-rename-state-rollback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.ProfileAssignment{}, &models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Series", DestinationPath: libraryRoot, Type: "series", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := []models.AssetRecord{
+		{Path: first, FileName: filepath.Base(first), Status: "library", LibraryID: library.ID},
+		{Path: second, FileName: filepath.Base(second), Status: "library", LibraryID: library.ID},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildLibraryRenamePlan(library, sourcePath, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := plan.Assets[0].TargetPath
+	assignments := []models.ProfileAssignment{
+		{TargetType: "asset", TargetPath: first, MediaType: "video", Selection: "profile", ProfileKey: "moving"},
+		{TargetType: "asset", TargetPath: target, MediaType: "video", Selection: "profile", ProfileKey: "collision"},
+	}
+	if err := db.Create(&assignments).Error; err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(LibraryRenameApplyInput{LibraryID: library.ID, Path: sourcePath, PlanHash: plan.PlanHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/library-rename/apply", AssetHandler{db: db}.ApplyLibraryPathRename)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/library-rename/apply", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "reconcile renamed Library state") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, source := range []string{first, second} {
+		if _, err := os.Stat(source); err != nil {
+			t.Fatalf("filesystem rollback did not restore %q: %v", source, err)
+		}
+	}
+	for _, asset := range plan.Assets {
+		if _, err := os.Stat(asset.TargetPath); !os.IsNotExist(err) {
+			t.Fatalf("filesystem rollback left target %q: %v", asset.TargetPath, err)
+		}
+	}
+	for index, source := range []string{first, second} {
+		var record models.AssetRecord
+		if err := db.First(&record, records[index].ID).Error; err != nil || record.Path != source {
+			t.Fatalf("database transaction did not roll back AssetRecord: %#v err=%v", record, err)
+		}
+	}
 }
 
 func TestDirectPublicationEpisodeNamingRenamesMediaAndSubtitleSidecars(t *testing.T) {
