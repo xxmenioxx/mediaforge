@@ -137,6 +137,18 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 			sourceSize = info.Size()
 		}
 	}
+
+	if recommendation.Warnings == nil {
+		recommendation.Warnings = []string{}
+	}
+
+	if recommendation.QualityReasons == nil {
+		recommendation.QualityReasons = []string{}
+	}
+
+	if args == nil {
+		args = []string{}
+	}
 	c.JSON(http.StatusOK, qualityRecommendationResponse{
 		RequestedProfile: requested, EffectiveProfile: profile, Recommendation: recommendation,
 		CapabilitySource: capabilitySource, FFmpegVideoArguments: args,

@@ -43,6 +43,25 @@ func TestSafeDeleteRouteIsRegistered(t *testing.T) {
 	t.Fatal("POST /api/assets/delete-converted is not registered")
 }
 
+func TestLibraryRenameRoutesAreRegistered(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:routes-library-rename-preview?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(db)
+	found := map[string]bool{}
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodPost {
+			found[route.Path] = true
+		}
+	}
+	for _, path := range []string{"/api/assets/library-rename/preview", "/api/assets/library-rename/apply"} {
+		if !found[path] {
+			t.Fatalf("POST %s is not registered", path)
+		}
+	}
+}
+
 func TestProductionMiddlewarePreservesIncomingRequestID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

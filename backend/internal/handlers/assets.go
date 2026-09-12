@@ -1900,7 +1900,91 @@ func saveDirectPublication(db *gorm.DB, publication *models.DirectPublication) e
 	return db.Save(publication).Error
 }
 
-func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library, movedPaths map[string]string) (map[string]string, func(), error) {
+type directPublicationEpisodeNamePlan struct {
+	published map[string]string
+	targets   map[string]string
+	records   []models.AssetRecord
+}
+
+type LibraryRenamePreviewInput struct {
+	LibraryID uint   `json:"libraryId"`
+	Path      string `json:"path"`
+}
+
+type LibraryRenameApplyInput struct {
+	LibraryID uint   `json:"libraryId"`
+	Path      string `json:"path"`
+	PlanHash  string `json:"planHash"`
+}
+
+type LibraryRenameSidecarPlan struct {
+	SourcePath string `json:"sourcePath"`
+	TargetPath string `json:"targetPath"`
+}
+
+type LibraryRenameAssetPlan struct {
+	AssetID    uint                       `json:"assetId"`
+	SourcePath string                     `json:"sourcePath"`
+	TargetPath string                     `json:"targetPath"`
+	Sidecars   []LibraryRenameSidecarPlan `json:"sidecars"`
+}
+
+type LibraryRenameConflict struct {
+	Code       string `json:"code"`
+	SourcePath string `json:"sourcePath,omitempty"`
+	TargetPath string `json:"targetPath,omitempty"`
+}
+
+type LibraryRenamePlan struct {
+	LibraryID  uint                     `json:"libraryId"`
+	SourcePath string                   `json:"sourcePath"`
+	TargetPath string                   `json:"targetPath"`
+	Assets     []LibraryRenameAssetPlan `json:"assets"`
+	Warnings   []string                 `json:"warnings"`
+	Conflicts  []LibraryRenameConflict  `json:"conflicts"`
+	PlanHash   string                   `json:"planHash"`
+}
+
+func canonicalDirectPublicationEpisodeTargets(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library) (map[string]string, []models.AssetRecord, error) {
+	if !libraryEpisodeNamingEnabled(library) || len(records) <= 1 {
+		return nil, nil, nil
+	}
+
+	sorted := append([]models.AssetRecord(nil), records...)
+	episodePositions := episodeSequencePositions(sourcePath, records)
+	title := sanitizeMediaFileName(episodeSeriesTitle(filepath.ToSlash(sourcePath), filepath.ToSlash(sourcePath)))
+	if title == "" {
+		title = sanitizeMediaFileName(filepath.Base(sourcePath))
+	}
+
+	targets := make(map[string]string, len(sorted))
+	seenTargets := map[string]bool{}
+	for _, record := range sorted {
+		episode := episodePositions[record.Path]
+		if episode <= 0 {
+			episode = 1
+		}
+		relative, err := filepath.Rel(sourcePath, record.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		recordGroupPath := filepath.Dir(record.Path)
+		season := firstPositiveInt(seasonNumberFromPath(recordGroupPath), seasonNumberFromPath(sourcePath), 1)
+		job := models.QueueJob{MediaPath: record.Path, BatchName: filepath.ToSlash(recordGroupPath)}
+		spec := multiEpisodeNameSpec{SeriesTitle: title, Season: season, Episode: episode}
+		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
+		target := filepath.Join(destinationPath, namedRelative)
+		clean := filepath.Clean(target)
+		if seenTargets[clean] {
+			return nil, nil, fmt.Errorf("episode naming produced duplicate target %s", target)
+		}
+		seenTargets[clean] = true
+		targets[record.Path] = target
+	}
+	return targets, sorted, nil
+}
+
+func planDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library, movedPaths map[string]string) (directPublicationEpisodeNamePlan, error) {
 	published := make(map[string]string, len(records))
 	for _, record := range records {
 		if movedPath := movedPaths[filepath.Clean(record.Path)]; movedPath != "" {
@@ -1909,80 +1993,154 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 		}
 		relative, err := filepath.Rel(sourcePath, record.Path)
 		if err != nil {
-			return nil, func() {}, err
+			return directPublicationEpisodeNamePlan{}, err
 		}
 		published[record.Path] = filepath.Join(destinationPath, relative)
 	}
-	if !libraryEpisodeNamingEnabled(library) || len(records) <= 1 {
-		return published, func() {}, nil
+	canonicalTargets, sorted, err := canonicalDirectPublicationEpisodeTargets(sourcePath, destinationPath, records, library)
+	if err != nil {
+		return directPublicationEpisodeNamePlan{}, err
 	}
-
-	sorted := append([]models.AssetRecord(nil), records...)
-
-	episodePositions := episodeSequencePositions(sourcePath, records)
-
-	title := sanitizeMediaFileName(
-		episodeSeriesTitle(
-			filepath.ToSlash(sourcePath),
-			filepath.ToSlash(sourcePath),
-		),
-	)
-	if title == "" {
-		title = sanitizeMediaFileName(filepath.Base(sourcePath))
+	if len(canonicalTargets) == 0 {
+		return directPublicationEpisodeNamePlan{published: published}, nil
 	}
-
-	targets := map[string]string{}
-
+	targets := make(map[string]string, len(canonicalTargets))
 	for _, record := range sorted {
-		episode := episodePositions[record.Path]
-		if episode <= 0 {
-			episode = 1
-		}
-		relative, err := filepath.Rel(sourcePath, record.Path)
-		if err != nil {
-			return nil, func() {}, err
-		}
-		recordGroupPath := filepath.Dir(record.Path)
-
-		season := firstPositiveInt(
-			seasonNumberFromPath(recordGroupPath),
-			seasonNumberFromPath(sourcePath),
-			1,
-		)
-
-		job := models.QueueJob{
-			MediaPath: record.Path,
-
-			// Direct publication already knows the concrete asset group.
-			// Using it as the batch scope prevents a structural Season XX
-			// directory from replacing the actual series title.
-			BatchName: filepath.ToSlash(recordGroupPath),
-		}
-
-		spec := multiEpisodeNameSpec{
-			SeriesTitle: title,
-			Season:      season,
-			Episode:     episode,
-		}
-		namedRelative := filepath.FromSlash(formatMultiEpisodeOutputRelativePath(job, filepath.ToSlash(relative), spec))
-		target := filepath.Join(destinationPath, namedRelative)
+		target := canonicalTargets[record.Path]
 		if current := published[record.Path]; filepath.Clean(current) != filepath.Clean(target) {
 			target, err = resolveMVFFileDestination(target)
 			if err != nil {
-				return nil, func() {}, err
+				return directPublicationEpisodeNamePlan{}, err
 			}
 		}
 		targets[record.Path] = target
 	}
 
-	seenTargets := map[string]bool{}
-	for _, target := range targets {
-		clean := filepath.Clean(target)
-		if seenTargets[clean] {
-			return nil, func() {}, fmt.Errorf("episode naming produced duplicate target %s", target)
+	return directPublicationEpisodeNamePlan{published: published, targets: targets, records: sorted}, nil
+}
+
+func buildLibraryRenamePlan(library models.Library, sourcePath string, records []models.AssetRecord) (LibraryRenamePlan, error) {
+	sourcePath = filepath.Clean(sourcePath)
+	targetPath := sourcePath
+	warnings := []string{}
+	if libraryEpisodeNamingEnabled(library) {
+		if season := seasonNumberFromPath(filepath.Base(sourcePath)); season > 0 {
+			targetPath = filepath.Join(filepath.Dir(sourcePath), fmt.Sprintf("Season %02d", season))
 		}
-		seenTargets[clean] = true
+	} else {
+		warnings = append(warnings, "Library episode naming is disabled")
 	}
+
+	sortedRecords := append([]models.AssetRecord(nil), records...)
+	sort.Slice(sortedRecords, func(i, j int) bool { return sortedRecords[i].Path < sortedRecords[j].Path })
+	canonicalTargets, sorted, err := canonicalDirectPublicationEpisodeTargets(sourcePath, targetPath, sortedRecords, library)
+	if err != nil {
+		return LibraryRenamePlan{}, err
+	}
+	if sorted == nil {
+		sorted = sortedRecords
+	}
+
+	plan := LibraryRenamePlan{
+		LibraryID:  library.ID,
+		SourcePath: sourcePath,
+		TargetPath: targetPath,
+		Assets:     make([]LibraryRenameAssetPlan, 0, len(sorted)),
+		Warnings:   warnings,
+		Conflicts:  []LibraryRenameConflict{},
+	}
+	seenTargets := map[string]string{}
+	changed := false
+	for _, record := range sorted {
+		target := canonicalTargets[record.Path]
+		if target == "" {
+			relative, relErr := filepath.Rel(sourcePath, record.Path)
+			if relErr != nil {
+				return LibraryRenamePlan{}, relErr
+			}
+			target = filepath.Join(targetPath, relative)
+		}
+		assetPlan := LibraryRenameAssetPlan{AssetID: record.ID, SourcePath: record.Path, TargetPath: target, Sidecars: []LibraryRenameSidecarPlan{}}
+		if filepath.Clean(record.Path) != filepath.Clean(target) {
+			changed = true
+		}
+		if _, statErr := os.Stat(record.Path); statErr != nil {
+			code := "source_unreadable"
+			if os.IsNotExist(statErr) {
+				code = "source_missing"
+			}
+			plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: code, SourcePath: record.Path})
+		}
+		appendRenameConflict(&plan, seenTargets, record.Path, target)
+
+		sidecars, sidecarErr := externalSubtitlesForMedia(record.Path)
+		if sidecarErr != nil {
+			if os.IsNotExist(sidecarErr) {
+				plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: "source_missing", SourcePath: record.Path})
+				plan.Assets = append(plan.Assets, assetPlan)
+				continue
+			}
+			return LibraryRenamePlan{}, sidecarErr
+		}
+		sourceBase := strings.TrimSuffix(record.Path, filepath.Ext(record.Path))
+		targetBase := strings.TrimSuffix(target, filepath.Ext(target))
+		for _, sidecar := range sidecars {
+			sidecarTarget := targetBase + strings.TrimPrefix(sidecar.Path, sourceBase)
+			assetPlan.Sidecars = append(assetPlan.Sidecars, LibraryRenameSidecarPlan{SourcePath: sidecar.Path, TargetPath: sidecarTarget})
+			if filepath.Clean(sidecar.Path) != filepath.Clean(sidecarTarget) {
+				changed = true
+			}
+			appendRenameConflict(&plan, seenTargets, sidecar.Path, sidecarTarget)
+		}
+		plan.Assets = append(plan.Assets, assetPlan)
+	}
+	if !changed {
+		plan.Warnings = append(plan.Warnings, "Path is already canonical")
+	}
+	sort.Slice(plan.Conflicts, func(i, j int) bool {
+		left, right := plan.Conflicts[i], plan.Conflicts[j]
+		return left.Code+left.SourcePath+left.TargetPath < right.Code+right.SourcePath+right.TargetPath
+	})
+	hashInput := plan
+	hashInput.PlanHash = ""
+	encoded, err := json.Marshal(hashInput)
+	if err != nil {
+		return LibraryRenamePlan{}, err
+	}
+	sum := sha256.Sum256(encoded)
+	plan.PlanHash = fmt.Sprintf("sha256:%x", sum)
+	return plan, nil
+}
+
+func appendRenameConflict(plan *LibraryRenamePlan, seenTargets map[string]string, sourcePath, targetPath string) {
+	cleanSource, cleanTarget := filepath.Clean(sourcePath), filepath.Clean(targetPath)
+	if previous := seenTargets[cleanTarget]; previous != "" && previous != cleanSource {
+		plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: "duplicate_target", SourcePath: sourcePath, TargetPath: targetPath})
+	} else {
+		seenTargets[cleanTarget] = cleanSource
+	}
+	if cleanSource == cleanTarget {
+		return
+	}
+	if _, err := os.Stat(targetPath); err == nil {
+		plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: "target_exists", SourcePath: sourcePath, TargetPath: targetPath})
+	} else if !os.IsNotExist(err) {
+		plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: "target_unreadable", SourcePath: sourcePath, TargetPath: targetPath})
+	}
+}
+
+func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, records []models.AssetRecord, library models.Library, movedPaths map[string]string) (map[string]string, func(), error) {
+	plan, err := planDirectPublicationEpisodeNames(sourcePath, destinationPath, records, library, movedPaths)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	published := plan.published
+	if len(plan.targets) == 0 {
+		return published, func() {}, nil
+	}
+	targets := plan.targets
+	sorted := plan.records
+
 	type renamePair struct{ from, to string }
 	completed := []renamePair{}
 	rollback := func() {
@@ -2031,6 +2189,238 @@ func applyDirectPublicationEpisodeNames(sourcePath, destinationPath string, reco
 		published[record.Path] = target
 	}
 	return published, rollback, nil
+}
+
+func (h AssetHandler) resolveLibraryRenamePlan(input LibraryRenamePreviewInput) (LibraryRenamePlan, models.Library, int, error) {
+	if input.LibraryID == 0 {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusBadRequest, errors.New("libraryId is required")
+	}
+	sourcePath := filepath.Clean(strings.TrimSpace(input.Path))
+	if sourcePath == "." || sourcePath == "" {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusBadRequest, errors.New("path is required")
+	}
+
+	var library models.Library
+	if err := h.db.First(&library, input.LibraryID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return LibraryRenamePlan{}, models.Library{}, http.StatusNotFound, errors.New("library not found")
+		}
+		return LibraryRenamePlan{}, models.Library{}, http.StatusInternalServerError, err
+	}
+	if !pathIsInside(sourcePath, library.DestinationPath) {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusBadRequest, errors.New("path is outside the selected Library")
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil || !info.IsDir() {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusBadRequest, errors.New("path must be a readable Library directory")
+	}
+
+	var candidates []models.AssetRecord
+	if err := h.db.Where("library_id = ? AND missing = ?", library.ID, false).Find(&candidates).Error; err != nil {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusInternalServerError, err
+	}
+	records := make([]models.AssetRecord, 0, len(candidates))
+	for _, record := range candidates {
+		if pathIsInside(record.Path, sourcePath) {
+			records = append(records, record)
+		}
+	}
+	if len(records) == 0 {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusNotFound, errors.New("path has no current Library assets")
+	}
+
+	plan, err := buildLibraryRenamePlan(library, sourcePath, records)
+	if err != nil {
+		return LibraryRenamePlan{}, models.Library{}, http.StatusInternalServerError, err
+	}
+	return plan, library, http.StatusOK, nil
+}
+
+func (h AssetHandler) PreviewLibraryPathRename(c *gin.Context) {
+	var input LibraryRenamePreviewInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	plan, _, status, err := h.resolveLibraryRenamePlan(input)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, plan)
+}
+
+type libraryRenamePair struct {
+	from string
+	to   string
+}
+
+func libraryRenamePairs(plan LibraryRenamePlan) []libraryRenamePair {
+	pairs := make([]libraryRenamePair, 0, len(plan.Assets))
+	for _, asset := range plan.Assets {
+		if filepath.Clean(asset.SourcePath) != filepath.Clean(asset.TargetPath) {
+			pairs = append(pairs, libraryRenamePair{from: asset.SourcePath, to: asset.TargetPath})
+		}
+		for _, sidecar := range asset.Sidecars {
+			if filepath.Clean(sidecar.SourcePath) != filepath.Clean(sidecar.TargetPath) {
+				pairs = append(pairs, libraryRenamePair{from: sidecar.SourcePath, to: sidecar.TargetPath})
+			}
+		}
+	}
+	return pairs
+}
+
+func validateLibraryRenamePlanForApply(plan LibraryRenamePlan, library models.Library) error {
+	if len(plan.Conflicts) > 0 {
+		return errors.New("rename plan has conflicts")
+	}
+	seenTargets := map[string]string{}
+	for _, pair := range libraryRenamePairs(plan) {
+		if !pathIsInside(pair.from, library.DestinationPath) || !pathIsInside(pair.to, library.DestinationPath) {
+			return fmt.Errorf("rename path escapes the Library: %s", pair.from)
+		}
+		info, err := os.Stat(pair.from)
+		if err != nil {
+			return fmt.Errorf("rename source is unavailable: %s: %w", pair.from, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("rename source is not a file: %s", pair.from)
+		}
+		cleanTarget := filepath.Clean(pair.to)
+		if previous := seenTargets[cleanTarget]; previous != "" && previous != filepath.Clean(pair.from) {
+			return fmt.Errorf("duplicate rename target: %s", pair.to)
+		}
+		seenTargets[cleanTarget] = filepath.Clean(pair.from)
+		if _, err := os.Stat(pair.to); err == nil {
+			return fmt.Errorf("rename target already exists: %s", pair.to)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("rename target is unavailable: %s: %w", pair.to, err)
+		}
+	}
+	return nil
+}
+
+func (h AssetHandler) validateLibraryRenameHasNoActiveWork(plan LibraryRenamePlan) error {
+	queue := NewQueueHandler(h.db)
+	for _, asset := range plan.Assets {
+		active, err := queue.assetHasOpenJob(asset.SourcePath, 0)
+		if err != nil {
+			return err
+		}
+		if active {
+			return fmt.Errorf("asset has an open Queue job: %s", asset.SourcePath)
+		}
+		active, err = activeAssetMaintenance(h.db, asset.SourcePath)
+		if err != nil {
+			return err
+		}
+		if active {
+			return fmt.Errorf("asset has active maintenance: %s", asset.SourcePath)
+		}
+	}
+	return nil
+}
+
+func applyLibraryRenamePlan(plan LibraryRenamePlan, library models.Library, renameFile func(string, string) error) error {
+	if err := validateLibraryRenamePlanForApply(plan, library); err != nil {
+		return err
+	}
+	pairs := libraryRenamePairs(plan)
+	createdDirectories := []string{}
+	seenDirectories := map[string]bool{}
+	for _, pair := range pairs {
+		for directory := filepath.Dir(pair.to); directory != filepath.Clean(library.DestinationPath) && pathIsInside(directory, library.DestinationPath); directory = filepath.Dir(directory) {
+			if seenDirectories[directory] {
+				continue
+			}
+			seenDirectories[directory] = true
+			if _, err := os.Stat(directory); os.IsNotExist(err) {
+				createdDirectories = append(createdDirectories, directory)
+			} else if err != nil {
+				return err
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(pair.to), 0o755); err != nil {
+			for _, directory := range createdDirectories {
+				_ = os.Remove(directory)
+			}
+			return err
+		}
+	}
+
+	completed := []libraryRenamePair{}
+	rollback := func() error {
+		var rollbackErr error
+		for index := len(completed) - 1; index >= 0; index-- {
+			if err := renameFile(completed[index].to, completed[index].from); err != nil && rollbackErr == nil {
+				rollbackErr = err
+			}
+		}
+		for _, directory := range createdDirectories {
+			_ = os.Remove(directory)
+		}
+		return rollbackErr
+	}
+	for _, pair := range pairs {
+		if _, err := os.Stat(pair.to); err == nil {
+			applyErr := fmt.Errorf("rename target appeared during Apply: %s", pair.to)
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
+			}
+			return applyErr
+		} else if !os.IsNotExist(err) {
+			applyErr := fmt.Errorf("rename target became unavailable: %s: %w", pair.to, err)
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
+			}
+			return applyErr
+		}
+		if err := renameFile(pair.from, pair.to); err != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("rename failed: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("rename failed: %w", err)
+		}
+		completed = append(completed, pair)
+	}
+	if filepath.Clean(plan.SourcePath) != filepath.Clean(plan.TargetPath) {
+		_ = os.Remove(plan.SourcePath)
+	}
+	return nil
+}
+
+func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
+	var input LibraryRenameApplyInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(input.PlanHash) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "planHash is required"})
+		return
+	}
+	plan, library, status, err := h.resolveLibraryRenamePlan(LibraryRenamePreviewInput{LibraryID: input.LibraryID, Path: input.Path})
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	if plan.PlanHash != strings.TrimSpace(input.PlanHash) {
+		c.JSON(http.StatusConflict, gin.H{"error": "rename plan changed; preview again"})
+		return
+	}
+	if err := validateLibraryRenamePlanForApply(plan, library); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.validateLibraryRenameHasNoActiveWork(plan); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if err := applyLibraryRenamePlan(plan, library, os.Rename); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "applied", "plan": plan})
 }
 
 func directPublicationRelativeGroup(relativeGroup, destinationRoot string) string {

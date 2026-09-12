@@ -776,6 +776,315 @@ func TestDirectPublicationRelativeGroupAvoidsDuplicateLibraryCategory(t *testing
 	}
 }
 
+func TestPlanDirectPublicationEpisodeNamesIsReadOnly(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "raw", "anime", "Digimon 2")
+	destinationPath := filepath.Join(root, "library", "anime", "Digimon 2")
+	records := []models.AssetRecord{
+		{Path: filepath.Join(sourcePath, "Digimon_Adventure_02_E01-[Group].mp4")},
+		{Path: filepath.Join(sourcePath, "Digimon_Adventure_02_E02-[Group].mp4")},
+	}
+	currentPaths := make([]string, 0, len(records))
+	for _, record := range records {
+		current := filepath.Join(destinationPath, filepath.Base(record.Path))
+		writeTestFile(t, current, "video")
+		currentPaths = append(currentPaths, current)
+	}
+	sidecarPath := filepath.Join(destinationPath, "Digimon_Adventure_02_E01-[Group].spa.srt")
+	writeTestFile(t, sidecarPath, "subtitle")
+	library := models.Library{ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+
+	plan, err := planDirectPublicationEpisodeNames(sourcePath, destinationPath, records, library, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedFirst := filepath.Join(destinationPath, "Digimon 2 - S01E01.mp4")
+	expectedSecond := filepath.Join(destinationPath, "Digimon 2 - S01E02.mp4")
+	if plan.targets[records[0].Path] != expectedFirst || plan.targets[records[1].Path] != expectedSecond {
+		t.Fatalf("unexpected planned publication names: %#v", plan.targets)
+	}
+	for _, current := range append(currentPaths, sidecarPath) {
+		if _, err := os.Stat(current); err != nil {
+			t.Fatalf("read-only plan changed source %q: %v", current, err)
+		}
+	}
+	for _, target := range []string{expectedFirst, expectedSecond, filepath.Join(destinationPath, "Digimon 2 - S01E01.spa.srt")} {
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Fatalf("read-only plan created target %q: %v", target, err)
+		}
+	}
+}
+
+func TestPreviewLibraryPathRenameReturnsCanonicalMediaAndOwnedSidecars(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+	first := filepath.Join(sourcePath, "doctor.who.2x01.mkv")
+	second := filepath.Join(sourcePath, "doctor.who.2x02.mkv")
+	firstSRT := filepath.Join(sourcePath, "doctor.who.2x01.eng.srt")
+	firstASS := filepath.Join(sourcePath, "doctor.who.2x01.signs.ass")
+	unrelated := filepath.Join(sourcePath, "notes.srt")
+	for _, path := range []string{first, second, firstSRT, firstASS, unrelated} {
+		writeTestFile(t, path, filepath.Base(path))
+	}
+
+	db, err := gorm.Open(sqlite.Open("file:library-rename-preview?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Series", DestinationPath: libraryRoot, Type: "series", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := []models.AssetRecord{
+		{Path: second, FileName: filepath.Base(second), Status: "library", LibraryID: library.ID},
+		{Path: first, FileName: filepath.Base(first), Status: "library", LibraryID: library.ID},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := json.Marshal(LibraryRenamePreviewInput{LibraryID: library.ID, Path: sourcePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/library-rename/preview", NewAssetHandler(db).PreviewLibraryPathRename)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/library-rename/preview", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var plan LibraryRenamePlan
+	if err := json.Unmarshal(response.Body.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	expectedDirectory := filepath.Join(libraryRoot, "Doctor Who", "Season 02")
+	if plan.TargetPath != expectedDirectory || len(plan.Assets) != 2 {
+		t.Fatalf("unexpected rename plan: %#v", plan)
+	}
+	if plan.Assets[0].TargetPath != filepath.Join(expectedDirectory, "Doctor Who - S02E01.mkv") ||
+		plan.Assets[1].TargetPath != filepath.Join(expectedDirectory, "Doctor Who - S02E02.mkv") {
+		t.Fatalf("unexpected canonical media targets: %#v", plan.Assets)
+	}
+	if got := plan.Assets[0].Sidecars; len(got) != 2 ||
+		got[0].TargetPath != filepath.Join(expectedDirectory, "Doctor Who - S02E01.eng.srt") ||
+		got[1].TargetPath != filepath.Join(expectedDirectory, "Doctor Who - S02E01.signs.ass") {
+		t.Fatalf("unexpected owned sidecar targets: %#v", got)
+	}
+	if len(plan.Conflicts) != 0 || !strings.HasPrefix(plan.PlanHash, "sha256:") {
+		t.Fatalf("unexpected conflicts/hash: conflicts=%#v hash=%q", plan.Conflicts, plan.PlanHash)
+	}
+	for _, path := range []string{first, second, firstSRT, firstASS, unrelated} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preview changed source %q: %v", path, err)
+		}
+	}
+}
+
+func TestBuildLibraryRenamePlanReportsCanonicalCollisionWithoutMVFFallback(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "Doctor Who", "Season2")
+	records := []models.AssetRecord{
+		{Path: filepath.Join(sourcePath, "episode-a.mkv")},
+		{Path: filepath.Join(sourcePath, "episode-b.mkv")},
+	}
+	for _, record := range records {
+		writeTestFile(t, record.Path, "video")
+	}
+	target := filepath.Join(root, "Doctor Who", "Season 02", "Doctor Who - S02E01.mkv")
+	writeTestFile(t, target, "existing")
+	library := models.Library{ID: 7, ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+
+	first, err := buildLibraryRenamePlan(library, sourcePath, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildLibraryRenamePlan(library, sourcePath, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PlanHash != second.PlanHash {
+		t.Fatalf("plan hash is not deterministic: %q != %q", first.PlanHash, second.PlanHash)
+	}
+	if first.Assets[0].TargetPath != target {
+		t.Fatalf("collision changed canonical target: %q", first.Assets[0].TargetPath)
+	}
+	if len(first.Conflicts) != 1 || first.Conflicts[0].Code != "target_exists" || first.Conflicts[0].TargetPath != target {
+		t.Fatalf("unexpected collision report: %#v", first.Conflicts)
+	}
+}
+
+func TestApplyLibraryRenamePlanMovesMediaAndOwnedSidecars(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+	first := filepath.Join(sourcePath, "episode-a.mkv")
+	second := filepath.Join(sourcePath, "episode-b.mkv")
+	srt := filepath.Join(sourcePath, "episode-a.eng.srt")
+	ass := filepath.Join(sourcePath, "episode-a.signs.ass")
+	unrelated := filepath.Join(sourcePath, "notes.srt")
+	for _, path := range []string{first, second, srt, ass, unrelated} {
+		writeTestFile(t, path, filepath.Base(path))
+	}
+	library := models.Library{ID: 4, DestinationPath: libraryRoot, ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	plan, err := buildLibraryRenamePlan(library, sourcePath, []models.AssetRecord{{Path: first}, {Path: second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyLibraryRenamePlan(plan, library, os.Rename); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDirectory := filepath.Join(libraryRoot, "Doctor Who", "Season 02")
+	for _, target := range []string{
+		filepath.Join(targetDirectory, "Doctor Who - S02E01.mkv"),
+		filepath.Join(targetDirectory, "Doctor Who - S02E02.mkv"),
+		filepath.Join(targetDirectory, "Doctor Who - S02E01.eng.srt"),
+		filepath.Join(targetDirectory, "Doctor Who - S02E01.signs.ass"),
+	} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("renamed target missing %q: %v", target, err)
+		}
+	}
+	for _, source := range []string{first, second, srt, ass} {
+		if _, err := os.Stat(source); !os.IsNotExist(err) {
+			t.Fatalf("renamed source still exists %q: %v", source, err)
+		}
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated file changed: %v", err)
+	}
+}
+
+func TestApplyLibraryRenamePlanRollsBackCompletedMoves(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+	first := filepath.Join(sourcePath, "episode-a.mkv")
+	second := filepath.Join(sourcePath, "episode-b.mkv")
+	for _, path := range []string{first, second} {
+		writeTestFile(t, path, "video")
+	}
+	library := models.Library{ID: 4, DestinationPath: libraryRoot, ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+	plan, err := buildLibraryRenamePlan(library, sourcePath, []models.AssetRecord{{Path: first}, {Path: second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	renameFile := func(from, to string) error {
+		calls++
+		if calls == 2 {
+			return fmt.Errorf("injected rename failure")
+		}
+		return os.Rename(from, to)
+	}
+	if err := applyLibraryRenamePlan(plan, library, renameFile); err == nil || !strings.Contains(err.Error(), "injected rename failure") {
+		t.Fatalf("unexpected apply error: %v", err)
+	}
+	for _, source := range []string{first, second} {
+		if _, err := os.Stat(source); err != nil {
+			t.Fatalf("rollback did not restore %q: %v", source, err)
+		}
+	}
+	for _, asset := range plan.Assets {
+		if _, err := os.Stat(asset.TargetPath); !os.IsNotExist(err) {
+			t.Fatalf("rollback left target %q: %v", asset.TargetPath, err)
+		}
+	}
+}
+
+func TestApplyLibraryPathRenameRejectsStalePlanAndActiveWork(t *testing.T) {
+	setup := func(t *testing.T) (*gorm.DB, models.Library, string, []models.AssetRecord, LibraryRenamePlan) {
+		root := t.TempDir()
+		libraryRoot := filepath.Join(root, "library", "series")
+		sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season2")
+		records := []models.AssetRecord{
+			{Path: filepath.Join(sourcePath, "episode-a.mkv"), FileName: "episode-a.mkv", Status: "library"},
+			{Path: filepath.Join(sourcePath, "episode-b.mkv"), FileName: "episode-b.mkv", Status: "library"},
+		}
+		for _, record := range records {
+			writeTestFile(t, record.Path, "video")
+		}
+		dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared"
+		db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
+			t.Fatal(err)
+		}
+		library := models.Library{Name: "Series", DestinationPath: libraryRoot, Type: "series", ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+		if err := db.Create(&library).Error; err != nil {
+			t.Fatal(err)
+		}
+		for index := range records {
+			records[index].LibraryID = library.ID
+		}
+		if err := db.Create(&records).Error; err != nil {
+			t.Fatal(err)
+		}
+		plan, err := buildLibraryRenamePlan(library, sourcePath, records)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return db, library, sourcePath, records, plan
+	}
+	apply := func(t *testing.T, db *gorm.DB, library models.Library, sourcePath, planHash string) *httptest.ResponseRecorder {
+		body, err := json.Marshal(LibraryRenameApplyInput{LibraryID: library.ID, Path: sourcePath, PlanHash: planHash})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.POST("/api/assets/library-rename/apply", AssetHandler{db: db}.ApplyLibraryPathRename)
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/assets/library-rename/apply", strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	t.Run("stale plan", func(t *testing.T) {
+		db, library, sourcePath, records, plan := setup(t)
+		writeTestFile(t, strings.TrimSuffix(records[0].Path, filepath.Ext(records[0].Path))+".eng.srt", "subtitle")
+		response := apply(t, db, library, sourcePath, plan.PlanHash)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "preview again") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("open Queue job", func(t *testing.T) {
+		db, library, sourcePath, records, plan := setup(t)
+		if err := db.Create(&models.QueueJob{MediaPath: records[0].Path, Status: JobStatusQueued}).Error; err != nil {
+			t.Fatal(err)
+		}
+		response := apply(t, db, library, sourcePath, plan.PlanHash)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "open Queue job") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("active maintenance", func(t *testing.T) {
+		db, library, sourcePath, records, plan := setup(t)
+		operation := models.AssetMaintenanceOperation{ID: "active-rename-test", AssetPath: records[0].Path, Status: maintenanceStatusQueued, Phase: "queued"}
+		if err := db.Create(&operation).Error; err != nil {
+			t.Fatal(err)
+		}
+		response := apply(t, db, library, sourcePath, plan.PlanHash)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "active maintenance") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+}
+
 func TestDirectPublicationEpisodeNamingRenamesMediaAndSubtitleSidecars(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "raw", "anime", "Digimon 2")

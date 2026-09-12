@@ -90,6 +90,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.PUT("/assets/external-subtitles", assets.UpdateExternalSubtitle)
 		api.POST("/assets/external-subtitles/rename", assets.RenameExternalSubtitle)
 		api.DELETE("/assets/external-subtitles", assets.DeleteExternalSubtitle)
+		api.POST("/assets/library-rename/preview", assets.PreviewLibraryPathRename)
+		api.POST("/assets/library-rename/apply", assets.ApplyLibraryPathRename)
 		api.POST("/assets/migrate-path", assets.MigratePath)
 		api.POST("/assets/publish-as-is", assets.PublishAsIs)
 		api.POST("/assets/accept-as-is", assets.AcceptAsIs)
