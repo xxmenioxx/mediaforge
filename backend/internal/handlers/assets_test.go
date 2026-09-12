@@ -889,6 +889,51 @@ func TestPreviewLibraryPathRenameReturnsCanonicalMediaAndOwnedSidecars(t *testin
 	}
 }
 
+func TestLibraryRenamePlanAlreadyCanonicalIsNoOp(t *testing.T) {
+	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library", "series")
+	sourcePath := filepath.Join(libraryRoot, "Doctor Who", "Season 02")
+	first := filepath.Join(sourcePath, "Doctor Who - S02E01.mkv")
+	second := filepath.Join(sourcePath, "Doctor Who - S02E02.mkv")
+	sidecar := filepath.Join(sourcePath, "Doctor Who - S02E01.eng.srt")
+	for _, path := range []string{first, second, sidecar} {
+		writeTestFile(t, path, filepath.Base(path))
+	}
+	library := models.Library{ID: 4, DestinationPath: libraryRoot, ValidationRules: models.JSONMap{"episodeNamingEnabled": true}}
+
+	plan, err := buildLibraryRenamePlan(library, sourcePath, []models.AssetRecord{{Path: first}, {Path: second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.TargetPath != sourcePath || len(plan.Assets) != 2 || len(plan.Conflicts) != 0 {
+		t.Fatalf("unexpected canonical plan: %#v", plan)
+	}
+	if plan.Assets[0].SourcePath != plan.Assets[0].TargetPath ||
+		len(plan.Assets[0].Sidecars) != 1 ||
+		plan.Assets[0].Sidecars[0].SourcePath != plan.Assets[0].Sidecars[0].TargetPath {
+		t.Fatalf("canonical paths were scheduled to move: %#v", plan.Assets)
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, " "), "already canonical") {
+		t.Fatalf("missing no-op warning: %#v", plan.Warnings)
+	}
+
+	renameCalls := 0
+	if _, err := applyLibraryRenamePlan(plan, library, func(_, _ string) error {
+		renameCalls++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("canonical plan performed %d filesystem rename(s)", renameCalls)
+	}
+	for _, path := range []string{first, second, sidecar} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("canonical file changed %q: %v", path, err)
+		}
+	}
+}
+
 func TestBuildLibraryRenamePlanReportsCanonicalCollisionWithoutMVFFallback(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "Doctor Who", "Season2")
