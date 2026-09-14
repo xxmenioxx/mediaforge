@@ -639,6 +639,12 @@ describe('Unprocessed Assets hierarchy', () => {
     } as unknown as AssetInventory;
     vi.mocked(api.assets).mockResolvedValue(inventory);
     vi.mocked(api.queueJobs).mockResolvedValue([activeQueueJob(202, '/media/library/series/Other/Other.mkv')]);
+    vi.mocked(api.assetScopeConfigurations).mockResolvedValue([{
+      id: 12, scopeType: 'path', scopeKey: '/media/library/series/Akira',
+      categorySelection: 'inherit', category: '', destinationSelection: 'inherit', destinationLibraryId: 0,
+      createdAt: '', updatedAt: '',
+    }] as never);
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot(path), status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.renameAsset).mockResolvedValue({ oldPath: path, path: '/media/library/series/Akira/Akira - S01E01.mkv', fileName: 'Akira - S01E01.mkv' });
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
@@ -653,7 +659,8 @@ describe('Unprocessed Assets hierarchy', () => {
     fireEvent.change(renameInput, { target: { value: 'Akira - S01E01.mkv' } });
     await user.click(within(dialog).getByRole('button', { name: 'Rename' }));
 
-    await waitFor(() => expect(api.renameAsset).toHaveBeenCalledWith({ path, fileName: 'Akira - S01E01.mkv' }));
+    await waitFor(() => expect(vi.mocked(api.renameAsset).mock.calls[0]?.[0]).toEqual({ path, fileName: 'Akira - S01E01.mkv' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
 	it.each([
