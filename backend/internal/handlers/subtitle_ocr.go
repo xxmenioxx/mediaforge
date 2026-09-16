@@ -64,6 +64,9 @@ func generateBitmapSubtitleSidecar(
 	if format == "" {
 		format = "srt"
 	}
+	if format == "both" {
+		return generateBitmapSubtitleBoth(ctx, sourceMediaPath, destinationMediaPath, stream, input, onProgress)
+	}
 	if format != "srt" && format != "ass" {
 		return SubtitleExtractionResult{}, fmt.Errorf("OCR output format must be srt or ass")
 	}
@@ -151,6 +154,73 @@ func generateBitmapSubtitleSidecar(
 				result.Existing = append(result.Existing, rawOutputPath)
 			}
 		}
+	}
+	return result, nil
+}
+
+func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinationMediaPath string, stream FFProbeStream, input SubtitleExtractionInput, onProgress OCRProgressFunc) (SubtitleExtractionResult, error) {
+	base := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath))
+	language := safeSubtitleFilenamePart(stream.Tags["language"])
+	if language == "" {
+		language = normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
+	}
+	srtPath := fmt.Sprintf("%s.%s.%d.srt", base, language, stream.Index)
+	assPath := fmt.Sprintf("%s.%s.%d.ass", base, language, stream.Index)
+	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: []string{}}
+	for _, path := range []string{srtPath, assPath} {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			result.Existing = append(result.Existing, path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return result, fmt.Errorf("%s", mediaPathReadError(err))
+		}
+	}
+	if len(result.Existing) == 2 {
+		return result, nil
+	}
+	if _, err := exec.LookPath("seconv"); err != nil {
+		return result, fmt.Errorf("OCR is not available in this backend image (seconv was not found)")
+	}
+	if _, err := exec.LookPath("tesseract"); err != nil {
+		return result, fmt.Errorf("OCR is not available in this backend image (Tesseract was not found)")
+	}
+	tempDir, err := os.MkdirTemp(filepath.Dir(srtPath), ".mvforge-ocr-both-*")
+	if err != nil {
+		return result, fmt.Errorf("cannot create OCR workspace beside the asset: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	rawTempPath := filepath.Join(tempDir, "ocr.raw.srt")
+	tempSRT := filepath.Join(tempDir, "ocr.srt")
+	languageValue := normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
+	message, err := runBitmapOCR(ctx, sourceMediaPath, stream, "srt", languageValue, input.OCRMode, tempSRT, rawTempPath, onProgress)
+	if err != nil {
+		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
+	}
+	content, err := os.ReadFile(tempSRT)
+	if err != nil || !validSubtitleSidecar("srt", content) {
+		return result, fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
+	}
+	if _, err := os.Stat(srtPath); os.IsNotExist(err) {
+		if err := os.Link(tempSRT, srtPath); err != nil {
+			return result, fmt.Errorf("cannot publish OCR subtitle beside the asset: %w", err)
+		}
+		result.Created = append(result.Created, srtPath)
+	}
+	tempASS := filepath.Join(tempDir, "ocr.ass")
+	cmd := exec.CommandContext(ctx, "ffmpeg", subtitleCueRenderArgs(tempSRT, "ass", tempASS)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return result, fmt.Errorf("ASS render failed for subtitle stream %d: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+	}
+	assContent, err := os.ReadFile(tempASS)
+	if err != nil || !validSubtitleSidecar("ass", assContent) {
+		return result, fmt.Errorf("ASS render for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
+	}
+	if _, err := os.Stat(assPath); os.IsNotExist(err) {
+		if err := os.Link(tempASS, assPath); err != nil {
+			return result, fmt.Errorf("cannot publish ASS subtitle beside the asset: %w", err)
+		}
+		result.Created = append(result.Created, assPath)
 	}
 	return result, nil
 }

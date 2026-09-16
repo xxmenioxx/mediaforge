@@ -241,7 +241,7 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		args = append(args,
 			fmt.Sprintf("-c:a:%d", aacStereoIndex), "aac",
 			fmt.Sprintf("-b:a:%d", aacStereoIndex), fmt.Sprintf("%dk", aacStereoBitrateKbps(plan.Profile)),
-			fmt.Sprintf("-ac:a:%d", aacStereoIndex), "2",
+			fmt.Sprintf("-ac:a:%d", aacStereoIndex), strconv.Itoa(aacStereoChannels(plan.Profile)),
 			fmt.Sprintf("-metadata:s:a:%d", aacStereoIndex), "title=AAC Stereo (MVForge)",
 			fmt.Sprintf("-disposition:a:%d", aacStereoIndex), disposition,
 		)
@@ -360,6 +360,14 @@ func aacStereoBitrateKbps(profile models.Profile) int {
 		return 512
 	}
 	return bitrate
+}
+
+func aacStereoChannels(profile models.Profile) int {
+	channels := workerIntValue(profile.WorkerConfig["aacStereoChannels"], 2)
+	if channels < 1 || channels > 8 {
+		return 2
+	}
+	return channels
 }
 
 func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceAnalysis) models.Profile {
@@ -3089,6 +3097,9 @@ func selectedVideoStreamsForPlan(
 	}
 
 	if plan.ProcessingMode != ProcessingModeFullEncode {
+		return selected
+	}
+	if !profileWorkerBool(plan.Profile, "removeNonPrimaryVideoTracks", false) {
 		return selected
 	}
 

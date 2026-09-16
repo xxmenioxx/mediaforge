@@ -508,11 +508,14 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 		return job, fmt.Errorf("load claim-time effective configuration: %w", err)
 	}
 	effective := configurationResolver.resolve(record)
+	effective = effectiveConfigurationWithFrozenAssetDefaults(effective, job.ProfileResolution)
 	hasOperation := effective.Video.VideoProfileID > 0 ||
 		effective.Video.Selection == VideoAssignmentOverrideOnly ||
 		effective.Video.Selection == VideoAssignmentAudioOnly ||
+		effective.Video.Selection == configSelectionValue ||
 		strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
-		strings.TrimSpace(effective.Tracks.ProfileKey) != ""
+		strings.TrimSpace(effective.Tracks.ProfileKey) != "" ||
+		effective.Audio.Selection == configSelectionValue || effective.Tracks.Selection == configSelectionValue
 	if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
 		return job, fmt.Errorf("claimed asset no longer has a complete effective processing configuration")
 	}
@@ -528,7 +531,7 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 		Priority:        job.Priority,
 		Notes:           job.Notes,
 	}
-	if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly {
+	if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly || effective.Video.Selection == configSelectionValue {
 		input.ProcessingMode = ProcessingModeFullEncode
 	}
 	resolution := resolveProfileAssignmentsFromEffective(&input, effective)

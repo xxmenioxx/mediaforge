@@ -243,22 +243,23 @@ type ResolvedSubtitleTrack struct {
 }
 
 type ResolvedTrackSidecar struct {
-	StreamIndex     int      `json:"streamIndex"`
-	Codec           string   `json:"codec,omitempty"`
-	SourceType      string   `json:"sourceType,omitempty"`
-	Language        string   `json:"language,omitempty"`
-	Format          string   `json:"format,omitempty"`
-	RequestedFormat string   `json:"requestedFormat,omitempty"`
-	Mode            string   `json:"mode"`
-	OCRRequired     bool     `json:"ocrRequired"`
-	Title           string   `json:"title,omitempty"`
-	Default         bool     `json:"default"`
-	Forced          bool     `json:"forced"`
-	OCRLanguage     string   `json:"ocrLanguage,omitempty"`
-	OCRMode         string   `json:"ocrMode,omitempty"`
-	Stages          []string `json:"stages,omitempty"`
-	Extension       string   `json:"extension,omitempty"`
-	NamingKey       string   `json:"namingKey,omitempty"`
+	StreamIndex         int      `json:"streamIndex"`
+	Codec               string   `json:"codec,omitempty"`
+	SourceType          string   `json:"sourceType,omitempty"`
+	Language            string   `json:"language,omitempty"`
+	Format              string   `json:"format,omitempty"`
+	RequestedFormat     string   `json:"requestedFormat,omitempty"`
+	Mode                string   `json:"mode"`
+	OCRRequired         bool     `json:"ocrRequired"`
+	Title               string   `json:"title,omitempty"`
+	Default             bool     `json:"default"`
+	Forced              bool     `json:"forced"`
+	OCRLanguage         string   `json:"ocrLanguage,omitempty"`
+	OCRMode             string   `json:"ocrMode,omitempty"`
+	Stages              []string `json:"stages,omitempty"`
+	Extension           string   `json:"extension,omitempty"`
+	NamingKey           string   `json:"namingKey,omitempty"`
+	LogicalTransformKey string   `json:"logicalTransformKey,omitempty"`
 }
 
 type ResolvedDefaultTrack struct {

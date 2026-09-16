@@ -733,6 +733,32 @@ func seedSettings(db *gorm.DB) error {
 			},
 		},
 		{
+			Key: "assetDefaults",
+			Value: models.JSONMap{
+				"schemaVersion": 1,
+				"video": models.JSONMap{
+					"source": "custom", "custom": models.JSONMap{"videoCodec": "copy"}, "removeNonPrimaryVideoTracks": false,
+				},
+				"audio": models.JSONMap{
+					"source": "custom",
+					"custom": models.JSONMap{
+						"addCompatibleTrack": false, "compatibleTrackQuality": 192,
+						"compatibleTrackChannels": 2, "compatibleTrackSource": "resolved",
+						"preferredDefaultLanguage": "",
+					},
+				},
+				"tracks": models.JSONMap{
+					"source": "custom",
+					"custom": models.JSONMap{
+						"trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all",
+						"subtitleDisposition": "keep", "subtitleSidecarFormats": models.JSONList{"srt"},
+						"attachmentPolicy": "auto", "fontAttachmentExportPolicy": "none", "chapterPolicy": "keep", "ocrMode": "accurate",
+						"defaultAudioLanguage": "", "defaultSubtitleLanguage": "",
+					},
+				},
+			},
+		},
+		{
 			Key: "pipelineAutomation",
 			Value: models.JSONMap{
 				"autoAnalysisEnabled":               false,

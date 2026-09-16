@@ -2284,7 +2284,8 @@ func TestFullEncodeOmitsSecondaryMJPEGAuxiliaryVideo(t *testing.T) {
 			VideoCodec: "x265",
 			AudioCodec: "copy",
 			WorkerConfig: models.JSONMap{
-				"videoEncoder": "hevc_qsv",
+				"videoEncoder":                "hevc_qsv",
+				"removeNonPrimaryVideoTracks": true,
 			},
 		},
 		Streams: MediaStreamInventory{

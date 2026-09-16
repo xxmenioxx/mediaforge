@@ -103,38 +103,44 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 			}
 			resolvedFormats := map[string]bool{}
 			for _, requested := range formats {
-				format, mode, formatErr := resolveSubtitleSidecarFormat(codec, requested)
-				if formatErr != nil {
-					return ResolvedTrackPlan{}, fmt.Errorf("subtitle stream %d: %w", index, formatErr)
+				requestedFormats := []string{requested}
+				if strings.EqualFold(strings.TrimSpace(requested), "both") {
+					requestedFormats = []string{"srt", "ass"}
 				}
-				outputKey := format + ":" + mode
-				if resolvedFormats[outputKey] {
-					continue
-				}
-				resolvedFormats[outputKey] = true
-				ocrLanguage, ocrMode := "", ""
-				sourceType := subtitleSourceType(codec)
-				stages := subtitleArtifactStages(sourceType, mode)
-				if mode == "converted" && isBitmapSubtitleCodecName(codec) {
-					ocrLanguage, ocrMode = "auto", "accurate"
-					if !canonicalDisposition {
-						if transform, ok := transforms[index]; ok {
-							ocrLanguage = fallback(strings.TrimSpace(transform.OCRLanguage), "auto")
-							ocrMode = normalizedOCRMode(transform.OCRMode)
-						}
-					} else {
-						ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language)
+				for _, outputRequested := range requestedFormats {
+					format, mode, formatErr := resolveSubtitleSidecarFormat(codec, outputRequested)
+					if formatErr != nil {
+						return ResolvedTrackPlan{}, fmt.Errorf("subtitle stream %d: %w", index, formatErr)
 					}
-				}
-				sidecars = append(sidecars, ResolvedTrackSidecar{
-					StreamIndex: index, Codec: codec, SourceType: sourceType, Language: language, Format: format, RequestedFormat: requested, Mode: mode,
-					OCRRequired: mode == "converted" && sourceType == "bitmap", Stages: stages, Extension: "." + format,
-					NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format),
-					Title:     workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
-					OCRLanguage: ocrLanguage, OCRMode: ocrMode,
-				})
-				if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
-					warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
+					outputKey := format + ":" + mode + ":" + requested
+					if resolvedFormats[outputKey] {
+						continue
+					}
+					resolvedFormats[outputKey] = true
+					ocrLanguage, ocrMode := "", ""
+					sourceType := subtitleSourceType(codec)
+					stages := subtitleArtifactStages(sourceType, mode)
+					if mode == "converted" && isBitmapSubtitleCodecName(codec) {
+						ocrLanguage, ocrMode = "auto", "accurate"
+						if !canonicalDisposition {
+							if transform, ok := transforms[index]; ok {
+								ocrLanguage = fallback(strings.TrimSpace(transform.OCRLanguage), "auto")
+								ocrMode = normalizedOCRMode(transform.OCRMode)
+							}
+						} else {
+							ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language)
+						}
+					}
+					sidecars = append(sidecars, ResolvedTrackSidecar{
+						StreamIndex: index, Codec: codec, SourceType: sourceType, Language: language, Format: format, RequestedFormat: requested, Mode: mode,
+						OCRRequired: mode == "converted" && sourceType == "bitmap", Stages: stages, Extension: "." + format,
+						NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format), LogicalTransformKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, requested),
+						Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
+						OCRLanguage: ocrLanguage, OCRMode: ocrMode,
+					})
+					if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
+						warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
+					}
 				}
 			}
 		}
@@ -332,7 +338,7 @@ func normalizedSubtitleSidecarFormats(raw any) []string {
 	}
 	for _, value := range values {
 		format := strings.ToLower(strings.TrimSpace(workerStringValue(value)))
-		if (format == "original" || format == "srt" || format == "ass") && !seen[format] {
+		if (format == "original" || format == "srt" || format == "ass" || format == "both") && !seen[format] {
 			seen[format] = true
 			result = append(result, format)
 		}
@@ -364,6 +370,12 @@ func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string,
 
 func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language string) (string, string) {
 	ocrLanguage, ocrMode := "auto", "accurate"
+	if value := strings.TrimSpace(workerStringValue(profile["ocrLanguage"])); value != "" {
+		ocrLanguage = strings.ToLower(value)
+	}
+	if value := strings.TrimSpace(workerStringValue(profile["ocrMode"])); value != "" {
+		ocrMode = normalizedOCRMode(value)
+	}
 	streamSpecific := false
 	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
 		rule := settingProfileObject(raw)
@@ -585,8 +597,8 @@ func validateSubtitleSidecarFormats(profile map[string]any) error {
 	validate := func(label string, raw any) error {
 		for _, value := range workerSliceValue(raw) {
 			format := strings.ToLower(strings.TrimSpace(workerStringValue(value)))
-			if format != "original" && format != "srt" {
-				return fmt.Errorf("%s must contain only original or srt", label)
+			if format != "original" && format != "srt" && format != "ass" && format != "both" {
+				return fmt.Errorf("%s must contain only original, srt, ass, or both", label)
 			}
 		}
 		return nil

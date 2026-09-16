@@ -38,6 +38,7 @@ type SubtitleArtifact struct {
 	Stages                  []string `json:"stages,omitempty"`
 	Extension               string   `json:"extension,omitempty"`
 	NamingKey               string   `json:"namingKey,omitempty"`
+	LogicalTransformKey     string   `json:"logicalTransformKey,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -87,7 +88,7 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Status: "planned",
-			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 		}
 		artifact.DisplayName = filepath.Base(resolvedSubtitleStagedPath(base, artifact, used))
 		artifacts = append(artifacts, artifact)
@@ -261,7 +262,33 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			}
 		}
 	}()
+	sharedTransforms := map[string][]ResolvedTrackSidecar{}
 	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+		if strings.EqualFold(strings.TrimSpace(decision.RequestedFormat), "both") && strings.EqualFold(strings.TrimSpace(decision.Mode), "converted") {
+			sharedTransforms[decision.LogicalTransformKey] = append(sharedTransforms[decision.LogicalTransformKey], decision)
+		}
+	}
+	processedShared := map[string]bool{}
+	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+		sharedKey := decision.LogicalTransformKey
+		if group := sharedTransforms[sharedKey]; len(group) == 2 && !processedShared[sharedKey] {
+			formats := map[string]bool{}
+			for _, member := range group {
+				formats[strings.ToLower(strings.TrimSpace(member.Format))] = true
+			}
+			if formats["srt"] && formats["ass"] {
+				shared, err := generateSharedConvertedSubtitleArtifacts(ctx, plan, group, base, usedPaths, &bitmapStreams, progress)
+				artifacts = append(artifacts, shared...)
+				processedShared[sharedKey] = true
+				if err != nil {
+					return artifacts, err
+				}
+				continue
+			}
+		}
+		if processedShared[sharedKey] {
+			continue
+		}
 		stream, exists := streams[decision.StreamIndex]
 		artifact := SubtitleArtifact{
 			ArtifactID:  subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format),
@@ -269,7 +296,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
-			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 			Status: "planned",
 		}
 		artifacts = append(artifacts, artifact)
@@ -375,6 +402,129 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 	}
 	completed = true
 	return artifacts, nil
+}
+
+func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, decisions []ResolvedTrackSidecar, base string, usedPaths map[string]struct{}, bitmapStreams *map[int]FFProbeStream, progress subtitleArtifactProgress) ([]SubtitleArtifact, error) {
+	if len(decisions) != 2 {
+		return nil, fmt.Errorf("both subtitle conversion requires SRT and ASS outputs")
+	}
+	stream, found := findMediaSubtitleStream(plan.Streams.Subtitle, decisions[0].StreamIndex)
+	if !found {
+		return nil, fmt.Errorf("subtitle stream %d disappeared before extraction", decisions[0].StreamIndex)
+	}
+
+	artifacts := make([]SubtitleArtifact, 0, len(decisions))
+	for _, decision := range decisions {
+		artifact := SubtitleArtifact{
+			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
+			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: strings.ToLower(strings.TrimSpace(decision.Format)),
+			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
+			Status: "planned",
+		}
+		artifact.Extension = "." + artifact.Format
+		artifact.StagedPath = resolvedSubtitleStagedPath(base, artifact, usedPaths)
+		artifact.DisplayName = filepath.Base(artifact.StagedPath)
+		_ = os.Remove(artifact.StagedPath)
+		artifacts = append(artifacts, artifact)
+		if progress != nil {
+			artifact.Status = "generating"
+			progress(artifact)
+		}
+	}
+
+	canonicalFile, err := os.CreateTemp(filepath.Dir(base), ".mvforge-canonical-subtitle-*.srt")
+	if err != nil {
+		return artifacts, fmt.Errorf("create canonical subtitle staging file: %w", err)
+	}
+	canonicalPath := canonicalFile.Name()
+	if err := canonicalFile.Close(); err != nil {
+		_ = os.Remove(canonicalPath)
+		return artifacts, fmt.Errorf("close canonical subtitle staging file: %w", err)
+	}
+	defer os.Remove(canonicalPath)
+
+	if isBitmapSubtitleCodecName(stream.Codec) {
+		bitmapStream, probeErr := bitmapSubtitleStreamByIndex(ctx, plan.InputPath, stream.Index, bitmapStreams)
+		if probeErr != nil {
+			return markSharedSubtitleFailure(artifacts, probeErr)
+		}
+		ocrLanguage := decisions[0].OCRLanguage
+		if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
+			ocrLanguage = ""
+		}
+		if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
+			return markSharedSubtitleFailure(artifacts, err)
+		}
+	} else {
+		if !subtitleCanConvertText(stream.Codec) {
+			err := fmt.Errorf("subtitle stream %d (%s) cannot be converted to both SRT and ASS sidecars", stream.Index, stream.Codec)
+			return markSharedSubtitleFailure(artifacts, err)
+		}
+		cmd := exec.CommandContext(ctx, "ffmpeg", textSubtitleExtractionArgs(plan, stream.Index, "srt", canonicalPath)...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			extractionErr := fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+			return markSharedSubtitleFailure(artifacts, extractionErr)
+		}
+	}
+
+	canonicalContent, err := os.ReadFile(canonicalPath)
+	if err != nil || len(canonicalContent) == 0 || !validSubtitleSidecar("srt", canonicalContent) {
+		if err == nil {
+			err = fmt.Errorf("subtitle stream %d produced an invalid canonical SRT sidecar", stream.Index)
+		} else {
+			err = fmt.Errorf("subtitle stream %d produced an unreadable canonical SRT sidecar: %w", stream.Index, err)
+		}
+		return markSharedSubtitleFailure(artifacts, err)
+	}
+
+	for index := range artifacts {
+		artifact := &artifacts[index]
+		if artifact.Format == "srt" {
+			if err := os.WriteFile(artifact.StagedPath, canonicalContent, 0o644); err != nil {
+				return markSharedSubtitleFailure(artifacts, err)
+			}
+		} else {
+			cmd := exec.CommandContext(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath)...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				renderErr := fmt.Errorf("subtitle stream %d ASS render failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+				return markSharedSubtitleFailure(artifacts, renderErr)
+			}
+		}
+		content, readErr := os.ReadFile(artifact.StagedPath)
+		info, statErr := os.Stat(artifact.StagedPath)
+		if readErr != nil || statErr != nil || info.IsDir() || info.Size() == 0 || !validSubtitleSidecar(artifact.Format, content) {
+			return markSharedSubtitleFailure(artifacts, fmt.Errorf("subtitle stream %d produced an invalid %s sidecar", stream.Index, strings.ToUpper(artifact.Format)))
+		}
+		artifact.SizeBytes, artifact.Status = info.Size(), "ready"
+		if progress != nil {
+			progress(*artifact)
+		}
+	}
+	return artifacts, nil
+}
+
+func markSharedSubtitleFailure(artifacts []SubtitleArtifact, err error) ([]SubtitleArtifact, error) {
+	for index := range artifacts {
+		_ = os.Remove(artifacts[index].StagedPath)
+		artifacts[index].Status = "failed"
+		artifacts[index].Error = err.Error()
+	}
+	return artifacts, err
+}
+
+func findMediaSubtitleStream(streams []MediaStream, index int) (MediaStream, bool) {
+	for _, stream := range streams {
+		if stream.Index == index {
+			return stream, true
+		}
+	}
+	return MediaStream{}, false
 }
 
 func resolvedSubtitleExecutionKind(codec, mode string) string {
@@ -640,6 +790,13 @@ func textSubtitleExtractionArgs(plan MediaJobPlan, streamIndex int, format, outp
 	)
 }
 
+func subtitleCueRenderArgs(inputPath, format, outputPath string) []string {
+	return []string{
+		"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", inputPath,
+		"-map", "0:0", "-vn", "-an", "-c:s", format, "-f", format, outputPath,
+	}
+}
+
 func existingSubtitleTransformSidecar(mediaPath string, transform SubtitleTransform, language string, used map[string]struct{}) bool {
 	mediaPath = strings.TrimSpace(mediaPath)
 	if mediaPath == "" {
@@ -683,7 +840,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
-			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey,
+			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
 		})
@@ -750,7 +907,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Error:                   stringFromUnknown(value["error"]),
 			DisplayName:             stringFromUnknown(value["displayName"]),
 			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
-			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]),
+			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]), LogicalTransformKey: stringFromUnknown(value["logicalTransformKey"]),
 		})
 	}
 	return result
