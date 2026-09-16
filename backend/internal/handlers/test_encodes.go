@@ -334,7 +334,7 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		}
 		job.ProfileID, job.AudioProfileKey, job.TrackProfileKey = queueInput.ProfileID, queueInput.AudioProfileKey, queueInput.TrackProfileKey
 		job.ProcessingMode = normalizeQueueProcessingMode(queueInput.ProcessingMode)
-		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
+		videoResolution := settingProfileObject(job.ProfileResolution["video"])
 		customAssetDefaults := strings.EqualFold(workerStringValue(videoResolution["source"]), assetDefaultsGlobalSource) &&
 			strings.EqualFold(workerStringValue(videoResolution["selection"]), configSelectionValue) &&
 			len(settingProfileObject(videoResolution["profileData"])) > 0

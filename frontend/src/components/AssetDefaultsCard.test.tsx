@@ -42,4 +42,28 @@ describe('AssetDefaultsCard', () => {
       video: expect.objectContaining({ source: 'profile', profileId: 7, custom: {} }),
     }));
   });
+
+  it('offers only encoders reported usable by the runtime', async () => {
+    const user = userEvent.setup();
+    render(
+      <AssetDefaultsCard
+        value={value}
+        settings={settings}
+        profiles={profiles}
+        runtimeEncoders={{
+          hevc_qsv: { listed: true, usable: true },
+          libx265: { listed: true, usable: true },
+          h264_nvenc: { listed: true, usable: false, reason: 'probe failed' },
+        }}
+        saving={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('combobox', { name: 'Preferred encoder' }));
+
+    expect(screen.getByRole('option', { name: 'hevc_qsv' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'libx265' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'h264_nvenc' })).toBeNull();
+  });
 });

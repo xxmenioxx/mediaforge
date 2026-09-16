@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +164,161 @@ func TestAssetDefaultsResolveCustomAudioTrackAndVideoPolicies(t *testing.T) {
 	if plan.SidecarOutputs[0].LogicalTransformKey == "" || plan.SidecarOutputs[0].LogicalTransformKey != plan.SidecarOutputs[1].LogicalTransformKey {
 		t.Fatalf("both outputs did not share logical identity: %#v", plan.SidecarOutputs)
 	}
+}
+
+func TestAssetDefaultsPreviewTestEncodeQueueParityForUnassignedAsset(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	mediaPath := filepath.Join(sourceDir, "Episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("test media placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Asset Defaults Parity Library", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, SourcePath: mediaPath, FileName: filepath.Base(mediaPath), Status: "unprocessed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan := models.ScanResult{
+		Path:       mediaPath,
+		VideoCodec: "h264", Width: 1280, Height: 720,
+		VideoStreams:           models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 1280, "height": 720, "avgFrameRate": "24000/1001"}},
+		AudioStreams:           models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn", "default": true}},
+		SubtitleStreams:        models.JSONList{map[string]any{"index": 3, "codec": "subrip", "language": "eng", "title": "Signs"}},
+		FrameStructureAnalysis: models.JSONMap{"averageGopLength": 48.0, "medianGopLength": 48.0, "completeGops": 8, "variability": "low", "confidence": "high"},
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	defaults := defaultAssetDefaultsValue()
+	defaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "x265", "preferredEncoder": "libx265"}
+	defaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{
+		"addCompatibleTrack": true, "compatibleTrackQuality": 160, "compatibleTrackChannels": 2,
+		"compatibleTrackSource": "default", "preferredDefaultLanguage": "jpn",
+	}
+	defaults["tracks"].(models.JSONMap)["custom"] = models.JSONMap{
+		"trackDispositionVersion": canonicalTrackDispositionVersion, "audioMode": "all", "subtitleMode": "all",
+		"subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"both"},
+		"attachmentPolicy": "auto", "fontAttachmentExportPolicy": "none", "chapterPolicy": "keep", "ocrMode": "clean",
+	}
+	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: defaults}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	queue := NewQueueHandler(db)
+	queueInput := QueueJobInput{MediaPath: mediaPath, LibraryID: library.ID, ResolveProfileAssignments: true}
+	queueResolution, err := queue.resolveProfileAssignments(&queueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewEffective, err := effectiveAssetConfiguration(db, mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewInput := QueueJobInput{MediaPath: mediaPath, LibraryID: library.ID}
+	previewResolution := resolveProfileAssignmentsFromEffective(&previewInput, previewEffective)
+	if configurationHash(previewResolution) != configurationHash(queueResolution) {
+		t.Fatalf("Preview effective Asset Defaults diverged from Queue: preview=%#v queue=%#v", previewResolution, queueResolution)
+	}
+
+	queueJob := models.QueueJob{
+		MediaPath: mediaPath, LibraryID: library.ID, ProfileID: queueInput.ProfileID,
+		AudioProfileKey: queueInput.AudioProfileKey, TrackProfileKey: queueInput.TrackProfileKey,
+		ProcessingMode: queueInput.ProcessingMode, ProfileResolution: queueResolution,
+	}
+	if err := queue.captureSupplementalProfiles(&queueJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.captureProfile(&queueJob, queueJob.ProfileID, "asset_defaults_parity_queue"); err != nil {
+		t.Fatal(err)
+	}
+
+	testEncode, err := (AssetHandler{db: db}).resolveTestEncodeRequest(testEncodeRequest{
+		SourcePath: mediaPath, LibraryID: library.ID, ConfigurationSource: "effective_asset", ResolveAssignments: true,
+	})
+	if err != nil {
+		t.Fatalf("Test Encode resolution failed: %v (queue input=%#v resolution=%#v)", err, queueInput, queueResolution)
+	}
+	if configurationHash(queueResolution) != configurationHash(testEncode.job.ProfileResolution) {
+		t.Fatalf("Queue and Test Encode resolved different Asset Defaults: queue=%#v test=%#v", queueResolution, testEncode.job.ProfileResolution)
+	}
+
+	queueProfile, err := (WorkerHandler{db: db}).profileForJob(queueJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams := MediaStreamInventory{
+		Video: []MediaStream{{Index: 0, Codec: "h264", Width: 1280, Height: 720, FrameRate: "24000/1001"}},
+	}
+	previewJob := models.QueueJob{
+		MediaPath: mediaPath, ProfileResolution: previewResolution, ProfileID: previewInput.ProfileID,
+		AudioProfileKey: previewInput.AudioProfileKey, TrackProfileKey: previewInput.TrackProfileKey,
+		ProcessingMode: previewInput.ProcessingMode,
+	}
+	previewProfile, custom, err := queue.customVideoProfileForJob(previewJob)
+	if err != nil || !custom {
+		t.Fatalf("Preview did not receive the effective custom video defaults: profile=%#v custom=%v err=%v", previewProfile, custom, err)
+	}
+	applyAssetDefaultsAudioToVideoProfile(&previewProfile, previewJob)
+	previewProfile, err = resolvePreviewVideoProfile(db, mediaPath, previewProfile, streams, InterlaceAnalysis{}, CadenceAnalysis{}, CadenceRecommendation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueProfile, err = resolveQueueVideoProfile(db, mediaPath, queueJob, queueProfile, AssetConversionOverrideState{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testProfile := resolveMediaJobVideoProfile(testEncode.profile, streams, mediaPath, InterlaceAnalysis{}, CadenceAnalysis{}, CadenceRecommendation{})
+	queueProfile = resolveMediaJobVideoProfile(queueProfile, streams, mediaPath, InterlaceAnalysis{}, CadenceAnalysis{}, CadenceRecommendation{})
+
+	if configurationHash(assetDefaultsVideoParityDecision(previewProfile)) != configurationHash(assetDefaultsVideoParityDecision(testProfile)) ||
+		configurationHash(assetDefaultsVideoParityDecision(queueProfile)) != configurationHash(assetDefaultsVideoParityDecision(testProfile)) {
+		t.Fatalf("Preview, Test Encode, and Queue video decisions diverged: preview=%#v test=%#v queue=%#v", assetDefaultsVideoParityDecision(previewProfile), assetDefaultsVideoParityDecision(testProfile), assetDefaultsVideoParityDecision(queueProfile))
+	}
+
+	queueAudio := audioProfileFromMap(queueJob.AudioProfileKey, queueJob.AudioProfileSnapshot)
+	if !reflect.DeepEqual(queueAudio, testEncode.audio) {
+		t.Fatalf("Preview/Test Encode/Queue audio defaults diverged: queue=%#v test=%#v", queueAudio, testEncode.audio)
+	}
+	previewAudio := audioProfileFromMap(previewJob.AudioProfileKey, profileDataForQueueJob(previewJob, "audio"))
+	if !reflect.DeepEqual(previewAudio, testEncode.audio) {
+		t.Fatalf("Preview audio defaults diverged: preview=%#v test=%#v", previewAudio, testEncode.audio)
+	}
+	previewTracks := applyAssetDefaultsAudioToTrackProfile(previewJob, profileDataForQueueJob(previewJob, "tracks"))
+	previewTracks = resolveTrackProfileForAsset(db, mediaPath, previewTracks)
+	previewTrackPlan, err := resolveTrackPlan(scan, previewTracks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewTrackPlanMap, err := resolvedTrackPlanMap(previewTrackPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueTrackPlan := settingProfileObject(queueJob.TrackProfileSnapshot[resolvedTrackPlanSnapshotKey])
+	if configurationHash(previewTrackPlanMap) != configurationHash(queueTrackPlan) {
+		t.Fatalf("Preview canonical track/subtitle plan diverged: preview=%#v queue=%#v", previewTrackPlanMap, queueTrackPlan)
+	}
+	for name, job := range map[string]models.QueueJob{"queue": queueJob, "test_encode": testEncode.job} {
+		if configurationHash(profileDataForQueueJob(job, "tracks")) != configurationHash(profileDataForQueueJob(testEncode.job, "tracks")) {
+			t.Fatalf("%s track defaults diverged: %#v", name, profileDataForQueueJob(job, "tracks"))
+		}
+		if configurationHash(plannedSidecarArtifactsJSON(job)) != configurationHash(plannedSidecarArtifactsJSON(testEncode.job)) {
+			t.Fatalf("%s canonical subtitle metadata diverged: %#v", name, plannedSidecarArtifactsJSON(job))
+		}
+	}
+	if len(plannedSidecarArtifactsJSON(queueJob)) != 2 {
+		t.Fatalf("canonical both subtitle plan did not produce SRT and ASS metadata: %#v", plannedSidecarArtifactsJSON(queueJob))
+	}
+}
+
+func assetDefaultsVideoParityDecision(profile models.Profile) models.JSONMap {
+	decision := effectiveVideoDecision(profile)
+	for _, key := range []string{"restoration", "upscale"} {
+		delete(decision, key)
+	}
+	return decision
 }
 
 func TestAssetDefaultsQueueResolutionRemainsFrozenAfterSettingEdit(t *testing.T) {
