@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -146,6 +147,55 @@ func TestResolveTrackPlanAcceptsBitmapCompatibilitySidecarsThroughOCR(t *testing
 		t.Fatal("unsupported converted format was accepted")
 	}
 }
+
+func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
+	path := filepath.Clean("/media/raw/show/episode.mkv")
+	scan := models.ScanResult{Path: path, SubtitleStreams: models.JSONList{map[string]any{
+		"index": 3, "codec": "subrip", "language": "eng",
+	}}}
+	profile := map[string]any{
+		"scope": "asset", "trackDispositionVersion": 1, "subtitleDisposition": "extract",
+		"subtitleSidecarFormats": []string{"srt"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}
+	pipeline, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetPlans, unsupported := subtitleExtractionPlansForRequest(path, []FFProbeStream{{
+		Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"},
+	}}, SubtitleExtractionInput{StreamIndex: intPointer(3), Format: "srt"})
+	if len(unsupported) != 0 || len(assetPlans) != 1 || len(pipeline.SidecarOutputs) != 1 {
+		t.Fatalf("asset=%#v unsupported=%#v pipeline=%#v", assetPlans, unsupported, pipeline.SidecarOutputs)
+	}
+	assetDecision := assetPlans[0].Decision
+	profileDecision := pipeline.SidecarOutputs[0]
+	compare := func(name string, got, want ResolvedTrackSidecar) {
+		t.Helper()
+		got.Default, got.Forced, got.Title = want.Default, want.Forced, want.Title
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s subtitle decision diverged: got=%#v want=%#v", name, got, want)
+		}
+	}
+	compare("Asset Info", assetDecision, profileDecision)
+
+	db, err := gorm.Open(sqlite.Open("file:subtitle-entrypoint-parity?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	labOverride, err := resolveLabTrackOverride(db, path, models.JSONMap(profile), AssetConversionOverrideState{})
+	if err != nil || labOverride.ResolvedTrackPlan == nil || len(labOverride.ResolvedTrackPlan.SidecarOutputs) != 1 {
+		t.Fatalf("lab plan=%#v err=%v", labOverride.ResolvedTrackPlan, err)
+	}
+	compare("Profile Lab", labOverride.ResolvedTrackPlan.SidecarOutputs[0], profileDecision)
+}
+
+func intPointer(value int) *int { return &value }
 
 func TestResolveTrackPlanFreezesCanonicalBitmapOCRRule(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "spa"}}}

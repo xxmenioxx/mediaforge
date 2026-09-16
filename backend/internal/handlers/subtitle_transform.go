@@ -13,25 +13,31 @@ import (
 )
 
 type SubtitleArtifact struct {
-	ArtifactID              string `json:"artifactId"`
-	Type                    string `json:"type"`
-	StreamIndex             int    `json:"streamIndex"`
-	SourceCodec             string `json:"sourceCodec"`
-	Format                  string `json:"format"`
-	Mode                    string `json:"mode"`
-	Language                string `json:"language"`
-	Default                 bool   `json:"default"`
-	Forced                  bool   `json:"forced"`
-	Title                   string `json:"title,omitempty"`
-	StagedPath              string `json:"stagedPath"`
-	PublishedPath           string `json:"publishedPath,omitempty"`
-	SizeBytes               int64  `json:"sizeBytes"`
-	Status                  string `json:"status"`
-	Error                   string `json:"error,omitempty"`
-	DisplayName             string `json:"displayName,omitempty"`
-	FontAttachmentsExported bool   `json:"fontAttachmentsExported"`
-	OCRLanguage             string `json:"ocrLanguage,omitempty"`
-	OCRMode                 string `json:"ocrMode,omitempty"`
+	ArtifactID              string   `json:"artifactId"`
+	Type                    string   `json:"type"`
+	StreamIndex             int      `json:"streamIndex"`
+	SourceCodec             string   `json:"sourceCodec"`
+	SourceType              string   `json:"sourceType,omitempty"`
+	Format                  string   `json:"format"`
+	RequestedFormat         string   `json:"requestedFormat,omitempty"`
+	Mode                    string   `json:"mode"`
+	OCRRequired             bool     `json:"ocrRequired"`
+	Language                string   `json:"language"`
+	Default                 bool     `json:"default"`
+	Forced                  bool     `json:"forced"`
+	Title                   string   `json:"title,omitempty"`
+	StagedPath              string   `json:"stagedPath"`
+	PublishedPath           string   `json:"publishedPath,omitempty"`
+	SizeBytes               int64    `json:"sizeBytes"`
+	Status                  string   `json:"status"`
+	Error                   string   `json:"error,omitempty"`
+	DisplayName             string   `json:"displayName,omitempty"`
+	FontAttachmentsExported bool     `json:"fontAttachmentsExported"`
+	OCRLanguage             string   `json:"ocrLanguage,omitempty"`
+	OCRMode                 string   `json:"ocrMode,omitempty"`
+	Stages                  []string `json:"stages,omitempty"`
+	Extension               string   `json:"extension,omitempty"`
+	NamingKey               string   `json:"namingKey,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -79,9 +85,9 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 	for _, decision := range plan.SidecarOutputs {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
-			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format, Mode: decision.Mode,
+			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Status: "planned",
-			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey,
 		}
 		artifact.DisplayName = filepath.Base(resolvedSubtitleStagedPath(base, artifact, used))
 		artifacts = append(artifacts, artifact)
@@ -261,8 +267,9 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			ArtifactID:  subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format),
 			Type:        "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
+			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
-			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode,
+			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey,
 			Status: "planned",
 		}
 		artifacts = append(artifacts, artifact)
@@ -291,6 +298,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			return artifacts, fmt.Errorf("%s", current.Error)
 		}
 		current.Format, current.Mode = format, mode
+		current.Extension = "." + format
 		current.SourceCodec = stream.Codec
 		if current.Language == "" {
 			current.Language = stream.Language
@@ -673,9 +681,9 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 	for _, value := range values {
 		result = append(result, map[string]interface{}{
 			"artifactId": value.ArtifactID,
-			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "format": value.Format, "mode": value.Mode,
+			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
-			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode,
+			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
 		})
@@ -726,8 +734,11 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Type:                    fallback(stringFromUnknown(value["type"]), "subtitle_sidecar"),
 			StreamIndex:             intValueSetting(value["streamIndex"], -1),
 			SourceCodec:             stringFromUnknown(value["sourceCodec"]),
+			SourceType:              stringFromUnknown(value["sourceType"]),
 			Format:                  stringFromUnknown(value["format"]),
+			RequestedFormat:         stringFromUnknown(value["requestedFormat"]),
 			Mode:                    stringFromUnknown(value["mode"]),
+			OCRRequired:             boolSetting(value["ocrRequired"], false),
 			Language:                stringFromUnknown(value["language"]),
 			Default:                 boolSetting(value["default"], false),
 			Forced:                  boolSetting(value["forced"], false),
@@ -739,7 +750,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Error:                   stringFromUnknown(value["error"]),
 			DisplayName:             stringFromUnknown(value["displayName"]),
 			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
-			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]),
+			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]),
 		})
 	}
 	return result

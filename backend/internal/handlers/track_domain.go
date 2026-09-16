@@ -243,22 +243,28 @@ type ResolvedSubtitleTrack struct {
 }
 
 type ResolvedTrackSidecar struct {
-	StreamIndex int    `json:"streamIndex"`
-	Codec       string `json:"codec,omitempty"`
-	Language    string `json:"language,omitempty"`
-	Format      string `json:"format,omitempty"`
-	Mode        string `json:"mode"`
-	Title       string `json:"title,omitempty"`
-	Default     bool   `json:"default"`
-	Forced      bool   `json:"forced"`
-	OCRLanguage string `json:"ocrLanguage,omitempty"`
-	OCRMode     string `json:"ocrMode,omitempty"`
+	StreamIndex     int      `json:"streamIndex"`
+	Codec           string   `json:"codec,omitempty"`
+	SourceType      string   `json:"sourceType,omitempty"`
+	Language        string   `json:"language,omitempty"`
+	Format          string   `json:"format,omitempty"`
+	RequestedFormat string   `json:"requestedFormat,omitempty"`
+	Mode            string   `json:"mode"`
+	OCRRequired     bool     `json:"ocrRequired"`
+	Title           string   `json:"title,omitempty"`
+	Default         bool     `json:"default"`
+	Forced          bool     `json:"forced"`
+	OCRLanguage     string   `json:"ocrLanguage,omitempty"`
+	OCRMode         string   `json:"ocrMode,omitempty"`
+	Stages          []string `json:"stages,omitempty"`
+	Extension       string   `json:"extension,omitempty"`
+	NamingKey       string   `json:"namingKey,omitempty"`
 }
 
 type ResolvedDefaultTrack struct {
 	RequestedLanguage string `json:"requestedLanguage,omitempty"`
-	StreamIndex        *int   `json:"streamIndex,omitempty"`
-	Status             string `json:"status"`
+	StreamIndex       *int   `json:"streamIndex,omitempty"`
+	Status            string `json:"status"`
 }
 
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
@@ -280,8 +286,8 @@ type ResolvedTrackPlan struct {
 	ChaptersKept               bool                       `json:"chaptersKept"`
 	SidecarOutputs             []ResolvedTrackSidecar     `json:"sidecarOutputs"`
 	Warnings                   []string                   `json:"warnings,omitempty"`
-	DefaultAudio    		   ResolvedDefaultTrack 	  `json:"defaultAudio"`
-	DefaultSubtitle 		   ResolvedDefaultTrack       `json:"defaultSubtitle"`
+	DefaultAudio               ResolvedDefaultTrack       `json:"defaultAudio"`
+	DefaultSubtitle            ResolvedDefaultTrack       `json:"defaultSubtitle"`
 }
 
 const resolvedTrackPlanSnapshotKey = "resolvedTrackPlan"
@@ -303,15 +309,15 @@ func resolveDefaultAudioTrack(
 			index := stream.StreamIndex
 			return ResolvedDefaultTrack{
 				RequestedLanguage: requested,
-				StreamIndex:        &index,
-				Status:             "resolved",
+				StreamIndex:       &index,
+				Status:            "resolved",
 			}
 		}
 	}
 
 	return ResolvedDefaultTrack{
 		RequestedLanguage: requested,
-		Status:             "missing",
+		Status:            "missing",
 	}
 }
 
@@ -336,15 +342,15 @@ func resolveDefaultSubtitleTrack(
 			index := stream.StreamIndex
 			return ResolvedDefaultTrack{
 				RequestedLanguage: requested,
-				StreamIndex:        &index,
-				Status:             "resolved",
+				StreamIndex:       &index,
+				Status:            "resolved",
 			}
 		}
 	}
 
 	return ResolvedDefaultTrack{
 		RequestedLanguage: requested,
-		Status:             "missing",
+		Status:            "missing",
 	}
 }
 

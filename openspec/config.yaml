@@ -1,0 +1,64 @@
+schema: spec-driven
+
+context: |
+  Project: MVForge / MediaForge
+
+  MVForge is a self-hosted media analysis, conversion and publishing
+  application designed to run on a resource-constrained NAS.
+
+  Stack:
+  - Backend: Go
+  - Frontend: React + TypeScript + MUI
+  - Media processing: FFmpeg / ffprobe
+  - Runtime: Docker Compose
+  - Storage: persistent NAS-mounted paths
+
+  Architecture principles:
+  - Prefer canonical shared backend resolvers over UI-specific pipelines.
+  - Asset Info, Lab, Profiles and Queue should reuse the same pipeline decisions.
+  - Avoid duplicate FFmpeg, ffprobe, OCR or media analysis work.
+  - Preserve backward compatibility unless explicitly specified.
+  - Resource usage matters because MVForge shares the NAS with Jellyfin,
+    Immich and other services.
+  - User-friendly defaults first; advanced controls remain available.
+
+  Validation:
+  - Canonical repository validation command:
+    ./scripts/verify.sh --auto
+  - Do not run all underlying validation commands individually unless
+    verify.sh reports a failure.
+  - On failures, limit diagnostic output initially to tail -n 60.
+
+rules:
+  proposal:
+    - Keep scope focused on the GitHub issue being implemented.
+    - Explicitly identify what is out of scope.
+
+  specs:
+    - Requirements must describe observable behavior rather than implementation details.
+    - Include failure and backward-compatibility scenarios where relevant.
+
+  design:
+    - Prefer reuse of existing canonical resolvers and pipeline stages.
+    - Identify NAS/runtime performance impact when relevant.
+    - Identify backward compatibility and migration impact.
+
+  tasks:
+    - Order tasks by dependency.
+    - Keep tasks independently verifiable.
+    - Include tests and repository verification.
+
+operations:
+  apply:
+    guidance:
+      - Do not expand scope beyond the approved OpenSpec change.
+      - Reuse existing implementations where possible instead of introducing parallel paths.
+
+      - Prefer Serena symbol navigation for code investigation whenever available.
+      - Use symbol definitions and references instead of reading entire files or large line ranges.
+      - Use rg/text search only for targeted discovery when symbol navigation is insufficient, then inspect the relevant symbols.
+      - Read narrow line ranges only when symbol-level inspection does not provide enough context.
+      - Avoid whole-file reads unless they are necessary to understand the implementation.      
+
+      - Run ./scripts/verify.sh --auto as the canonical final validation.
+      - If validation fails, inspect only the relevant failure and initially limit output to 60 lines.
