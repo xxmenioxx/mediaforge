@@ -113,6 +113,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 				}
 				resolvedFormats[outputKey] = true
 				ocrLanguage, ocrMode := "", ""
+				sourceType := subtitleSourceType(codec)
+				stages := subtitleArtifactStages(sourceType, mode)
 				if mode == "converted" && isBitmapSubtitleCodecName(codec) {
 					ocrLanguage, ocrMode = "auto", "accurate"
 					if !canonicalDisposition {
@@ -125,8 +127,10 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 					}
 				}
 				sidecars = append(sidecars, ResolvedTrackSidecar{
-					StreamIndex: index, Codec: codec, Language: language, Format: format, Mode: mode,
-					Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
+					StreamIndex: index, Codec: codec, SourceType: sourceType, Language: language, Format: format, RequestedFormat: requested, Mode: mode,
+					OCRRequired: mode == "converted" && sourceType == "bitmap", Stages: stages, Extension: "." + format,
+					NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format),
+					Title:     workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
 					OCRLanguage: ocrLanguage, OCRMode: ocrMode,
 				})
 				if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
@@ -182,6 +186,23 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		DefaultAudio:    defaultAudio,
 		DefaultSubtitle: defaultSubtitle,
 	}, nil
+}
+
+func subtitleSourceType(codec string) string {
+	if isBitmapSubtitleCodecName(codec) {
+		return "bitmap"
+	}
+	return "text"
+}
+
+func subtitleArtifactStages(sourceType, mode string) []string {
+	if strings.EqualFold(mode, "original") {
+		return []string{"extract"}
+	}
+	if strings.EqualFold(sourceType, "bitmap") {
+		return []string{"ocr", "normalize", "render"}
+	}
+	return []string{"extract", "normalize", "render"}
 }
 
 func extractsOriginalASSOrSSA(sidecars []ResolvedTrackSidecar) bool {

@@ -35,9 +35,10 @@ type AssetHandler struct {
 }
 
 type SubtitleExtractionResult struct {
-	Created     []string `json:"created"`
-	Existing    []string `json:"existing"`
-	Unsupported []string `json:"unsupported"`
+	Created     []string           `json:"created"`
+	Existing    []string           `json:"existing"`
+	Unsupported []string           `json:"unsupported"`
+	Artifacts   []SubtitleArtifact `json:"artifacts,omitempty"`
 }
 
 type SubtitleExtractionInput struct {
@@ -1312,8 +1313,18 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 
 	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: []string{}}
 	for _, plan := range plans {
+		artifact := SubtitleArtifact{
+			ArtifactID: subtitleArtifactID(plan.Decision.StreamIndex, plan.Decision.Mode, plan.Decision.Format), Type: "subtitle_sidecar",
+			StreamIndex: plan.Decision.StreamIndex, SourceCodec: plan.Decision.Codec, SourceType: plan.Decision.SourceType,
+			Format: plan.Decision.Format, RequestedFormat: plan.Decision.RequestedFormat, Mode: plan.Decision.Mode,
+			Language: plan.Decision.Language, OCRRequired: plan.Decision.OCRRequired, Stages: append([]string(nil), plan.Decision.Stages...),
+			Extension: plan.Decision.Extension, NamingKey: plan.Decision.NamingKey, StagedPath: plan.OutputPath,
+		}
 		if existing, statErr := os.Stat(plan.OutputPath); statErr == nil && !existing.IsDir() {
 			result.Existing = append(result.Existing, plan.OutputPath)
+			artifact.Status = "existing"
+			artifact.SizeBytes = existing.Size()
+			result.Artifacts = append(result.Artifacts, artifact)
 			continue
 		} else if statErr != nil && !os.IsNotExist(statErr) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
@@ -1364,6 +1375,11 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		}
 		_ = os.Remove(tempPath)
 		result.Created = append(result.Created, plan.OutputPath)
+		artifact.Status = "ready"
+		if info, statErr := os.Stat(plan.OutputPath); statErr == nil {
+			artifact.SizeBytes = info.Size()
+		}
+		result.Artifacts = append(result.Artifacts, artifact)
 	}
 
 	if len(bitmapStreams) > 0 {
@@ -1491,6 +1507,40 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 				finalResult.Unsupported,
 				ocrResult.Unsupported...,
 			)
+			ocrFormat := strings.ToLower(strings.TrimSpace(input.Format))
+			if ocrFormat == "" {
+				ocrFormat = "srt"
+			}
+			ocrLanguage := safeSubtitleFilenamePart(stream.Tags["language"])
+			if ocrLanguage == "" {
+				ocrLanguage = "und"
+			}
+			ocrDecision := ResolvedTrackSidecar{
+				StreamIndex: stream.Index, Codec: stream.CodecName, SourceType: "bitmap", Language: normalizedTrackLanguage(stream.Tags["language"]),
+				Format: ocrFormat, RequestedFormat: ocrFormat, Mode: "converted", OCRRequired: true,
+				Stages: subtitleArtifactStages("bitmap", "converted"), Extension: "." + ocrFormat,
+				NamingKey: fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, ocrFormat),
+			}
+			ocrArtifact := SubtitleArtifact{
+				ArtifactID: subtitleArtifactID(stream.Index, "converted", ocrFormat), Type: "subtitle_sidecar", StreamIndex: stream.Index,
+				SourceCodec: stream.CodecName, SourceType: "bitmap", Format: ocrFormat, RequestedFormat: ocrFormat, Mode: "converted",
+				Language: ocrDecision.Language, OCRRequired: true, OCRLanguage: input.OCRLanguage, OCRMode: normalizedOCRMode(input.OCRMode),
+				Stages: ocrDecision.Stages, Extension: ocrDecision.Extension, NamingKey: ocrDecision.NamingKey,
+				StagedPath: fmt.Sprintf("%s.%s.%d.%s", strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath)), ocrLanguage, stream.Index, ocrFormat), Status: "ready",
+			}
+			for _, created := range ocrResult.Created {
+				if strings.HasSuffix(created, ".raw."+ocrFormat) {
+					continue
+				}
+				ocrArtifact.StagedPath = created
+				break
+			}
+			if len(ocrResult.Created) > 0 || len(ocrResult.Existing) > 0 {
+				if len(ocrResult.Created) == 0 {
+					ocrArtifact.Status = "existing"
+				}
+				finalResult.Artifacts = append(finalResult.Artifacts, ocrArtifact)
+			}
 
 			updateSubtitleExtractionOperation(
 				operationID,
@@ -3103,6 +3153,7 @@ type subtitleExtractionPlan struct {
 	Mode        string
 	Format      string
 	OutputPath  string
+	Decision    ResolvedTrackSidecar
 }
 
 func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subtitleExtractionPlan, []string) {
@@ -3148,11 +3199,18 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 		if language == "" {
 			language = "und"
 		}
+		decision := ResolvedTrackSidecar{
+			StreamIndex: stream.Index, Codec: strings.ToLower(strings.TrimSpace(stream.CodecName)), SourceType: subtitleSourceType(stream.CodecName),
+			Language: language, Format: format, RequestedFormat: fallback(requested, "srt"), Mode: mode,
+			OCRRequired: mode == "converted" && isBitmapSubtitleCodecName(stream.CodecName), Stages: subtitleArtifactStages(subtitleSourceType(stream.CodecName), mode),
+			Extension: "." + format, NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, format),
+		}
 		plans = append(plans, subtitleExtractionPlan{
 			StreamIndex: stream.Index,
 			Mode:        mode,
 			Format:      format,
 			OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
+			Decision:    decision,
 		})
 	}
 	if input.StreamIndex != nil && !matched {

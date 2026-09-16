@@ -97,3 +97,4 @@ docs/architecture/
 docs/ai/evaluations/
 scripts/ai/
 scripts/new-ai-evaluation.sh
+.env

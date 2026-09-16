@@ -886,8 +886,11 @@ export type QueueJob = {
     type?: 'subtitle_sidecar' | 'font_attachment';
     streamIndex: number;
     sourceCodec: string;
+    sourceType?: 'text' | 'bitmap';
     format?: 'srt' | 'ass' | 'ssa' | 'sup';
+    requestedFormat?: string;
     mode?: 'original' | 'converted';
+    ocrRequired?: boolean;
     language?: string;
     default?: boolean;
     forced?: boolean;
@@ -901,6 +904,9 @@ export type QueueJob = {
     fontAttachmentsExported?: boolean;
 	ocrLanguage?: string;
 	ocrMode?: 'raw' | 'clean' | 'accurate';
+    stages?: string[];
+    extension?: string;
+    namingKey?: string;
     attachmentOrdinal?: number;
     originalName?: string;
     mimeType?: string;
@@ -1830,6 +1836,24 @@ export type SubtitleExtractionResult = {
   created: string[];
   existing: string[];
   unsupported: string[];
+  artifacts?: Array<{
+    artifactId: string;
+    type: 'subtitle_sidecar';
+    streamIndex: number;
+    sourceCodec: string;
+    sourceType?: 'text' | 'bitmap';
+    format: 'srt' | 'ass' | 'ssa' | 'sup';
+    requestedFormat?: string;
+    mode: 'original' | 'converted';
+    ocrRequired?: boolean;
+    language?: string;
+    stages?: string[];
+    extension?: string;
+    namingKey?: string;
+    stagedPath: string;
+    sizeBytes: number;
+    status: string;
+  }>;
 };
 
 export type SubtitleExtractionOperation = {

@@ -23,6 +23,131 @@ func TestTextSubtitleExtractionUsesTestEncodeWindowOnlyWhenRequested(t *testing.
 	assertContains(t, ass, "-map 0:3 -vn -an -c:s ass -f ass /staging/full.ass")
 }
 
+func TestGenerateResolvedConvertedTextSubtitleArtifactsProducesCues(t *testing.T) {
+	bin := t.TempDir()
+	ffmpeg := filepath.Join(bin, "ffmpeg")
+	script := "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\ncase \"$output\" in\n  *.ass) printf '%s\\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola' > \"$output\" ;;\n  *) printf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > \"$output\" ;;\nesac\n"
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, test := range []struct {
+		name, requested, format string
+	}{
+		{name: "converted SRT", requested: "srt", format: "srt"},
+		{name: "converted ASS", requested: "ass", format: "ass"},
+		{name: "default converted SRT", requested: "", format: "srt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "Episode.mkv")
+			plan := MediaJobPlan{
+				InputPath: "/raw/Episode.mkv", OutputPath: output,
+				Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 3, Codec: "subrip", Language: "eng"}}},
+				ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
+					StreamIndex: 3, Codec: "subrip", SourceType: "text", Language: "eng", Format: test.format,
+					RequestedFormat: test.requested, Mode: "converted", Extension: "." + test.format,
+					Stages: []string{"extract", "normalize", "render"},
+				}}},
+			}
+			artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
+			if err != nil || len(artifacts) != 1 {
+				t.Fatalf("artifacts=%#v err=%v", artifacts, err)
+			}
+			content, err := os.ReadFile(artifacts[0].StagedPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.format == "srt" && !strings.Contains(string(content), "-->") {
+				t.Fatalf("SRT artifact has no cue: %q", content)
+			}
+			if test.format == "ass" && (!strings.Contains(string(content), "[Events]") || !strings.Contains(string(content), "Dialogue:")) {
+				t.Fatalf("ASS artifact has no normalized cue: %q", content)
+			}
+		})
+	}
+}
+
+func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
+	for _, test := range []struct {
+		codec, format string
+	}{
+		{codec: "hdmv_pgs_subtitle", format: "srt"},
+		{codec: "hdmv_pgs_subtitle", format: "ass"},
+		{codec: "dvd_subtitle", format: "srt"},
+		{codec: "dvd_subtitle", format: "ass"},
+	} {
+		t.Run(test.codec+"_"+test.format, func(t *testing.T) {
+			bin := t.TempDir()
+			scripts := map[string]string{
+				"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"id\":\"0x7\",\"codec_type\":\"subtitle\",\"codec_name\":\"" + test.codec + "\",\"tags\":{\"language\":\"spa\"}}]}'\n",
+				"ffmpeg":    "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf 'PG' > \"$output\"\n",
+				"seconv":    "#!/bin/sh\noutput=\"\"\nfor argument do case \"$argument\" in --output-filename:*) output=\"${argument#--output-filename:}\" ;; esac; done\ncase \"$output\" in\n *.ass) printf '%s\\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola OCR' > \"$output\" ;;\n *) printf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola OCR' > \"$output\" ;;\nesac\n",
+				"tesseract": "#!/bin/sh\nexit 0\n",
+			}
+			for name, script := range scripts {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			output := filepath.Join(t.TempDir(), "Episode.mkv")
+			plan := MediaJobPlan{
+				InputPath: "/raw/Episode.mkv", OutputPath: output,
+				Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: test.codec, Language: "spa"}}},
+				ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
+					StreamIndex: 4, Codec: test.codec, SourceType: "bitmap", Language: "spa", Format: test.format,
+					RequestedFormat: test.format, Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw",
+				}}},
+			}
+			artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
+			if err != nil || len(artifacts) != 1 {
+				t.Fatalf("artifacts=%#v err=%v", artifacts, err)
+			}
+			content, err := os.ReadFile(artifacts[0].StagedPath)
+			if err != nil || !strings.Contains(string(content), "Hola OCR") {
+				t.Fatalf("OCR artifact content=%q err=%v", content, err)
+			}
+		})
+	}
+}
+
+func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ffprobe"), []byte("#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"hdmv_pgs_subtitle\"}]}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "ffmpeg"), []byte("#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf 'PG' > \"$output\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "seconv"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tesseract"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output := filepath.Join(t.TempDir(), "Episode.mkv")
+	plan := MediaJobPlan{
+		InputPath: "/raw/Episode.mkv", OutputPath: output,
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "hdmv_pgs_subtitle"}}},
+		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
+			StreamIndex: 4, Codec: "hdmv_pgs_subtitle", SourceType: "bitmap", Format: "srt", Mode: "converted", OCRRequired: true,
+		}}},
+	}
+	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "OCR failed") {
+		t.Fatalf("expected explicit OCR failure, artifacts=%#v err=%v", artifacts, err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.StagedPath != "" {
+			if _, statErr := os.Stat(artifact.StagedPath); !os.IsNotExist(statErr) {
+				t.Fatalf("failed OCR left misleading artifact %q: %v", artifact.StagedPath, statErr)
+			}
+		}
+	}
+}
+
 func TestBitmapSubtitleExtractionUsesSameAccurateTestEncodeWindow(t *testing.T) {
 	for _, test := range []struct {
 		name       string

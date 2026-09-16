@@ -43,3 +43,8 @@ output_token_limit = 4000
 
 [mcp_servers.serena.tools.get_diagnostics_for_file]
 output_token_limit = 4000
+
+[mcp_servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+# Replace with your real PAT (least-privilege scopes). Do NOT commit this.
+bearer_token_env_var = "GITHUB_PAT_TOKEN"

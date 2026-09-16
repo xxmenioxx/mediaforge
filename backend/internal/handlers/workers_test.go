@@ -38,6 +38,51 @@ func TestNextClaimableJobUsesExactQueuePosition(t *testing.T) {
 	}
 }
 
+func TestWorkerRetryUsesFrozenCanonicalSubtitlePlanAndLeavesLegacySnapshotAuthoritative(t *testing.T) {
+	frozen := ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
+		StreamIndex: 4, Codec: "hdmv_pgs_subtitle", SourceType: "bitmap", Language: "spa",
+		Format: "ass", RequestedFormat: "ass", Mode: "converted", OCRRequired: true,
+		Stages: []string{"ocr", "normalize", "render"}, Extension: ".ass", NamingKey: "subtitle:4:converted:ass",
+	}}}
+	planMap, err := resolvedTrackPlanMap(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{
+		MediaPath: "/raw/Episode.mkv", TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap},
+		SubtitleArtifacts: plannedSidecarArtifactsJSON(models.QueueJob{
+			MediaPath: "/raw/Episode.mkv", TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: planMap},
+		}),
+	}
+	mutable := map[string]AssetConversionOverrideState{
+		job.MediaPath: {SubtitleTransforms: []SubtitleTransform{{StreamIndex: 4, Format: "srt", Language: "eng"}}},
+	}
+	first := currentConversionOverrideForJob(job, mutable)
+	second := currentConversionOverrideForJob(job, mutable)
+	if first.ResolvedTrackPlan == nil || second.ResolvedTrackPlan == nil ||
+		first.ResolvedTrackPlan.SidecarOutputs[0].Format != "ass" ||
+		second.ResolvedTrackPlan.SidecarOutputs[0].NamingKey != "subtitle:4:converted:ass" {
+		t.Fatalf("retry re-resolved or lost frozen canonical plan: first=%#v second=%#v", first.ResolvedTrackPlan, second.ResolvedTrackPlan)
+	}
+	if artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts); len(artifacts) != 1 || artifacts[0].Format != "ass" || artifacts[0].OCRRequired != true {
+		t.Fatalf("retry did not retain frozen artifact metadata: %#v", artifacts)
+	}
+
+	legacy := models.QueueJob{
+		MediaPath: "/raw/Legacy.mkv",
+		TrackProfileSnapshot: models.JSONMap{"subtitleTransforms": []any{map[string]any{
+			"streamIndex": float64(2), "format": "ass", "language": "jpn", "removeEmbedded": true,
+		}}},
+	}
+	legacyBefore := fmt.Sprintf("%#v", legacy.TrackProfileSnapshot)
+	_ = conversionOverrideForJob(legacy, map[string]AssetConversionOverrideState{
+		legacy.MediaPath: {SubtitleTransforms: []SubtitleTransform{{StreamIndex: 9, Format: "srt", Language: "eng"}}},
+	})
+	if _, ok := ResolvedTrackPlanFromSnapshot(legacy.TrackProfileSnapshot); ok || fmt.Sprintf("%#v", legacy.TrackProfileSnapshot) != legacyBefore {
+		t.Fatalf("legacy snapshot was silently rewritten: %#v", legacy.TrackProfileSnapshot)
+	}
+}
+
 func TestAssignExecutionNumberIgnoresQueuedPlaceholderIDs(t *testing.T) {
 	db := queueJobTestDB(t)
 	executedNumber := uint(4)
