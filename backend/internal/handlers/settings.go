@@ -83,6 +83,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			return
 		}
 	}
+	if key == assetDefaultsSettingKey {
+		normalized, err := validateAssetDefaultsValue(h.db, input.Value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Value = normalized
+	}
 	if key == "audioEnhancementProfiles" || key == "trackProfiles" {
 		mediaType := "audio"
 		if key == "trackProfiles" {

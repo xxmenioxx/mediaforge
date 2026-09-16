@@ -29,7 +29,7 @@ type QueueJobInput struct {
 	BatchName                 string `json:"batchName"`
 	BatchPosition             int    `json:"batchPosition"`
 	LibraryID                 uint   `json:"libraryId" binding:"required"`
-	ProfileID                 uint   `json:"profileId" binding:"required"`
+	ProfileID                 uint   `json:"profileId"`
 	AudioProfileKey           string `json:"audioProfileKey"`
 	TrackProfileKey           string `json:"trackProfileKey"`
 	ProcessingMode            string `json:"processingMode"`
@@ -982,8 +982,10 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		hasOperation := effective.Video.VideoProfileID > 0 ||
 			effective.Video.Selection == VideoAssignmentOverrideOnly ||
 			effective.Video.Selection == VideoAssignmentAudioOnly ||
+			effective.Video.Selection == configSelectionValue ||
 			strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
-			strings.TrimSpace(effective.Tracks.ProfileKey) != ""
+			strings.TrimSpace(effective.Tracks.ProfileKey) != "" ||
+			effective.Audio.Selection == configSelectionValue || effective.Tracks.Selection == configSelectionValue
 		if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
 			result.Outcome, result.Reason = "failed", "invalid_configuration"
 			if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 {
@@ -996,7 +998,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		}
 
 		processingMode := ProcessingModeAudioOnly
-		if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly {
+		if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly || effective.Video.Selection == configSelectionValue {
 			processingMode = ProcessingModeFullEncode
 		}
 		queueInput := QueueJobInput{
@@ -1309,6 +1311,42 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	return resolveProfileAssignmentsFromEffective(input, effective), nil
 }
 
+func effectiveConfigurationWithFrozenAssetDefaults(effective EffectiveAssetConfiguration, resolution models.JSONMap) EffectiveAssetConfiguration {
+	for mediaType, raw := range resolution {
+		if mediaType != "video" && mediaType != "audio" && mediaType != "tracks" {
+			continue
+		}
+		value := settingProfileObject(raw)
+		if value == nil || !strings.EqualFold(strings.TrimSpace(workerStringValue(value["source"])), assetDefaultsGlobalSource) {
+			continue
+		}
+		frozen := AssetConfigurationValue{
+			Selection:      strings.TrimSpace(workerStringValue(value["selection"])),
+			Source:         assetDefaultsGlobalSource,
+			SourceKey:      workerStringValue(value["targetPath"]),
+			SourceName:     "Asset Defaults",
+			VideoProfileID: uint(workerNumberValue(value["videoProfileId"], 0)),
+			ProfileKey:     workerStringValue(value["profileKey"]),
+			ProfileData:    models.JSONMap(settingProfileObject(value["profileData"])),
+		}
+		switch mediaType {
+		case "video":
+			if effective.Video.Source == "" || strings.EqualFold(effective.Video.Source, assetDefaultsGlobalSource) {
+				effective.Video = frozen
+			}
+		case "audio":
+			if effective.Audio.Source == "" || strings.EqualFold(effective.Audio.Source, assetDefaultsGlobalSource) {
+				effective.Audio = frozen
+			}
+		case "tracks":
+			if effective.Tracks.Source == "" || strings.EqualFold(effective.Tracks.Source, assetDefaultsGlobalSource) {
+				effective.Tracks = frozen
+			}
+		}
+	}
+	return effective
+}
+
 func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective EffectiveAssetConfiguration) models.JSONMap {
 	resolution := models.JSONMap{}
 	for mediaType, value := range map[string]AssetConfigurationValue{"video": effective.Video, "audio": effective.Audio, "tracks": effective.Tracks} {
@@ -1322,6 +1360,9 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 			"videoProfileId": value.VideoProfileID,
 			"profileKey":     value.ProfileKey,
 			"overrideOnly":   value.Selection == VideoAssignmentOverrideOnly,
+		}
+		if len(value.ProfileData) > 0 {
+			resolution[mediaType].(models.JSONMap)["profileData"] = value.ProfileData
 		}
 		switch mediaType {
 
@@ -1342,17 +1383,28 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 				// stored assignments, but new UI should use "audio_only".
 				input.ProfileID = 0
 				input.ProcessingMode = ProcessingModeAudioOnly
+			case configSelectionValue:
+				input.ProfileID = 0
+				if strings.EqualFold(workerStringValue(value.ProfileData["videoCodec"]), "copy") {
+					input.ProcessingMode = ProcessingModeAudioOnly
+				} else {
+					input.ProcessingMode = ProcessingModeFullEncode
+				}
 			}
 
 		case "audio":
 			if value.Selection == "profile" {
 				input.AudioProfileKey = value.ProfileKey
+			} else if value.Selection == configSelectionValue && len(value.ProfileData) > 0 {
+				input.AudioProfileKey = assetDefaultsCustomAudioKey
 			} else if value.Selection == "disabled" {
 				input.AudioProfileKey = ""
 			}
 		case "tracks":
 			if value.Selection == "profile" {
 				input.TrackProfileKey = value.ProfileKey
+			} else if value.Selection == configSelectionValue && len(value.ProfileData) > 0 {
+				input.TrackProfileKey = assetDefaultsCustomTracksKey
 			} else if value.Selection == "disabled" {
 				input.TrackProfileKey = ""
 			}
@@ -1372,17 +1424,36 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 
 func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 	if strings.TrimSpace(job.AudioProfileKey) != "" {
-		profile, err := settingProfileByKey(h.db, "audioEnhancementProfiles", job.AudioProfileKey)
-		if err != nil {
-			return fmt.Errorf("audio profile: %w", err)
+		if job.AudioProfileKey == assetDefaultsCustomAudioKey {
+			profile := profileDataForQueueJob(*job, "audio")
+			if len(profile) == 0 {
+				return fmt.Errorf("audio profile: custom Asset Defaults profile is missing")
+			}
+			job.AudioProfileSnapshot = models.JSONMap(profile)
+		} else {
+			profile, err := settingProfileByKey(h.db, "audioEnhancementProfiles", job.AudioProfileKey)
+			if err != nil {
+				return fmt.Errorf("audio profile: %w", err)
+			}
+			job.AudioProfileSnapshot = models.JSONMap(profile)
 		}
-		job.AudioProfileSnapshot = models.JSONMap(profile)
 	}
 	if strings.TrimSpace(job.TrackProfileKey) != "" {
-		profile, err := settingProfileByKey(h.db, "trackProfiles", job.TrackProfileKey)
-		if err != nil {
-			return fmt.Errorf("track profile: %w", err)
+		var profile map[string]any
+		if job.TrackProfileKey == assetDefaultsCustomTracksKey {
+			profile = profileDataForQueueJob(*job, "tracks")
+			if len(profile) == 0 {
+				return fmt.Errorf("track profile: custom Asset Defaults profile is missing")
+			}
+			profile = applyAssetDefaultsAudioToTrackProfile(*job, profile)
+		} else {
+			var err error
+			profile, err = settingProfileByKey(h.db, "trackProfiles", job.TrackProfileKey)
+			if err != nil {
+				return fmt.Errorf("track profile: %w", err)
+			}
 		}
+		profile = applyAssetDefaultsAudioToTrackProfile(*job, profile)
 		resolved := resolveTrackProfileForAsset(h.db, job.MediaPath, profile)
 		if storedSettingProfileScope(profile) == "path" && strings.TrimSpace(workerStringValue(resolved["resolvedForAsset"])) == "" {
 			return fmt.Errorf("track profile: a cached asset snapshot is required to resolve a path profile safely")
@@ -1964,12 +2035,19 @@ var errQueueProfileDisabled = errors.New("profile is disabled")
 
 func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, source string) error {
 	var profile models.Profile
-	if err := h.db.First(&profile, profileID).Error; err != nil {
+	customProfile, custom, err := h.customVideoProfileForJob(*job)
+	if err != nil {
+		return err
+	}
+	if custom {
+		profile = customProfile
+	} else if err := h.db.First(&profile, profileID).Error; err != nil {
 		return err
 	}
 	if profile.Disabled {
 		return errQueueProfileDisabled
 	}
+	applyAssetDefaultsAudioToVideoProfile(&profile, *job)
 	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
 	if err := h.freezeEffectiveTrackPlan(job, &override); err != nil {
 		return err

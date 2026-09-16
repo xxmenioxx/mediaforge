@@ -43,6 +43,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
+import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
@@ -308,11 +309,12 @@ export function SettingsPage() {
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
+  const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
-  const [section, setSection] = useState<'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'analysis', 'runtime', 'assets', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations' : 'overview');
-  const changeSection = (next: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
+  const [section, setSection] = useState<'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations' : 'overview');
+  const changeSection = (next: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -682,6 +684,18 @@ export function SettingsPage() {
                   }}
                 />
               </Stack>
+            ) : null}
+
+            {section === 'asset-defaults' ? (
+              <AssetDefaultsCard
+                key={JSON.stringify(settings.data?.find((item) => item.key === 'assetDefaults')?.value)}
+                value={settings.data?.find((item) => item.key === 'assetDefaults')?.value}
+                settings={settings.data ?? []}
+                profiles={profilesQuery.data ?? []}
+                runtimeEncoders={runtimeSnapshot.data?.encoders}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'assetDefaults', value: value as unknown as Record<string, unknown> })}
+              />
             ) : null}
 
             {section === 'archive' ? (
@@ -1092,12 +1106,13 @@ export function SettingsPage() {
   );
 }
 
-function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations') => void }) {
+function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations') => void }) {
   const domains = [
     { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
     { key: 'analysis' as const, title: 'Analysis', description: 'Snapshot analysis strategy, confidence, cache reuse and workload limits.', color: 'info.dark' },
     { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
     { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
+    { key: 'asset-defaults' as const, title: 'Asset Defaults', description: 'Non-destructive fallback policies for video, audio, tracks, subtitles and attachments.', color: 'warning.main' },
     { key: 'archive' as const, title: 'Original Archive', description: 'Archive locations, retention period and safe automatic deletion policy.', color: 'secondary.main' },
     { key: 'operations' as const, title: 'Operations', description: 'Scheduler recovery, cancellation cleanup, housekeeping and system-wide logs.', color: 'warning.main' },
   ];

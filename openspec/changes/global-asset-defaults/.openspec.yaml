@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-16
+goal: Define canonical fallback policies for unassigned assets while preserving
+  existing precedence and behavior

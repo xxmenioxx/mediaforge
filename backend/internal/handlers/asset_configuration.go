@@ -129,14 +129,15 @@ const (
 )
 
 type AssetConfigurationValue struct {
-	Selection            string `json:"selection"`
-	Source               string `json:"source,omitempty"`
-	SourceKey            string `json:"sourceKey,omitempty"`
-	SourceName           string `json:"sourceName,omitempty"`
-	VideoProfileID       uint   `json:"videoProfileId,omitempty"`
-	ProfileKey           string `json:"profileKey,omitempty"`
-	Category             string `json:"category,omitempty"`
-	DestinationLibraryID uint   `json:"destinationLibraryId,omitempty"`
+	Selection            string         `json:"selection"`
+	Source               string         `json:"source,omitempty"`
+	SourceKey            string         `json:"sourceKey,omitempty"`
+	SourceName           string         `json:"sourceName,omitempty"`
+	VideoProfileID       uint           `json:"videoProfileId,omitempty"`
+	ProfileKey           string         `json:"profileKey,omitempty"`
+	ProfileData          models.JSONMap `json:"profileData,omitempty"`
+	Category             string         `json:"category,omitempty"`
+	DestinationLibraryID uint           `json:"destinationLibraryId,omitempty"`
 }
 
 type EffectiveAssetConfiguration struct {
@@ -146,6 +147,7 @@ type EffectiveAssetConfiguration struct {
 	Tracks      AssetConfigurationValue `json:"tracks"`
 	Category    AssetConfigurationValue `json:"category"`
 	Destination AssetConfigurationValue `json:"destination"`
+	Warnings    []string                `json:"warnings,omitempty"`
 }
 
 type EffectiveAssetConfigurationBatchInput struct {
@@ -404,12 +406,20 @@ type assetConfigurationResolver struct {
 	sourceGroups   map[uint]models.SourceGroup
 	assignments    map[string]models.ProfileAssignment
 	configurations map[string]models.AssetScopeConfiguration
+	assetDefaults  models.JSONMap
+	warnings       []string
 }
 
 func loadAssetConfigurationResolver(db *gorm.DB) (assetConfigurationResolver, error) {
 	resolver := assetConfigurationResolver{
 		sourceGroups: map[uint]models.SourceGroup{}, assignments: map[string]models.ProfileAssignment{}, configurations: map[string]models.AssetScopeConfiguration{},
 	}
+	defaults, warnings, err := loadAssetDefaultsWithWarnings(db)
+	if err != nil {
+		return resolver, err
+	}
+	resolver.assetDefaults = defaults
+	resolver.warnings = warnings
 	if db.Migrator().HasTable(&models.SourceGroup{}) {
 		var groups []models.SourceGroup
 		if err := db.Find(&groups).Error; err != nil {
@@ -504,7 +514,51 @@ func (resolver assetConfigurationResolver) resolve(record models.AssetRecord) Ef
 			result.Destination = AssetConfigurationValue{Selection: configuration.DestinationSelection, DestinationLibraryID: configuration.DestinationLibraryID, Source: target.Type, SourceKey: target.Key, SourceName: target.Name}
 		}
 	}
+	for _, mediaType := range []string{"video", "audio", "tracks"} {
+		if value := resolver.globalValue(mediaType); value.Selection != configSelectionInherit {
+			switch mediaType {
+			case "video":
+				if result.Video.Selection == configSelectionInherit {
+					result.Video = value
+				}
+			case "audio":
+				if result.Audio.Selection == configSelectionInherit {
+					result.Audio = value
+				}
+			case "tracks":
+				if result.Tracks.Selection == configSelectionInherit {
+					result.Tracks = value
+				}
+			}
+		}
+	}
+	result.Warnings = append(result.Warnings, resolver.warnings...)
 	return result
+}
+
+func (resolver assetConfigurationResolver) globalValue(mediaType string) AssetConfigurationValue {
+	block := assetDefaultsDomain(resolver.assetDefaults, mediaType)
+	if block == nil {
+		return AssetConfigurationValue{Selection: configSelectionInherit}
+	}
+	value := AssetConfigurationValue{
+		Source: assetDefaultsGlobalSource, SourceKey: assetDefaultsSettingKey, SourceName: "Asset Defaults",
+	}
+	if strings.EqualFold(workerStringValue(block["source"]), "profile") {
+		value.Selection = configSelectionValue
+		if mediaType == "video" {
+			value.VideoProfileID = uint(workerNumberValue(block["profileId"], 0))
+		} else {
+			value.ProfileKey = strings.TrimSpace(workerStringValue(block["profileKey"]))
+		}
+		value.Selection = "profile"
+		return value
+	}
+	value.Selection = configSelectionValue
+	if custom := settingProfileObject(block["custom"]); custom != nil {
+		value.ProfileData = models.JSONMap(custom)
+	}
+	return value
 }
 
 func assetScopeTargetsForRecord(db *gorm.DB, record models.AssetRecord) ([]assetScopeTarget, error) {

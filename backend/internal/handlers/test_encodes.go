@@ -334,7 +334,11 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		}
 		job.ProfileID, job.AudioProfileKey, job.TrackProfileKey = queueInput.ProfileID, queueInput.AudioProfileKey, queueInput.TrackProfileKey
 		job.ProcessingMode = normalizeQueueProcessingMode(queueInput.ProcessingMode)
-		if job.ProfileID == 0 {
+		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
+		customAssetDefaults := strings.EqualFold(workerStringValue(videoResolution["source"]), assetDefaultsGlobalSource) &&
+			strings.EqualFold(workerStringValue(videoResolution["selection"]), configSelectionValue) &&
+			len(settingProfileObject(videoResolution["profileData"])) > 0
+		if job.ProfileID == 0 && !customAssetDefaults {
 			return resolvedTestEncode{}, fmt.Errorf("an effective video profile is required for Test Encode V1")
 		}
 		if err := queue.captureSupplementalProfiles(&job); err != nil {

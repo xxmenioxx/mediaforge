@@ -433,6 +433,7 @@ export type EffectiveAssetConfigurationValue = {
 	sourceName?: string;
 	videoProfileId?: number;
 	profileKey?: string;
+	profileData?: Record<string, unknown>;
 	category?: string;
 	destinationLibraryId?: number;
 };
@@ -444,6 +445,7 @@ export type EffectiveAssetConfiguration = {
 	tracks: EffectiveAssetConfigurationValue;
 	category: EffectiveAssetConfigurationValue;
 	destination: EffectiveAssetConfigurationValue;
+	warnings?: string[];
 };
 
 export type EffectiveAssetConfigurationBatchResponse = {
@@ -727,6 +729,22 @@ export type AppSetting = {
   updatedAt: string;
 };
 
+export type AssetDefaultsSource = 'custom' | 'profile';
+export type AssetDefaultsDomain = {
+  source: AssetDefaultsSource;
+  profileId?: number;
+  profileKey?: string;
+  custom: Record<string, unknown>;
+  [key: string]: unknown;
+};
+export type AssetDefaultsValue = {
+  schemaVersion: number;
+  video: AssetDefaultsDomain;
+  audio: AssetDefaultsDomain;
+  tracks: AssetDefaultsDomain;
+  [key: string]: unknown;
+};
+
 export type UpdateSettingInput = {
   key: string;
   value: Record<string, unknown>;
@@ -754,7 +772,7 @@ export type TrackProfileResolutionPreview = {
   audio: TrackProfilePreviewDecision[];
   subtitle: TrackProfilePreviewDecision[];
   warnings: string[];
-	resolvedTrackPlan: {
+		resolvedTrackPlan: {
 		videoStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		audioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		removedAudioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
@@ -770,7 +788,7 @@ export type TrackProfileResolutionPreview = {
     defaultAudio: ResolvedDefaultTrack;
     defaultSubtitle: ResolvedDefaultTrack;
 		chaptersKept: boolean;
-		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }>;
+		sidecarOutputs: Array<{ streamIndex: number; codec?: string; language?: string; format?: string; mode?: 'original' | 'converted'; forced: boolean; default: boolean; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate'; logicalTransformKey?: string }>;
 		warnings?: string[];
 	};
 };
@@ -907,6 +925,7 @@ export type QueueJob = {
     stages?: string[];
     extension?: string;
     namingKey?: string;
+    logicalTransformKey?: string;
     attachmentOrdinal?: number;
     originalName?: string;
     mimeType?: string;
