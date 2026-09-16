@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/driver/sqlite"
@@ -92,6 +93,7 @@ func TestAssetDefaultsInvalidStoredProfileFallsBackWithWarning(t *testing.T) {
 	value := defaultAssetDefaultsValue()
 	value["video"].(models.JSONMap)["source"] = "profile"
 	value["video"].(models.JSONMap)["profileId"] = 999
+	value["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
 	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: value}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +106,39 @@ func TestAssetDefaultsInvalidStoredProfileFallsBackWithWarning(t *testing.T) {
 	}
 	if effective.Video.Source != assetDefaultsGlobalSource || effective.Video.ProfileData == nil {
 		t.Fatalf("invalid default did not use safe fallback: %#v", effective.Video)
+	}
+	if workerStringValue(effective.Audio.ProfileData["preferredDefaultLanguage"]) != "jpn" {
+		t.Fatalf("invalid video profile changed valid audio default: %#v", effective.Audio)
+	}
+}
+
+func TestAssetDefaultsCustomVideoUsesNeutralBaseAndAppliesContractAfterCustom(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-defaults-neutral-video?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{
+		Name: "User HEVC Profile", VideoCodec: "x265_10bit", CodecFamily: "hevc", AudioCodec: "copy",
+		QualityMode: "crf", QualityValue: 12, PreferredEncoder: "libx265", AllowedEncoders: models.StringList{"libx265"},
+		WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "videoPreset": "slow"},
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	value := defaultAssetDefaultsValue()
+	value["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "x264", "preferredEncoder": "libx264"}
+	resolved, err := (QueueHandler{db: db}).customVideoProfile(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.VideoCodec != "x264" || resolved.CodecFamily != "h264" || resolved.PreferredEncoder != "libx264" || len(resolved.AllowedEncoders) != 1 || resolved.AllowedEncoders[0] != "libx264" {
+		t.Fatalf("custom video did not apply neutral contract: %#v", resolved)
+	}
+	if resolved.QualityValue == profile.QualityValue || resolved.WorkerConfig["videoPreset"] != nil {
+		t.Fatalf("custom video inherited user profile fields: %#v", resolved)
 	}
 }
 
@@ -143,6 +178,82 @@ func TestAssetDefaultsQueueResolutionRemainsFrozenAfterSettingEdit(t *testing.T)
 	frozen := effectiveConfigurationWithFrozenAssetDefaults(current, old)
 	if workerStringValue(frozen.Video.ProfileData["videoCodec"]) != "copy" || workerStringValue(frozen.Audio.ProfileData["preferredDefaultLanguage"]) != "eng" {
 		t.Fatalf("queue resolution changed after defaults edit: %#v", frozen)
+	}
+}
+
+func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	mediaPath := filepath.Join(sourceDir, "Episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("test media placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Asset Defaults Library", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: mediaPath, SourcePath: mediaPath, LogicalGroupPath: sourceDir, FileName: filepath.Base(mediaPath), Status: "unprocessed"}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"reviewMode": "automatic"}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	oldDefaults := defaultAssetDefaultsValue()
+	oldDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "eng"}
+	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: oldDefaults}).Error; err != nil {
+		t.Fatal(err)
+	}
+	newDefaults := defaultAssetDefaultsValue()
+	newDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "x265"}
+	newDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
+	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", newDefaults).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	job := models.QueueJob{
+		MediaPath: mediaPath, LibraryID: library.ID, Status: JobStatusRunning, Stage: JobStageClaimed,
+		WorkerName: "test-worker", StartedAt: &now, ProcessingMode: ProcessingModeAudioOnly,
+		ProfileResolution: models.JSONMap{
+			"video":  models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"videoCodec": "copy"}},
+			"audio":  models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"preferredDefaultLanguage": "eng"}},
+			"tracks": models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"subtitleDisposition": "keep"}},
+		},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparedVideo := settingProfileObject(prepared.ProfileResolution["video"])
+	preparedAudio := settingProfileObject(prepared.ProfileResolution["audio"])
+	if workerStringValue(settingProfileObject(preparedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(preparedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" {
+		t.Fatalf("claim preparation re-resolved changed defaults: %#v", prepared.ProfileResolution)
+	}
+	again, err := NewWorkerHandler(db).prepareClaimedQueueJob(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	againVideo := settingProfileObject(again.ProfileResolution["video"])
+	againAudio := settingProfileObject(again.ProfileResolution["audio"])
+	if workerStringValue(settingProfileObject(againVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(againAudio["profileData"])["preferredDefaultLanguage"]) != "eng" {
+		t.Fatalf("retry changed frozen Asset Defaults resolution: %#v", again.ProfileResolution)
 	}
 }
 

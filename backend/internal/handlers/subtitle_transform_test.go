@@ -112,6 +112,53 @@ func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
 	}
 }
 
+func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.T) {
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "ocr.log")
+	scripts := map[string]string{
+		"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"dvd_subtitle\",\"tags\":{\"language\":\"spa\"}}]}'\n",
+		"seconv":    "#!/bin/sh\nprintf 'seconv\\n' >> \"$MVFORGE_OCR_BOTH_LOG\"\noutput=\"\"\nfor argument do case \"$argument\" in --output-filename:*) output=\"${argument#--output-filename:}\" ;; esac; done\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola OCR' > \"$output\"\n",
+		"ffmpeg":    "#!/bin/sh\nprintf 'ffmpeg\\n' >> \"$MVFORGE_OCR_BOTH_LOG\"\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola OCR' > \"$output\"\n",
+		"tesseract": "#!/bin/sh\nexit 0\n",
+	}
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MVFORGE_OCR_BOTH_LOG", logPath)
+	plan := MediaJobPlan{
+		InputPath:  "/raw/Episode.mkv",
+		OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
+		Streams:    MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "dvd_subtitle", Language: "spa"}}},
+		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{
+			{StreamIndex: 4, Codec: "dvd_subtitle", SourceType: "bitmap", Language: "spa", Format: "srt", RequestedFormat: "both", Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw", LogicalTransformKey: "subtitle:4:converted:both"},
+			{StreamIndex: 4, Codec: "dvd_subtitle", SourceType: "bitmap", Language: "spa", Format: "ass", RequestedFormat: "both", Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw", LogicalTransformKey: "subtitle:4:converted:both"},
+		}},
+	}
+	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
+	if err != nil || len(artifacts) != 2 {
+		t.Fatalf("bitmap both artifacts=%#v err=%v", artifacts, err)
+	}
+	if artifacts[0].Format != "srt" || artifacts[1].Format != "ass" || artifacts[0].LogicalTransformKey != artifacts[1].LogicalTransformKey {
+		t.Fatalf("bitmap both artifact identity=%#v", artifacts)
+	}
+	for _, artifact := range artifacts {
+		content, readErr := os.ReadFile(artifact.StagedPath)
+		if readErr != nil || !strings.Contains(string(content), "Hola OCR") {
+			t.Fatalf("bitmap both artifact=%#v content=%q err=%v", artifact, content, readErr)
+		}
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(strings.TrimSpace(string(log)), "\n"); len(got) != 2 || got[0] != "seconv" || got[1] != "ffmpeg" {
+		t.Fatalf("bitmap both did not OCR once and render once: %q", log)
+	}
+}
+
 func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "ffprobe"), []byte("#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"hdmv_pgs_subtitle\"}]}'\n"), 0o700); err != nil {

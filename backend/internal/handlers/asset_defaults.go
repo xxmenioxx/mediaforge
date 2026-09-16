@@ -79,18 +79,30 @@ func defaultAssetDefaultsValue() models.JSONMap {
 }
 
 func validateAssetDefaultsValue(db *gorm.DB, value models.JSONMap) (models.JSONMap, error) {
+	result, warnings, err := validateAssetDefaultsValueWithWarnings(db, value)
+	if err != nil {
+		return nil, err
+	}
+	if len(warnings) > 0 {
+		return nil, fmt.Errorf("%s", strings.Join(warnings, "; "))
+	}
+	return result, nil
+}
+
+func validateAssetDefaultsValueWithWarnings(db *gorm.DB, value models.JSONMap) (models.JSONMap, []string, error) {
 	result := mergeJSONMaps(defaultAssetDefaultsValue(), value)
+	warnings := []string{}
 	if assetDefaultsIntSetting(result["schemaVersion"], assetDefaultsSchemaVersion) != assetDefaultsSchemaVersion {
-		return nil, fmt.Errorf("assetDefaults schemaVersion must be %d", assetDefaultsSchemaVersion)
+		return nil, nil, fmt.Errorf("assetDefaults schemaVersion must be %d", assetDefaultsSchemaVersion)
 	}
 	for _, domain := range []string{"video", "audio", "tracks"} {
 		block := settingProfileObject(result[domain])
 		if block == nil {
-			return nil, fmt.Errorf("assetDefaults.%s must be an object", domain)
+			return nil, nil, fmt.Errorf("assetDefaults.%s must be an object", domain)
 		}
 		source := strings.ToLower(strings.TrimSpace(workerStringValue(block["source"])))
 		if source != "custom" && source != "profile" {
-			return nil, fmt.Errorf("assetDefaults.%s.source must be custom or profile", domain)
+			return nil, nil, fmt.Errorf("assetDefaults.%s.source must be custom or profile", domain)
 		}
 		block["source"] = source
 		if source == "custom" {
@@ -108,12 +120,16 @@ func validateAssetDefaultsValue(db *gorm.DB, value models.JSONMap) (models.JSONM
 			block["custom"] = models.JSONMap{}
 			profileID := uint(workerNumberValue(block["profileId"], 0))
 			if profileID == 0 {
-				return nil, fmt.Errorf("assetDefaults.video.profileId is required for a profile source")
+				warnings = append(warnings, "assetDefaults.video.profileId is required for a profile source; using built-in default for video")
+				result[domain] = defaultAssetDefaultsValue()[domain]
+				continue
 			}
 			if db != nil && db.Migrator().HasTable(&models.Profile{}) {
 				var profile models.Profile
 				if err := db.First(&profile, profileID).Error; err != nil || profile.Disabled {
-					return nil, fmt.Errorf("assetDefaults.video.profileId references an unavailable profile")
+					warnings = append(warnings, fmt.Sprintf("assetDefaults.video.profileId %d references an unavailable profile; using built-in default for video", profileID))
+					result[domain] = defaultAssetDefaultsValue()[domain]
+					continue
 				}
 			}
 			block["profileId"] = profileID
@@ -121,7 +137,9 @@ func validateAssetDefaultsValue(db *gorm.DB, value models.JSONMap) (models.JSONM
 			block["custom"] = models.JSONMap{}
 			key := strings.TrimSpace(workerStringValue(block["profileKey"]))
 			if key == "" {
-				return nil, fmt.Errorf("assetDefaults.%s.profileKey is required for a profile source", domain)
+				warnings = append(warnings, fmt.Sprintf("assetDefaults.%s.profileKey is required for a profile source; using built-in default for %s", domain, domain))
+				result[domain] = defaultAssetDefaultsValue()[domain]
+				continue
 			}
 			if db != nil && db.Migrator().HasTable(&models.AppSetting{}) {
 				settingKey := "audioEnhancementProfiles"
@@ -130,7 +148,9 @@ func validateAssetDefaultsValue(db *gorm.DB, value models.JSONMap) (models.JSONM
 				}
 				profile, err := settingProfileByKey(db, settingKey, key)
 				if err != nil || boolValue(profile["disabled"], false) || strings.TrimSpace(workerStringValue(profile["deletedAt"])) != "" {
-					return nil, fmt.Errorf("assetDefaults.%s.profileKey references an unavailable profile", domain)
+					warnings = append(warnings, fmt.Sprintf("assetDefaults.%s.profileKey %q references an unavailable profile; using built-in default for %s", domain, key, domain))
+					result[domain] = defaultAssetDefaultsValue()[domain]
+					continue
 				}
 			}
 			block["profileKey"] = key
@@ -140,40 +160,40 @@ func validateAssetDefaultsValue(db *gorm.DB, value models.JSONMap) (models.JSONM
 		custom := settingProfileObject(audio["custom"])
 		channels := assetDefaultsIntSetting(custom["compatibleTrackChannels"], 2)
 		if channels < 1 || channels > 8 {
-			return nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackChannels must be between 1 and 8")
+			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackChannels must be between 1 and 8")
 		}
 		quality := assetDefaultsIntSetting(custom["compatibleTrackQuality"], 192)
 		if quality < 1 {
-			return nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackQuality must be positive")
+			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackQuality must be positive")
 		}
 		source := strings.ToLower(strings.TrimSpace(workerStringValue(custom["compatibleTrackSource"])))
 		if source != "resolved" && source != "default" {
-			return nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackSource must be resolved or default")
+			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackSource must be resolved or default")
 		}
 	}
 	if tracks := assetDefaultsDomain(result, "tracks"); tracks != nil {
 		custom := settingProfileObject(tracks["custom"])
 		if _, err := ParseSubtitleDisposition(workerStringValue(custom["subtitleDisposition"])); err != nil {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
 		}
 		if _, err := ParseAttachmentPolicy(workerStringValue(custom["attachmentPolicy"])); err != nil {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
 		}
 		if _, err := ParseFontAttachmentExportPolicy(workerStringValue(custom["fontAttachmentExportPolicy"])); err != nil {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
 		}
 		if _, err := ParseChapterPolicy(workerStringValue(custom["chapterPolicy"])); err != nil {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
 		}
 		if len(normalizedSubtitleSidecarFormats(custom["subtitleSidecarFormats"])) == 0 {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom.subtitleSidecarFormats must contain original, srt, ass, or both")
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.subtitleSidecarFormats must contain original, srt, ass, or both")
 		}
 		ocrMode := strings.ToLower(strings.TrimSpace(workerStringValue(custom["ocrMode"])))
 		if ocrMode != "" && ocrMode != "raw" && ocrMode != "clean" && ocrMode != "accurate" {
-			return nil, fmt.Errorf("assetDefaults.tracks.custom.ocrMode must be raw, clean, or accurate")
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.ocrMode must be raw, clean, or accurate")
 		}
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 func loadAssetDefaults(db *gorm.DB) (models.JSONMap, error) {
@@ -192,9 +212,9 @@ func loadAssetDefaultsWithWarnings(db *gorm.DB) (models.JSONMap, []string, error
 		}
 		return nil, nil, err
 	}
-	normalized, err := validateAssetDefaultsValue(db, setting.Value)
+	normalized, warnings, err := validateAssetDefaultsValueWithWarnings(db, setting.Value)
 	if err == nil {
-		return normalized, nil, nil
+		return normalized, warnings, nil
 	}
 	return defaultAssetDefaultsValue(), []string{err.Error()}, nil
 }
@@ -268,23 +288,12 @@ func profileFromMap(value map[string]any) (models.Profile, error) {
 }
 
 func (h QueueHandler) customVideoProfile(value models.JSONMap) (models.Profile, error) {
-	var fallbackProfile models.Profile
-	if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallbackProfile).Error; err != nil && err != gorm.ErrRecordNotFound {
-		return models.Profile{}, err
-	}
 	custom, _ := assetDefaultsProfileData(value, "video")
-	merged := profileMap(fallbackProfile)
-	if custom != nil {
-		merged = mergeJSONMaps(models.JSONMap(merged), models.JSONMap(custom))
-	}
-	profile, err := profileFromMap(map[string]any(merged))
-	if err != nil {
-		return models.Profile{}, err
-	}
+	profile := assetDefaultsNeutralVideoProfile()
+	applyAssetDefaultsVideoCustom(&profile, custom)
 	if err := scheduler.ApplyAuthoritativeContract(&profile); err != nil {
 		return models.Profile{}, fmt.Errorf("asset defaults video profile: %w", err)
 	}
-	applyAssetDefaultsVideoCustom(&profile, custom)
 	block := assetDefaultsDomain(value, "video")
 	if block != nil && boolValue(block["removeNonPrimaryVideoTracks"], false) {
 		profile.WorkerConfig["removeNonPrimaryVideoTracks"] = true
@@ -321,20 +330,28 @@ func (h QueueHandler) customVideoProfileForJob(job models.QueueJob) (models.Prof
 	if len(custom) == 0 {
 		return models.Profile{}, false, nil
 	}
-	var fallbackProfile models.Profile
-	if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallbackProfile).Error; err != nil {
-		return models.Profile{}, false, err
-	}
-	merged := mergeJSONMaps(models.JSONMap(profileMap(fallbackProfile)), models.JSONMap(custom))
-	profile, err := profileFromMap(map[string]any(merged))
-	if err != nil {
-		return models.Profile{}, false, err
-	}
+	profile := assetDefaultsNeutralVideoProfile()
+	applyAssetDefaultsVideoCustom(&profile, custom)
 	if err := scheduler.ApplyAuthoritativeContract(&profile); err != nil {
 		return models.Profile{}, false, fmt.Errorf("asset defaults video profile: %w", err)
 	}
-	applyAssetDefaultsVideoCustom(&profile, custom)
 	return profile, true, nil
+}
+
+func assetDefaultsNeutralVideoProfile() models.Profile {
+	return models.Profile{
+		Name:              "Asset Defaults",
+		Scope:             "asset",
+		Container:         "mkv",
+		VideoCodec:        "x265",
+		AudioCodec:        "copy",
+		QualityMode:       "crf",
+		QualityValue:      20,
+		ProfileVersion:    1,
+		PreserveSubtitles: true,
+		PreserveChapters:  true,
+		WorkerConfig:      models.JSONMap{},
+	}
 }
 
 func applyAssetDefaultsVideoCustom(profile *models.Profile, custom map[string]any) {
@@ -343,6 +360,14 @@ func applyAssetDefaultsVideoCustom(profile *models.Profile, custom map[string]an
 	}
 	if profile.WorkerConfig == nil {
 		profile.WorkerConfig = models.JSONMap{}
+	}
+	if codec := strings.TrimSpace(workerStringValue(custom["videoCodec"])); codec != "" {
+		profile.VideoCodec = codec
+		profile.CodecFamily = ""
+		profile.EncoderPolicy = ""
+		profile.PreferredEncoder = ""
+		profile.AllowedEncoders = nil
+		profile.FallbackPolicy = ""
 	}
 	if preferred := strings.TrimSpace(workerStringValue(custom["preferredEncoder"])); preferred != "" {
 		profile.WorkerConfig["videoEncoder"] = preferred
