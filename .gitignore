@@ -98,3 +98,4 @@ docs/ai/evaluations/
 scripts/ai/
 scripts/new-ai-evaluation.sh
 .env
+.codex/config.toml
