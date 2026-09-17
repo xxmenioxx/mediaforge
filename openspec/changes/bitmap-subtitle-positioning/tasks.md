@@ -3,7 +3,7 @@
 - [ ] 1.1 Define the internal canonical bitmap cue and optional geometry model, including validated canvas/bounds, timing, source ordinal, and bounded parser limits; verify malformed and out-of-bounds geometry is rejected without failing OCR.
 - [ ] 1.2 Implement PGS SUP geometry extraction from the existing operation-owned FFmpeg output using presentation-composition/object-definition data; verify canvas, event timing, bitmap bounds, and stable source ordering with disposable SUP fixtures.
 - [ ] 1.3 Implement the capability-driven VobSub geometry provider for representations the runtime can actually parse, and fail closed to missing-geometry fallback when an embedded or unsupported representation exposes no verified coordinates; verify both available and unavailable paths without adding an unverified FFmpeg/SeConv contract.
-- [ ] 1.4 Normalize source-event and OCR cue timing to one operation-local prepared-input timeline, including non-zero segment/sample starts and any established output-offset restoration; verify matching uses local times without changing emitted subtitle timing.
+- [ ] 1.4 Define provenance-based timing normalization: use prepared-input-local values directly, translate original-source-absolute values exactly once, and fail closed for unknown or ambiguous provenance; verify that a non-zero segment/sample start is not mechanically applied a second time.
 
 ## 2. Cue correlation and coarse layout
 
@@ -22,6 +22,6 @@
 
 - [ ] 4.1 Add focused backend regression fixtures for simultaneous top/bottom cues, including overlapping timings, and verify each event retains its own coarse ASS region without merging.
 - [ ] 4.2 Add focused regression coverage for missing or ambiguous geometry and verify conversion succeeds with deterministic bottom-center ASS fallback while SRT remains unchanged.
-- [ ] 4.3 Add focused regression coverage for geometry/OCR correlation through a non-zero segment or sample start and verify source and recognized cues match in the prepared-input timeline.
+- [ ] 4.3 Add focused regression coverage using a non-zero segment/sample start where geometry and OCR cues are already prepared-input-local; assert the correct match and explicitly fail if a second segment-start adjustment occurs. Also cover one original-source-absolute translation.
 - [ ] 4.4 Add cleanup-retention, raw-ASS, SRT, native ASS, native SSA, and logical both regression coverage against disposable FFmpeg/SeConv fixtures; verify no serializer invokes OCR and no existing sidecar identity changes.
 - [ ] 4.5 Run ./scripts/verify.sh --auto and verify the result reports ALL CHECKS PASSED.

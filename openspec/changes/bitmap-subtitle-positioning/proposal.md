@@ -18,9 +18,11 @@ problem.
   parseable event geometry.
 - Correlate geometry with recognized cues without merging simultaneous cues,
   using cue timing and stable source-event order as the primary association.
-- Normalize source-event and OCR cue timing into one operation-local
-  prepared-input timeline before correlation, including non-zero segment/sample
-  starts.
+- Normalize source-event and OCR cue timing by provenance: prepared-input-local
+  values are used directly, original-source-absolute values are translated
+  exactly once into the prepared-input timeline, and unknown or ambiguous
+  values receive no invented offset and fall back safely. This covers
+  non-zero segment/sample execution without double-adjustment.
 - Add a deterministic coarse ASS layout resolver using relative vertical
   regions and optional left/center/right alignment. Use a safe bottom-center
   fallback when geometry is missing, ambiguous, or unsupported.

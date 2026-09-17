@@ -107,15 +107,28 @@ prepared input/workspace. They do not invoke Tesseract, SeConv, or a second
 OCR pass. Parser limits on event count, segment size, and retained diagnostics
 must prevent malformed subtitle data from causing unbounded memory or work.
 
-#### Operation-local timing normalization
+#### Operation-local timing normalization by provenance
 
-Before correlation, source bitmap events and OCR cues are converted to one
-operation-local timeline whose zero is the start of the prepared input. For a
-full conversion this is the source timeline. For a segmented or sampled
-conversion, source event timestamps and geometry are shifted by the same
-non-zero segment/sample start used to prepare the input, while OCR timestamps
-are interpreted relative to that prepared input. Matching never compares an
-absolute source timestamp with an unshifted sample timestamp.
+Before correlation, every source bitmap event and recognized OCR cue must have
+an explicit timing provenance:
+
+- `prepared-input-local`: the value already belongs to the prepared input,
+  including geometry parsed from a segment or sample generated for that input;
+  use it directly.
+- `original-source-absolute`: the value belongs to the original media
+  timeline; translate it exactly once through the operation's explicit
+  preparation mapping into the prepared-input timeline.
+- `unknown` or `ambiguous`: do not add or subtract any offset; the value cannot
+  establish an authoritative geometry match and the affected cue uses the
+  safe fallback.
+
+The existence of a non-zero segment/sample start does not itself imply a
+translation. It is used only when provenance is original-source-absolute. If
+geometry and OCR cues both originate from the same prepared or segmented
+input, they are already in the same operation-local timeline and must not
+receive another segment-start adjustment. Matching must never compare
+unconverted absolute timing with local timing; when provenance cannot prove a
+safe conversion, correlation fails closed.
 
 The normalized timeline is used only for geometry correlation. Existing output
 timing and any later offset restoration remain governed by the canonical

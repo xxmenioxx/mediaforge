@@ -18,6 +18,14 @@ have layout applied, from the cleaned canonical cues plus the same retained
 geometry; correctness SHALL NOT depend on SeConv preserving already-serialized
 ASS alignment tags.
 
+Every geometry event and recognized OCR cue SHALL have timing provenance.
+prepared-input-local timing SHALL be used directly. original-source-absolute
+timing SHALL be translated exactly once into the prepared-input timeline using
+the operation's known preparation mapping. unknown or ambiguous timing
+provenance SHALL receive no invented offset and SHALL NOT produce an
+authoritative geometry correlation; the affected cue SHALL use the safe
+fallback.
+
 #### Scenario: Bitmap cue geometry is available
 
 - **WHEN** a bitmap subtitle cue has verifiable canvas and bitmap bounds and
@@ -41,13 +49,28 @@ ASS alignment tags.
   and assigns their independently correlated coarse regions without merging
   them because their timestamps overlap
 
-#### Scenario: Geometry correlation uses the prepared-input timeline
+#### Scenario: Prepared-input-local timings are not double-adjusted
 
 - **WHEN** bitmap source events and recognized OCR cues are produced from a
-  prepared input with a non-zero segment or sample start
-- **THEN** both timing sets are normalized to one operation-local prepared-input
-  timeline before correlation, so geometry is assigned to the correct cues
-  without changing the established published timing semantics
+  prepared or segmented input with a non-zero segment or sample start and both
+  are marked prepared-input-local
+- **THEN** both timing sets are matched directly in that local timeline, the
+  segment/sample start is not applied again, and the expected geometry remains
+  associated with the cue rather than being shifted by a second offset
+
+#### Scenario: Original-source-absolute timing is translated once
+
+- **WHEN** bitmap source-event timing is original-source-absolute and recognized
+  OCR cue timing is prepared-input-local
+- **THEN** the source event is translated exactly once through the known
+  preparation mapping before correlation, without changing emitted subtitle
+  timing
+
+#### Scenario: Ambiguous timing provenance falls back safely
+
+- **WHEN** geometry-event or OCR-cue timing provenance is unknown or ambiguous
+- **THEN** no offset is invented, no authoritative geometry match is made, and
+  the affected OCR ASS cue uses the documented safe fallback
 
 ### Requirement: OCR-generated ASS uses deterministic coarse layout
 
