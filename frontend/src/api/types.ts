@@ -921,6 +921,7 @@ export type QueueJob = {
     displayName?: string;
     fontAttachmentsExported?: boolean;
 	ocrLanguage?: string;
+	effectiveOcrLanguage?: string;
 	ocrMode?: 'raw' | 'clean' | 'accurate';
     stages?: string[];
     extension?: string;

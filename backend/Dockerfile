@@ -227,8 +227,11 @@ RUN apt-get update \
        libvorbis0a libvorbisenc2 libvpx9 libwebp7 libx264-164 libx265-215 \
        libx11-6 libxext6 libxfixes3 libwayland-client0 \
        libzimg2 ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es tesseract-ocr \
-       tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-spa tzdata \
+       tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-jpn-vert tesseract-ocr-spa tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+RUN tesseract --list-langs | grep -Fx 'jpn' \
+    && tesseract --list-langs | grep -Fx 'jpn_vert'
 
 COPY --from=build /out/mvforge-api /usr/local/bin/mvforge-api
 COPY --from=build /out/mvforge-hw-probe /usr/local/bin/mvforge-hw-probe

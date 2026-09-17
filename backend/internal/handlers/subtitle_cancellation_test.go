@@ -317,7 +317,7 @@ printf '%s\n' 'Running tesseract OCR on 5 VobSub image(s)...' >&2
 touch "$BITMAP_OCR_MARKER"
 while :; do sleep 1; done
 `)
-			writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nexit 0\n")
+			writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n")
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			gin.SetMode(gin.TestMode)

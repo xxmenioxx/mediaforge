@@ -347,9 +347,11 @@ func executeSingleSubtitleTarget(
 			op.Progress = 20
 			op.Message = "Running OCR"
 		})
-		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0, subtitleOCRProgress(operationID)); err != nil {
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0, subtitleOCRProgress(operationID))
+		if err != nil {
 			return target.artifact, err
 		}
+		target.artifact.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		return validateStagedSubtitleArtifact(target)
 	} else {
 		args = textSubtitleExtractionArgs(plan, target.plan.StreamIndex, target.plan.Format, target.stagePath)
@@ -384,8 +386,12 @@ func executeBothSubtitleTargets(
 			op.Progress = 20
 			op.Message = "Running OCR"
 		})
-		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0, subtitleOCRProgress(operationID)); err != nil {
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0, subtitleOCRProgress(operationID))
+		if err != nil {
 			return nil, err
+		}
+		for _, target := range targets {
+			target.artifact.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		}
 	} else {
 		args := textSubtitleExtractionArgs(MediaJobPlan{InputPath: sourceMediaPath}, stream.Index, "srt", canonicalPath)

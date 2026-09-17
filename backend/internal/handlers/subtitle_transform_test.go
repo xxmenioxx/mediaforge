@@ -83,7 +83,7 @@ func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
 				"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"id\":\"0x7\",\"codec_type\":\"subtitle\",\"codec_name\":\"" + test.codec + "\",\"tags\":{\"language\":\"spa\"}}]}'\n",
 				"ffmpeg":    "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf 'PG' > \"$output\"\n",
 				"seconv":    "#!/bin/sh\noutput=\"\"\nfor argument do case \"$argument\" in --output-filename:*) output=\"${argument#--output-filename:}\" ;; esac; done\ncase \"$output\" in\n *.ass) printf '%s\\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola OCR' > \"$output\" ;;\n *) printf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola OCR' > \"$output\" ;;\nesac\n",
-				"tesseract": "#!/bin/sh\nexit 0\n",
+				"tesseract": "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n",
 			}
 			for name, script := range scripts {
 				if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
@@ -119,7 +119,7 @@ func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.
 		"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"dvd_subtitle\",\"tags\":{\"language\":\"spa\"}}]}'\n",
 		"seconv":    "#!/bin/sh\nprintf 'seconv\\n' >> \"$MVFORGE_OCR_BOTH_LOG\"\noutput=\"\"\nfor argument do case \"$argument\" in --output-filename:*) output=\"${argument#--output-filename:}\" ;; esac; done\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola OCR' > \"$output\"\n",
 		"ffmpeg":    "#!/bin/sh\nprintf 'ffmpeg\\n' >> \"$MVFORGE_OCR_BOTH_LOG\"\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola OCR' > \"$output\"\n",
-		"tesseract": "#!/bin/sh\nexit 0\n",
+		"tesseract": "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n",
 	}
 	for name, script := range scripts {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
@@ -170,7 +170,7 @@ func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "seconv"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "tesseract"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "tesseract"), []byte("#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -318,11 +318,11 @@ func TestResolvedSubtitleStagedPathSharesDuplicateIdentityAcrossFormats(t *testi
 
 func TestSubtitleArtifactJSONPreservesResolvedExtractionState(t *testing.T) {
 	values := []SubtitleArtifact{
-		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "spa", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
+		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "spa", OCRLanguage: "jpn", EffectiveOCRLanguage: "jpn_vert", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
 		{StreamIndex: 5, SourceCodec: "subrip", Format: "srt", Language: "eng", Forced: true, StagedPath: "/staging/Movie.eng.forced.srt", Status: "ready", SizeBytes: 30},
 	}
 	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON(values))
-	if len(decoded) != 2 || decoded[0].Status != "ready" || decoded[0].Mode != "original" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
+	if len(decoded) != 2 || decoded[0].Status != "ready" || decoded[0].Mode != "original" || decoded[0].OCRLanguage != "jpn" || decoded[0].EffectiveOCRLanguage != "jpn_vert" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
 		t.Fatalf("multiple sidecar artifacts did not round trip: %#v", decoded)
 	}
 	if got := subtitleArtifactsFromJSON(subtitleArtifactsJSON(nil)); len(got) != 0 {
