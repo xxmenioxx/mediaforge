@@ -74,6 +74,12 @@ The model is an intermediate canonical result, not a new job system or a
 second subtitle pipeline. Existing OCR, normalization, validation, cleanup,
 publication, and operation ownership remain the surrounding stages.
 
+Geometry is authoritative on this canonical cue object, not on an ASS file.
+The cleanup adapter must preserve cue identity and carry its geometry alongside
+any cleaned text, line-break, or timing changes. SeConv must receive the
+geometry-free cleanup representation; serialized ASS alignment tags are never
+the source of truth and their survival in SeConv output is not required.
+
 ### 2. Obtain geometry from available bitmap representations
 
 Geometry acquisition is a best-effort provider selected by source type and
@@ -101,6 +107,20 @@ prepared input/workspace. They do not invoke Tesseract, SeConv, or a second
 OCR pass. Parser limits on event count, segment size, and retained diagnostics
 must prevent malformed subtitle data from causing unbounded memory or work.
 
+#### Operation-local timing normalization
+
+Before correlation, source bitmap events and OCR cues are converted to one
+operation-local timeline whose zero is the start of the prepared input. For a
+full conversion this is the source timeline. For a segmented or sampled
+conversion, source event timestamps and geometry are shifted by the same
+non-zero segment/sample start used to prepare the input, while OCR timestamps
+are interpreted relative to that prepared input. Matching never compares an
+absolute source timestamp with an unshifted sample timestamp.
+
+The normalized timeline is used only for geometry correlation. Existing output
+timing and any later offset restoration remain governed by the canonical
+subtitle pipeline, so this change does not alter published cue timing.
+
 Alternative: request coordinates from ffprobe or add SeConv geometry flags.
 Rejected because neither contract is present in the repository/runtime and
 would make layout depend on unsupported behavior.
@@ -108,11 +128,12 @@ would make layout depend on unsupported behavior.
 ### 3. Correlate recognized cues deterministically and one-to-one
 
 The OCR result is normalized into canonical cues before output fan-out. Each
-source bitmap event carries a source ordinal and timing interval. Correlation
+source bitmap event and recognized OCR cue first receives a start/end interval
+in the operation-local prepared-input timeline described above. Correlation
 uses the following ordered rules:
 
-1. Prefer a unique recognized cue whose start/end interval matches or overlaps
-   the source event within the existing subtitle timing precision.
+1. Prefer a unique recognized cue whose normalized start/end interval matches
+   or overlaps the source event within the existing subtitle timing precision.
 2. For simultaneous or otherwise equal timing candidates, match in stable
    source-event and recognized-cue order.
 3. Assign geometry only when the candidate is unique under those rules;
@@ -149,10 +170,15 @@ available, use explicit bottom-center (\an2) or the equivalent existing
 default. The resolver emits supported ASS override alignment tags in the
 event-level output and does not emit \pos(x,y).
 
-Layout is applied only while serializing OCR-derived ASS. The raw OCR ASS
-contains the resolved tags, and the existing cleanup path receives those tags
-and must retain them in the cleaned ASS. The SRT serializer ignores the
-geometry field, and native ASS/SSA extraction bypasses the resolver.
+Layout is applied only while serializing OCR-derived ASS. The raw OCR ASS,
+when required, is rendered directly from the pre-clean canonical cues plus
+geometry. Cleanup receives a geometry-free representation of those canonical
+cues; its output is normalized back into cleaned canonical cues while cue
+identity retains the original geometry. The final cleaned ASS is then rendered
+from the cleaned canonical cues plus that retained geometry. This makes layout
+correctness independent of whether SeConv preserves serialized ASS override
+tags. The SRT serializer ignores the geometry field, and native ASS/SSA
+extraction bypasses the resolver.
 
 Alternative: mutate one global ASS style for each track. Rejected because
 simultaneous cues can require different positions. Alternative: use exact
@@ -163,8 +189,8 @@ coordinate contract to preserve.
 ### 5. Preserve one canonical result for SRT, ASS, and both
 
 For converted bitmap SRT or ASS, the canonical operation performs recognition,
-normalization, geometry acquisition, and correlation once. For logical both,
-the same enriched cue slice is sent to:
+normalization, geometry acquisition, timing normalization, and correlation
+once. For logical both, the same enriched cue slice is sent to:
 
 - the existing text/timing-only SRT serializer; and
 - the ASS serializer with the coarse alignment resolver.
@@ -174,9 +200,11 @@ correlation. Artifact naming, logical transform keys, OCR language metadata,
 staging, validation, and publication remain owned by the existing canonical
 artifact flow.
 
-For direct OCR ASS, the raw and cleaned ASS outputs use the enriched cues. For
-shared both, the ASS artifact is the only requested ASS output and receives
-the same geometry-enriched result; no auxiliary OCR operation is created.
+For direct OCR ASS, raw output uses the pre-clean enriched cues and cleaned
+output uses cleaned enriched cues. For shared both, SRT and ASS are rendered
+from the same geometry-enriched result and no auxiliary OCR operation is
+created. A non-zero segment/sample start affects matching through the local
+timeline only; it does not cause a second extraction or recognition.
 
 ### 6. Keep runtime and migration impact additive
 

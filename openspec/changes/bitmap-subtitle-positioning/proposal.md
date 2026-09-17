@@ -18,11 +18,17 @@ problem.
   parseable event geometry.
 - Correlate geometry with recognized cues without merging simultaneous cues,
   using cue timing and stable source-event order as the primary association.
+- Normalize source-event and OCR cue timing into one operation-local
+  prepared-input timeline before correlation, including non-zero segment/sample
+  starts.
 - Add a deterministic coarse ASS layout resolver using relative vertical
   regions and optional left/center/right alignment. Use a safe bottom-center
   fallback when geometry is missing, ambiguous, or unsupported.
-- Apply spatial layout only to OCR-generated ASS, including the raw ASS and
-  cleaned ASS artifacts. Keep SRT text/timing-only behavior unchanged.
+- Keep spatial metadata authoritative through OCR cleanup: render raw ASS from
+  pre-clean canonical cues plus geometry, and render cleaned ASS from cleaned
+  canonical cues plus the same retained geometry. Keep SRT text/timing-only
+  behavior unchanged; correctness must not depend on SeConv preserving
+  serialized ASS alignment tags.
 - Keep native ASS/SSA extraction lossless and unchanged, and preserve canonical
   artifact identity, OCR language, cleanup, sidecar publication, and logical
   \`both\` shared-result execution.

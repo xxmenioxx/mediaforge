@@ -11,6 +11,13 @@ geometry. When geometry is unavailable, invalid, or cannot be correlated
 unambiguously, the affected cue SHALL remain valid and use the existing
 bottom-center layout fallback.
 
+Spatial metadata SHALL remain authoritative canonical cue metadata through OCR
+cleanup. Raw OCR ASS, when produced, SHALL be rendered from the pre-clean
+canonical cues plus their geometry. Final cleaned ASS SHALL be rendered, or
+have layout applied, from the cleaned canonical cues plus the same retained
+geometry; correctness SHALL NOT depend on SeConv preserving already-serialized
+ASS alignment tags.
+
 #### Scenario: Bitmap cue geometry is available
 
 - **WHEN** a bitmap subtitle cue has verifiable canvas and bitmap bounds and
@@ -33,6 +40,14 @@ bottom-center layout fallback.
 - **THEN** the canonical result keeps both recognized cues as separate events
   and assigns their independently correlated coarse regions without merging
   them because their timestamps overlap
+
+#### Scenario: Geometry correlation uses the prepared-input timeline
+
+- **WHEN** bitmap source events and recognized OCR cues are produced from a
+  prepared input with a non-zero segment or sample start
+- **THEN** both timing sets are normalized to one operation-local prepared-input
+  timeline before correlation, so geometry is assigned to the correct cues
+  without changing the established published timing semantics
 
 ### Requirement: OCR-generated ASS uses deterministic coarse layout
 
@@ -67,8 +82,18 @@ cleaned OCR ASS SHALL retain the resolved layout metadata.
 #### Scenario: Cleanup retains layout
 
 - **WHEN** OCR-generated ASS passes through the existing cleanup mode
-- **THEN** the cleaned ASS retains each resolved coarse alignment and does not
-  collapse positioned events to one default style
+- **THEN** cleanup operates on canonical cue text/timing while geometry remains
+  attached to cue identity, and the cleaned ASS is rendered with each retained
+  coarse alignment rather than relying on SeConv to preserve serialized ASS
+  tags
+
+#### Scenario: Raw and cleaned ASS use the same geometry
+
+- **WHEN** an OCR conversion produces both a raw ASS representation and a
+  cleaned ASS artifact
+- **THEN** raw ASS uses pre-clean canonical cues plus geometry, cleaned ASS uses
+  cleaned canonical cues plus that same geometry, and cleanup cannot silently
+  replace spatial metadata with its default style
 
 ### Requirement: Spatial metadata does not alter SRT or native subtitle behavior
 

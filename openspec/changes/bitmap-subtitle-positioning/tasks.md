@@ -3,16 +3,17 @@
 - [ ] 1.1 Define the internal canonical bitmap cue and optional geometry model, including validated canvas/bounds, timing, source ordinal, and bounded parser limits; verify malformed and out-of-bounds geometry is rejected without failing OCR.
 - [ ] 1.2 Implement PGS SUP geometry extraction from the existing operation-owned FFmpeg output using presentation-composition/object-definition data; verify canvas, event timing, bitmap bounds, and stable source ordering with disposable SUP fixtures.
 - [ ] 1.3 Implement the capability-driven VobSub geometry provider for representations the runtime can actually parse, and fail closed to missing-geometry fallback when an embedded or unsupported representation exposes no verified coordinates; verify both available and unavailable paths without adding an unverified FFmpeg/SeConv contract.
+- [ ] 1.4 Normalize source-event and OCR cue timing to one operation-local prepared-input timeline, including non-zero segment/sample starts and any established output-offset restoration; verify matching uses local times without changing emitted subtitle timing.
 
 ## 2. Cue correlation and coarse layout
 
-- [ ] 2.1 Correlate recognized OCR cues with source bitmap events by timing and deterministic source order, retaining one-to-one cue identity and leaving ambiguous matches unpositioned; verify simultaneous cues in different regions remain separate.
+- [ ] 2.1 Correlate recognized OCR cues with source bitmap events by normalized timing and deterministic source order, retaining one-to-one cue identity and leaving ambiguous matches unpositioned; verify simultaneous cues in different regions remain separate.
 - [ ] 2.2 Implement the coarse ASS alignment resolver using relative vertical thirds and reliable horizontal thirds mapped to ASS alignment tags, with deterministic bottom-center fallback and no exact position claims; verify upper, middle, lower, left, center, right, boundary, and missing-geometry cases.
 - [ ] 2.3 Keep geometry independent from SRT serialization and verify SRT contains only recognized text/timing while generated ASS receives the expected event-level alignment.
 
 ## 3. Canonical pipeline integration
 
-- [ ] 3.1 Thread the enriched bitmap cue result through direct OCR-generated ASS and the existing cleanup path; verify raw OCR ASS contains resolved layout, cleaned ASS retains it, and OCR language, timing, line breaks, and artifact identity remain unchanged.
+- [ ] 3.1 Thread the enriched bitmap cue result through direct OCR-generated ASS and cleanup without making layout correctness depend on serialized ASS tags surviving SeConv; verify raw ASS renders from pre-clean cues plus geometry, cleaned ASS renders from cleaned cues plus the same geometry, and OCR language, timing, line breaks, and artifact identity remain unchanged.
 - [ ] 3.2 Integrate geometry-aware ASS and geometry-free SRT fan-out into the existing canonical resolved-artifact path without introducing a second operation or OCR pass; verify Asset Info, Queue, and other canonical callers use the same behavior.
 - [ ] 3.3 Preserve native ASS and SSA extraction as lossless stream-copy behavior that bypasses bitmap geometry; verify native styles, override positioning, karaoke data, and representation remain unchanged.
 - [ ] 3.4 Preserve logical both shared-result execution so one bitmap recognition and one geometry correlation feed SRT and ASS, with only ASS consuming spatial metadata; verify command counts, shared cue identity, and independently valid artifacts.
@@ -21,5 +22,6 @@
 
 - [ ] 4.1 Add focused backend regression fixtures for simultaneous top/bottom cues, including overlapping timings, and verify each event retains its own coarse ASS region without merging.
 - [ ] 4.2 Add focused regression coverage for missing or ambiguous geometry and verify conversion succeeds with deterministic bottom-center ASS fallback while SRT remains unchanged.
-- [ ] 4.3 Add cleanup-retention, raw-ASS, SRT, native ASS, native SSA, and logical both regression coverage against disposable FFmpeg/SeConv fixtures; verify no serializer invokes OCR and no existing sidecar identity changes.
-- [ ] 4.4 Run ./scripts/verify.sh --auto and verify the result reports ALL CHECKS PASSED.
+- [ ] 4.3 Add focused regression coverage for geometry/OCR correlation through a non-zero segment or sample start and verify source and recognized cues match in the prepared-input timeline.
+- [ ] 4.4 Add cleanup-retention, raw-ASS, SRT, native ASS, native SSA, and logical both regression coverage against disposable FFmpeg/SeConv fixtures; verify no serializer invokes OCR and no existing sidecar identity changes.
+- [ ] 4.5 Run ./scripts/verify.sh --auto and verify the result reports ALL CHECKS PASSED.
