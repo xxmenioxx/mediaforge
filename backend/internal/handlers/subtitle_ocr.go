@@ -52,112 +52,6 @@ func scanLinesAndCarriageReturns(
 	return 0, nil, nil
 }
 
-func generateBitmapSubtitleSidecar(
-	ctx context.Context,
-	sourceMediaPath string,
-	destinationMediaPath string,
-	stream FFProbeStream,
-	input SubtitleExtractionInput,
-	onProgress OCRProgressFunc,
-) (SubtitleExtractionResult, error) {
-	format := strings.ToLower(strings.TrimSpace(input.Format))
-	if format == "" {
-		format = "srt"
-	}
-	if format == "both" {
-		return generateBitmapSubtitleBoth(ctx, sourceMediaPath, destinationMediaPath, stream, input, onProgress)
-	}
-	if format != "srt" && format != "ass" {
-		return SubtitleExtractionResult{}, fmt.Errorf("OCR output format must be srt or ass")
-	}
-
-	language := normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
-	fileLanguage := safeSubtitleFilenamePart(stream.Tags["language"])
-	if fileLanguage == "" {
-		fileLanguage = language
-	}
-	outputPath := fmt.Sprintf(
-		"%s.%s.%d.%s",
-		strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath)),
-		fileLanguage,
-		stream.Index,
-		format,
-	)
-	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: []string{}}
-	if info, err := os.Stat(outputPath); err == nil && !info.IsDir() {
-		result.Existing = append(result.Existing, outputPath)
-		return result, nil
-	} else if err != nil && !os.IsNotExist(err) {
-		return result, fmt.Errorf("%s", mediaPathReadError(err))
-	}
-
-	if _, err := exec.LookPath("seconv"); err != nil {
-		return result, fmt.Errorf("OCR is not available in this backend image (seconv was not found)")
-	}
-	if _, err := exec.LookPath("tesseract"); err != nil {
-		return result, fmt.Errorf("OCR is not available in this backend image (Tesseract was not found)")
-	}
-
-	tempDir, err := os.MkdirTemp(filepath.Dir(outputPath), ".mvforge-ocr-*")
-	if err != nil {
-		return result, fmt.Errorf("cannot create OCR workspace beside the asset: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	tempName := "ocr." + format
-	tempPath := filepath.Join(tempDir, tempName)
-	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
-
-	message, err := runBitmapOCR(
-		ctx,
-		sourceMediaPath,
-		stream,
-		format,
-		language,
-		input.OCRMode,
-		tempPath,
-		rawTempPath,
-		onProgress,
-	)
-	if err != nil {
-		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %s", stream.Index, stream.CodecName, fallback(message, err.Error()))
-	}
-
-	content, err := os.ReadFile(tempPath)
-	if err != nil {
-		if summary := emptyOCRTrackMessage(stream.Index, language, message); summary != "" {
-			return result, fmt.Errorf("%s", summary)
-		}
-		if message == "" {
-			message = "SeConv completed without reporting a reason"
-		}
-		message = conciseCommandOutput(message, 1200)
-		return result, fmt.Errorf("OCR produced no %s subtitle for stream %d: %s", strings.ToUpper(format), stream.Index, message)
-	}
-	if !validSubtitleSidecar(format, content) {
-		return result, fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
-	}
-	if err := os.Link(tempPath, outputPath); err != nil {
-		if os.IsExist(err) {
-			result.Existing = append(result.Existing, outputPath)
-			return result, nil
-		}
-		return result, fmt.Errorf("cannot publish OCR subtitle beside the asset: %w", err)
-	}
-	result.Created = append(result.Created, outputPath)
-	if normalizedOCRMode(input.OCRMode) != "raw" {
-		rawOutputPath := strings.TrimSuffix(outputPath, "."+format) + ".raw." + format
-		if rawContent, readErr := os.ReadFile(rawTempPath); readErr == nil && validSubtitleSidecar(format, rawContent) {
-			if linkErr := os.Link(rawTempPath, rawOutputPath); linkErr == nil {
-				result.Created = append(result.Created, rawOutputPath)
-			} else if os.IsExist(linkErr) {
-				result.Existing = append(result.Existing, rawOutputPath)
-			}
-		}
-	}
-	return result, nil
-}
-
 func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinationMediaPath string, stream FFProbeStream, input SubtitleExtractionInput, onProgress OCRProgressFunc) (SubtitleExtractionResult, error) {
 	base := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath))
 	language := safeSubtitleFilenamePart(stream.Tags["language"])
@@ -199,28 +93,42 @@ func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinatio
 	if err != nil || !validSubtitleSidecar("srt", content) {
 		return result, fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
 	}
-	if _, err := os.Stat(srtPath); os.IsNotExist(err) {
-		if err := os.Link(tempSRT, srtPath); err != nil {
-			return result, fmt.Errorf("cannot publish OCR subtitle beside the asset: %w", err)
-		}
-		result.Created = append(result.Created, srtPath)
-	}
 	tempASS := filepath.Join(tempDir, "ocr.ass")
-	cmd := exec.CommandContext(ctx, "ffmpeg", subtitleCueRenderArgs(tempSRT, "ass", tempASS)...)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(tempSRT, "ass", tempASS), nil, &stderr); err != nil {
 		return result, fmt.Errorf("ASS render failed for subtitle stream %d: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 	}
 	assContent, err := os.ReadFile(tempASS)
 	if err != nil || !validSubtitleSidecar("ass", assContent) {
 		return result, fmt.Errorf("ASS render for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
 	}
-	if _, err := os.Stat(assPath); os.IsNotExist(err) {
-		if err := os.Link(tempASS, assPath); err != nil {
-			return result, fmt.Errorf("cannot publish ASS subtitle beside the asset: %w", err)
+	// Keep a logical both conversion behind one publication barrier. The
+	// complete requested set is validated before either new sidecar is linked.
+	subtitlePublicationMu.Lock()
+	defer subtitlePublicationMu.Unlock()
+	published := []string{}
+	for _, pair := range []struct {
+		temp string
+		path string
+	}{
+		{temp: tempSRT, path: srtPath},
+		{temp: tempASS, path: assPath},
+	} {
+		if _, statErr := os.Stat(pair.path); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			rollbackSubtitlePublication(published)
+			return result, fmt.Errorf("cannot inspect OCR subtitle destination: %w", statErr)
 		}
-		result.Created = append(result.Created, assPath)
+		if linkErr := os.Link(pair.temp, pair.path); linkErr != nil {
+			if os.IsExist(linkErr) {
+				continue
+			}
+			rollbackSubtitlePublication(published)
+			return result, fmt.Errorf("cannot publish OCR subtitle beside the asset: %w", linkErr)
+		}
+		published = append(published, pair.path)
+		result.Created = append(result.Created, pair.path)
 	}
 	return result, nil
 }
@@ -252,9 +160,10 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	if segmentDuration > 0 {
 		segmentPath := filepath.Join(tempDir, "subtitle-segment.mkv")
 		args := bitmapSubtitleSegmentArgs(mediaPath, stream.Index, segmentPath, segmentStart, segmentDuration)
-		output, runErr := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+		var output bytes.Buffer
+		runErr := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output)
 		if runErr != nil {
-			return fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", stream.Index, fallback(strings.TrimSpace(string(output)), runErr.Error()))
+			return fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", stream.Index, fallback(strings.TrimSpace(output.String()), runErr.Error()))
 		}
 		windowStreams, probeErr := probeSubtitleStreams(ctx, segmentPath)
 		if probeErr != nil || len(windowStreams) == 0 {
@@ -291,6 +200,13 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 	_ = os.Remove(outputPath)
 	if err := os.Rename(tempPath, outputPath); err != nil {
 		return fmt.Errorf("cannot stage OCR subtitle: %w", err)
+	}
+	if normalizedOCRMode(ocrMode) != "raw" {
+		rawOutputPath := strings.TrimSuffix(outputPath, "."+format) + ".raw." + format
+		_ = os.Remove(rawOutputPath)
+		if err := os.Rename(rawTempPath, rawOutputPath); err != nil {
+			return fmt.Errorf("cannot stage raw OCR subtitle: %w", err)
+		}
 	}
 	return nil
 }
@@ -338,17 +254,17 @@ func extractPGSSubtitleForOCR(
 		outputPath,
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
+	var output bytes.Buffer
+	err := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output)
 	if err != nil {
-		return strings.TrimSpace(string(output)), fmt.Errorf(
+		return strings.TrimSpace(output.String()), fmt.Errorf(
 			"cannot extract PGS subtitle stream %d: %w",
 			stream.Index,
 			err,
 		)
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(output.String()), nil
 }
 
 func runBitmapOCR(
@@ -488,10 +404,8 @@ func runSeConvCleanup(ctx context.Context, inputPath, format, language, outputPa
 }
 
 func runSeConv(ctx context.Context, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "seconv", args...)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err := runSubtitleCommand(ctx, "seconv", args, &stdout, &stderr)
 	return strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n")), err
 }
 
@@ -500,7 +414,8 @@ func runSeConvWithProgress(
 	args []string,
 	onProgress OCRProgressFunc,
 ) (string, error) {
-	cmd := exec.CommandContext(ctx, "seconv", args...)
+	cmd := exec.Command("seconv", args...)
+	configureSubtitleProcessGroup(cmd)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -583,7 +498,9 @@ func runSeConvWithProgress(
 	go process(stdoutPipe)
 	go process(stderrPipe)
 
-	waitErr := cmd.Wait()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	waitErr := waitSubtitleProcess(ctx, cmd, waitDone)
 	wg.Wait()
 
 	return strings.TrimSpace(output.String()), waitErr

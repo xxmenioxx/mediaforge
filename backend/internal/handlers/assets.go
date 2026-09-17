@@ -100,6 +100,7 @@ type subtitleExtractionOperation struct {
 	Error       string                    `json:"error,omitempty"`
 	CreatedAt   time.Time                 `json:"createdAt"`
 	UpdatedAt   time.Time                 `json:"updatedAt"`
+	cancel      context.CancelFunc
 }
 
 var previewCacheState = struct {
@@ -123,6 +124,9 @@ func updateSubtitleExtractionOperation(
 
 	operation, exists := subtitleExtractionOperations.items[id]
 	if !exists {
+		return
+	}
+	if operation.Status == "completed" || operation.Status == "error" || operation.Status == "cancelled" {
 		return
 	}
 
@@ -1311,269 +1315,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 
-	result := SubtitleExtractionResult{Created: []string{}, Existing: []string{}, Unsupported: []string{}}
-	for _, plan := range plans {
-		artifact := SubtitleArtifact{
-			ArtifactID: subtitleArtifactID(plan.Decision.StreamIndex, plan.Decision.Mode, plan.Decision.Format), Type: "subtitle_sidecar",
-			StreamIndex: plan.Decision.StreamIndex, SourceCodec: plan.Decision.Codec, SourceType: plan.Decision.SourceType,
-			Format: plan.Decision.Format, RequestedFormat: plan.Decision.RequestedFormat, Mode: plan.Decision.Mode,
-			Language: plan.Decision.Language, OCRRequired: plan.Decision.OCRRequired, Stages: append([]string(nil), plan.Decision.Stages...),
-			Extension: plan.Decision.Extension, NamingKey: plan.Decision.NamingKey, StagedPath: plan.OutputPath,
-		}
-		if existing, statErr := os.Stat(plan.OutputPath); statErr == nil && !existing.IsDir() {
-			result.Existing = append(result.Existing, plan.OutputPath)
-			artifact.Status = "existing"
-			artifact.SizeBytes = existing.Size()
-			result.Artifacts = append(result.Artifacts, artifact)
-			continue
-		} else if statErr != nil && !os.IsNotExist(statErr) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": mediaPathReadError(statErr)})
-			return
-		}
-
-		temp, err := os.CreateTemp(filepath.Dir(plan.OutputPath), ".mvforge-subtitle-*."+plan.Format)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("cannot create subtitle beside the converted asset: %v", err)})
-			return
-		}
-		tempPath := temp.Name()
-		if err := temp.Close(); err != nil {
-			_ = os.Remove(tempPath)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		_ = os.Remove(tempPath)
-
-		mediaPlan := MediaJobPlan{InputPath: path}
-		var args []string
-		if plan.Mode == "original" {
-			_, muxer, _ := originalSubtitleExtractionFormat(plan.Format)
-			args = originalSubtitleExtractionArgs(mediaPlan, plan.StreamIndex, muxer, tempPath)
-		} else {
-			args = textSubtitleExtractionArgs(mediaPlan, plan.StreamIndex, plan.Format, tempPath)
-		}
-		cmd := exec.CommandContext(c.Request.Context(), "ffmpeg", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			_ = os.Remove(tempPath)
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = err.Error()
-			}
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("subtitle stream %d could not be extracted: %s", plan.StreamIndex, message)})
-			return
-		}
-		if err := os.Link(tempPath, plan.OutputPath); err != nil {
-			_ = os.Remove(tempPath)
-			if os.IsExist(err) {
-				result.Existing = append(result.Existing, plan.OutputPath)
-				continue
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("cannot publish extracted subtitle: %v", err)})
-			return
-		}
-		_ = os.Remove(tempPath)
-		result.Created = append(result.Created, plan.OutputPath)
-		artifact.Status = "ready"
-		if info, statErr := os.Stat(plan.OutputPath); statErr == nil {
-			artifact.SizeBytes = info.Size()
-		}
-		result.Artifacts = append(result.Artifacts, artifact)
-	}
-
-	if len(bitmapStreams) > 0 {
-		stream := bitmapStreams[0]
-
-		operationID := fmt.Sprintf(
-			"ocr-%d-%d",
-			stream.Index,
-			time.Now().UnixNano(),
-		)
-
-		now := time.Now()
-
-		operation := &subtitleExtractionOperation{
-			ID:          operationID,
-			AssetPath:   path,
-			Status:      "running",
-			Phase:       "preparing",
-			Progress:    1,
-			Processed:   0,
-			Total:       0,
-			StreamIndex: stream.Index,
-			Format:      input.Format,
-			Message:     "Preparing subtitle OCR",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-
-		subtitleExtractionOperations.Lock()
-		subtitleExtractionOperations.items[operationID] = operation
-		subtitleExtractionOperations.Unlock()
-
-		// Important:
-		// Do not use c.Request.Context() here.
-		// That context is cancelled as soon as this HTTP request finishes.
-		go func(
-			operationID string,
-			sourceMediaPath string,
-			destinationMediaPath string,
-			stream FFProbeStream,
-			input SubtitleExtractionInput,
-			initialResult SubtitleExtractionResult,
-		) {
-			ctx, cancel := context.WithTimeout(
-				context.Background(),
-				2*time.Hour,
-			)
-			defer cancel()
-
-			updateSubtitleExtractionOperation(
-				operationID,
-				func(op *subtitleExtractionOperation) {
-					op.Phase = "ocr"
-					op.Progress = 10
-					op.Message = "Running subtitle OCR"
-				},
-			)
-
-			ocrResult, ocrErr := generateBitmapSubtitleSidecar(
-				ctx,
-				sourceMediaPath,
-				destinationMediaPath,
-				stream,
-				input,
-				func(processed, total int) {
-					if total <= 0 {
-						return
-					}
-
-					progress := 15.0
-
-					if processed > 0 {
-						progress = 15 + (float64(processed)/float64(total))*70
-					}
-
-					updateSubtitleExtractionOperation(
-						operationID,
-						func(op *subtitleExtractionOperation) {
-							op.Status = "running"
-							op.Phase = "ocr"
-							op.Progress = progress
-							op.Processed = processed
-							op.Total = total
-
-							if processed > 0 {
-								op.Message = fmt.Sprintf(
-									"OCR %d / %d images",
-									processed,
-									total,
-								)
-							} else {
-								op.Message = fmt.Sprintf(
-									"OCR preparing %d images",
-									total,
-								)
-							}
-						},
-					)
-				},
-			)
-
-			if ocrErr != nil {
-				updateSubtitleExtractionOperation(
-					operationID,
-					func(op *subtitleExtractionOperation) {
-						op.Status = "error"
-						op.Phase = "error"
-						op.Error = ocrErr.Error()
-						op.Message = "Subtitle OCR failed"
-					},
-				)
-				return
-			}
-
-			finalResult := initialResult
-			finalResult.Created = append(
-				finalResult.Created,
-				ocrResult.Created...,
-			)
-			finalResult.Existing = append(
-				finalResult.Existing,
-				ocrResult.Existing...,
-			)
-			finalResult.Unsupported = append(
-				finalResult.Unsupported,
-				ocrResult.Unsupported...,
-			)
-			ocrFormat := strings.ToLower(strings.TrimSpace(input.Format))
-			if ocrFormat == "" {
-				ocrFormat = "srt"
-			}
-			ocrLanguage := safeSubtitleFilenamePart(stream.Tags["language"])
-			if ocrLanguage == "" {
-				ocrLanguage = "und"
-			}
-			ocrDecision := ResolvedTrackSidecar{
-				StreamIndex: stream.Index, Codec: stream.CodecName, SourceType: "bitmap", Language: normalizedTrackLanguage(stream.Tags["language"]),
-				Format: ocrFormat, RequestedFormat: ocrFormat, Mode: "converted", OCRRequired: true,
-				Stages: subtitleArtifactStages("bitmap", "converted"), Extension: "." + ocrFormat,
-				NamingKey: fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, ocrFormat),
-			}
-			ocrArtifact := SubtitleArtifact{
-				ArtifactID: subtitleArtifactID(stream.Index, "converted", ocrFormat), Type: "subtitle_sidecar", StreamIndex: stream.Index,
-				SourceCodec: stream.CodecName, SourceType: "bitmap", Format: ocrFormat, RequestedFormat: ocrFormat, Mode: "converted",
-				Language: ocrDecision.Language, OCRRequired: true, OCRLanguage: input.OCRLanguage, OCRMode: normalizedOCRMode(input.OCRMode),
-				Stages: ocrDecision.Stages, Extension: ocrDecision.Extension, NamingKey: ocrDecision.NamingKey,
-				StagedPath: fmt.Sprintf("%s.%s.%d.%s", strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath)), ocrLanguage, stream.Index, ocrFormat), Status: "ready",
-			}
-			for _, created := range ocrResult.Created {
-				if strings.HasSuffix(created, ".raw."+ocrFormat) {
-					continue
-				}
-				ocrArtifact.StagedPath = created
-				break
-			}
-			if len(ocrResult.Created) > 0 || len(ocrResult.Existing) > 0 {
-				if len(ocrResult.Created) == 0 {
-					ocrArtifact.Status = "existing"
-				}
-				finalResult.Artifacts = append(finalResult.Artifacts, ocrArtifact)
-			}
-
-			updateSubtitleExtractionOperation(
-				operationID,
-				func(op *subtitleExtractionOperation) {
-					op.Status = "completed"
-					op.Phase = "completed"
-					op.Progress = 100
-					op.Message = "Subtitle OCR completed"
-					op.Result = &finalResult
-				},
-			)
-		}(
-			operationID,
-			path,
-			destinationMediaPath,
-			stream,
-			input,
-			result,
-		)
-
-		c.JSON(http.StatusAccepted, gin.H{
-			"operationId": operationID,
-			"status":      "running",
-			"phase":       "preparing",
-			"progress":    1,
-			"streamIndex": stream.Index,
-			"format":      input.Format,
-		})
-
-		return
-	}
-
-	c.JSON(http.StatusOK, result)
+	h.startSubtitleExtractionOperation(c, path, destinationMediaPath, plans, bitmapStreams, input)
+	return
 }
 
 func (h AssetHandler) subtitleDestinationForArchivedOriginal(archivePath string) (string, error) {
@@ -3095,20 +2838,15 @@ func hasSubtitleProbeStream(streams []FFProbeStream) bool {
 }
 
 func probeSubtitleStreams(ctx context.Context, path string) ([]FFProbeStream, error) {
-	cmd := exec.CommandContext(
-		ctx,
-		"ffprobe",
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runSubtitleCommand(ctx, "ffprobe", []string{
 		"-v", "error",
 		"-select_streams", "s",
 		"-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title",
 		"-of", "json",
 		path,
-	)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	}, &stdout, &stderr); err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()

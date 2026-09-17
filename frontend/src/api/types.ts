@@ -1878,7 +1878,7 @@ export type SubtitleExtractionResult = {
 export type SubtitleExtractionOperation = {
   id: string;
   assetPath: string;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'completed' | 'cancelled' | 'error';
   phase:
     | 'preparing'
     | 'extracting'
@@ -1886,12 +1886,13 @@ export type SubtitleExtractionOperation = {
     | 'cleanup'
     | 'publishing'
     | 'completed'
+    | 'cancelled'
     | 'error';
   progress: number;
   processed: number;
   total: number;
   streamIndex: number;
-  format: 'srt' | 'ass';
+  format: 'original' | 'srt' | 'ass' | 'both';
   message?: string;
   result?: SubtitleExtractionResult;
   error?: string;

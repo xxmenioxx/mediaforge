@@ -201,10 +201,8 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 			return nil, fmt.Errorf("subtitle stream %d (%s) cannot be converted to %s", stream.Index, stream.Codec, strings.ToUpper(transform.Format))
 		} else {
 			args := textSubtitleExtractionArgs(plan, stream.Index, transform.Format, stagedPath)
-			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			if err := cmd.Run(); err != nil {
+			if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
 				_ = os.Remove(stagedPath)
 				return nil, fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 			}
@@ -363,10 +361,8 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			} else {
 				args = textSubtitleExtractionArgs(plan, stream.Index, format, current.StagedPath)
 			}
-			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			if err := cmd.Run(); err != nil {
+			if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
 				current.Status = "failed"
 				current.Error = fmt.Sprintf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 				if progress != nil {
@@ -462,10 +458,8 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 			err := fmt.Errorf("subtitle stream %d (%s) cannot be converted to both SRT and ASS sidecars", stream.Index, stream.Codec)
 			return markSharedSubtitleFailure(artifacts, err)
 		}
-		cmd := exec.CommandContext(ctx, "ffmpeg", textSubtitleExtractionArgs(plan, stream.Index, "srt", canonicalPath)...)
 		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
+		if err := runSubtitleCommand(ctx, "ffmpeg", textSubtitleExtractionArgs(plan, stream.Index, "srt", canonicalPath), nil, &stderr); err != nil {
 			extractionErr := fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 			return markSharedSubtitleFailure(artifacts, extractionErr)
 		}
@@ -488,10 +482,8 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 				return markSharedSubtitleFailure(artifacts, err)
 			}
 		} else {
-			cmd := exec.CommandContext(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath)...)
 			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			if err := cmd.Run(); err != nil {
+			if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath), nil, &stderr); err != nil {
 				renderErr := fmt.Errorf("subtitle stream %d ASS render failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 				return markSharedSubtitleFailure(artifacts, renderErr)
 			}
