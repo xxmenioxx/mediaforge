@@ -2047,7 +2047,7 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	if err := os.WriteFile(seconv, []byte(seconvScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tesseract, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(tesseract, []byte("#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -2241,7 +2241,7 @@ func TestExtractBitmapSubtitlesFromArchivePublishesOCRBesideConvertedAsset(t *te
 	scripts := map[string]string{
 		"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"id\":\"0x7\",\"codec_type\":\"subtitle\",\"codec_name\":\"dvd_subtitle\",\"tags\":{\"language\":\"spa\"}}]}'\n",
 		"seconv":    "#!/bin/sh\nfor argument do case \"$argument\" in --output-filename:*) output_filename=\"${argument#--output-filename:}\" ;; esac; done\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola desde Archive' > \"$output_filename\"\n",
-		"tesseract": "#!/bin/sh\nexit 0\n",
+		"tesseract": "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n",
 	}
 	for name, script := range scripts {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
@@ -2371,7 +2371,7 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > "$output_filename"
 	for name, content := range map[string]string{
 		"ffprobe":   probeScript,
 		"seconv":    seconvScript,
-		"tesseract": "#!/bin/sh\nexit 0\n",
+		"tesseract": "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n",
 	} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o700); err != nil {
 			t.Fatal(err)

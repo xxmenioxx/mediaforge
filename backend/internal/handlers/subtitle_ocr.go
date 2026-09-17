@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +23,25 @@ var (
 	ocrBitmapCountPattern = regexp.MustCompile(
 		`(?i)Running tesseract OCR on\s+(\d+)\s+.*image(?:s|\(s\))?`,
 	)
-	ocrDroppedCountPattern = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
+	ocrDroppedCountPattern         = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
+	ocrZeroRecognitionPattern      = regexp.MustCompile(`(?i)\bno subtitles recogn(?:ised|ized)\b`)
+	ocrDisqualifyingFailurePattern = regexp.MustCompile(`(?i)\b(?:cancel(?:led|ed)|interrupt(?:ed)?|malformed|corrupt(?:ed)?|invalid input|cannot read|unable to read|segmentation fault|panic|fatal|crash(?:ed)?|signal: (?:killed|terminated))\b`)
 )
+
+const maxOCRDiagnostics = 64 * 1024
+
+type ocrPassResult struct {
+	message         string
+	err             error
+	zeroRecognition bool
+}
+
+type bitmapOCRLanguageAttempt struct {
+	message    string
+	err        error
+	chosenPath string
+	zero       bool
+}
 
 type OCRProgressFunc func(processed, total int)
 
@@ -276,6 +295,13 @@ func runBitmapOCR(
 ) (string, error) {
 	mode = normalizedOCRMode(mode)
 	dir := filepath.Dir(outputPath)
+	capabilities, capabilityMessage, err := probeTesseractLanguages(ctx)
+	if err != nil {
+		return capabilityMessage, err
+	}
+	if _, available := capabilities[language]; !available {
+		return capabilityMessage, fmt.Errorf("OCR language %q is unavailable in the running Tesseract runtime; install its traineddata and retry", language)
+	}
 
 	ocrInputPath := mediaPath
 	useTrackNumber := true
@@ -303,51 +329,158 @@ func runBitmapOCR(
 		useTrackNumber = false
 	}
 
-	first := filepath.Join(dir, "ocr-isolated."+format)
-	message, err := runSeConvOCRPass(
-		ctx,
-		ocrInputPath,
-		stream,
-		format,
-		language,
-		first,
-		false,
-		useTrackNumber,
-		onProgress,
-	)
-
-	message = strings.TrimSpace(extractionMessage + "\n" + message)
-
-	if err != nil {
-		return message, err
-	}
-	chosen := first
-	if mode == "accurate" {
-		second := filepath.Join(dir, "ocr-colors."+format)
-		secondMessage, secondErr := runSeConvOCRPass(
-			ctx,
-			ocrInputPath,
-			stream,
-			format,
-			language,
-			second,
-			true,
-			useTrackNumber,
-			onProgress,
-		)
-		message = strings.TrimSpace(message + "\n" + secondMessage)
-		if secondErr == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
-			chosen = second
+	primary := runBitmapOCRLanguageAttempt(ctx, ocrInputPath, stream, format, language, mode, dir, "primary", useTrackNumber, onProgress)
+	message := strings.TrimSpace(fmt.Sprintf("OCR effective language: %s\n%s\n%s", language, extractionMessage, primary.message))
+	chosen := primary.chosenPath
+	successfulLanguage := language
+	if primary.zero {
+		alternate := oppositeJapaneseOCRLanguage(language)
+		if alternate == "" {
+			return message, conciseZeroRecognitionError(language, "")
 		}
+		if _, available := capabilities[alternate]; !available {
+			return message, fmt.Errorf("OCR recognized no subtitle text using %s; alternate Japanese orientation %s is unavailable in the running Tesseract runtime", language, alternate)
+		}
+		fallbackAttempt := runBitmapOCRLanguageAttempt(ctx, ocrInputPath, stream, format, alternate, mode, dir, "fallback", useTrackNumber, onProgress)
+		message = strings.TrimSpace(message + "\nOCR fallback language: " + alternate + "\n" + fallbackAttempt.message)
+		if fallbackAttempt.zero {
+			return message, conciseZeroRecognitionError(language, alternate)
+		}
+		if fallbackAttempt.err != nil {
+			return message, fallbackAttempt.err
+		}
+		chosen = fallbackAttempt.chosenPath
+		successfulLanguage = alternate
+	} else if primary.err != nil {
+		return message, primary.err
 	}
+
 	if err := copyFileContents(chosen, rawOutputPath); err != nil {
 		return message, err
 	}
 	if mode == "raw" {
 		return message, copyFileContents(chosen, outputPath)
 	}
-	cleanMessage, cleanErr := runSeConvCleanup(ctx, chosen, format, language, outputPath)
+	cleanMessage, cleanErr := runSeConvCleanup(ctx, chosen, format, successfulLanguage, outputPath)
 	return strings.TrimSpace(message + "\n" + cleanMessage), cleanErr
+}
+
+func probeTesseractLanguages(ctx context.Context) (map[string]struct{}, string, error) {
+	var stdout, stderr bytes.Buffer
+	err := runSubtitleCommand(ctx, "tesseract", []string{"--list-langs"}, &stdout, &stderr)
+	diagnostics := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
+	capabilities := parseTesseractLanguages(stdout.String())
+	message := "Tesseract runtime languages: " + strings.Join(sortedOCRLanguages(capabilities), ", ")
+	if err != nil {
+		return capabilities, conciseCommandOutput(diagnostics, 1200), fmt.Errorf("cannot inspect Tesseract runtime languages: %w", err)
+	}
+	if len(capabilities) == 0 {
+		return capabilities, conciseCommandOutput(diagnostics, 1200), errors.New("Tesseract runtime reported no usable OCR languages")
+	}
+	return capabilities, message, nil
+}
+
+func parseTesseractLanguages(output string) map[string]struct{} {
+	capabilities := map[string]struct{}{}
+	for _, line := range strings.Split(output, "\n") {
+		language := strings.TrimSpace(line)
+		if language == "" || strings.HasPrefix(strings.ToLower(language), "list of available languages") {
+			continue
+		}
+		if strings.IndexFunc(language, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_'
+		}) != -1 {
+			continue
+		}
+		capabilities[language] = struct{}{}
+	}
+	return capabilities
+}
+
+func sortedOCRLanguages(capabilities map[string]struct{}) []string {
+	values := make([]string, 0, len(capabilities))
+	for language := range capabilities {
+		values = append(values, language)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func oppositeJapaneseOCRLanguage(language string) string {
+	switch language {
+	case "jpn":
+		return "jpn_vert"
+	case "jpn_vert":
+		return "jpn"
+	default:
+		return ""
+	}
+}
+
+func runBitmapOCRLanguageAttempt(
+	ctx context.Context,
+	inputPath string,
+	stream FFProbeStream,
+	format, language, mode, dir, tag string,
+	useTrackNumber bool,
+	onProgress OCRProgressFunc,
+) bitmapOCRLanguageAttempt {
+	first := filepath.Join(dir, "ocr-"+tag+"-isolated."+format)
+	firstResult := runSeConvOCRPassDetailed(ctx, inputPath, stream, format, language, first, false, useTrackNumber, onProgress)
+	result := bitmapOCRLanguageAttempt{message: firstResult.message}
+	if firstResult.zeroRecognition {
+		result.zero = true
+		return result
+	}
+	if firstResult.err != nil {
+		result.err = firstResult.err
+		return result
+	}
+	chosen := first
+	if mode == "accurate" {
+		second := filepath.Join(dir, "ocr-"+tag+"-colors."+format)
+		secondResult := runSeConvOCRPassDetailed(ctx, inputPath, stream, format, language, second, true, useTrackNumber, onProgress)
+		result.message = strings.TrimSpace(result.message + "\n" + secondResult.message)
+		if secondResult.err != nil && ctx.Err() != nil {
+			result.err = secondResult.err
+			return result
+		}
+		if secondResult.err == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
+			chosen = second
+		}
+	}
+	result.chosenPath = chosen
+	return result
+}
+
+func runSeConvOCRPassDetailed(
+	ctx context.Context,
+	inputPath string,
+	stream FFProbeStream,
+	format, language, outputPath string,
+	preserveColors, useTrackNumber bool,
+	onProgress OCRProgressFunc,
+) ocrPassResult {
+	message, err := runSeConvOCRPass(ctx, inputPath, stream, format, language, outputPath, preserveColors, useTrackNumber, onProgress)
+	if isGenuineZeroRecognition(ctx, message, err) {
+		return ocrPassResult{message: message, zeroRecognition: true}
+	}
+	return ocrPassResult{message: message, err: err}
+}
+
+func isGenuineZeroRecognition(ctx context.Context, diagnostics string, _ error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	knownSignal := ocrZeroRecognitionPattern.MatchString(diagnostics) || ocrDroppedCountPattern.MatchString(diagnostics)
+	return knownSignal && !ocrDisqualifyingFailurePattern.MatchString(diagnostics)
+}
+
+func conciseZeroRecognitionError(primary, alternate string) error {
+	if alternate == "" {
+		return fmt.Errorf("OCR recognized no subtitle text using %s; check subtitle orientation or source content", primary)
+	}
+	return fmt.Errorf("OCR recognized no subtitle text with Japanese orientations %s and %s; check subtitle orientation or source content", primary, alternate)
 }
 
 func runSeConvOCRPass(
@@ -432,7 +565,20 @@ func runSeConvWithProgress(
 	}
 
 	var output bytes.Buffer
+	var outputMu sync.Mutex
 	var wg sync.WaitGroup
+	appendDiagnostic := func(line string) {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+		if output.Len() >= maxOCRDiagnostics {
+			return
+		}
+		remaining := maxOCRDiagnostics - output.Len()
+		if len(line) > remaining {
+			line = line[:remaining]
+		}
+		output.WriteString(line)
+	}
 
 	process := func(r io.Reader) {
 		defer wg.Done()
@@ -447,8 +593,7 @@ func runSeConvWithProgress(
 				continue
 			}
 
-			output.WriteString(line)
-			output.WriteByte('\n')
+			appendDiagnostic(line + "\n")
 
 			fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
 
@@ -503,7 +648,10 @@ func runSeConvWithProgress(
 	waitErr := waitSubtitleProcess(ctx, cmd, waitDone)
 	wg.Wait()
 
-	return strings.TrimSpace(output.String()), waitErr
+	outputMu.Lock()
+	diagnostics := strings.TrimSpace(output.String())
+	outputMu.Unlock()
+	return diagnostics, waitErr
 }
 
 func ocrDictionaryFolder() string {
