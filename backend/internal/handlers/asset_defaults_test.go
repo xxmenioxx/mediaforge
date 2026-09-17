@@ -426,7 +426,7 @@ func TestAssetDefaultsOptionalVideoTrackRemovalAndSharedSubtitleGeneration(t *te
 
 	bin := t.TempDir()
 	ffmpeg := filepath.Join(bin, "ffmpeg")
-	script := "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' \"$output\" >> \"$MVFORGE_SUBTITLE_LOG\"\ncase \"$output\" in\n *.ass) printf '%s\\n' '[Events]' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola' > \"$output\" ;;\n *) printf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > \"$output\" ;;\nesac\n"
+	script := "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' \"$output\" >> \"$MVFORGE_SUBTITLE_LOG\"\nif [ \"$output\" = \"-\" ]; then exit 0; fi\ncase \"$output\" in\n *.ass) printf '%s\\n' '[Events]' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Hola' > \"$output\" ;;\n *) printf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > \"$output\" ;;\nesac\n"
 	if err := os.WriteFile(ffmpeg, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -2029,7 +2029,10 @@ printf '%s' '{"format":{"filename":"Baccano.mkv"},"streams":[{"index":2,"codec_t
 	ffmpegScript := `#!/bin/sh
 for argument do output="$argument"; done
 if [ "$output" = "-" ]; then exit 0; fi
-printf '%s\n' 'generated subtitle' > "$output"
+case "$output" in
+  *.ass) printf '%s\n' '[Script Info]' '[Events]' 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Generated subtitle' > "$output" ;;
+  *) printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'generated subtitle' > "$output" ;;
+esac
 `
 	seconvScript := `#!/bin/sh
 for argument do case "$argument" in --output-filename:*) output_filename="${argument#--output-filename:}" ;; esac; done
@@ -2155,7 +2158,7 @@ func TestExtractSubtitlesFromArchivePublishesBesideActiveConvertedAsset(t *testi
 	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":2,\"codec_type\":\"subtitle\",\"codec_name\":\"subrip\",\"tags\":{\"language\":\"eng\"}}]}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nfor argument do output=\"$argument\"; done\nif [ \"$output\" = \"-\" ]; then exit 0; fi\nprintf '%s\\n' 'generated subtitle' > \"$output\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nfor argument do output=\"$argument\"; done\nif [ \"$output\" = \"-\" ]; then exit 0; fi\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'generated subtitle' > \"$output\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -2166,7 +2169,13 @@ func TestExtractSubtitlesFromArchivePublishesBesideActiveConvertedAsset(t *testi
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles?path="+url.QueryEscape(archivePath), strings.NewReader(`{"streamIndex":2,"format":"srt"}`))
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code == http.StatusAccepted {
+		var started subtitleExtractionStartedResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+			t.Fatal(err)
+		}
+		waitForSubtitleExtractionOperation(t, started.OperationID)
+	} else if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 

@@ -3066,9 +3066,11 @@ function AssetRow({
       setSubtitleGenerations((current) => ({
         ...current,
         [key]: {
-          status: 'running',
+          status: operation.status === 'cancelled' ? 'cancelled' : 'running',
           streamIndex,
           format,
+          operationId,
+          cancelPending: current[key]?.cancelPending,
           progress: operation.progress,
           phase: operation.phase,
           processed: operation.processed,
@@ -3077,11 +3079,27 @@ function AssetRow({
         },
       }));
 
-      if (operation.status === 'completed') {
-        return operation.result;
-      }
+      if (subtitleOperationStopsPolling(operation.status)) {
+        if (operation.status === 'completed') {
+          return operation.result;
+        }
 
-      if (operation.status === 'error') {
+        if (operation.status === 'cancelled') {
+          setSubtitleGenerations((current) => ({
+            ...current,
+            [key]: {
+              ...current[key],
+              status: 'cancelled',
+              streamIndex,
+              format,
+              operationId,
+              cancelPending: false,
+              message: operation.message || 'Subtitle generation cancelled.',
+            },
+          }));
+          return undefined;
+        }
+
         throw new Error(
           operation.error ||
             operation.message ||
@@ -3106,6 +3124,9 @@ async function restoreSubtitleOperations() {
 
     for (const operation of runningOperations) {
       const format = operation.format;
+      if (format === 'both') {
+        continue;
+      }
       const key = subtitleGenerationKey(operation.streamIndex, format);
 
       setSubtitleGenerations((current) => ({
@@ -3114,6 +3135,8 @@ async function restoreSubtitleOperations() {
           status: 'running',
           streamIndex: operation.streamIndex,
           format,
+          operationId: operation.id,
+          cancelPending: false,
           phase: operation.phase,
           progress: operation.progress,
           processed: operation.processed,
@@ -3181,6 +3204,10 @@ async function generateExternalSubtitle(
       result = response;
     }
 
+    if (!result) {
+      return;
+    }
+
     setSubtitleGenerations((current) => ({
         ...current,
         [key]: {
@@ -3209,6 +3236,61 @@ async function generateExternalSubtitle(
             error instanceof Error
               ? error.message
               : 'Subtitle generation failed.',
+        },
+      }));
+    }
+  }
+
+  async function cancelExternalSubtitle(
+    streamIndex: number,
+    format: 'original' | 'srt' | 'ass',
+  ) {
+    const key = subtitleGenerationKey(streamIndex, format);
+    const generation = subtitleGenerations[key];
+    if (generation?.status !== 'running' || !generation.operationId || generation.cancelPending) {
+      return;
+    }
+
+    setSubtitleGenerations((current) => ({
+      ...current,
+      [key]: {
+        ...current[key],
+        status: 'running',
+        streamIndex,
+        format,
+        operationId: generation.operationId,
+        cancelPending: true,
+        message: 'Cancelling subtitle generation…',
+      },
+    }));
+
+    try {
+      const operation = await api.cancelSubtitleExtractionOperation(generation.operationId);
+      if (operation.status === 'cancelled') {
+        setSubtitleGenerations((current) => ({
+          ...current,
+          [key]: {
+            ...current[key],
+            status: 'cancelled',
+            streamIndex,
+            format,
+            operationId: generation.operationId,
+            cancelPending: false,
+            message: operation.message || 'Subtitle generation cancelled.',
+          },
+        }));
+      }
+    } catch (error) {
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: {
+          ...current[key],
+          status: 'running',
+          streamIndex,
+          format,
+          operationId: generation.operationId,
+          cancelPending: false,
+          message: error instanceof Error ? error.message : 'Unable to cancel subtitle generation.',
         },
       }));
     }
@@ -3957,6 +4039,7 @@ async function generateExternalSubtitle(
                       streams={snapshotData.subtitleStreams}
                       generations={subtitleGenerations}
                       onGenerate={generateExternalSubtitle}
+                      onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob}
                     />
                     {!isArchive ? (
@@ -4350,10 +4433,11 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
   );
 }
 
-function EmbeddedSubtitleActions({
+export function EmbeddedSubtitleActions({
   streams,
   generations,
   onGenerate,
+  onCancel,
   disabled = false,
 }: {
   streams: MediaStreamInfo[];
@@ -4363,6 +4447,10 @@ function EmbeddedSubtitleActions({
     format: 'original' | 'srt' | 'ass',
     ocrLanguage?: string,
     ocrMode?: 'raw' | 'clean' | 'accurate',
+  ) => void;
+  onCancel: (
+    streamIndex: number,
+    format: 'original' | 'srt' | 'ass',
   ) => void;
   disabled?: boolean;
 }) {
@@ -4487,9 +4575,18 @@ function EmbeddedSubtitleActions({
                         value={generation.progress}
                         aria-label={`Generating ${generation.format.toUpperCase()} subtitle for stream ${stream.index}`}
                       />
+                      <Button
+                        size="small"
+                        color="warning"
+                        variant="outlined"
+                        disabled={disabled || generation.cancelPending}
+                        onClick={() => onCancel(generation.streamIndex, generation.format)}
+                      >
+                        {generation.cancelPending ? 'Cancelling…' : 'Cancel'}
+                      </Button>
                     </Stack>
                   ) : (
-                    <Alert severity={generation.status === 'success' ? 'success' : 'warning'} sx={{ py: 0 }}>
+                    <Alert severity={generation.status === 'success' ? 'success' : generation.status === 'cancelled' ? 'info' : 'warning'} sx={{ py: 0 }}>
                       {generation.message}
                     </Alert>
                   )}
@@ -4504,9 +4601,11 @@ function EmbeddedSubtitleActions({
 }
 
 type SubtitleGenerationState = {
-  status: 'running' | 'success' | 'error';
+  status: 'running' | 'success' | 'cancelled' | 'error';
   streamIndex: number;
   format: 'original' | 'srt' | 'ass';
+  operationId?: string;
+  cancelPending?: boolean;
   message?: string;
 
   progress?: number;
@@ -4517,10 +4616,17 @@ type SubtitleGenerationState = {
     | 'cleanup'
     | 'publishing'
     | 'completed'
+    | 'cancelled'
     | 'error';
   processed?: number;
   total?: number;
 };
+
+export function subtitleOperationStopsPolling(
+  status: 'running' | 'completed' | 'cancelled' | 'error',
+) {
+  return status !== 'running';
+}
 
 function subtitleGenerationKey(streamIndex: number, format:  'original' | 'srt' | 'ass') {
   return `${streamIndex}:${format}`;
