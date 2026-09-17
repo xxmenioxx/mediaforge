@@ -55,14 +55,26 @@ direct process can leave descendants alive or leave temporary workspace behind.
    A synchronized transition makes Cancel idempotent and resolves races by
    allowing exactly one terminal outcome; once publication has committed, normal
    completion wins and a later Cancel returns that completed snapshot.
+   Terminal states are immutable: retrying a cancelled request creates a fresh
+   operation ID, controller, and context rather than restarting the old
+   operation.
 
-2. **Use an operation-owned context independent of the HTTP request.**
+2. **Use an operation-owned work context and an independent cleanup context.**
    After validation and canonical planning, the operation creates a bounded
-   context with cancellation and runs the work under it. The request context is
-   used for request validation only; it is not retained by a background
-   operation. Every helper in the canonical subtitle execution chain accepts
-   and forwards that context, checking it between stages so cancellation also
-   stops work that has not yet launched a child process.
+   work context with cancellation and runs conversion under it. The request
+   context is used for request validation only; it is not retained by a
+   background operation. Every helper in the canonical subtitle execution
+   chain accepts and forwards the work context, checking it between stages so
+   cancellation also stops work that has not yet launched a child process.
+   Once work is cancelled, cleanup runs through an independent bounded context
+   derived from a non-cancelled root (or an equivalent cleanup path that is not
+   governed by the cancelled work context). Cleanup waits for process and pipe
+   termination where needed, removes only operation-owned staging/workspace,
+   records cleanup diagnostics as cancellation diagnostics rather than a
+   conversion failure, and is attempted before the operation becomes
+   terminally `cancelled`. Even if cleanup reaches its bound or reports an
+   error, user cancellation remains the final status and no staged output may
+   be published.
 
 3. **Terminate process trees, not only direct commands.**
    External tools continue to receive argument arrays and run through the
@@ -77,23 +89,28 @@ direct process can leave descendants alive or leave temporary workspace behind.
 4. **Make operation output staging and publication explicit.**
    Each new sidecar and OCR intermediate is created below a uniquely owned
    temporary workspace or staged path. Existing valid sidecars are identified
-   by the canonical plan before execution and are never removed. For a
-   multi-output request such as converted `both`, SRT and ASS are generated from
-   the one canonical normalized cue result, validated, and held behind one
-   publication barrier. Cancellation before that barrier removes only the
-   operation-owned staged files and workspace; it does not expose a partial
-   sidecar. A short commit section is serialized so a cancellation racing with
-   publication either aborts before commit or observes a fully committed
-   result, never a partially committed file set.
+   by the canonical plan before execution and are never removed. A logical
+   multi-output request such as converted `both` owns one staged output set:
+   SRT and ASS are generated from the one canonical normalized cue result,
+   validated together, and neither newly generated sidecar is published
+   independently before the complete requested set crosses one publication
+   barrier. If cancellation occurs while the second output is being generated,
+   cleanup removes every staged output owned by the current operation. It must
+   not remove final sidecars that predated the operation or were published by a
+   previously completed operation. A short commit section is serialized so a
+   cancellation racing with publication either aborts before commit or
+   observes a fully committed result, never a partially committed file set.
 
 5. **Classify context cancellation before generic tool errors.**
-   Cleanup always runs first for cancelled work, but the final operation update
-   checks whether the operation context was cancelled. Context cancellation
-   produces status `cancelled` and a user-facing cancellation message; a
-   non-cancellation exit, invalid output, unavailable OCR tool, or validation
-   error retains the existing failure status and diagnostic. Cancellation must
-   not be wrapped into a misleading failed result merely because a child exits
-   non-zero after receiving the termination signal.
+   After the independent cleanup attempt, the final operation update checks
+   whether the operation work context was cancelled. Context cancellation
+   produces status `cancelled` and a user-facing cancellation message; cleanup
+   diagnostics remain attached to that cancellation outcome and do not
+   populate the conversion-failure classification. A non-cancellation exit,
+   invalid output, unavailable OCR tool, or validation error retains the
+   existing failure status and diagnostic. Cancellation must not be wrapped
+   into a misleading failed result merely because a child exits non-zero after
+   receiving the termination signal.
 
 6. **Add an operation cancellation endpoint without changing canonical plans.**
    Add an action endpoint addressed by operation ID, returning the current
@@ -102,7 +119,8 @@ direct process can leave descendants alive or leave temporary workspace behind.
    media path as an alternate identity. The existing start, get, and list
    operations remain the source of truth for clients; responses add the
    `cancelled` status while retaining existing immediate-result behavior when a
-   request has no new work to run.
+   request has no new work to run. Retry starts a new operation identity, and
+   the old cancelled snapshot can never be moved back to `running`.
 
 7. **Stop and restart frontend polling through terminal state.**
    The Asset Info client adds the cancel action and the `cancelled` status to

@@ -13,12 +13,19 @@ second queue or job system.
 - Extend the existing subtitle operation lifecycle with cancellable execution,
   context propagation, child-process termination, and a distinct `cancelled`
   terminal status.
+- Run cancellation cleanup with an independent bounded cleanup context (or
+  equivalent non-cancelled cleanup path), attempt it before recording the
+  terminal `cancelled` state, and keep cleanup diagnostics separate from
+  conversion failure diagnostics.
 - Keep conversion and OCR outputs in temporary, validated staging until the
-  complete requested result is ready; cancelled or failed work must never
-  publish partial sidecars.
+  complete requested result is ready; a logical `both` request publishes SRT
+  and ASS together only after the full output set crosses its publication
+  barrier, and cancelled or failed work must never publish partial sidecars.
 - Clean temporary conversion/OCR workspace after cancellation while preserving
   completed sidecars and valid sidecars that existed before the operation.
-- Allow the same conversion request to be started again after cancellation.
+- Allow the same conversion request to be started again after cancellation by
+  creating a new operation identity; a terminal cancelled operation never
+  transitions back to running.
 - Stop Asset Info progress polling cleanly when cancellation completes and keep
   the cancelled state distinct from an error state.
 - Preserve the canonical `subtitles` capability for source classification,
