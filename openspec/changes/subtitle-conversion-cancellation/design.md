@@ -21,7 +21,8 @@ direct process can leave descendants alive or leave temporary workspace behind.
 - Represent cancellable text conversion and bitmap OCR work with the existing
   Asset Info subtitle operation model.
 - Give each operation one cancellation context that reaches every canonical
-  extraction, OCR, normalization, rendering, and cleanup step.
+  extraction, OCR, normalization, and rendering step, with cancellation cleanup
+  running through an independent bounded cleanup context.
 - Terminate complete external-process trees promptly and classify cancellation
   separately from tool failure.
 - Make sidecar publication transactional at the operation boundary: only fully
