@@ -318,11 +318,11 @@ func TestResolvedSubtitleStagedPathSharesDuplicateIdentityAcrossFormats(t *testi
 
 func TestSubtitleArtifactJSONPreservesResolvedExtractionState(t *testing.T) {
 	values := []SubtitleArtifact{
-		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "spa", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
+		{StreamIndex: 4, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "spa", OCRLanguage: "jpn", EffectiveOCRLanguage: "jpn_vert", StagedPath: "/staging/Movie.spa.ass", Status: "ready", SizeBytes: 20},
 		{StreamIndex: 5, SourceCodec: "subrip", Format: "srt", Language: "eng", Forced: true, StagedPath: "/staging/Movie.eng.forced.srt", Status: "ready", SizeBytes: 30},
 	}
 	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON(values))
-	if len(decoded) != 2 || decoded[0].Status != "ready" || decoded[0].Mode != "original" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
+	if len(decoded) != 2 || decoded[0].Status != "ready" || decoded[0].Mode != "original" || decoded[0].OCRLanguage != "jpn" || decoded[0].EffectiveOCRLanguage != "jpn_vert" || !decoded[1].Forced || decoded[1].StagedPath != values[1].StagedPath {
 		t.Fatalf("multiple sidecar artifacts did not round trip: %#v", decoded)
 	}
 	if got := subtitleArtifactsFromJSON(subtitleArtifactsJSON(nil)); len(got) != 0 {

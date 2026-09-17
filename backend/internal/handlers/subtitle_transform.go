@@ -34,6 +34,7 @@ type SubtitleArtifact struct {
 	DisplayName             string   `json:"displayName,omitempty"`
 	FontAttachmentsExported bool     `json:"fontAttachmentsExported"`
 	OCRLanguage             string   `json:"ocrLanguage,omitempty"`
+	EffectiveOCRLanguage    string   `json:"effectiveOcrLanguage,omitempty"`
 	OCRMode                 string   `json:"ocrMode,omitempty"`
 	Stages                  []string `json:"stages,omitempty"`
 	Extension               string   `json:"extension,omitempty"`
@@ -175,6 +176,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 		}
 		usedPaths[stagedPath] = struct{}{}
 		_ = os.Remove(stagedPath)
+		effectiveOCRLanguage := ""
 		if isBitmapSubtitleCodecName(stream.Codec) {
 			if bitmapStreams == nil {
 				probed, probeErr := probeSubtitleStreams(ctx, plan.InputPath)
@@ -194,9 +196,11 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 			if strings.TrimSpace(ocrLanguage) == "" {
 				ocrLanguage = transform.Language
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
+			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+			if err != nil {
 				return nil, err
 			}
+			effectiveOCRLanguage = ocrResult.EffectiveLanguage
 		} else if !subtitleCanConvertText(stream.Codec) {
 			return nil, fmt.Errorf("subtitle stream %d (%s) cannot be converted to %s", stream.Index, stream.Codec, strings.ToUpper(transform.Format))
 		} else {
@@ -226,7 +230,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 		}
 		artifacts = append(artifacts, SubtitleArtifact{
 			Type: "subtitle_sidecar", StreamIndex: stream.Index, SourceCodec: stream.Codec, Format: transform.Format,
-			Language: language, Default: transform.MakeDefault, StagedPath: stagedPath, SizeBytes: info.Size(), Status: "ready",
+			Language: language, OCRLanguage: transform.OCRLanguage, EffectiveOCRLanguage: effectiveOCRLanguage, OCRMode: transform.OCRMode, Default: transform.MakeDefault, StagedPath: stagedPath, SizeBytes: info.Size(), Status: "ready",
 		})
 	}
 	completed = true
@@ -345,13 +349,15 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 				ocrLanguage = ""
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
+			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+			if err != nil {
 				current.Status, current.Error = "failed", err.Error()
 				if progress != nil {
 					progress(*current)
 				}
 				return artifacts, err
 			}
+			current.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		} else {
 			// Build arguments after the deterministic output path is known.
 			var args []string
@@ -450,8 +456,12 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 		if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 			ocrLanguage = ""
 		}
-		if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+		if err != nil {
 			return markSharedSubtitleFailure(artifacts, err)
+		}
+		for index := range artifacts {
+			artifacts[index].EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		}
 	} else {
 		if !subtitleCanConvertText(stream.Codec) {
@@ -832,7 +842,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
-			"ocrLanguage": value.OCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
+			"ocrLanguage": value.OCRLanguage, "effectiveOcrLanguage": value.EffectiveOCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
 		})
@@ -899,7 +909,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Error:                   stringFromUnknown(value["error"]),
 			DisplayName:             stringFromUnknown(value["displayName"]),
 			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
-			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]), LogicalTransformKey: stringFromUnknown(value["logicalTransformKey"]),
+			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), EffectiveOCRLanguage: stringFromUnknown(value["effectiveOcrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]), LogicalTransformKey: stringFromUnknown(value["logicalTransformKey"]),
 		})
 	}
 	return result

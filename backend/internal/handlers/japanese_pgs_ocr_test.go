@@ -72,6 +72,57 @@ exit 0
 	}
 }
 
+func TestJapanesePGSOCRAccurateFallbackPreservesModeAndEffectiveLanguage(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	logPath := filepath.Join(root, "commands.log")
+	writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' jpn jpn_vert; exit 0; fi\nexit 0\n")
+	writeExecutable(t, filepath.Join(bin, "seconv"), `#!/bin/sh
+language=""
+output=""
+for argument do
+  case "$argument" in
+    --ocr-language:*) language="${argument#--ocr-language:}" ;;
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+if [ -n "$language" ]; then printf '%s\n' "$language" >> "$JPN_OCR_LOG"; fi
+if [ "$language" = "jpn" ]; then printf '%s\n' 'No subtitles recognised' >&2; exit 17; fi
+if [ -n "$output" ]; then printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Japanese OCR' > "$output"; fi
+`)
+	t.Setenv("JPN_OCR_LOG", logPath)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := runBitmapOCRWithResult(
+		context.Background(),
+		filepath.Join(root, "Episode.mkv"),
+		FFProbeStream{Index: 4, CodecName: "dvd_subtitle", Tags: map[string]string{"language": "jpn"}},
+		"srt",
+		"jpn",
+		"accurate",
+		filepath.Join(root, "out.srt"),
+		filepath.Join(root, "raw.srt"),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("accurate Japanese OCR fallback failed: result=%#v err=%v", result, err)
+	}
+	if result.EffectiveLanguage != "jpn_vert" {
+		t.Fatalf("accurate fallback effective language=%q", result.EffectiveLanguage)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "out.srt"))
+	if err != nil || !strings.Contains(string(content), "Japanese OCR") {
+		t.Fatalf("accurate fallback output=%q err=%v", content, err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(log)), "jpn\njpn_vert\njpn_vert"; got != want {
+		t.Fatalf("accurate mode should run both passes only for the successful fallback orientation: got %q want %q", got, want)
+	}
+}
+
 func TestJapanesePGSOCRRejectsMissingRuntimeLanguageBeforeSeConv(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
@@ -216,6 +267,7 @@ for argument do
   esac
 done
 if [ -n "$language" ]; then printf '%s\n' "ocr-$language" >> "$JPN_OCR_LOG"; fi
+if [ "$language" = "jpn" ]; then printf '%s\n' 'No subtitles recognised' >&2; exit 17; fi
 if [ -n "$output" ]; then printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Japanese OCR' > "$output"; fi
 `)
 	t.Setenv("JPN_OCR_LOG", logPath)
@@ -234,6 +286,9 @@ if [ -n "$output" ]; then printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Jap
 		t.Fatalf("Japanese both artifacts=%#v err=%v", artifacts, err)
 	}
 	for _, artifact := range artifacts {
+		if artifact.OCRLanguage != "jpn" || artifact.EffectiveOCRLanguage != "jpn_vert" {
+			t.Fatalf("Japanese fallback language metadata=%#v", artifact)
+		}
 		content, readErr := os.ReadFile(artifact.StagedPath)
 		if readErr != nil || !strings.Contains(string(content), "Japanese OCR") {
 			t.Fatalf("Japanese both artifact=%#v content=%q err=%v", artifact, content, readErr)
@@ -243,7 +298,7 @@ if [ -n "$output" ]; then printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Jap
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if got, want := strings.TrimSpace(string(log)), "extract\nocr-jpn\nrender"; got != want {
+	if got, want := strings.TrimSpace(string(log)), "extract\nocr-jpn\nocr-jpn_vert\nrender"; got != want {
 		t.Fatalf("Japanese both duplicated OCR or extraction: got %q want %q", got, want)
 	}
 }
