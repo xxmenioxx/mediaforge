@@ -447,6 +447,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 	}
 	defer os.Remove(canonicalPath)
 
+	var bitmapOCR bitmapOCRResult
 	if isBitmapSubtitleCodecName(stream.Codec) {
 		bitmapStream, probeErr := bitmapSubtitleStreamByIndex(ctx, plan.InputPath, stream.Index, bitmapStreams)
 		if probeErr != nil {
@@ -460,6 +461,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 		if err != nil {
 			return markSharedSubtitleFailure(artifacts, err)
 		}
+		bitmapOCR = bitmapOCRResult{Cues: ocrResult.Cues, Geometry: ocrResult.Geometry}
 		for index := range artifacts {
 			artifacts[index].EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		}
@@ -493,7 +495,11 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 			}
 		} else {
 			var stderr bytes.Buffer
-			if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath), nil, &stderr); err != nil {
+			if len(bitmapOCR.Geometry) > 0 && len(bitmapOCR.Cues) > 0 {
+				if err := os.WriteFile(artifact.StagedPath, renderBitmapASSCues(bitmapOCR.Cues), 0o644); err != nil {
+					return markSharedSubtitleFailure(artifacts, err)
+				}
+			} else if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath), nil, &stderr); err != nil {
 				renderErr := fmt.Errorf("subtitle stream %d ASS render failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 				return markSharedSubtitleFailure(artifacts, renderErr)
 			}
