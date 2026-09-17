@@ -13,11 +13,14 @@ ambiguous and prevents a safe, bounded orientation retry.
   the runtime image's exposed Japanese options aligned with installed
   traineddata.
 - Classify unavailable language/runtime support separately from a completed
-  OCR attempt that produced zero recognized cues, and include the effective OCR
-  language in diagnostics.
-- For Japanese only, allow one bounded `jpn` ↔ `jpn_vert` fallback after a
-  genuine zero-recognition result when the alternate language is available;
-  reuse the already extracted PGS/bitmap input and existing OCR workspace.
+  OCR attempt that produced zero recognized cues, including the strict known
+  SeConv zero-recognition diagnostic even when SeConv exits non-zero, and
+  include the effective OCR language in diagnostics.
+- For Japanese only, allow one bounded opposite language/orientation attempt
+  (`jpn` ↔ `jpn_vert`) after a genuine zero-recognition result when the
+  alternate language is available; preserve the existing raw/clean/accurate
+  OCR-mode subprocess semantics within each language attempt, and reuse the
+  already extracted PGS/bitmap input and existing OCR workspace.
 - Feed the first successful canonical Japanese recognition result to the
   existing SRT, ASS, or logical `both` serializers without triggering another
   OCR pass.
@@ -48,7 +51,7 @@ None.
 - No database or Queue migration. Existing canonical subtitle planning,
   artifact identity, sidecar naming/discovery, OCR modes, and non-Japanese OCR
   semantics remain unchanged.
-- Out of scope: arbitrary-language fallback, retrying a failed OCR attempt as
-  a generic recovery mechanism, new OCR engines, visual subtitle styling
-  reconstruction, new sidecar discovery/matching, or a parallel subtitle
-  pipeline.
+- Out of scope: arbitrary-language fallback, retrying a failed OCR language
+  attempt as a generic recovery mechanism, changing raw/clean/accurate mode
+  semantics, new OCR engines, visual subtitle styling reconstruction, new
+  sidecar discovery/matching, or a parallel subtitle pipeline.

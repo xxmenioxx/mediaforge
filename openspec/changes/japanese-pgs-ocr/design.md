@@ -10,8 +10,10 @@ proposal and the `subtitles` delta spec for the observable contract.
 The current runtime image installs `tesseract-ocr-jpn`, while the application
 can pass both `jpn` and `jpn_vert`. Package intent is not sufficient evidence
 that an exact language identifier is usable by the running Tesseract binary.
-SeConv output also distinguishes a genuine “No subtitles recognised” result
-from other command or input failures only after its output is inspected.
+SeConv output can distinguish a genuine “No subtitles recognised” result from
+other command or input failures only after bounded stdout/stderr and exit
+diagnostics are inspected; the genuine signal may accompany a non-zero process
+exit.
 
 ## Goals / Non-Goals
 
@@ -22,7 +24,9 @@ from other command or input failures only after its output is inspected.
 - Keep requested, effective, attempted, and ultimately successful OCR language
   information distinct in diagnostics.
 - Add only the bounded Japanese orientation retry required by issue #24,
-  reusing the already prepared bitmap/PGS input and canonical workspace.
+  defined as one opposite language/orientation attempt rather than a raw
+  SeConv process count, reusing the already prepared bitmap/PGS input and
+  canonical workspace.
 - Preserve one successful recognition result as the sole source for SRT, ASS,
   and logical `both` output.
 - Keep failures concise, actionable, and compatible with the existing
@@ -69,11 +73,14 @@ Keep the canonical OCR operation but make its internal recognition result
 distinguish at least:
 
 - `language_unavailable`: preflight rejected the effective language;
-- `zero_recognition`: the selected language was available, the OCR command
-  completed the relevant input, and the canonical SeConv result explicitly
-  indicates no recognized subtitle text; and
+- `zero_recognition`: the selected language was available, bounded SeConv
+  diagnostics contain the strict canonical no-recognition signal, and no
+  cancellation, malformed-input, crash, or unrelated-failure diagnostic takes
+  precedence. This classification is allowed even when SeConv exits non-zero;
+  the exit code alone is not decisive; and
 - `tool_or_input_failure`: process failure, malformed input, interrupted work,
-  invalid output, or any result that is not the strict zero-recognition case.
+  invalid output, a non-zero exit without the strict zero-recognition signal,
+  or any result that is not the strict zero-recognition case.
 
 The result carries the effective language, bounded image/input information when
 available, command diagnostics, and the staged recognized cue output. User
@@ -82,6 +89,11 @@ not contain the full Batch Converter help/table output, while a genuine empty
 recognition names the language actually attempted. Existing cancellation and
 generic failure classification stays authoritative outside this recognition
 classification.
+
+Classification checks cancellation and explicit malformed/crash/unrelated
+failure diagnostics before accepting the strict zero-recognition signal. The
+bounded diagnostic matcher is deliberately narrow and does not infer empty
+recognition from an exit code, an empty output file, or a generic error.
 
 Alternative considered: match any non-zero SeConv exit as zero recognition.
 Rejected because damaged or empty PGS input and tool errors would be masked as
@@ -94,17 +106,21 @@ first recognition attempt writes/reads the extracted SUP from the existing
 operation-owned OCR workspace; if it returns the structured genuine
 zero-recognition outcome and the effective language is Japanese, the operation
 checks the already probed capability set for the opposite orientation and may
-run exactly one alternate recognition attempt against that same SUP. VobSub
-uses the same rule against its already available bitmap input; no new input
-extraction or sidecar discovery is introduced.
+run exactly one alternate language/orientation attempt against that same SUP.
+VobSub uses the same rule against its already available bitmap input; no new
+input extraction or sidecar discovery is introduced.
 
 Each attempt uses distinct temporary recognition filenames within the same
 workspace, and only the successful attempt's canonical cue result proceeds to
-the existing cleanup and validation stages. The operation records both the
-primary effective language and the language that ultimately succeeded, or both
-attempted languages in the final concise failure. A missing primary language,
-an unavailable alternate, a tool/input failure, cancellation, or a non-Japanese
-language never enters this fallback branch.
+the existing cleanup and validation stages. The fallback budget is consumed by
+the distinct language/orientation attempt, not by the number of SeConv
+processes. Raw, clean, and accurate OCR modes remain authoritative within each
+attempt, including their existing multi-process sequencing; an intermediate
+process does not independently trigger or consume a fallback. The operation
+records both the primary effective language and the language that ultimately
+succeeded, or both attempted languages in the final concise failure. A missing
+primary language, an unavailable alternate, a tool/input failure, cancellation,
+or a non-Japanese language never enters this fallback branch.
 
 Alternative considered: retry the whole bitmap OCR function including PGS
 extraction. Rejected because it duplicates expensive extraction and makes it
@@ -116,8 +132,8 @@ Treat a successful recognition as a canonical normalized cue result plus
 effective-language metadata. The existing SRT and ASS serializers consume that
 result; a logical `both` request performs one recognition attempt sequence
 (including at most the one Japanese fallback) and renders both formats from the
-same successful result. Serializer calls cannot invoke OCR or independently
-select an OCR language.
+same successful result. Serializer calls cannot invoke or retry OCR, or
+independently select an OCR language.
 
 The fallback is therefore resolved before publication and before format fan-out.
 It does not alter artifact identity or output naming, and it preserves the
@@ -146,9 +162,11 @@ existing requested OCR language field and artifact identity.
 - **[Risk]** A Japanese fallback adds OCR cost for tracks that genuinely produce
   no text. **Mitigation:** limit it to Japanese, require strict zero
   recognition, probe availability once, and allow at most one alternate pass.
-- **[Risk]** SeConv wording or exit behavior can vary by version. **Mitigation:**
-  keep the zero-recognition classifier narrow, test the deployed SeConv version,
-  and preserve bounded raw diagnostics for non-matching failures.
+- **[Risk]** SeConv wording or exit behavior can vary by version, including a
+  non-zero exit for genuine zero recognition. **Mitigation:** keep the
+  zero-recognition classifier narrow, inspect bounded diagnostics before using
+  the exit code, test the deployed SeConv version, and preserve bounded raw
+  diagnostics for non-matching failures.
 - **[Risk]** A fallback could accidentally re-extract PGS or duplicate OCR for
   `both`. **Mitigation:** test extraction invocation counts and serializer
   fan-out against a shared canonical result in disposable fixtures.
