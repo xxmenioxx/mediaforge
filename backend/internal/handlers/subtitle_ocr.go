@@ -133,7 +133,7 @@ func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinatio
 	return result, nil
 }
 
-func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int) error {
+func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc) error {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format != "srt" && format != "ass" {
 		return fmt.Errorf("OCR output format must be srt or ass")
@@ -181,7 +181,7 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 		ocrMode,
 		tempPath,
 		rawTempPath,
-		nil,
+		onProgress,
 	)
 
 	if runErr != nil {

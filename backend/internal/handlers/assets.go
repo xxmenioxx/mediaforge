@@ -86,21 +86,23 @@ type previewGeneration struct {
 }
 
 type subtitleExtractionOperation struct {
-	ID          string                    `json:"id"`
-	Status      string                    `json:"status"`
-	Phase       string                    `json:"phase"`
-	Progress    float64                   `json:"progress"`
-	Processed   int                       `json:"processed"`
-	Total       int                       `json:"total"`
-	StreamIndex int                       `json:"streamIndex"`
-	Format      string                    `json:"format"`
-	AssetPath   string                    `json:"assetPath"`
-	Message     string                    `json:"message,omitempty"`
-	Result      *SubtitleExtractionResult `json:"result,omitempty"`
-	Error       string                    `json:"error,omitempty"`
-	CreatedAt   time.Time                 `json:"createdAt"`
-	UpdatedAt   time.Time                 `json:"updatedAt"`
-	cancel      context.CancelFunc
+	ID                     string                    `json:"id"`
+	Status                 string                    `json:"status"`
+	Phase                  string                    `json:"phase"`
+	Progress               float64                   `json:"progress"`
+	Processed              int                       `json:"processed"`
+	Total                  int                       `json:"total"`
+	StreamIndex            int                       `json:"streamIndex"`
+	Format                 string                    `json:"format"`
+	AssetPath              string                    `json:"assetPath"`
+	Message                string                    `json:"message,omitempty"`
+	Result                 *SubtitleExtractionResult `json:"result,omitempty"`
+	Error                  string                    `json:"error,omitempty"`
+	CreatedAt              time.Time                 `json:"createdAt"`
+	UpdatedAt              time.Time                 `json:"updatedAt"`
+	cancel                 context.CancelFunc
+	publicationCommitted   bool
+	publicationCommittedCh chan struct{}
 }
 
 var previewCacheState = struct {

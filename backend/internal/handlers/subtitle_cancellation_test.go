@@ -48,6 +48,7 @@ printf '%s' '{"streams":[{"index":2,"codec_type":"subtitle","codec_name":"subrip
 `)
 	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
 for argument do output="$argument"; done
+if [ "$output" = "-" ]; then exit 0; fi
 case "$output" in
   *.ass)
     if [ "${SUBTITLE_ASS_RETRY:-}" = "1" ]; then
@@ -143,6 +144,84 @@ esac
 	}
 }
 
+func TestSubtitlePublicationBarrierWinsRacingCancellation(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	operationID := "subtitle-publication-race"
+	operation := &subtitleExtractionOperation{
+		ID:                     operationID,
+		Status:                 "running",
+		Phase:                  "publishing",
+		cancel:                 cancel,
+		publicationCommittedCh: make(chan struct{}),
+	}
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = operation
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+
+	targets := []subtitleExtractionTarget{}
+	created := []SubtitleArtifact{}
+	createdPaths := []string{}
+	for _, format := range []string{"srt", "ass"} {
+		stagePath := filepath.Join(root, "stage."+format)
+		finalPath := filepath.Join(root, "Movie.eng.2."+format)
+		content := "1\n00:00:01,000 --> 00:00:02,000\nShared subtitle\n"
+		if format == "ass" {
+			content = "[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Shared subtitle\n"
+		}
+		writeTestFile(t, stagePath, content)
+		targets = append(targets, subtitleExtractionTarget{stagePath: stagePath, finalPath: finalPath})
+		created = append(created, SubtitleArtifact{StagedPath: finalPath, Format: format})
+		createdPaths = append(createdPaths, finalPath)
+	}
+
+	publishDone := make(chan error, 1)
+	go func() {
+		_, _, err := publishSubtitleExtractionTargets(operationID, ctx, targets, created, createdPaths)
+		publishDone <- err
+	}()
+	select {
+	case <-operation.publicationCommittedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publication barrier did not commit")
+	}
+
+	cancelDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.POST("/api/assets/extract-subtitles/:id/cancel", (&AssetHandler{}).CancelSubtitleExtractionOperation)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles/"+operationID+"/cancel", nil))
+		cancelDone <- response
+	}()
+
+	if err := <-publishDone; err != nil {
+		t.Fatalf("publication failed: %v", err)
+	}
+	response := <-cancelDone
+	if response.Code != http.StatusAccepted && response.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("racing cancellation cancelled committed operation: %v", err)
+	}
+	if !snapshotSubtitleOperation(operationID).publicationCommitted {
+		t.Fatal("operation lost publication commit")
+	}
+	for _, format := range []string{"srt", "ass"} {
+		if _, err := os.Stat(filepath.Join(root, "Movie.eng.2."+format)); err != nil {
+			t.Fatalf("committed %s publication missing after racing cancellation: %v", format, err)
+		}
+	}
+}
+
 func TestRunSubtitleCommandTerminatesProcessTreeOnCancellation(t *testing.T) {
 	bin := t.TempDir()
 	marker := filepath.Join(bin, "child.pid")
@@ -234,6 +313,7 @@ if [ "${BITMAP_OCR_RETRY:-0}" = "1" ]; then
   esac
   exit 0
 fi
+printf '%s\n' 'Running tesseract OCR on 5 VobSub image(s)...' >&2
 touch "$BITMAP_OCR_MARKER"
 while :; do sleep 1; done
 `)
@@ -255,6 +335,10 @@ while :; do sleep 1; done
 				t.Fatal(err)
 			}
 			waitForFile(t, marker)
+			progress := waitForSubtitleOperationProgress(t, started.OperationID, 5)
+			if progress.Phase != "ocr" || progress.Processed != 0 || progress.Total != 5 || progress.Progress < 20 {
+				t.Fatalf("bitmap OCR progress was not preserved: %#v", progress)
+			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles/"+started.OperationID+"/cancel", nil))
 			if response.Code != http.StatusAccepted {
@@ -316,6 +400,23 @@ func waitForSubtitleOperationStatus(t *testing.T, id, status string) subtitleExt
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for operation %q to become %q", id, status)
+	return subtitleExtractionOperation{}
+}
+
+func waitForSubtitleOperationProgress(t *testing.T, id string, total int) subtitleExtractionOperation {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := snapshotSubtitleOperation(id)
+		if snapshot.Phase == "ocr" && snapshot.Total == total {
+			return snapshot
+		}
+		if snapshot.Status == "error" || snapshot.Status == "cancelled" {
+			t.Fatalf("operation stopped before OCR progress was observed: %#v", snapshot)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for OCR progress on operation %q", id)
 	return subtitleExtractionOperation{}
 }
 

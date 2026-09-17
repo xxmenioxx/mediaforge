@@ -22,7 +22,8 @@ second queue or job system.
   and ASS together only after the full output set crosses its publication
   barrier, and cancelled or failed work must never publish partial sidecars.
 - Clean temporary conversion/OCR workspace after cancellation while preserving
-  completed sidecars and valid sidecars that existed before the operation.
+  valid sidecars that existed before the operation and sidecars published by
+  previously completed operations.
 - Allow the same conversion request to be started again after cancellation by
   creating a new operation identity; a terminal cancelled operation never
   transitions back to running.

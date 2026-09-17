@@ -194,7 +194,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 			if strings.TrimSpace(ocrLanguage) == "" {
 				ocrLanguage = transform.Language
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
 				return nil, err
 			}
 		} else if !subtitleCanConvertText(stream.Codec) {
@@ -345,7 +345,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 				ocrLanguage = ""
 			}
-			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
+			if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
 				current.Status, current.Error = "failed", err.Error()
 				if progress != nil {
 					progress(*current)
@@ -450,7 +450,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 		if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 			ocrLanguage = ""
 		}
-		if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds); err != nil {
+		if err := generateBitmapSubtitleAtPath(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil); err != nil {
 			return markSharedSubtitleFailure(artifacts, err)
 		}
 	} else {

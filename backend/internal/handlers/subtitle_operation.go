@@ -79,23 +79,27 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 	}
 	now := time.Now()
 	operation := &subtitleExtractionOperation{
-		ID:          operationID,
-		Status:      "running",
-		Phase:       "preparing",
-		Progress:    1,
-		StreamIndex: streamIndex,
-		Format:      format,
-		AssetPath:   sourceMediaPath,
-		Message:     "Preparing subtitle conversion",
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		cancel:      cancel,
+		ID:                     operationID,
+		Status:                 "running",
+		Phase:                  "preparing",
+		Progress:               1,
+		StreamIndex:            streamIndex,
+		Format:                 format,
+		AssetPath:              sourceMediaPath,
+		Message:                "Preparing subtitle conversion",
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		cancel:                 cancel,
+		publicationCommittedCh: make(chan struct{}),
 	}
 	subtitleExtractionOperations.Lock()
 	subtitleExtractionOperations.items[operationID] = operation
 	subtitleExtractionOperations.Unlock()
 
-	go runSubtitleExtractionOperation(workCtx, operationID, workspace, sourceMediaPath, result, targets)
+	go func() {
+		defer cancel()
+		runSubtitleExtractionOperation(workCtx, operationID, workspace, sourceMediaPath, result, targets)
+	}()
 	c.JSON(202, map[string]any{
 		"operationId": operationID,
 		"status":      "running",
@@ -211,9 +215,25 @@ func runSubtitleExtractionOperation(
 ) {
 	created, createdPaths, err := executeSubtitleExtractionTargets(ctx, operationID, workspace, sourceMediaPath, targets)
 	if err == nil && ctx.Err() == nil {
-		created, createdPaths, err = publishSubtitleExtractionTargets(ctx, targets, created, createdPaths)
+		created, createdPaths, err = publishSubtitleExtractionTargets(operationID, ctx, targets, created, createdPaths)
 	}
 	cleanupErr := cleanupSubtitleOperationWorkspace(workspace)
+
+	if subtitleOperationPublicationCommitted(operationID) {
+		finalResult := initialResult
+		finalResult.Created = append(finalResult.Created, createdPaths...)
+		for _, artifact := range created {
+			finalResult.Artifacts = append(finalResult.Artifacts, artifact)
+		}
+		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
+			op.Status = "completed"
+			op.Phase = "completed"
+			op.Progress = 100
+			op.Message = "Subtitle conversion completed"
+			op.Result = &finalResult
+		})
+		return
+	}
 
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 		message := "Subtitle conversion cancelled"
@@ -322,7 +342,12 @@ func executeSingleSubtitleTarget(
 		_, muxer, _ := originalSubtitleExtractionFormat(target.plan.Format)
 		args = originalSubtitleExtractionArgs(plan, target.plan.StreamIndex, muxer, target.stagePath)
 	} else if isBitmapSubtitleCodecName(target.stream.CodecName) {
-		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0); err != nil {
+		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
+			op.Phase = "ocr"
+			op.Progress = 20
+			op.Message = "Running OCR"
+		})
+		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0, subtitleOCRProgress(operationID)); err != nil {
 			return target.artifact, err
 		}
 		return validateStagedSubtitleArtifact(target)
@@ -354,7 +379,12 @@ func executeBothSubtitleTargets(
 	canonicalPath := filepath.Join(workspace, "canonical.srt")
 	stream := targets[0].stream
 	if isBitmapSubtitleCodecName(stream.CodecName) {
-		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0); err != nil {
+		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
+			op.Phase = "ocr"
+			op.Progress = 20
+			op.Message = "Running OCR"
+		})
+		if err := generateBitmapSubtitleAtPath(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0, subtitleOCRProgress(operationID)); err != nil {
 			return nil, err
 		}
 	} else {
@@ -398,6 +428,27 @@ func executeBothSubtitleTargets(
 	return created, nil
 }
 
+func subtitleOCRProgress(operationID string) OCRProgressFunc {
+	return func(processed, total int) {
+		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
+			op.Phase = "ocr"
+			op.Processed = processed
+			op.Total = total
+			op.Message = "Running OCR"
+			if total > 0 {
+				ratio := float64(processed) / float64(total)
+				if ratio < 0 {
+					ratio = 0
+				}
+				if ratio > 1 {
+					ratio = 1
+				}
+				op.Progress = 20 + ratio*60
+			}
+		})
+	}
+}
+
 func validateStagedSubtitleArtifact(target *subtitleExtractionTarget) (SubtitleArtifact, error) {
 	content, readErr := os.ReadFile(target.stagePath)
 	info, statErr := os.Stat(target.stagePath)
@@ -418,16 +469,17 @@ func validateStagedSubtitleArtifact(target *subtitleExtractionTarget) (SubtitleA
 }
 
 func publishSubtitleExtractionTargets(
+	operationID string,
 	ctx context.Context,
 	targets []subtitleExtractionTarget,
 	created []SubtitleArtifact,
 	createdPaths []string,
 ) ([]SubtitleArtifact, []string, error) {
+	subtitlePublicationMu.Lock()
+	defer subtitlePublicationMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return created, nil, err
 	}
-	subtitlePublicationMu.Lock()
-	defer subtitlePublicationMu.Unlock()
 	published := make([]string, 0, len(createdPaths))
 	createdByPath := map[string]SubtitleArtifact{}
 	for _, artifact := range created {
@@ -463,6 +515,7 @@ func publishSubtitleExtractionTargets(
 			published = append(published, output.final)
 		}
 	}
+	markSubtitlePublicationCommitted(operationID)
 	return created, published, nil
 }
 
@@ -485,6 +538,26 @@ func cleanupSubtitleOperationWorkspace(workspace string) error {
 	}
 }
 
+func markSubtitlePublicationCommitted(operationID string) {
+	subtitleExtractionOperations.Lock()
+	defer subtitleExtractionOperations.Unlock()
+	operation, exists := subtitleExtractionOperations.items[operationID]
+	if !exists || operation.publicationCommitted {
+		return
+	}
+	operation.publicationCommitted = true
+	if operation.publicationCommittedCh != nil {
+		close(operation.publicationCommittedCh)
+	}
+}
+
+func subtitleOperationPublicationCommitted(operationID string) bool {
+	subtitleExtractionOperations.RLock()
+	defer subtitleExtractionOperations.RUnlock()
+	operation, exists := subtitleExtractionOperations.items[operationID]
+	return exists && operation.publicationCommitted
+}
+
 func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
@@ -492,6 +565,8 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
+	subtitlePublicationMu.Lock()
+	defer subtitlePublicationMu.Unlock()
 	subtitleExtractionOperations.Lock()
 	operation, exists := subtitleExtractionOperations.items[id]
 	if !exists {
@@ -499,7 +574,7 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "subtitle extraction operation not found"})
 		return
 	}
-	if operation.Status == "running" && operation.cancel != nil {
+	if operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
 		operation.cancel()
 	}
 	snapshot := *operation
