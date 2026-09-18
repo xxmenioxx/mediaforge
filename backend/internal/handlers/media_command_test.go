@@ -67,15 +67,19 @@ func TestFFmpegCommandBuilderUsesFrozenSubtitleRoleDispositions(t *testing.T) {
 		Streams: MediaStreamInventory{Subtitle: []MediaStream{
 			{Index: 3, Codec: "subrip", Language: "spa"},
 			{Index: 4, Codec: "subrip", Language: "spa"},
+			{Index: 5, Codec: "subrip", Language: "eng"},
 		}},
 		ResolvedTracks: &ResolvedTrackPlan{SubtitleStreams: []ResolvedSubtitleTrack{
 			{StreamIndex: 3, Action: SubtitleDispositionKeep, Role: SubtitleRoleForced, Forced: false, EffectiveForced: true},
 			{StreamIndex: 4, Action: SubtitleDispositionKeep, Role: SubtitleRoleSDH},
+			{StreamIndex: 5, Action: SubtitleDispositionKeep, Role: SubtitleRoleCommentary},
 		}},
 	}
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
 	assertContains(t, command, "-disposition:s:0 forced")
 	assertContains(t, command, "-disposition:s:1 hearing_impaired")
+	assertContains(t, command, "-disposition:s:2 comment")
+	assertNotContains(t, command, "-disposition:s:2 commentary")
 	assertNotContains(t, command, "signs")
 }
 

@@ -20,9 +20,10 @@ func TestClassifySubtitleRoleUsesExplicitEvidenceAndKeepsForcedIndependent(t *te
 		{"explicit sdh", map[string]any{"index": 4, "role": "sdh"}, SubtitleRoleSDH, "metadata"},
 		{"source forced signs", map[string]any{"index": 5, "title": "Signs", "forced": true}, SubtitleRoleSigns, "heuristic"},
 		{"source unforced signs", map[string]any{"index": 6, "title": "Signs", "forced": false}, SubtitleRoleSigns, "heuristic"},
-		{"disposition commentary", map[string]any{"index": 7, "commentary": true}, SubtitleRoleCommentary, "disposition"},
-		{"disposition sdh", map[string]any{"index": 8, "hearingImpaired": true}, SubtitleRoleSDH, "disposition"},
-		{"ambiguous", map[string]any{"index": 9, "title": "Signs commentary"}, SubtitleRoleUnknown, "ambiguous/unknown"},
+		{"source forced without stronger role", map[string]any{"index": 7, "forced": true}, SubtitleRoleForced, "disposition"},
+		{"disposition commentary", map[string]any{"index": 8, "commentary": true}, SubtitleRoleCommentary, "disposition"},
+		{"disposition sdh", map[string]any{"index": 9, "hearingImpaired": true}, SubtitleRoleSDH, "disposition"},
+		{"ambiguous", map[string]any{"index": 10, "title": "Signs commentary"}, SubtitleRoleUnknown, "ambiguous/unknown"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -31,6 +32,37 @@ func TestClassifySubtitleRoleUsesExplicitEvidenceAndKeepsForcedIndependent(t *te
 				t.Fatalf("decision=%#v want role=%q provenance=%q", decision, test.role, test.provenance)
 			}
 		})
+	}
+}
+
+func TestSubtitleRoleGeneratedSnapshotAnnotationRemainsAutomatic(t *testing.T) {
+	scan := models.ScanResult{Path: "/media/title.mkv", SizeBytes: 10, SubtitleStreams: models.JSONList{
+		map[string]any{"index": 4, "codec": "subrip", "language": "spa", "title": "Signs"},
+	}}
+	annotateSubtitleRoleSummaries(&scan)
+	plan, err := resolveTrackPlan(scan, map[string]any{"subtitleDisposition": "keep", "attachmentPolicy": "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.SubtitleStreams[0]; got.Role != SubtitleRoleSigns || got.RoleProvenance != "heuristic" || got.RoleProvenance == "metadata" {
+		t.Fatalf("generated role was promoted to source metadata: %#v", got)
+	}
+}
+
+func TestSubtitleRoleForcedDispositionAndEffectiveForcedRemainIndependent(t *testing.T) {
+	scan := models.ScanResult{Path: "/media/title.mkv", SizeBytes: 10, SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "spa", "title": "Signs", "forced": false},
+		map[string]any{"index": 4, "codec": "subrip", "language": "spa", "role": "forced", "forced": false},
+	}}
+	plan, err := resolveTrackPlan(scan, map[string]any{"subtitleDisposition": "keep", "attachmentPolicy": "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SubtitleStreams[0].Role != SubtitleRoleSigns || plan.SubtitleStreams[0].EffectiveForced {
+		t.Fatalf("signs without source forced disposition became forced: %#v", plan.SubtitleStreams[0])
+	}
+	if plan.SubtitleStreams[1].Role != SubtitleRoleForced || plan.SubtitleStreams[1].Forced || !plan.SubtitleStreams[1].EffectiveForced {
+		t.Fatalf("canonical forced role did not set effective forced independently: %#v", plan.SubtitleStreams[1])
 	}
 }
 
@@ -59,6 +91,24 @@ func TestSubtitleRoleOverrideBindsToSnapshotAndStreamSignature(t *testing.T) {
 	}
 }
 
+func TestSubtitleRoleOverrideUnrelatedSaveDoesNotRebindReusedStreamIndex(t *testing.T) {
+	oldScan := models.ScanResult{Path: "/media/title.mkv", SizeBytes: 10, SubtitleStreams: models.JSONList{
+		map[string]any{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "jpn", "title": "Signs"},
+	}}
+	existing := bindSubtitleRoleOverrides(oldScan, map[int]SubtitleRoleOverride{4: {Role: SubtitleRoleSigns}})
+	newScan := oldScan
+	newScan.SizeBytes++
+	newScan.SubtitleStreams = models.JSONList{map[string]any{"index": 4, "codec": "subrip", "language": "eng", "title": "Full"}}
+	retained := subtitleRoleOverridesForConversionUpdate(newScan, existing, nil, false)
+	if retained[4].SourceSnapshotFingerprint != existing[4].SourceSnapshotFingerprint || retained[4].StreamSignature != existing[4].StreamSignature {
+		t.Fatalf("unrelated save rebound stale override: got=%#v existing=%#v", retained[4], existing[4])
+	}
+	decision := classifySubtitleRole(newScan, newScan.SubtitleStreams[0].(map[string]any), map[string]any{"subtitleRoleOverrides": retained})
+	if decision.OverrideState != "stale/ignored" || decision.Provenance == "manual" {
+		t.Fatalf("stale override became valid after unrelated save: %#v", decision)
+	}
+}
+
 func TestResolveTrackPlanRoleRulesPreserveSameLanguageStreams(t *testing.T) {
 	scan := models.ScanResult{Path: "/media/title.mkv", SizeBytes: 10, SubtitleStreams: models.JSONList{
 		map[string]any{"index": 3, "codec": "subrip", "language": "spa", "title": "Full"},
@@ -78,6 +128,9 @@ func TestResolveTrackPlanRoleRulesPreserveSameLanguageStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if plan.RoleClassifierVersion != subtitleSemanticRoleClassifierVersion || plan.SubtitleStreams[0].RoleClassifierVersion != subtitleSemanticRoleClassifierVersion {
+		t.Fatalf("classifier version was not frozen through the resolved plan: %#v", plan)
+	}
 	wantActions := []SubtitleDisposition{SubtitleDispositionKeep, SubtitleDispositionKeep, SubtitleDispositionRemove, SubtitleDispositionKeep}
 	wantRoles := []SubtitleSemanticRole{SubtitleRoleFull, SubtitleRoleSigns, SubtitleRoleCommentary, SubtitleRoleFull}
 	for index, subtitle := range plan.SubtitleStreams {
@@ -90,12 +143,21 @@ func TestResolveTrackPlanRoleRulesPreserveSameLanguageStreams(t *testing.T) {
 	}
 }
 
+func TestSubtitleArtifactPreservesRoleClassifierVersion(t *testing.T) {
+	values := subtitleArtifactsFromJSON(subtitleArtifactsJSON([]SubtitleArtifact{{
+		StreamIndex: 4, Format: "srt", Role: SubtitleRoleFull, RoleClassifierVersion: subtitleSemanticRoleClassifierVersion, Status: "planned",
+	}}))
+	if len(values) != 1 || values[0].RoleClassifierVersion != subtitleSemanticRoleClassifierVersion {
+		t.Fatalf("artifact classifier version was not persisted: %#v", values)
+	}
+}
+
 func TestSubtitleRolePublicationPreservesForcedAndSDHSemantics(t *testing.T) {
 	forced := true
 	if got := subtitleStreamDisposition(StreamMetadataOverride{}, MediaStream{}, true, false, false); got != "forced" {
 		t.Fatalf("role forced disposition=%q", got)
 	}
-	if got := subtitleStreamDisposition(StreamMetadataOverride{}, MediaStream{}, false, true, false); got != "commentary" {
+	if got := subtitleStreamDisposition(StreamMetadataOverride{}, MediaStream{}, false, true, false); got != "comment" {
 		t.Fatalf("commentary disposition=%q", got)
 	}
 	if got := subtitleStreamDisposition(StreamMetadataOverride{}, MediaStream{}, false, false, true); got != "hearing_impaired" {

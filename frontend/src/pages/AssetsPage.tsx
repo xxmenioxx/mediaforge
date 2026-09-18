@@ -3007,7 +3007,7 @@ function AssetRow({
     const current = { ...(conversionDraft.subtitleRoleOverrides ?? {}) };
     if (value === 'auto') delete current[String(index)];
     else current[String(index)] = { role: value };
-    const nextDraft = { ...conversionDraft, subtitleRoleOverrides: Object.keys(current).length ? current : undefined };
+    const nextDraft = { ...conversionDraft, subtitleRoleOverrides: current };
     setConversionDraft(nextDraft);
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
@@ -6651,7 +6651,7 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
         ? [[String(numericIndex), { ...override, role: override.role }]]
         : [];
     }));
-    if (Object.keys(overrides).length) clean.subtitleRoleOverrides = overrides;
+    if (Object.keys(overrides).length || value.subtitleRoleOverrides !== undefined) clean.subtitleRoleOverrides = overrides;
   }
   if (Array.isArray(value.subtitleTransforms) && value.subtitleTransforms.length) {
     clean.subtitleTransforms = value.subtitleTransforms;

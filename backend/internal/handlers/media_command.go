@@ -1533,7 +1533,7 @@ func subtitleStreamDisposition(metadata StreamMetadataOverride, stream MediaStre
 		flags = nil
 	}
 	if commentaryValue {
-		flags = append(flags, "commentary")
+		flags = append(flags, "comment")
 	}
 	if hearingImpairedValue {
 		flags = append(flags, "hearing_impaired")

@@ -96,7 +96,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		resolved := ResolvedSubtitleTrack{
 			StreamIndex: index, Codec: codec, Language: language, Action: action,
 			Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
-			RoleOverrideState: role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
+			RoleClassifierVersion: role.ClassifierVersion,
+			RoleOverrideState:     role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
 			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
 		}
 		subtitles = append(subtitles, resolved)
@@ -146,7 +147,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 						NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format), LogicalTransformKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, requested),
 						Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: effectiveForced, SourceForced: sourceForced,
 						Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
-						OCRLanguage: ocrLanguage, OCRMode: ocrMode,
+						RoleClassifierVersion: role.ClassifierVersion,
+						OCRLanguage:           ocrLanguage, OCRMode: ocrMode,
 					})
 					if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
 						warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
@@ -193,7 +195,8 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	defaultAudio := resolveDefaultAudioTrack(profile, audio)
 	defaultSubtitle := resolveDefaultSubtitleTrack(profile, subtitles)
 	return ResolvedTrackPlan{
-		VideoStreams: video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
+		RoleClassifierVersion: subtitleSemanticRoleClassifierVersion,
+		VideoStreams:          video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
 		AttachmentPolicy: attachmentPolicy, AttachmentsKept: attachmentsKept, AttachmentReason: attachmentReason,
 		AttachmentStreams: attachments, FontAttachmentExportPolicy: fontPolicy,
 		FontAttachments: fontAttachments, FontAttachmentsExported: len(fontAttachments) > 0,

@@ -2377,6 +2377,22 @@ export function ProfileLabPage() {
     });
   }
 
+  function subtitleRolesForLanguage(language: string): SubtitleSemanticRole[] {
+    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === undefined && rule.language === language)?.roles ?? [];
+  }
+
+  function updateSubtitleRolesForLanguage(language: string, roles: SubtitleSemanticRole[]) {
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === undefined && rule.language === language);
+      return migrateTrackDisposition(current, {
+        subtitleRules: [
+          ...current.subtitleRules.filter((rule) => rule.streamIndex !== undefined || rule.language !== language),
+          { ...(existing ?? { language, action: current.subtitleDisposition }), language, roles: roles.length ? roles : undefined },
+        ],
+      });
+    });
+  }
+
   function toggleTrackStream(type: 'video' | 'audio', index: number, keep: boolean) {
     const scan = selectedAssetSnapshot;
     if (!scan) {
@@ -4567,7 +4583,10 @@ export function ProfileLabPage() {
                             <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Subtitle rule" value={trackDraft.subtitleMode} onChange={(event) => setTrackDraft({ ...trackDraft, subtitleMode: event.target.value as TrackProfile['subtitleMode'] })}><MenuItem value="all">Keep all subtitles</MenuItem><MenuItem value="none">Remove all subtitles</MenuItem><MenuItem value="forced">Forced only</MenuItem><MenuItem value="languages">Selected languages</MenuItem><MenuItem value="forced-or-languages">Forced or selected languages</MenuItem></TextField></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.audioLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, audioLanguages: normalizeStringList(values) })} disabled={trackDraft.audioMode !== 'languages'} renderInput={(params) => <TextField {...params} label="Audio languages" helperText="Select or enter ISO language codes." />} /></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><Autocomplete multiple freeSolo options={languageOptions.map((option) => option.value)} value={trackDraft.subtitleLanguages} onChange={(_, values) => setTrackDraft({ ...trackDraft, subtitleLanguages: normalizeStringList(values) })} disabled={trackDraft.subtitleMode !== 'languages' && trackDraft.subtitleMode !== 'forced-or-languages'} renderInput={(params) => <TextField {...params} label="Subtitle languages" helperText="ISO codes; und matches unknown language only. Use Default subtitle action for all others." />} /></Grid>
-                            {activeProfileScope === 'path' ? trackDraft.subtitleLanguages.map((language) => <Grid key={language} size={{ xs: 12, md: 6 }}><TextField select fullWidth label={`${language.toUpperCase()} subtitle action`} value={subtitleActionForLanguage(language)} onChange={(event) => updateSubtitleActionForLanguage(language, event.target.value as SubtitleDisposition)}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>) : null}
+                            {activeProfileScope === 'path' ? trackDraft.subtitleLanguages.flatMap((language) => [
+                              <Grid key={`${language}-action`} size={{ xs: 12, md: 6 }}><TextField select fullWidth label={`${language.toUpperCase()} subtitle action`} value={subtitleActionForLanguage(language)} onChange={(event) => updateSubtitleActionForLanguage(language, event.target.value as SubtitleDisposition)}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField></Grid>,
+                              <Grid key={`${language}-roles`} size={{ xs: 12, md: 6 }}><TextField select fullWidth SelectProps={{ multiple: true }} label={`${language.toUpperCase()} subtitle roles`} value={subtitleRolesForLanguage(language)} onChange={(event) => { const value = event.target.value; updateSubtitleRolesForLanguage(language, (typeof value === 'string' ? value.split(',') : value) as SubtitleSemanticRole[]); }} helperText="Leave empty to match every role."><MenuItem value="full">Full</MenuItem><MenuItem value="forced">Forced</MenuItem><MenuItem value="signs">Signs</MenuItem><MenuItem value="commentary">Commentary</MenuItem><MenuItem value="sdh">SDH</MenuItem><MenuItem value="unknown">Unknown</MenuItem></TextField></Grid>,
+                            ]) : null}
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default audio language" value={trackDraft.defaultAudioLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultAudioLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={trackDraft.defaultSubtitleLanguage} onChange={(event) => setTrackDraft({ ...trackDraft, defaultSubtitleLanguage: event.target.value.toLowerCase() })} /></Grid>
                             <Grid size={{ xs: 12 }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap><FormControlLabel control={<Checkbox checked={trackDraft.audioRequired} onChange={(event) => setTrackDraft({ ...trackDraft, audioRequired: event.target.checked })} />} label="Require matching audio" /><FormControlLabel control={<Checkbox checked={trackDraft.subtitlesRequired} onChange={(event) => setTrackDraft({ ...trackDraft, subtitlesRequired: event.target.checked })} />} label="Require matching subtitles" /><FormControlLabel control={<Checkbox checked={trackDraft.dropCommentary} onChange={(event) => setTrackDraft({ ...trackDraft, dropCommentary: event.target.checked })} />} label="Remove commentary tracks" /></Stack></Grid>

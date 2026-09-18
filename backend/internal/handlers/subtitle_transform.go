@@ -29,6 +29,7 @@ type SubtitleArtifact struct {
 	Role                    SubtitleSemanticRole `json:"role,omitempty"`
 	RoleProvenance          string               `json:"roleProvenance,omitempty"`
 	RoleConfidence          string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion   string               `json:"roleClassifierVersion,omitempty"`
 	Title                   string               `json:"title,omitempty"`
 	StagedPath              string               `json:"stagedPath"`
 	PublishedPath           string               `json:"publishedPath,omitempty"`
@@ -92,7 +93,7 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Status: "planned",
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Status: "planned",
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 		}
 		artifact.DisplayName = filepath.Base(resolvedSubtitleStagedPath(base, artifact, used))
@@ -301,7 +302,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			Type:        "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Mode: decision.Mode,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 			Status: "planned",
 		}
@@ -425,7 +426,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: strings.ToLower(strings.TrimSpace(decision.Format)),
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Mode: decision.Mode,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 			Status: "planned",
 		}
@@ -855,7 +856,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 		result = append(result, map[string]interface{}{
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
-			"language": value.Language, "default": value.Default, "forced": value.Forced, "sourceForced": value.SourceForced, "role": string(value.Role), "roleProvenance": value.RoleProvenance, "roleConfidence": value.RoleConfidence, "title": value.Title,
+			"language": value.Language, "default": value.Default, "forced": value.Forced, "sourceForced": value.SourceForced, "role": string(value.Role), "roleProvenance": value.RoleProvenance, "roleConfidence": value.RoleConfidence, "roleClassifierVersion": value.RoleClassifierVersion, "title": value.Title,
 			"ocrLanguage": value.OCRLanguage, "effectiveOcrLanguage": value.EffectiveOCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
@@ -919,6 +920,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Role:                    SubtitleSemanticRole(stringFromUnknown(value["role"])),
 			RoleProvenance:          stringFromUnknown(value["roleProvenance"]),
 			RoleConfidence:          stringFromUnknown(value["roleConfidence"]),
+			RoleClassifierVersion:   stringFromUnknown(value["roleClassifierVersion"]),
 			Title:                   stringFromUnknown(value["title"]),
 			StagedPath:              stringFromUnknown(value["stagedPath"]),
 			PublishedPath:           stringFromUnknown(value["publishedPath"]),

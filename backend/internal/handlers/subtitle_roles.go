@@ -32,10 +32,13 @@ type subtitleRoleDecision struct {
 	Role                      SubtitleSemanticRole
 	Provenance                string
 	Confidence                string
+	ClassifierVersion         string
 	SourceSnapshotFingerprint string
 	StreamSignature           string
 	OverrideState             string
 }
+
+const subtitleSemanticRoleClassifierVersion = "subtitle-semantic-roles/v1"
 
 var subtitleSemanticRoles = map[SubtitleSemanticRole]struct{}{
 	SubtitleRoleFull: {}, SubtitleRoleForced: {}, SubtitleRoleSigns: {},
@@ -64,7 +67,7 @@ func subtitleSnapshotFingerprint(scan models.ScanResult) string {
 }
 
 func subtitleStreamSignature(stream map[string]any) string {
-	keys := []string{"index", "codec", "language", "title", "default", "forced", "comment", "commentary", "hearingImpaired", "order", "role", "semanticRole", "subtitleRole"}
+	keys := []string{"index", "codec", "language", "title", "default", "forced", "comment", "commentary", "hearingImpaired", "order"}
 	payload := make(map[string]any, len(keys))
 	for _, key := range keys {
 		if value, ok := stream[key]; ok {
@@ -145,6 +148,42 @@ func bindSubtitleRoleOverrides(scan models.ScanResult, overrides map[int]Subtitl
 	return result
 }
 
+// resolveSubtitleRoleOverridesForUpdate treats a present request map as the
+// complete current set of user overrides. An omitted map is handled by the
+// caller as "leave the stored set unchanged". New/unbound entries are bound to
+// the current scan; already-bound entries retain their original binding so an
+// unrelated save cannot make a stale override current again.
+func resolveSubtitleRoleOverridesForUpdate(scan models.ScanResult, existing, incoming map[int]SubtitleRoleOverride) map[int]SubtitleRoleOverride {
+	if len(incoming) == 0 {
+		return nil
+	}
+	incoming = normalizedSubtitleRoleOverrides(incoming)
+	result := make(map[int]SubtitleRoleOverride, len(incoming))
+	bound := bindSubtitleRoleOverrides(scan, incoming)
+	for index, override := range incoming {
+		if override.SourceSnapshotFingerprint != "" && override.StreamSignature != "" {
+			result[index] = override
+			continue
+		}
+		if prior, ok := existing[index]; ok && prior.SourceSnapshotFingerprint != "" &&
+			prior.StreamSignature != "" && prior.Role == override.Role {
+			result[index] = prior
+			continue
+		}
+		if replacement, ok := bound[index]; ok {
+			result[index] = replacement
+		}
+	}
+	return result
+}
+
+func subtitleRoleOverridesForConversionUpdate(scan models.ScanResult, existing, incoming map[int]SubtitleRoleOverride, supplied bool) map[int]SubtitleRoleOverride {
+	if !supplied {
+		return existing
+	}
+	return resolveSubtitleRoleOverridesForUpdate(scan, existing, incoming)
+}
+
 func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile map[string]any) subtitleRoleDecision {
 	snapshotFingerprint := subtitleSnapshotFingerprint(scan)
 	streamSignature := subtitleStreamSignature(stream)
@@ -152,6 +191,7 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 		Role:                      SubtitleRoleUnknown,
 		Provenance:                "ambiguous/unknown",
 		Confidence:                "low",
+		ClassifierVersion:         subtitleSemanticRoleClassifierVersion,
 		SourceSnapshotFingerprint: snapshotFingerprint,
 		StreamSignature:           streamSignature,
 		OverrideState:             "automatic",
@@ -167,12 +207,19 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 		decision.OverrideState = "stale/ignored"
 	}
 
-	for _, key := range []string{"role", "semanticRole", "subtitleRole"} {
-		if role := normalizeSubtitleSemanticRole(workerStringValue(stream[key])); role != "" {
-			decision.Role = role
-			decision.Provenance = "metadata"
-			decision.Confidence = "high"
-			return decision
+	generatedRole := (workerStringValue(stream["roleSourceSnapshotFingerprint"]) != "" ||
+		workerStringValue(stream["roleStreamSignature"]) != "") &&
+		(workerStringValue(stream["roleProvenance"]) == "heuristic" ||
+			workerStringValue(stream["roleProvenance"]) == "disposition" ||
+			workerStringValue(stream["roleProvenance"]) == "ambiguous/unknown")
+	if !generatedRole {
+		for _, key := range []string{"role", "semanticRole", "subtitleRole"} {
+			if role := normalizeSubtitleSemanticRole(workerStringValue(stream[key])); role != "" {
+				decision.Role = role
+				decision.Provenance = "metadata"
+				decision.Confidence = "high"
+				return decision
+			}
 		}
 	}
 
@@ -219,6 +266,12 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 		decision.Role = heuristics[0]
 		decision.Provenance = "heuristic"
 		decision.Confidence = "medium"
+		return decision
+	}
+	if boolValue(stream["forced"], false) {
+		decision.Role = SubtitleRoleForced
+		decision.Provenance = "disposition"
+		decision.Confidence = "high"
 	}
 	return decision
 }
@@ -236,6 +289,7 @@ func annotateSubtitleRoleSummaries(scan *models.ScanResult) {
 		stream["role"] = decision.Role
 		stream["roleProvenance"] = decision.Provenance
 		stream["roleConfidence"] = decision.Confidence
+		stream["roleClassifierVersion"] = decision.ClassifierVersion
 		stream["roleSourceSnapshotFingerprint"] = decision.SourceSnapshotFingerprint
 		stream["roleStreamSignature"] = decision.StreamSignature
 	}

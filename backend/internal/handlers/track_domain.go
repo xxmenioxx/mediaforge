@@ -243,6 +243,7 @@ type ResolvedSubtitleTrack struct {
 	Role                          SubtitleSemanticRole `json:"role,omitempty"`
 	RoleProvenance                string               `json:"roleProvenance,omitempty"`
 	RoleConfidence                string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion         string               `json:"roleClassifierVersion,omitempty"`
 	RoleOverrideState             string               `json:"roleOverrideState,omitempty"`
 	RoleSourceSnapshotFingerprint string               `json:"roleSourceSnapshotFingerprint,omitempty"`
 	RoleStreamSignature           string               `json:"roleStreamSignature,omitempty"`
@@ -251,27 +252,28 @@ type ResolvedSubtitleTrack struct {
 }
 
 type ResolvedTrackSidecar struct {
-	StreamIndex         int                  `json:"streamIndex"`
-	Codec               string               `json:"codec,omitempty"`
-	SourceType          string               `json:"sourceType,omitempty"`
-	Language            string               `json:"language,omitempty"`
-	Format              string               `json:"format,omitempty"`
-	RequestedFormat     string               `json:"requestedFormat,omitempty"`
-	Mode                string               `json:"mode"`
-	OCRRequired         bool                 `json:"ocrRequired"`
-	Title               string               `json:"title,omitempty"`
-	Default             bool                 `json:"default"`
-	Forced              bool                 `json:"forced"`
-	SourceForced        bool                 `json:"sourceForced"`
-	Role                SubtitleSemanticRole `json:"role,omitempty"`
-	RoleProvenance      string               `json:"roleProvenance,omitempty"`
-	RoleConfidence      string               `json:"roleConfidence,omitempty"`
-	OCRLanguage         string               `json:"ocrLanguage,omitempty"`
-	OCRMode             string               `json:"ocrMode,omitempty"`
-	Stages              []string             `json:"stages,omitempty"`
-	Extension           string               `json:"extension,omitempty"`
-	NamingKey           string               `json:"namingKey,omitempty"`
-	LogicalTransformKey string               `json:"logicalTransformKey,omitempty"`
+	StreamIndex           int                  `json:"streamIndex"`
+	Codec                 string               `json:"codec,omitempty"`
+	SourceType            string               `json:"sourceType,omitempty"`
+	Language              string               `json:"language,omitempty"`
+	Format                string               `json:"format,omitempty"`
+	RequestedFormat       string               `json:"requestedFormat,omitempty"`
+	Mode                  string               `json:"mode"`
+	OCRRequired           bool                 `json:"ocrRequired"`
+	Title                 string               `json:"title,omitempty"`
+	Default               bool                 `json:"default"`
+	Forced                bool                 `json:"forced"`
+	SourceForced          bool                 `json:"sourceForced"`
+	Role                  SubtitleSemanticRole `json:"role,omitempty"`
+	RoleProvenance        string               `json:"roleProvenance,omitempty"`
+	RoleConfidence        string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion string               `json:"roleClassifierVersion,omitempty"`
+	OCRLanguage           string               `json:"ocrLanguage,omitempty"`
+	OCRMode               string               `json:"ocrMode,omitempty"`
+	Stages                []string             `json:"stages,omitempty"`
+	Extension             string               `json:"extension,omitempty"`
+	NamingKey             string               `json:"namingKey,omitempty"`
+	LogicalTransformKey   string               `json:"logicalTransformKey,omitempty"`
 }
 
 type ResolvedDefaultTrack struct {
@@ -283,6 +285,7 @@ type ResolvedDefaultTrack struct {
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
 // decisions. Task 2 wires this model into Queue snapshots and execution plans.
 type ResolvedTrackPlan struct {
+	RoleClassifierVersion      string                     `json:"roleClassifierVersion,omitempty"`
 	VideoStreams               []ResolvedTrackStream      `json:"videoStreams"`
 	AudioStreams               []ResolvedTrackStream      `json:"audioStreams"`
 	RemovedAudioStreams        []ResolvedTrackStream      `json:"removedAudioStreams"`

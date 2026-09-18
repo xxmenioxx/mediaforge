@@ -2965,7 +2965,7 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 				Language: language, Format: format, RequestedFormat: fallback(requested, "srt"), Mode: mode,
 				OCRRequired: mode == "converted" && isBitmapSubtitleCodecName(stream.CodecName), Stages: subtitleArtifactStages(subtitleSourceType(stream.CodecName), mode),
 				Extension: "." + format, NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, format), LogicalTransformKey: logicalTransformKey,
-				Forced: effectiveForced, SourceForced: sourceForced, Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
+				Forced: effectiveForced, SourceForced: sourceForced, Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence, RoleClassifierVersion: role.ClassifierVersion,
 			}
 			plans = append(plans, subtitleExtractionPlan{
 				StreamIndex: stream.Index,
@@ -3144,14 +3144,19 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleCustomHeight must be a positive even height for custom upscale"})
 		return
 	}
-	roleOverrides := normalizedSubtitleRoleOverrides(input.SubtitleRoleOverrides)
-	var roleScan models.ScanResult
-	if err := h.db.Where("path = ?", filepath.Clean(resolvedPath)).Order("updated_at desc, id desc").First(&roleScan).Error; err == nil {
-		roleOverrides = bindSubtitleRoleOverrides(roleScan, roleOverrides)
-	}
-
 	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
+	existingRoleOverrides := entries[cleanPath].SubtitleRoleOverrides
+	roleOverrides := existingRoleOverrides
+	var roleScan models.ScanResult
+	if input.SubtitleRoleOverrides != nil {
+		if err := h.db.Where("path = ?", cleanPath).Order("updated_at desc, id desc").First(&roleScan).Error; err == nil {
+			roleOverrides = subtitleRoleOverridesForConversionUpdate(roleScan, existingRoleOverrides, input.SubtitleRoleOverrides, true)
+		} else {
+			roleOverrides = subtitleRoleOverridesForConversionUpdate(models.ScanResult{}, existingRoleOverrides, input.SubtitleRoleOverrides, true)
+		}
+	}
+
 	override := AssetConversionOverrideState{
 		TrackProfileKey:                strings.TrimSpace(input.TrackProfileKey),
 		KeepVideoStreams:               normalizedStreamIndexes(input.KeepVideoStreams),
