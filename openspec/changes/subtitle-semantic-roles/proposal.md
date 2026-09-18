@@ -17,14 +17,19 @@ canonical subtitle pipeline.
   ambiguous or insufficient evidence resolves safely to `unknown`.
 - Add authoritative manual per-asset/per-stream role overrides with reset-to-auto
   behavior, and expose role, provenance, and confidence in Asset Info.
-- Extend Track Profiles with optional role filtering while keeping existing
-  language-only profiles backward compatible.
+- Extend the existing `subtitleRules` model so each rule can optionally match
+  language, stream index, and semantic roles while retaining its action, sidecar,
+  and OCR fields; keep existing language-only profiles backward compatible.
+- Bind manual per-asset/per-stream overrides to the source snapshot and stream
+  signature so stale overrides fail closed and fall back to automatic role
+  classification.
 - Reuse `resolveTrackPlan`, freeze resolved roles in `ResolvedTrackPlan` and Queue
   snapshots, and require Workers to consume those frozen decisions without
   reclassification.
 - Carry role metadata through subtitle artifacts, sidecars, and publishing;
-  supported `forced` and `sdh` conventions may be mapped at publication boundaries
-  without making the canonical model player-specific.
+  supported external sidecars use `.forced` and `.sdh`, and supported muxed
+  outputs map forced/commentary/SDH to their corresponding dispositions without
+  making the canonical model player-specific.
 - Keep classification bounded and metadata-based; role resolution MUST NOT invoke
   OCR or introduce a new subtitle planner, job system, or dashboard.
 

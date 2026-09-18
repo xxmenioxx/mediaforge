@@ -9,7 +9,9 @@ stream index SHALL remain the authoritative identity of the subtitle track.
 Explicit semantic metadata and explicit dispositions SHALL take precedence over
 bounded heuristics. Heuristics SHALL use only available bounded snapshot or
 track evidence, SHALL NOT invoke OCR, and SHALL resolve ambiguous or
-insufficient evidence to `unknown`. A `signs` role SHALL NOT imply `forced`.
+insufficient evidence to `unknown`. The automatic result SHALL identify the
+source snapshot and relevant stream-signature evidence used to classify it. A
+`signs` role SHALL NOT imply `forced`.
 
 #### Scenario: Explicit semantic metadata wins
 
@@ -48,11 +50,14 @@ insufficient evidence to `unknown`. A `signs` role SHALL NOT imply `forced`.
 
 Asset Info SHALL expose the resolved role, provenance, confidence, and whether
 the role is manually overridden for each subtitle stream. A user SHALL be able
-to set or reset a per-asset, per-stream role override. A valid manual override
-SHALL take precedence over all automatic classification and SHALL remain tied to
-the stream index rather than language alone. Reset-to-auto SHALL remove only the
-override and recompute the role from the current snapshot without changing the
-stream identity.
+to set or reset a per-asset, per-stream role override. A manual override SHALL
+be bound to the asset/source snapshot identity and a relevant stream signature
+in addition to the authoritative stream index. A valid, current manual
+override SHALL take precedence over all automatic classification; a stale or
+non-matching override SHALL fail closed, SHALL NOT move to another stream, and
+automatic classification SHALL be used instead. Asset Info SHOULD expose the
+stale/ignored state for review. Reset-to-auto SHALL remove only the override and
+recompute the role from the current snapshot without changing stream identity.
 
 #### Scenario: Manual override changes one stream only
 
@@ -67,48 +72,83 @@ stream identity.
 - **THEN** the resolved role remains the manual value until the override is
   reset
 
+#### Scenario: Stale manual override is ignored
+
+- **WHEN** the source snapshot or relevant stream signature changes while a
+  manual override remains stored for the old stream index
+- **THEN** the override is marked stale or ignored, is not applied to the new
+  stream, and automatic classification resolves the current stream instead
+
+#### Scenario: Stream-index reuse does not inherit an override
+
+- **WHEN** a later source snapshot reuses an old stream index for a different
+  codec, language, title, order, or disposition signature
+- **THEN** the old manual role is not transferred and the new stream receives
+  only its current automatic classification until explicitly overridden
+
 #### Scenario: Reset returns to current automatic classification
 
 - **WHEN** a user resets a stream's manual role override
 - **THEN** the override is cleared, the role is recomputed from current
   evidence, and the UI identifies the result as automatic
 
-### Requirement: Optional role-aware Track Profile filtering
+### Requirement: Role-aware subtitle rules in Track Profiles
 
-Track Profiles MAY configure subtitle semantic-role filters in addition to their
-existing language and stream-selection rules. Role filtering SHALL apply only
-when explicitly configured. A profile that contains only existing language-based
-configuration SHALL retain its current behavior, including selection of multiple
-same-language streams when its existing rules select them.
+Track Profiles SHALL use the existing `subtitleRules` model for optional
+semantic-role matching. Each rule MAY match `language`, `streamIndex`, and
+`roles`, and SHALL retain its existing action, sidecar-format, and OCR fields.
+An absent role selector SHALL be a wildcard and SHALL preserve current behavior.
+Role matching SHALL preserve existing rule precedence, including a matching
+stream-specific rule taking precedence over language/path-safe rules. A profile
+that contains only existing language-based rules SHALL retain its current
+behavior, including selection of multiple same-language streams when its
+existing rules select them.
 
-#### Scenario: Role filter selects matching subtitles
+#### Scenario: Rule matches language and role
 
-- **WHEN** a Track Profile explicitly requests one or more semantic roles
-- **THEN** subtitle selection includes only streams whose resolved roles match
-  the configured role filter, subject to the profile's existing selection and
-  disposition rules
+- **WHEN** a Track Profile contains a subtitle rule matching `language: spa` and
+  `roles: [full]`
+- **THEN** that rule applies only to Spanish streams with role `full`, while
+  the rule's existing action, sidecar, and OCR fields are applied unchanged
 
-#### Scenario: Unconfigured role filter preserves compatibility
+#### Scenario: Different role policies coexist by language
 
-- **WHEN** a legacy or current Track Profile has no semantic-role filter
-- **THEN** resolution uses the existing language and stream rules without
-  requiring role classification for selection or changing its selected tracks
+- **WHEN** a profile defines `spa + full -> keep`, `spa + forced/signs -> keep`,
+  `spa + commentary -> remove`, and `eng + full -> keep`
+- **THEN** each subtitle stream is evaluated against its language and role and
+  receives the action from its matching rule without merging same-language
+  streams
 
-#### Scenario: Unknown role is not silently treated as a configured role
+#### Scenario: Absent role selector remains a wildcard
 
-- **WHEN** a profile explicitly filters for a role and a stream resolves to
+- **WHEN** an existing subtitle rule has language and/or stream selectors but no
+  `roles` field
+- **THEN** the rule matches any resolved role exactly as it did before semantic
+  roles were introduced
+
+#### Scenario: Stream-specific rule precedence is preserved
+
+- **WHEN** a stream matches both a language/path-safe rule and a stream-specific
+  rule, with compatible or different role selectors
+- **THEN** the stream-specific rule wins according to existing precedence and
+  role matching does not reorder or weaken that rule
+
+#### Scenario: Unknown role is explicit in filtering
+
+- **WHEN** a rule explicitly lists `unknown` in `roles` and a stream resolves to
   `unknown`
-- **THEN** that stream is excluded unless the profile explicitly includes
-  `unknown`
+- **THEN** the rule may match it, while an explicit list that omits `unknown`
+  does not match it
 
 ### Requirement: Resolved roles are frozen for Queue execution
 
 The canonical resolved track plan SHALL include each subtitle stream's role,
-provenance, confidence, and override state. When Queue freezes a resolved plan,
-those role decisions SHALL be stored in the immutable Queue snapshot alongside
-the stream index and existing subtitle decisions. Workers SHALL consume the
-frozen role decisions and SHALL NOT reclassify streams from mutable profiles or
-new runtime metadata during execution.
+provenance, confidence, override state, source snapshot binding, and relevant
+stream signature. When Queue freezes a resolved plan, those role decisions
+SHALL be stored in the immutable Queue snapshot alongside the stream index and
+existing subtitle decisions. Workers SHALL consume the frozen role decisions
+and SHALL NOT reclassify streams from mutable profiles or new runtime metadata
+during execution.
 
 #### Scenario: Queue snapshot freezes role decisions
 
@@ -128,12 +168,21 @@ new runtime metadata during execution.
 
 Resolved semantic role metadata SHALL remain associated with the authoritative
 stream index through canonical subtitle artifact planning, sidecar generation,
-and publishing. Where a target supports established conventions, `forced` and
-`sdh` MAY be mapped to sidecar or container metadata, but the canonical role
-value SHALL remain player-agnostic and shall not be replaced by a convention.
+and publishing. For supported external subtitle sidecars, role `forced` SHALL
+use the `.forced` suffix and role `sdh` SHALL use the `.sdh` suffix in the
+canonical sidecar naming position before the subtitle extension. For supported
+muxed/container outputs, role `forced` SHALL map to the forced disposition,
+role `commentary` SHALL map to the commentary disposition, and role `sdh` SHALL
+map to the hearing-impaired disposition where those target dispositions exist.
+Original source dispositions SHALL be preserved independently. The canonical
+role value SHALL remain player-agnostic and shall not be replaced by a
+destination convention. `signs` SHALL remain independent from `forced`; this
+change SHALL NOT invent a `.signs` suffix.
+
 Role metadata SHALL not alter subtitle text conversion, OCR, bitmap geometry,
 ASS positioning, native ASS/SSA extraction, atomic publication, or existing
-sidecar identity unless an explicit role-aware publishing rule requires it.
+sidecar identity except for the required supported forced/SDH publication
+mapping.
 
 #### Scenario: Converted sidecar retains role metadata
 
@@ -141,11 +190,27 @@ sidecar identity unless an explicit role-aware publishing rule requires it.
 - **THEN** the resulting artifact metadata identifies the source stream and
   resolved role while the canonical text/OCR pipeline remains unchanged
 
-#### Scenario: Supported publishing convention is derived from role
+#### Scenario: Forced and SDH external sidecars use canonical suffixes
 
-- **WHEN** a publication target supports a documented forced or SDH convention
-- **THEN** publishing may emit that convention from the frozen canonical role
-  while retaining the canonical role in artifact metadata
+- **WHEN** a supported external sidecar target publishes subtitles with frozen
+  role `forced` or `sdh`
+- **THEN** the published sidecar uses `.forced` or `.sdh`, respectively, before
+  its `.srt`, `.ass`, or other supported subtitle extension, and retains the
+  canonical role in artifact metadata
+
+#### Scenario: Supported muxed outputs map role dispositions
+
+- **WHEN** a supported muxed/container target publishes a subtitle with frozen
+  role `forced`, `commentary`, or `sdh`
+- **THEN** it emits the corresponding forced, commentary, or hearing-impaired
+  disposition while preserving the source disposition fields independently
+
+#### Scenario: Signs does not inherit forced publication
+
+- **WHEN** a supported target publishes a subtitle whose canonical role is
+  `signs` without a forced role
+- **THEN** it does not add forced semantics or invent a `.signs` suffix solely
+  from the canonical role
 
 #### Scenario: Unsupported convention preserves canonical role
 

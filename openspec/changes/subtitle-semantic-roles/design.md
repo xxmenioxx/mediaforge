@@ -67,34 +67,49 @@ extract subtitles, invoke OCR, or perform an unbounded media read merely to
 decide a role. If a bounded evidence source is unavailable, the result is
 `unknown` with a reason rather than a guessed role.
 
-### 2. Extend the existing canonical plan, not the planner topology
+### 2. Extend the existing canonical plan and subtitle rule model, not the
+planner topology
 
 Add role, provenance, confidence, and manual-override state to the existing
 resolved subtitle stream shape and to sidecar artifact metadata. Keep
 `resolveTrackPlan` as the only place that combines stream evidence, profile
-rules, role overrides, and optional role filters. Existing language-only
-selection remains the default path.
+rules, role overrides, and role matching. Existing language-only selection
+remains the default path.
 
-An optional Track Profile role filter should use an absent/unconfigured state
-distinct from a configured list containing `unknown`. When configured, role
-matching is applied in the same stream-index loop as existing selection rules;
-it never merges same-language streams and never replaces explicit per-stream
-selection or disposition decisions. The API/UI should expose the role filter
-as an optional list of canonical values and preserve older profile payloads
-without migration requirements.
+Extend each existing `subtitleRules` entry rather than adding a parallel global
+role filter. A rule may contain `language?`, `streamIndex?`, `roles?`, and its
+existing `action`, `sidecarFormats`, `ocrLanguage`, and `ocrMode` fields. An
+absent `roles` selector is a wildcard. The role predicate is evaluated together
+with the existing language and stream predicates, so a profile can express
+policies such as `spa + full -> keep`, `spa + forced/signs -> keep`,
+`spa + commentary -> remove`, and `eng + full -> keep`.
 
-### 3. Keep overrides scoped to asset and stream identity
+Preserve the existing rule precedence: a matching stream-specific rule wins
+over language/path-safe rules, and role matching only narrows whether a rule
+matches; it must not reorder rules or merge same-language streams. A configured
+role list containing `unknown` is distinct from an absent role selector and an
+empty/invalid selector fails validation rather than becoming a wildcard. Older
+profile payloads without `roles` remain valid and retain their current
+language-only behavior.
+
+### 3. Keep overrides scoped to the source snapshot and stream identity
 
 Store manual role overrides under the existing per-asset configuration boundary,
-keyed by authoritative stream index. Do not key an override only by language,
-title, or ordinal position. When a snapshot changes, an override for a still
-present stream index remains applicable; absent indexes are ignored without
-silently moving the override to another track. Asset Info displays automatic or
-manual provenance, confidence, and the reset-to-auto action.
+keyed by authoritative stream index plus the source/asset snapshot identity and
+a stable signature of the relevant stream metadata. The binding should include
+the source snapshot/fingerprint and normalized stream identity evidence such as
+index, codec, language, title, order, and dispositions. Do not key an override
+only by language, title, ordinal position, or stream index. If the source
+snapshot or relevant stream signature changes, the override is stale and MUST
+fail closed: it is ignored, never moved to another stream, and automatic role
+classification is used instead. Asset Info displays automatic, manual, or
+stale/ignored provenance and the reset-to-auto action.
 
 Reset deletes only the selected stream override and invokes the same canonical
 resolver against the current snapshot. It does not mutate source media,
-existing sidecars, or unrelated stream overrides.
+existing sidecars, or unrelated stream overrides. A stale override may be
+retained for review/audit, but it cannot affect selection or publishing until a
+new override is explicitly bound to the current snapshot and stream signature.
 
 ### 4. Freeze role decisions at the existing Queue boundary
 
@@ -107,17 +122,25 @@ rerun role heuristics. A job prepared before a later metadata/profile change
 therefore retains the role it was frozen with, consistent with other Queue
 decisions.
 
-### 5. Propagate role metadata through artifacts and publication adapters
+### 5. Propagate role metadata through artifacts and required publication
+adapters
 
 The canonical artifact records retain the source stream index and resolved role
-for original and converted sidecars. Publication code may translate `forced`
-or `sdh` into a target's established filename/container convention only at the
-boundary where that convention is supported. The adapter records the canonical
-role as metadata and uses no convention to reclassify it. Unsupported targets
-publish with existing naming and conversion behavior while retaining role
-metadata in the internal artifact/provenance record.
+for original and converted sidecars. For supported external subtitle sidecars,
+publication MUST insert `.forced` for role `forced` and `.sdh` for role `sdh` in
+the established sidecar naming position before the subtitle extension. No
+`.signs` suffix is invented by this change. For supported muxed/container
+outputs, publication MUST map `forced` to the forced disposition,
+`commentary` to the commentary disposition, and `sdh` to the hearing-impaired
+disposition when those target dispositions are available. Original source
+disposition flags remain preserved independently of the canonical role.
 
-Role metadata is descriptive: it does not alter OCR language, OCR lifecycle,
+The adapter records the canonical role as metadata and uses no target
+convention to reclassify it. Targets without these supported conventions keep
+existing naming/metadata behavior while retaining the canonical role in the
+internal artifact/provenance record.
+
+Role metadata is descriptive to the conversion pipeline: it does not alter OCR language, OCR lifecycle,
 subtitle text/timing, bitmap geometry, ASS alignment, native ASS/SSA stream
 copy, cancellation, atomic `both` publication, or sidecar identity unless an
 explicit role-aware publication mapping is configured.
@@ -148,8 +171,9 @@ results safely.
   bind automatic provenance to the snapshot/evidence version and recompute
   only through the canonical resolver; keep manual overrides stream-indexed.
 - [Publishing convention drift] Player-specific forced/SDH conventions differ
-  → isolate mappings at publication boundaries and preserve the canonical role
-  when no supported mapping exists.
+  → require the canonical `.forced`/`.sdh` sidecar and supported container
+  mappings only where the destination contract supports them, and preserve the
+  canonical role when no supported mapping exists.
 - [NAS cost] Extra probes could duplicate media work → prefer existing snapshot
   evidence, bounded reads, and cached classification inputs; never invoke OCR
   for role resolution.
