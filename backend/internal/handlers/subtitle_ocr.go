@@ -119,10 +119,9 @@ func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinatio
 		return result, fmt.Errorf("cannot create OCR workspace beside the asset: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
-	rawTempPath := filepath.Join(tempDir, "ocr.raw.srt")
 	tempSRT := filepath.Join(tempDir, "ocr.srt")
 	languageValue := normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
-	ocrResult, err := runBitmapOCRWithResult(ctx, sourceMediaPath, stream, "srt", languageValue, input.OCRMode, tempSRT, rawTempPath, onProgress)
+	ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, stream, "srt", languageValue, input.OCRMode, tempSRT, 0, 0, onProgress)
 	if err != nil {
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, err)
 	}
@@ -191,80 +190,49 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 	if format != "srt" && format != "ass" {
 		return result, fmt.Errorf("OCR output format must be srt or ass")
 	}
-	language := normalizedOCRLanguage(ocrLanguage, stream.Tags["language"])
-	if _, err := exec.LookPath("seconv"); err != nil {
-		return result, fmt.Errorf("OCR is not available in this backend image (seconv was not found)")
-	}
-	if _, err := exec.LookPath("tesseract"); err != nil {
-		return result, fmt.Errorf("OCR is not available in this backend image (Tesseract was not found)")
-	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return result, fmt.Errorf("cannot create OCR output directory: %w", err)
 	}
-	tempDir, err := os.MkdirTemp(filepath.Dir(outputPath), ".mvforge-ocr-*")
+	language := normalizedOCRLanguage(ocrLanguage, stream.Tags["language"])
+	request := canonicalOCRRequestFor(mediaPath, stream, language, ocrMode, segmentStart, segmentDuration)
+	evidence, err := canonicalOCREvidenceForRequest(ctx, request, onProgress)
 	if err != nil {
-		return result, fmt.Errorf("cannot create OCR workspace: %w", err)
+		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, err)
 	}
-	defer os.RemoveAll(tempDir)
-	tempPath := filepath.Join(tempDir, "ocr."+format)
-	rawTempPath := filepath.Join(tempDir, "ocr.raw."+format)
-	ocrMediaPath := mediaPath
-	ocrStream := stream
-	if segmentDuration > 0 {
-		segmentPath := filepath.Join(tempDir, "subtitle-segment.mkv")
-		args := bitmapSubtitleSegmentArgs(mediaPath, stream.Index, segmentPath, segmentStart, segmentDuration)
-		var output bytes.Buffer
-		runErr := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output)
-		if runErr != nil {
-			return result, fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", stream.Index, fallback(strings.TrimSpace(output.String()), runErr.Error()))
-		}
-		windowStreams, probeErr := probeSubtitleStreams(ctx, segmentPath)
-		if probeErr != nil || len(windowStreams) == 0 {
-			return result, fmt.Errorf("subtitle test window for stream %d has no readable subtitle track", stream.Index)
-		}
-		ocrMediaPath, ocrStream = segmentPath, windowStreams[0]
-	}
-
-	ocrResult, runErr := runBitmapOCRWithTiming(
-		ctx,
-		ocrMediaPath,
-		ocrStream,
-		format,
-		language,
-		ocrMode,
-		tempPath,
-		rawTempPath,
-		onProgress,
-		segmentDuration > 0,
-		segmentStart,
-	)
-
-	if runErr != nil {
-		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, runErr)
-	}
-	result.EffectiveLanguage = ocrResult.EffectiveLanguage
-	result.Cues = ocrResult.Cues
-	result.Geometry = ocrResult.Geometry
-	content, err := os.ReadFile(tempPath)
-	if err != nil {
-		if summary := emptyOCRTrackMessage(stream.Index, language, ocrResult.Message); summary != "" {
-			return result, fmt.Errorf("%s", summary)
-		}
-		return result, fmt.Errorf("OCR produced no %s subtitle for stream %d: %s", strings.ToUpper(format), stream.Index, conciseCommandOutput(fallback(ocrResult.Message, "SeConv completed without reporting a reason"), 1200))
+	result.EffectiveLanguage = evidence.EffectiveLanguage
+	result.Cues = cloneCanonicalCues(evidence.Cues)
+	result.Geometry = append([]bitmapCueGeometry(nil), evidence.Geometry...)
+	var content []byte
+	if format == "ass" {
+		content = renderBitmapASSCues(evidence.Cues)
+	} else {
+		content = renderBitmapSRTCues(evidence.Cues)
 	}
 	if !validSubtitleSidecar(format, content) {
 		return result, fmt.Errorf("OCR output for subtitle stream %d did not contain valid timed subtitle text", stream.Index)
 	}
-	_ = os.Remove(outputPath)
-	if err := os.Rename(tempPath, outputPath); err != nil {
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(outputPath), ".mvforge-subtitle-stage-*")
+	if err != nil {
+		return result, fmt.Errorf("cannot create OCR serializer staging file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
 		return result, fmt.Errorf("cannot stage OCR subtitle: %w", err)
 	}
-	if normalizedOCRMode(ocrMode) != "raw" {
-		rawOutputPath := strings.TrimSuffix(outputPath, "."+format) + ".raw." + format
-		_ = os.Remove(rawOutputPath)
-		if err := os.Rename(rawTempPath, rawOutputPath); err != nil {
-			return result, fmt.Errorf("cannot stage raw OCR subtitle: %w", err)
-		}
+	if err := temporary.Close(); err != nil {
+		return result, fmt.Errorf("cannot stage OCR subtitle: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	_ = os.Remove(outputPath)
+	if err := os.Rename(temporaryPath, outputPath); err != nil {
+		return result, fmt.Errorf("cannot stage OCR subtitle: %w", err)
 	}
 	return result, nil
 }

@@ -26,13 +26,11 @@ const (
 var subtitlePublicationMu sync.Mutex
 
 type subtitleExtractionTarget struct {
-	plan         subtitleExtractionPlan
-	stream       FFProbeStream
-	finalPath    string
-	stagePath    string
-	rawFinalPath string
-	rawStagePath string
-	artifact     SubtitleArtifact
+	plan      subtitleExtractionPlan
+	stream    FFProbeStream
+	finalPath string
+	stagePath string
+	artifact  SubtitleArtifact
 }
 
 func (h AssetHandler) startSubtitleExtractionOperation(
@@ -60,9 +58,6 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 	}
 	for index := range targets {
 		targets[index].stagePath = filepath.Join(workspace, filepath.Base(targets[index].finalPath))
-		if targets[index].rawFinalPath != "" {
-			targets[index].rawStagePath = filepath.Join(workspace, filepath.Base(targets[index].rawFinalPath))
-		}
 	}
 
 	operationID := fmt.Sprintf("subtitle-%d", time.Now().UnixNano())
@@ -173,9 +168,6 @@ func prepareSubtitleExtractionTargets(
 				stream:    stream,
 				finalPath: plan.OutputPath,
 				artifact:  subtitleExtractionArtifact(plan, plan.OutputPath),
-			}
-			if normalizedOCRMode(input.OCRMode) != "raw" {
-				target.rawFinalPath = strings.TrimSuffix(target.finalPath, "."+outputFormat) + ".raw." + outputFormat
 			}
 			if info, statErr := os.Stat(target.finalPath); statErr == nil && !info.IsDir() {
 				target.artifact.Status = "existing"
@@ -315,11 +307,6 @@ func executeSubtitleExtractionTargets(
 		}
 		created = append(created, artifact)
 		createdPaths = append(createdPaths, artifact.StagedPath)
-		if target.rawStagePath != "" {
-			if _, rawErr := os.Stat(target.rawStagePath); rawErr == nil {
-				createdPaths = append(createdPaths, target.rawFinalPath)
-			}
-		}
 	}
 	return created, createdPaths, nil
 }
@@ -497,18 +484,11 @@ func publishSubtitleExtractionTargets(
 	for _, artifact := range created {
 		createdByPath[artifact.StagedPath] = artifact
 	}
-	createdPathSet := map[string]bool{}
-	for _, path := range createdPaths {
-		createdPathSet[path] = true
-	}
 	for index := range targets {
 		target := &targets[index]
 		outputs := []struct{ stage, final string }{}
 		if _, exists := createdByPath[target.finalPath]; exists {
 			outputs = append(outputs, struct{ stage, final string }{target.stagePath, target.finalPath})
-		}
-		if target.rawStagePath != "" && createdPathSet[target.rawFinalPath] {
-			outputs = append(outputs, struct{ stage, final string }{target.rawStagePath, target.rawFinalPath})
 		}
 		for _, output := range outputs {
 			if info, err := os.Stat(output.final); err == nil && !info.IsDir() {

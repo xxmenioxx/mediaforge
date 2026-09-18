@@ -2098,19 +2098,21 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 	}
 
 	first := run()
-	if len(first.Created) != 4 || len(first.Existing) != 0 || len(first.Unsupported) != 0 {
+	if len(first.Created) != 3 || len(first.Existing) != 0 || len(first.Unsupported) != 0 {
 		t.Fatalf("unexpected first extraction result: %#v", first)
 	}
 	for _, path := range []string{
 		filepath.Join(root, "Baccano.spa.2.ass"),
 		filepath.Join(root, "Baccano.eng.3.srt"),
 		filepath.Join(root, "Baccano.jpn.4.srt"),
-		filepath.Join(root, "Baccano.jpn.4.raw.srt"),
 	} {
 		content, err := os.ReadFile(path)
 		if err != nil || len(content) == 0 {
 			t.Fatalf("sidecar %q content=%q err=%v", path, content, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "Baccano.jpn.4.raw.srt")); !os.IsNotExist(err) {
+		t.Fatalf("raw OCR intermediate was published beside media: %v", err)
 	}
 
 	second := run()

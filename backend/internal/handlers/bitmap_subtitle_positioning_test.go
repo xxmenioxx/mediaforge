@@ -212,7 +212,7 @@ func TestParseVobSubGeometryFailsClosedForPSWrappedSub(t *testing.T) {
 	}
 }
 
-func TestBitmapOCRASSRetainsGeometryThroughRawAndCleanup(t *testing.T) {
+func TestBitmapOCRASSRetainsGeometryThroughCanonicalCleanup(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
 	fixturePath := filepath.Join(root, "input.sup")
@@ -241,9 +241,9 @@ for argument do
   esac
 done
 if [ "$cleanup" = "0" ]; then
-	printf '%s\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Top' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Bottom' > "$output"
+	printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Top' '2' '00:00:01,000 --> 00:00:02,000' 'Bottom' > "$output"
 else
-	printf '%s\n' '[Events]' 'Format: Layer, Start, End, Style, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Clean Top' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,Clean Bottom' > "$output"
+	printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Clean Top' '2' '00:00:01,000 --> 00:00:02,000' 'Clean Bottom' > "$output"
 fi
 `)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -256,14 +256,11 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "captions.raw.ass"))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(root, "captions.raw.ass")); !os.IsNotExist(err) {
+		t.Fatalf("raw OCR intermediate was published beside output: %v", err)
 	}
-	for name, content := range map[string]string{"raw": string(raw), "cleaned": string(cleaned)} {
-		if !strings.Contains(content, "{\\an8}") || !strings.Contains(content, "{\\an2}") {
-			t.Fatalf("%s ASS lost independent geometry: %q", name, content)
-		}
+	if !strings.Contains(string(cleaned), "{\\an8}") || !strings.Contains(string(cleaned), "{\\an2}") {
+		t.Fatalf("cleaned ASS lost independent geometry: %q", cleaned)
 	}
 	if !strings.Contains(string(cleaned), "Clean Top") || !strings.Contains(string(cleaned), "Clean Bottom") {
 		t.Fatalf("cleaned ASS did not use cleaned canonical cues: %q", cleaned)
