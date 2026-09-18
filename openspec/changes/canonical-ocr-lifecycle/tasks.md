@@ -27,3 +27,16 @@
 - [x] 4.4 Add focused shared-cancellation and retry coverage for subscriber A cancellation while B remains, last-subscriber cancellation, cancellation after failure, retry identity creation, child-process termination, valid B-side cache commit, and no reuse after shared cancellation/failure.
 - [x] 4.5 Run `openspec validate canonical-ocr-lifecycle --type change --strict` and verify the complete change artifacts pass strict validation.
 - [x] 4.6 Run `./scripts/verify.sh --auto` and verify the repository reports `ALL CHECKS PASSED`.
+
+## 5. Implementation-review follow-ups
+
+- [x] 5.1 Validate a stored prepared-subtitle fingerprint before returning a
+  cache hit, using only the bounded prepared representation and no OCR; fail
+  closed when the representation is unavailable or changed.
+- [x] 5.2 Include cached SeConv/Tesseract executable provenance and the bounded
+  Tesseract language/capability fingerprint in the canonical OCR identity,
+  while retaining explicit application pipeline contract versions.
+- [x] 5.3 Add focused regression evidence for prepared-representation cache
+  invalidation, unchanged runtime reuse, runtime/tool provenance changes,
+  Japanese orientation capability changes, and output-format-independent
+  identity.

@@ -35,6 +35,102 @@ func TestCanonicalOCRIdentityIsSerializerNeutralAndPreparationScoped(t *testing.
 	}
 }
 
+func TestCanonicalOCRPreparedFingerprintValidationDoesNotRunOCROnCacheValidation(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	mediaPath := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("stable source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+case "$output" in
+  *.sup) printf '%s' "$PREPARED_OCR_CONTENT" > "$output"; printf 'ffmpeg\n' >> "$MVFORGE_PREPARED_LOG" ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(bin, "seconv"), `#!/bin/sh
+output=""
+for argument do
+  case "$argument" in
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+printf 'seconv\n' >> "$MVFORGE_PREPARED_LOG"
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Prepared OCR' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal-cache"))
+	logPath := filepath.Join(root, "prepared.log")
+	t.Setenv("MVFORGE_PREPARED_LOG", logPath)
+	t.Setenv("PREPARED_OCR_CONTENT", "prepared-v1")
+	stream := FFProbeStream{Index: 4, CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "spa"}}
+	request := canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0)
+	if _, err := canonicalOCREvidenceForRequest(context.Background(), request, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canonicalOCREvidenceForRequest(context.Background(), request, nil); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(log), "ffmpeg\n") != 2 || strings.Count(string(log), "seconv\n") != 1 {
+		t.Fatalf("cache validation should prepare without OCR: %q", log)
+	}
+	t.Setenv("PREPARED_OCR_CONTENT", "prepared-v2")
+	if _, err := canonicalOCREvidenceForRequest(context.Background(), request, nil); err != nil {
+		t.Fatal(err)
+	}
+	log, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(log), "ffmpeg\n") != 4 || strings.Count(string(log), "seconv\n") != 2 {
+		t.Fatalf("changed prepared subtitle representation reused cached OCR: %q", log)
+	}
+}
+
+func TestCanonicalOCRRuntimeProvenanceIsStableAndCapabilitySensitive(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("runtime source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stream := FFProbeStream{Index: 4, CodecName: "dvd_subtitle", Tags: map[string]string{"language": "spa"}}
+	binA := installCanonicalRuntimeTools(t, "seconv-a", "eng spa jpn jpn_vert")
+	t.Setenv("PATH", binA+string(os.PathListSeparator)+os.Getenv("PATH"))
+	request := canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0)
+	withRuntimeA, err := canonicalOCRRequestWithRuntime(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRuntimeAAgain, err := canonicalOCRRequestWithRuntime(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withRuntimeA.Identity.RuntimeProvenance != withRuntimeAAgain.Identity.RuntimeProvenance || withRuntimeA.Identity.key() != withRuntimeAAgain.Identity.key() {
+		t.Fatal("unchanged OCR runtime provenance was not deterministic")
+	}
+	if !strings.Contains(withRuntimeA.Identity.RuntimeProvenance, `"jpnVert":true`) {
+		t.Fatalf("Japanese orientation capability was not recorded: %s", withRuntimeA.Identity.RuntimeProvenance)
+	}
+	binB := installCanonicalRuntimeTools(t, "seconv-b", "eng spa jpn")
+	t.Setenv("PATH", binB+string(os.PathListSeparator)+os.Getenv("PATH"))
+	withRuntimeB, err := canonicalOCRRequestWithRuntime(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withRuntimeA.Identity.key() == withRuntimeB.Identity.key() || withRuntimeA.Identity.RuntimeProvenance == withRuntimeB.Identity.RuntimeProvenance {
+		t.Fatal("runtime/tool or OCR capability change did not invalidate identity")
+	}
+	if !strings.Contains(withRuntimeB.Identity.RuntimeProvenance, `"jpnVert":false`) {
+		t.Fatalf("changed Japanese orientation capability was not recorded: %s", withRuntimeB.Identity.RuntimeProvenance)
+	}
+}
+
 func TestCanonicalOCREquivalentSRTAndASSShareEvidenceAndProgress(t *testing.T) {
 	root := t.TempDir()
 	installCanonicalOCRTestTools(t, `#!/bin/sh
@@ -387,5 +483,13 @@ func installCanonicalOCRTestTools(t *testing.T, seconv string) string {
 	writeExecutable(t, filepath.Join(bin, "seconv"), seconv)
 	writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' eng spa jpn jpn_vert; exit 0; fi\nexit 0\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return bin
+}
+
+func installCanonicalRuntimeTools(t *testing.T, seconvLabel, languages string) string {
+	t.Helper()
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "seconv"), "#!/bin/sh\nprintf '%s\\n' '"+seconvLabel+"' >&2\nexit 0\n")
+	writeExecutable(t, filepath.Join(bin, "tesseract"), "#!/bin/sh\nif [ \"$1\" = \"--list-langs\" ]; then printf '%s\\n' "+languages+"; exit 0; fi\nprintf '%s\\n' 'tesseract-runtime' >&2\nexit 0\n")
 	return bin
 }

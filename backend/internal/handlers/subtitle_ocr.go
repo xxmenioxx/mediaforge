@@ -440,6 +440,14 @@ func runBitmapOCRWithTiming(
 }
 
 func probeTesseractLanguages(ctx context.Context) (map[string]struct{}, string, error) {
+	snapshot, err := resolveCanonicalOCRRuntimeProvenance(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	return cloneOCRCapabilities(snapshot.capabilities), snapshot.message, nil
+}
+
+func probeTesseractLanguagesUncached(ctx context.Context) (map[string]struct{}, string, error) {
 	var stdout, stderr bytes.Buffer
 	err := runSubtitleCommand(ctx, "tesseract", []string{"--list-langs"}, &stdout, &stderr)
 	diagnostics := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))

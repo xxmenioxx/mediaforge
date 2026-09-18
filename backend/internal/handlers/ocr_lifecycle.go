@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -19,12 +21,19 @@ import (
 )
 
 const (
-	canonicalOCRPipelineProvenance = "canonical-subtitle-pipeline/ocr-evidence-v1"
+	canonicalOCRPipelineProvenance = "canonical-subtitle-pipeline/ocr-evidence-v1;" + canonicalOCRLifecycleVersion + ";" + canonicalOCRParserVersion + ";" + canonicalOCRCleanupVersion + ";" + canonicalOCRGeometryVersion + ";" + canonicalOCRExtractionVersion
+	canonicalOCRLifecycleVersion   = "lifecycle-v1"
+	canonicalOCRParserVersion      = "parser-v1"
+	canonicalOCRCleanupVersion     = "cleanup-v1"
+	canonicalOCRGeometryVersion    = "geometry-v1"
+	canonicalOCRExtractionVersion  = "extraction-v1"
 	canonicalOCRIdentityVersion    = 1
+	canonicalOCRRuntimeVersion     = "ocr-runtime-v1"
 	canonicalOCRCacheVersion       = 1
 	canonicalOCRCacheMaxAge        = 7 * 24 * time.Hour
 	canonicalOCRCacheMaxBytes      = 256 * 1024 * 1024
 	canonicalOCRPreparedHashLimit  = 128 * 1024 * 1024
+	canonicalOCRRuntimeCacheTTL    = 30 * time.Second
 )
 
 // canonicalOCRIdentity deliberately contains no requested output format. It
@@ -48,6 +57,7 @@ type canonicalOCRIdentity struct {
 	PreparedRepresentation     string `json:"preparedRepresentation"`
 	PreparedRepresentationHash string `json:"preparedRepresentationHash,omitempty"`
 	PipelineProvenance         string `json:"pipelineProvenance"`
+	RuntimeProvenance          string `json:"runtimeProvenance"`
 }
 
 func (identity canonicalOCRIdentity) key() string {
@@ -65,6 +75,19 @@ type canonicalOCRRequest struct {
 	PreparedLocal    bool
 	PreparationStart float64
 }
+
+type canonicalOCRRuntimeSnapshot struct {
+	cacheKey     string
+	provenance   string
+	capabilities map[string]struct{}
+	message      string
+	createdAt    time.Time
+}
+
+var canonicalOCRRuntimeCache = struct {
+	sync.Mutex
+	items map[string]canonicalOCRRuntimeSnapshot
+}{items: map[string]canonicalOCRRuntimeSnapshot{}}
 
 type canonicalOCRFailure struct {
 	cause       error
@@ -186,6 +209,110 @@ func canonicalOCRRequestFor(
 	}
 }
 
+func canonicalOCRRequestWithRuntime(ctx context.Context, request canonicalOCRRequest) (canonicalOCRRequest, error) {
+	snapshot, err := resolveCanonicalOCRRuntimeProvenance(ctx)
+	if err != nil {
+		return request, err
+	}
+	request.Identity.RuntimeProvenance = snapshot.provenance
+	return request, nil
+}
+
+func resolveCanonicalOCRRuntimeProvenance(ctx context.Context) (canonicalOCRRuntimeSnapshot, error) {
+	seconvPath, err := exec.LookPath("seconv")
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, fmt.Errorf("OCR is not available in this backend image (seconv was not found)")
+	}
+	tesseractPath, err := exec.LookPath("tesseract")
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, fmt.Errorf("OCR is not available in this backend image (Tesseract was not found)")
+	}
+	seconvProvenance, err := ocrToolProvenance(seconvPath)
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, fmt.Errorf("cannot fingerprint SeConv runtime: %w", err)
+	}
+	tesseractProvenance, err := ocrToolProvenance(tesseractPath)
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, fmt.Errorf("cannot fingerprint Tesseract runtime: %w", err)
+	}
+	cacheKey := seconvProvenance + "\x00" + tesseractProvenance
+	canonicalOCRRuntimeCache.Lock()
+	if cached, ok := canonicalOCRRuntimeCache.items[cacheKey]; ok && time.Since(cached.createdAt) < canonicalOCRRuntimeCacheTTL {
+		canonicalOCRRuntimeCache.Unlock()
+		return cloneCanonicalOCRRuntimeSnapshot(cached), nil
+	}
+	canonicalOCRRuntimeCache.Unlock()
+
+	capabilities, message, err := probeTesseractLanguagesUncached(ctx)
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, err
+	}
+	languages := sortedOCRLanguages(capabilities)
+	languageBytes := sha256.Sum256([]byte(strings.Join(languages, "\n")))
+	payload, err := json.Marshal(struct {
+		Version             string   `json:"version"`
+		SeConvProvenance    string   `json:"seconv"`
+		TesseractProvenance string   `json:"tesseract"`
+		Languages           []string `json:"languages"`
+		LanguageFingerprint string   `json:"languageFingerprint"`
+		JapaneseHorizontal  bool     `json:"jpn"`
+		JapaneseVertical    bool     `json:"jpnVert"`
+		PipelineProvenance  string   `json:"pipeline"`
+	}{
+		Version:             canonicalOCRRuntimeVersion,
+		SeConvProvenance:    seconvProvenance,
+		TesseractProvenance: tesseractProvenance,
+		Languages:           languages,
+		LanguageFingerprint: hex.EncodeToString(languageBytes[:]),
+		JapaneseHorizontal:  hasOCRLanguage(capabilities, "jpn"),
+		JapaneseVertical:    hasOCRLanguage(capabilities, "jpn_vert"),
+		PipelineProvenance:  canonicalOCRPipelineProvenance,
+	})
+	if err != nil {
+		return canonicalOCRRuntimeSnapshot{}, fmt.Errorf("cannot serialize OCR runtime provenance: %w", err)
+	}
+	snapshot := canonicalOCRRuntimeSnapshot{
+		cacheKey:     cacheKey,
+		provenance:   string(payload),
+		capabilities: cloneOCRCapabilities(capabilities),
+		message:      message,
+		createdAt:    time.Now(),
+	}
+	canonicalOCRRuntimeCache.Lock()
+	canonicalOCRRuntimeCache.items[cacheKey] = snapshot
+	canonicalOCRRuntimeCache.Unlock()
+	return cloneCanonicalOCRRuntimeSnapshot(snapshot), nil
+}
+
+func ocrToolProvenance(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", path)
+	}
+	return fmt.Sprintf("path=%s;size=%d;mtime=%d;mode=%o", path, info.Size(), info.ModTime().UnixNano(), info.Mode().Perm()), nil
+}
+
+func hasOCRLanguage(capabilities map[string]struct{}, language string) bool {
+	_, ok := capabilities[language]
+	return ok
+}
+
+func cloneOCRCapabilities(capabilities map[string]struct{}) map[string]struct{} {
+	clone := make(map[string]struct{}, len(capabilities))
+	for language := range capabilities {
+		clone[language] = struct{}{}
+	}
+	return clone
+}
+
+func cloneCanonicalOCRRuntimeSnapshot(snapshot canonicalOCRRuntimeSnapshot) canonicalOCRRuntimeSnapshot {
+	snapshot.capabilities = cloneOCRCapabilities(snapshot.capabilities)
+	return snapshot
+}
+
 func canonicalOCREvidenceForRequest(
 	ctx context.Context,
 	request canonicalOCRRequest,
@@ -194,8 +321,12 @@ func canonicalOCREvidenceForRequest(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	request, err := canonicalOCRRequestWithRuntime(ctx, request)
+	if err != nil {
+		return nil, err
+	}
 	key := request.Identity.key()
-	if cached, ok := loadCanonicalOCREvidence(request, key); ok {
+	if cached, ok := loadCanonicalOCREvidence(ctx, request, key); ok {
 		cached.Message = strings.TrimSpace("OCR evidence cache hit; reusing canonical evidence\n" + cached.Message)
 		if onProgress != nil {
 			onProgress(1, 1)
@@ -318,34 +449,11 @@ func (flight *canonicalOCRFlight) hasSubscribers() bool {
 func (flight *canonicalOCRFlight) execute() {
 	canonicalPath := filepath.Join(flight.workspace, "canonical.srt")
 	rawPath := filepath.Join(flight.workspace, "canonical.raw.srt")
-	ocrMediaPath := flight.request.MediaPath
-	ocrStream := flight.request.Stream
-	if flight.request.PreparedLocal {
-		segmentPath := filepath.Join(flight.workspace, "subtitle-segment.mkv")
-		args := bitmapSubtitleSegmentArgs(
-			flight.request.MediaPath,
-			flight.request.Stream.Index,
-			segmentPath,
-			flight.request.PreparationStart,
-			flight.request.Identity.SegmentDuration,
-		)
-		var output strings.Builder
-		segmentErr := runSubtitleCommand(flight.ctx, "ffmpeg", args, &output, &output)
-		if segmentErr == nil {
-			var probeErr error
-			var streams []FFProbeStream
-			streams, probeErr = probeSubtitleStreams(flight.ctx, segmentPath)
-			if probeErr != nil || len(streams) == 0 {
-				segmentErr = fmt.Errorf("subtitle test window for stream %d has no readable subtitle track", flight.request.Stream.Index)
-			} else {
-				ocrMediaPath, ocrStream = segmentPath, streams[0]
-			}
-		}
-		if segmentErr != nil {
-			_ = cleanupSubtitleOperationWorkspace(flight.workspace)
-			flight.finish(nil, fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", flight.request.Stream.Index, fallback(strings.TrimSpace(output.String()), segmentErr.Error())))
-			return
-		}
+	ocrMediaPath, ocrStream, prepareErr := prepareCanonicalOCRInput(flight.ctx, flight.request, flight.workspace)
+	if prepareErr != nil {
+		_ = cleanupSubtitleOperationWorkspace(flight.workspace)
+		flight.finish(nil, prepareErr)
+		return
 	}
 	result, err := runBitmapOCRWithTiming(
 		flight.ctx,
@@ -448,7 +556,7 @@ func canonicalOCRCachePath(root, key string) string {
 	return filepath.Join(root, "evidence-"+key+".json")
 }
 
-func loadCanonicalOCREvidence(request canonicalOCRRequest, key string) (*canonicalOCREvidence, bool) {
+func loadCanonicalOCREvidence(ctx context.Context, request canonicalOCRRequest, key string) (*canonicalOCREvidence, bool) {
 	if request.Identity.SourceSize < 0 || request.Identity.SourceModTimeUnixNano < 0 {
 		return nil, false
 	}
@@ -468,23 +576,95 @@ func loadCanonicalOCREvidence(request canonicalOCRRequest, key string) (*canonic
 	}
 	payload, _ := json.Marshal(record.Payload)
 	sum := sha256.Sum256(payload)
-	if record.Checksum != hex.EncodeToString(sum[:]) || !record.Payload.Complete || record.Payload.Integrity != "canonical-cues-validated-v1" || !canonicalOCRIdentityMatches(request.Identity, record.Payload.Identity) {
+	if record.Checksum != hex.EncodeToString(sum[:]) || !record.Payload.Complete || record.Payload.Integrity != "canonical-cues-validated-v1" {
+		return nil, false
+	}
+	preparedHash, preparedOK := validateCachedPreparedRepresentation(ctx, request, record.Payload.Identity.PreparedRepresentationHash)
+	if !preparedOK {
+		return nil, false
+	}
+	request.Identity.PreparedRepresentationHash = preparedHash
+	if !canonicalOCRIdentityMatches(request.Identity, record.Payload.Identity) {
 		return nil, false
 	}
 	return cloneCanonicalOCREvidence(&record.Payload), true
 }
 
 func canonicalOCRIdentityMatches(expected, actual canonicalOCRIdentity) bool {
-	// A prepared representation hash is additional validation when the caller
-	// already has one. For extracted PGS, the flight learns that hash after the
-	// shared extraction; source stat/snapshot and preparation identity still
-	// select the bounded candidate before that extraction.
-	if expected.PreparedRepresentationHash != "" && expected.PreparedRepresentationHash != actual.PreparedRepresentationHash {
+	return reflect.DeepEqual(expected, actual)
+}
+
+func validateCachedPreparedRepresentation(ctx context.Context, request canonicalOCRRequest, storedHash string) (string, bool) {
+	if storedHash == "" {
+		if preparedOCRRepresentationRequired(request) {
+			return "", false
+		}
+		return "", true
+	}
+	root := canonicalOCRWorkspaceRoot()
+	workspace, err := os.MkdirTemp(root, ".mvforge-ocr-cache-validate-*")
+	if err != nil {
+		return "", false
+	}
+	defer cleanupSubtitleOperationWorkspace(workspace)
+
+	codec := strings.ToLower(strings.TrimSpace(request.Stream.CodecName))
+	var preparedPath string
+	switch codec {
+	case "hdmv_pgs_subtitle", "pgssub":
+		mediaPath, stream, prepareErr := prepareCanonicalOCRInput(ctx, request, workspace)
+		if prepareErr != nil {
+			return "", false
+		}
+		preparedPath = filepath.Join(workspace, fmt.Sprintf("prepared-stream-%d.sup", stream.Index))
+		if _, extractErr := extractPGSSubtitleForOCR(ctx, mediaPath, stream, preparedPath); extractErr != nil {
+			return "", false
+		}
+	case "dvd_subtitle", "dvb_subtitle":
+		preparedPath = preparedOCRRepresentationPath(request, workspace)
+	default:
+		return "", false
+	}
+	actualHash := boundedOCRFileHash(preparedPath)
+	if actualHash == "" || actualHash != storedHash {
+		return "", false
+	}
+	return actualHash, true
+}
+
+func preparedOCRRepresentationRequired(request canonicalOCRRequest) bool {
+	codec := strings.ToLower(strings.TrimSpace(request.Stream.CodecName))
+	if codec == "hdmv_pgs_subtitle" || codec == "pgssub" {
+		return true
+	}
+	if codec != "dvd_subtitle" && codec != "dvb_subtitle" {
 		return false
 	}
-	expected.PreparedRepresentationHash = ""
-	actual.PreparedRepresentationHash = ""
-	return reflect.DeepEqual(expected, actual)
+	extension := strings.ToLower(filepath.Ext(request.MediaPath))
+	return extension == ".idx" || extension == ".sub"
+}
+
+func prepareCanonicalOCRInput(ctx context.Context, request canonicalOCRRequest, workspace string) (string, FFProbeStream, error) {
+	if !request.PreparedLocal {
+		return request.MediaPath, request.Stream, nil
+	}
+	segmentPath := filepath.Join(workspace, "subtitle-segment.mkv")
+	args := bitmapSubtitleSegmentArgs(
+		request.MediaPath,
+		request.Stream.Index,
+		segmentPath,
+		request.PreparationStart,
+		request.Identity.SegmentDuration,
+	)
+	var output bytes.Buffer
+	if err := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output); err != nil {
+		return "", FFProbeStream{}, fmt.Errorf("cannot isolate subtitle test window for stream %d: %s", request.Stream.Index, fallback(strings.TrimSpace(output.String()), err.Error()))
+	}
+	streams, err := probeSubtitleStreams(ctx, segmentPath)
+	if err != nil || len(streams) == 0 {
+		return "", FFProbeStream{}, fmt.Errorf("subtitle test window for stream %d has no readable subtitle track", request.Stream.Index)
+	}
+	return segmentPath, streams[0], nil
 }
 
 func commitCanonicalOCREvidence(request canonicalOCRRequest, key string, evidence *canonicalOCREvidence) {
@@ -572,6 +752,14 @@ func pruneCanonicalOCREvidenceCache(root string) {
 }
 
 func preparedOCRRepresentationHash(request canonicalOCRRequest, workspace string) string {
+	path := preparedOCRRepresentationPath(request, workspace)
+	if path == "" {
+		return ""
+	}
+	return boundedOCRFileHash(path)
+}
+
+func preparedOCRRepresentationPath(request canonicalOCRRequest, workspace string) string {
 	path := ""
 	switch strings.ToLower(strings.TrimSpace(request.Stream.CodecName)) {
 	case "hdmv_pgs_subtitle", "pgssub":
@@ -587,7 +775,7 @@ func preparedOCRRepresentationHash(request canonicalOCRRequest, workspace string
 	if path == "" {
 		return ""
 	}
-	return boundedOCRFileHash(path)
+	return path
 }
 
 func boundedOCRFileHash(path string) string {
