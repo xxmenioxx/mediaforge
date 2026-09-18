@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -139,12 +137,17 @@ type pgsComposition struct {
 	objects []pgsCompositionObject
 }
 
+type pgsDisplaySet struct {
+	compositions []pgsComposition
+	dimensions   map[uint16]pgsObjectDimension
+}
+
 func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 	if len(data) < 12 {
 		return nil, fmt.Errorf("PGS SUP is too short")
 	}
-	dimensions := map[uint16]pgsObjectDimension{}
-	compositions := []pgsComposition{}
+	displaySets := []pgsDisplaySet{}
+	current := pgsDisplaySet{dimensions: map[uint16]pgsObjectDimension{}}
 	for offset, segmentCount := 0, 0; offset < len(data); segmentCount++ {
 		if segmentCount >= 10000 {
 			return nil, fmt.Errorf("PGS SUP contains too many segments")
@@ -163,17 +166,15 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 		payload := data[payloadStart:payloadEnd]
 		switch segmentType {
 		case 0x14:
-			composition, err := parsePGSComposition(pts, payload)
-			if err != nil {
-				return nil, err
+			// PDS: palette id/version followed by five-byte entries.
+			if len(payload) < 2 || (len(payload)-2)%5 != 0 {
+				return nil, fmt.Errorf("invalid PGS palette definition")
 			}
-			compositions = append(compositions, composition)
 		case 0x15:
-			if len(payload) < 1 || (len(payload)-1)%3 != 0 {
-				return nil, fmt.Errorf("invalid PGS window definition")
-			}
-		case 0x17:
-			if len(payload) < 7 {
+			// ODS: object id/version/sequence, then dimensions on the first
+			// fragment. Dimensions belong to this display set, not globally to
+			// the object id, because PGS may reuse ids with different sizes.
+			if len(payload) < 4 {
 				return nil, fmt.Errorf("invalid PGS object definition")
 			}
 			objectID := binary.BigEndian.Uint16(payload[0:2])
@@ -187,10 +188,37 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 				if width <= 0 || height <= 0 {
 					return nil, fmt.Errorf("invalid PGS object dimensions")
 				}
-				dimensions[objectID] = pgsObjectDimension{width: width, height: height}
+				current.dimensions[objectID] = pgsObjectDimension{width: width, height: height}
 			}
+		case 0x16:
+			composition, err := parsePGSComposition(pts, payload)
+			if err != nil {
+				return nil, err
+			}
+			current.compositions = append(current.compositions, composition)
+		case 0x17:
+			// WDS: window count followed by nine-byte window definitions.
+			if len(payload) < 1 || (len(payload)-1)%9 != 0 {
+				return nil, fmt.Errorf("invalid PGS window definition")
+			}
+		case 0x80:
+			if len(current.compositions) > 0 {
+				displaySets = append(displaySets, current)
+			}
+			current = pgsDisplaySet{dimensions: map[uint16]pgsObjectDimension{}}
 		}
 		offset = payloadEnd
+	}
+	if len(current.compositions) > 0 {
+		displaySets = append(displaySets, current)
+	}
+	compositions := make([]pgsComposition, 0)
+	dimensionsByComposition := make([]map[uint16]pgsObjectDimension, 0)
+	for _, displaySet := range displaySets {
+		for _, composition := range displaySet.compositions {
+			compositions = append(compositions, composition)
+			dimensionsByComposition = append(dimensionsByComposition, displaySet.dimensions)
+		}
 	}
 	result := make([]bitmapCueGeometry, 0)
 	ordinal := 0
@@ -200,7 +228,7 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 			end = compositions[index+1].start
 		}
 		for _, object := range composition.objects {
-			dimension, exists := dimensions[object.id]
+			dimension, exists := dimensionsByComposition[index][object.id]
 			if !exists {
 				continue
 			}
@@ -254,9 +282,6 @@ func parsePGSComposition(pts uint32, payload []byte) (pgsComposition, error) {
 	return composition, nil
 }
 
-var vobSubSizePattern = regexp.MustCompile(`(?im)^\s*size:\s*(\d+)x(\d+)\s*$`)
-var vobSubTimestampPattern = regexp.MustCompile(`(?im)^\s*timestamp:\s*(\d+):(\d+):(\d+):(\d+)\s*,\s*filepos:\s*([0-9a-f]+)\s*$`)
-
 func bitmapSubtitleGeometryForPath(inputPath, codec string, preparedLocal bool, preparationStart float64) []bitmapCueGeometry {
 	codec = strings.ToLower(strings.TrimSpace(codec))
 	if codec == "hdmv_pgs_subtitle" || codec == "pgssub" || strings.HasSuffix(strings.ToLower(inputPath), ".sup") {
@@ -281,94 +306,11 @@ func bitmapSubtitleGeometryForPath(inputPath, codec string, preparedLocal bool, 
 }
 
 func parseVobSubGeometry(inputPath string, preparedLocal bool, preparationStart float64) []bitmapCueGeometry {
-	idxPath := inputPath
-	if !strings.EqualFold(filepath.Ext(idxPath), ".idx") {
-		idxPath = strings.TrimSuffix(idxPath, filepath.Ext(idxPath)) + ".idx"
-	}
-	idx, err := os.ReadFile(idxPath)
-	if err != nil {
-		return nil
-	}
-	sizeMatch := vobSubSizePattern.FindSubmatch(idx)
-	if len(sizeMatch) != 3 {
-		return nil
-	}
-	canvasWidth, widthErr := strconv.Atoi(string(sizeMatch[1]))
-	canvasHeight, heightErr := strconv.Atoi(string(sizeMatch[2]))
-	if widthErr != nil || heightErr != nil || canvasWidth <= 0 || canvasHeight <= 0 {
-		return nil
-	}
-	subPath := strings.TrimSuffix(idxPath, filepath.Ext(idxPath)) + ".sub"
-	sub, err := os.ReadFile(subPath)
-	if err != nil {
-		return nil
-	}
-	matches := vobSubTimestampPattern.FindAllSubmatch(idx, -1)
-	values := make([]bitmapCueGeometry, 0, len(matches))
-	for index, match := range matches {
-		hour, _ := strconv.Atoi(string(match[1]))
-		minute, _ := strconv.Atoi(string(match[2]))
-		second, _ := strconv.Atoi(string(match[3]))
-		millisecond, _ := strconv.Atoi(string(match[4]))
-		fileOffset, parseErr := strconv.ParseInt(string(match[5]), 16, 64)
-		if parseErr != nil || fileOffset < 0 || fileOffset >= int64(len(sub)) {
-			continue
-		}
-		start := float64(hour*3600+minute*60+second) + float64(millisecond)/1000
-		end := start + 10
-		if index+1 < len(matches) {
-			nextHour, _ := strconv.Atoi(string(matches[index+1][1]))
-			nextMinute, _ := strconv.Atoi(string(matches[index+1][2]))
-			nextSecond, _ := strconv.Atoi(string(matches[index+1][3]))
-			nextMillisecond, _ := strconv.Atoi(string(matches[index+1][4]))
-			end = float64(nextHour*3600+nextMinute*60+nextSecond) + float64(nextMillisecond)/1000
-		}
-		x, y, width, height, ok := parseVobSubPacketGeometry(sub[int(fileOffset):])
-		if !ok {
-			continue
-		}
-		provenance := originalSourceAbsolute
-		if preparedLocal {
-			provenance = preparedInputLocal
-		}
-		values = append(values, bitmapCueGeometry{Start: start, End: end, CanvasWidth: canvasWidth, CanvasHeight: canvasHeight, BitmapX: x, BitmapY: y, BitmapWidth: width, BitmapHeight: height, SourceOrdinal: index, TimingProvenance: provenance})
-	}
-	return normalizeBitmapGeometryTiming(values, preparedInputLocalOrAbsolute(values), preparationStart)
-}
-
-func preparedInputLocalOrAbsolute(values []bitmapCueGeometry) subtitleTimingProvenance {
-	if len(values) == 0 {
-		return unknownTimingProvenance
-	}
-	return values[0].TimingProvenance
-}
-
-func parseVobSubPacketGeometry(packet []byte) (int, int, int, int, bool) {
-	limit := len(packet)
-	if limit > 128*1024 {
-		limit = 128 * 1024
-	}
-	for offset := 0; offset+8 <= limit; offset++ {
-		packetSize := int(binary.BigEndian.Uint16(packet[offset : offset+2]))
-		controlOffset := int(binary.BigEndian.Uint16(packet[offset+2 : offset+4]))
-		if packetSize < 4 || controlOffset < 4 || controlOffset+12 > packetSize || offset+packetSize > limit {
-			continue
-		}
-		control := packet[offset+controlOffset : offset+packetSize]
-		for index := 4; index+6 <= len(control); index++ {
-			if control[index] != 0x05 {
-				continue
-			}
-			x1 := int(control[index+1])<<4 | int(control[index+2])>>4
-			x2 := int(control[index+2]&0x0f)<<8 | int(control[index+3])
-			y1 := int(control[index+4])<<4 | int(control[index+5])>>4
-			y2 := int(control[index+5]&0x0f)<<8 | int(control[index+6])
-			if x2 >= x1 && y2 >= y1 {
-				return x1, y1, x2 - x1 + 1, y2 - y1 + 1, true
-			}
-		}
-	}
-	return 0, 0, 0, 0, false
+	// VobSub filepos values point into an MPEG Program Stream/PES container,
+	// not directly at an SPU packet. Until a bounded, structure-validated
+	// PS/PES-to-SPU extractor is available, fail closed so callers retain the
+	// deterministic bottom-center fallback rather than trusting byte scans.
+	return nil
 }
 
 func parseCanonicalBitmapSubtitleCues(format string, content []byte) []canonicalBitmapSubtitleCue {

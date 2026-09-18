@@ -27,6 +27,25 @@ func TestParsePGSSUPGeometryValidatesBoundsAndOrdering(t *testing.T) {
 	}
 }
 
+func TestParsePGSSUPGeometryScopesObjectDimensionsToDisplaySet(t *testing.T) {
+	first := testPGSDisplaySet(90000, []struct{ id, x, y, width, height int }{
+		{id: 7, x: 100, y: 100, width: 320, height: 80},
+	})
+	second := testPGSDisplaySet(270000, []struct{ id, x, y, width, height int }{
+		{id: 7, x: 200, y: 200, width: 640, height: 160},
+	})
+	geometry, err := parsePGSSUPGeometry(append(first, second...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(geometry) != 2 {
+		t.Fatalf("geometry=%#v", geometry)
+	}
+	if geometry[0].BitmapWidth != 320 || geometry[0].BitmapHeight != 80 || geometry[1].BitmapWidth != 640 || geometry[1].BitmapHeight != 160 {
+		t.Fatalf("object dimensions were not scoped to display sets: %#v", geometry)
+	}
+}
+
 func TestBitmapSubtitleTimingNormalizationUsesProvenance(t *testing.T) {
 	if got, ok := normalizeBitmapTiming(1, preparedInputLocal, 42.5); !ok || got != 1 {
 		t.Fatalf("prepared-local timing=%v,%t", got, ok)
@@ -97,16 +116,19 @@ func TestBitmapSubtitleSerializersKeepGeometryOutOfSRT(t *testing.T) {
 
 func TestBitmapASSAlignmentUsesCoarseNineRegionGrid(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		x, y int
-		want int
+		name                      string
+		x, y, width, height, want int
 	}{
-		{name: "upper-left", x: 0, y: 0, want: 7},
-		{name: "middle-center", x: 960, y: 500, want: 5},
-		{name: "lower-right", x: 1700, y: 900, want: 3},
+		{name: "upper-left", x: 0, y: 0, width: 100, height: 100, want: 7},
+		{name: "middle-center", x: 960, y: 500, width: 100, height: 100, want: 5},
+		{name: "lower-right", x: 1700, y: 900, width: 100, height: 100, want: 3},
+		{name: "vertical-one-third-boundary", x: 960, y: 310, width: 100, height: 100, want: 5},
+		{name: "vertical-two-thirds-boundary", x: 960, y: 670, width: 100, height: 100, want: 2},
+		{name: "horizontal-one-third-boundary", x: 590, y: 500, width: 100, height: 100, want: 5},
+		{name: "horizontal-two-thirds-boundary", x: 1230, y: 500, width: 100, height: 100, want: 6},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cue := canonicalBitmapSubtitleCue{Geometry: &bitmapCueGeometry{CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: test.x, BitmapY: test.y, BitmapWidth: 100, BitmapHeight: 100}}
+			cue := canonicalBitmapSubtitleCue{Geometry: &bitmapCueGeometry{CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: test.x, BitmapY: test.y, BitmapWidth: test.width, BitmapHeight: test.height}}
 			if got := bitmapASSAlignment(cue); got != test.want {
 				t.Fatalf("alignment=%d want %d", got, test.want)
 			}
@@ -117,25 +139,31 @@ func TestBitmapASSAlignmentUsesCoarseNineRegionGrid(t *testing.T) {
 	}
 }
 
-func TestParseVobSubGeometryUsesVerifiedPacketBounds(t *testing.T) {
+func TestParseVobSubGeometryFailsClosedForPSWrappedSub(t *testing.T) {
 	root := t.TempDir()
 	idxPath := filepath.Join(root, "captions.idx")
 	subPath := filepath.Join(root, "captions.sub")
-	packet := make([]byte, 20)
-	binary.BigEndian.PutUint16(packet[0:2], uint16(len(packet)))
-	binary.BigEndian.PutUint16(packet[2:4], 4)
-	packet[8] = 0x05
-	packet[9], packet[10], packet[11] = 0, 0xa0, 20
-	packet[12], packet[13], packet[14] = 1, 0xe0, 40
 	if err := os.WriteFile(idxPath, []byte("size: 1920x1080\ntimestamp: 00:00:01:000, filepos: 000000000\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(subPath, packet, 0o644); err != nil {
+	// filepos points into the PS/PES stream. The bytes resembling an SPU
+	// control packet are deliberately wrapped and must not be byte-scanned as
+	// if the file began with a raw SPU packet.
+	spu := make([]byte, 20)
+	binary.BigEndian.PutUint16(spu[0:2], uint16(len(spu)))
+	binary.BigEndian.PutUint16(spu[2:4], 4)
+	spu[8] = 0x05
+	spu[9], spu[10], spu[11] = 0, 0xa0, 20
+	spu[12], spu[13], spu[14] = 1, 0xe0, 40
+	pesPayload := append([]byte{0x80, 0x80, 0x00}, spu...)
+	pes := append([]byte{0x00, 0x00, 0x01, 0xbd, byte(len(pesPayload) >> 8), byte(len(pesPayload))}, pesPayload...)
+	pack := []byte{0x00, 0x00, 0x01, 0xba, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00}
+	if err := os.WriteFile(subPath, append(pack, pes...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	geometry := parseVobSubGeometry(idxPath, false, 0)
-	if len(geometry) != 1 || geometry[0].BitmapX != 10 || geometry[0].BitmapY != 30 || geometry[0].BitmapWidth != 11 || geometry[0].BitmapHeight != 11 {
-		t.Fatalf("VobSub geometry=%#v", geometry)
+	if geometry != nil {
+		t.Fatalf("PS/PES VobSub representation must fail closed: %#v", geometry)
 	}
 	if got := parseVobSubGeometry(filepath.Join(root, "missing.idx"), false, 0); got != nil {
 		t.Fatalf("missing VobSub representation should fall back, got %#v", got)
@@ -254,11 +282,15 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Top' '2' '00:00:01,000 --> 00
 
 func testPGSSUP(t *testing.T, objects []struct{ id, x, y, width, height int }) []byte {
 	t.Helper()
+	return testPGSDisplaySet(90000, objects)
+}
+
+func testPGSDisplaySet(pts uint32, objects []struct{ id, x, y, width, height int }) []byte {
 	pcs := make([]byte, 11+8*len(objects))
 	binary.BigEndian.PutUint16(pcs[0:2], 1920)
 	binary.BigEndian.PutUint16(pcs[2:4], 1080)
 	pcs[10] = byte(len(objects))
-	od := make([]byte, 0, len(objects)*11)
+	od := make([]byte, 0, len(objects)*24)
 	for index, object := range objects {
 		offset := 11 + index*8
 		binary.BigEndian.PutUint16(pcs[offset:offset+2], uint16(object.id))
@@ -269,9 +301,13 @@ func testPGSSUP(t *testing.T, objects []struct{ id, x, y, width, height int }) [
 		payload[3] = 0x80
 		binary.BigEndian.PutUint16(payload[7:9], uint16(object.width))
 		binary.BigEndian.PutUint16(payload[9:11], uint16(object.height))
-		od = append(od, pgsTestSegment(1, 0x17, payload)...)
+		od = append(od, pgsTestSegment(pts, 0x15, payload)...)
 	}
-	return append(append(pgsTestSegment(90000, 0x14, pcs), od...), pgsTestSegment(90000, 0x80, nil)...)
+	ordered := pgsTestSegment(pts, 0x16, pcs)
+	ordered = append(ordered, pgsTestSegment(pts, 0x17, []byte{0})...)
+	ordered = append(ordered, pgsTestSegment(pts, 0x14, []byte{0, 0})...)
+	ordered = append(ordered, od...)
+	return append(ordered, pgsTestSegment(pts, 0x80, nil)...)
 }
 
 func pgsTestSegment(pts uint32, segmentType byte, payload []byte) []byte {
