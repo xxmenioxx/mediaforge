@@ -3,16 +3,14 @@ import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
+import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride, SubtitleSemanticRole } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
-import { getTrackProfiles, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, removeTrackProfileSubtitleRule, updateTrackProfileSubtitleRule, type SubtitleDisposition, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
 
 export function TrackProfilesPage() {
   const client = useQueryClient();
-  const navigate = useNavigate();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const profiles = getTrackProfiles(settings.data, true);
   const [showDisabled, setShowDisabled] = useState(false);
@@ -21,6 +19,7 @@ export function TrackProfilesPage() {
   const update = useMutation({ mutationFn: api.updateSetting, onSuccess: () => client.invalidateQueries({ queryKey: ['settings'] }) });
   const save = () => {
     if (!draft) return;
+	if (invalidLanguageScopedSubtitleRuleIndexes(draft).length) return;
     const key = slug(draft.key || draft.name);
 	const pathScope = draft.scope === 'path';
 	const normalized = pathScope ? {
@@ -85,6 +84,24 @@ export function TrackProfilesPage() {
       subtitleTransforms: (draft.subtitleTransforms ?? []).map((item) => item.streamIndex === streamIndex ? { ...item, ...patch } : item),
     });
   };
+  const updateSubtitleRule = (index: number, patch: { language?: string; action?: SubtitleDisposition; roles?: SubtitleSemanticRole[]; sidecarFormats?: ('original' | 'srt' | 'ass')[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' }) => {
+    if (!draft) return;
+    setDraft(updateTrackProfileSubtitleRule(draft, index, {
+      ...patch,
+      language: patch.language?.trim().toLowerCase() || undefined,
+      sidecarFormats: patch.sidecarFormats?.length ? patch.sidecarFormats : undefined,
+      ocrLanguage: patch.ocrLanguage?.trim().toLowerCase() || undefined,
+    }));
+  };
+  const addSubtitleRule = () => {
+    if (!draft) return;
+    setDraft(appendTrackProfileSubtitleRule(draft, { language: draft.subtitleLanguages[0] || undefined, action: draft.subtitleDisposition }));
+  };
+  const removeSubtitleRule = (index: number) => {
+    if (!draft) return;
+    setDraft(removeTrackProfileSubtitleRule(draft, index));
+  };
+	const invalidSubtitleRuleIndexes = draft ? invalidLanguageScopedSubtitleRuleIndexes(draft) : [];
   return <>
     <PageHeader title="Track Profiles" eyebrow="Stream selection"><Typography color="text.secondary" sx={{ mt: 1 }}>Reusable video, audio, subtitle and metadata selection rules.</Typography></PageHeader>
     <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}><Stack spacing={2}>
@@ -92,10 +109,10 @@ export function TrackProfilesPage() {
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
         <FormControlLabel control={<Switch checked={showDisabled} onChange={(_, value) => setShowDisabled(value)} />} label="Show disabled" />
         <TextField label="Search track profiles" value={profileSearch} onChange={(event) => setProfileSearch(event.target.value)} placeholder="Name, rule, language…" size="small" sx={{ width: { xs: '100%', md: 360 } }} />
-        <Button startIcon={<AddIcon />} variant="contained" onClick={() => navigate('/profile-lab?section=tracks')}>Add Track Profile</Button>
+        <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDraft({ ...emptyTrackProfile })}>Add Track Profile</Button>
       </Stack>
       <Card><CardContent sx={{ p: 0 }}><Table><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Streams</TableCell><TableCell>Rules</TableCell><TableCell>Status</TableCell><TableCell /></TableRow></TableHead><TableBody>
-        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}</TableCell><TableCell><Stack direction="row" spacing={0.5}><Chip size="small" label={profile.scope === 'path' ? 'Path' : 'Asset'} /><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></Stack></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => navigate(`/profile-lab?trackProfileKey=${encodeURIComponent(profile.key)}`)}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
+        {visible.map((profile) => <TableRow key={profile.key}><TableCell><Typography fontWeight={700}>{profile.name}</Typography><Typography variant="body2" color="text.secondary">{profile.description || profile.key}</Typography></TableCell><TableCell>V {list(profile.keepVideoStreams)} · A {list(profile.keepAudioStreams)} · S {list(profile.keepSubtitleStreams)}</TableCell><TableCell>{profile.audioMode} / {profile.subtitleMode}{profile.subtitleRules.some((rule) => rule.roles?.length) ? <Typography variant="caption" display="block" color="text.secondary">{profile.subtitleRules.filter((rule) => rule.roles?.length).length} role rule(s)</Typography> : null}</TableCell><TableCell><Stack direction="row" spacing={0.5}><Chip size="small" label={profile.scope === 'path' ? 'Path' : 'Asset'} /><Chip size="small" label={profile.disabled ? 'Disabled' : 'Active'} color={profile.disabled ? 'default' : 'success'} /></Stack></TableCell><TableCell><Button startIcon={<EditIcon />} onClick={() => setDraft({ ...profile })}>Edit</Button><Button onClick={() => toggle(profile)}>{profile.disabled ? 'Enable' : 'Disable'}</Button></TableCell></TableRow>)}
         {!visible.length ? <TableRow><TableCell colSpan={5}><Alert severity="info">{normalizedProfileSearch ? 'No track profiles match this search.' : 'No track profiles yet. Create one here or from Profile Lab.'}</Alert></TableCell></TableRow> : null}
       </TableBody></Table></CardContent></Card>
     </Stack></Box>
@@ -199,8 +216,10 @@ export function TrackProfilesPage() {
       ) : null}
 	  {draft.scope !== 'path' ? <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}><IndexField label="Video stream indexes" value={draft.keepVideoStreams} onChange={(value) => setDraft({ ...draft, keepVideoStreams: value })} /><IndexField label="Audio stream indexes" value={draft.keepAudioStreams} onChange={(value) => setDraft({ ...draft, keepAudioStreams: value })} /><IndexField label="Subtitle stream indexes" value={draft.keepSubtitleStreams} onChange={(value) => setDraft({ ...draft, keepSubtitleStreams: value })} /></Stack> : null}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}><TextField select fullWidth label="Audio rule" value={draft.audioMode} onChange={(e) => setDraft({ ...draft, audioMode: e.target.value as TrackProfile['audioMode'] })}>{['all','default','languages','none'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField><TextField select fullWidth label="Subtitle rule" value={draft.subtitleMode} onChange={(e) => setDraft({ ...draft, subtitleMode: e.target.value as TrackProfile['subtitleMode'] })}>{['all','none','forced','languages','forced-or-languages'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField><TextField select fullWidth label="Validation" value={draft.validationMode} onChange={(e) => setDraft({ ...draft, validationMode: e.target.value as TrackProfile['validationMode'] })}>{['block','review','warn'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}</TextField></Stack>
-      <TextField label="Audio languages (comma separated)" value={draft.audioLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, audioLanguages: csv(e.target.value) })} /><TextField label="Subtitle languages (comma separated)" value={draft.subtitleLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, subtitleLanguages: csv(e.target.value) })} /><TextField label="Notes" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} multiline />
-    </Stack> : null}</DialogContent><DialogActions><Button onClick={() => setDraft(null)}>Cancel</Button><Button variant="contained" onClick={save} disabled={!draft?.name || update.isPending}>Save</Button></DialogActions></Dialog>
+      <TextField label="Audio languages (comma separated)" value={draft.audioLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, audioLanguages: csv(e.target.value) })} /><TextField label="Subtitle languages (comma separated)" value={draft.subtitleLanguages.join(', ')} onChange={(e) => setDraft({ ...draft, subtitleLanguages: csv(e.target.value) })} />
+      {draft ? <Stack spacing={1}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h3">Language subtitle rules</Typography><Typography variant="body2" color="text.secondary">Rules stay ordered. Empty roles match every role for the selected language; stream-specific rules remain preserved for Profile Lab.</Typography></Box><Button size="small" onClick={addSubtitleRule}>Add rule</Button></Stack>{invalidSubtitleRuleIndexes.length ? <Alert severity="warning">Each rule without a stream index requires a language before this profile can be saved.</Alert> : null}{draft.subtitleRules.map((rule, index) => rule.streamIndex === undefined ? <Stack key={`subtitle-rule-${index}`} spacing={1} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}><Stack direction={{ xs: 'column', md: 'row' }} spacing={1}><TextField fullWidth label="Language" value={rule.language ?? ''} error={invalidSubtitleRuleIndexes.includes(index)} onChange={(event) => updateSubtitleRule(index, { language: event.target.value })} helperText={invalidSubtitleRuleIndexes.includes(index) ? 'Language is required for a language-scoped rule.' : 'ISO language code; use und for unknown language.'} /><TextField select fullWidth label="Action" value={rule.action} onChange={(event) => updateSubtitleRule(index, { action: event.target.value as SubtitleDisposition })}><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem></TextField><TextField select fullWidth SelectProps={{ multiple: true }} label="Roles" value={rule.roles ?? []} onChange={(event) => { const value = event.target.value; const roles = (typeof value === 'string' ? value.split(',') : value) as SubtitleSemanticRole[]; updateSubtitleRule(index, { roles: roles.length ? roles : undefined }); }} helperText="Empty matches every role for this language."><MenuItem value="full">Full</MenuItem><MenuItem value="forced">Forced</MenuItem><MenuItem value="signs">Signs</MenuItem><MenuItem value="commentary">Commentary</MenuItem><MenuItem value="sdh">SDH</MenuItem><MenuItem value="unknown">Unknown</MenuItem></TextField><Button color="error" onClick={() => removeSubtitleRule(index)}>Remove</Button></Stack><Stack direction={{ xs: 'column', md: 'row' }} spacing={1}><TextField fullWidth label="Sidecar formats" value={(rule.sidecarFormats ?? []).join(', ')} onChange={(event) => updateSubtitleRule(index, { sidecarFormats: event.target.value.split(',').map((value) => value.trim()).filter((value): value is 'original' | 'srt' | 'ass' => value === 'original' || value === 'srt' || value === 'ass') })} helperText="original, srt, ass" /><TextField fullWidth label="OCR language" value={rule.ocrLanguage ?? ''} onChange={(event) => updateSubtitleRule(index, { ocrLanguage: event.target.value })} /><TextField select fullWidth label="OCR mode" value={rule.ocrMode ?? ''} onChange={(event) => updateSubtitleRule(index, { ocrMode: event.target.value ? event.target.value as 'raw' | 'clean' | 'accurate' : undefined })}><MenuItem value="">Default</MenuItem><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField></Stack></Stack> : null)}{!draft.subtitleRules.some((rule) => rule.streamIndex === undefined) ? <Typography variant="body2" color="text.secondary">No language-scoped rules yet.</Typography> : null}</Stack> : null}
+      <TextField label="Notes" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} multiline />
+    </Stack> : null}</DialogContent><DialogActions><Button onClick={() => setDraft(null)}>Cancel</Button><Button variant="contained" onClick={save} disabled={!draft?.name || invalidSubtitleRuleIndexes.length > 0 || update.isPending}>Save</Button></DialogActions></Dialog>
   </>;
 }
 

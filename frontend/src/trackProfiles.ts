@@ -1,4 +1,4 @@
-import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride } from './api/types';
+import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride, SubtitleSemanticRole } from './api/types';
 
 export type SubtitleTransform = {
   streamIndex: number;
@@ -13,7 +13,7 @@ export type SubtitleTransform = {
 
 export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extract';
 export type SubtitleSidecarFormat = 'original' | 'srt' | 'ass';
-export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' };
+export type SubtitleRule = { language?: string; streamIndex?: number; roles?: SubtitleSemanticRole[]; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' };
 
 export type TrackProfile = {
 	trackDispositionVersion?: number;
@@ -62,6 +62,26 @@ export const emptyTrackProfile: TrackProfile = {
 
 export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pick<TrackProfile, 'subtitleDisposition' | 'subtitleRules' | 'subtitleSidecarFormats' | 'attachmentPolicy' | 'fontAttachmentExportPolicy' | 'chapterPolicy'>>): TrackProfile {
   return { ...profile, ...patch, trackDispositionVersion: 1 };
+}
+
+export function updateTrackProfileSubtitleRule(profile: TrackProfile, index: number, patch: Partial<SubtitleRule>): TrackProfile {
+  if (index < 0 || index >= profile.subtitleRules.length) return profile;
+  return migrateTrackDisposition(profile, {
+    subtitleRules: profile.subtitleRules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule),
+  });
+}
+
+export function appendTrackProfileSubtitleRule(profile: TrackProfile, rule: SubtitleRule): TrackProfile {
+  return migrateTrackDisposition(profile, { subtitleRules: [...profile.subtitleRules, rule] });
+}
+
+export function removeTrackProfileSubtitleRule(profile: TrackProfile, index: number): TrackProfile {
+  if (index < 0 || index >= profile.subtitleRules.length) return profile;
+  return migrateTrackDisposition(profile, { subtitleRules: profile.subtitleRules.filter((_, ruleIndex) => ruleIndex !== index) });
+}
+
+export function invalidLanguageScopedSubtitleRuleIndexes(profile: TrackProfile): number[] {
+  return profile.subtitleRules.flatMap((rule, index) => rule.streamIndex === undefined && !rule.language?.trim() ? [index] : []);
 }
 
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
@@ -150,8 +170,11 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
 		const action = disposition(value.action ?? value.disposition);
 		const language = typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : undefined;
 		const streamIndex = Number.isInteger(value.streamIndex) && Number(value.streamIndex) >= 0 ? Number(value.streamIndex) : undefined;
+		const roles = Array.isArray(value.roles)
+			? Array.from(new Set(value.roles.filter((role): role is SubtitleSemanticRole => role === 'full' || role === 'forced' || role === 'signs' || role === 'commentary' || role === 'sdh' || role === 'unknown')))
+			: undefined;
 		return [{
-			language, streamIndex, action,
+			language, streamIndex, roles: roles?.length ? roles : undefined, action,
 			sidecarFormats: sidecarFormats(value.sidecarFormats).length ? sidecarFormats(value.sidecarFormats) : undefined,
 			ocrLanguage: typeof value.ocrLanguage === 'string' && value.ocrLanguage.trim() ? value.ocrLanguage.trim().toLowerCase() : undefined,
 			ocrMode: value.ocrMode === 'raw' || value.ocrMode === 'clean' || value.ocrMode === 'accurate' ? value.ocrMode : undefined,

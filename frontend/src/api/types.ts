@@ -154,6 +154,14 @@ export type AssetMetadataState = {
   updatedAt: string;
 };
 
+export type SubtitleSemanticRole = 'full' | 'forced' | 'signs' | 'commentary' | 'sdh' | 'unknown';
+
+export type SubtitleRoleOverride = {
+  role: SubtitleSemanticRole;
+  sourceSnapshotFingerprint?: string;
+  streamSignature?: string;
+};
+
 export type AssetConversionOverrideState = {
   trackProfileKey?: string;
   keepVideoStreams?: number[] | null;
@@ -162,6 +170,7 @@ export type AssetConversionOverrideState = {
   videoMetadata?: Record<string, StreamMetadataOverride>;
   audioMetadata?: Record<string, StreamMetadataOverride>;
   subtitleMetadata?: Record<string, StreamMetadataOverride>;
+  subtitleRoleOverrides?: Record<string, SubtitleRoleOverride>;
   subtitleTransforms?: Array<{
     streamIndex: number;
     format: 'srt' | 'ass';
@@ -776,7 +785,7 @@ export type TrackProfileResolutionPreview = {
 		videoStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		audioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		removedAudioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
-		subtitleStreams: Array<{ streamIndex: number; codec?: string; language?: string; action: 'keep' | 'remove' | 'extract' | 'keep_and_extract' }>;
+		subtitleStreams: Array<{ streamIndex: number; codec?: string; language?: string; action: 'keep' | 'remove' | 'extract' | 'keep_and_extract'; role?: SubtitleSemanticRole; roleProvenance?: string; roleConfidence?: string; roleOverrideState?: string; forced?: boolean; effectiveForced?: boolean }>;
 		attachmentPolicy: 'auto' | 'keep' | 'remove';
 		attachmentsKept: boolean;
 		attachmentReason: string;
@@ -1198,6 +1207,11 @@ export type MediaStreamInfo = {
   forced: boolean;
   comment: boolean;
   hearingImpaired: boolean;
+  role?: SubtitleSemanticRole;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleSourceSnapshotFingerprint?: string;
+  roleStreamSignature?: string;
   width?: number;
   height?: number;
   pixFmt?: string;

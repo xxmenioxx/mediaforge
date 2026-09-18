@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppSetting, AssetConversionOverrideState } from './api/types';
-import { emptyTrackProfile, getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion } from './trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
 
 const conversion: AssetConversionOverrideState = {
   keepVideoStreams: [0],
@@ -109,5 +109,60 @@ describe('trackProfileWithConversion', () => {
 	 expect(profile.subtitleRules[0].sidecarFormats).toEqual(['srt', 'ass']);
 	 expect(profile.subtitleRules[0].ocrLanguage).toBe('spa');
 	 expect(profile.subtitleRules[0].ocrMode).toBe('accurate');
+  });
+
+  it('round-trips role selectors while preserving legacy wildcard rules', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'roles', name: 'Roles', subtitleRules: [
+        { language: 'spa', roles: ['full', 'forced', 'signs', 'forced', 'invalid'], action: 'keep' },
+        { language: 'spa', roles: ['commentary'], action: 'remove' },
+        { language: 'eng', action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[];
+    const [profile] = getTrackProfiles(settings);
+
+    expect(profile.subtitleRules[0].roles).toEqual(['full', 'forced', 'signs']);
+    expect(profile.subtitleRules[1].roles).toEqual(['commentary']);
+    expect(profile.subtitleRules[2].roles).toBeUndefined();
+  });
+
+  it('edits and saves multiple ordered rules for the same language independently', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'ordered-roles', name: 'Ordered roles', scope: 'path', subtitleLanguages: ['spa', 'eng'], subtitleRules: [
+        { language: 'spa', roles: ['full'], action: 'keep' },
+        { language: 'spa', roles: ['forced', 'signs'], action: 'keep' },
+        { language: 'spa', roles: ['commentary'], action: 'remove' },
+        { language: 'eng', roles: ['full'], action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[];
+    const [profile] = getTrackProfiles(settings);
+    const edited = updateTrackProfileSubtitleRule(profile, 2, { action: 'keep', roles: ['sdh'] });
+    const appended = appendTrackProfileSubtitleRule(edited, { language: 'spa', roles: ['commentary'], action: 'remove', sidecarFormats: ['srt'], ocrLanguage: 'spa', ocrMode: 'clean' });
+    const saved = trackProfileWithConversion(appended, {});
+    const [reloaded] = getTrackProfiles(JSON.parse(JSON.stringify([{ key: 'trackProfiles', value: { profiles: [saved] } }])) as AppSetting[]);
+
+    expect(reloaded.subtitleRules).toEqual([
+      expect.objectContaining({ language: 'spa', roles: ['full'], action: 'keep' }),
+      expect.objectContaining({ language: 'spa', roles: ['forced', 'signs'], action: 'keep' }),
+      expect.objectContaining({ language: 'spa', roles: ['sdh'], action: 'keep' }),
+      expect.objectContaining({ language: 'eng', roles: ['full'], action: 'keep' }),
+      expect.objectContaining({ language: 'spa', roles: ['commentary'], action: 'remove', sidecarFormats: ['srt'], ocrLanguage: 'spa', ocrMode: 'clean' }),
+    ]);
+  });
+
+  it('requires language on language-scoped rules but permits stream-specific rules and und', () => {
+    const profile = getTrackProfiles([{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'language-validation', name: 'Language validation', subtitleRules: [
+        { action: 'keep' },
+        { language: ' ', action: 'remove' },
+        { streamIndex: 4, action: 'keep' },
+        { language: 'und', action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[])[0];
+
+    expect(invalidLanguageScopedSubtitleRuleIndexes(profile)).toEqual([0, 1]);
   });
 });
