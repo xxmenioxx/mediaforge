@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppSetting, AssetConversionOverrideState } from './api/types';
-import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
 
 const conversion: AssetConversionOverrideState = {
   keepVideoStreams: [0],
@@ -150,5 +150,19 @@ describe('trackProfileWithConversion', () => {
       expect.objectContaining({ language: 'eng', roles: ['full'], action: 'keep' }),
       expect.objectContaining({ language: 'spa', roles: ['commentary'], action: 'remove', sidecarFormats: ['srt'], ocrLanguage: 'spa', ocrMode: 'clean' }),
     ]);
+  });
+
+  it('requires language on language-scoped rules but permits stream-specific rules and und', () => {
+    const profile = getTrackProfiles([{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'language-validation', name: 'Language validation', subtitleRules: [
+        { action: 'keep' },
+        { language: ' ', action: 'remove' },
+        { streamIndex: 4, action: 'keep' },
+        { language: 'und', action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[])[0];
+
+    expect(invalidLanguageScopedSubtitleRuleIndexes(profile)).toEqual([0, 1]);
   });
 });

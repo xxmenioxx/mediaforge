@@ -80,6 +80,10 @@ export function removeTrackProfileSubtitleRule(profile: TrackProfile, index: num
   return migrateTrackDisposition(profile, { subtitleRules: profile.subtitleRules.filter((_, ruleIndex) => ruleIndex !== index) });
 }
 
+export function invalidLanguageScopedSubtitleRuleIndexes(profile: TrackProfile): number[] {
+  return profile.subtitleRules.flatMap((rule, index) => rule.streamIndex === undefined && !rule.language?.trim() ? [index] : []);
+}
+
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
   const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
   if (!Array.isArray(value)) return [];
