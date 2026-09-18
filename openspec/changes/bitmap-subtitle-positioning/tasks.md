@@ -21,7 +21,7 @@
 ## 4. Regression coverage and validation
 
 - [x] 4.1 Add focused backend regression fixtures for simultaneous top/bottom cues, including overlapping timings, and verify each event retains its own coarse ASS region without merging.
-- [x] 4.2 Add focused regression coverage for missing or ambiguous geometry and verify conversion succeeds with deterministic bottom-center ASS fallback while SRT remains unchanged.
+- [x] 4.2 Add focused regression coverage for missing geometry and a cue overlapping multiple non-equivalent source events, verifying the ambiguous cue remains unpositioned, conversion succeeds with deterministic bottom-center ASS fallback, and SRT remains unchanged.
 - [x] 4.3 Add focused regression coverage using a non-zero segment/sample start where geometry and OCR cues are already prepared-input-local; assert the correct match and explicitly fail if a second segment-start adjustment occurs. Also cover one original-source-absolute translation.
 - [x] 4.4 Add cleanup-retention, raw-ASS, SRT, native ASS, native SSA, and logical both regression coverage against disposable FFmpeg/SeConv fixtures; verify no serializer invokes OCR and no existing sidecar identity changes.
 - [x] 4.5 Run ./scripts/verify.sh --auto and verify the result reports ALL CHECKS PASSED.

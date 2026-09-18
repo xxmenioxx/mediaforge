@@ -402,7 +402,49 @@ func correlateBitmapSubtitleCues(cues []canonicalBitmapSubtitleCue, geometry []b
 		return orderedGeometry[i].Start < orderedGeometry[j].Start
 	})
 	used := make([]bool, len(orderedGeometry))
+	assigned := make([]bool, len(result))
 	for cueIndex := range result {
+		if assigned[cueIndex] {
+			continue
+		}
+		// A genuinely simultaneous group can be resolved by stable source
+		// order, but only when the complete equal-timing group has exactly one
+		// matching source event per cue. This prevents an individual cue from
+		// inheriting the first event in an otherwise ambiguous overlap.
+		equalTimingCues := []int{cueIndex}
+		for otherIndex := cueIndex + 1; otherIndex < len(result); otherIndex++ {
+			if !assigned[otherIndex] && subtitleCueStartsEqual(result[cueIndex].Start, result[otherIndex].Start) && subtitleCueIntervalsOverlap(result[cueIndex].Start, result[cueIndex].End, result[otherIndex].Start, result[otherIndex].End) {
+				equalTimingCues = append(equalTimingCues, otherIndex)
+			}
+		}
+		if len(equalTimingCues) > 1 {
+			equalTimingGeometry := []int{}
+			for geometryIndex, value := range orderedGeometry {
+				if used[geometryIndex] || value.TimingProvenance != "" && value.TimingProvenance != preparedInputLocal || !subtitleCueStartsEqual(result[cueIndex].Start, value.Start) || !subtitleCueIntervalsOverlap(result[cueIndex].Start, result[cueIndex].End, value.Start, value.End) {
+					continue
+				}
+				equalTimingGeometry = append(equalTimingGeometry, geometryIndex)
+			}
+			if len(equalTimingGeometry) == len(equalTimingCues) {
+				sort.SliceStable(equalTimingCues, func(i, j int) bool {
+					if result[equalTimingCues[i]].SourceOrdinal == result[equalTimingCues[j]].SourceOrdinal {
+						return equalTimingCues[i] < equalTimingCues[j]
+					}
+					return result[equalTimingCues[i]].SourceOrdinal < result[equalTimingCues[j]].SourceOrdinal
+				})
+				sort.SliceStable(equalTimingGeometry, func(i, j int) bool {
+					return orderedGeometry[equalTimingGeometry[i]].SourceOrdinal < orderedGeometry[equalTimingGeometry[j]].SourceOrdinal
+				})
+				for index, matchedCueIndex := range equalTimingCues {
+					geometryIndex := equalTimingGeometry[index]
+					used[geometryIndex] = true
+					value := orderedGeometry[geometryIndex]
+					result[matchedCueIndex].Geometry = &value
+					assigned[matchedCueIndex] = true
+				}
+				continue
+			}
+		}
 		candidates := []int{}
 		for geometryIndex, value := range orderedGeometry {
 			if used[geometryIndex] || value.TimingProvenance != "" && value.TimingProvenance != preparedInputLocal || result[cueIndex].TimingProvenance != "" && result[cueIndex].TimingProvenance != preparedInputLocal || !subtitleCueIntervalsOverlap(result[cueIndex].Start, result[cueIndex].End, value.Start, value.End) {
@@ -413,13 +455,37 @@ func correlateBitmapSubtitleCues(cues []canonicalBitmapSubtitleCue, geometry []b
 		if len(candidates) == 0 {
 			continue
 		}
-		// Source order is the deterministic tie-breaker for simultaneous cues.
+		exactTimingCandidates := []int{}
+		for _, geometryIndex := range candidates {
+			value := orderedGeometry[geometryIndex]
+			if subtitleCueTimingsEqual(result[cueIndex].Start, result[cueIndex].End, value.Start, value.End) {
+				exactTimingCandidates = append(exactTimingCandidates, geometryIndex)
+			}
+		}
+		if len(exactTimingCandidates) == 1 {
+			candidates = exactTimingCandidates
+		} else if len(candidates) != 1 {
+			// Multiple non-equivalent source events remain possible. Do not
+			// select the first one; the ASS serializer will use its fallback.
+			continue
+		}
 		geometryIndex := candidates[0]
 		used[geometryIndex] = true
 		value := orderedGeometry[geometryIndex]
 		result[cueIndex].Geometry = &value
+		assigned[cueIndex] = true
 	}
 	return result
+}
+
+func subtitleCueTimingsEqual(startA, endA, startB, endB float64) bool {
+	const tolerance = 0.1
+	return math.Abs(startA-startB) <= tolerance && math.Abs(endA-endB) <= tolerance
+}
+
+func subtitleCueStartsEqual(startA, startB float64) bool {
+	const tolerance = 0.1
+	return math.Abs(startA-startB) <= tolerance
 }
 
 func subtitleCueIntervalsOverlap(startA, endA, startB, endB float64) bool {

@@ -102,6 +102,48 @@ func TestCorrelateBitmapSubtitleCuesKeepsSimultaneousRegionsSeparate(t *testing.
 	}
 }
 
+func TestCorrelateBitmapSubtitleCuesLeavesAmbiguousOverlapUnpositioned(t *testing.T) {
+	t.Run("one unambiguous match", func(t *testing.T) {
+		cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "Unique", TimingProvenance: preparedInputLocal}}
+		geometry := []bitmapCueGeometry{{Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 80, BitmapWidth: 720, BitmapHeight: 120, SourceOrdinal: 1, TimingProvenance: preparedInputLocal}}
+		correlated := correlateBitmapSubtitleCues(cues, geometry)
+		if correlated[0].Geometry == nil || bitmapASSAlignment(correlated[0]) != 8 {
+			t.Fatalf("unambiguous match=%#v", correlated)
+		}
+	})
+
+	t.Run("equal timing uses source order", func(t *testing.T) {
+		cues := []canonicalBitmapSubtitleCue{
+			{Start: 1, End: 2, Text: "First", SourceOrdinal: 10, TimingProvenance: preparedInputLocal},
+			{Start: 1, End: 2, Text: "Second", SourceOrdinal: 20, TimingProvenance: preparedInputLocal},
+		}
+		geometry := []bitmapCueGeometry{
+			{Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 850, BitmapWidth: 720, BitmapHeight: 130, SourceOrdinal: 2, TimingProvenance: preparedInputLocal},
+			{Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 80, BitmapWidth: 720, BitmapHeight: 120, SourceOrdinal: 1, TimingProvenance: preparedInputLocal},
+		}
+		correlated := correlateBitmapSubtitleCues(cues, geometry)
+		if correlated[0].Geometry == nil || correlated[1].Geometry == nil || bitmapASSAlignment(correlated[0]) != 8 || bitmapASSAlignment(correlated[1]) != 2 {
+			t.Fatalf("equal-timing source order=%#v", correlated)
+		}
+	})
+
+	t.Run("non-equivalent overlap falls back", func(t *testing.T) {
+		cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 3, Text: "Ambiguous", TimingProvenance: preparedInputLocal}}
+		geometry := []bitmapCueGeometry{
+			{Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 80, BitmapWidth: 720, BitmapHeight: 120, SourceOrdinal: 1, TimingProvenance: preparedInputLocal},
+			{Start: 2, End: 4, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 850, BitmapWidth: 720, BitmapHeight: 130, SourceOrdinal: 2, TimingProvenance: preparedInputLocal},
+		}
+		correlated := correlateBitmapSubtitleCues(cues, geometry)
+		if correlated[0].Geometry != nil {
+			t.Fatalf("ambiguous overlap was positioned: %#v", correlated)
+		}
+		ass := string(renderBitmapASSCues(correlated))
+		if !strings.Contains(ass, "{\\an2}Ambiguous") {
+			t.Fatalf("ambiguous overlap did not use bottom-center fallback: %q", ass)
+		}
+	})
+}
+
 func TestBitmapSubtitleSerializersKeepGeometryOutOfSRT(t *testing.T) {
 	cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "Top", TimingProvenance: preparedInputLocal, Geometry: &bitmapCueGeometry{CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 80, BitmapWidth: 720, BitmapHeight: 120}}}
 	srt := string(renderBitmapSRTCues(cues))
