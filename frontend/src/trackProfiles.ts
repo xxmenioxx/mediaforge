@@ -64,6 +64,22 @@ export function migrateTrackDisposition(profile: TrackProfile, patch: Partial<Pi
   return { ...profile, ...patch, trackDispositionVersion: 1 };
 }
 
+export function updateTrackProfileSubtitleRule(profile: TrackProfile, index: number, patch: Partial<SubtitleRule>): TrackProfile {
+  if (index < 0 || index >= profile.subtitleRules.length) return profile;
+  return migrateTrackDisposition(profile, {
+    subtitleRules: profile.subtitleRules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule),
+  });
+}
+
+export function appendTrackProfileSubtitleRule(profile: TrackProfile, rule: SubtitleRule): TrackProfile {
+  return migrateTrackDisposition(profile, { subtitleRules: [...profile.subtitleRules, rule] });
+}
+
+export function removeTrackProfileSubtitleRule(profile: TrackProfile, index: number): TrackProfile {
+  if (index < 0 || index >= profile.subtitleRules.length) return profile;
+  return migrateTrackDisposition(profile, { subtitleRules: profile.subtitleRules.filter((_, ruleIndex) => ruleIndex !== index) });
+}
+
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
   const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
   if (!Array.isArray(value)) return [];

@@ -18,12 +18,13 @@ func TestClassifySubtitleRoleUsesExplicitEvidenceAndKeepsForcedIndependent(t *te
 		{"explicit signs", map[string]any{"index": 2, "subtitleRole": "signs"}, SubtitleRoleSigns, "metadata"},
 		{"explicit commentary", map[string]any{"index": 3, "role": "commentary"}, SubtitleRoleCommentary, "metadata"},
 		{"explicit sdh", map[string]any{"index": 4, "role": "sdh"}, SubtitleRoleSDH, "metadata"},
-		{"source forced signs", map[string]any{"index": 5, "title": "Signs", "forced": true}, SubtitleRoleSigns, "heuristic"},
-		{"source unforced signs", map[string]any{"index": 6, "title": "Signs", "forced": false}, SubtitleRoleSigns, "heuristic"},
-		{"source forced without stronger role", map[string]any{"index": 7, "forced": true}, SubtitleRoleForced, "disposition"},
-		{"disposition commentary", map[string]any{"index": 8, "commentary": true}, SubtitleRoleCommentary, "disposition"},
-		{"disposition sdh", map[string]any{"index": 9, "hearingImpaired": true}, SubtitleRoleSDH, "disposition"},
-		{"ambiguous", map[string]any{"index": 10, "title": "Signs commentary"}, SubtitleRoleUnknown, "ambiguous/unknown"},
+		{"source forced signs uses disposition precedence", map[string]any{"index": 5, "title": "Signs", "forced": true}, SubtitleRoleForced, "disposition"},
+		{"explicit signs coexists with source forced", map[string]any{"index": 6, "role": "signs", "forced": true}, SubtitleRoleSigns, "metadata"},
+		{"source unforced signs", map[string]any{"index": 7, "title": "Signs", "forced": false}, SubtitleRoleSigns, "heuristic"},
+		{"source forced without stronger role", map[string]any{"index": 8, "forced": true}, SubtitleRoleForced, "disposition"},
+		{"disposition commentary", map[string]any{"index": 9, "commentary": true}, SubtitleRoleCommentary, "disposition"},
+		{"disposition sdh", map[string]any{"index": 10, "hearingImpaired": true}, SubtitleRoleSDH, "disposition"},
+		{"ambiguous", map[string]any{"index": 11, "title": "Signs commentary"}, SubtitleRoleUnknown, "ambiguous/unknown"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -112,7 +113,7 @@ func TestSubtitleRoleOverrideUnrelatedSaveDoesNotRebindReusedStreamIndex(t *test
 func TestResolveTrackPlanRoleRulesPreserveSameLanguageStreams(t *testing.T) {
 	scan := models.ScanResult{Path: "/media/title.mkv", SizeBytes: 10, SubtitleStreams: models.JSONList{
 		map[string]any{"index": 3, "codec": "subrip", "language": "spa", "title": "Full"},
-		map[string]any{"index": 4, "codec": "subrip", "language": "spa", "title": "Signs", "forced": true},
+		map[string]any{"index": 4, "codec": "subrip", "language": "spa", "title": "Signs", "role": "signs", "forced": true},
 		map[string]any{"index": 5, "codec": "subrip", "language": "spa", "title": "Commentary"},
 		map[string]any{"index": 6, "codec": "subrip", "language": "eng", "title": "Full"},
 	}}

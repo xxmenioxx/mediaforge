@@ -233,6 +233,9 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 	if boolValue(stream["hearingImpaired"], false) || boolValue(stream["hearing_impaired"], false) {
 		flags = append(flags, SubtitleRoleSDH)
 	}
+	if boolValue(stream["forced"], false) {
+		flags = append(flags, SubtitleRoleForced)
+	}
 	if len(flags) == 1 {
 		decision.Role = flags[0]
 		decision.Provenance = "disposition"
@@ -267,11 +270,6 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 		decision.Provenance = "heuristic"
 		decision.Confidence = "medium"
 		return decision
-	}
-	if boolValue(stream["forced"], false) {
-		decision.Role = SubtitleRoleForced
-		decision.Provenance = "disposition"
-		decision.Confidence = "high"
 	}
 	return decision
 }
