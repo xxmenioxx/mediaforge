@@ -236,30 +236,42 @@ type ResolvedFontAttachment struct {
 }
 
 type ResolvedSubtitleTrack struct {
-	StreamIndex int                 `json:"streamIndex"`
-	Codec       string              `json:"codec,omitempty"`
-	Language    string              `json:"language,omitempty"`
-	Action      SubtitleDisposition `json:"action"`
+	StreamIndex                   int                  `json:"streamIndex"`
+	Codec                         string               `json:"codec,omitempty"`
+	Language                      string               `json:"language,omitempty"`
+	Action                        SubtitleDisposition  `json:"action"`
+	Role                          SubtitleSemanticRole `json:"role,omitempty"`
+	RoleProvenance                string               `json:"roleProvenance,omitempty"`
+	RoleConfidence                string               `json:"roleConfidence,omitempty"`
+	RoleOverrideState             string               `json:"roleOverrideState,omitempty"`
+	RoleSourceSnapshotFingerprint string               `json:"roleSourceSnapshotFingerprint,omitempty"`
+	RoleStreamSignature           string               `json:"roleStreamSignature,omitempty"`
+	Forced                        bool                 `json:"forced"`
+	EffectiveForced               bool                 `json:"effectiveForced"`
 }
 
 type ResolvedTrackSidecar struct {
-	StreamIndex         int      `json:"streamIndex"`
-	Codec               string   `json:"codec,omitempty"`
-	SourceType          string   `json:"sourceType,omitempty"`
-	Language            string   `json:"language,omitempty"`
-	Format              string   `json:"format,omitempty"`
-	RequestedFormat     string   `json:"requestedFormat,omitempty"`
-	Mode                string   `json:"mode"`
-	OCRRequired         bool     `json:"ocrRequired"`
-	Title               string   `json:"title,omitempty"`
-	Default             bool     `json:"default"`
-	Forced              bool     `json:"forced"`
-	OCRLanguage         string   `json:"ocrLanguage,omitempty"`
-	OCRMode             string   `json:"ocrMode,omitempty"`
-	Stages              []string `json:"stages,omitempty"`
-	Extension           string   `json:"extension,omitempty"`
-	NamingKey           string   `json:"namingKey,omitempty"`
-	LogicalTransformKey string   `json:"logicalTransformKey,omitempty"`
+	StreamIndex         int                  `json:"streamIndex"`
+	Codec               string               `json:"codec,omitempty"`
+	SourceType          string               `json:"sourceType,omitempty"`
+	Language            string               `json:"language,omitempty"`
+	Format              string               `json:"format,omitempty"`
+	RequestedFormat     string               `json:"requestedFormat,omitempty"`
+	Mode                string               `json:"mode"`
+	OCRRequired         bool                 `json:"ocrRequired"`
+	Title               string               `json:"title,omitempty"`
+	Default             bool                 `json:"default"`
+	Forced              bool                 `json:"forced"`
+	SourceForced        bool                 `json:"sourceForced"`
+	Role                SubtitleSemanticRole `json:"role,omitempty"`
+	RoleProvenance      string               `json:"roleProvenance,omitempty"`
+	RoleConfidence      string               `json:"roleConfidence,omitempty"`
+	OCRLanguage         string               `json:"ocrLanguage,omitempty"`
+	OCRMode             string               `json:"ocrMode,omitempty"`
+	Stages              []string             `json:"stages,omitempty"`
+	Extension           string               `json:"extension,omitempty"`
+	NamingKey           string               `json:"namingKey,omitempty"`
+	LogicalTransformKey string               `json:"logicalTransformKey,omitempty"`
 }
 
 type ResolvedDefaultTrack struct {

@@ -1,4 +1,4 @@
-import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride } from './api/types';
+import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride, SubtitleSemanticRole } from './api/types';
 
 export type SubtitleTransform = {
   streamIndex: number;
@@ -13,7 +13,7 @@ export type SubtitleTransform = {
 
 export type SubtitleDisposition = 'keep' | 'remove' | 'extract' | 'keep_and_extract';
 export type SubtitleSidecarFormat = 'original' | 'srt' | 'ass';
-export type SubtitleRule = { language?: string; streamIndex?: number; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' };
+export type SubtitleRule = { language?: string; streamIndex?: number; roles?: SubtitleSemanticRole[]; action: SubtitleDisposition; sidecarFormats?: SubtitleSidecarFormat[]; ocrLanguage?: string; ocrMode?: 'raw' | 'clean' | 'accurate' };
 
 export type TrackProfile = {
 	trackDispositionVersion?: number;
@@ -150,8 +150,11 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
 		const action = disposition(value.action ?? value.disposition);
 		const language = typeof value.language === 'string' && value.language.trim() ? value.language.trim().toLowerCase() : undefined;
 		const streamIndex = Number.isInteger(value.streamIndex) && Number(value.streamIndex) >= 0 ? Number(value.streamIndex) : undefined;
+		const roles = Array.isArray(value.roles)
+			? Array.from(new Set(value.roles.filter((role): role is SubtitleSemanticRole => role === 'full' || role === 'forced' || role === 'signs' || role === 'commentary' || role === 'sdh' || role === 'unknown')))
+			: undefined;
 		return [{
-			language, streamIndex, action,
+			language, streamIndex, roles: roles?.length ? roles : undefined, action,
 			sidecarFormats: sidecarFormats(value.sidecarFormats).length ? sidecarFormats(value.sidecarFormats) : undefined,
 			ocrLanguage: typeof value.ocrLanguage === 'string' && value.ocrLanguage.trim() ? value.ocrLanguage.trim().toLowerCase() : undefined,
 			ocrMode: value.ocrMode === 'raw' || value.ocrMode === 'clean' || value.ocrMode === 'accurate' ? value.ocrMode : undefined,

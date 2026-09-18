@@ -64,7 +64,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleSemanticRole, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -3003,6 +3003,15 @@ function AssetRow({
     updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
 
+  function updateSubtitleRole(index: number, value: SubtitleSemanticRole | 'auto') {
+    const current = { ...(conversionDraft.subtitleRoleOverrides ?? {}) };
+    if (value === 'auto') delete current[String(index)];
+    else current[String(index)] = { role: value };
+    const nextDraft = { ...conversionDraft, subtitleRoleOverrides: Object.keys(current).length ? current : undefined };
+    setConversionDraft(nextDraft);
+    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
+  }
+
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
     const customHardwareControl = ['globalQuality', 'qsvRateControl', 'qsvLookAheadDepth', 'qsvExtendedBrc', 'qsvAdaptiveI', 'qsvAdaptiveB', 'qsvPStrategy', 'videoToolboxBitrateMbps', 'videoToolboxMaxrateMbps', 'videoToolboxBufferMbps', 'videoToolboxProfile', 'videoToolboxGop', 'videoToolboxRealtime', 'videoToolboxBFramePolicy', 'videoToolboxBFrames', 'videoToolboxAutoAdjustBitrate', 'videoToolboxPowerEfficiency', 'pixFmt'].includes(String(key));
     setConversionDraft((current) => {
@@ -4027,6 +4036,19 @@ async function generateExternalSubtitle(
                           <MenuItem value="original">Original format only</MenuItem>
                           {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
                           {textCompatible ? <MenuItem value="original+srt">Original + SRT compatibility</MenuItem> : null}
+                        </TextField>;
+                      })}
+                    </Stack> : null}
+                    {snapshotData.subtitleStreams.length ? <Stack spacing={1.25}>
+                      <Typography fontWeight={700}>Semantic subtitle roles</Typography>
+                      <Typography variant="body2" color="text.secondary">Roles are resolved from the current snapshot. A manual choice is bound to this stream signature; reset returns to automatic classification.</Typography>
+                      {snapshotData.subtitleStreams.map((stream) => {
+                        const override = conversionDraft.subtitleRoleOverrides?.[String(stream.index)];
+                        const roleValue = override?.role ?? 'auto';
+                        const automatic = stream.role ?? 'unknown';
+                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked || updateConversion.isPending} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
+                          <MenuItem value="auto">Automatic ({automatic})</MenuItem>
+                          {(['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'] as SubtitleSemanticRole[]).map((role) => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                         </TextField>;
                       })}
                     </Stack> : null}</> : null}
@@ -6620,6 +6642,16 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   }
   if (subtitleMetadata) {
     clean.subtitleMetadata = subtitleMetadata;
+  }
+  if (value.subtitleRoleOverrides) {
+    const roles: SubtitleSemanticRole[] = ['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'];
+    const overrides = Object.fromEntries(Object.entries(value.subtitleRoleOverrides).flatMap(([index, override]) => {
+      const numericIndex = Number(index);
+      return Number.isInteger(numericIndex) && numericIndex >= 0 && roles.includes(override.role)
+        ? [[String(numericIndex), { ...override, role: override.role }]]
+        : [];
+    }));
+    if (Object.keys(overrides).length) clean.subtitleRoleOverrides = overrides;
   }
   if (Array.isArray(value.subtitleTransforms) && value.subtitleTransforms.length) {
     clean.subtitleTransforms = value.subtitleTransforms;

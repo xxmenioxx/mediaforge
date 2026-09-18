@@ -110,4 +110,20 @@ describe('trackProfileWithConversion', () => {
 	 expect(profile.subtitleRules[0].ocrLanguage).toBe('spa');
 	 expect(profile.subtitleRules[0].ocrMode).toBe('accurate');
   });
+
+  it('round-trips role selectors while preserving legacy wildcard rules', () => {
+    const settings = [{ key: 'trackProfiles', value: { profiles: [{
+      ...emptyTrackProfile,
+      key: 'roles', name: 'Roles', subtitleRules: [
+        { language: 'spa', roles: ['full', 'forced', 'signs', 'forced', 'invalid'], action: 'keep' },
+        { language: 'spa', roles: ['commentary'], action: 'remove' },
+        { language: 'eng', action: 'keep' },
+      ],
+    }] } }] as unknown as AppSetting[];
+    const [profile] = getTrackProfiles(settings);
+
+    expect(profile.subtitleRules[0].roles).toEqual(['full', 'forced', 'signs']);
+    expect(profile.subtitleRules[1].roles).toEqual(['commentary']);
+    expect(profile.subtitleRules[2].roles).toBeUndefined();
+  });
 });

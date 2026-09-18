@@ -66,6 +66,7 @@ import type {
   ScanResult,
   SnapshotOperation,
   StreamMetadataOverride,
+  SubtitleSemanticRole,
   QSVFrameStructureAnalysis,
   TrackProfileResolutionPreview as TrackProfileResolutionPreviewResponse,
   FrameStructureRecommendationSet,
@@ -2300,6 +2301,22 @@ export function ProfileLabPage() {
     }));
   }
 
+  function subtitleRolesForStream(index: number): SubtitleSemanticRole[] {
+    return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.roles ?? [];
+  }
+
+  function updateSubtitleRolesForStream(index: number, roles: SubtitleSemanticRole[]) {
+    setTrackDraft((current) => {
+      const existing = current.subtitleRules.find((rule) => rule.streamIndex === index);
+      return migrateTrackDisposition(current, {
+        subtitleRules: [
+          ...current.subtitleRules.filter((rule) => rule.streamIndex !== index),
+          { ...(existing ?? { streamIndex: index, action: current.subtitleDisposition }), streamIndex: index, roles: roles.length ? roles : undefined },
+        ],
+      });
+    });
+  }
+
   function subtitleFormatsForStream(index: number): SubtitleSidecarFormat[] {
     return trackDraft.subtitleRules.find((rule) => rule.streamIndex === index)?.sidecarFormats ?? trackDraft.subtitleSidecarFormats ?? ['original'];
   }
@@ -4502,6 +4519,13 @@ export function ProfileLabPage() {
                                   <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
                                   <TextField select fullWidth disabled={updateSetting.isPending} label="Action" value={subtitleActionForStream(stream.index)} onChange={(event) => updateSubtitleActionForStream(stream.index, event.target.value as SubtitleDisposition)}>
                                     <MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem><MenuItem value="extract">Extract</MenuItem><MenuItem value="keep_and_extract">Keep + Extract</MenuItem>
+                                  </TextField>
+                                  <TextField select fullWidth disabled={updateSetting.isPending} label="Semantic role filter (optional)" value={subtitleRolesForStream(stream.index)} SelectProps={{ multiple: true }} onChange={(event) => {
+                                    const value = event.target.value;
+                                    const roles = (typeof value === 'string' ? value.split(',') : value) as SubtitleSemanticRole[];
+                                    updateSubtitleRolesForStream(stream.index, roles);
+                                  }} helperText="Empty matches every role; stream index remains authoritative.">
+                                    {(['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'] as SubtitleSemanticRole[]).map((role) => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                                   </TextField>
                                   {subtitleActionForStream(stream.index) === 'extract' || subtitleActionForStream(stream.index) === 'keep_and_extract' ? <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                     <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('original')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'original', event.target.checked)} />} label={`${stream.codec.toUpperCase()} (Original)`} />

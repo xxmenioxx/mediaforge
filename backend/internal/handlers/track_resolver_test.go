@@ -562,13 +562,13 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode.mkv")
-	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "jpn"}}, AttachmentStreams: models.JSONList{map[string]any{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}}, AttachmentInventoryAvailable: true}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "jpn", "title": "Full"}}, AttachmentStreams: models.JSONList{map[string]any{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}}, AttachmentInventoryAvailable: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	setting := models.AppSetting{
 		Key: "trackProfiles",
 		Value: models.JSONMap{"profiles": models.JSONList{
-			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep"},
+			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleRules": models.JSONList{models.JSONMap{"streamIndex": 2, "roles": models.JSONList{"full"}, "action": "keep_and_extract"}}, "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep"},
 		}},
 	}
 	if err := db.Create(&setting).Error; err != nil {
@@ -579,7 +579,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
+	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || frozen.SubtitleStreams[0].Role != SubtitleRoleFull || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
 		t.Fatalf("canonical plan was not frozen: %#v", job.TrackProfileSnapshot)
 	}
 	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "subtitleSidecarFormats": models.JSONList{"original"}, "attachmentPolicy": "remove", "fontAttachmentExportPolicy": "none", "chapterPolicy": "remove"}}
@@ -587,7 +587,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	stillFrozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 || len(stillFrozen.FontAttachments) != 1 {
+	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || stillFrozen.SubtitleStreams[0].Role != SubtitleRoleFull || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 || len(stillFrozen.FontAttachments) != 1 {
 		t.Fatalf("queued decision changed after profile edit: %#v", stillFrozen)
 	}
 	override := currentConversionOverrideForJob(job, nil)

@@ -2117,6 +2117,7 @@ func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *A
 	profile["videoMetadata"] = override.VideoMetadata
 	profile["audioMetadata"] = override.AudioMetadata
 	profile["subtitleMetadata"] = override.SubtitleMetadata
+	profile["subtitleRoleOverrides"] = override.SubtitleRoleOverrides
 	profile["subtitleTransforms"] = override.SubtitleTransforms
 	profile["subtitleSidecarFormatsByStream"] = override.SubtitleSidecarFormatsByStream
 	var scan models.ScanResult

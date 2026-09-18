@@ -263,6 +263,7 @@ type AssetConversionOverrideState struct {
 	VideoMetadata                    map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
 	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
 	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`
+	SubtitleRoleOverrides            map[int]SubtitleRoleOverride   `json:"subtitleRoleOverrides,omitempty"`
 	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms,omitempty"`
 	SubtitleSidecarFormatsByStream   map[int][]string               `json:"subtitleSidecarFormatsByStream,omitempty"`
 	VideoCodec                       string                         `json:"videoCodec,omitempty"`
@@ -419,6 +420,7 @@ type AssetConversionUpdateInput struct {
 	VideoMetadata                    map[int]StreamMetadataOverride `json:"videoMetadata"`
 	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata"`
 	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata"`
+	SubtitleRoleOverrides            map[int]SubtitleRoleOverride   `json:"subtitleRoleOverrides"`
 	SubtitleTransforms               []SubtitleTransform            `json:"subtitleTransforms"`
 	SubtitleSidecarFormatsByStream   map[int][]string               `json:"subtitleSidecarFormatsByStream"`
 	VideoCodec                       string                         `json:"videoCodec"`
@@ -2904,6 +2906,15 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 	base := strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath))
 	plans := []subtitleExtractionPlan{}
 	unsupported := []string{}
+	roleScan := models.ScanResult{Path: mediaPath, SubtitleStreams: streamSummaries(streams, "subtitle")}
+	rolesByIndex := map[int]subtitleRoleDecision{}
+	for _, raw := range roleScan.SubtitleStreams {
+		stream := settingProfileObject(raw)
+		index := streamIndexValue(stream["index"])
+		if index >= 0 {
+			rolesByIndex[index] = classifySubtitleRole(roleScan, stream, nil)
+		}
+	}
 	matched := false
 	requestedFormat := strings.ToLower(strings.TrimSpace(input.Format))
 	if requestedFormat != "" &&
@@ -2945,12 +2956,16 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 				unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
 				continue
 			}
+			role := rolesByIndex[stream.Index]
+			sourceForced := stream.Disposition["forced"] == 1
+			effectiveForced := sourceForced || role.Role == SubtitleRoleForced
 			logicalTransformKey := fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, requested)
 			decision := ResolvedTrackSidecar{
 				StreamIndex: stream.Index, Codec: strings.ToLower(strings.TrimSpace(stream.CodecName)), SourceType: subtitleSourceType(stream.CodecName),
 				Language: language, Format: format, RequestedFormat: fallback(requested, "srt"), Mode: mode,
 				OCRRequired: mode == "converted" && isBitmapSubtitleCodecName(stream.CodecName), Stages: subtitleArtifactStages(subtitleSourceType(stream.CodecName), mode),
 				Extension: "." + format, NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, format), LogicalTransformKey: logicalTransformKey,
+				Forced: effectiveForced, SourceForced: sourceForced, Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
 			}
 			plans = append(plans, subtitleExtractionPlan{
 				StreamIndex: stream.Index,
@@ -3129,6 +3144,11 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleCustomHeight must be a positive even height for custom upscale"})
 		return
 	}
+	roleOverrides := normalizedSubtitleRoleOverrides(input.SubtitleRoleOverrides)
+	var roleScan models.ScanResult
+	if err := h.db.Where("path = ?", filepath.Clean(resolvedPath)).Order("updated_at desc, id desc").First(&roleScan).Error; err == nil {
+		roleOverrides = bindSubtitleRoleOverrides(roleScan, roleOverrides)
+	}
 
 	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
@@ -3140,6 +3160,7 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		VideoMetadata:                  normalizedStreamMetadata(input.VideoMetadata),
 		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
 		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
+		SubtitleRoleOverrides:          roleOverrides,
 		SubtitleTransforms:             normalizedSubtitleTransforms(input.SubtitleTransforms),
 		SubtitleSidecarFormatsByStream: normalizedSubtitleSidecarFormatsByStream(input.SubtitleSidecarFormatsByStream),
 		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
@@ -6909,6 +6930,7 @@ func conversionOverrideForPath(path string, overrides map[string]AssetConversion
 	override.VideoMetadata = normalizedStreamMetadata(override.VideoMetadata)
 	override.AudioMetadata = normalizedStreamMetadata(override.AudioMetadata)
 	override.SubtitleMetadata = normalizedStreamMetadata(override.SubtitleMetadata)
+	override.SubtitleRoleOverrides = normalizedSubtitleRoleOverrides(override.SubtitleRoleOverrides)
 	override.SubtitleTransforms = normalizedSubtitleTransforms(override.SubtitleTransforms)
 	override.SubtitleSidecarFormatsByStream = normalizedSubtitleSidecarFormatsByStream(override.SubtitleSidecarFormatsByStream)
 	return override
@@ -6923,6 +6945,7 @@ func assetConversionOverrideEmpty(override AssetConversionOverrideState) bool {
 		len(override.VideoMetadata) == 0 &&
 		len(override.AudioMetadata) == 0 &&
 		len(override.SubtitleMetadata) == 0 &&
+		len(override.SubtitleRoleOverrides) == 0 &&
 		len(override.SubtitleTransforms) == 0 &&
 		len(override.SubtitleSidecarFormatsByStream) == 0 &&
 		strings.TrimSpace(override.VideoCodec) == "" &&

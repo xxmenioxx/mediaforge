@@ -92,6 +92,8 @@ type MediaStream struct {
 	Title              string
 	Default            bool
 	Forced             bool
+	Commentary         bool
+	HearingImpaired    bool
 	Width              int
 	Height             int
 	Bitrate            int64
@@ -302,8 +304,21 @@ func (FFmpegCommandBuilder) Build(plan MediaJobPlan) []string {
 		if metadata.Language != "" {
 			args = append(args, fmt.Sprintf("-metadata:s:s:%d", index), "language="+metadata.Language)
 		}
-		if metadata.Default != nil || metadata.Forced != nil {
-			args = append(args, fmt.Sprintf("-disposition:s:%d", index), streamDisposition(metadata, stream.Default, stream.Forced))
+		effectiveForced := stream.Forced
+		effectiveCommentary := stream.Commentary
+		effectiveHearingImpaired := stream.HearingImpaired
+		if plan.ResolvedTracks != nil {
+			for _, resolved := range plan.ResolvedTracks.SubtitleStreams {
+				if resolved.StreamIndex == stream.Index {
+					effectiveForced = resolved.EffectiveForced
+					effectiveCommentary = effectiveCommentary || resolved.Role == SubtitleRoleCommentary
+					effectiveHearingImpaired = effectiveHearingImpaired || resolved.Role == SubtitleRoleSDH
+					break
+				}
+			}
+		}
+		if metadata.Default != nil || metadata.Forced != nil || effectiveForced != stream.Forced || effectiveCommentary != stream.Commentary || effectiveHearingImpaired != stream.HearingImpaired {
+			args = append(args, fmt.Sprintf("-disposition:s:%d", index), subtitleStreamDisposition(metadata, stream, effectiveForced, effectiveCommentary, effectiveHearingImpaired))
 		}
 	}
 
@@ -1508,6 +1523,20 @@ func streamDisposition(metadata StreamMetadataOverride, defaultValue bool, force
 	}
 	if len(flags) == 0 {
 		return "0"
+	}
+	return strings.Join(flags, "+")
+}
+
+func subtitleStreamDisposition(metadata StreamMetadataOverride, stream MediaStream, forcedValue, commentaryValue, hearingImpairedValue bool) string {
+	flags := strings.Split(streamDisposition(metadata, stream.Default, forcedValue), "+")
+	if len(flags) == 1 && flags[0] == "0" {
+		flags = nil
+	}
+	if commentaryValue {
+		flags = append(flags, "commentary")
+	}
+	if hearingImpairedValue {
+		flags = append(flags, "hearing_impaired")
 	}
 	return strings.Join(flags, "+")
 }
@@ -2914,10 +2943,12 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 			DisplayAspectRatio string            `json:"display_aspect_ratio"`
 			Tags               map[string]string `json:"tags"`
 			Disposition        struct {
-				Default     int `json:"default"`
-				Forced      int `json:"forced"`
-				AttachedPic int `json:"attached_pic"`
-				StillImage  int `json:"still_image"`
+				Default         int `json:"default"`
+				Forced          int `json:"forced"`
+				Commentary      int `json:"commentary"`
+				HearingImpaired int `json:"hearing_impaired"`
+				AttachedPic     int `json:"attached_pic"`
+				StillImage      int `json:"still_image"`
 			} `json:"disposition"`
 		} `json:"streams"`
 		Chapters []struct {
@@ -2945,6 +2976,8 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 			Title:              stream.Tags["title"],
 			Default:            stream.Disposition.Default == 1,
 			Forced:             stream.Disposition.Forced == 1,
+			Commentary:         stream.Disposition.Commentary == 1,
+			HearingImpaired:    stream.Disposition.HearingImpaired == 1,
 			Width:              stream.Width,
 			Height:             stream.Height,
 			Bitrate:            parseInt(stream.Bitrate),

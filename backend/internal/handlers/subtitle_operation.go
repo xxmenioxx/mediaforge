@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -147,6 +148,12 @@ func prepareSubtitleExtractionTargets(
 		if language == "" {
 			language = normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
 		}
+		roleStream := map[string]any{
+			"index": stream.Index, "codec": stream.CodecName, "language": stream.Tags["language"],
+			"title": stream.Tags["title"], "forced": stream.Disposition["forced"] == 1,
+		}
+		role := classifySubtitleRole(models.ScanResult{Path: destinationMediaPath, SubtitleStreams: models.JSONList{roleStream}}, roleStream, nil)
+		sourceForced := stream.Disposition["forced"] == 1
 		base := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath))
 		for _, outputFormat := range formats {
 			plan := subtitleExtractionPlan{
@@ -157,6 +164,8 @@ func prepareSubtitleExtractionTargets(
 				Decision: ResolvedTrackSidecar{
 					StreamIndex: stream.Index, Codec: strings.ToLower(stream.CodecName), SourceType: "bitmap",
 					Language: language, Format: outputFormat, RequestedFormat: format, Mode: "converted",
+					Forced: sourceForced || role.Role == SubtitleRoleForced, SourceForced: sourceForced,
+					Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
 					OCRRequired: true, OCRLanguage: input.OCRLanguage, OCRMode: normalizedOCRMode(input.OCRMode),
 					Stages: subtitleArtifactStages("bitmap", "converted"), Extension: "." + outputFormat,
 					NamingKey:           fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, outputFormat),
@@ -190,7 +199,8 @@ func subtitleExtractionArtifact(plan subtitleExtractionPlan, path string) Subtit
 		ArtifactID: subtitleArtifactID(plan.StreamIndex, decision.Mode, decision.Format),
 		Type:       "subtitle_sidecar", StreamIndex: plan.StreamIndex, SourceCodec: decision.Codec,
 		SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat,
-		Mode: decision.Mode, Language: decision.Language, OCRRequired: decision.OCRRequired,
+		Mode: decision.Mode, Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced,
+		Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, OCRRequired: decision.OCRRequired,
 		OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...),
 		Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 		StagedPath: path, Status: "planned",

@@ -494,6 +494,43 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect((destination as HTMLInputElement).value).toBe('Movies'));
   }, 10000);
 
+  it('edits and resets the Asset Info semantic role override with snapshot evidence', async () => {
+    const snapshot = {
+      ...testSnapshot(),
+      subtitleTracks: 1,
+      subtitleStreams: [{ index: 3, codec: 'subrip', language: 'spa', role: 'signs', roleProvenance: 'heuristic', roleConfidence: 'medium' }],
+    } as unknown as ScanResult;
+    const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot, status: 'current', requiresAnalysis: false, staleComponents: [] };
+    vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
+    vi.mocked(api.assets).mockResolvedValue(singleAssetInventory());
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'], snapshotState);
+    queryClient.setQueryData(['assetScopeConfigurations'], []);
+    render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = await screen.findByRole('dialog');
+    const role = within(dialog).getAllByLabelText('#3 · SPA · SUBRIP').at(-1)!;
+    expect(role.textContent).toContain('Automatic');
+
+    const user = userEvent.setup();
+    await user.click(role);
+    await user.click(await screen.findByRole('option', { name: 'commentary' }));
+    await waitFor(() => expect(api.updateAssetConversion).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/media/raw/movies/Akira/Akira.mkv',
+      subtitleRoleOverrides: expect.objectContaining({ '3': expect.objectContaining({ role: 'commentary' }) }),
+    }), expect.anything()));
+
+    const refreshedRole = within(dialog).getAllByLabelText('#3 · SPA · SUBRIP').at(-1)!;
+    await user.click(refreshedRole);
+    await user.click(await screen.findByRole('option', { name: /^Automatic/ }));
+    await waitFor(() => {
+      const lastInput = vi.mocked(api.updateAssetConversion).mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+      expect(lastInput).not.toHaveProperty('subtitleRoleOverrides');
+    });
+  }, 10000);
+
   it('shows the inherited effective Destination in Asset Info', async () => {
     const snapshotState: Awaited<ReturnType<typeof api.latestSnapshot>> = { found: true, snapshot: testSnapshot(), status: 'current', requiresAnalysis: false, staleComponents: [] };
     const assetConfigurations = [{

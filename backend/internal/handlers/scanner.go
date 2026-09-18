@@ -1495,6 +1495,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		RestorationAnalysis:          analysisMapFromRaw(raw, "restorationAnalysis"),
 		FrameStructureAnalysis:       analysisMapFromRaw(raw, "frameStructureAnalysis"),
 	}
+	annotateSubtitleRoleSummaries(&result)
 	result.CompatibilityAnalysis = buildPlaybackCompatibilityAnalysis(result)
 	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
 	result.HEVCLevelRecommendation = hevcLevelRecommendationMap(result)

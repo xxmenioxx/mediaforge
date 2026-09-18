@@ -66,6 +66,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		}
 		codec := strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec"])))
 		language := normalizedTrackLanguage(workerStringValue(stream["language"]))
+		role := classifySubtitleRole(scan, stream, profile)
 		action := defaultDisposition
 		if explicitSubtitleSelection &&
 			(!canonicalDisposition || resolvedCanonicalPathSelection) &&
@@ -86,15 +87,23 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 				profile,
 				index,
 				language,
+				role.Role,
 				action,
 			)
 		}
-		resolved := ResolvedSubtitleTrack{StreamIndex: index, Codec: codec, Language: language, Action: action}
+		sourceForced := boolValue(stream["forced"], false)
+		effectiveForced := sourceForced || role.Role == SubtitleRoleForced
+		resolved := ResolvedSubtitleTrack{
+			StreamIndex: index, Codec: codec, Language: language, Action: action,
+			Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
+			RoleOverrideState: role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
+			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
+		}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
 			formats := []string{"original"}
 			if canonicalDisposition {
-				formats = matchingSubtitleSidecarFormats(profile, index, language, formats)
+				formats = matchingSubtitleSidecarFormats(profile, index, language, role.Role, formats)
 			} else {
 				if transform, ok := transforms[index]; ok &&
 					strings.TrimSpace(transform.Format) != "" {
@@ -128,14 +137,15 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 								ocrMode = normalizedOCRMode(transform.OCRMode)
 							}
 						} else {
-							ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language)
+							ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language, role.Role)
 						}
 					}
 					sidecars = append(sidecars, ResolvedTrackSidecar{
 						StreamIndex: index, Codec: codec, SourceType: sourceType, Language: language, Format: format, RequestedFormat: requested, Mode: mode,
 						OCRRequired: mode == "converted" && sourceType == "bitmap", Stages: stages, Extension: "." + format,
 						NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format), LogicalTransformKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, requested),
-						Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: boolValue(stream["forced"], false),
+						Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: effectiveForced, SourceForced: sourceForced,
+						Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
 						OCRLanguage: ocrLanguage, OCRMode: ocrMode,
 					})
 					if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
@@ -292,7 +302,7 @@ func uniqueFontAttachmentFilename(candidate string, streamIndex int, used map[st
 	}
 }
 
-func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, language string, fallback []string) []string {
+func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole, fallback []string) []string {
 	formats := normalizedSubtitleSidecarFormats(profile["subtitleSidecarFormats"])
 	if len(formats) == 0 {
 		formats = append([]string(nil), fallback...)
@@ -304,13 +314,14 @@ func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, lan
 		if len(candidate) == 0 {
 			continue
 		}
-		if rawIndex, ok := rule["streamIndex"]; ok && streamIndexValue(rawIndex) >= 0 {
-			if streamIndexValue(rawIndex) == streamIndex {
+		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
+		if specific {
+			if matched {
 				formats, streamSpecific = candidate, true
 			}
 			continue
 		}
-		if !streamSpecific && normalizedTrackLanguage(workerStringValue(rule["language"])) == language {
+		if matched && !streamSpecific {
 			formats = candidate
 		}
 	}
@@ -368,7 +379,7 @@ func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string,
 	return "", "", fmt.Errorf("unsupported sidecar format %q", requested)
 }
 
-func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language string) (string, string) {
+func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole) (string, string) {
 	ocrLanguage, ocrMode := "auto", "accurate"
 	if value := strings.TrimSpace(workerStringValue(profile["ocrLanguage"])); value != "" {
 		ocrLanguage = strings.ToLower(value)
@@ -379,13 +390,13 @@ func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language
 	streamSpecific := false
 	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
 		rule := settingProfileObject(raw)
-		rawIndex, hasIndex := rule["streamIndex"]
-		if hasIndex && streamIndexValue(rawIndex) >= 0 {
-			if streamIndexValue(rawIndex) != streamIndex {
+		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
+		if specific {
+			if !matched {
 				continue
 			}
 			streamSpecific = true
-		} else if streamSpecific || normalizedTrackLanguage(workerStringValue(rule["language"])) != language {
+		} else if streamSpecific || !matched {
 			continue
 		}
 		if value := strings.TrimSpace(workerStringValue(rule["ocrLanguage"])); value != "" {
@@ -503,7 +514,7 @@ func subtitleTransformsByIndex(raw any) map[int]SubtitleTransform {
 // subtitleRules is the semantic, path-safe rule list. A rule may match a
 // language, a concrete streamIndex (asset scope), or both. Rules are applied in
 // persisted order; a stream-specific match wins over language-only rules.
-func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, language string, fallback SubtitleDisposition) SubtitleDisposition {
+func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole, fallback SubtitleDisposition) SubtitleDisposition {
 	action := fallback
 	streamSpecific := false
 	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
@@ -516,20 +527,14 @@ func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, languag
 		if err != nil {
 			continue
 		}
-		rawLanguage, hasLanguage := rule["language"]
-		ruleLanguage := ""
-		if hasLanguage && strings.TrimSpace(workerStringValue(rawLanguage)) != "" {
-			ruleLanguage = normalizedTrackLanguage(workerStringValue(rawLanguage))
-		}
-		rawIndex, hasIndex := rule["streamIndex"]
-		index := streamIndexValue(rawIndex)
-		if hasIndex && index >= 0 {
-			if index == streamIndex {
+		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
+		if specific {
+			if matched {
 				action, streamSpecific = parsed, true
 			}
 			continue
 		}
-		if !streamSpecific && ruleLanguage != "" && ruleLanguage == language {
+		if matched && !streamSpecific {
 			action = parsed
 		}
 	}
@@ -578,6 +583,12 @@ func validateSubtitleRules(profile map[string]any) error {
 		}
 		if rawIndex, exists := rule["streamIndex"]; exists && streamIndexValue(rawIndex) < 0 {
 			return fmt.Errorf("subtitle rule %d streamIndex must be a non-negative integer", index+1)
+		}
+		if rawRoles, exists := rule["roles"]; exists {
+			roles, configured := normalizedSubtitleRoleList(rawRoles)
+			if !configured || len(roles) == 0 {
+				return fmt.Errorf("subtitle rule %d roles must contain at least one supported semantic role", index+1)
+			}
 		}
 		rawLanguage, hasLanguage := rule["language"]
 		rawIndex, hasIndex := rule["streamIndex"]

@@ -13,33 +13,37 @@ import (
 )
 
 type SubtitleArtifact struct {
-	ArtifactID              string   `json:"artifactId"`
-	Type                    string   `json:"type"`
-	StreamIndex             int      `json:"streamIndex"`
-	SourceCodec             string   `json:"sourceCodec"`
-	SourceType              string   `json:"sourceType,omitempty"`
-	Format                  string   `json:"format"`
-	RequestedFormat         string   `json:"requestedFormat,omitempty"`
-	Mode                    string   `json:"mode"`
-	OCRRequired             bool     `json:"ocrRequired"`
-	Language                string   `json:"language"`
-	Default                 bool     `json:"default"`
-	Forced                  bool     `json:"forced"`
-	Title                   string   `json:"title,omitempty"`
-	StagedPath              string   `json:"stagedPath"`
-	PublishedPath           string   `json:"publishedPath,omitempty"`
-	SizeBytes               int64    `json:"sizeBytes"`
-	Status                  string   `json:"status"`
-	Error                   string   `json:"error,omitempty"`
-	DisplayName             string   `json:"displayName,omitempty"`
-	FontAttachmentsExported bool     `json:"fontAttachmentsExported"`
-	OCRLanguage             string   `json:"ocrLanguage,omitempty"`
-	EffectiveOCRLanguage    string   `json:"effectiveOcrLanguage,omitempty"`
-	OCRMode                 string   `json:"ocrMode,omitempty"`
-	Stages                  []string `json:"stages,omitempty"`
-	Extension               string   `json:"extension,omitempty"`
-	NamingKey               string   `json:"namingKey,omitempty"`
-	LogicalTransformKey     string   `json:"logicalTransformKey,omitempty"`
+	ArtifactID              string               `json:"artifactId"`
+	Type                    string               `json:"type"`
+	StreamIndex             int                  `json:"streamIndex"`
+	SourceCodec             string               `json:"sourceCodec"`
+	SourceType              string               `json:"sourceType,omitempty"`
+	Format                  string               `json:"format"`
+	RequestedFormat         string               `json:"requestedFormat,omitempty"`
+	Mode                    string               `json:"mode"`
+	OCRRequired             bool                 `json:"ocrRequired"`
+	Language                string               `json:"language"`
+	Default                 bool                 `json:"default"`
+	Forced                  bool                 `json:"forced"`
+	SourceForced            bool                 `json:"sourceForced"`
+	Role                    SubtitleSemanticRole `json:"role,omitempty"`
+	RoleProvenance          string               `json:"roleProvenance,omitempty"`
+	RoleConfidence          string               `json:"roleConfidence,omitempty"`
+	Title                   string               `json:"title,omitempty"`
+	StagedPath              string               `json:"stagedPath"`
+	PublishedPath           string               `json:"publishedPath,omitempty"`
+	SizeBytes               int64                `json:"sizeBytes"`
+	Status                  string               `json:"status"`
+	Error                   string               `json:"error,omitempty"`
+	DisplayName             string               `json:"displayName,omitempty"`
+	FontAttachmentsExported bool                 `json:"fontAttachmentsExported"`
+	OCRLanguage             string               `json:"ocrLanguage,omitempty"`
+	EffectiveOCRLanguage    string               `json:"effectiveOcrLanguage,omitempty"`
+	OCRMode                 string               `json:"ocrMode,omitempty"`
+	Stages                  []string             `json:"stages,omitempty"`
+	Extension               string               `json:"extension,omitempty"`
+	NamingKey               string               `json:"namingKey,omitempty"`
+	LogicalTransformKey     string               `json:"logicalTransformKey,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -88,7 +92,7 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Status: "planned",
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Status: "planned",
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 		}
 		artifact.DisplayName = filepath.Base(resolvedSubtitleStagedPath(base, artifact, used))
@@ -297,7 +301,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			Type:        "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 			Status: "planned",
 		}
@@ -421,7 +425,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: strings.ToLower(strings.TrimSpace(decision.Format)),
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
-			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, Title: decision.Title, Mode: decision.Mode,
+			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 			Status: "planned",
 		}
@@ -722,24 +726,28 @@ func resolvedSubtitleStagedPath(base string, artifact SubtitleArtifact, used map
 	if language == "" {
 		language = "und"
 	}
-	suffix := "." + language
+	suffix := "." + language + subtitleArtifactDispositionSuffix(artifact)
+	path := base + suffix + "." + artifact.Format
+	if _, duplicate := used[path]; duplicate {
+		suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
+		suffix += subtitleArtifactDispositionSuffix(artifact)
+		path = base + suffix + "." + artifact.Format
+	}
+	used[path] = struct{}{}
+	return path
+}
+
+func subtitleArtifactDispositionSuffix(artifact SubtitleArtifact) string {
+	suffix := ""
 	if artifact.Forced {
 		suffix += ".forced"
 	} else if artifact.Default {
 		suffix += ".default"
 	}
-	path := base + suffix + "." + artifact.Format
-	if _, duplicate := used[path]; duplicate {
-		suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
-		if artifact.Forced {
-			suffix += ".forced"
-		} else if artifact.Default {
-			suffix += ".default"
-		}
-		path = base + suffix + "." + artifact.Format
+	if artifact.Role == SubtitleRoleSDH {
+		suffix += ".sdh"
 	}
-	used[path] = struct{}{}
-	return path
+	return suffix
 }
 
 func validOriginalSubtitleSidecar(format string, content []byte) bool {
@@ -847,7 +855,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 		result = append(result, map[string]interface{}{
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
-			"language": value.Language, "default": value.Default, "forced": value.Forced, "title": value.Title,
+			"language": value.Language, "default": value.Default, "forced": value.Forced, "sourceForced": value.SourceForced, "role": string(value.Role), "roleProvenance": value.RoleProvenance, "roleConfidence": value.RoleConfidence, "title": value.Title,
 			"ocrLanguage": value.OCRLanguage, "effectiveOcrLanguage": value.EffectiveOCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
@@ -907,6 +915,10 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			Language:                stringFromUnknown(value["language"]),
 			Default:                 boolSetting(value["default"], false),
 			Forced:                  boolSetting(value["forced"], false),
+			SourceForced:            boolSetting(value["sourceForced"], false),
+			Role:                    SubtitleSemanticRole(stringFromUnknown(value["role"])),
+			RoleProvenance:          stringFromUnknown(value["roleProvenance"]),
+			RoleConfidence:          stringFromUnknown(value["roleConfidence"]),
 			Title:                   stringFromUnknown(value["title"]),
 			StagedPath:              stringFromUnknown(value["stagedPath"]),
 			PublishedPath:           stringFromUnknown(value["publishedPath"]),
@@ -1001,21 +1013,12 @@ func publishSubtitleArtifacts(
 		if language == "" {
 			language = "und"
 		}
-		suffix := "." + language
-		if artifact.Forced {
-			suffix += ".forced"
-		} else if artifact.Default {
-			suffix += ".default"
-		}
+		suffix := "." + language + subtitleArtifactDispositionSuffix(artifact)
 		suffix += "." + artifact.Format
 		preferredDestination := base + suffix
 		if _, duplicate := usedDestinations[preferredDestination]; duplicate {
 			suffix = fmt.Sprintf(".%s.%d", language, artifact.StreamIndex)
-			if artifact.Forced {
-				suffix += ".forced"
-			} else if artifact.Default {
-				suffix += ".default"
-			}
+			suffix += subtitleArtifactDispositionSuffix(artifact)
 			suffix += "." + artifact.Format
 			preferredDestination = base + suffix
 			for discriminator := 2; ; discriminator++ {
@@ -1023,11 +1026,7 @@ func publishSubtitleArtifacts(
 					break
 				}
 				suffix = fmt.Sprintf(".%s.%d.%d", language, artifact.StreamIndex, discriminator)
-				if artifact.Forced {
-					suffix += ".forced"
-				} else if artifact.Default {
-					suffix += ".default"
-				}
+				suffix += subtitleArtifactDispositionSuffix(artifact)
 				suffix += "." + artifact.Format
 				preferredDestination = base + suffix
 			}

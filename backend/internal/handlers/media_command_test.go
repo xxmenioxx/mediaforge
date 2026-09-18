@@ -59,6 +59,26 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 	assertContains(t, command, "-map_chapters 0")
 }
 
+func TestFFmpegCommandBuilderUsesFrozenSubtitleRoleDispositions(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/movie.mkv", OutputPath: "/media/staging/movie.mkv", Overwrite: true,
+		ProcessingMode: ProcessingModeFullEncode,
+		Profile:        models.Profile{VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20, PreserveSubtitles: true},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 3, Codec: "subrip", Language: "spa"},
+			{Index: 4, Codec: "subrip", Language: "spa"},
+		}},
+		ResolvedTracks: &ResolvedTrackPlan{SubtitleStreams: []ResolvedSubtitleTrack{
+			{StreamIndex: 3, Action: SubtitleDispositionKeep, Role: SubtitleRoleForced, Forced: false, EffectiveForced: true},
+			{StreamIndex: 4, Action: SubtitleDispositionKeep, Role: SubtitleRoleSDH},
+		}},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-disposition:s:0 forced")
+	assertContains(t, command, "-disposition:s:1 hearing_impaired")
+	assertNotContains(t, command, "signs")
+}
+
 func TestFFmpegCommandBuilderFullEncodeUsesTenBitX265(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath:      "/media/raw/movie.mkv",

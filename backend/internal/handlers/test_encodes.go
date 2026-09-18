@@ -415,6 +415,9 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 	if len(explicit.SubtitleSidecarFormatsByStream) > 0 {
 		resolved["subtitleSidecarFormatsByStream"] = explicit.SubtitleSidecarFormatsByStream
 	}
+	if len(explicit.SubtitleRoleOverrides) > 0 {
+		resolved["subtitleRoleOverrides"] = bindSubtitleRoleOverrides(scan, explicit.SubtitleRoleOverrides)
+	}
 	trackPlan, err := resolveTrackPlan(scan, resolved)
 	if err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: resolve track plan: %w", err)
