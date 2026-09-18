@@ -380,6 +380,7 @@ func executeBothSubtitleTargets(
 	})
 	canonicalPath := filepath.Join(workspace, "canonical.srt")
 	stream := targets[0].stream
+	var bitmapOCR bitmapOCRResult
 	if isBitmapSubtitleCodecName(stream.CodecName) {
 		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
 			op.Phase = "ocr"
@@ -393,6 +394,7 @@ func executeBothSubtitleTargets(
 		for _, target := range targets {
 			target.artifact.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
 		}
+		bitmapOCR = bitmapOCRResult{Cues: ocrResult.Cues, Geometry: ocrResult.Geometry}
 	} else {
 		args := textSubtitleExtractionArgs(MediaJobPlan{InputPath: sourceMediaPath}, stream.Index, "srt", canonicalPath)
 		var stderr bytes.Buffer
@@ -421,7 +423,11 @@ func executeBothSubtitleTargets(
 				op.Message = "Rendering ASS from shared subtitle result"
 			})
 			var stderr bytes.Buffer
-			if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", target.stagePath), nil, &stderr); err != nil {
+			if len(bitmapOCR.Geometry) > 0 && len(bitmapOCR.Cues) > 0 {
+				if err := os.WriteFile(target.stagePath, renderBitmapASSCues(bitmapOCR.Cues), 0o644); err != nil {
+					return created, err
+				}
+			} else if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", target.stagePath), nil, &stderr); err != nil {
 				return created, fmt.Errorf("subtitle stream %d ASS render failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 			}
 		}

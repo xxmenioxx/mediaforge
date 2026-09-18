@@ -122,7 +122,7 @@ func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinatio
 	rawTempPath := filepath.Join(tempDir, "ocr.raw.srt")
 	tempSRT := filepath.Join(tempDir, "ocr.srt")
 	languageValue := normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
-	_, err = runBitmapOCR(ctx, sourceMediaPath, stream, "srt", languageValue, input.OCRMode, tempSRT, rawTempPath, onProgress)
+	ocrResult, err := runBitmapOCRWithResult(ctx, sourceMediaPath, stream, "srt", languageValue, input.OCRMode, tempSRT, rawTempPath, onProgress)
 	if err != nil {
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, err)
 	}
@@ -132,7 +132,11 @@ func generateBitmapSubtitleBoth(ctx context.Context, sourceMediaPath, destinatio
 	}
 	tempASS := filepath.Join(tempDir, "ocr.ass")
 	var stderr bytes.Buffer
-	if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(tempSRT, "ass", tempASS), nil, &stderr); err != nil {
+	if len(ocrResult.Geometry) > 0 && len(ocrResult.Cues) > 0 {
+		if err := os.WriteFile(tempASS, renderBitmapASSCues(ocrResult.Cues), 0o644); err != nil {
+			return result, err
+		}
+	} else if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(tempSRT, "ass", tempASS), nil, &stderr); err != nil {
 		return result, fmt.Errorf("ASS render failed for subtitle stream %d: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
 	}
 	assContent, err := os.ReadFile(tempASS)
@@ -177,6 +181,8 @@ func generateBitmapSubtitleAtPath(ctx context.Context, mediaPath string, stream 
 
 type bitmapSubtitleOCRResult struct {
 	EffectiveLanguage string
+	Cues              []canonicalBitmapSubtitleCue
+	Geometry          []bitmapCueGeometry
 }
 
 func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc) (bitmapSubtitleOCRResult, error) {
@@ -219,7 +225,7 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 		ocrMediaPath, ocrStream = segmentPath, windowStreams[0]
 	}
 
-	ocrResult, runErr := runBitmapOCRWithResult(
+	ocrResult, runErr := runBitmapOCRWithTiming(
 		ctx,
 		ocrMediaPath,
 		ocrStream,
@@ -229,12 +235,16 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 		tempPath,
 		rawTempPath,
 		onProgress,
+		segmentDuration > 0,
+		segmentStart,
 	)
 
 	if runErr != nil {
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, runErr)
 	}
 	result.EffectiveLanguage = ocrResult.EffectiveLanguage
+	result.Cues = ocrResult.Cues
+	result.Geometry = ocrResult.Geometry
 	content, err := os.ReadFile(tempPath)
 	if err != nil {
 		if summary := emptyOCRTrackMessage(stream.Index, language, ocrResult.Message); summary != "" {
@@ -318,6 +328,8 @@ func extractPGSSubtitleForOCR(
 type bitmapOCRResult struct {
 	Message           string
 	EffectiveLanguage string
+	Cues              []canonicalBitmapSubtitleCue
+	Geometry          []bitmapCueGeometry
 }
 
 func runBitmapOCR(
@@ -337,6 +349,18 @@ func runBitmapOCRWithResult(
 	stream FFProbeStream,
 	format, language, mode, outputPath, rawOutputPath string,
 	onProgress OCRProgressFunc,
+) (bitmapOCRResult, error) {
+	return runBitmapOCRWithTiming(ctx, mediaPath, stream, format, language, mode, outputPath, rawOutputPath, onProgress, false, 0)
+}
+
+func runBitmapOCRWithTiming(
+	ctx context.Context,
+	mediaPath string,
+	stream FFProbeStream,
+	format, language, mode, outputPath, rawOutputPath string,
+	onProgress OCRProgressFunc,
+	preparedLocal bool,
+	preparationStart float64,
 ) (bitmapOCRResult, error) {
 	result := bitmapOCRResult{}
 	mode = normalizedOCRMode(mode)
@@ -374,6 +398,11 @@ func runBitmapOCRWithResult(
 		ocrInputPath = pgsPath
 		useTrackNumber = false
 	}
+	geometry := bitmapSubtitleGeometryForPath(ocrInputPath, stream.CodecName, preparedLocal, preparationStart)
+	ocrTimingProvenance := originalSourceAbsolute
+	if preparedLocal {
+		ocrTimingProvenance = preparedInputLocal
+	}
 
 	primary := runBitmapOCRLanguageAttempt(ctx, ocrInputPath, stream, format, language, mode, dir, "primary", useTrackNumber, onProgress)
 	message := strings.TrimSpace(fmt.Sprintf("OCR requested language: %s\nOCR effective language: %s\n%s\n%s", language, language, extractionMessage, primary.message))
@@ -402,17 +431,44 @@ func runBitmapOCRWithResult(
 		return bitmapOCRResult{Message: message}, primary.err
 	}
 
-	if err := copyFileContents(chosen, rawOutputPath); err != nil {
-		return bitmapOCRResult{Message: message}, err
+	rawContent, rawReadErr := os.ReadFile(chosen)
+	if rawReadErr != nil {
+		return bitmapOCRResult{Message: message}, rawReadErr
 	}
+	rawCues := correlateBitmapSubtitleCuesWithTiming(parseCanonicalBitmapSubtitleCues(format, rawContent), geometry, ocrTimingProvenance, preparationStart)
 	result.Message = message
 	result.EffectiveLanguage = successfulLanguage
+	result.Cues = rawCues
+	result.Geometry = geometry
+	if format == "ass" && len(geometry) > 0 && len(rawCues) > 0 {
+		rawContent = renderBitmapASSCues(rawCues)
+	}
+	if err := os.WriteFile(rawOutputPath, rawContent, 0o644); err != nil {
+		return bitmapOCRResult{Message: message}, err
+	}
 	if mode == "raw" {
+		if format == "ass" && len(geometry) > 0 && len(rawCues) > 0 {
+			return result, os.WriteFile(outputPath, rawContent, 0o644)
+		}
 		return result, copyFileContents(chosen, outputPath)
 	}
 	cleanMessage, cleanErr := runSeConvCleanup(ctx, chosen, format, successfulLanguage, outputPath)
 	result.Message = strings.TrimSpace(message + "\n" + cleanMessage)
-	return result, cleanErr
+	if cleanErr != nil {
+		return result, cleanErr
+	}
+	cleanContent, cleanReadErr := os.ReadFile(outputPath)
+	if cleanReadErr != nil {
+		return result, cleanReadErr
+	}
+	cleanCues := correlateBitmapSubtitleCuesWithTiming(parseCanonicalBitmapSubtitleCues(format, cleanContent), geometry, ocrTimingProvenance, preparationStart)
+	result.Cues = cleanCues
+	if format == "ass" && len(geometry) > 0 && len(cleanCues) > 0 {
+		if err := os.WriteFile(outputPath, renderBitmapASSCues(cleanCues), 0o644); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 func probeTesseractLanguages(ctx context.Context) (map[string]struct{}, string, error) {
