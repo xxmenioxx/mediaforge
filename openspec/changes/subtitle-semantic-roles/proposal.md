@@ -27,9 +27,11 @@ canonical subtitle pipeline.
   snapshots, and require Workers to consume those frozen decisions without
   reclassification.
 - Carry role metadata through subtitle artifacts, sidecars, and publishing;
-  supported external sidecars use `.forced` and `.sdh`, and supported muxed
-  outputs map forced/commentary/SDH to their corresponding dispositions without
-  making the canonical model player-specific.
+  preserve source dispositions independently, derive effective forced semantics
+  from source `forced=true` or `role=forced`, use `.forced` and `.sdh` for
+  supported external sidecars, and map supported muxed outputs to forced,
+  commentary, and hearing-impaired dispositions without making the canonical
+  model player-specific.
 - Keep classification bounded and metadata-based; role resolution MUST NOT invoke
   OCR or introduce a new subtitle planner, job system, or dashboard.
 

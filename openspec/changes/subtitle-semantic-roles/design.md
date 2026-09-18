@@ -125,15 +125,27 @@ decisions.
 ### 5. Propagate role metadata through artifacts and required publication
 adapters
 
-The canonical artifact records retain the source stream index and resolved role
-for original and converted sidecars. For supported external subtitle sidecars,
-publication MUST insert `.forced` for role `forced` and `.sdh` for role `sdh` in
-the established sidecar naming position before the subtitle extension. No
-`.signs` suffix is invented by this change. For supported muxed/container
-outputs, publication MUST map `forced` to the forced disposition,
-`commentary` to the commentary disposition, and `sdh` to the hearing-impaired
-disposition when those target dispositions are available. Original source
-disposition flags remain preserved independently of the canonical role.
+The canonical artifact records retain the source stream index, resolved role,
+and original dispositions for original and converted sidecars. Compute an
+effective forced disposition independently as:
+
+`effectiveForced = sourceForced || canonicalRole == forced`.
+
+For supported external subtitle sidecars, the `.forced` token MUST be derived
+from `effectiveForced`, not exclusively from the canonical role. Thus an
+existing/source `forced=true` preserves existing forced sidecar naming even for
+`signs`, `sdh`, or another canonical role. Role `sdh` uses the supported `.sdh`
+semantic suffix. When a supported naming convention can represent both SDH and
+forced, it retains both tokens deterministically; otherwise the supported
+forced channel and `.sdh` channel are preserved wherever available. No `.signs`
+suffix is invented by this change.
+
+For supported muxed/container outputs, publication MUST map `effectiveForced`
+to the forced disposition, `commentary` to the commentary disposition, and
+`sdh` to the hearing-impaired disposition when those target dispositions are
+available. Original/source disposition flags remain preserved independently of
+the canonical role, so role `signs` with `forced=true` remains forced and role
+`signs` with `forced=false` does not become forced.
 
 The adapter records the canonical role as metadata and uses no target
 convention to reclassify it. Targets without these supported conventions keep
@@ -171,9 +183,9 @@ results safely.
   bind automatic provenance to the snapshot/evidence version and recompute
   only through the canonical resolver; keep manual overrides stream-indexed.
 - [Publishing convention drift] Player-specific forced/SDH conventions differ
-  → require the canonical `.forced`/`.sdh` sidecar and supported container
-  mappings only where the destination contract supports them, and preserve the
-  canonical role when no supported mapping exists.
+  → derive forced publication from the effective forced disposition, retain
+  both supported SDH and forced markers when the destination allows them, and
+  preserve canonical role/source disposition metadata when it does not.
 - [NAS cost] Extra probes could duplicate media work → prefer existing snapshot
   evidence, bounded reads, and cached classification inputs; never invoke OCR
   for role resolution.

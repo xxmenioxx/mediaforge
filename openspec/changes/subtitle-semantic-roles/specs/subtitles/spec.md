@@ -168,16 +168,23 @@ during execution.
 
 Resolved semantic role metadata SHALL remain associated with the authoritative
 stream index through canonical subtitle artifact planning, sidecar generation,
-and publishing. For supported external subtitle sidecars, role `forced` SHALL
-use the `.forced` suffix and role `sdh` SHALL use the `.sdh` suffix in the
-canonical sidecar naming position before the subtitle extension. For supported
-muxed/container outputs, role `forced` SHALL map to the forced disposition,
-role `commentary` SHALL map to the commentary disposition, and role `sdh` SHALL
-map to the hearing-impaired disposition where those target dispositions exist.
-Original source dispositions SHALL be preserved independently. The canonical
-role value SHALL remain player-agnostic and shall not be replaced by a
-destination convention. `signs` SHALL remain independent from `forced`; this
-change SHALL NOT invent a `.signs` suffix.
+and publishing. Existing/source `forced=true` SHALL remain authoritative
+publication metadata. The effective forced disposition SHALL be true when the
+source disposition is true or the canonical role is `forced`; canonical role
+and source dispositions remain independent metadata.
+
+For supported external subtitle sidecars, `.forced` naming SHALL derive from
+the effective forced disposition, while role `sdh` SHALL use the supported
+`.sdh` semantic suffix in the canonical sidecar naming position before the
+subtitle extension. Where a supported convention can represent both SDH and
+forced, both semantics SHALL be retained. For supported muxed/container
+outputs, the effective forced disposition SHALL map to forced, role
+`commentary` SHALL map to commentary, and role `sdh` SHALL map to
+hearing-impaired where those target dispositions exist. Original source
+dispositions SHALL be preserved independently. The canonical role value SHALL
+remain player-agnostic and shall not be replaced by a destination convention.
+`signs` SHALL remain independent from forced; this change SHALL NOT invent a
+`.signs` suffix.
 
 Role metadata SHALL not alter subtitle text conversion, OCR, bitmap geometry,
 ASS positioning, native ASS/SSA extraction, atomic publication, or existing
@@ -190,13 +197,40 @@ mapping.
 - **THEN** the resulting artifact metadata identifies the source stream and
   resolved role while the canonical text/OCR pipeline remains unchanged
 
-#### Scenario: Forced and SDH external sidecars use canonical suffixes
+#### Scenario: Existing forced disposition preserves forced sidecar naming
 
-- **WHEN** a supported external sidecar target publishes subtitles with frozen
-  role `forced` or `sdh`
-- **THEN** the published sidecar uses `.forced` or `.sdh`, respectively, before
-  its `.srt`, `.ass`, or other supported subtitle extension, and retains the
-  canonical role in artifact metadata
+- **WHEN** a supported external sidecar target publishes a subtitle with
+  source `forced=true`, including a stream whose canonical role is `signs` or
+  `sdh`
+- **THEN** the published sidecar retains the existing `.forced` naming before
+  its subtitle extension, and the source disposition and canonical role remain
+  separately observable
+
+#### Scenario: Canonical forced role sets effective forced disposition
+
+- **WHEN** a supported target publishes a subtitle with canonical `role=forced`
+  and source `forced=false`
+- **THEN** the effective forced disposition is true, supported muxed output
+  carries forced semantics, and supported external sidecar output uses `.forced`
+
+#### Scenario: Signs with source forced disposition remains forced
+
+- **WHEN** a subtitle has `role=signs` and source `forced=true`
+- **THEN** supported publication retains forced semantics and existing `.forced`
+  sidecar naming, without inventing a `.signs` suffix
+
+#### Scenario: Signs without source forced disposition is not forced
+
+- **WHEN** a subtitle has `role=signs` and source `forced=false`
+- **THEN** supported publication does not add forced semantics or `.forced`
+  naming solely from the `signs` role
+
+#### Scenario: SDH with source forced disposition retains both semantics
+
+- **WHEN** a subtitle has `role=sdh` and source `forced=true`
+- **THEN** supported publication retains both SDH and forced semantics, using
+  the supported `.sdh` and `.forced` representation or corresponding container
+  metadata wherever the destination convention allows both
 
 #### Scenario: Supported muxed outputs map role dispositions
 

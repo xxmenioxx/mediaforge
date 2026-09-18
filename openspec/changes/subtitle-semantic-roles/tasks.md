@@ -10,9 +10,9 @@
   safe `unknown`; verify no OCR or unbounded media read is invoked during role
   classification.
 - [ ] 1.3 Cover explicit `full`, `forced`, `signs`, `commentary`, and `sdh`
-  evidence, `signs`/`forced` independence, conflicting evidence, and missing
-  evidence; verify each result includes actionable provenance/confidence and
-  ambiguous cases remain `unknown`.
+  evidence, source-disposition/role independence, `signs`/`forced` behavior,
+  conflicting evidence, and missing evidence; verify each result includes
+  actionable provenance/confidence and ambiguous cases remain `unknown`.
 
 ## 2. Overrides and canonical plan resolution
 
@@ -52,11 +52,12 @@
   subtitle text/timing, OCR, bitmap geometry, ASS positioning, native ASS/SSA
   extraction, cancellation, or atomic publication; verify focused artifact
   metadata tests.
-- [ ] 4.2 Require supported publication mappings for `forced` -> `.forced` and
-  `sdh` -> `.sdh` external sidecars, and forced/commentary/SDH -> corresponding
-  muxed dispositions where available; verify original dispositions remain
-  independent, signs never inherits forced, and no `.signs` convention is
-  invented.
+- [ ] 4.2 Derive effective forced publication from source `forced=true` OR
+  `role=forced`; require supported external `.forced` and `.sdh` semantics and
+  forced/commentary/hearing-impaired muxed dispositions where available; verify
+  `signs + forced=true`, `signs + forced=false`, `sdh + forced=true`,
+  `role=forced` with source false, existing forced sidecar naming, independent
+  original dispositions, and no invented `.signs` convention.
 - [ ] 4.3 Verify role metadata follows sidecar creation, Queue publication, and
   existing artifact/provenance records without publishing a new raw/intermediate
   subtitle path.
@@ -75,11 +76,12 @@
   stream selection.
 - [ ] 5.4 Add Queue snapshot and Worker coverage proving role decisions freeze at
   preparation and are consumed unchanged after profile or source metadata changes.
-- [ ] 5.5 Add role-aware publishing and artifact coverage for required
-  `.forced`/`.sdh` sidecars, forced/commentary/hearing-impaired muxed
-  dispositions, signs independence, unsupported targets, original ASS/SSA,
-  converted SRT/ASS/both, geometry-aware ASS, and preservation of existing
-  publication barriers.
+- [ ] 5.5 Add role-aware publishing and artifact coverage for effective forced
+  disposition mapping, required `.forced`/`.sdh` sidecars, `signs + forced=true`,
+  `signs + forced=false`, `sdh + forced=true`, `role=forced` mapping, existing
+  forced sidecar naming, forced/commentary/hearing-impaired muxed dispositions,
+  unsupported targets, original ASS/SSA, converted SRT/ASS/both,
+  geometry-aware ASS, and preservation of existing publication barriers.
 - [ ] 5.6 Run focused subtitle, resolver, Queue, publishing, and frontend tests;
   verify the canonical subtitle/OCR pipeline remains the only planner and role
   resolution does not add OCR or duplicate media analysis.
