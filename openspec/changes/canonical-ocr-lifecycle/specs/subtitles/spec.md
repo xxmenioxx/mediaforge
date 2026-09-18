@@ -210,14 +210,15 @@ for another attached subscriber.
 
 The existing subtitle operation and cancellation model SHALL remain authoritative
 for OCR lifecycle execution. A shared in-flight OCR execution SHALL own a
-separate shared workspace and shared execution context for prepared bitmap
-input, OCR passes, cleanup intermediates, and evidence production. Each
-subscriber subtitle operation SHALL own only its own serializer
-staging/publication workspace. Operation-owned temporary OCR workspace, raw
-pass outputs, extraction intermediates, and staged final sidecars SHALL be
-cleaned after terminal success, failure, or cancellation; reusable committed
+separate shared workspace and shared execution context. The shared flight owns
+prepared bitmap/subtitle input, extraction intermediates, raw and accurate OCR
+passes, cleanup intermediates, and evidence staging. Each subscriber subtitle
+operation owns only serializer output, validation, and publication staging.
+Operation-owned staging SHALL be cleaned after terminal success, failure, or
+cancellation; shared-flight workspace SHALL be cleaned only by the flight after
+its own terminal success, failure, or cancellation. Reusable committed
 evidence is exempt because it belongs to the internal cache. Cancelling one
-consumer SHALL detach it and clean only its operation-owned workspace; it MUST
+consumer SHALL detach it and clean only its operation-owned staging; it MUST
 NOT delete the active shared-flight workspace. A shared in-flight OCR execution
 MAY continue for other non-cancelled equivalent consumers, but when its last
 consumer detaches it SHALL cancel its shared context, terminate child processes
@@ -228,8 +229,13 @@ and SHALL not commit evidence.
 
 - **WHEN** an OCR conversion reaches terminal completion after final sidecars
   pass validation and publication
-- **THEN** its temporary OCR workspace and non-reusable intermediates are gone,
-  while any committed internal evidence remains only in the internal cache
+- **THEN** the subscriber operation's serializer/validation/publication staging
+  workspace is gone, and the shared flight independently cleans its prepared
+  input, extraction/OCR/cleanup intermediates, and evidence staging after the
+  flight reaches its own terminal state, while any committed internal evidence
+  remains only in the internal cache. A subscriber terminal state does not imply
+  deletion of an active shared-flight workspace still serving another
+  subscriber
 
 #### Scenario: Failure or cancellation removes temporary workspace
 

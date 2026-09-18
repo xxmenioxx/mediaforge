@@ -251,7 +251,7 @@ prevents publication by the cancelled operation. Existing sidecars and
 evidence from completed prior operations are never removed as part of another
 operation's cleanup.
 
-### 7. Roll out without migrating published media
+### 8. Roll out without migrating published media
 
 The first cache schema starts empty and is populated only by successful new
 canonical OCR executions. Existing `.srt`, `.ass`, native `.ssa`, and any
