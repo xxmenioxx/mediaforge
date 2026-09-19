@@ -159,6 +159,42 @@ func TestLabDraftTrackProfileResolvesLanguageRulesForTestEncode(t *testing.T) {
 	assertNotContains(t, command, "-map 0:2")
 }
 
+func TestTestEncodeTrackProfileUsesPersistedASSFallback(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-subtitle-fallback")
+	path := filepath.Clean("/media/raw/movie.mkv")
+	if err := db.Create(&models.ScanResult{
+		Path:            path,
+		SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng"}},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{
+		Key:   subtitleSettingsKey,
+		Value: models.JSONMap{generateSRTFallbackForASSKey: true},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	override, err := resolveLabTrackOverride(db, path, models.JSONMap{
+		"scope":                   "asset",
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "extract",
+		"subtitleSidecarFormats":  []string{"ass"},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+	}, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.ResolvedTrackPlan == nil || len(override.ResolvedTrackPlan.SidecarOutputs) != 2 {
+		t.Fatalf("test encode track plan=%#v", override.ResolvedTrackPlan)
+	}
+	formats := []string{override.ResolvedTrackPlan.SidecarOutputs[0].Format, override.ResolvedTrackPlan.SidecarOutputs[1].Format}
+	if !sameStringSlice(formats, []string{"srt", "ass"}) {
+		t.Fatalf("test encode fallback formats=%#v", formats)
+	}
+}
+
 func TestEffectiveAssetTestEncodeKeepsPersistedVideoOverridePrecedence(t *testing.T) {
 	path := "/media/video/asset.mkv"
 	job := models.QueueJob{MediaPath: path, ProcessingMode: ProcessingModeFullEncode}

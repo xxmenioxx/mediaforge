@@ -27,6 +27,6 @@
 
 ## 6. Cross-entry-point and compatibility regression coverage
 
-- [ ] 6.1 Add focused backend coverage for persistence, normalization/deduplication, native ASS/SSA, bitmap OCR sharing, Asset Info, Track Profiles, Lab/Test Encode, Queue freeze, stale settings, and logical `both` behavior.
-- [ ] 6.2 Add focused frontend coverage for effective SRT visibility and setting persistence in existing subtitle-output controls.
-- [ ] 6.3 Run `openspec validate subtitle-srt-fallback-compatibility --type change --strict` and reconcile this checklist only after all implementation and regression evidence is complete.
+- [x] 6.1 Add focused backend coverage for persistence, normalization/deduplication, native ASS/SSA, bitmap OCR sharing, Asset Info, Track Profiles, Lab/Test Encode, Queue freeze, stale settings, and logical `both` behavior.
+- [x] 6.2 Add focused frontend coverage for effective SRT visibility and setting persistence in existing subtitle-output controls.
+- [x] 6.3 Run `openspec validate subtitle-srt-fallback-compatibility --type change --strict` and reconcile this checklist only after all implementation and regression evidence is complete.
