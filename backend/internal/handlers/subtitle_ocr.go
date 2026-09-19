@@ -66,6 +66,80 @@ func (e *bitmapOCRProcessError) Unwrap() error {
 
 type OCRProgressFunc func(processed, total int)
 
+type ocrProcessOutput struct {
+	mu                    sync.Mutex
+	pending               []byte
+	discardUntilDelimiter bool
+	onLine                func(string)
+}
+
+func (o *ocrProcessOutput) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	written := len(data)
+
+	lines := make([]string, 0, 1)
+	o.mu.Lock()
+	for len(data) > 0 {
+		if o.discardUntilDelimiter {
+			index := bytes.IndexAny(data, "\r\n")
+			if index < 0 {
+				break
+			}
+			data = data[index+1:]
+			o.discardUntilDelimiter = false
+			continue
+		}
+
+		index := bytes.IndexAny(data, "\r\n")
+		if index < 0 {
+			remaining := maxOCRDiagnostics - len(o.pending)
+			if remaining <= 0 {
+				o.discardUntilDelimiter = true
+				break
+			}
+			if len(data) > remaining {
+				o.pending = append(o.pending, data[:remaining]...)
+				o.discardUntilDelimiter = true
+				break
+			}
+			o.pending = append(o.pending, data...)
+			break
+		}
+
+		line := data[:index]
+		remaining := maxOCRDiagnostics - len(o.pending)
+		if remaining > 0 {
+			if len(line) > remaining {
+				line = line[:remaining]
+			}
+			o.pending = append(o.pending, line...)
+		}
+		lines = append(lines, string(o.pending))
+		o.pending = o.pending[:0]
+		data = data[index+1:]
+	}
+	o.mu.Unlock()
+
+	for _, line := range lines {
+		if o.onLine != nil {
+			o.onLine(line)
+		}
+	}
+	return written, nil
+}
+
+func (o *ocrProcessOutput) flush() {
+	o.mu.Lock()
+	line := string(o.pending)
+	o.pending = o.pending[:0]
+	o.mu.Unlock()
+	if line != "" && o.onLine != nil {
+		o.onLine(line)
+	}
+}
+
 func isBitmapSubtitleCodecName(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
 	case "dvd_subtitle", "dvb_subtitle", "hdmv_pgs_subtitle", "pgssub":
@@ -637,23 +711,8 @@ func runSeConvWithProgress(
 	cmd := exec.Command("seconv", args...)
 	configureSubtitleProcessGroup(cmd)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-
 	var output bytes.Buffer
 	var outputMu sync.Mutex
-	var wg sync.WaitGroup
 	appendDiagnostic := func(line string) {
 		outputMu.Lock()
 		defer outputMu.Unlock()
@@ -667,73 +726,44 @@ func runSeConvWithProgress(
 		output.WriteString(line)
 	}
 
-	process := func(r io.Reader) {
-		defer wg.Done()
+	processLine := func(rawLine string) {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			return
+		}
 
-		scanner := bufio.NewScanner(r)
-		scanner.Split(scanLinesAndCarriageReturns)
+		appendDiagnostic(line + "\n")
 
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
+		fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
 
-			if line == "" {
-				continue
-			}
+		if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
+			if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
+				fmt.Fprintf(
+					os.Stderr,
+					"\n[SECONV-PROGRESS] total=%d\n",
+					total,
+				)
 
-			appendDiagnostic(line + "\n")
-
-			fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
-
-			if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
-				if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
-					fmt.Fprintf(
-						os.Stderr,
-						"\n[SECONV-PROGRESS] total=%d\n",
-						total,
-					)
-
-					if onProgress != nil {
-						onProgress(0, total)
-					}
+				if onProgress != nil {
+					onProgress(0, total)
 				}
 			}
 		}
-
-		// for scanner.Scan() {
-		// 	line := scanner.Text()
-
-		// 	output.WriteString(line)
-		// 	output.WriteByte('\n')
-
-		// 	lower := strings.ToLower(line)
-
-		// 	if strings.Contains(lower, "ocr") ||
-		// 		strings.Contains(lower, "tesseract") ||
-		// 		strings.Contains(lower, "image") ||
-		// 		strings.Contains(lower, "%") {
-		// 		fmt.Printf("[seconv-ocr] %s\n", line)
-		// 	}
-
-		// 	// Primero detectamos el total reportado por SeConv.
-		// 	if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
-		// 		if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
-		// 			if onProgress != nil {
-		// 				onProgress(0, total)
-		// 			}
-		// 		}
-		// 	}
-		// }
 	}
 
-	wg.Add(2)
-
-	go process(stdoutPipe)
-	go process(stderrPipe)
+	stdout := &ocrProcessOutput{onLine: processLine}
+	stderr := &ocrProcessOutput{onLine: processLine}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 	waitErr := waitSubtitleProcess(ctx, cmd, waitDone)
-	wg.Wait()
+	stdout.flush()
+	stderr.flush()
 
 	outputMu.Lock()
 	diagnostics := strings.TrimSpace(output.String())

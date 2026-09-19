@@ -243,6 +243,23 @@ exit 17
 	}
 }
 
+func TestRunSeConvWithProgressCapturesShortStderrBeforeNonZeroExit(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "seconv"), `#!/bin/sh
+printf 'No subtitles recognised\n' >&2
+exit 17
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	diagnostics, err := runSeConvWithProgress(context.Background(), []string{"input"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "exit status 17") {
+		t.Fatalf("short diagnostic command did not preserve exit status: diagnostics=%q err=%v", diagnostics, err)
+	}
+	if !strings.Contains(diagnostics, "No subtitles recognised") {
+		t.Fatalf("short stderr diagnostic was lost before process classification: %q", diagnostics)
+	}
+}
+
 func TestJapanesePGSBothUsesOneCanonicalOCRResult(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
