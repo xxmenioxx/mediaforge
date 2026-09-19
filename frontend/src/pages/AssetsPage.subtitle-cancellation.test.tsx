@@ -103,4 +103,22 @@ describe('Asset Info subtitle cancellation controls', () => {
     expect(onGenerate).toHaveBeenCalledWith(4, 'srt', 'eng', 'accurate');
     expect(onCancel).not.toHaveBeenCalled();
   });
+
+  it('exposes Analyze OCR for bitmap subtitles and routes the stream/format', async () => {
+    const user = userEvent.setup();
+    const onAnalyze = vi.fn();
+
+    render(
+      <EmbeddedSubtitleActions
+        streams={[bitmapStream]}
+        generations={{}}
+        onGenerate={vi.fn()}
+        onCancel={vi.fn()}
+        onAnalyze={onAnalyze}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Analyze OCR' }));
+    expect(onAnalyze).toHaveBeenCalledWith(4, 'srt');
+  });
 });

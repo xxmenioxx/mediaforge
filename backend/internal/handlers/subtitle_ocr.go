@@ -182,6 +182,7 @@ type bitmapSubtitleOCRResult struct {
 	EffectiveLanguage string
 	Cues              []canonicalBitmapSubtitleCue
 	Geometry          []bitmapCueGeometry
+	Evidence          *canonicalOCREvidence
 }
 
 func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc) (bitmapSubtitleOCRResult, error) {
@@ -202,6 +203,7 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 	result.EffectiveLanguage = evidence.EffectiveLanguage
 	result.Cues = cloneCanonicalCues(evidence.Cues)
 	result.Geometry = append([]bitmapCueGeometry(nil), evidence.Geometry...)
+	result.Evidence = cloneCanonicalOCREvidence(evidence)
 	var content []byte
 	if format == "ass" {
 		content = renderBitmapASSCues(evidence.Cues)
@@ -527,7 +529,7 @@ func runBitmapOCRLanguageAttempt(
 			result.err = &bitmapOCRProcessError{language: language, diagnostics: secondResult.message, err: secondResult.err}
 			return result
 		}
-		if secondResult.err == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
+		if secondResult.err == nil && preferSecondaryOCR(subtitleOCRFileScoreForLanguage(first, format, language), subtitleOCRFileScoreForLanguage(second, format, language)) {
 			chosen = second
 		}
 	}
@@ -764,14 +766,22 @@ func copyFileContents(source, destination string) error {
 }
 
 func subtitleOCRFileScore(path, format string) float64 {
+	return subtitleOCRFileScoreForLanguage(path, format, "")
+}
+
+func subtitleOCRFileScoreForLanguage(path, format, language string) float64 {
 	content, err := os.ReadFile(path)
 	if err != nil || !validSubtitleSidecar(format, content) {
 		return math.Inf(-1)
 	}
-	return subtitleOCRScore(string(content))
+	return subtitleOCRScoreForLanguage(string(content), language)
 }
 
 func subtitleOCRScore(content string) float64 {
+	return subtitleOCRScoreForLanguage(content, "")
+}
+
+func subtitleOCRScoreForLanguage(content, language string) float64 {
 	letters, digits, suspicious, replacement := 0, 0, 0, 0
 	for _, r := range content {
 		switch {
@@ -785,7 +795,86 @@ func subtitleOCRScore(content string) float64 {
 			suspicious++
 		}
 	}
-	return float64(letters) + float64(digits)*0.1 - float64(suspicious)*6 - float64(replacement)*25
+	score := float64(letters) + float64(digits)*0.1 - float64(suspicious)*6 - float64(replacement)*25
+	score -= float64(ocrConfusionCount(content, language)) * 4
+	if dictionary := ocrKnownWords(language); len(dictionary) > 0 {
+		words := ocrWords(content)
+		for _, word := range words {
+			if _, ok := dictionary[strings.ToLower(word)]; ok {
+				score += 8
+				continue
+			}
+			// Unknown words are weak evidence only. Preserve likely proper nouns,
+			// long names, and tokens that the supported dictionary does not know.
+			if isLikelyProperNoun(word) || len([]rune(word)) > 12 {
+				continue
+			}
+			score -= 2
+		}
+	}
+	return score
+}
+
+var ocrWordPattern = regexp.MustCompile(`(?i)[[:alpha:]][[:alpha:]'’-]*`)
+var ocrConfusionTokenPattern = regexp.MustCompile(`(?i)[[:alpha:]]+[0-9|][[:alpha:]]+`)
+
+func ocrWords(content string) []string {
+	raw := ocrWordPattern.FindAllString(content, -1)
+	words := make([]string, 0, len(raw))
+	for _, word := range raw {
+		if word != "" {
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+func isLikelyProperNoun(word string) bool {
+	for _, r := range word {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func ocrKnownWords(language string) map[string]struct{} {
+	language = strings.ToLower(strings.TrimSpace(language))
+	if index := strings.IndexByte(language, '_'); index >= 0 {
+		language = language[:index]
+	}
+	switch language {
+	case "eng":
+		return map[string]struct{}{
+			"a": {}, "and": {}, "are": {}, "cat": {}, "come": {}, "do": {}, "for": {}, "from": {}, "go": {}, "have": {}, "hello": {}, "i": {}, "in": {}, "is": {}, "it": {}, "me": {}, "no": {}, "not": {}, "of": {}, "on": {}, "one": {}, "please": {}, "see": {}, "that": {}, "the": {}, "this": {}, "to": {}, "we": {}, "what": {}, "with": {}, "you": {},
+		}
+	case "spa":
+		return map[string]struct{}{
+			"a": {}, "al": {}, "con": {}, "de": {}, "del": {}, "el": {}, "en": {}, "es": {}, "hola": {}, "la": {}, "las": {}, "lo": {}, "los": {}, "mi": {}, "no": {}, "para": {}, "por": {}, "que": {}, "se": {}, "su": {}, "un": {}, "una": {}, "y": {}, "yo": {},
+		}
+	default:
+		return nil
+	}
+}
+
+func ocrConfusionCount(content, language string) int {
+	// These patterns are deliberately bounded and language-neutral. They are
+	// evidence for review/scoring, never a standalone correction rule.
+	words := ocrWords(content)
+	count := 0
+	count += len(ocrConfusionTokenPattern.FindAllString(content, -1))
+	for _, word := range words {
+		if strings.ContainsAny(word, "|{}[]") {
+			count++
+		}
+		if strings.Contains(word, "rn") || strings.Contains(word, "cl") {
+			count++
+		}
+		if language != "jpn" && language != "jpn_vert" && strings.ContainsAny(word, "０１２３４５６７８９") {
+			count++
+		}
+	}
+	return count
 }
 
 func preferSecondaryOCR(primary, secondary float64) bool {

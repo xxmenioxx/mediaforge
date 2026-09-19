@@ -97,6 +97,8 @@ type subtitleExtractionOperation struct {
 	AssetPath              string                    `json:"assetPath"`
 	Message                string                    `json:"message,omitempty"`
 	Result                 *SubtitleExtractionResult `json:"result,omitempty"`
+	Kind                   string                    `json:"kind,omitempty"`
+	QualityReport          *subtitleOCRQualityReport `json:"qualityReport,omitempty"`
 	Error                  string                    `json:"error,omitempty"`
 	CreatedAt              time.Time                 `json:"createdAt"`
 	UpdatedAt              time.Time                 `json:"updatedAt"`

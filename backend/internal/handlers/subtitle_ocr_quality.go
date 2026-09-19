@@ -1,0 +1,869 @@
+package handlers
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+const (
+	subtitleOCRQualityVersion       = "quality-v1"
+	subtitleOCRRepairVersion        = "repair-v1"
+	maxPublishedSubtitleBytes       = 64 * 1024 * 1024
+	maxPublishedSnapshotHistory     = 8
+	subtitleOCRQualityStatusClean   = "clean"
+	subtitleOCRQualityStatusSuspect = "suspicious"
+	subtitleOCRQualityStatusReview  = "review"
+)
+
+var subtitleOCRSnapshotMu sync.Mutex
+
+type publishedSubtitleRevision struct {
+	ArtifactPath       string `json:"artifactPath"`
+	ArtifactIdentity   string `json:"artifactIdentity"`
+	SizeBytes          int64  `json:"sizeBytes"`
+	ModifiedAtUnixNano int64  `json:"modifiedAtUnixNano"`
+	ContentHash        string `json:"contentHash"`
+	LogicalTransform   string `json:"logicalTransform,omitempty"`
+}
+
+func (revision publishedSubtitleRevision) key() string {
+	encoded, _ := json.Marshal(revision)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+type publishedCanonicalOCRSnapshot struct {
+	Version             int                       `json:"version"`
+	OwnerIdentity       string                    `json:"ownerIdentity"`
+	SourcePath          string                    `json:"sourcePath"`
+	Format              string                    `json:"format"`
+	LogicalTransformKey string                    `json:"logicalTransformKey,omitempty"`
+	Revision            publishedSubtitleRevision `json:"revision"`
+	Evidence            canonicalOCREvidence      `json:"evidence"`
+	CreatedAt           time.Time                 `json:"createdAt"`
+	UpdatedAt           time.Time                 `json:"updatedAt"`
+	AnalyzerVersion     string                    `json:"analyzerVersion"`
+	RepairVersion       string                    `json:"repairVersion"`
+	ScoringVersion      string                    `json:"scoringVersion"`
+	PreviousRevision    string                    `json:"previousRevision,omitempty"`
+	CorrectionOperation string                    `json:"correctionOperation,omitempty"`
+	Integrity           string                    `json:"integrity"`
+}
+
+type subtitleOCRQualityFinding struct {
+	CueID           int      `json:"cueId"`
+	OriginalText    string   `json:"originalText"`
+	Suggestion      string   `json:"suggestion,omitempty"`
+	Status          string   `json:"status"`
+	Reasons         []string `json:"reasons,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
+	CandidateSource string   `json:"candidateSource,omitempty"`
+	Baseline        string   `json:"baselineRevision"`
+}
+
+type subtitleOCRQualityReport struct {
+	ArtifactPath        string                      `json:"artifactPath"`
+	Format              string                      `json:"format"`
+	LogicalTransformKey string                      `json:"logicalTransformKey,omitempty"`
+	Revision            publishedSubtitleRevision   `json:"revision"`
+	RevisionSet         []publishedSubtitleRevision `json:"revisionSet,omitempty"`
+	BaselineRevision    string                      `json:"baselineRevision"`
+	AnalyzerVersion     string                      `json:"analyzerVersion"`
+	RepairVersion       string                      `json:"repairVersion"`
+	CleanCount          int                         `json:"cleanCount"`
+	SuspiciousCount     int                         `json:"suspiciousCount"`
+	ReviewCount         int                         `json:"reviewCount"`
+	LegacyTextOnly      bool                        `json:"legacyTextOnly,omitempty"`
+	CanCorrect          bool                        `json:"canCorrect"`
+	Findings            []subtitleOCRQualityFinding `json:"findings"`
+}
+
+type subtitleOCRCorrection struct {
+	CueID      int    `json:"cueId"`
+	Action     string `json:"action"`
+	Text       string `json:"text,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+type subtitleOCRAnalyzeInput struct {
+	MediaPath           string   `json:"mediaPath,omitempty"`
+	SidecarPath         string   `json:"sidecarPath"`
+	SidecarPaths        []string `json:"sidecarPaths,omitempty"`
+	Format              string   `json:"format"`
+	LogicalTransformKey string   `json:"logicalTransformKey,omitempty"`
+}
+
+type subtitleOCRCorrectionInput struct {
+	MediaPath           string                      `json:"mediaPath,omitempty"`
+	SidecarPath         string                      `json:"sidecarPath"`
+	SidecarPaths        []string                    `json:"sidecarPaths,omitempty"`
+	Format              string                      `json:"format"`
+	LogicalTransformKey string                      `json:"logicalTransformKey,omitempty"`
+	BaselineRevision    string                      `json:"baselineRevision"`
+	Revisions           []publishedSubtitleRevision `json:"revisions,omitempty"`
+	Corrections         []subtitleOCRCorrection     `json:"corrections"`
+}
+
+func subtitleOCRPaths(inputSidecarPath string, inputPaths []string) []string {
+	paths := append([]string(nil), inputPaths...)
+	if strings.TrimSpace(inputSidecarPath) != "" && len(paths) == 0 {
+		paths = []string{inputSidecarPath}
+	}
+	for index := range paths {
+		paths[index] = filepath.Clean(strings.TrimSpace(paths[index]))
+	}
+	return paths
+}
+
+func validateSubtitleOCRSidecarPaths(mediaPath string, paths []string) ([]string, error) {
+	mediaPath = filepath.Clean(strings.TrimSpace(mediaPath))
+	if mediaPath == "." || mediaPath == "" {
+		return paths, nil
+	}
+	validated := make([]string, len(paths))
+	for index, path := range paths {
+		value, err := validatedExternalSubtitlePath(mediaPath, path)
+		if err != nil {
+			return nil, err
+		}
+		validated[index] = value
+	}
+	return validated, nil
+}
+
+func loadOrReconstructPublishedOCRSnapshot(path, format, logicalTransform string) (*publishedCanonicalOCRSnapshot, bool) {
+	if snapshot, ok := loadPublishedCanonicalOCRSnapshot(path, format, logicalTransform); ok {
+		return snapshot, true
+	}
+	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	if _, err := os.Stat(publishedSubtitleSnapshotPath(owner)); err == nil {
+		// An owned snapshot that no longer matches its artifact/source is stale;
+		// do not silently downgrade it to a legacy reconstruction.
+		return nil, false
+	}
+	return reconstructLegacyOCRSnapshot(path, format, logicalTransform)
+}
+
+func analyzePublishedOCRQuality(path, format, logicalTransform string) (subtitleOCRQualityReport, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+	}
+	if format != "srt" && format != "ass" {
+		return subtitleOCRQualityReport{}, fmt.Errorf("OCR quality analysis supports SRT or ASS artifacts")
+	}
+	snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, format, logicalTransform)
+	if !ok {
+		return subtitleOCRQualityReport{}, fmt.Errorf("published OCR canonical baseline is unavailable; regenerate through the canonical subtitle pipeline")
+	}
+	return analyzeCanonicalOCRSnapshot(snapshot), nil
+}
+
+func applySubtitleOCRCorrections(cues []canonicalBitmapSubtitleCue, corrections []subtitleOCRCorrection) ([]canonicalBitmapSubtitleCue, error) {
+	result := cloneCanonicalCues(cues)
+	byID := make(map[int]int, len(result))
+	for index, cue := range result {
+		byID[cue.SourceOrdinal] = index
+	}
+	for _, correction := range corrections {
+		index, ok := byID[correction.CueID]
+		if !ok {
+			return nil, fmt.Errorf("OCR correction references unknown cue %d", correction.CueID)
+		}
+		text := strings.TrimSpace(correction.Text)
+		if strings.EqualFold(strings.TrimSpace(correction.Action), "keep") || strings.EqualFold(strings.TrimSpace(correction.Action), "reject") {
+			continue
+		}
+		if text == "" && strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
+			text = strings.TrimSpace(correction.Suggestion)
+		}
+		if text == "" {
+			return nil, fmt.Errorf("OCR correction for cue %d has no text", correction.CueID)
+		}
+		result[index].Text = text
+	}
+	return result, nil
+}
+
+func correctedSubtitleEvidence(snapshot *publishedCanonicalOCRSnapshot, cues []canonicalBitmapSubtitleCue) *canonicalOCREvidence {
+	evidence := cloneCanonicalOCREvidence(&snapshot.Evidence)
+	evidence.Cues = cues
+	return evidence
+}
+
+func validateSubtitleQualityCorrectionInput(input subtitleOCRCorrectionInput) ([]publishedSubtitleRevision, error) {
+	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
+	if len(paths) == 0 {
+		return nil, errors.New("OCR correction requires a published sidecar path")
+	}
+	revisions := append([]publishedSubtitleRevision(nil), input.Revisions...)
+	if len(revisions) == 0 {
+		for _, path := range paths {
+			revision, _, err := publishedSubtitleRevisionFor(path, input.LogicalTransformKey)
+			if err != nil {
+				return nil, err
+			}
+			revisions = append(revisions, revision)
+		}
+	}
+	if len(revisions) != len(paths) {
+		return nil, errors.New("OCR correction revision set does not match the requested sidecars")
+	}
+	for index, path := range paths {
+		if revisions[index].ArtifactPath != path {
+			return nil, errors.New("OCR correction revision identity does not match its sidecar path")
+		}
+		if input.BaselineRevision != "" && len(paths) == 1 && revisions[index].key() != input.BaselineRevision {
+			return nil, errors.New("stale OCR analysis revision")
+		}
+	}
+	return revisions, nil
+}
+
+func writeCorrectedSubtitleFiles(workspace string, paths []string, formats []string, cues []canonicalBitmapSubtitleCue) ([]string, error) {
+	staged := make([]string, 0, len(paths))
+	for index, path := range paths {
+		format := strings.ToLower(strings.TrimSpace(formats[index]))
+		if format == "ass" && len(cues) == 0 {
+			return nil, errors.New("corrected ASS canonical cues are unavailable")
+		}
+		var content []byte
+		if format == "srt" {
+			content = renderBitmapSRTCues(cues)
+		} else if format == "ass" {
+			content = renderBitmapASSCues(cues)
+		} else {
+			return nil, fmt.Errorf("unsupported OCR correction format %q", format)
+		}
+		if !validSubtitleSidecar(format, content) {
+			return nil, fmt.Errorf("corrected %s sidecar failed validation", format)
+		}
+		stage := filepath.Join(workspace, fmt.Sprintf("output-%d.%s", index, format))
+		if err := os.WriteFile(stage, content, 0o644); err != nil {
+			return nil, err
+		}
+		staged = append(staged, stage)
+		_ = path
+	}
+	return staged, nil
+}
+
+func publishCorrectedSubtitleFiles(
+	ctx context.Context,
+	operationID string,
+	paths, formats, staged []string,
+	snapshots []*publishedCanonicalOCRSnapshot,
+	oldRevisions []publishedSubtitleRevision,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(paths) == 0 || len(paths) != len(staged) || len(paths) != len(snapshots) {
+		return errors.New("invalid OCR correction publication set")
+	}
+	subtitlePublicationMu.Lock()
+	defer subtitlePublicationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for index, revision := range oldRevisions {
+		current, _, err := publishedSubtitleRevisionFor(paths[index], revision.LogicalTransform)
+		if err != nil || current != revision {
+			return errors.New("stale OCR analysis revision")
+		}
+	}
+	oldContent := make([][]byte, len(paths))
+	oldSnapshot := make([][]byte, len(paths))
+	for index, path := range paths {
+		var err error
+		oldContent[index], err = os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		owner := publishedSubtitleOwnerIdentity(path, formats[index], snapshots[index].LogicalTransformKey)
+		oldSnapshot[index], _ = os.ReadFile(publishedSubtitleSnapshotPath(owner))
+	}
+	rollback := func() {
+		rollbackRoot := filepath.Join(canonicalOCRWorkspaceRoot(), "rollback")
+		_ = os.MkdirAll(rollbackRoot, 0o700)
+		for index, path := range paths {
+			private := filepath.Join(rollbackRoot, fmt.Sprintf("%s-%d", filepath.Base(path), index))
+			if err := os.WriteFile(private, oldContent[index], 0o600); err == nil {
+				_ = copyPublishedFile(private, path, true)
+			}
+			_ = os.Remove(private)
+			owner := publishedSubtitleOwnerIdentity(path, formats[index], snapshots[index].LogicalTransformKey)
+			if len(oldSnapshot[index]) == 0 {
+				_ = os.Remove(publishedSubtitleSnapshotPath(owner))
+			} else {
+				_ = os.WriteFile(publishedSubtitleSnapshotPath(owner), oldSnapshot[index], 0o600)
+			}
+		}
+	}
+	for index, path := range paths {
+		if err := ctx.Err(); err != nil {
+			rollback()
+			return err
+		}
+		if err := publishStagedSubtitleFile(staged[index], path); err != nil {
+			rollback()
+			return err
+		}
+	}
+	for index, snapshot := range snapshots {
+		previous := oldRevisions[index].key()
+		// The complete output set has crossed the publication barrier. A later
+		// cancellation must not roll back a committed publication.
+		if err := commitPublishedCanonicalOCRSnapshot(context.Background(), paths[index], formats[index], snapshot.LogicalTransformKey, &snapshot.Evidence, operationID, previous); err != nil {
+			rollback()
+			return fmt.Errorf("cannot commit corrected OCR baseline: %w", err)
+		}
+	}
+	return nil
+}
+
+func publishStagedSubtitleFile(staged, destination string) error {
+	if err := os.Rename(staged, destination); err == nil {
+		return nil
+	}
+	return copyPublishedFile(staged, destination, true)
+}
+
+func runSubtitleOCRCorrectionOperation(
+	ctx context.Context,
+	operationID, workspace string,
+	input subtitleOCRCorrectionInput,
+) {
+	defer cleanupSubtitleOperationWorkspace(workspace)
+	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
+	oldRevisions, err := validateSubtitleQualityCorrectionInput(input)
+	if err != nil {
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Status = "error"
+			operation.Phase = "error"
+			operation.Message = "Stale OCR analysis"
+			operation.Error = err.Error()
+		})
+		return
+	}
+	formats := make([]string, len(paths))
+	for index, path := range paths {
+		formats[index] = strings.ToLower(strings.TrimSpace(input.Format))
+		if formats[index] == "both" || formats[index] == "" {
+			formats[index] = strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+		}
+		if formats[index] != "srt" && formats[index] != "ass" {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = "unsupported correction format"
+			})
+			return
+		}
+	}
+	snapshots := make([]*publishedCanonicalOCRSnapshot, len(paths))
+	for index, path := range paths {
+		snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, formats[index], input.LogicalTransformKey)
+		if !ok || !snapshot.CanCorrectLegacy(formats[index], len(paths)) {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = "canonical structural evidence is unavailable for this representation"
+			})
+			return
+		}
+		snapshots[index] = snapshot
+	}
+	cues, err := applySubtitleOCRCorrections(snapshots[0].Evidence.Cues, input.Corrections)
+	if err != nil {
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Status = "error"
+			operation.Phase = "error"
+			operation.Message = "OCR correction failed"
+			operation.Error = err.Error()
+		})
+		return
+	}
+	for index := range snapshots {
+		snapshots[index].Evidence.Cues = cloneCanonicalCues(cues)
+	}
+	staged, err := writeCorrectedSubtitleFiles(workspace, paths, formats, cues)
+	if err == nil {
+		err = publishCorrectedSubtitleFiles(ctx, operationID, paths, formats, staged, snapshots, oldRevisions)
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "cancelled"
+				operation.Phase = "cleanup"
+				operation.Message = "OCR correction cancelled"
+				operation.Error = ""
+			})
+		} else {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = err.Error()
+			})
+		}
+		return
+	}
+	markSubtitlePublicationCommitted(operationID)
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		operation.Status = "completed"
+		operation.Phase = "completed"
+		operation.Progress = 100
+		operation.Message = "OCR correction completed"
+	})
+}
+
+func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace string, input subtitleOCRAnalyzeInput) {
+	defer cleanupSubtitleOperationWorkspace(workspace)
+	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
+	if len(paths) == 0 {
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Status = "error"
+			operation.Phase = "error"
+			operation.Message = "OCR analysis failed"
+			operation.Error = "OCR analysis requires a published sidecar path"
+		})
+		return
+	}
+	var combined subtitleOCRQualityReport
+	for index, path := range paths {
+		if err := ctx.Err(); err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "cancelled"
+				operation.Phase = "cancelled"
+				operation.Message = "OCR analysis cancelled"
+			})
+			return
+		}
+		report, err := analyzePublishedOCRQuality(path, input.Format, input.LogicalTransformKey)
+		if err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR analysis failed"
+				operation.Error = err.Error()
+			})
+			return
+		}
+		if index == 0 {
+			combined = report
+		} else {
+			combined.RevisionSet = append(combined.RevisionSet, report.RevisionSet...)
+			combined.CleanCount += report.CleanCount
+			combined.SuspiciousCount += report.SuspiciousCount
+			combined.ReviewCount += report.ReviewCount
+			combined.Findings = append(combined.Findings, report.Findings...)
+			combined.LegacyTextOnly = combined.LegacyTextOnly || report.LegacyTextOnly
+			combined.CanCorrect = combined.CanCorrect && report.CanCorrect
+		}
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Phase = "analyzing"
+			operation.Progress = float64(index+1) / float64(len(paths)) * 100
+			operation.Processed = index + 1
+			operation.Total = len(paths)
+			operation.Message = "Analyzing OCR quality"
+		})
+	}
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		operation.Status = "completed"
+		operation.Phase = "completed"
+		operation.Progress = 100
+		operation.QualityReport = &combined
+		operation.Message = "OCR analysis completed"
+	})
+}
+
+func startSubtitleOCRAnalysisOperation(input subtitleOCRAnalyzeInput) (string, error) {
+	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
+	validated, err := validateSubtitleOCRSidecarPaths(input.MediaPath, paths)
+	if err != nil {
+		return "", err
+	}
+	paths = validated
+	if len(paths) == 0 {
+		return "", errors.New("OCR analysis requires a published sidecar path")
+	}
+	workspace, err := os.MkdirTemp(canonicalOCRWorkspaceRoot(), ".mvforge-subtitle-analysis-*")
+	if err != nil {
+		return "", err
+	}
+	operationID := fmt.Sprintf("subtitle-ocr-analysis-%d", time.Now().UnixNano())
+	workCtx, cancel := context.WithTimeout(context.Background(), subtitleOperationTimeout)
+	now := time.Now()
+	operation := &subtitleExtractionOperation{
+		ID: operationID, Kind: "ocr_analysis", Status: "running", Phase: "preparing", Progress: 1,
+		Format: input.Format, AssetPath: paths[0], Total: len(paths), Message: "Preparing OCR analysis",
+		CreatedAt: now, UpdatedAt: now, cancel: cancel, publicationCommittedCh: make(chan struct{}),
+	}
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = operation
+	subtitleExtractionOperations.Unlock()
+	go func() {
+		defer cancel()
+		runSubtitleOCRAnalysisOperation(workCtx, operationID, workspace, input)
+	}()
+	return operationID, nil
+}
+
+func (snapshot *publishedCanonicalOCRSnapshot) CanCorrectLegacy(format string, outputCount int) bool {
+	if snapshot == nil {
+		return false
+	}
+	if snapshot.Evidence.Integrity != "legacy-text-cues-v1" {
+		return true
+	}
+	return strings.EqualFold(format, "srt") && outputCount == 1
+}
+
+func startSubtitleOCRCorrectionOperation(input subtitleOCRCorrectionInput) (string, error) {
+	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
+	validated, err := validateSubtitleOCRSidecarPaths(input.MediaPath, paths)
+	if err != nil {
+		return "", err
+	}
+	paths = validated
+	if len(paths) == 0 {
+		return "", errors.New("OCR correction requires a published sidecar path")
+	}
+	workspace, err := os.MkdirTemp(canonicalOCRWorkspaceRoot(), ".mvforge-subtitle-correction-*")
+	if err != nil {
+		return "", err
+	}
+	operationID := fmt.Sprintf("subtitle-ocr-correction-%d", time.Now().UnixNano())
+	workCtx, cancel := context.WithTimeout(context.Background(), subtitleOperationTimeout)
+	now := time.Now()
+	operation := &subtitleExtractionOperation{ID: operationID, Kind: "ocr_correction", Status: "running", Phase: "preparing", Progress: 1, Format: input.Format, AssetPath: paths[0], Message: "Preparing OCR correction", CreatedAt: now, UpdatedAt: now, cancel: cancel, publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = operation
+	subtitleExtractionOperations.Unlock()
+	go func() {
+		defer cancel()
+		runSubtitleOCRCorrectionOperation(workCtx, operationID, workspace, input)
+	}()
+	return operationID, nil
+}
+
+func (h AssetHandler) AnalyzeSubtitleOCR(c *gin.Context) {
+	var input subtitleOCRAnalyzeInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	paths, err := validateSubtitleOCRSidecarPaths(input.MediaPath, subtitleOCRPaths(input.SidecarPath, input.SidecarPaths))
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if len(paths) > 0 {
+		input.SidecarPath = paths[0]
+		input.SidecarPaths = paths
+	}
+	operationID, err := startSubtitleOCRAnalysisOperation(input)
+	if err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"operationId": operationID, "status": "running", "phase": "preparing", "progress": 1})
+}
+
+func (h AssetHandler) CorrectSubtitleOCR(c *gin.Context) {
+	var input subtitleOCRCorrectionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	paths, err := validateSubtitleOCRSidecarPaths(input.MediaPath, subtitleOCRPaths(input.SidecarPath, input.SidecarPaths))
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if len(paths) > 0 {
+		input.SidecarPath = paths[0]
+		input.SidecarPaths = paths
+	}
+	operationID, err := startSubtitleOCRCorrectionOperation(input)
+	if err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"operationId": operationID, "status": "running", "phase": "preparing", "progress": 1})
+}
+
+func publishedSubtitleRevisionFor(path, logicalTransform string) (publishedSubtitleRevision, []byte, error) {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "." || cleanPath == "" {
+		return publishedSubtitleRevision{}, nil, errors.New("published subtitle path is required")
+	}
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return publishedSubtitleRevision{}, nil, err
+	}
+	if info.IsDir() || info.Size() > maxPublishedSubtitleBytes {
+		return publishedSubtitleRevision{}, nil, fmt.Errorf("published subtitle is unavailable for bounded revision analysis")
+	}
+	content, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return publishedSubtitleRevision{}, nil, err
+	}
+	sum := sha256.Sum256(content)
+	revision := publishedSubtitleRevision{
+		ArtifactPath:       cleanPath,
+		ArtifactIdentity:   fmt.Sprintf("path:%s", cleanPath),
+		SizeBytes:          info.Size(),
+		ModifiedAtUnixNano: info.ModTime().UnixNano(),
+		ContentHash:        hex.EncodeToString(sum[:]),
+		LogicalTransform:   strings.TrimSpace(logicalTransform),
+	}
+	return revision, content, nil
+}
+
+func publishedSubtitleRevisionMatches(expected publishedSubtitleRevision) bool {
+	actual, _, err := publishedSubtitleRevisionFor(expected.ArtifactPath, expected.LogicalTransform)
+	return err == nil && actual == expected
+}
+
+func publishedSubtitleSnapshotRoot() string {
+	root := filepath.Join(canonicalOCRWorkspaceRoot(), "published-snapshots")
+	_ = os.MkdirAll(root, 0o700)
+	return root
+}
+
+func publishedSubtitleSnapshotPath(ownerIdentity string) string {
+	sum := sha256.Sum256([]byte(ownerIdentity))
+	return filepath.Join(publishedSubtitleSnapshotRoot(), hex.EncodeToString(sum[:])+".json")
+}
+
+func publishedSubtitleOwnerIdentity(path, format, logicalTransform string) string {
+	return strings.Join([]string{filepath.Clean(path), strings.ToLower(strings.TrimSpace(format)), strings.TrimSpace(logicalTransform)}, "\x00")
+}
+
+func loadPublishedCanonicalOCRSnapshot(path, format, logicalTransform string) (*publishedCanonicalOCRSnapshot, bool) {
+	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	content, err := os.ReadFile(publishedSubtitleSnapshotPath(owner))
+	if err != nil {
+		return nil, false
+	}
+	var snapshot publishedCanonicalOCRSnapshot
+	if json.Unmarshal(content, &snapshot) != nil || snapshot.OwnerIdentity != owner || snapshot.Version != 1 || snapshot.Integrity != "published-canonical-cues-v1" || snapshot.AnalyzerVersion != subtitleOCRQualityVersion || snapshot.RepairVersion != subtitleOCRRepairVersion || snapshot.ScoringVersion != canonicalOCRScoringVersion {
+		return nil, false
+	}
+	if snapshot.Revision.ArtifactPath != filepath.Clean(path) || !publishedSubtitleRevisionMatches(snapshot.Revision) {
+		return nil, false
+	}
+	if sourcePath := strings.TrimSpace(snapshot.Evidence.Identity.SourcePath); sourcePath != "" {
+		if _, err := os.Stat(sourcePath); err != nil {
+			return nil, false
+		}
+	}
+	return &snapshot, true
+}
+
+func commitPublishedCanonicalOCRSnapshot(
+	ctx context.Context,
+	path, format, logicalTransform string,
+	evidence *canonicalOCREvidence,
+	operationID, previousRevision string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if evidence == nil || !evidence.Complete || len(evidence.Cues) == 0 {
+		return errors.New("canonical OCR evidence is incomplete")
+	}
+	revision, _, err := publishedSubtitleRevisionFor(path, logicalTransform)
+	if err != nil {
+		return err
+	}
+	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	snapshot := publishedCanonicalOCRSnapshot{
+		Version:             1,
+		OwnerIdentity:       owner,
+		SourcePath:          evidence.Identity.SourcePath,
+		Format:              strings.ToLower(strings.TrimSpace(format)),
+		LogicalTransformKey: strings.TrimSpace(logicalTransform),
+		Revision:            revision,
+		Evidence:            *cloneCanonicalOCREvidence(evidence),
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+		AnalyzerVersion:     subtitleOCRQualityVersion,
+		RepairVersion:       subtitleOCRRepairVersion,
+		ScoringVersion:      canonicalOCRScoringVersion,
+		PreviousRevision:    strings.TrimSpace(previousRevision),
+		CorrectionOperation: strings.TrimSpace(operationID),
+		Integrity:           "published-canonical-cues-v1",
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	subtitleOCRSnapshotMu.Lock()
+	defer subtitleOCRSnapshotMu.Unlock()
+	root := publishedSubtitleSnapshotRoot()
+	temporary, err := os.CreateTemp(root, ".published-canonical-cues-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err = temporary.Write(encoded); err == nil {
+		err = temporary.Chmod(0o600)
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, publishedSubtitleSnapshotPath(owner)); err != nil {
+		return err
+	}
+	prunePublishedCanonicalSnapshots(root)
+	return nil
+}
+
+func prunePublishedCanonicalSnapshots(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) <= maxPublishedSnapshotHistory {
+		cleanupOrphanedPublishedCanonicalSnapshots(root, entries)
+		return
+	}
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	candidates := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil {
+			candidates = append(candidates, candidate{filepath.Join(root, entry.Name()), info.ModTime()})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod.Before(candidates[j].mod) })
+	for len(candidates) > maxPublishedSnapshotHistory {
+		_ = os.Remove(candidates[0].path)
+		candidates = candidates[1:]
+	}
+	cleanupOrphanedPublishedCanonicalSnapshots(root, entries)
+}
+
+func cleanupOrphanedPublishedCanonicalSnapshots(root string, entries []os.DirEntry) {
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var snapshot publishedCanonicalOCRSnapshot
+		if json.Unmarshal(content, &snapshot) != nil || snapshot.OwnerIdentity == "" {
+			_ = os.Remove(path)
+			continue
+		}
+		if _, err := os.Stat(snapshot.Revision.ArtifactPath); err != nil {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+func reconstructLegacyOCRSnapshot(path, format, logicalTransform string) (*publishedCanonicalOCRSnapshot, bool) {
+	revision, content, err := publishedSubtitleRevisionFor(path, logicalTransform)
+	if err != nil || !validSubtitleSidecar(format, content) {
+		return nil, false
+	}
+	cues := parseCanonicalBitmapSubtitleCues(format, content)
+	if len(cues) == 0 {
+		return nil, false
+	}
+	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	return &publishedCanonicalOCRSnapshot{
+		Version: 1, OwnerIdentity: owner, SourcePath: path, Format: format,
+		LogicalTransformKey: logicalTransform, Revision: revision,
+		Evidence:  canonicalOCREvidence{RequestedLanguage: "", OCRMode: "legacy", Complete: true, Integrity: "legacy-text-cues-v1", Cues: cues},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Integrity: "published-canonical-cues-v1",
+	}, true
+}
+
+func analyzeCanonicalOCRSnapshot(snapshot *publishedCanonicalOCRSnapshot) subtitleOCRQualityReport {
+	report := subtitleOCRQualityReport{
+		ArtifactPath:        snapshot.Revision.ArtifactPath,
+		Format:              snapshot.Format,
+		LogicalTransformKey: snapshot.LogicalTransformKey,
+		Revision:            snapshot.Revision,
+		RevisionSet:         []publishedSubtitleRevision{snapshot.Revision},
+		BaselineRevision:    snapshot.Revision.key(),
+		AnalyzerVersion:     subtitleOCRQualityVersion,
+		RepairVersion:       subtitleOCRRepairVersion,
+		LegacyTextOnly:      snapshot.Evidence.Integrity == "legacy-text-cues-v1",
+		CanCorrect:          snapshot.Evidence.Integrity != "legacy-text-cues-v1" || strings.EqualFold(snapshot.Format, "srt"),
+		Findings:            make([]subtitleOCRQualityFinding, 0, len(snapshot.Evidence.Cues)),
+	}
+	for _, cue := range snapshot.Evidence.Cues {
+		finding := subtitleOCRQualityFinding{CueID: cue.SourceOrdinal, OriginalText: cue.Text, Status: subtitleOCRQualityStatusClean, Baseline: report.BaselineRevision}
+		lower := strings.ToLower(cue.Text)
+		if strings.ContainsRune(cue.Text, '\ufffd') {
+			finding.Status = subtitleOCRQualityStatusReview
+			finding.Reasons = append(finding.Reasons, "replacement character")
+		}
+		if confusion := ocrConfusionCount(cue.Text, snapshot.Evidence.RequestedLanguage); confusion > 0 {
+			finding.Status = subtitleOCRQualityStatusSuspect
+			finding.Reasons = append(finding.Reasons, "known OCR confusion pattern")
+			finding.Evidence = append(finding.Evidence, fmt.Sprintf("%d bounded confusion signal(s)", confusion))
+			if suggestion, ok := deterministicOCRSuggestion(cue.Text, snapshot.Evidence.RequestedLanguage); ok {
+				finding.Suggestion = suggestion
+				finding.CandidateSource = "deterministic-confusion-repair"
+			}
+		}
+		if strings.ContainsAny(lower, "|{}[]") {
+			finding.Status = subtitleOCRQualityStatusReview
+			finding.Reasons = append(finding.Reasons, "suspicious OCR character")
+		}
+		if finding.Status == subtitleOCRQualityStatusClean {
+			finding.Evidence = append(finding.Evidence, "no bounded deterministic suspicion detected")
+		}
+		report.Findings = append(report.Findings, finding)
+		switch finding.Status {
+		case subtitleOCRQualityStatusClean:
+			report.CleanCount++
+		case subtitleOCRQualityStatusSuspect:
+			report.SuspiciousCount++
+		default:
+			report.ReviewCount++
+		}
+	}
+	return report
+}
+
+func deterministicOCRSuggestion(text, language string) (string, bool) {
+	if strings.Contains(text, "{\\") || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	candidate := strings.NewReplacer("0", "o", "1", "l", "|", "I").Replace(text)
+	if candidate == text || subtitleOCRScoreForLanguage(candidate, language) <= subtitleOCRScoreForLanguage(text, language) {
+		return "", false
+	}
+	return candidate, true
+}

@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	canonicalOCRPipelineProvenance = "canonical-subtitle-pipeline/ocr-evidence-v1;" + canonicalOCRLifecycleVersion + ";" + canonicalOCRParserVersion + ";" + canonicalOCRCleanupVersion + ";" + canonicalOCRGeometryVersion + ";" + canonicalOCRExtractionVersion
+	canonicalOCRPipelineProvenance = "canonical-subtitle-pipeline/ocr-evidence-v1;" + canonicalOCRLifecycleVersion + ";" + canonicalOCRParserVersion + ";" + canonicalOCRCleanupVersion + ";" + canonicalOCRGeometryVersion + ";" + canonicalOCRExtractionVersion + ";" + canonicalOCRScoringVersion
 	canonicalOCRLifecycleVersion   = "lifecycle-v1"
 	canonicalOCRParserVersion      = "parser-v1"
 	canonicalOCRCleanupVersion     = "cleanup-v1"
 	canonicalOCRGeometryVersion    = "geometry-v1"
 	canonicalOCRExtractionVersion  = "extraction-v1"
+	canonicalOCRScoringVersion     = "score-v2"
 	canonicalOCRIdentityVersion    = 1
 	canonicalOCRRuntimeVersion     = "ocr-runtime-v1"
 	canonicalOCRCacheVersion       = 1

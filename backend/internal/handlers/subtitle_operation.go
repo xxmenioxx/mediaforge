@@ -349,6 +349,7 @@ func executeSingleSubtitleTarget(
 			return target.artifact, err
 		}
 		target.artifact.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
+		target.artifact.CanonicalEvidence = ocrResult.Evidence
 		return validateStagedSubtitleArtifact(target)
 	} else {
 		args = textSubtitleExtractionArgs(plan, target.plan.StreamIndex, target.plan.Format, target.stagePath)
@@ -390,6 +391,7 @@ func executeBothSubtitleTargets(
 		}
 		for _, target := range targets {
 			target.artifact.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
+			target.artifact.CanonicalEvidence = ocrResult.Evidence
 		}
 		bitmapOCR = bitmapOCRResult{Cues: ocrResult.Cues, Geometry: ocrResult.Geometry}
 	} else {
@@ -515,6 +517,16 @@ func publishSubtitleExtractionTargets(
 				return created, nil, fmt.Errorf("cannot publish extracted subtitle: %w", err)
 			}
 			published = append(published, output.final)
+		}
+	}
+	for _, target := range targets {
+		artifact, exists := createdByPath[target.finalPath]
+		if !exists || artifact.CanonicalEvidence == nil {
+			continue
+		}
+		if err := commitPublishedCanonicalOCRSnapshot(ctx, target.finalPath, target.plan.Format, target.plan.Decision.LogicalTransformKey, artifact.CanonicalEvidence, operationID, ""); err != nil {
+			rollbackSubtitlePublication(published)
+			return created, nil, fmt.Errorf("cannot commit published OCR baseline: %w", err)
 		}
 	}
 	markSubtitlePublicationCommitted(operationID)

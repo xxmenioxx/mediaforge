@@ -86,6 +86,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets/extract-subtitles", assets.ListSubtitleExtractionOperations)
 		api.GET("/assets/extract-subtitles/:id", assets.GetSubtitleExtractionOperation)
 		api.POST("/assets/extract-subtitles/:id/cancel", assets.CancelSubtitleExtractionOperation)
+		api.POST("/assets/subtitle-ocr/analyze", assets.AnalyzeSubtitleOCR)
+		api.POST("/assets/subtitle-ocr/correct", assets.CorrectSubtitleOCR)
 		api.GET("/assets/external-subtitles", assets.ExternalSubtitles)
 		api.GET("/assets/external-subtitles/content", assets.ExternalSubtitleContent)
 		api.PUT("/assets/external-subtitles", assets.UpdateExternalSubtitle)

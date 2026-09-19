@@ -1896,6 +1896,7 @@ export type SubtitleExtractionOperation = {
   status: 'running' | 'completed' | 'cancelled' | 'error';
   phase:
     | 'preparing'
+    | 'analyzing'
     | 'extracting'
     | 'ocr'
     | 'cleanup'
@@ -1911,8 +1912,52 @@ export type SubtitleExtractionOperation = {
   message?: string;
   result?: SubtitleExtractionResult;
   error?: string;
+  kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | string;
+  qualityReport?: SubtitleOCRQualityReport;
   createdAt: string;
   updatedAt: string;
+};
+
+export type SubtitleOCRQualityFinding = {
+  cueId: number;
+  originalText: string;
+  suggestion?: string;
+  status: 'clean' | 'suspicious' | 'review' | string;
+  reasons?: string[];
+  evidence?: string[];
+  candidateSource?: string;
+  baselineRevision: string;
+};
+
+export type SubtitleOCRQualityReport = {
+  artifactPath: string;
+  format: 'srt' | 'ass' | string;
+  logicalTransformKey?: string;
+  revision: {
+    artifactPath: string;
+    artifactIdentity: string;
+    sizeBytes: number;
+    modifiedAtUnixNano: number;
+    contentHash: string;
+    logicalTransform?: string;
+  };
+  revisionSet?: Array<{
+    artifactPath: string;
+    artifactIdentity: string;
+    sizeBytes: number;
+    modifiedAtUnixNano: number;
+    contentHash: string;
+    logicalTransform?: string;
+  }>;
+  baselineRevision: string;
+  analyzerVersion: string;
+  repairVersion: string;
+  cleanCount: number;
+  suspiciousCount: number;
+  reviewCount: number;
+  legacyTextOnly?: boolean;
+  canCorrect: boolean;
+  findings: SubtitleOCRQualityFinding[];
 };
 
 export type SubtitleExtractionOperationList = {
