@@ -33,6 +33,15 @@ unvalidated result.
 - Bind analysis and correction to the exact published SRT/ASS revision and fail
   closed if an external edit or concurrent correction changes any member of a
   logical `both` output set.
+- After atomic publication, advance the durable canonical cue snapshot and
+  published revision/provenance together so the corrected text is the next
+  analysis baseline and prior findings are stale.
+- Restrict legacy text-only baselines to the structural evidence present in the
+  owned artifact; missing geometry/layout cannot be invented for ASS or
+  logical `both` repair.
+- Define bounded ownership and cleanup for published cue snapshots, including
+  replacement, artifact removal, source-identity changes, and orphan cleanup
+  without deleting published sidecars.
 - If a contextual correction provider is enabled later, send only bounded
   suspicious/review candidates in batches, propagate operation cancellation,
   and keep provider text subordinate to deterministic validation.

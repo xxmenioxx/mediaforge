@@ -5,6 +5,8 @@
 - [ ] 1.3 Persist a bounded published canonical OCR cue snapshot containing serializer-neutral cue/provenance/integrity data while keeping the seven-day/256 MiB #6 execution cache evictable and prepared bitmaps out of durable storage; verify analysis still works after execution-cache eviction
 - [ ] 1.4 Define bounded published SRT/ASS revision identity including artifact/path identity, size, mtime, full content hash, and logical `both` membership; verify revision records are backward-compatible and stale records fail closed
 - [ ] 1.5 Add legacy OCR fallback that reconstructs only text evidence from MVForge-owned SRT/ASS when provenance is sufficient; verify missing provenance does not trigger full OCR or complete-media scanning
+- [ ] 1.6 Commit the corrected canonical cue snapshot, new published revision, and correction lineage only with successful atomic publication; verify revision R advances to one new baseline, prior findings become stale, subsequent analysis sees corrected text, logical `both` advances one baseline, and commit failure leaves publication/baseline state consistent
+- [ ] 1.7 Define snapshot ownership, replacement, artifact-removal invalidation, source-identity fail-closed behavior, bounded provenance retention, and orphan cleanup; verify cleanup never deletes published sidecars or creates Library-visible artifacts
 
 ## 2. Deterministic Quality Analyzer
 
@@ -30,12 +32,14 @@
 - [ ] 5.1 Render SRT and ASS only after corrected canonical cues exist, using one corrected cue set for logical `both`; verify corrected text parity, preserved ASS tags/styles/geometry/positioning, and SRT text/timing-only output
 - [ ] 5.2 Validate every requested output before the existing atomic publication barrier and recheck the complete published revision immediately before commit; verify external edits and concurrent operation A/B publication cause stale correction failure, preserve the current sidecar, and prevent `both` from publishing only one newly corrected output
 - [ ] 5.3 Keep `.bak`, `.raw`, and temporary staging internal and retain bounded revision/provenance suitable for future undo without adjacent media files; verify filesystem and publication metadata regression tests
+- [ ] 5.4 Enforce legacy representation boundaries; verify SRT-only reconstructed baselines can correct only SRT, cannot silently synthesize ASS geometry or become a `both` source, legacy ASS uses only safely parsed structure, and missing evidence routes to canonical subtitle conversion
 
 ## 6. Compatibility and performance regressions
 
 - [ ] 6.1 Verify native ASS/SSA extraction, Japanese OCR fallback, bitmap positioning, existing OCR modes, and conversions without explicit repair remain unchanged through focused regression tests
 - [ ] 6.2 Verify NAS-safe bounded lookup uses canonical/prepared-input identity rather than whole-media hashing, respects the seven-day/256 MiB execution-cache policy, uses the durable cue snapshot after eviction, and avoids repeated expensive runtime probes
 - [ ] 6.3 Verify cancellation, failed correction, successful retry, external sidecar edits, concurrent correction races, existing sidecar preservation, and internal workspace cleanup across text and bitmap subtitle paths
+- [ ] 6.4 Add lifecycle regressions for post-correction baseline advancement, corrected-text reanalysis, stale prior findings, logical `both` baseline lineage, artifact removal, ownership changes, and orphan snapshot cleanup
 
 ## 7. Validation
 

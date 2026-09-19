@@ -80,10 +80,46 @@ canonical identity; it is not a new OCR planner or job system.
 
 For legacy OCR artifacts without a snapshot, text-only analysis may reconstruct
 a bounded snapshot from an MVForge-owned SRT/ASS when its provenance and
-artifact identity are sufficient. That reconstruction cannot invent bitmap
-geometry or cue images. Image-level/selective OCR is unavailable unless valid
-source evidence can be safely reacquired, and Analyze OCR must not silently
-start a full OCR rerun merely to create a baseline.
+artifact identity are sufficient. An SRT-only reconstruction supplies only
+text, timing, and order: it may analyze and correct that SRT representation,
+but cannot synthesize ASS geometry/layout or become an ASS/`both` repair source.
+A legacy ASS reconstruction may preserve only structure that can be safely
+parsed and validated from that owned artifact; missing geometry/layout or
+provenance fails closed. Any representation requiring missing evidence must
+go through the existing canonical subtitle conversion pipeline, not OCR repair.
+Repair operates only on the published artifact representation or logical set
+represented by its analysis baseline. Image-level/selective OCR is unavailable
+unless valid source evidence can be safely reacquired, and Analyze OCR must not
+silently start a full OCR rerun merely to create a baseline.
+
+The snapshot is owned by the MVForge-managed published OCR artifact or logical
+transform. A successful replacement advances the current snapshot rather than
+creating an unowned second baseline. Artifact removal invalidates/removes its
+active snapshot; an ownership or source-identity change fails closed. Bounded
+retention keeps only the current baseline and permitted provenance/history, and
+orphaned internal snapshots are eligible for cleanup. This cleanup never
+deletes published sidecars and creates no Library-visible artifact class.
+
+### 1b. Advance the baseline with publication
+
+Correction follows one ordered transaction boundary:
+
+`revision R -> analyze -> correct canonical text -> validate serializers -> final stale-revision check -> atomic publication -> commit new snapshot/revision/provenance`
+
+The final publication barrier and the internal baseline/provenance commit are
+one fail-safe transition. The new snapshot contains the corrected canonical cue
+set and the new published SRT/ASS revision. The provenance records previous
+revision R, new revision, correction operation identity, and bounded correction
+lineage. The implementation must not expose newly published sidecars as
+current while the active internal snapshot still contains the pre-correction
+text: if the internal commit cannot be completed, the publication transition
+must fail safely and retain the prior published state, or roll back before
+exposing the new state through the managed publication path.
+
+After the transition, findings derived from R are stale and subsequent
+`Analyze OCR` reads the corrected snapshot. A logical `both` publication
+advances one canonical corrected baseline associated with the complete new SRT
+and ASS member revisions; it does not create independent corrected cue sets.
 
 ### 2. Keep canonical cue structure immutable during correction
 
@@ -195,6 +231,13 @@ publication boundary. If operation A commits from revision R, operation B
 still based on R must observe the changed revision and fail closed rather than
 overwrite A. For `both`, every currently published member is checked as one
 set; one stale or missing member prevents the correction.
+
+The publication boundary also commits the new canonical cue snapshot and
+published-revision/provenance record as the same managed state transition. The
+new sidecars must never become observable as current while the old snapshot is
+still authoritative. If the internal commit fails, the transition fails safe
+using private staging/rollback semantics and leaves the prior published state
+and snapshot authoritative; no Library-visible backup is created.
 
 No `.bak`, `.raw`, or temporary path is exposed beside the asset. Previous
 published artifacts remain in place until a successful atomic replacement;

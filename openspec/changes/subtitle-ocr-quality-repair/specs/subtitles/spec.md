@@ -33,6 +33,30 @@ bounded and evictable, including its current seven-day and 256 MiB limits.
   image-level/selective OCR remains unavailable unless valid cue input is
   safely reacquired, and Analyze OCR does not silently rerun full OCR
 
+#### Scenario: Legacy SRT baseline cannot become an ASS repair source
+
+- **WHEN** a legacy SRT-only baseline has bounded text, timing, and order but
+  no durable canonical geometry/layout evidence
+- **THEN** OCR repair may analyze and correct only the published SRT
+  representation; it cannot silently synthesize ASS geometry or use that
+  baseline as a new ASS or logical `both` repair source
+
+#### Scenario: Legacy ASS preserves only safely parsed structure
+
+- **WHEN** a legacy MVForge-owned ASS artifact is used to reconstruct a
+  baseline
+- **THEN** repair preserves only structure that can be parsed and validated
+  from that artifact, and missing geometry/layout or provenance causes the
+  affected ASS correction to fail closed
+
+#### Scenario: Missing representation evidence uses canonical conversion
+
+- **WHEN** a requested correction needs a representation or layout field that
+  the legacy analysis baseline does not contain
+- **THEN** OCR repair does not invent it or act as a format converter, and any
+  generation requiring that evidence is delegated to the existing canonical
+  subtitle conversion pipeline
+
 #### Scenario: Missing legacy provenance fails closed
 
 - **WHEN** a legacy OCR artifact has neither a valid snapshot nor sufficient
@@ -40,6 +64,83 @@ bounded and evictable, including its current seven-day and 256 MiB limits.
 - **THEN** analysis reports the unavailable baseline and leaves the published
   sidecar unchanged rather than guessing, scanning the complete media, or
   starting full OCR automatically
+
+### Requirement: Successful correction advances the durable canonical baseline
+
+After a correction passes serializer validation, the final stale-revision
+check, and the existing atomic publication barrier, the system SHALL commit the
+corrected canonical cue set as the current lightweight published snapshot. The
+newly published SRT/ASS bytes SHALL define a new published-artifact revision,
+and bounded provenance SHALL record the previous revision, new revision, and
+correction operation identity. The publication and internal snapshot/revision
+commit SHALL fail safe so newly published sidecars are never current while the
+old snapshot remains authoritative.
+
+#### Scenario: Successful correction advances the baseline
+
+- **WHEN** correction starts from revision R, validates the requested
+  serializers, passes the final stale-revision check, and publishes
+- **THEN** the corrected canonical cues become the durable analysis baseline,
+  the new sidecar bytes define a new revision, and provenance records R to the
+  new revision with the correction operation identity
+
+#### Scenario: Subsequent analysis sees corrected text
+
+- **WHEN** a correction successfully publishes text different from the
+  snapshot used for analysis
+- **THEN** the next `Analyze OCR` reads the corrected canonical text rather
+  than the pre-correction snapshot
+
+#### Scenario: Previous findings become stale
+
+- **WHEN** correction advances the baseline from revision R to a new revision
+- **THEN** findings produced against R cannot be applied again and are marked
+  stale or require a new analysis
+
+#### Scenario: Logical both advances one corrected baseline
+
+- **WHEN** a logical `both` correction publishes validated SRT and ASS outputs
+- **THEN** one corrected canonical cue baseline is committed for the complete
+  output set, both new member revisions are recorded, and neither serializer
+  retains an independent pre-correction baseline
+
+#### Scenario: Baseline commit failure is fail-safe
+
+- **WHEN** publication or the internal snapshot/revision/provenance commit
+  cannot complete as one managed transition
+- **THEN** the prior published state and prior authoritative baseline remain
+  consistent, no partial correction is exposed, and no Library-visible backup
+  is required
+
+### Requirement: Published OCR snapshots have bounded ownership and cleanup
+
+The current lightweight published OCR snapshot SHALL be owned by its
+MVForge-managed published OCR artifact or logical transform. Replacement SHALL
+advance that current baseline and retain only bounded provenance/history under
+the retention policy. Artifact removal SHALL invalidate or remove its active
+snapshot; an ownership or source-identity change SHALL fail closed. Orphaned
+internal snapshots SHALL be eligible for bounded cleanup, and cleanup SHALL
+never delete published sidecars or create a Library-visible artifact class.
+
+#### Scenario: Artifact removal invalidates its snapshot
+
+- **WHEN** the managed published OCR artifact or logical transform is removed
+- **THEN** its active snapshot is invalidated or removed and cannot be used for
+  later analysis or correction
+
+#### Scenario: Ownership change does not reuse a snapshot
+
+- **WHEN** a snapshot is found under a different source or artifact owner than
+  the published artifact it describes
+- **THEN** the snapshot fails closed as unusable and no correction or analysis
+  is applied from it
+
+#### Scenario: Orphan cleanup preserves published sidecars
+
+- **WHEN** bounded cleanup finds an internal snapshot with no valid managed
+  artifact owner
+- **THEN** the snapshot is eligible for cleanup without deleting, replacing, or
+  renaming any published sidecar
 
 ### Requirement: OCR quality analysis uses canonical evidence
 
