@@ -289,6 +289,43 @@ func TestOriginalSubtitleExtractionUsesStreamCopy(t *testing.T) {
 	assertNotContains(t, command, "-c:s ass")
 }
 
+func TestExecuteOriginalPGSTargetUsesSourceCodecMuxerWithoutOCR(t *testing.T) {
+	bin := t.TempDir()
+	ffmpeg := filepath.Join(bin, "ffmpeg")
+	logPath := filepath.Join(t.TempDir(), "original-muxer.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MVFORGE_ORIGINAL_MUXER_LOG\"\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf 'PG' > \"$output\"\n"
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MVFORGE_ORIGINAL_MUXER_LOG", logPath)
+	stagePath := filepath.Join(t.TempDir(), "Movie.sup")
+	target := &subtitleExtractionTarget{
+		plan: subtitleExtractionPlan{
+			StreamIndex: 4, Mode: "original", Format: "sup", OutputPath: stagePath,
+			Decision: ResolvedTrackSidecar{StreamIndex: 4, Codec: "hdmv_pgs_subtitle", Format: "sup", Mode: "original"},
+		},
+		stream:    FFProbeStream{Index: 4, CodecName: "hdmv_pgs_subtitle", CodecType: "subtitle"},
+		finalPath: stagePath,
+		stagePath: stagePath,
+		artifact:  SubtitleArtifact{StreamIndex: 4, SourceCodec: "hdmv_pgs_subtitle", Format: "sup", Mode: "original", StagedPath: stagePath},
+	}
+	artifact, err := executeSingleSubtitleTarget(context.Background(), "", t.TempDir(), "/raw/Movie.mkv", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Status != "ready" || artifact.Format != "sup" || target.plan.Decision.OCRRequired {
+		t.Fatalf("unexpected original PGS artifact=%#v target=%#v", artifact, target)
+	}
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "-f\nsup\n") {
+		t.Fatalf("original PGS muxer was not sup: %q", args)
+	}
+}
+
 func TestResolvedSubtitleStagedPathIsDeterministic(t *testing.T) {
 	used := map[string]struct{}{}
 	first := resolvedSubtitleStagedPath("/staging/Movie", SubtitleArtifact{StreamIndex: 4, Language: "spa", Format: "ass"}, used)

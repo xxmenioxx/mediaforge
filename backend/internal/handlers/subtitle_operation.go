@@ -360,7 +360,14 @@ func executeSingleSubtitleTarget(
 	plan := MediaJobPlan{InputPath: sourceMediaPath}
 	var args []string
 	if target.plan.Mode == "original" {
-		_, muxer, _ := originalSubtitleExtractionFormat(target.plan.Format)
+		sourceCodec := strings.TrimSpace(target.plan.Decision.Codec)
+		if sourceCodec == "" {
+			sourceCodec = target.stream.CodecName
+		}
+		_, muxer, supported := originalSubtitleExtractionFormat(sourceCodec)
+		if !supported || strings.TrimSpace(muxer) == "" {
+			return target.artifact, fmt.Errorf("subtitle stream %d codec %s does not support original extraction", target.plan.StreamIndex, sourceCodec)
+		}
 		args = originalSubtitleExtractionArgs(plan, target.plan.StreamIndex, muxer, target.stagePath)
 	} else if isBitmapSubtitleCodecName(target.stream.CodecName) {
 		updateSubtitleExtractionOperation(operationID, func(op *subtitleExtractionOperation) {
