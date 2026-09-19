@@ -26,6 +26,9 @@ var (
 	ocrDroppedCountPattern         = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
 	ocrZeroRecognitionPattern      = regexp.MustCompile(`(?i)\bno subtitles recogn(?:ised|ized)\b`)
 	ocrDisqualifyingFailurePattern = regexp.MustCompile(`(?i)\b(?:cancel(?:led|ed)|interrupt(?:ed)?|malformed|corrupt(?:ed)?|invalid input|cannot read|unable to read|segmentation fault|panic|fatal|crash(?:ed)?|signal: (?:killed|terminated))\b`)
+	ocrDictionaryCacheMu           sync.Mutex
+	ocrDictionaryCache             = map[string]map[string]struct{}{}
+	ocrDictionaryFolderOverride    string
 )
 
 const maxOCRDiagnostics = 64 * 1024
@@ -62,6 +65,80 @@ func (e *bitmapOCRProcessError) Unwrap() error {
 }
 
 type OCRProgressFunc func(processed, total int)
+
+type ocrProcessOutput struct {
+	mu                    sync.Mutex
+	pending               []byte
+	discardUntilDelimiter bool
+	onLine                func(string)
+}
+
+func (o *ocrProcessOutput) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	written := len(data)
+
+	lines := make([]string, 0, 1)
+	o.mu.Lock()
+	for len(data) > 0 {
+		if o.discardUntilDelimiter {
+			index := bytes.IndexAny(data, "\r\n")
+			if index < 0 {
+				break
+			}
+			data = data[index+1:]
+			o.discardUntilDelimiter = false
+			continue
+		}
+
+		index := bytes.IndexAny(data, "\r\n")
+		if index < 0 {
+			remaining := maxOCRDiagnostics - len(o.pending)
+			if remaining <= 0 {
+				o.discardUntilDelimiter = true
+				break
+			}
+			if len(data) > remaining {
+				o.pending = append(o.pending, data[:remaining]...)
+				o.discardUntilDelimiter = true
+				break
+			}
+			o.pending = append(o.pending, data...)
+			break
+		}
+
+		line := data[:index]
+		remaining := maxOCRDiagnostics - len(o.pending)
+		if remaining > 0 {
+			if len(line) > remaining {
+				line = line[:remaining]
+			}
+			o.pending = append(o.pending, line...)
+		}
+		lines = append(lines, string(o.pending))
+		o.pending = o.pending[:0]
+		data = data[index+1:]
+	}
+	o.mu.Unlock()
+
+	for _, line := range lines {
+		if o.onLine != nil {
+			o.onLine(line)
+		}
+	}
+	return written, nil
+}
+
+func (o *ocrProcessOutput) flush() {
+	o.mu.Lock()
+	line := string(o.pending)
+	o.pending = o.pending[:0]
+	o.mu.Unlock()
+	if line != "" && o.onLine != nil {
+		o.onLine(line)
+	}
+}
 
 func isBitmapSubtitleCodecName(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
@@ -182,6 +259,7 @@ type bitmapSubtitleOCRResult struct {
 	EffectiveLanguage string
 	Cues              []canonicalBitmapSubtitleCue
 	Geometry          []bitmapCueGeometry
+	Evidence          *canonicalOCREvidence
 }
 
 func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc) (bitmapSubtitleOCRResult, error) {
@@ -202,6 +280,7 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 	result.EffectiveLanguage = evidence.EffectiveLanguage
 	result.Cues = cloneCanonicalCues(evidence.Cues)
 	result.Geometry = append([]bitmapCueGeometry(nil), evidence.Geometry...)
+	result.Evidence = cloneCanonicalOCREvidence(evidence)
 	var content []byte
 	if format == "ass" {
 		content = renderBitmapASSCues(evidence.Cues)
@@ -527,7 +606,7 @@ func runBitmapOCRLanguageAttempt(
 			result.err = &bitmapOCRProcessError{language: language, diagnostics: secondResult.message, err: secondResult.err}
 			return result
 		}
-		if secondResult.err == nil && preferSecondaryOCR(subtitleOCRFileScore(first, format), subtitleOCRFileScore(second, format)) {
+		if secondResult.err == nil && preferSecondaryOCR(subtitleOCRFileScoreForLanguage(first, format, language), subtitleOCRFileScoreForLanguage(second, format, language)) {
 			chosen = second
 		}
 	}
@@ -632,23 +711,8 @@ func runSeConvWithProgress(
 	cmd := exec.Command("seconv", args...)
 	configureSubtitleProcessGroup(cmd)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-
 	var output bytes.Buffer
 	var outputMu sync.Mutex
-	var wg sync.WaitGroup
 	appendDiagnostic := func(line string) {
 		outputMu.Lock()
 		defer outputMu.Unlock()
@@ -662,73 +726,44 @@ func runSeConvWithProgress(
 		output.WriteString(line)
 	}
 
-	process := func(r io.Reader) {
-		defer wg.Done()
+	processLine := func(rawLine string) {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			return
+		}
 
-		scanner := bufio.NewScanner(r)
-		scanner.Split(scanLinesAndCarriageReturns)
+		appendDiagnostic(line + "\n")
 
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
+		fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
 
-			if line == "" {
-				continue
-			}
+		if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
+			if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
+				fmt.Fprintf(
+					os.Stderr,
+					"\n[SECONV-PROGRESS] total=%d\n",
+					total,
+				)
 
-			appendDiagnostic(line + "\n")
-
-			fmt.Fprintf(os.Stderr, "\n[SECONV-OCR] %s\n", line)
-
-			if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
-				if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
-					fmt.Fprintf(
-						os.Stderr,
-						"\n[SECONV-PROGRESS] total=%d\n",
-						total,
-					)
-
-					if onProgress != nil {
-						onProgress(0, total)
-					}
+				if onProgress != nil {
+					onProgress(0, total)
 				}
 			}
 		}
-
-		// for scanner.Scan() {
-		// 	line := scanner.Text()
-
-		// 	output.WriteString(line)
-		// 	output.WriteByte('\n')
-
-		// 	lower := strings.ToLower(line)
-
-		// 	if strings.Contains(lower, "ocr") ||
-		// 		strings.Contains(lower, "tesseract") ||
-		// 		strings.Contains(lower, "image") ||
-		// 		strings.Contains(lower, "%") {
-		// 		fmt.Printf("[seconv-ocr] %s\n", line)
-		// 	}
-
-		// 	// Primero detectamos el total reportado por SeConv.
-		// 	if match := ocrBitmapCountPattern.FindStringSubmatch(line); len(match) == 2 {
-		// 		if total, parseErr := strconv.Atoi(match[1]); parseErr == nil {
-		// 			if onProgress != nil {
-		// 				onProgress(0, total)
-		// 			}
-		// 		}
-		// 	}
-		// }
 	}
 
-	wg.Add(2)
-
-	go process(stdoutPipe)
-	go process(stderrPipe)
+	stdout := &ocrProcessOutput{onLine: processLine}
+	stderr := &ocrProcessOutput{onLine: processLine}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 	waitErr := waitSubtitleProcess(ctx, cmd, waitDone)
-	wg.Wait()
+	stdout.flush()
+	stderr.flush()
 
 	outputMu.Lock()
 	diagnostics := strings.TrimSpace(output.String())
@@ -737,6 +772,9 @@ func runSeConvWithProgress(
 }
 
 func ocrDictionaryFolder() string {
+	if value := strings.TrimSpace(ocrDictionaryFolderOverride); value != "" {
+		return value
+	}
 	for _, path := range []string{"/usr/share/hunspell", "/usr/local/share/hunspell", "/opt/homebrew/share/hunspell"} {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			return path
@@ -764,14 +802,22 @@ func copyFileContents(source, destination string) error {
 }
 
 func subtitleOCRFileScore(path, format string) float64 {
+	return subtitleOCRFileScoreForLanguage(path, format, "")
+}
+
+func subtitleOCRFileScoreForLanguage(path, format, language string) float64 {
 	content, err := os.ReadFile(path)
 	if err != nil || !validSubtitleSidecar(format, content) {
 		return math.Inf(-1)
 	}
-	return subtitleOCRScore(string(content))
+	return subtitleOCRScoreForLanguage(string(content), language)
 }
 
 func subtitleOCRScore(content string) float64 {
+	return subtitleOCRScoreForLanguage(content, "")
+}
+
+func subtitleOCRScoreForLanguage(content, language string) float64 {
 	letters, digits, suspicious, replacement := 0, 0, 0, 0
 	for _, r := range content {
 		switch {
@@ -785,7 +831,153 @@ func subtitleOCRScore(content string) float64 {
 			suspicious++
 		}
 	}
-	return float64(letters) + float64(digits)*0.1 - float64(suspicious)*6 - float64(replacement)*25
+	score := float64(letters) + float64(digits)*0.1 - float64(suspicious)*6 - float64(replacement)*25
+	score -= float64(ocrConfusionCount(content, language)) * 4
+	if dictionary := ocrKnownWords(language); len(dictionary) > 0 {
+		words := ocrWords(content)
+		for _, word := range words {
+			if _, ok := dictionary[strings.ToLower(word)]; ok {
+				score += 8
+				continue
+			}
+			// Unknown words are weak evidence only. Preserve likely proper nouns,
+			// long names, and tokens that the supported dictionary does not know.
+			if isLikelyProperNoun(word) || len([]rune(word)) > 12 {
+				continue
+			}
+			score -= 2
+		}
+	}
+	return score
+}
+
+var ocrWordPattern = regexp.MustCompile(`(?i)[[:alpha:]][[:alpha:]'’-]*`)
+var ocrConfusionTokenPattern = regexp.MustCompile(`(?i)[[:alpha:]][[:alpha:][:digit:]|]*`)
+
+func ocrWords(content string) []string {
+	raw := ocrWordPattern.FindAllString(content, -1)
+	words := make([]string, 0, len(raw))
+	for _, word := range raw {
+		if word != "" {
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+func isLikelyProperNoun(word string) bool {
+	for _, r := range word {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func hunspellLanguageForOCR(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "eng", "en", "en_us", "english":
+		return "en"
+	case "spa", "es", "es_es", "spanish":
+		return "es"
+	default:
+		return ""
+	}
+}
+
+func ocrKnownWords(language string) map[string]struct{} {
+	language = hunspellLanguageForOCR(language)
+	if language == "" {
+		return nil
+	}
+	folder := ocrDictionaryFolder()
+	if folder == "" {
+		return nil
+	}
+	cacheKey := folder + "\x00" + language
+	ocrDictionaryCacheMu.Lock()
+	if dictionary, ok := ocrDictionaryCache[cacheKey]; ok {
+		ocrDictionaryCacheMu.Unlock()
+		return dictionary
+	}
+	ocrDictionaryCacheMu.Unlock()
+	entries, err := os.ReadDir(folder)
+	if err != nil || len(entries) > 4096 {
+		return nil
+	}
+	dictionaryPath := ""
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".dic") {
+			continue
+		}
+		base := strings.TrimSuffix(strings.ToLower(entry.Name()), filepath.Ext(entry.Name()))
+		if base == language {
+			dictionaryPath = filepath.Join(folder, entry.Name())
+			break
+		}
+		if dictionaryPath == "" && strings.HasPrefix(base, language+"_") {
+			dictionaryPath = filepath.Join(folder, entry.Name())
+		}
+	}
+	if dictionaryPath == "" {
+		return nil
+	}
+	file, err := os.Open(dictionaryPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(io.LimitReader(file, 8*1024*1024))
+	scanner.Buffer(make([]byte, 1024), 64*1024)
+	dictionary := make(map[string]struct{})
+	for scanner.Scan() && len(dictionary) < 100000 {
+		word := strings.TrimSpace(scanner.Text())
+		if word == "" || strings.HasPrefix(word, "#") {
+			continue
+		}
+		if slash := strings.IndexByte(word, '/'); slash >= 0 {
+			word = word[:slash]
+		}
+		word = strings.ToLower(strings.TrimSpace(word))
+		if word != "" && strings.IndexFunc(word, func(r rune) bool { return unicode.IsLetter(r) }) >= 0 {
+			dictionary[word] = struct{}{}
+		}
+	}
+	if err := scanner.Err(); err != nil || len(dictionary) == 0 {
+		return nil
+	}
+	ocrDictionaryCacheMu.Lock()
+	ocrDictionaryCache[cacheKey] = dictionary
+	ocrDictionaryCacheMu.Unlock()
+	return dictionary
+}
+
+func ocrDictionaryCandidate(token, language string) (string, bool) {
+	dictionary := ocrKnownWords(language)
+	if len(dictionary) == 0 || !strings.ContainsAny(token, "01|") {
+		return "", false
+	}
+	candidate := strings.NewReplacer("0", "o", "1", "l", "|", "i").Replace(token)
+	if candidate == token {
+		return "", false
+	}
+	if _, exists := dictionary[strings.ToLower(token)]; exists {
+		return "", false
+	}
+	if _, exists := dictionary[strings.ToLower(candidate)]; !exists {
+		return "", false
+	}
+	return candidate, true
+}
+
+func ocrConfusionCount(content, language string) int {
+	count := 0
+	for _, token := range ocrConfusionTokenPattern.FindAllString(content, -1) {
+		if _, ok := ocrDictionaryCandidate(token, language); ok {
+			count++
+		}
+	}
+	return count
 }
 
 func preferSecondaryOCR(primary, secondary float64) bool {

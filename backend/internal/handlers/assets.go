@@ -49,14 +49,17 @@ type SubtitleExtractionInput struct {
 }
 
 type ExternalSubtitle struct {
-	Path       string    `json:"path"`
-	FileName   string    `json:"fileName"`
-	Format     string    `json:"format"`
-	Language   string    `json:"language,omitempty"`
-	Default    bool      `json:"default"`
-	Forced     bool      `json:"forced"`
-	SizeBytes  int64     `json:"sizeBytes"`
-	ModifiedAt time.Time `json:"modifiedAt"`
+	Path                 string    `json:"path"`
+	FileName             string    `json:"fileName"`
+	Format               string    `json:"format"`
+	Language             string    `json:"language,omitempty"`
+	Default              bool      `json:"default"`
+	Forced               bool      `json:"forced"`
+	SizeBytes            int64     `json:"sizeBytes"`
+	ModifiedAt           time.Time `json:"modifiedAt"`
+	OCRManaged           bool      `json:"ocrManaged,omitempty"`
+	OCRAnalysisAvailable bool      `json:"ocrAnalysisAvailable,omitempty"`
+	LogicalTransformKey  string    `json:"logicalTransformKey,omitempty"`
 }
 
 type ExternalSubtitleUpdateInput struct {
@@ -97,6 +100,8 @@ type subtitleExtractionOperation struct {
 	AssetPath              string                    `json:"assetPath"`
 	Message                string                    `json:"message,omitempty"`
 	Result                 *SubtitleExtractionResult `json:"result,omitempty"`
+	Kind                   string                    `json:"kind,omitempty"`
+	QualityReport          *subtitleOCRQualityReport `json:"qualityReport,omitempty"`
 	Error                  string                    `json:"error,omitempty"`
 	CreatedAt              time.Time                 `json:"createdAt"`
 	UpdatedAt              time.Time                 `json:"updatedAt"`
@@ -2847,7 +2852,7 @@ func probeSubtitleStreams(ctx context.Context, path string) ([]FFProbeStream, er
 	if err := runSubtitleCommand(ctx, "ffprobe", []string{
 		"-v", "error",
 		"-select_streams", "s",
-		"-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title",
+		"-show_entries", "stream=index,id,codec_type,codec_name:stream_tags=language,title",
 		"-of", "json",
 		path,
 	}, &stdout, &stderr); err != nil {
@@ -3004,6 +3009,7 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 		return nil, err
 	}
 	values := []ExternalSubtitle{}
+	ocrOwnershipIndex := loadPublishedOCRExternalOwnershipIndex()
 	for _, entry := range entries {
 		if entry.IsDir() || !externalSubtitleNameForStem(entry.Name(), stem) {
 			continue
@@ -3031,9 +3037,12 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 				}
 			}
 		}
+		sidecarPath := filepath.Join(directory, entry.Name())
+		ocrManaged, ocrAnalysisAvailable, logicalTransformKey := publishedOCRExternalOwnershipFromIndex(ocrOwnershipIndex, sidecarPath, ext)
 		values = append(values, ExternalSubtitle{
-			Path: filepath.Join(directory, entry.Name()), FileName: entry.Name(), Format: ext,
+			Path: sidecarPath, FileName: entry.Name(), Format: ext,
 			Language: language, Default: isDefault, Forced: forced, SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
+			OCRManaged: ocrManaged, OCRAnalysisAvailable: ocrAnalysisAvailable, LogicalTransformKey: logicalTransformKey,
 		})
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].FileName < values[j].FileName })

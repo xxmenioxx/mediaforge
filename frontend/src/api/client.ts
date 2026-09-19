@@ -264,6 +264,45 @@ export const api = {
       `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
     ),
 
+  analyzeSubtitleOCR: (input: {
+    mediaPath?: string;
+    sidecarPath?: string;
+    sidecarPaths?: string[];
+    format: 'srt' | 'ass' | 'both';
+    logicalTransformKey?: string;
+  }) =>
+    request<{ operationId: string; status: string; phase: string; progress: number }>(
+      '/api/assets/subtitle-ocr/analyze',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
+  correctSubtitleOCR: (input: {
+    mediaPath?: string;
+    sidecarPath?: string;
+    sidecarPaths?: string[];
+    format: 'srt' | 'ass' | 'both';
+    logicalTransformKey?: string;
+    baselineRevision: string;
+    revisions?: Array<{
+      artifactPath: string;
+      artifactIdentity: string;
+      sizeBytes: number;
+      modifiedAtUnixNano: number;
+      contentHash: string;
+      logicalTransform?: string;
+    }>;
+    corrections: Array<{
+      cueId: number;
+      action: 'keep' | 'apply' | 'edit' | 'reject';
+      text?: string;
+      suggestion?: string;
+    }>;
+  }) =>
+    request<{ operationId: string; status: string; phase: string; progress: number }>(
+      '/api/assets/subtitle-ocr/correct',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
   probeRemoteExecutor: (executor: RemoteExecutorConfig) =>
     request<RemoteExecutorProbe>('/api/remote-executors/probe', {
       method: 'POST',

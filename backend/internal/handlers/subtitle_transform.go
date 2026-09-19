@@ -13,38 +13,39 @@ import (
 )
 
 type SubtitleArtifact struct {
-	ArtifactID              string               `json:"artifactId"`
-	Type                    string               `json:"type"`
-	StreamIndex             int                  `json:"streamIndex"`
-	SourceCodec             string               `json:"sourceCodec"`
-	SourceType              string               `json:"sourceType,omitempty"`
-	Format                  string               `json:"format"`
-	RequestedFormat         string               `json:"requestedFormat,omitempty"`
-	Mode                    string               `json:"mode"`
-	OCRRequired             bool                 `json:"ocrRequired"`
-	Language                string               `json:"language"`
-	Default                 bool                 `json:"default"`
-	Forced                  bool                 `json:"forced"`
-	SourceForced            bool                 `json:"sourceForced"`
-	Role                    SubtitleSemanticRole `json:"role,omitempty"`
-	RoleProvenance          string               `json:"roleProvenance,omitempty"`
-	RoleConfidence          string               `json:"roleConfidence,omitempty"`
-	RoleClassifierVersion   string               `json:"roleClassifierVersion,omitempty"`
-	Title                   string               `json:"title,omitempty"`
-	StagedPath              string               `json:"stagedPath"`
-	PublishedPath           string               `json:"publishedPath,omitempty"`
-	SizeBytes               int64                `json:"sizeBytes"`
-	Status                  string               `json:"status"`
-	Error                   string               `json:"error,omitempty"`
-	DisplayName             string               `json:"displayName,omitempty"`
-	FontAttachmentsExported bool                 `json:"fontAttachmentsExported"`
-	OCRLanguage             string               `json:"ocrLanguage,omitempty"`
-	EffectiveOCRLanguage    string               `json:"effectiveOcrLanguage,omitempty"`
-	OCRMode                 string               `json:"ocrMode,omitempty"`
-	Stages                  []string             `json:"stages,omitempty"`
-	Extension               string               `json:"extension,omitempty"`
-	NamingKey               string               `json:"namingKey,omitempty"`
-	LogicalTransformKey     string               `json:"logicalTransformKey,omitempty"`
+	ArtifactID              string                `json:"artifactId"`
+	Type                    string                `json:"type"`
+	StreamIndex             int                   `json:"streamIndex"`
+	SourceCodec             string                `json:"sourceCodec"`
+	SourceType              string                `json:"sourceType,omitempty"`
+	Format                  string                `json:"format"`
+	RequestedFormat         string                `json:"requestedFormat,omitempty"`
+	Mode                    string                `json:"mode"`
+	OCRRequired             bool                  `json:"ocrRequired"`
+	Language                string                `json:"language"`
+	Default                 bool                  `json:"default"`
+	Forced                  bool                  `json:"forced"`
+	SourceForced            bool                  `json:"sourceForced"`
+	Role                    SubtitleSemanticRole  `json:"role,omitempty"`
+	RoleProvenance          string                `json:"roleProvenance,omitempty"`
+	RoleConfidence          string                `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion   string                `json:"roleClassifierVersion,omitempty"`
+	Title                   string                `json:"title,omitempty"`
+	StagedPath              string                `json:"stagedPath"`
+	PublishedPath           string                `json:"publishedPath,omitempty"`
+	SizeBytes               int64                 `json:"sizeBytes"`
+	Status                  string                `json:"status"`
+	Error                   string                `json:"error,omitempty"`
+	DisplayName             string                `json:"displayName,omitempty"`
+	FontAttachmentsExported bool                  `json:"fontAttachmentsExported"`
+	OCRLanguage             string                `json:"ocrLanguage,omitempty"`
+	EffectiveOCRLanguage    string                `json:"effectiveOcrLanguage,omitempty"`
+	OCRMode                 string                `json:"ocrMode,omitempty"`
+	Stages                  []string              `json:"stages,omitempty"`
+	Extension               string                `json:"extension,omitempty"`
+	NamingKey               string                `json:"namingKey,omitempty"`
+	LogicalTransformKey     string                `json:"logicalTransformKey,omitempty"`
+	CanonicalEvidence       *canonicalOCREvidence `json:"canonicalEvidence,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -363,6 +364,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 				return artifacts, err
 			}
 			current.EffectiveOCRLanguage = ocrResult.EffectiveLanguage
+			current.CanonicalEvidence = ocrResult.Evidence
 		} else {
 			// Build arguments after the deterministic output path is known.
 			var args []string
@@ -469,6 +471,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 		bitmapOCR = bitmapOCRResult{Cues: ocrResult.Cues, Geometry: ocrResult.Geometry}
 		for index := range artifacts {
 			artifacts[index].EffectiveOCRLanguage = ocrResult.EffectiveLanguage
+			artifacts[index].CanonicalEvidence = ocrResult.Evidence
 		}
 	} else {
 		if !subtitleCanConvertText(stream.Codec) {
@@ -1078,6 +1081,30 @@ func publishSubtitleArtifacts(
 		artifacts[index].PublishedPath = destinations[index]
 	}
 	job.SubtitleArtifacts = sidecarArtifactsJSON(artifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
+	for index, artifact := range artifacts {
+		if alreadyPublished[index] {
+			continue
+		}
+		if artifact.CanonicalEvidence == nil {
+			if artifact.OCRRequired {
+				if err := markMVForgeOwnedLegacyOCRArtifact(destinations[index], artifact.Format, artifact.LogicalTransformKey, destinationMediaPath); err != nil {
+					return published, fmt.Errorf("cannot commit legacy OCR ownership: %w", err)
+				}
+			}
+			continue
+		}
+		if err := commitPublishedCanonicalOCRSnapshot(
+			context.Background(),
+			destinations[index],
+			artifact.Format,
+			artifact.LogicalTransformKey,
+			artifact.CanonicalEvidence,
+			"queue-publication",
+			"",
+		); err != nil {
+			return published, fmt.Errorf("cannot commit published OCR baseline: %w", err)
+		}
+	}
 	return published, nil
 }
 
