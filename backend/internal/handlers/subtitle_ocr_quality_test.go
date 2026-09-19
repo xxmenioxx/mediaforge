@@ -209,6 +209,7 @@ func TestSubtitleOCRQualityAnalyzerSeparatesCleanSuspiciousAndReview(t *testing.
 func TestLegacyOCRRepairPreservesRepresentationBoundary(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	srt := filepath.Join(root, "legacy.srt")
 	ass := filepath.Join(root, "legacy.ass")
 	writeTestSRT(t, srt, "The h0use")
@@ -237,6 +238,7 @@ func TestLegacyOCRRepairPreservesRepresentationBoundary(t *testing.T) {
 func TestLegacyOCRRepairRejectsUnownedAdjacentSubtitle(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "external.srt")
 	writeTestSRT(t, sidecar, "The h0use")
 	if snapshot, ok := reconstructLegacyOCRSnapshot(sidecar, "srt", ""); ok || snapshot != nil {
@@ -247,6 +249,7 @@ func TestLegacyOCRRepairRejectsUnownedAdjacentSubtitle(t *testing.T) {
 func TestSubtitleOCRCorrectionAdvancesBaselineAndRejectsConcurrentStaleWriter(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.eng.srt")
 	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The h0use")
@@ -310,6 +313,7 @@ func TestSubtitleOCRCorrectionAdvancesBaselineAndRejectsConcurrentStaleWriter(t 
 func TestSubtitleOCRBothCorrectionUsesOneCanonicalCueSet(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	srt := filepath.Join(root, "movie.srt")
 	ass := filepath.Join(root, "movie.ass")
 	writeTestSRT(t, srt, "The h0use")
@@ -349,6 +353,7 @@ func TestSubtitleOCRBothCorrectionUsesOneCanonicalCueSet(t *testing.T) {
 func TestSubtitleOCRBothCorrectionRejectsStaleSibling(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	srt := filepath.Join(root, "movie.srt")
 	ass := filepath.Join(root, "movie.ass")
 	writeTestSRT(t, srt, "The h0use")
@@ -395,6 +400,7 @@ func TestSubtitleOCRBothCorrectionRejectsStaleSibling(t *testing.T) {
 func TestSubtitleOCRCorrectionCancellationBeforeBarrierDoesNotPublish(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.srt")
 	writeTestSRT(t, sidecar, "original")
 	oldRevision, _, err := publishedSubtitleRevisionFor(sidecar, "cancel")
@@ -421,6 +427,7 @@ func TestSubtitleOCRCorrectionCancellationBeforeBarrierDoesNotPublish(t *testing
 func TestPublishedOCRSnapshotCleanupRemovesOrphansWithoutTouchingSidecars(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.srt")
 	writeTestSRT(t, sidecar, "The house")
 	evidence := testPublishedOCREvidence(sidecar, "The house")
@@ -444,6 +451,7 @@ func TestPublishedOCRSnapshotCleanupRemovesOrphansWithoutTouchingSidecars(t *tes
 func TestPublishedOCRSnapshotSourceOwnershipMismatchFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.srt")
 	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The house")
@@ -465,6 +473,7 @@ func TestPublishedOCRSnapshotSourceOwnershipMismatchFailsClosed(t *testing.T) {
 func TestPublishedOCRSnapshotsKeepMoreThanEightActiveBaselines(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	paths := make([]string, 0, 10)
 	for index := 0; index < 10; index++ {
 		sidecar := filepath.Join(root, "movie-"+strconv.Itoa(index)+".srt")
@@ -485,6 +494,7 @@ func TestPublishedOCRSnapshotsKeepMoreThanEightActiveBaselines(t *testing.T) {
 func TestPublishedOCRSnapshotSamePathSourceReplacementFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.srt")
 	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The house")
@@ -506,6 +516,7 @@ func TestPublishedOCRSnapshotSamePathSourceReplacementFailsClosed(t *testing.T) 
 func TestSubtitleOCRCorrectionRequiresAnalyzeRevisionEvidence(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", root)
 	sidecar := filepath.Join(root, "movie.srt")
 	writeTestSRT(t, sidecar, "The h0use")
 	if _, err := validateSubtitleQualityCorrectionInput(subtitleOCRCorrectionInput{SidecarPath: sidecar, Format: "srt", Corrections: []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}}); err == nil {
@@ -516,13 +527,18 @@ func TestSubtitleOCRCorrectionRequiresAnalyzeRevisionEvidence(t *testing.T) {
 func TestExternalSubtitleInventoryExposesExactOCROwnership(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "internal"))
 	media := filepath.Join(root, "movie.mkv")
 	managed := filepath.Join(root, "movie.eng.srt")
+	managedASS := filepath.Join(root, "movie.eng.ass")
 	external := filepath.Join(root, "movie.spa.srt")
 	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeTestSRT(t, managed, "The house")
+	if err := os.WriteFile(managedASS, renderBitmapASSCues([]canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "The house", SourceOrdinal: 1}}), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeTestSRT(t, external, "La casa")
 	evidence := testPublishedOCREvidence(managed, "The house")
 	evidence.Identity.SourcePath = media
@@ -532,17 +548,23 @@ func TestExternalSubtitleInventoryExposesExactOCROwnership(t *testing.T) {
 	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), managed, "srt", "ocr-stream-4", evidence, "test", ""); err != nil {
 		t.Fatal(err)
 	}
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), managedASS, "ass", "ocr-stream-4", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
 	values, err := externalSubtitlesForMedia(media)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 2 {
+	if len(values) != 3 {
 		t.Fatalf("expected both sidecars, got %#v", values)
 	}
-	var managedValue, externalValue ExternalSubtitle
+	var managedValue, managedASSValue, externalValue ExternalSubtitle
 	for _, value := range values {
 		if value.Path == managed {
 			managedValue = value
+		}
+		if value.Path == managedASS {
+			managedASSValue = value
 		}
 		if value.Path == external {
 			externalValue = value
@@ -551,14 +573,86 @@ func TestExternalSubtitleInventoryExposesExactOCROwnership(t *testing.T) {
 	if !managedValue.OCRManaged || !managedValue.OCRAnalysisAvailable || managedValue.LogicalTransformKey != "ocr-stream-4" {
 		t.Fatalf("managed sidecar lost canonical ownership metadata: %+v", managedValue)
 	}
+	if !managedASSValue.OCRManaged || !managedASSValue.OCRAnalysisAvailable || managedASSValue.LogicalTransformKey != "ocr-stream-4" {
+		t.Fatalf("logical both ASS sidecar lost canonical ownership metadata: %+v", managedASSValue)
+	}
 	if externalValue.OCRManaged || externalValue.OCRAnalysisAvailable || externalValue.LogicalTransformKey != "" {
 		t.Fatalf("generic sidecar was labeled as OCR-managed: %+v", externalValue)
+	}
+}
+
+func TestExternalSubtitleOwnershipIgnoresStaleOlderTransform(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "execution"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "persistent"))
+	media := filepath.Join(root, "movie.mkv")
+	sidecar := filepath.Join(root, "movie.eng.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, sidecar, "The house")
+	evidence := testPublishedOCREvidence(media, "The house")
+	info, _ := os.Stat(media)
+	evidence.Identity.SourcePath = media
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "valid-new", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	validSnapshot, ok := loadPublishedCanonicalOCRSnapshot(sidecar, "srt", "valid-new")
+	if !ok {
+		t.Fatal("valid OCR snapshot was not committed")
+	}
+	staleSnapshot := *validSnapshot
+	staleSnapshot.LogicalTransformKey = "stale-old"
+	staleSnapshot.OwnerIdentity = publishedSubtitleOwnerIdentity(sidecar, "srt", "stale-old")
+	staleSnapshot.Evidence.Identity.SourceModTimeUnixNano = 1
+	encoded, err := json.Marshal(staleSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(publishedSubtitleSnapshotPath(staleSnapshot.OwnerIdentity), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownershipIndex := loadPublishedOCRExternalOwnershipIndex()
+	managed, available, logicalTransform := publishedOCRExternalOwnershipFromIndex(ownershipIndex, sidecar, "srt")
+	if !managed || !available || logicalTransform != "valid-new" {
+		t.Fatalf("stale ownership disabled valid transform: managed=%v available=%v logical=%q", managed, available, logicalTransform)
+	}
+}
+
+func TestExternalSubtitleOwnershipWithOnlyStaleCandidateIsUnavailable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "execution"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "persistent"))
+	media := filepath.Join(root, "movie.mkv")
+	sidecar := filepath.Join(root, "movie.eng.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, sidecar, "The house")
+	evidence := testPublishedOCREvidence(media, "The house")
+	info, _ := os.Stat(media)
+	evidence.Identity.SourcePath = media
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "stale-only", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(media, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ownershipIndex := loadPublishedOCRExternalOwnershipIndex()
+	managed, available, logicalTransform := publishedOCRExternalOwnershipFromIndex(ownershipIndex, sidecar, "srt")
+	if !managed || available || logicalTransform != "" {
+		t.Fatalf("stale-only ownership did not fail closed: managed=%v available=%v logical=%q", managed, available, logicalTransform)
 	}
 }
 
 func TestAssetInfoOCRAnalysisResolvesNonEmptyLogicalTransform(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "internal"))
 	media := filepath.Join(root, "movie.mkv")
 	sidecar := filepath.Join(root, "movie.eng.srt")
 	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
@@ -611,6 +705,7 @@ func TestAssetInfoOCRAnalysisResolvesNonEmptyLogicalTransform(t *testing.T) {
 func TestAssetInfoBothOCRAnalysisUsesOneCanonicalBaseline(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "internal"))
 	media := filepath.Join(root, "movie.mkv")
 	srt := filepath.Join(root, "movie.srt")
 	ass := filepath.Join(root, "movie.ass")

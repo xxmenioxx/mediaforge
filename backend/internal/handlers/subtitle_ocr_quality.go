@@ -1035,13 +1035,6 @@ func publishedOCRStateRoot() string {
 		_ = os.MkdirAll(root, 0o700)
 		return root
 	}
-	// MVFORGE_OCR_LIFECYCLE_ROOT remains a test isolation override. Production
-	// uses the persistent application-data directory derived from the database
-	// path rather than the user cache/workspace root.
-	if root := strings.TrimSpace(os.Getenv("MVFORGE_OCR_LIFECYCLE_ROOT")); root != "" {
-		_ = os.MkdirAll(root, 0o700)
-		return root
-	}
 	databasePath := strings.TrimSpace(config.Load().DatabasePath)
 	if databasePath == "" {
 		databasePath = filepath.Join("data", "mvforge.db")
@@ -1136,21 +1129,28 @@ func publishedOCRExternalOwnershipFromIndex(index publishedOCRExternalOwnershipI
 		return false, false, ""
 	}
 	candidates := index[publishedOCROwnershipLookupKey(cleanPath, format)]
-	if len(candidates) != 1 {
-		if len(candidates) > 1 {
-			return true, false, ""
-		}
+	if len(candidates) == 0 {
 		return false, false, ""
 	}
-	candidate := candidates[0]
-	if candidate.Snapshot {
-		_, valid := loadPublishedCanonicalOCRSnapshot(cleanPath, format, candidate.LogicalTransform)
-		return true, valid, candidate.LogicalTransform
+	validCandidates := make([]publishedOCRExternalOwnershipCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		valid := false
+		if candidate.Snapshot {
+			_, valid = loadPublishedCanonicalOCRSnapshot(cleanPath, format, candidate.LogicalTransform)
+		} else {
+			_, valid = reconstructLegacyOCRSnapshot(cleanPath, format, candidate.LogicalTransform)
+		}
+		if valid {
+			validCandidates = append(validCandidates, candidate)
+		}
 	}
-	if _, ok := reconstructLegacyOCRSnapshot(cleanPath, format, candidate.LogicalTransform); !ok {
-		return true, false, candidate.LogicalTransform
+	if len(validCandidates) == 0 {
+		return true, false, ""
 	}
-	return true, true, candidate.LogicalTransform
+	if len(validCandidates) > 1 {
+		return true, false, ""
+	}
+	return true, true, validCandidates[0].LogicalTransform
 }
 
 func publishedOCRExternalOwnership(path, format string) (managed, analysisAvailable bool, logicalTransform string) {
