@@ -18,6 +18,24 @@ type SettingsHandler struct {
 	db *gorm.DB
 }
 
+const (
+	subtitleSettingsKey          = "subtitleSettings"
+	generateSRTFallbackForASSKey = "generateSRTFallbackForASS"
+)
+
+func generateSRTFallbackForASSValue(value models.JSONMap) bool {
+	enabled, ok := value[generateSRTFallbackForASSKey].(bool)
+	return ok && enabled
+}
+
+func generateSRTFallbackForASSSetting(db *gorm.DB) bool {
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", subtitleSettingsKey).Error; err != nil {
+		return false
+	}
+	return generateSRTFallbackForASSValue(setting.Value)
+}
+
 type SettingInput struct {
 	Value models.JSONMap `json:"value" binding:"required"`
 }

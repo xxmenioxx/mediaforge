@@ -1,7 +1,7 @@
 ## 1. Setting contract and persistence
 
-- [ ] 1.1 Add the persisted `generateSRTFallbackForASS` setting through the existing settings model/API with a missing-value default of `false`, and verify save/load and legacy-default tests.
-- [ ] 1.2 Expose the setting in the existing subtitle settings surface without adding client capability or playback-policy logic, and verify the default and persisted toggle in focused frontend coverage.
+- [x] 1.1 Add the persisted `generateSRTFallbackForASS` setting through the existing settings model/API with a missing-value default of `false`, and verify save/load and legacy-default tests.
+- [x] 1.2 Expose the setting in the existing subtitle settings surface without adding client capability or playback-policy logic, and verify the default and persisted toggle in focused frontend coverage.
 
 ## 2. Canonical effective-format resolution
 
