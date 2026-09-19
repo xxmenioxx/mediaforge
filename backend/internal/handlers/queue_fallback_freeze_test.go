@@ -1,11 +1,16 @@
 package handlers
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -50,6 +55,62 @@ func TestQueueClaimResolvesCurrentSubtitleFallbackBeforeFreeze(t *testing.T) {
 	}
 }
 
+func TestDirectQueueCreationDefersFallbackFreezeUntilClaim(t *testing.T) {
+	tests := []struct {
+		name          string
+		queuedSetting bool
+		claimSetting  bool
+		wantFormats   []string
+	}{
+		{name: "setting changed on before claim", queuedSetting: false, claimSetting: true, wantFormats: []string{"srt", "ass"}},
+		{name: "setting changed off before claim", queuedSetting: true, claimSetting: false, wantFormats: []string{"ass"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, path, library, profile := queueCreationFreezeFixture(t, test.queuedSetting)
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+			body := fmt.Sprintf(`{"mediaPath":%q,"libraryId":%d,"profileId":%d,"trackProfileKey":"tracks"}`, path, library.ID, profile.ID)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusCreated {
+				t.Fatalf("queue create status=%d body=%s", response.Code, response.Body.String())
+			}
+
+			var job models.QueueJob
+			if err := db.First(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil {
+				t.Fatalf("direct Queue create froze execution state: %#v", job)
+			}
+
+			setFallbackFreezeTestSetting(t, db, test.claimSetting)
+			now := time.Now()
+			if err := db.Model(&job).Updates(map[string]any{
+				"status": JobStatusRunning, "stage": JobStageClaimed,
+				"worker_name": "test-worker", "started_at": &now,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.First(&job, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, ok := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
+			if !ok || !sameStringSlice(resolvedFallbackFormats(plan), test.wantFormats) || prepared.ActiveExecutionPlanID == nil {
+				t.Fatalf("claim did not freeze current fallback setting: plan=%#v job=%#v", plan, prepared)
+			}
+		})
+	}
+}
+
 func TestWorkerUsesFrozenFallbackPlanAfterSettingChanges(t *testing.T) {
 	db, path := fallbackFreezeTestDB(t, true)
 	job := models.QueueJob{MediaPath: path, TrackProfileKey: "tracks", Status: JobStatusRunning, Stage: JobStageClaimed}
@@ -83,15 +144,22 @@ func TestWorkerUsesFrozenFallbackPlanAfterSettingChanges(t *testing.T) {
 }
 
 func TestQueueRetryResolvesOnlyIncompleteFallbackFreeze(t *testing.T) {
-	db, path := fallbackFreezeTestDB(t, true)
-	job := models.QueueJob{MediaPath: path, TrackProfileKey: "tracks", Status: JobStatusRunning, Stage: JobStageClaimed}
-	setFallbackFreezeTestSetting(t, db, false)
-	if err := NewQueueHandler(db).captureSupplementalProfilesAtClaim(&job); err != nil {
+	db, path, library, profile := queueCreationFreezeFixture(t, true)
+	job := models.QueueJob{
+		MediaPath: path, LibraryID: library.ID, ProfileID: profile.ID,
+		TrackProfileKey: "tracks", Status: JobStatusRunning, Stage: JobStageClaimed,
+	}
+	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || !sameStringSlice(resolvedFallbackFormats(plan), []string{"ass"}) {
-		t.Fatalf("incomplete-freeze retry did not use current setting: %#v", plan)
+	setFallbackFreezeTestSetting(t, db, false)
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
+	if !ok || !sameStringSlice(resolvedFallbackFormats(plan), []string{"ass"}) || prepared.ActiveExecutionPlanID == nil {
+		t.Fatalf("incomplete-freeze retry did not use current setting: plan=%#v job=%#v", plan, prepared)
 	}
 
 	setFallbackFreezeTestSetting(t, db, true)
@@ -141,6 +209,57 @@ func fallbackFreezeTestDB(t *testing.T, fallback bool) (*gorm.DB, string) {
 		t.Fatal(err)
 	}
 	return db, path
+}
+
+func queueCreationFreezeFixture(t *testing.T, fallback bool) (*gorm.DB, string, models.Library, models.Profile) {
+	t.Helper()
+	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	path := filepath.Join(sourceDir, "episode.mkv")
+	library := models.Library{Name: "Test Library", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: path, SourcePath: path, LogicalGroupPath: sourceDir, FileName: filepath.Base(path), Status: "unprocessed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]models.ProfileAssignment{
+		{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID},
+		{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "tracks", Selection: "profile", ProfileKey: "tracks"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: path, VideoCodec: "h264", Width: 720, Height: 480,
+		VideoStreams:    models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}},
+		SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{
+		"key": "tracks", "scope": "path", "trackDispositionVersion": 1,
+		"subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"ass"},
+		"subtitleRules":    models.JSONList{models.JSONMap{"streamIndex": 4, "action": "extract", "sidecarFormats": models.JSONList{"ass"}}},
+		"attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: subtitleSettingsKey, Value: models.JSONMap{generateSRTFallbackForASSKey: fallback}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"reviewMode": "automatic"}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return db, path, library, profile
 }
 
 func setFallbackFreezeTestSetting(t *testing.T, db *gorm.DB, enabled bool) {

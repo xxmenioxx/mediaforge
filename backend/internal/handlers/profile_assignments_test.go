@@ -49,7 +49,7 @@ func TestProfileAssignmentsPreferAssetOverPathPerMediaType(t *testing.T) {
 	}
 }
 
-func TestQueueFreezesResolvedPathAndAssetProfiles(t *testing.T) {
+func TestQueueCapturesResolvedPathAndAssetProfileIntent(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:profile-assignment-queue?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -122,15 +122,12 @@ func TestQueueFreezesResolvedPathAndAssetProfiles(t *testing.T) {
 	if job.ProfileID != pathProfile.ID || job.AudioProfileKey != "asset-audio" || job.TrackProfileKey != "path-tracks" {
 		t.Fatalf("assignment precedence was not frozen: %#v", job)
 	}
-	if job.AudioProfileSnapshot["filters"] != "volume=0.8" || job.TrackProfileSnapshot["resolvedForAsset"] != assetPath {
-		t.Fatalf("supplemental snapshots were not frozen: audio=%#v tracks=%#v", job.AudioProfileSnapshot, job.TrackProfileSnapshot)
-	}
-	if indexes, ok := job.TrackProfileSnapshot["keepAudioStreams"].([]any); !ok || len(indexes) != 1 || indexes[0] != float64(1) {
-		t.Fatalf("track snapshot was not resolved for the queued asset: %#v", job.TrackProfileSnapshot)
+	if len(job.ProfileSnapshot) != 0 || len(job.AudioProfileSnapshot) != 0 || len(job.TrackProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
+		t.Fatalf("queued intent was frozen before claim: %#v", job)
 	}
 }
 
-func TestQueueFreezesDifferentSourceAndLogicalGroupProfilesPerAsset(t *testing.T) {
+func TestQueueCapturesDifferentSourceAndLogicalGroupProfileIntentPerAsset(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "source-logical-queue.db")), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -193,8 +190,8 @@ func TestQueueFreezesDifferentSourceAndLogicalGroupProfilesPerAsset(t *testing.T
 			wantProfileID = logicalProfile.ID
 			wantSource = assetScopeLogicalGroup
 		}
-		if job.ProfileID != wantProfileID || job.ProfileSnapshot["profileName"] != map[bool]string{true: logicalProfile.Name, false: sourceProfile.Name}[index == 1] {
-			t.Fatalf("asset %d did not freeze its effective profile: %#v", index, job)
+		if job.ProfileID != wantProfileID || len(job.ProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
+			t.Fatalf("asset %d queued intent was frozen before claim: %#v", index, job)
 		}
 		video, ok := job.ProfileResolution["video"].(map[string]any)
 		if !ok || video["source"] != wantSource {
@@ -261,7 +258,7 @@ func TestPathTrackProfileResolvesSemanticRulesPerAsset(t *testing.T) {
 	}
 }
 
-func TestQueueFreezesAssetTrackProfileRemovedStreams(t *testing.T) {
+func TestQueueCapturesAssetTrackProfileIntent(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:asset-track-profile-removals?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -314,24 +311,12 @@ func TestQueueFreezesAssetTrackProfileRemovedStreams(t *testing.T) {
 	if job.TrackProfileKey != "asset-tracks" {
 		t.Fatalf("asset track assignment was not selected: %#v", job)
 	}
-	assertSnapshotIndexes := func(key string, want []float64) {
-		t.Helper()
-		got, ok := job.TrackProfileSnapshot[key].([]any)
-		if !ok || len(got) != len(want) {
-			t.Fatalf("%s=%#v want=%#v snapshot=%#v", key, job.TrackProfileSnapshot[key], want, job.TrackProfileSnapshot)
-		}
-		for index := range want {
-			if got[index] != want[index] {
-				t.Fatalf("%s=%#v want=%#v", key, got, want)
-			}
-		}
+	if len(job.TrackProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
+		t.Fatalf("queued track intent was frozen before claim: %#v", job)
 	}
-	assertSnapshotIndexes("keepVideoStreams", []float64{0})
-	assertSnapshotIndexes("keepAudioStreams", []float64{2})
-	assertSnapshotIndexes("keepSubtitleStreams", []float64{})
 }
 
-func TestBatchFreezesPathTrackProfilePerAsset(t *testing.T) {
+func TestBatchCapturesPathTrackProfileIntentPerAsset(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:path-track-profile-batch?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -396,18 +381,9 @@ func TestBatchFreezesPathTrackProfilePerAsset(t *testing.T) {
 	if len(result.Jobs) != len(assets) {
 		t.Fatalf("jobs=%d want=%d", len(result.Jobs), len(assets))
 	}
-	for index, job := range result.Jobs {
-		got, ok := job.TrackProfileSnapshot["keepAudioStreams"].([]any)
-		if !ok || len(got) != len(assets[index].want) {
-			t.Fatalf("job %s audio=%#v want=%#v", job.MediaPath, job.TrackProfileSnapshot["keepAudioStreams"], assets[index].want)
-		}
-		for item := range got {
-			if got[item] != assets[index].want[item] {
-				t.Fatalf("job %s audio=%#v want=%#v", job.MediaPath, got, assets[index].want)
-			}
-		}
-		if job.TrackProfileSnapshot["resolvedForAsset"] != job.MediaPath {
-			t.Fatalf("job snapshot was resolved for another asset: %#v", job.TrackProfileSnapshot)
+	for _, job := range result.Jobs {
+		if job.TrackProfileKey != "season-tracks" || len(job.TrackProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
+			t.Fatalf("job %s queued intent was frozen before claim: %#v", job.MediaPath, job)
 		}
 	}
 }

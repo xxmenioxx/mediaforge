@@ -822,6 +822,7 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 	prepared := make([]models.QueueJob, 0, len(jobsInput))
 
 	for _, item := range jobsInput {
+		item.deferFreeze = true
 		job, status, err := h.prepareBatchQueueJob(item)
 		if err != nil {
 			c.JSON(status, gin.H{
@@ -1228,31 +1229,6 @@ func (h QueueHandler) Create(c *gin.Context) {
 		Stage:             JobStageQueued,
 		Notes:             input.Notes,
 	}
-	if err := h.captureSupplementalProfiles(&job); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
-		if err := h.captureOverrideOnlyProfile(
-			&job,
-			"queue_create_override_only",
-		); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-			})
-			return
-		}
-	} else {
-		if err := h.captureProfile(
-			&job,
-			input.ProfileID,
-			"queue_create",
-		); err != nil {
-			h.profileCaptureError(c, err)
-			return
-		}
-	}
-
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var highest int64
 		if err := tx.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
@@ -1266,14 +1242,6 @@ func (h QueueHandler) Create(c *gin.Context) {
 			return err
 		}
 		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {
-			return err
-		}
-
-		if _, err := scheduler.CreatePendingExecutionPlan(
-			tx,
-			&job,
-			"Execution plan created from queued profile snapshot",
-		); err != nil {
 			return err
 		}
 

@@ -1398,6 +1398,9 @@ func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing
 
 	for index, want := range expected {
 		got := queued[index]
+		if want.batchID != "" && (queueJobFreezeComplete(got) || got.ActiveExecutionPlanID != nil) {
+			t.Fatalf("ordinary batch job %q was frozen while queued: %#v", got.MediaPath, got)
+		}
 
 		if filepath.Base(got.MediaPath) != want.file {
 			t.Fatalf(
