@@ -22,8 +22,8 @@
 
 ## 5. Queue freeze and worker consumption
 
-- [ ] 5.1 Resolve effective fallback outputs during `QUEUED → CLAIM/PREPARING`, freeze them with relevant provenance in the Queue `ResolvedTrackPlan` snapshot, and verify Workers consume only the snapshot.
-- [ ] 5.2 Add regressions proving a setting change before successful freeze is observed during preparation, while a change after successful freeze cannot change execution or retry; verify incomplete freeze may resolve current settings and a future job resolves current settings.
+- [x] 5.1 Resolve effective fallback outputs during `QUEUED → CLAIM/PREPARING`, freeze them with relevant provenance in the Queue `ResolvedTrackPlan` snapshot, and verify Workers consume only the snapshot.
+- [x] 5.2 Add regressions proving a setting change before successful freeze is observed during preparation, while a change after successful freeze cannot change execution or retry; verify incomplete freeze may resolve current settings and a future job resolves current settings.
 
 ## 6. Cross-entry-point and compatibility regression coverage
 

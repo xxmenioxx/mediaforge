@@ -567,7 +567,7 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 	}
 
 	queue := NewQueueHandler(h.db)
-	if err := queue.captureSupplementalProfiles(&prepared); err != nil {
+	if err := queue.captureSupplementalProfilesAtClaim(&prepared); err != nil {
 		return job, err
 	}
 	if queueUsesOverrideOnlyVideo(prepared.ProfileResolution) {

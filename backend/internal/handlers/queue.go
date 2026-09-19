@@ -1423,6 +1423,18 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 }
 
 func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
+	return h.captureSupplementalProfilesWithSettings(job, false)
+}
+
+// captureSupplementalProfilesAtClaim resolves execution-time subtitle settings
+// immediately before the immutable Queue snapshot is built. The generic
+// capture path is also used by intent/update workflows and must not read a
+// mutable setting there.
+func (h QueueHandler) captureSupplementalProfilesAtClaim(job *models.QueueJob) error {
+	return h.captureSupplementalProfilesWithSettings(job, true)
+}
+
+func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJob, applyCurrentSubtitleSettings bool) error {
 	if strings.TrimSpace(job.AudioProfileKey) != "" {
 		if job.AudioProfileKey == assetDefaultsCustomAudioKey {
 			profile := profileDataForQueueJob(*job, "audio")
@@ -1469,6 +1481,9 @@ func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 		if !canonical {
 			job.TrackProfileSnapshot = models.JSONMap(resolved)
 			return nil
+		}
+		if applyCurrentSubtitleSettings {
+			resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(h.db))
 		}
 		trackPlan, err := resolveTrackPlan(scan, resolved)
 		if err != nil {
