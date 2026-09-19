@@ -11,8 +11,8 @@
 
 ## 3. Native subtitle representations
 
-- [ ] 3.1 Keep source codec separate from requested mode and apply the canonical eligibility predicate: verify converted text/bitmap ASS produces converted SRT through the canonical converted path, while `mode=original` native ASS/SSA preserves the original and adds converted SRT without treating it as logical `both`; verify original SRT/PGS/VobSub receive no implicit SRT.
-- [ ] 3.2 Verify fallback naming, sidecar metadata, role/forced/SDH qualifiers, and existing artifact satisfaction behavior for converted and original-mode native outputs.
+- [x] 3.1 Keep source codec separate from requested mode and apply the canonical eligibility predicate: verify converted text/bitmap ASS produces converted SRT through the canonical converted path, while `mode=original` native ASS/SSA preserves the original and adds converted SRT without treating it as logical `both`; verify original SRT/PGS/VobSub receive no implicit SRT.
+- [x] 3.2 Verify fallback naming, sidecar metadata, role/forced/SDH qualifiers, and existing artifact satisfaction behavior for converted and original-mode native outputs.
 
 ## 4. Bitmap OCR and canonical serializer fan-out
 

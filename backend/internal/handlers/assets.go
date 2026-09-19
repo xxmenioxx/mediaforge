@@ -1303,8 +1303,8 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 	input.Format = strings.ToLower(strings.TrimSpace(input.Format))
-	if input.Format != "" && input.Format != "srt" && input.Format != "ass" && input.Format != "both" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be srt, ass, or both"})
+	if input.Format != "" && input.Format != "original" && input.Format != "srt" && input.Format != "ass" && input.Format != "both" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be original, srt, ass, or both"})
 		return
 	}
 	input.GenerateSRTFallbackForASS = generateSRTFallbackForASSSetting(h.db)

@@ -1848,6 +1848,90 @@ func TestSubtitleExtractionPlansApplyPersistedASSFallbackWithoutChangingDisabled
 	}
 }
 
+func TestSubtitleExtractionPlansPreserveNativeOriginalIdentityWithASSFallback(t *testing.T) {
+	for _, test := range []struct {
+		codec       string
+		original    string
+		wantFormats []string
+	}{
+		{codec: "ass", original: "ass", wantFormats: []string{"ass", "srt"}},
+		{codec: "ssa", original: "ssa", wantFormats: []string{"ssa", "srt"}},
+	} {
+		t.Run(test.codec, func(t *testing.T) {
+			streamIndex := 3
+			plans, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", []FFProbeStream{{
+				Index: streamIndex, CodecType: "subtitle", CodecName: test.codec, Tags: map[string]string{"language": "spa"},
+			}}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "original", GenerateSRTFallbackForASS: true})
+			if len(unsupported) != 0 || len(plans) != 2 {
+				t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
+			}
+			for index, plan := range plans {
+				if plan.Format != test.wantFormats[index] || plan.Decision.Language != "spa" {
+					t.Fatalf("plan[%d]=%#v", index, plan)
+				}
+			}
+			if plans[0].Mode != "original" || plans[1].Mode != "converted" || plans[0].Decision.LogicalTransformKey == plans[1].Decision.LogicalTransformKey {
+				t.Fatalf("native original and converted fallback identity collapsed: %#v", plans)
+			}
+			if plans[0].Decision.NamingKey != "subtitle:3:original:"+test.original || plans[1].Decision.NamingKey != "subtitle:3:converted:srt" {
+				t.Fatalf("unexpected naming identity: %#v", plans)
+			}
+		})
+	}
+}
+
+func TestSubtitleExtractionTargetsPreserveConvertedBitmapFallbackIdentity(t *testing.T) {
+	streamIndex := 4
+	streams := []FFProbeStream{{Index: streamIndex, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "jpn"}}}
+	plans, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", streams, SubtitleExtractionInput{
+		StreamIndex:               &streamIndex,
+		Format:                    "ass",
+		GenerateSRTFallbackForASS: true,
+	})
+	if len(unsupported) != 0 || len(plans) != 0 {
+		t.Fatalf("bitmap plans should be prepared as targets, plans=%#v unsupported=%#v", plans, unsupported)
+	}
+	result, targets, err := prepareSubtitleExtractionTargets("/media/library/Movie.mkv", nil, streams, SubtitleExtractionInput{
+		StreamIndex:               &streamIndex,
+		Format:                    "ass",
+		GenerateSRTFallbackForASS: true,
+	})
+	if err != nil || len(result.Artifacts) != 0 || len(targets) != 2 {
+		t.Fatalf("bitmap targets=%#v result=%#v err=%v", targets, result, err)
+	}
+	if targets[0].artifact.LogicalTransformKey != "subtitle:4:converted:both" || targets[1].artifact.LogicalTransformKey != targets[0].artifact.LogicalTransformKey {
+		t.Fatalf("bitmap fallback identity=%#v", targets)
+	}
+}
+
+func TestSubtitleExtractionTargetsReuseExistingFallbackOutputsWithoutDuplication(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "Movie.mkv")
+	streamIndex := 3
+	streams := []FFProbeStream{{Index: streamIndex, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "eng"}}}
+	plans, unsupported := subtitleExtractionPlansForRequest(mediaPath, streams, SubtitleExtractionInput{
+		StreamIndex:               &streamIndex,
+		Format:                    "ass",
+		GenerateSRTFallbackForASS: true,
+	})
+	if len(unsupported) != 0 || len(plans) != 2 {
+		t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
+	}
+	for _, plan := range plans {
+		if err := os.WriteFile(plan.OutputPath, []byte("existing subtitle"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, targets, err := prepareSubtitleExtractionTargets(mediaPath, plans, nil, SubtitleExtractionInput{
+		StreamIndex:               &streamIndex,
+		Format:                    "ass",
+		GenerateSRTFallbackForASS: true,
+	})
+	if err != nil || len(targets) != 0 || len(result.Existing) != 2 || len(result.Artifacts) != 2 {
+		t.Fatalf("existing fallback outputs were not reused independently: result=%#v targets=%#v err=%v", result, targets, err)
+	}
+}
+
 func TestSubtitleExtractionPlansPreserveExplicitOriginalASSAndSSA(t *testing.T) {
 	for _, test := range []struct {
 		name       string
