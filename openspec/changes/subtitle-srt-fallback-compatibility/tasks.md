@@ -16,9 +16,9 @@
 
 ## 4. Bitmap OCR and canonical serializer fan-out
 
-- [ ] 4.1 Represent bitmap ASS+SRT fallback as one logical transformation using the existing shared OCR lifecycle, and verify exactly one OCR/evidence execution feeds both serializers.
-- [ ] 4.2 Verify Japanese fallback, accurate selection, OCR quality corrections, canonical cue text, and bitmap geometry are applied before both SRT and ASS serialization.
-- [ ] 4.3 Verify cancellation, shared-flight behavior, and the existing atomic all-output publication barrier prevent partial fallback publication.
+- [x] 4.1 Represent bitmap ASS+SRT fallback as one logical transformation using the existing shared OCR lifecycle, and verify exactly one OCR/evidence execution feeds both serializers.
+- [x] 4.2 Verify Japanese fallback, accurate selection, OCR quality corrections, canonical cue text, and bitmap geometry are applied before both SRT and ASS serialization.
+- [x] 4.3 Verify cancellation, shared-flight behavior, and the existing atomic all-output publication barrier prevent partial fallback publication.
 
 ## 5. Queue freeze and worker consumption
 

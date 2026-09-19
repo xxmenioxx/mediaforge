@@ -262,14 +262,17 @@ wait "$child"
 
 func TestBitmapSubtitleConversionCancellation(t *testing.T) {
 	for _, testCase := range []struct {
-		name   string
-		codec  string
-		format string
+		name            string
+		codec           string
+		format          string
+		expectedFormats []string
 	}{
-		{name: "PGS-SRT", codec: "hdmv_pgs_subtitle", format: "srt"},
-		{name: "PGS-ASS", codec: "hdmv_pgs_subtitle", format: "ass"},
-		{name: "VobSub-SRT", codec: "dvd_subtitle", format: "srt"},
-		{name: "VobSub-ASS", codec: "dvd_subtitle", format: "ass"},
+		{name: "PGS-SRT", codec: "hdmv_pgs_subtitle", format: "srt", expectedFormats: []string{"srt"}},
+		{name: "PGS-ASS", codec: "hdmv_pgs_subtitle", format: "ass", expectedFormats: []string{"ass"}},
+		{name: "PGS-both", codec: "hdmv_pgs_subtitle", format: "both", expectedFormats: []string{"srt", "ass"}},
+		{name: "VobSub-SRT", codec: "dvd_subtitle", format: "srt", expectedFormats: []string{"srt"}},
+		{name: "VobSub-ASS", codec: "dvd_subtitle", format: "ass", expectedFormats: []string{"ass"}},
+		{name: "VobSub-both", codec: "dvd_subtitle", format: "both", expectedFormats: []string{"srt", "ass"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:subtitle-bitmap-cancellation-%s?mode=memory&cache=shared", strings.ToLower(testCase.name))), &gorm.Config{})
@@ -282,6 +285,7 @@ func TestBitmapSubtitleConversionCancellation(t *testing.T) {
 			root := t.TempDir()
 			mediaPath := filepath.Join(root, "Bitmap.mkv")
 			writeTestFile(t, mediaPath, "source")
+			t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "persistent"))
 			if err := db.Create(&models.Library{Name: "Movies", DestinationPath: root}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -298,6 +302,7 @@ printf '%%s' '{"streams":[{"index":4,"id":"0x7","codec_type":"subtitle","codec_n
 for argument do output="$argument"; done
 case "$output" in
   *.sup) printf '%s' 'PG' > "$output" ;;
+  *.ass) printf '%s\n' '[Script Info]' '[Events]' 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text' 'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Retry OCR subtitle' > "$output" ;;
 esac
 `)
 			writeExecutable(t, filepath.Join(bin, "seconv"), `#!/bin/sh
@@ -348,9 +353,11 @@ while :; do sleep 1; done
 			if cancelled.Error != "" {
 				t.Fatalf("bitmap cancellation reported failure: %#v", cancelled)
 			}
-			outputPath := filepath.Join(root, "Bitmap.eng.4."+testCase.format)
-			if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
-				t.Fatalf("bitmap cancellation published a sidecar: %v", err)
+			for _, format := range testCase.expectedFormats {
+				outputPath := filepath.Join(root, "Bitmap.eng.4."+format)
+				if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+					t.Fatalf("bitmap cancellation published a %s sidecar: %v", format, err)
+				}
 			}
 
 			t.Setenv("BITMAP_OCR_RETRY", "1")
@@ -370,8 +377,30 @@ while :; do sleep 1; done
 			if completed.Error != "" {
 				t.Fatalf("bitmap retry reported failure: %#v", completed)
 			}
-			if info, err := os.Stat(outputPath); err != nil || info.Size() == 0 {
-				t.Fatalf("bitmap retry did not publish %s: %v", testCase.format, err)
+			if completed.Result == nil || len(completed.Result.Created) != len(testCase.expectedFormats) {
+				t.Fatalf("bitmap retry did not publish the complete %s set: %#v", testCase.format, completed.Result)
+			}
+			for _, format := range testCase.expectedFormats {
+				outputPath := filepath.Join(root, "Bitmap.eng.4."+format)
+				if info, err := os.Stat(outputPath); err != nil || info.Size() == 0 {
+					t.Fatalf("bitmap retry did not publish %s: %v", format, err)
+				}
+			}
+			if testCase.format == "both" {
+				const logicalTransform = "subtitle:4:converted:both"
+				var evidenceIdentity string
+				for _, format := range testCase.expectedFormats {
+					snapshot, ok := loadPublishedCanonicalOCRSnapshot(filepath.Join(root, "Bitmap.eng.4."+format), format, logicalTransform)
+					if !ok || snapshot == nil || len(snapshot.Evidence.Cues) == 0 {
+						t.Fatalf("successful bitmap fallback did not commit %s canonical baseline: %#v", format, snapshot)
+					}
+					identity := snapshot.Evidence.Identity.key()
+					if evidenceIdentity == "" {
+						evidenceIdentity = identity
+					} else if identity != evidenceIdentity {
+						t.Fatalf("bitmap fallback committed different evidence identities for %s: %q vs %q", format, identity, evidenceIdentity)
+					}
+				}
 			}
 		})
 	}
