@@ -65,7 +65,7 @@ import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, UpscaleMode, UpscaleSharpen } from '../api/types';
-import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
+import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
@@ -615,7 +615,7 @@ function AssetTable({
   }, [query, mode, visibleGroups.length]);
 
 	if (mode === 'archive') {
-		return <ArchivedAssetTable groups={visibleGroups} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} query={query} emptyLabel={emptyLabel} />;
+		return <ArchivedAssetTable groups={visibleGroups} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} query={query} emptyLabel={emptyLabel} />;
 	}
 
   if (visibleGroups.length === 0) {
@@ -804,7 +804,7 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 		return <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 720, tableLayout: 'fixed' }}><TableHead><TableRow><TableCell padding="checkbox" sx={{ width: 48 }} /><TableCell>Asset</TableCell><TableCell sx={{ width: 180 }}>Status</TableCell><TableCell sx={{ width: 100 }}>Size</TableCell><TableCell align="center" sx={{ width: 220 }}>Actions</TableCell></TableRow></TableHead><TableBody>{visibleAssets.map((asset) => {
 			const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
 			const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
-			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
+			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
@@ -1492,11 +1492,12 @@ function SnapshotStateChip({ status }: { status: 'current' | 'missing' | 'change
 }
 
 function ArchivedAssetTable({
-  groups,
-  libraries,
-  profiles,
-  audioProfiles,
-  trackProfiles,
+	groups,
+	libraries,
+	profiles,
+	audioProfiles,
+	trackProfiles,
+	settings,
   assetCategories,
   queueJobs,
   runningSnapshotPaths,
@@ -1505,9 +1506,10 @@ function ArchivedAssetTable({
 }: {
   groups: AssetGroup[];
   libraries: Library[];
-  profiles: Profile[];
-  audioProfiles: AudioEnhancementProfile[];
-  trackProfiles: TrackProfile[];
+	profiles: Profile[];
+	audioProfiles: AudioEnhancementProfile[];
+	trackProfiles: TrackProfile[];
+	settings: AppSetting[];
   assetCategories: string[];
   queueJobs: QueueJob[];
   runningSnapshotPaths: Set<string>;
@@ -1547,9 +1549,10 @@ function ArchivedAssetTable({
                 key={`${asset.status}-${asset.libraryId}-${asset.path}`}
                 asset={asset}
                 libraries={libraries}
-                profiles={profiles}
-                audioProfiles={audioProfiles}
-                trackProfiles={trackProfiles}
+				profiles={profiles}
+				audioProfiles={audioProfiles}
+				trackProfiles={trackProfiles}
+				srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                 assetCategories={assetCategories}
                 groupRelativePath={group.relativePath}
                 groupPath={group.path}
@@ -2338,9 +2341,10 @@ function AssetGroupRow({
                           key={`${asset.status}-${asset.libraryId}-${asset.path}-${selectedProfileId}-${selectedLibraryId}`}
                           asset={asset}
                           libraries={libraries}
-                          profiles={profiles}
-                          audioProfiles={audioProfiles}
-                          trackProfiles={trackProfiles}
+							profiles={profiles}
+							audioProfiles={audioProfiles}
+							trackProfiles={trackProfiles}
+							srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                           pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
                           groupRelativePath={group.relativePath}
@@ -2482,7 +2486,8 @@ function AssetRow({
   libraries,
   profiles,
   audioProfiles,
-  trackProfiles,
+	trackProfiles,
+	srtFallbackEnabled,
   pathTrackProfile,
   assetCategories,
   groupRelativePath,
@@ -2507,7 +2512,8 @@ function AssetRow({
   libraries: Library[];
   profiles: Profile[];
   audioProfiles: AudioEnhancementProfile[];
-  trackProfiles: TrackProfile[];
+	trackProfiles: TrackProfile[];
+	srtFallbackEnabled?: boolean;
   pathTrackProfile?: TrackProfile;
   assetCategories: string[];
   groupRelativePath: string;
@@ -4144,6 +4150,7 @@ async function generateExternalSubtitle(
                     <EmbeddedSubtitleActions
                       streams={snapshotData.subtitleStreams}
                       generations={subtitleGenerations}
+						 srtFallbackEnabled={srtFallbackEnabled}
                       onGenerate={generateExternalSubtitle}
                       onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob}
@@ -4549,6 +4556,7 @@ export function EmbeddedSubtitleActions({
   generations,
   onGenerate,
   onCancel,
+  srtFallbackEnabled = false,
   disabled = false,
 }: {
   streams: MediaStreamInfo[];
@@ -4563,6 +4571,7 @@ export function EmbeddedSubtitleActions({
     streamIndex: number,
     format: 'original' | 'srt' | 'ass',
   ) => void;
+  srtFallbackEnabled?: boolean;
   disabled?: boolean;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
@@ -4573,6 +4582,7 @@ export function EmbeddedSubtitleActions({
         <Stack>
           <Typography variant="h3">Generate external subtitles</Typography>
           <Typography color="text.secondary" variant="body2">Create an SRT or ASS sidecar through the canonical subtitle pipeline. Bitmap tracks use OCR and produce neutral recognized text rather than preserving the source image styling; the embedded track is not removed.</Typography>
+          {srtFallbackEnabled ? <Typography color="info.main" variant="caption">ASS + SRT compatibility fallback is enabled; selecting ASS also produces converted SRT.</Typography> : null}
         </Stack>
         {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
         {streams.map((stream) => {

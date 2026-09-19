@@ -64,6 +64,41 @@ func TestPreviewTrackProfileResolutionUsesPathRulesWithoutPersistingDraftIndexes
 	}
 }
 
+func TestPreviewTrackProfileResolutionUsesPersistedASSFallback(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:track-preview-fallback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/series/show.mkv"
+	if err := db.Create(&models.ScanResult{Path: path, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng"}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: subtitleSettingsKey, Value: models.JSONMap{generateSRTFallbackForASSKey: true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/track-profiles/resolve-preview", NewQueueHandler(db).PreviewTrackProfileResolution)
+	requestBody := `{"assetPath":"/media/series/show.mkv","profile":{"scope":"asset","trackDispositionVersion":1,"subtitleDisposition":"extract","subtitleSidecarFormats":["ass"],"attachmentPolicy":"auto","chapterPolicy":"keep"}}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/track-profiles/resolve-preview", strings.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var preview TrackProfileResolutionPreview
+	if err := json.Unmarshal(response.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.ResolvedTrackPlan.SidecarOutputs) != 2 {
+		t.Fatalf("preview sidecars=%#v", preview.ResolvedTrackPlan.SidecarOutputs)
+	}
+}
+
 func assertIndexesEqual(t *testing.T, got, want []int) {
 	t.Helper()
 	if len(got) != len(want) {

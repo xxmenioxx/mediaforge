@@ -1824,6 +1824,30 @@ func TestSubtitleExtractionPlansUseCanonicalASSOutputSelection(t *testing.T) {
 	}
 }
 
+func TestSubtitleExtractionPlansApplyPersistedASSFallbackWithoutChangingDisabledBehavior(t *testing.T) {
+	streamIndex := 3
+	streams := []FFProbeStream{{Index: streamIndex, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "eng"}}}
+
+	off, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", streams, SubtitleExtractionInput{
+		StreamIndex: &streamIndex, Format: "ass",
+	})
+	if len(unsupported) != 0 || len(off) != 1 || off[0].Format != "ass" {
+		t.Fatalf("fallback-off plans=%#v unsupported=%#v", off, unsupported)
+	}
+
+	on, unsupported := subtitleExtractionPlansForRequest("/media/library/Movie.mkv", streams, SubtitleExtractionInput{
+		StreamIndex:               &streamIndex,
+		Format:                    "ass",
+		GenerateSRTFallbackForASS: true,
+	})
+	if len(unsupported) != 0 || len(on) != 2 {
+		t.Fatalf("fallback-on plans=%#v unsupported=%#v", on, unsupported)
+	}
+	if on[0].Decision.LogicalTransformKey != "subtitle:3:converted:both" || on[1].Decision.LogicalTransformKey != on[0].Decision.LogicalTransformKey {
+		t.Fatalf("fallback-on logical transform=%q,%q", on[0].Decision.LogicalTransformKey, on[1].Decision.LogicalTransformKey)
+	}
+}
+
 func TestSubtitleExtractionPlansPreserveExplicitOriginalASSAndSSA(t *testing.T) {
 	for _, test := range []struct {
 		name       string

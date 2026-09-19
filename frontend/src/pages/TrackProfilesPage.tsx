@@ -7,12 +7,13 @@ import { api } from '../api/client';
 import type { AppSetting, MediaStreamInfo, ScanResult, StreamMetadataOverride, SubtitleSemanticRole } from '../api/types';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { PageHeader } from '../components/PageHeader';
-import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, removeTrackProfileSubtitleRule, updateTrackProfileSubtitleRule, type SubtitleDisposition, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, removeTrackProfileSubtitleRule, subtitleSRTFallbackEnabled, updateTrackProfileSubtitleRule, type SubtitleDisposition, type SubtitleTransform, type TrackProfile } from '../trackProfiles';
 
 export function TrackProfilesPage() {
   const client = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const profiles = getTrackProfiles(settings.data, true);
+  const srtFallbackEnabled = subtitleSRTFallbackEnabled(settings.data);
   const [showDisabled, setShowDisabled] = useState(false);
   const [profileSearch, setProfileSearch] = useState('');
   const [draft, setDraft] = useState<TrackProfile | null>(null);
@@ -154,6 +155,7 @@ export function TrackProfilesPage() {
                     {bitmap ? (
                       <Alert severity="info">This bitmap subtitle will run OCR as a pre-conversion phase. The generated sidecar is validated before the embedded track is removed.</Alert>
                     ) : null}
+                    {srtFallbackEnabled && transform?.format === 'ass' ? <Typography variant="caption" color="info.main">ASS + SRT compatibility fallback</Typography> : null}
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
                       <TextField
                         select

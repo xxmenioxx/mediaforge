@@ -7,7 +7,7 @@
 
 - [x] 2.1 Extend the canonical subtitle planning boundary to compute `fallbackEligible` from the persisted setting, requested mode, source codec, and effective converted formats before `ResolvedTrackPlan` construction; verify converted ASS, original native ASS, original native SSA, original non-ASS/SSA, and disabled-setting cases.
 - [x] 2.2 Normalize and deduplicate effective formats while preserving explicit requests, stream/rule precedence, semantic roles, forced/SDH metadata, and logical-transform identity; verify focused resolver tests.
-- [ ] 2.3 Verify Asset Info, Track Profiles, Profile Lab, and Test Encode use the same canonical resolver/effective-format contract and show the added SRT consequence wherever ASS selection is exposed.
+- [x] 2.3 Verify Asset Info, Track Profiles, Profile Lab, and Test Encode use the same canonical resolver/effective-format contract and show the added SRT consequence wherever ASS selection is exposed.
 
 ## 3. Native subtitle representations
 

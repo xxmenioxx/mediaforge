@@ -33,6 +33,25 @@ function runningGeneration() {
 }
 
 describe('Asset Info subtitle cancellation controls', () => {
+	it('shows the backend-owned ASS fallback consequence without adding a client output', async () => {
+		const user = userEvent.setup();
+		const onGenerate = vi.fn();
+		render(
+			<EmbeddedSubtitleActions
+				streams={[bitmapStream]}
+				generations={{}}
+				onGenerate={onGenerate}
+				onCancel={vi.fn()}
+				srtFallbackEnabled
+			/>,
+		);
+
+		expect(screen.getByText('ASS + SRT compatibility fallback is enabled; selecting ASS also produces converted SRT.')).toBeTruthy();
+		await user.click(screen.getByRole('button', { name: 'Generate ASS' }));
+		expect(onGenerate).toHaveBeenCalledWith(4, 'ass', 'eng', 'accurate');
+		expect(onGenerate).not.toHaveBeenCalledWith(4, 'srt', 'eng', 'accurate');
+	});
+
   it('selects both OCR sidecars from their shared logical transform', () => {
     const values = [
       { path: '/library/movie.ass', format: 'ass', logicalTransformKey: 'both-4' },

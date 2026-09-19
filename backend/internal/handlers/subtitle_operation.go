@@ -140,10 +140,7 @@ func prepareSubtitleExtractionTargets(
 		if format == "" {
 			format = "srt"
 		}
-		formats := []string{format}
-		if format == "both" {
-			formats = []string{"srt", "ass"}
-		}
+		requestedGroups := effectiveSubtitleSidecarFormats(stream.CodecName, []string{format}, input.GenerateSRTFallbackForASS)
 		language := safeSubtitleFilenamePart(stream.Tags["language"])
 		if language == "" {
 			language = normalizedOCRLanguage(input.OCRLanguage, stream.Tags["language"])
@@ -155,39 +152,45 @@ func prepareSubtitleExtractionTargets(
 		role := classifySubtitleRole(models.ScanResult{Path: destinationMediaPath, SubtitleStreams: models.JSONList{roleStream}}, roleStream, nil)
 		sourceForced := stream.Disposition["forced"] == 1
 		base := strings.TrimSuffix(destinationMediaPath, filepath.Ext(destinationMediaPath))
-		for _, outputFormat := range formats {
-			plan := subtitleExtractionPlan{
-				StreamIndex: stream.Index,
-				Mode:        "converted",
-				Format:      outputFormat,
-				OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, outputFormat),
-				Decision: ResolvedTrackSidecar{
-					StreamIndex: stream.Index, Codec: strings.ToLower(stream.CodecName), SourceType: "bitmap",
-					Language: language, Format: outputFormat, RequestedFormat: format, Mode: "converted",
-					Forced: sourceForced || role.Role == SubtitleRoleForced, SourceForced: sourceForced,
-					Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence, RoleClassifierVersion: role.ClassifierVersion,
-					OCRRequired: true, OCRLanguage: input.OCRLanguage, OCRMode: normalizedOCRMode(input.OCRMode),
-					Stages: subtitleArtifactStages("bitmap", "converted"), Extension: "." + outputFormat,
-					NamingKey:           fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, outputFormat),
-					LogicalTransformKey: fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, format),
-				},
+		for _, requestedGroup := range requestedGroups {
+			outputFormats := []string{requestedGroup}
+			if requestedGroup == "both" {
+				outputFormats = []string{"srt", "ass"}
 			}
-			target := subtitleExtractionTarget{
-				plan:      plan,
-				stream:    stream,
-				finalPath: plan.OutputPath,
-				artifact:  subtitleExtractionArtifact(plan, plan.OutputPath),
+			for _, outputFormat := range outputFormats {
+				plan := subtitleExtractionPlan{
+					StreamIndex: stream.Index,
+					Mode:        "converted",
+					Format:      outputFormat,
+					OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, outputFormat),
+					Decision: ResolvedTrackSidecar{
+						StreamIndex: stream.Index, Codec: strings.ToLower(stream.CodecName), SourceType: "bitmap",
+						Language: language, Format: outputFormat, RequestedFormat: requestedGroup, Mode: "converted",
+						Forced: sourceForced || role.Role == SubtitleRoleForced, SourceForced: sourceForced,
+						Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence, RoleClassifierVersion: role.ClassifierVersion,
+						OCRRequired: true, OCRLanguage: input.OCRLanguage, OCRMode: normalizedOCRMode(input.OCRMode),
+						Stages: subtitleArtifactStages("bitmap", "converted"), Extension: "." + outputFormat,
+						NamingKey:           fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, outputFormat),
+						LogicalTransformKey: fmt.Sprintf("subtitle:%d:converted:%s", stream.Index, requestedGroup),
+					},
+				}
+				target := subtitleExtractionTarget{
+					plan:      plan,
+					stream:    stream,
+					finalPath: plan.OutputPath,
+					artifact:  subtitleExtractionArtifact(plan, plan.OutputPath),
+				}
+				if info, statErr := os.Stat(target.finalPath); statErr == nil && !info.IsDir() {
+					target.artifact.Status = "existing"
+					target.artifact.SizeBytes = info.Size()
+					result.Existing = append(result.Existing, target.finalPath)
+					result.Artifacts = append(result.Artifacts, target.artifact)
+					continue
+				} else if statErr != nil && !os.IsNotExist(statErr) {
+					return result, nil, fmt.Errorf("%s", mediaPathReadError(statErr))
+				}
+				targets = append(targets, target)
 			}
-			if info, statErr := os.Stat(target.finalPath); statErr == nil && !info.IsDir() {
-				target.artifact.Status = "existing"
-				target.artifact.SizeBytes = info.Size()
-				result.Existing = append(result.Existing, target.finalPath)
-				result.Artifacts = append(result.Artifacts, target.artifact)
-				continue
-			} else if statErr != nil && !os.IsNotExist(statErr) {
-				return result, nil, fmt.Errorf("%s", mediaPathReadError(statErr))
-			}
-			targets = append(targets, target)
 		}
 	}
 	return result, targets, nil

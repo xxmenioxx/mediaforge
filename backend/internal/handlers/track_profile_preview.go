@@ -56,6 +56,7 @@ func (h QueueHandler) PreviewTrackProfileResolution(c *gin.Context) {
 	if storedSettingProfileScope(profile) == "path" {
 		resolved = resolveTrackProfileForAsset(h.db, path, profile)
 	}
+	resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(h.db))
 	if _, err := canonicalTrackDispositionProfile(resolved); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

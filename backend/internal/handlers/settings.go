@@ -36,6 +36,16 @@ func generateSRTFallbackForASSSetting(db *gorm.DB) bool {
 	return generateSRTFallbackForASSValue(setting.Value)
 }
 
+func applyPersistedSubtitleSettings(profile map[string]any, enabled bool) map[string]any {
+	if profile == nil {
+		profile = map[string]any{}
+	}
+	profile[subtitleSettingsKey] = map[string]any{
+		generateSRTFallbackForASSKey: enabled,
+	}
+	return profile
+}
+
 type SettingInput struct {
 	Value models.JSONMap `json:"value" binding:"required"`
 }

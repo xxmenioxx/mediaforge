@@ -42,10 +42,11 @@ type SubtitleExtractionResult struct {
 }
 
 type SubtitleExtractionInput struct {
-	StreamIndex *int   `json:"streamIndex"`
-	Format      string `json:"format"`
-	OCRLanguage string `json:"ocrLanguage,omitempty"`
-	OCRMode     string `json:"ocrMode,omitempty"`
+	StreamIndex               *int   `json:"streamIndex"`
+	Format                    string `json:"format"`
+	OCRLanguage               string `json:"ocrLanguage,omitempty"`
+	OCRMode                   string `json:"ocrMode,omitempty"`
+	GenerateSRTFallbackForASS bool   `json:"-"`
 }
 
 type ExternalSubtitle struct {
@@ -1306,6 +1307,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be srt, ass, or both"})
 		return
 	}
+	input.GenerateSRTFallbackForASS = generateSRTFallbackForASSSetting(h.db)
 	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
 	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
 	if len(plans) == 0 && len(bitmapStreams) == 0 {
@@ -2943,6 +2945,9 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 			if supportsOriginal && (originalFormat == "ass" || originalFormat == "ssa" || originalFormat == "srt") {
 				requested = "original"
 			}
+			if requested == "" {
+				requested = "srt"
+			}
 		}
 		if isBitmapSubtitleCodecName(stream.CodecName) {
 			continue
@@ -2951,34 +2956,37 @@ func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream
 		if language == "" {
 			language = "und"
 		}
-		requestedFormats := []string{requested}
-		if strings.EqualFold(requested, "both") {
-			requestedFormats = []string{"srt", "ass"}
-		}
-		for _, outputRequested := range requestedFormats {
-			format, mode, err := resolveSubtitleSidecarFormat(stream.CodecName, outputRequested)
-			if err != nil {
-				unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
-				continue
+		requestedGroups := effectiveSubtitleSidecarFormats(stream.CodecName, []string{requested}, input.GenerateSRTFallbackForASS)
+		for _, requestedGroup := range requestedGroups {
+			outputFormats := []string{requestedGroup}
+			if requestedGroup == "both" {
+				outputFormats = []string{"srt", "ass"}
 			}
-			role := rolesByIndex[stream.Index]
-			sourceForced := stream.Disposition["forced"] == 1
-			effectiveForced := sourceForced || role.Role == SubtitleRoleForced
-			logicalTransformKey := fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, requested)
-			decision := ResolvedTrackSidecar{
-				StreamIndex: stream.Index, Codec: strings.ToLower(strings.TrimSpace(stream.CodecName)), SourceType: subtitleSourceType(stream.CodecName),
-				Language: language, Format: format, RequestedFormat: fallback(requested, "srt"), Mode: mode,
-				OCRRequired: mode == "converted" && isBitmapSubtitleCodecName(stream.CodecName), Stages: subtitleArtifactStages(subtitleSourceType(stream.CodecName), mode),
-				Extension: "." + format, NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, format), LogicalTransformKey: logicalTransformKey,
-				Forced: effectiveForced, SourceForced: sourceForced, Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence, RoleClassifierVersion: role.ClassifierVersion,
+			for _, outputRequested := range outputFormats {
+				format, mode, err := resolveSubtitleSidecarFormat(stream.CodecName, outputRequested)
+				if err != nil {
+					unsupported = append(unsupported, fmt.Sprintf("stream %d (%s)", stream.Index, stream.CodecName))
+					continue
+				}
+				role := rolesByIndex[stream.Index]
+				sourceForced := stream.Disposition["forced"] == 1
+				effectiveForced := sourceForced || role.Role == SubtitleRoleForced
+				logicalTransformKey := fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, requestedGroup)
+				decision := ResolvedTrackSidecar{
+					StreamIndex: stream.Index, Codec: strings.ToLower(strings.TrimSpace(stream.CodecName)), SourceType: subtitleSourceType(stream.CodecName),
+					Language: language, Format: format, RequestedFormat: fallback(requestedGroup, "srt"), Mode: mode,
+					OCRRequired: mode == "converted" && isBitmapSubtitleCodecName(stream.CodecName), Stages: subtitleArtifactStages(subtitleSourceType(stream.CodecName), mode),
+					Extension: "." + format, NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", stream.Index, mode, format), LogicalTransformKey: logicalTransformKey,
+					Forced: effectiveForced, SourceForced: sourceForced, Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence, RoleClassifierVersion: role.ClassifierVersion,
+				}
+				plans = append(plans, subtitleExtractionPlan{
+					StreamIndex: stream.Index,
+					Mode:        mode,
+					Format:      format,
+					OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
+					Decision:    decision,
+				})
 			}
-			plans = append(plans, subtitleExtractionPlan{
-				StreamIndex: stream.Index,
-				Mode:        mode,
-				Format:      format,
-				OutputPath:  fmt.Sprintf("%s.%s.%d.%s", base, language, stream.Index, format),
-				Decision:    decision,
-			})
 		}
 	}
 	if input.StreamIndex != nil && !matched {

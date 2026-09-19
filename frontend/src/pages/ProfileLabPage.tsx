@@ -94,7 +94,7 @@ import { brightnessFromStored, brightnessToStored, exposureFromStored, exposureT
 import { formatHEVCLevel } from '../utils/hevcLevel';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
-import { appendTrackProfileSubtitleRule, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, removeTrackProfileSubtitleRule, trackProfileOverride, trackProfileWithConversion, updateTrackProfileSubtitleRule, type SubtitleDisposition, type SubtitleRule, type SubtitleSidecarFormat, type TrackProfile } from '../trackProfiles';
+import { appendTrackProfileSubtitleRule, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, removeTrackProfileSubtitleRule, subtitleSRTFallbackEnabled, trackProfileOverride, trackProfileWithConversion, updateTrackProfileSubtitleRule, type SubtitleDisposition, type SubtitleRule, type SubtitleSidecarFormat, type TrackProfile } from '../trackProfiles';
 import { normalizedQSVMBBRCMode, normalizedQSVRDOMode, qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
 import { videoToolboxRatesFromTargetMbps } from '../utils/videoToolboxRates';
 import { frameStructureManagedKeys } from '../utils/frameStructureModes';
@@ -722,6 +722,7 @@ export function ProfileLabPage() {
   );
   const audioProfiles = useMemo(() => getAudioProfiles(settings.data), [settings.data]);
   const trackProfiles = useMemo(() => getTrackProfiles(settings.data), [settings.data]);
+  const srtFallbackEnabled = subtitleSRTFallbackEnabled(settings.data);
   const allAudioProfiles = useMemo(() => getAudioProfiles(settings.data, true), [settings.data]);
   const allTrackProfiles = useMemo(() => getTrackProfiles(settings.data, true), [settings.data]);
   const [labSection, setLabSection] = useState<LabSection>('video');
@@ -4529,6 +4530,7 @@ export function ProfileLabPage() {
                                     <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('original')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'original', event.target.checked)} />} label={`${stream.codec.toUpperCase()} (Original)`} />
                                     <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('srt')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'srt', event.target.checked)} />} label={isBitmapSubtitleStream(stream) ? 'SRT (OCR)' : 'SRT (Converted)'} />
                                     <FormControlLabel control={<Checkbox checked={subtitleFormatsForStream(stream.index).includes('ass')} onChange={(event) => updateSubtitleFormatsForStream(stream.index, 'ass', event.target.checked)} />} label={isBitmapSubtitleStream(stream) ? 'ASS (OCR text)' : 'ASS (Converted)'} />
+                                    {srtFallbackEnabled && subtitleFormatsForStream(stream.index).includes('ass') ? <Typography variant="caption" color="info.main">ASS + SRT compatibility fallback</Typography> : null}
                                   </Stack> : null}
                                   {isBitmapSubtitleStream(stream) && subtitleFormatsForStream(stream.index).some((format) => format === 'srt' || format === 'ass') && (subtitleActionForStream(stream.index) === 'extract' || subtitleActionForStream(stream.index) === 'keep_and_extract') ? <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                                     <TextField select fullWidth label="OCR quality" value={subtitleOCRForStream(stream.index).mode} onChange={(event) => updateSubtitleOCRForStream(stream.index, { ocrMode: event.target.value as 'raw' | 'clean' | 'accurate' })}><MenuItem value="raw">Raw</MenuItem><MenuItem value="clean">Clean</MenuItem><MenuItem value="accurate">Accurate</MenuItem></TextField>

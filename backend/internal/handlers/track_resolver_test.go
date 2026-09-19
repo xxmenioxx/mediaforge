@@ -258,6 +258,54 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 	compare("Profile Lab", labOverride.ResolvedTrackPlan.SidecarOutputs[0], profileDecision)
 }
 
+func TestInteractiveSubtitleEntryPointsUsePersistedASSFallback(t *testing.T) {
+	path := filepath.Clean("/media/raw/show/episode.mkv")
+	scan := models.ScanResult{Path: path, SubtitleStreams: models.JSONList{map[string]any{
+		"index": 3, "codec": "ass", "language": "eng",
+	}}}
+	profile := map[string]any{
+		"scope": "asset", "trackDispositionVersion": 1, "subtitleDisposition": "extract",
+		"subtitleSidecarFormats": []string{"ass"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}
+	db, err := gorm.Open(sqlite.Open("file:subtitle-entrypoint-fallback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: subtitleSettingsKey, Value: models.JSONMap{generateSRTFallbackForASSKey: true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := resolveTrackPlan(scan, applyPersistedSubtitleSettings(profile, generateSRTFallbackForASSSetting(db)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetPlans, unsupported := subtitleExtractionPlansForRequest(path, []FFProbeStream{{
+		Index: 3, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "eng"},
+	}}, SubtitleExtractionInput{StreamIndex: intPointer(3), Format: "ass", GenerateSRTFallbackForASS: generateSRTFallbackForASSSetting(db)})
+	if len(unsupported) != 0 || len(assetPlans) != 2 || len(plan.SidecarOutputs) != 2 {
+		t.Fatalf("asset=%#v unsupported=%#v planner=%#v", assetPlans, unsupported, plan.SidecarOutputs)
+	}
+	if assetPlans[0].Decision.LogicalTransformKey != plan.SidecarOutputs[0].LogicalTransformKey || assetPlans[1].Decision.LogicalTransformKey != plan.SidecarOutputs[1].LogicalTransformKey {
+		t.Fatalf("asset/planner logical transforms diverged: asset=%#v planner=%#v", assetPlans, plan.SidecarOutputs)
+	}
+
+	lab, err := resolveLabTrackOverride(db, path, models.JSONMap(profile), AssetConversionOverrideState{})
+	if err != nil || lab.ResolvedTrackPlan == nil || len(lab.ResolvedTrackPlan.SidecarOutputs) != 2 {
+		t.Fatalf("lab=%#v err=%v", lab.ResolvedTrackPlan, err)
+	}
+	for index := range plan.SidecarOutputs {
+		if lab.ResolvedTrackPlan.SidecarOutputs[index].Format != plan.SidecarOutputs[index].Format || lab.ResolvedTrackPlan.SidecarOutputs[index].LogicalTransformKey != plan.SidecarOutputs[index].LogicalTransformKey {
+			t.Fatalf("lab/planner decision %d diverged: lab=%#v planner=%#v", index, lab.ResolvedTrackPlan.SidecarOutputs, plan.SidecarOutputs)
+		}
+	}
+}
+
 func intPointer(value int) *int { return &value }
 
 func TestResolveTrackPlanFreezesCanonicalBitmapOCRRule(t *testing.T) {

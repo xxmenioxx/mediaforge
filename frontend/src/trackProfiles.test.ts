@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppSetting, AssetConversionOverrideState } from './api/types';
-import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, subtitleSRTFallbackEnabled, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
 
 const conversion: AssetConversionOverrideState = {
   keepVideoStreams: [0],
@@ -17,6 +17,12 @@ const conversion: AssetConversionOverrideState = {
 };
 
 describe('trackProfileWithConversion', () => {
+	it('reads the persisted ASS fallback setting without mutating output selections', () => {
+		expect(subtitleSRTFallbackEnabled(undefined)).toBe(false);
+		expect(subtitleSRTFallbackEnabled([{ key: 'subtitleSettings', value: { generateSRTFallbackForASS: true } }] as unknown as AppSetting[])).toBe(true);
+		expect(subtitleSRTFallbackEnabled([{ key: 'subtitleSettings', value: { generateSRTFallbackForASS: false } }] as unknown as AppSetting[])).toBe(false);
+	});
+
   it('persists the exact retained indexes, including remove-all, for an asset profile', () => {
     const saved = trackProfileWithConversion({ ...emptyTrackProfile, key: 'asset-tracks', name: 'Asset tracks', scope: 'asset' }, conversion);
     const settings = JSON.parse(JSON.stringify([{ key: 'trackProfiles', value: { profiles: [saved] } }])) as AppSetting[];
