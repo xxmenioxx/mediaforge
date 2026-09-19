@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppSetting, AssetConversionOverrideState } from './api/types';
-import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, subtitleSRTFallbackEnabled, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
+import { appendTrackProfileSubtitleRule, emptyTrackProfile, getTrackProfiles, invalidLanguageScopedSubtitleRuleIndexes, materializeAssetTrackSelection, migrateTrackDisposition, subtitleSRTFallbackEnabled, subtitleSRTFallbackNotice, trackProfileWithConversion, updateTrackProfileSubtitleRule } from './trackProfiles';
 
 const conversion: AssetConversionOverrideState = {
   keepVideoStreams: [0],
@@ -21,6 +21,13 @@ describe('trackProfileWithConversion', () => {
 		expect(subtitleSRTFallbackEnabled(undefined)).toBe(false);
 		expect(subtitleSRTFallbackEnabled([{ key: 'subtitleSettings', value: { generateSRTFallbackForASS: true } }] as unknown as AppSetting[])).toBe(true);
 		expect(subtitleSRTFallbackEnabled([{ key: 'subtitleSettings', value: { generateSRTFallbackForASS: false } }] as unknown as AppSetting[])).toBe(false);
+	});
+
+	it('shows the fallback notice for language rules without changing their formats', () => {
+		const formats = ['ass'] as const;
+		expect(subtitleSRTFallbackNotice(true, [...formats])).toBe('ASS + SRT compatibility fallback');
+		expect([...formats]).toEqual(['ass']);
+		expect(subtitleSRTFallbackNotice(false, [...formats])).toBeUndefined();
 	});
 
   it('persists the exact retained indexes, including remove-all, for an asset profile', () => {
