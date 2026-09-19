@@ -111,6 +111,79 @@ func TestDirectQueueCreationDefersFallbackFreezeUntilClaim(t *testing.T) {
 	}
 }
 
+func TestExplicitQueueIntentPreservesProfileWhenClaimAssignmentDiffers(t *testing.T) {
+	db, path, library, profile := queueCreationFreezeFixture(t, false)
+	claimProfile := authoritativeTestProfile()
+	claimProfile.Name = "Claim assignment profile"
+	if err := db.Create(&claimProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	body := fmt.Sprintf(`{"mediaPath":%q,"libraryId":%d,"profileId":%d,"trackProfileKey":"tracks"}`, path, library.ID, profile.ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("queue create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	var record models.AssetRecord
+	if err := db.Where("path = ?", path).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: claimProfile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	setFallbackFreezeTestSetting(t, db, true)
+	markQueueJobClaimed(t, db, &job)
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
+	if !ok || prepared.ProfileID != profile.ID || prepared.TrackProfileKey != "tracks" || !sameStringSlice(resolvedFallbackFormats(plan), []string{"srt", "ass"}) {
+		t.Fatalf("explicit Queue intent was replaced by claim assignment: profile=%d track=%q plan=%#v", prepared.ProfileID, prepared.TrackProfileKey, plan)
+	}
+}
+
+func TestExplicitBatchQueueIntentFreezesOnlyAtClaim(t *testing.T) {
+	db, path, library, profile := queueCreationFreezeFixture(t, false)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
+	body := fmt.Sprintf(`{"batchId":"explicit-batch","batchName":"Season 1","jobs":[{"mediaPath":%q,"libraryId":%d,"profileId":%d,"trackProfileKey":"tracks"}]}`, path, library.ID, profile.ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/batches", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("batch create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil || job.ProfileID != profile.ID || job.TrackProfileKey != "tracks" {
+		t.Fatalf("explicit batch intent was frozen or changed at enqueue: %#v", job)
+	}
+	setFallbackFreezeTestSetting(t, db, true)
+	markQueueJobClaimed(t, db, &job)
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
+	if !ok || prepared.ProfileID != profile.ID || prepared.TrackProfileKey != "tracks" || prepared.ActiveExecutionPlanID == nil || !sameStringSlice(resolvedFallbackFormats(plan), []string{"srt", "ass"}) {
+		t.Fatalf("explicit batch intent was not preserved at claim: job=%#v plan=%#v", prepared, plan)
+	}
+}
+
 func TestWorkerUsesFrozenFallbackPlanAfterSettingChanges(t *testing.T) {
 	db, path := fallbackFreezeTestDB(t, true)
 	job := models.QueueJob{MediaPath: path, TrackProfileKey: "tracks", Status: JobStatusRunning, Stage: JobStageClaimed}
@@ -227,15 +300,6 @@ func queueCreationFreezeFixture(t *testing.T, fallback bool) (*gorm.DB, string, 
 	if err := db.Create(&models.AssetRecord{Path: path, SourcePath: path, LogicalGroupPath: sourceDir, FileName: filepath.Base(path), Status: "unprocessed"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&[]models.ProfileAssignment{
-		{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID},
-		{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "tracks", Selection: "profile", ProfileKey: "tracks"},
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
-		t.Fatal(err)
-	}
 	if err := db.Create(&models.ScanResult{Path: path, VideoCodec: "h264", Width: 720, Height: 480,
 		VideoStreams:    models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}},
 		SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}},
@@ -269,6 +333,20 @@ func setFallbackFreezeTestSetting(t *testing.T, db *gorm.DB, enabled bool) {
 		t.Fatal(err)
 	}
 	if err := db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func markQueueJobClaimed(t *testing.T, db *gorm.DB, job *models.QueueJob) {
+	t.Helper()
+	now := time.Now()
+	if err := db.Model(job).Updates(map[string]any{
+		"status": JobStatusRunning, "stage": JobStageClaimed,
+		"worker_name": "test-worker", "started_at": &now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(job, job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 }

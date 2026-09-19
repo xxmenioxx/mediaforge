@@ -503,44 +503,71 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 	if err := h.db.Where("path = ?", filepath.Clean(job.MediaPath)).First(&record).Error; err != nil {
 		return job, fmt.Errorf("load claimed asset: %w", err)
 	}
-	configurationResolver, err := loadAssetConfigurationResolver(h.db)
-	if err != nil {
-		return job, fmt.Errorf("load claim-time effective configuration: %w", err)
-	}
-	effective := configurationResolver.resolve(record)
-	effective = effectiveConfigurationWithFrozenAssetDefaults(effective, job.ProfileResolution)
-	hasOperation := effective.Video.VideoProfileID > 0 ||
-		effective.Video.Selection == VideoAssignmentOverrideOnly ||
-		effective.Video.Selection == VideoAssignmentAudioOnly ||
-		effective.Video.Selection == configSelectionValue ||
-		strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
-		strings.TrimSpace(effective.Tracks.ProfileKey) != "" ||
-		effective.Audio.Selection == configSelectionValue || effective.Tracks.Selection == configSelectionValue
-	if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
-		return job, fmt.Errorf("claimed asset no longer has a complete effective processing configuration")
-	}
-
+	var err error
+	assignmentBacked := queueJobUsesAssignmentBackedIntent(job)
 	input := QueueJobInput{
 		MediaPath:       job.MediaPath,
 		PublishMode:     job.PublishMode,
-		LibraryID:       effective.Destination.DestinationLibraryID,
-		ProfileID:       effective.Video.VideoProfileID,
-		AudioProfileKey: effective.Audio.ProfileKey,
-		TrackProfileKey: effective.Tracks.ProfileKey,
-		ProcessingMode:  ProcessingModeAudioOnly,
+		LibraryID:       job.LibraryID,
+		ProfileID:       job.ProfileID,
+		AudioProfileKey: job.AudioProfileKey,
+		TrackProfileKey: job.TrackProfileKey,
+		ProcessingMode:  normalizeQueueProcessingMode(job.ProcessingMode),
 		Priority:        job.Priority,
 		Notes:           job.Notes,
 	}
-	if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly || effective.Video.Selection == configSelectionValue {
-		input.ProcessingMode = ProcessingModeFullEncode
-	}
-	resolution := resolveProfileAssignmentsFromEffective(&input, effective)
-	if normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly && input.ProfileID == 0 {
-		var fallback models.Profile
-		if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
-			return job, fmt.Errorf("resolve claim-time audio-only fallback profile: %w", err)
+	resolution := job.ProfileResolution
+	if assignmentBacked {
+		configurationResolver, err := loadAssetConfigurationResolver(h.db)
+		if err != nil {
+			return job, fmt.Errorf("load claim-time effective configuration: %w", err)
 		}
-		input.ProfileID = fallback.ID
+		effective := configurationResolver.resolve(record)
+		effective = effectiveConfigurationWithFrozenAssetDefaults(effective, job.ProfileResolution)
+		hasOperation := effective.Video.VideoProfileID > 0 ||
+			effective.Video.Selection == VideoAssignmentOverrideOnly ||
+			effective.Video.Selection == VideoAssignmentAudioOnly ||
+			effective.Video.Selection == configSelectionValue ||
+			strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
+			strings.TrimSpace(effective.Tracks.ProfileKey) != "" ||
+			effective.Audio.Selection == configSelectionValue || effective.Tracks.Selection == configSelectionValue
+		if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
+			return job, fmt.Errorf("claimed asset no longer has a complete effective processing configuration")
+		}
+		input.LibraryID = effective.Destination.DestinationLibraryID
+		input.ProfileID = effective.Video.VideoProfileID
+		input.AudioProfileKey = effective.Audio.ProfileKey
+		input.TrackProfileKey = effective.Tracks.ProfileKey
+		input.ProcessingMode = ProcessingModeAudioOnly
+		if effective.Video.VideoProfileID > 0 || effective.Video.Selection == VideoAssignmentOverrideOnly || effective.Video.Selection == configSelectionValue {
+			input.ProcessingMode = ProcessingModeFullEncode
+		}
+		resolution = resolveProfileAssignmentsFromEffective(&input, effective)
+	} else {
+		if input.LibraryID == 0 {
+			return job, fmt.Errorf("explicit queue intent has no library")
+		}
+		var library models.Library
+		if err := h.db.First(&library, input.LibraryID).Error; err != nil {
+			return job, fmt.Errorf("load explicit queue library: %w", err)
+		}
+		if input.ProcessingMode == "" {
+			if input.ProfileID > 0 {
+				input.ProcessingMode = ProcessingModeFullEncode
+			} else if strings.TrimSpace(input.AudioProfileKey) != "" || strings.TrimSpace(input.TrackProfileKey) != "" {
+				input.ProcessingMode = ProcessingModeAudioOnly
+			}
+		}
+		if input.ProfileID == 0 && normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly {
+			var fallback models.Profile
+			if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
+				return job, fmt.Errorf("resolve explicit audio-only fallback profile: %w", err)
+			}
+			input.ProfileID = fallback.ID
+		}
+		if input.ProfileID == 0 && strings.TrimSpace(input.AudioProfileKey) == "" && strings.TrimSpace(input.TrackProfileKey) == "" {
+			return job, fmt.Errorf("explicit queue intent has no processing profile")
+		}
 	}
 
 	prepared := job
@@ -645,6 +672,15 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 		return job, err
 	}
 	return prepared, nil
+}
+
+func queueJobUsesAssignmentBackedIntent(job models.QueueJob) bool {
+	for _, mediaType := range []string{"video", "audio", "tracks"} {
+		if _, ok := job.ProfileResolution[mediaType]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (h WorkerHandler) returnPreparedJobToQueue(jobID uint) error {
