@@ -1904,6 +1904,53 @@ func TestSubtitleExtractionTargetsPreserveConvertedBitmapFallbackIdentity(t *tes
 	}
 }
 
+func TestSubtitleExtractionTargetsKeepBitmapOriginalModeSeparateFromOCR(t *testing.T) {
+	streamIndex := 4
+	t.Run("PGS", func(t *testing.T) {
+		result, targets, err := prepareSubtitleExtractionTargets("/media/library/Movie.mkv", nil, []FFProbeStream{{
+			Index: streamIndex, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "jpn"},
+		}}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "original", GenerateSRTFallbackForASS: true})
+		if err != nil || len(result.Unsupported) != 0 || len(targets) != 1 {
+			t.Fatalf("PGS original result=%#v targets=%#v err=%v", result, targets, err)
+		}
+		decision := targets[0].plan.Decision
+		if decision.Mode != "original" || decision.Format != "sup" || decision.OCRRequired || decision.RequestedFormat != "original" {
+			t.Fatalf("invalid PGS original decision=%#v", decision)
+		}
+	})
+
+	t.Run("VobSub unsupported", func(t *testing.T) {
+		result, targets, err := prepareSubtitleExtractionTargets("/media/library/Movie.mkv", nil, []FFProbeStream{{
+			Index: streamIndex, CodecType: "subtitle", CodecName: "dvd_subtitle", Tags: map[string]string{"language": "spa"},
+		}}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "original", GenerateSRTFallbackForASS: true})
+		if err != nil || len(result.Unsupported) != 1 || len(targets) != 0 {
+			t.Fatalf("VobSub original result=%#v targets=%#v err=%v", result, targets, err)
+		}
+		for _, artifact := range result.Artifacts {
+			if artifact.Format == "original" || artifact.OCRRequired {
+				t.Fatalf("unsupported VobSub created invalid artifact=%#v", artifact)
+			}
+		}
+	})
+}
+
+func TestSubtitleExtractionTargetsPreserveConvertedPGSAndVobSubFallback(t *testing.T) {
+	for _, codec := range []string{"hdmv_pgs_subtitle", "dvd_subtitle"} {
+		t.Run(codec, func(t *testing.T) {
+			streamIndex := 4
+			result, targets, err := prepareSubtitleExtractionTargets("/media/library/Movie.mkv", nil, []FFProbeStream{{
+				Index: streamIndex, CodecType: "subtitle", CodecName: codec, Tags: map[string]string{"language": "eng"},
+			}}, SubtitleExtractionInput{StreamIndex: &streamIndex, Format: "ass", GenerateSRTFallbackForASS: true})
+			if err != nil || len(result.Unsupported) != 0 || len(targets) != 2 {
+				t.Fatalf("converted bitmap result=%#v targets=%#v err=%v", result, targets, err)
+			}
+			if targets[0].plan.Format != "srt" || targets[1].plan.Format != "ass" || targets[0].plan.Mode != "converted" || targets[1].plan.Mode != "converted" || targets[0].plan.Decision.LogicalTransformKey != targets[1].plan.Decision.LogicalTransformKey {
+				t.Fatalf("converted bitmap fallback targets=%#v", targets)
+			}
+		})
+	}
+}
+
 func TestSubtitleExtractionTargetsReuseExistingFallbackOutputsWithoutDuplication(t *testing.T) {
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "Movie.mkv")
@@ -1929,6 +1976,53 @@ func TestSubtitleExtractionTargetsReuseExistingFallbackOutputsWithoutDuplication
 	})
 	if err != nil || len(targets) != 0 || len(result.Existing) != 2 || len(result.Artifacts) != 2 {
 		t.Fatalf("existing fallback outputs were not reused independently: result=%#v targets=%#v err=%v", result, targets, err)
+	}
+}
+
+func TestSubtitleExtractionTargetsReuseExistingNativeASSFallbackOutputs(t *testing.T) {
+	for _, codec := range []string{"ass", "ssa"} {
+		t.Run(codec, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "Movie.mkv")
+			streamIndex := 3
+			streams := []FFProbeStream{{Index: streamIndex, CodecType: "subtitle", CodecName: codec, Tags: map[string]string{"language": "eng"}}}
+			plans, unsupported := subtitleExtractionPlansForRequest(mediaPath, streams, SubtitleExtractionInput{
+				StreamIndex: &streamIndex, Format: "original", GenerateSRTFallbackForASS: true,
+			})
+			if len(unsupported) != 0 || len(plans) != 2 {
+				t.Fatalf("plans=%#v unsupported=%#v", plans, unsupported)
+			}
+			for _, plan := range plans {
+				if err := os.WriteFile(plan.OutputPath, []byte("existing subtitle"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, targets, err := prepareSubtitleExtractionTargets(mediaPath, plans, nil, SubtitleExtractionInput{
+				StreamIndex: &streamIndex, Format: "original", GenerateSRTFallbackForASS: true,
+			})
+			if err != nil || len(targets) != 0 || len(result.Existing) != 2 {
+				t.Fatalf("existing native fallback outputs were not reused: result=%#v targets=%#v err=%v", result, targets, err)
+			}
+		})
+	}
+}
+
+func TestSubtitleFallbackArtifactNamingPreservesForcedAndSDHQualifiers(t *testing.T) {
+	used := map[string]struct{}{}
+	for _, artifact := range []struct {
+		name  string
+		value SubtitleArtifact
+		want  string
+	}{
+		{name: "forced", value: SubtitleArtifact{Language: "eng", Format: "srt", Forced: true}, want: "/staging/Movie.eng.forced.srt"},
+		{name: "sdh", value: SubtitleArtifact{Language: "eng", Format: "srt", Role: SubtitleRoleSDH}, want: "/staging/Movie.eng.sdh.srt"},
+		{name: "forced sdh", value: SubtitleArtifact{Language: "eng", Format: "srt", Forced: true, Role: SubtitleRoleSDH}, want: "/staging/Movie.eng.forced.sdh.srt"},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			if got := resolvedSubtitleStagedPath("/staging/Movie", artifact.value, used); got != artifact.want {
+				t.Fatalf("staged path=%q want=%q", got, artifact.want)
+			}
+		})
 	}
 }
 
