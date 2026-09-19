@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/config"
 	"github.com/gin-gonic/gin"
 )
 
@@ -1024,7 +1025,28 @@ func publishedSubtitleRevisionMatches(expected publishedSubtitleRevision) bool {
 }
 
 func publishedSubtitleSnapshotRoot() string {
-	root := filepath.Join(canonicalOCRWorkspaceRoot(), "published-snapshots")
+	root := filepath.Join(publishedOCRStateRoot(), "published-snapshots")
+	_ = os.MkdirAll(root, 0o700)
+	return root
+}
+
+func publishedOCRStateRoot() string {
+	if root := strings.TrimSpace(os.Getenv("MVFORGE_OCR_PERSISTENT_ROOT")); root != "" {
+		_ = os.MkdirAll(root, 0o700)
+		return root
+	}
+	// MVFORGE_OCR_LIFECYCLE_ROOT remains a test isolation override. Production
+	// uses the persistent application-data directory derived from the database
+	// path rather than the user cache/workspace root.
+	if root := strings.TrimSpace(os.Getenv("MVFORGE_OCR_LIFECYCLE_ROOT")); root != "" {
+		_ = os.MkdirAll(root, 0o700)
+		return root
+	}
+	databasePath := strings.TrimSpace(config.Load().DatabasePath)
+	if databasePath == "" {
+		databasePath = filepath.Join("data", "mvforge.db")
+	}
+	root := filepath.Join(filepath.Dir(databasePath), "mvforge-ocr-state")
 	_ = os.MkdirAll(root, 0o700)
 	return root
 }
@@ -1038,82 +1060,101 @@ func publishedSubtitleOwnerIdentity(path, format, logicalTransform string) strin
 	return strings.Join([]string{filepath.Clean(path), strings.ToLower(strings.TrimSpace(format)), strings.TrimSpace(logicalTransform)}, "\x00")
 }
 
-func publishedOCRExternalOwnership(path, format string) (managed, analysisAvailable bool, logicalTransform string) {
+type publishedOCRExternalOwnershipCandidate struct {
+	LogicalTransform string
+	Snapshot         bool
+}
+
+type publishedOCRExternalOwnershipIndex map[string][]publishedOCRExternalOwnershipCandidate
+
+func publishedOCROwnershipLookupKey(path, format string) string {
+	return publishedSubtitleOwnerIdentity(filepath.Clean(path), strings.ToLower(strings.TrimSpace(format)), "")
+}
+
+func appendPublishedOCROwnershipCandidate(ownershipIndex publishedOCRExternalOwnershipIndex, path, format, logicalTransform string, snapshot bool) {
+	lookupKey := publishedOCROwnershipLookupKey(path, format)
+	candidates := ownershipIndex[lookupKey]
+	for candidateIndex, candidate := range candidates {
+		if candidate.LogicalTransform == logicalTransform {
+			if snapshot {
+				candidates[candidateIndex].Snapshot = true
+			}
+			ownershipIndex[lookupKey] = candidates
+			return
+		}
+	}
+	ownershipIndex[lookupKey] = append(candidates, publishedOCRExternalOwnershipCandidate{LogicalTransform: logicalTransform, Snapshot: snapshot})
+}
+
+func loadPublishedOCRExternalOwnershipIndex() publishedOCRExternalOwnershipIndex {
+	index := make(publishedOCRExternalOwnershipIndex)
+	root := publishedSubtitleSnapshotRoot()
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(root, entry.Name()))
+			if readErr != nil {
+				continue
+			}
+			var snapshot publishedCanonicalOCRSnapshot
+			if json.Unmarshal(content, &snapshot) != nil || snapshot.OwnerIdentity == "" || snapshot.Revision.ArtifactPath == "" || snapshot.Format == "" {
+				continue
+			}
+			if snapshot.OwnerIdentity != publishedSubtitleOwnerIdentity(snapshot.Revision.ArtifactPath, snapshot.Format, snapshot.LogicalTransformKey) {
+				continue
+			}
+			appendPublishedOCROwnershipCandidate(index, snapshot.Revision.ArtifactPath, snapshot.Format, snapshot.LogicalTransformKey, true)
+		}
+	}
+
+	legacyRoot := filepath.Join(publishedOCRStateRoot(), "legacy-ownership")
+	if entries, err := os.ReadDir(legacyRoot); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(legacyRoot, entry.Name()))
+			if readErr != nil {
+				continue
+			}
+			var ownership legacyPublishedOCROwnership
+			if json.Unmarshal(content, &ownership) != nil || ownership.ArtifactPath == "" || ownership.Format == "" {
+				continue
+			}
+			appendPublishedOCROwnershipCandidate(index, ownership.ArtifactPath, ownership.Format, ownership.LogicalTransformKey, false)
+		}
+	}
+	return index
+}
+
+func publishedOCRExternalOwnershipFromIndex(index publishedOCRExternalOwnershipIndex, path, format string) (managed, analysisAvailable bool, logicalTransform string) {
 	cleanPath := filepath.Clean(strings.TrimSpace(path))
 	format = strings.ToLower(strings.TrimSpace(format))
 	if cleanPath == "." || cleanPath == "" || format == "" {
 		return false, false, ""
 	}
-	entries, err := os.ReadDir(publishedSubtitleSnapshotRoot())
-	if err == nil && len(entries) <= 4096 {
-		keys := make([]string, 0, 2)
-		available := make([]bool, 0, 2)
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			content, readErr := os.ReadFile(filepath.Join(publishedSubtitleSnapshotRoot(), entry.Name()))
-			if readErr != nil {
-				continue
-			}
-			var snapshot publishedCanonicalOCRSnapshot
-			if json.Unmarshal(content, &snapshot) != nil || snapshot.Revision.ArtifactPath != cleanPath || snapshot.Format != format {
-				continue
-			}
-			key := snapshot.LogicalTransformKey
-			if snapshot.OwnerIdentity != publishedSubtitleOwnerIdentity(cleanPath, format, key) {
-				continue
-			}
-			duplicate := false
-			for _, existing := range keys {
-				duplicate = duplicate || existing == key
-			}
-			if duplicate {
-				continue
-			}
-			keys = append(keys, key)
-			_, valid := loadPublishedCanonicalOCRSnapshot(cleanPath, format, key)
-			available = append(available, valid)
-		}
-		if len(keys) == 1 {
-			return true, available[0], keys[0]
-		}
-		if len(keys) > 1 {
+	candidates := index[publishedOCROwnershipLookupKey(cleanPath, format)]
+	if len(candidates) != 1 {
+		if len(candidates) > 1 {
 			return true, false, ""
 		}
-	}
-
-	legacyRoot := filepath.Join(canonicalOCRWorkspaceRoot(), "legacy-ownership")
-	legacyEntries, err := os.ReadDir(legacyRoot)
-	if err != nil || len(legacyEntries) > 4096 {
 		return false, false, ""
 	}
-	keys := make([]string, 0, 2)
-	for _, entry := range legacyEntries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		content, readErr := os.ReadFile(filepath.Join(legacyRoot, entry.Name()))
-		if readErr != nil {
-			continue
-		}
-		var ownership legacyPublishedOCROwnership
-		if json.Unmarshal(content, &ownership) != nil || ownership.ArtifactPath != cleanPath || ownership.Format != format {
-			continue
-		}
-		key := ownership.LogicalTransformKey
-		if _, ok := reconstructLegacyOCRSnapshot(cleanPath, format, key); !ok {
-			continue
-		}
-		keys = append(keys, key)
+	candidate := candidates[0]
+	if candidate.Snapshot {
+		_, valid := loadPublishedCanonicalOCRSnapshot(cleanPath, format, candidate.LogicalTransform)
+		return true, valid, candidate.LogicalTransform
 	}
-	if len(keys) == 1 {
-		return true, true, keys[0]
+	if _, ok := reconstructLegacyOCRSnapshot(cleanPath, format, candidate.LogicalTransform); !ok {
+		return true, false, candidate.LogicalTransform
 	}
-	if len(keys) > 1 {
-		return true, false, ""
-	}
-	return false, false, ""
+	return true, true, candidate.LogicalTransform
+}
+
+func publishedOCRExternalOwnership(path, format string) (managed, analysisAvailable bool, logicalTransform string) {
+	return publishedOCRExternalOwnershipFromIndex(loadPublishedOCRExternalOwnershipIndex(), path, format)
 }
 
 func canonicalOCRSourceIdentityMatches(identity canonicalOCRIdentity) bool {
@@ -1245,7 +1286,7 @@ type legacyPublishedOCROwnership struct {
 func legacyPublishedOCROwnershipPath(path, format, logicalTransform string) string {
 	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
 	sum := sha256.Sum256([]byte(owner))
-	root := filepath.Join(canonicalOCRWorkspaceRoot(), "legacy-ownership")
+	root := filepath.Join(publishedOCRStateRoot(), "legacy-ownership")
 	_ = os.MkdirAll(root, 0o700)
 	return filepath.Join(root, hex.EncodeToString(sum[:])+".json")
 }

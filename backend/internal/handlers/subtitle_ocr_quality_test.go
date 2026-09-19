@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -60,7 +61,10 @@ func TestSubtitleOCRAccurateScoreUsesDeterministicLanguageEvidence(t *testing.T)
 
 func TestAnalyzePublishedOCRQualityUsesDurableSnapshotAfterCacheEviction(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	executionRoot := t.TempDir()
+	persistentRoot := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", executionRoot)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", persistentRoot)
 	sidecar := filepath.Join(root, "movie.eng.srt")
 	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The h0use")
@@ -76,7 +80,7 @@ func TestAnalyzePublishedOCRQualityUsesDurableSnapshotAfterCacheEviction(t *test
 		t.Fatal(err)
 	}
 	// The execution cache is intentionally unrelated to the durable snapshot.
-	if err := os.RemoveAll(filepath.Join(root, "execution-cache")); err != nil {
+	if err := os.RemoveAll(executionRoot); err != nil {
 		t.Fatal(err)
 	}
 	report, err := analyzePublishedOCRQuality(sidecar, "srt", "both-1")
@@ -88,6 +92,91 @@ func TestAnalyzePublishedOCRQualityUsesDurableSnapshotAfterCacheEviction(t *test
 	}
 	if content, err := os.ReadFile(sidecar); err != nil || !strings.Contains(string(content), "The h0use") {
 		t.Fatalf("analysis changed the published sidecar: %q (%v)", content, err)
+	}
+}
+
+func TestExternalSubtitleInventoryUsesIndexedOwnershipBeyondPreviousLimit(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "execution"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "persistent"))
+	media := filepath.Join(root, "movie.mkv")
+	managed := filepath.Join(root, "movie.eng.srt")
+	generic := filepath.Join(root, "movie.spa.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, managed, "The house")
+	writeTestSRT(t, generic, "La casa")
+	evidence := testPublishedOCREvidence(media, "The house")
+	info, _ := os.Stat(media)
+	evidence.Identity.SourcePath = media
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), managed, "srt", "indexed-managed", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 4100; index++ {
+		unrelatedPath := filepath.Join(root, "unrelated-"+strconv.Itoa(index)+".srt")
+		owner := publishedSubtitleOwnerIdentity(unrelatedPath, "srt", "unrelated-"+strconv.Itoa(index))
+		snapshot := publishedCanonicalOCRSnapshot{
+			OwnerIdentity:       owner,
+			Revision:            publishedSubtitleRevision{ArtifactPath: unrelatedPath},
+			Format:              "srt",
+			LogicalTransformKey: "unrelated-" + strconv.Itoa(index),
+		}
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(publishedSubtitleSnapshotPath(owner), encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	values, err := externalSubtitlesForMedia(media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var managedValue, genericValue ExternalSubtitle
+	for _, value := range values {
+		switch value.Path {
+		case managed:
+			managedValue = value
+		case generic:
+			genericValue = value
+		}
+	}
+	if !managedValue.OCRManaged || !managedValue.OCRAnalysisAvailable || managedValue.LogicalTransformKey != "indexed-managed" {
+		t.Fatalf("active ownership was hidden by unrelated snapshot count: %+v", managedValue)
+	}
+	if genericValue.OCRManaged || genericValue.OCRAnalysisAvailable || genericValue.LogicalTransformKey != "" {
+		t.Fatalf("generic sidecar became managed: %+v", genericValue)
+	}
+}
+
+func TestExternalSubtitleOwnershipAmbiguityFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "execution"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(root, "persistent"))
+	media := filepath.Join(root, "movie.mkv")
+	managed := filepath.Join(root, "movie.eng.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, managed, "The house")
+	evidence := testPublishedOCREvidence(media, "The house")
+	info, _ := os.Stat(media)
+	evidence.Identity.SourcePath = media
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	for _, logicalTransform := range []string{"ambiguous-a", "ambiguous-b"} {
+		if err := commitPublishedCanonicalOCRSnapshot(context.Background(), managed, "srt", logicalTransform, evidence, "test", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ownershipIndex := loadPublishedOCRExternalOwnershipIndex()
+	managedValue, available, logicalTransform := publishedOCRExternalOwnershipFromIndex(ownershipIndex, managed, "srt")
+	if !managedValue || available || logicalTransform != "" {
+		t.Fatalf("ambiguous OCR ownership was not failed closed: managed=%v available=%v logical=%q", managedValue, available, logicalTransform)
 	}
 }
 

@@ -3009,6 +3009,7 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 		return nil, err
 	}
 	values := []ExternalSubtitle{}
+	ocrOwnershipIndex := loadPublishedOCRExternalOwnershipIndex()
 	for _, entry := range entries {
 		if entry.IsDir() || !externalSubtitleNameForStem(entry.Name(), stem) {
 			continue
@@ -3037,7 +3038,7 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 			}
 		}
 		sidecarPath := filepath.Join(directory, entry.Name())
-		ocrManaged, ocrAnalysisAvailable, logicalTransformKey := publishedOCRExternalOwnership(sidecarPath, ext)
+		ocrManaged, ocrAnalysisAvailable, logicalTransformKey := publishedOCRExternalOwnershipFromIndex(ocrOwnershipIndex, sidecarPath, ext)
 		values = append(values, ExternalSubtitle{
 			Path: sidecarPath, FileName: entry.Name(), Format: ext,
 			Language: language, Default: isDefault, Forced: forced, SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
