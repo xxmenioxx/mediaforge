@@ -8,6 +8,14 @@ atomic all-output publication barrier. This change adds quality analysis and
 correction at the boundary described in the proposal; it does not replace
 those contracts or create another planner, OCR lifecycle, or job system.
 
+The #6 reusable OCR execution cache is currently bounded by a seven-day age
+limit and a 256 MiB size limit. It retains canonical cues and geometry but is
+evictable, and completed shared-flight workspaces/prepared bitmap intermediates
+are cleaned. It is therefore not a durable prerequisite for later quality
+analysis. This design adds a separate lightweight snapshot associated with a
+successful OCR publication; the snapshot contains canonical cue/provenance
+metadata, never an indefinitely retained prepared bitmap.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -21,6 +29,8 @@ those contracts or create another planner, OCR lifecycle, or job system.
 - Support Asset Info review, explicit user decisions, safe batch correction,
   provenance, retry, cancellation, cleanup, and atomic publication.
 - Keep NAS reads, candidate generation, cache lookup, and retention bounded.
+- Allow `Analyze OCR` to work after #6 execution-cache eviction by using the
+  lightweight published canonical cue snapshot.
 
 **Non-Goals:**
 
@@ -53,6 +63,28 @@ rejected because it would allow output drift, lose geometry context, and make
 rejected because native extraction is intentionally lossless and outside the
 OCR lifecycle.
 
+### 1a. Separate the durable analysis baseline from the execution cache
+
+After successful OCR publication, persist a bounded MVForge-owned canonical cue
+snapshot associated with the published artifact. The snapshot contains cue IDs,
+text, timing/order, geometry/layout required for ASS, OCR language/mode,
+canonical OCR identity/provenance reference, artifact/logical-transform
+identity, and explicit versions/integrity metadata. It does not retain the
+prepared bitmap workspace or arbitrary per-cue images.
+
+The #6 execution/reuse cache remains the fast reusable-OCR path and retains its
+existing seven-day/256 MiB bounds. Eviction of that cache invalidates a future
+OCR execution reuse opportunity but does not remove the lightweight published
+baseline. Snapshot lookup is tied to the exact published artifact revision and
+canonical identity; it is not a new OCR planner or job system.
+
+For legacy OCR artifacts without a snapshot, text-only analysis may reconstruct
+a bounded snapshot from an MVForge-owned SRT/ASS when its provenance and
+artifact identity are sufficient. That reconstruction cannot invent bitmap
+geometry or cue images. Image-level/selective OCR is unavailable unless valid
+source evidence can be safely reacquired, and Analyze OCR must not silently
+start a full OCR rerun merely to create a baseline.
+
 ### 2. Keep canonical cue structure immutable during correction
 
 The repair layer may replace cue text and append correction metadata only. It
@@ -69,7 +101,8 @@ intermediate happened to contain layout tags.
 
 ### 3. Use a deterministic, read-only quality analyzer
 
-The analyzer runs over canonical cues and bounded recognition evidence. Its
+The analyzer runs over the published canonical cue snapshot and any still-valid
+bounded recognition evidence. Its
 first pass combines:
 
 - normalized lexical and dictionary evidence;
@@ -83,21 +116,40 @@ evidence. It does not publish, rewrite canonical cues, start full OCR, or
 assume that an unknown word is wrong. Proper nouns, names, and insufficiently
 supported tokens remain unchanged or go to review.
 
-Candidate scoring is deterministic and versioned. It may compare the existing
-canonical text with candidates already produced by the canonical lifecycle
-and, where eligible, a selective secondary OCR candidate. A candidate is
-auto-applicable only if the validator and confidence threshold agree;
-otherwise the finding remains reviewable. Repeating analysis with the same
-canonical evidence and versions is expected to produce the same result.
+Candidate scoring is deterministic and versioned. The existing structural
+score is extended with structural character sanity, replacement/suspicious
+character penalties, known OCR-confusion penalties, supported-language
+dictionary/known-word evidence, and bounded lexical plausibility. Unknown-word
+ratio is evidence only: proper nouns and unsupported/unknown languages do not
+receive an English dictionary penalty or an automatic rewrite. The selected
+`accurate` candidate is chosen with this score before canonical cleanup and
+serialization, and its scoring contract/version is included in OCR pipeline
+and evidence provenance so incompatible cached evidence fails closed.
+
+The scorer may compare the existing canonical text with candidates already
+produced by the canonical lifecycle and, where eligible, a selective secondary
+OCR candidate. A candidate is auto-applicable only if the validator and
+confidence threshold agree; otherwise the finding remains reviewable. Repeating
+scoring with the same evidence, supported language, and versions is expected
+to produce the same result. A valid-looking OCR error is allowed to change the
+accurate selection only when deterministic evidence supports that choice.
 
 ### 4. Make repair selective and representation-aware
 
-For bitmap cues, selective repair can reuse the prepared bitmap/PGS/VobSub
-representation owned by the canonical OCR evidence. DVD/VobSub preprocessing
-is bounded and OCR-only; it is limited to suspicious cue input and does not
-perform heuristic byte scanning or a full source-media pass. Existing OCR
-language, mode, runtime capability, and Japanese fallback semantics remain
-authoritative.
+For bitmap cues, selective repair is capability-gated. It may use a bounded
+prepared subtitle representation, a persisted lightweight source/cue locator,
+or another explicit supported extraction mechanism that can safely reacquire
+the suspicious cue input. The reusable canonical evidence itself does not
+promise that cue bitmaps remain available after its flight workspace is
+cleaned. DVD/VobSub preprocessing is bounded and OCR-only; it is limited to
+suspicious cue input and does not perform heuristic byte scanning or a full
+source-media pass. Existing OCR language, mode, runtime capability, and
+Japanese fallback semantics remain authoritative.
+
+If no supported bounded cue-input mechanism is available, the canonical text
+remains unchanged and the cue is marked for review. Repair must not rerun
+full-stream OCR automatically, hash/scan the complete media, or claim that a
+selective OCR attempt was made.
 
 The candidate set is ordered for explainability: original canonical text,
 existing canonical/accurate candidates, eligible secondary-OCR candidates,
@@ -121,6 +173,13 @@ subscriber does not cancel a shared flight used by another subscriber; when
 the shared flight itself ends, existing bounded process-tree cancellation and
 independent cleanup rules apply.
 
+Before any apply action starts, the operation loads the published-artifact
+revision recorded by analysis. It must revalidate that revision before staging
+and again immediately before publication. A revision is bounded metadata for
+the artifact/path identity, size, mtime, full sidecar content hash, and logical
+`both` membership. The operation never treats a content change as a new
+baseline implicitly.
+
 ### 6. Publish only validated final outputs at the existing barrier
 
 Correction writes candidate SRT/ASS outputs to operation-owned staging. The
@@ -131,6 +190,12 @@ currently published sidecars remain untouched and all operation-owned staging
 is removed. A subscriber terminal state does not delete an active shared OCR
 workspace.
 
+The final revision check and publication commit are serialized by the existing
+publication boundary. If operation A commits from revision R, operation B
+still based on R must observe the changed revision and fail closed rather than
+overwrite A. For `both`, every currently published member is checked as one
+set; one stale or missing member prevents the correction.
+
 No `.bak`, `.raw`, or temporary path is exposed beside the asset. Previous
 published artifacts remain in place until a successful atomic replacement;
 revision and correction provenance are retained in the internal store so
@@ -140,9 +205,11 @@ future undo can be designed without relying on Library-visible backups.
 
 Quality results and repaired evidence reference the canonical OCR identity
 defined by `canonical-ocr-lifecycle`, including source/stream/preparation,
-language/mode, runtime, and parser/provenance inputs. Quality analyzer and
-repair contract versions are included in internal provenance so implementation
-changes fail closed to a fresh analysis or candidate evaluation.
+language/mode, runtime, and parser/provenance inputs. Quality analyzer, repair,
+and accurate-candidate-scoring contract versions are included in internal
+provenance so implementation changes fail closed to a fresh analysis or
+candidate evaluation. The published cue snapshot is the durable baseline;
+temporary execution evidence and the seven-day/256 MiB execution cache are not.
 
 The normal lookup path uses bounded source/stat identity and prepared subtitle
 representation evidence already available to the canonical lifecycle. It must
@@ -158,6 +225,16 @@ OCR is limited by cue count, prepared-input size, timeout, and the existing
 operation cancellation context. Runtime/tool probes are reused through the
 canonical OCR lifecycle's bounded capability/provenance facilities rather than
 repeated per cue. Cleanup uses the existing independent bounded cleanup path.
+
+### 9. Bound contextual providers and candidate batches
+
+If a contextual correction provider is enabled later, it receives only
+suspicious or review candidates, in bounded batches rather than one request per
+cue. The existing operation cancellation context propagates through the
+provider call. Provider output is text-only, records provider provenance, and
+must pass deterministic validation before it can be applied. Provider failure,
+timeout, or cancellation leaves the canonical text unchanged and does not
+turn the provider into a translation or independent correction lifecycle.
 
 This trades some recall for predictable NAS load and safe review. A cue that
 cannot be evaluated within the bounds is reported for review rather than
@@ -186,11 +263,15 @@ silently changed.
 1. Add the quality/correction contracts and internal provenance fields as
    backward-compatible optional data; existing canonical evidence and
    published artifacts remain readable.
-2. Implement analyzer and review in read-only mode first, with focused tests
+2. On first analysis of a legacy OCR artifact, reconstruct only a bounded
+   text-based snapshot when MVForge-owned provenance is sufficient; otherwise
+   report the unavailable baseline/cue-input capability without starting full
+   OCR.
+3. Implement analyzer and review in read-only mode first, with focused tests
    proving no sidecar mutation and no duplicate OCR.
-3. Enable selective repair and final publication behind the existing subtitle
+4. Enable selective repair and final publication behind the existing subtitle
    operation path, preserving cancellation and the all-output barrier.
-4. Roll back by disabling repair actions while retaining the existing canonical
+5. Roll back by disabling repair actions while retaining the existing canonical
    OCR conversion path; do not delete existing sidecars or internal evidence.
 
 No migration of published media is required. Existing SRT/ASS sidecars and
