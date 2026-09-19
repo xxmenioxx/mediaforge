@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +20,6 @@ const (
 	subtitleOCRQualityVersion       = "quality-v1"
 	subtitleOCRRepairVersion        = "repair-v1"
 	maxPublishedSubtitleBytes       = 64 * 1024 * 1024
-	maxPublishedSnapshotHistory     = 8
 	subtitleOCRQualityStatusClean   = "clean"
 	subtitleOCRQualityStatusSuspect = "suspicious"
 	subtitleOCRQualityStatusReview  = "review"
@@ -127,6 +125,15 @@ func subtitleOCRPaths(inputSidecarPath string, inputPaths []string) []string {
 	return paths
 }
 
+func subtitleRevisionSetKey(revisions []publishedSubtitleRevision) string {
+	if len(revisions) == 1 {
+		return revisions[0].key()
+	}
+	encoded, _ := json.Marshal(revisions)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
 func validateSubtitleOCRSidecarPaths(mediaPath string, paths []string) ([]string, error) {
 	mediaPath = filepath.Clean(strings.TrimSpace(mediaPath))
 	if mediaPath == "." || mediaPath == "" {
@@ -208,25 +215,19 @@ func validateSubtitleQualityCorrectionInput(input subtitleOCRCorrectionInput) ([
 	if len(paths) == 0 {
 		return nil, errors.New("OCR correction requires a published sidecar path")
 	}
-	revisions := append([]publishedSubtitleRevision(nil), input.Revisions...)
-	if len(revisions) == 0 {
-		for _, path := range paths {
-			revision, _, err := publishedSubtitleRevisionFor(path, input.LogicalTransformKey)
-			if err != nil {
-				return nil, err
-			}
-			revisions = append(revisions, revision)
-		}
+	if strings.TrimSpace(input.BaselineRevision) == "" {
+		return nil, errors.New("OCR correction requires the revision returned by Analyze OCR")
 	}
+	revisions := append([]publishedSubtitleRevision(nil), input.Revisions...)
 	if len(revisions) != len(paths) {
 		return nil, errors.New("OCR correction revision set does not match the requested sidecars")
+	}
+	if subtitleRevisionSetKey(revisions) != input.BaselineRevision {
+		return nil, errors.New("stale OCR analysis revision")
 	}
 	for index, path := range paths {
 		if revisions[index].ArtifactPath != path {
 			return nil, errors.New("OCR correction revision identity does not match its sidecar path")
-		}
-		if input.BaselineRevision != "" && len(paths) == 1 && revisions[index].key() != input.BaselineRevision {
-			return nil, errors.New("stale OCR analysis revision")
 		}
 	}
 	return revisions, nil
@@ -483,6 +484,7 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			operation.Message = "Analyzing OCR quality"
 		})
 	}
+	combined.BaselineRevision = subtitleRevisionSetKey(combined.RevisionSet)
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		operation.Status = "completed"
 		operation.Phase = "completed"
@@ -600,6 +602,10 @@ func (h AssetHandler) CorrectSubtitleOCR(c *gin.Context) {
 		input.SidecarPath = paths[0]
 		input.SidecarPaths = paths
 	}
+	if _, err := validateSubtitleQualityCorrectionInput(input); err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
 	operationID, err := startSubtitleOCRCorrectionOperation(input)
 	if err != nil {
 		c.JSON(409, gin.H{"error": err.Error()})
@@ -656,6 +662,15 @@ func publishedSubtitleOwnerIdentity(path, format, logicalTransform string) strin
 	return strings.Join([]string{filepath.Clean(path), strings.ToLower(strings.TrimSpace(format)), strings.TrimSpace(logicalTransform)}, "\x00")
 }
 
+func canonicalOCRSourceIdentityMatches(identity canonicalOCRIdentity) bool {
+	sourcePath := filepath.Clean(strings.TrimSpace(identity.SourcePath))
+	if sourcePath == "." || sourcePath == "" || identity.SourceSnapshotVersion != "stat-v1" || identity.SourceSize < 0 || identity.SourceModTimeUnixNano < 0 {
+		return false
+	}
+	info, err := os.Stat(sourcePath)
+	return err == nil && !info.IsDir() && info.Size() == identity.SourceSize && info.ModTime().UnixNano() == identity.SourceModTimeUnixNano
+}
+
 func loadPublishedCanonicalOCRSnapshot(path, format, logicalTransform string) (*publishedCanonicalOCRSnapshot, bool) {
 	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
 	content, err := os.ReadFile(publishedSubtitleSnapshotPath(owner))
@@ -669,10 +684,8 @@ func loadPublishedCanonicalOCRSnapshot(path, format, logicalTransform string) (*
 	if snapshot.Revision.ArtifactPath != filepath.Clean(path) || !publishedSubtitleRevisionMatches(snapshot.Revision) {
 		return nil, false
 	}
-	if sourcePath := strings.TrimSpace(snapshot.Evidence.Identity.SourcePath); sourcePath != "" {
-		if _, err := os.Stat(sourcePath); err != nil {
-			return nil, false
-		}
+	if !canonicalOCRSourceIdentityMatches(snapshot.Evidence.Identity) {
+		return nil, false
 	}
 	return &snapshot, true
 }
@@ -741,30 +754,7 @@ func commitPublishedCanonicalOCRSnapshot(
 }
 
 func prunePublishedCanonicalSnapshots(root string) {
-	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) <= maxPublishedSnapshotHistory {
-		cleanupOrphanedPublishedCanonicalSnapshots(root, entries)
-		return
-	}
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	candidates := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		info, err := entry.Info()
-		if err == nil {
-			candidates = append(candidates, candidate{filepath.Join(root, entry.Name()), info.ModTime()})
-		}
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod.Before(candidates[j].mod) })
-	for len(candidates) > maxPublishedSnapshotHistory {
-		_ = os.Remove(candidates[0].path)
-		candidates = candidates[1:]
-	}
+	entries, _ := os.ReadDir(root)
 	cleanupOrphanedPublishedCanonicalSnapshots(root, entries)
 }
 
@@ -789,7 +779,59 @@ func cleanupOrphanedPublishedCanonicalSnapshots(root string, entries []os.DirEnt
 	}
 }
 
+type legacyPublishedOCROwnership struct {
+	Version             int    `json:"version"`
+	ArtifactPath        string `json:"artifactPath"`
+	Format              string `json:"format"`
+	LogicalTransformKey string `json:"logicalTransformKey,omitempty"`
+	SourcePath          string `json:"sourcePath"`
+	Provenance          string `json:"provenance"`
+}
+
+func legacyPublishedOCROwnershipPath(path, format, logicalTransform string) string {
+	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	sum := sha256.Sum256([]byte(owner))
+	root := filepath.Join(canonicalOCRWorkspaceRoot(), "legacy-ownership")
+	_ = os.MkdirAll(root, 0o700)
+	return filepath.Join(root, hex.EncodeToString(sum[:])+".json")
+}
+
+func markMVForgeOwnedLegacyOCRArtifact(path, format, logicalTransform, sourcePath string) error {
+	if filepath.Clean(strings.TrimSpace(path)) == "." || filepath.Clean(strings.TrimSpace(sourcePath)) == "." {
+		return errors.New("legacy OCR ownership requires artifact and source paths")
+	}
+	ownership := legacyPublishedOCROwnership{
+		Version:             1,
+		ArtifactPath:        filepath.Clean(path),
+		Format:              strings.ToLower(strings.TrimSpace(format)),
+		LogicalTransformKey: strings.TrimSpace(logicalTransform),
+		SourcePath:          filepath.Clean(sourcePath),
+		Provenance:          "mvforge-ocr-publication-v1",
+	}
+	encoded, err := json.Marshal(ownership)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(legacyPublishedOCROwnershipPath(path, format, logicalTransform), encoded, 0o600)
+}
+
+func loadMVForgeOwnedLegacyOCRArtifact(path, format, logicalTransform string) (legacyPublishedOCROwnership, bool) {
+	content, err := os.ReadFile(legacyPublishedOCROwnershipPath(path, format, logicalTransform))
+	if err != nil {
+		return legacyPublishedOCROwnership{}, false
+	}
+	var ownership legacyPublishedOCROwnership
+	if json.Unmarshal(content, &ownership) != nil || ownership.Version != 1 || ownership.Provenance != "mvforge-ocr-publication-v1" || ownership.ArtifactPath != filepath.Clean(path) || ownership.Format != strings.ToLower(strings.TrimSpace(format)) || ownership.LogicalTransformKey != strings.TrimSpace(logicalTransform) || ownership.SourcePath == "" {
+		return legacyPublishedOCROwnership{}, false
+	}
+	return ownership, true
+}
+
 func reconstructLegacyOCRSnapshot(path, format, logicalTransform string) (*publishedCanonicalOCRSnapshot, bool) {
+	ownership, owned := loadMVForgeOwnedLegacyOCRArtifact(path, format, logicalTransform)
+	if !owned {
+		return nil, false
+	}
 	revision, content, err := publishedSubtitleRevisionFor(path, logicalTransform)
 	if err != nil || !validSubtitleSidecar(format, content) {
 		return nil, false
@@ -800,7 +842,7 @@ func reconstructLegacyOCRSnapshot(path, format, logicalTransform string) (*publi
 	}
 	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
 	return &publishedCanonicalOCRSnapshot{
-		Version: 1, OwnerIdentity: owner, SourcePath: path, Format: format,
+		Version: 1, OwnerIdentity: owner, SourcePath: ownership.SourcePath, Format: format,
 		LogicalTransformKey: logicalTransform, Revision: revision,
 		Evidence:  canonicalOCREvidence{RequestedLanguage: "", OCRMode: "legacy", Complete: true, Integrity: "legacy-text-cues-v1", Cues: cues},
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Integrity: "published-canonical-cues-v1",
@@ -861,8 +903,16 @@ func deterministicOCRSuggestion(text, language string) (string, bool) {
 	if strings.Contains(text, "{\\") || strings.TrimSpace(text) == "" {
 		return "", false
 	}
-	candidate := strings.NewReplacer("0", "o", "1", "l", "|", "I").Replace(text)
-	if candidate == text || subtitleOCRScoreForLanguage(candidate, language) <= subtitleOCRScoreForLanguage(text, language) {
+	changed := false
+	candidate := ocrConfusionTokenPattern.ReplaceAllStringFunc(text, func(token string) string {
+		replacement, ok := ocrDictionaryCandidate(token, language)
+		if !ok {
+			return token
+		}
+		changed = true
+		return replacement
+	})
+	if !changed || candidate == text || subtitleOCRScoreForLanguage(candidate, language) <= subtitleOCRScoreForLanguage(text, language) {
 		return "", false
 	}
 	return candidate, true

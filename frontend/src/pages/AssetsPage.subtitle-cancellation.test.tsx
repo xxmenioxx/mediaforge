@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { EmbeddedSubtitleActions, subtitleOperationStopsPolling } from './AssetsPage';
+import { EmbeddedSubtitleActions, ExternalSubtitleList, subtitleOperationStopsPolling } from './AssetsPage';
 
 afterEach(cleanup);
 
@@ -104,21 +104,33 @@ describe('Asset Info subtitle cancellation controls', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('exposes Analyze OCR for bitmap subtitles and routes the stream/format', async () => {
+  it('analyzes the exact sidecar selected in the external subtitle list', async () => {
     const user = userEvent.setup();
     const onAnalyze = vi.fn();
 
     render(
-      <EmbeddedSubtitleActions
-        streams={[bitmapStream]}
-        generations={{}}
-        onGenerate={vi.fn()}
-        onCancel={vi.fn()}
+      <ExternalSubtitleList
+        values={[{
+          path: '/library/movie.eng.srt',
+          fileName: 'movie.eng.srt',
+          format: 'srt',
+          language: 'eng',
+          default: false,
+          forced: false,
+          sizeBytes: 100,
+          modifiedAt: '',
+        }] as never}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
         onAnalyze={onAnalyze}
       />,
     );
 
     await user.click(screen.getByRole('button', { name: 'Analyze OCR' }));
-    expect(onAnalyze).toHaveBeenCalledWith(4, 'srt');
+    expect(onAnalyze).toHaveBeenCalledWith(expect.objectContaining({ path: '/library/movie.eng.srt', format: 'srt' }));
   });
 });

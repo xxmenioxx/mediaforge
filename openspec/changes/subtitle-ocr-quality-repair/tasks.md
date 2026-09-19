@@ -23,15 +23,15 @@
 
 ## 4. Asset Info review and operation integration
 
-- [ ] 4.1 Expose Asset Info `Analyze OCR` results with clean/suspicious/review counts, original-versus-suggestion details, reasons, and provenance through the existing subtitle operation model; verify focused backend/API and frontend review tests
-- [ ] 4.2 Add keep, validated apply, manual text edit, and safe batch actions using the existing operation identity, progress, cancellation, and retry semantics; verify manual/individual/batch actions check the recorded published revision before staging, manual edits are text-only, and uncertain findings are not batch-applied
+- [x] 4.1 Expose Asset Info `Analyze OCR` results with clean/suspicious/review counts, original-versus-suggestion details, reasons, and provenance through the existing subtitle operation model; verify focused backend/API and frontend review tests
+- [x] 4.2 Add keep, validated apply, manual text edit, and safe batch actions using the existing operation identity, progress, cancellation, and retry semantics; verify manual/individual/batch actions check the recorded published revision before staging, manual edits are text-only, and uncertain findings are not batch-applied
 - [ ] 4.3 Preserve subscriber/shared-flight ownership and canonical OCR cancellation behavior while adding quality work; verify one cancelled subscriber does not cancel another active equivalent request and last-subscriber cancellation cleans without committing evidence
 
 ## 5. Canonical serialization and publication
 
 - [x] 5.1 Render SRT and ASS only after corrected canonical cues exist, using one corrected cue set for logical `both`; verify corrected text parity, preserved ASS tags/styles/geometry/positioning, and SRT text/timing-only output
 - [x] 5.2 Validate every requested output before the existing atomic publication barrier and recheck the complete published revision immediately before commit; verify external edits and concurrent operation A/B publication cause stale correction failure, preserve the current sidecar, and prevent `both` from publishing only one newly corrected output
-- [ ] 5.3 Keep `.bak`, `.raw`, and temporary staging internal and retain bounded revision/provenance suitable for future undo without adjacent media files; verify filesystem and publication metadata regression tests
+- [x] 5.3 Keep `.bak`, `.raw`, and temporary staging internal and retain bounded revision/provenance suitable for future undo without adjacent media files; verify filesystem and publication metadata regression tests
 - [x] 5.4 Enforce legacy representation boundaries; verify SRT-only reconstructed baselines can correct only SRT, cannot silently synthesize ASS geometry or become a `both` source, legacy ASS uses only safely parsed structure, and missing evidence routes to canonical subtitle conversion
 
 ## 6. Compatibility and performance regressions

@@ -4,13 +4,21 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func testPublishedOCREvidence(path string, text string) *canonicalOCREvidence {
+	info, _ := os.Stat(path)
+	size := int64(-1)
+	modified := int64(-1)
+	if info != nil {
+		size = info.Size()
+		modified = info.ModTime().UnixNano()
+	}
 	return &canonicalOCREvidence{
-		Identity:          canonicalOCRIdentity{SourcePath: path},
+		Identity:          canonicalOCRIdentity{SourcePath: path, SourceSize: size, SourceModTimeUnixNano: modified, SourceSnapshotVersion: "stat-v1"},
 		RequestedLanguage: "eng",
 		EffectiveLanguage: "eng",
 		OCRMode:           "accurate",
@@ -31,6 +39,13 @@ func writeTestSRT(t *testing.T, path, text string) {
 }
 
 func TestSubtitleOCRAccurateScoreUsesDeterministicLanguageEvidence(t *testing.T) {
+	dictionaryRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dictionaryRoot, "en.dic"), []byte("3\nthe\nhouse\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() { ocrDictionaryFolderOverride = previousFolder }()
 	primary := subtitleOCRScoreForLanguage("1\n00:00:01,000 --> 00:00:02,000\nThe h0use\n", "eng")
 	secondary := subtitleOCRScoreForLanguage("1\n00:00:01,000 --> 00:00:02,000\nThe house\n", "eng")
 	if secondary <= primary {
@@ -45,8 +60,16 @@ func TestAnalyzePublishedOCRQualityUsesDurableSnapshotAfterCacheEviction(t *test
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
 	sidecar := filepath.Join(root, "movie.eng.srt")
+	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The h0use")
+	if err := os.WriteFile(source, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	evidence := testPublishedOCREvidence(sidecar, "The h0use")
+	evidence.Identity.SourcePath = source
+	info, _ := os.Stat(source)
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
 	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "both-1", evidence, "test", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +124,12 @@ func TestLegacyOCRRepairPreservesRepresentationBoundary(t *testing.T) {
 	if err := os.WriteFile(ass, []byte("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,The h0use\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := markMVForgeOwnedLegacyOCRArtifact(srt, "srt", "", srt); err != nil {
+		t.Fatal(err)
+	}
+	if err := markMVForgeOwnedLegacyOCRArtifact(ass, "ass", "", ass); err != nil {
+		t.Fatal(err)
+	}
 	srtSnapshot, ok := reconstructLegacyOCRSnapshot(srt, "srt", "")
 	if !ok || !srtSnapshot.CanCorrectLegacy("srt", 1) {
 		t.Fatal("legacy SRT should provide text-only correction")
@@ -114,12 +143,30 @@ func TestLegacyOCRRepairPreservesRepresentationBoundary(t *testing.T) {
 	}
 }
 
+func TestLegacyOCRRepairRejectsUnownedAdjacentSubtitle(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	sidecar := filepath.Join(root, "external.srt")
+	writeTestSRT(t, sidecar, "The h0use")
+	if snapshot, ok := reconstructLegacyOCRSnapshot(sidecar, "srt", ""); ok || snapshot != nil {
+		t.Fatal("arbitrary adjacent subtitle must not be treated as an MVForge OCR baseline")
+	}
+}
+
 func TestSubtitleOCRCorrectionAdvancesBaselineAndRejectsConcurrentStaleWriter(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
 	sidecar := filepath.Join(root, "movie.eng.srt")
+	source := filepath.Join(root, "source.mkv")
 	writeTestSRT(t, sidecar, "The h0use")
+	if err := os.WriteFile(source, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	evidence := testPublishedOCREvidence(sidecar, "The h0use")
+	evidence.Identity.SourcePath = source
+	info, _ := os.Stat(source)
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
 	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "one", evidence, "initial", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +193,15 @@ func TestSubtitleOCRCorrectionAdvancesBaselineAndRejectsConcurrentStaleWriter(t 
 	current, ok := loadPublishedCanonicalOCRSnapshot(sidecar, "srt", "one")
 	if !ok || current.Evidence.Cues[0].Text != "The house" || current.PreviousRevision != oldRevision.key() {
 		t.Fatalf("corrected baseline did not advance with lineage: %+v", current)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".bak") || strings.Contains(entry.Name(), ".raw") || strings.HasPrefix(entry.Name(), ".subtitle-") {
+			t.Fatalf("correction leaked a Library-visible staging artifact: %s", entry.Name())
+		}
 	}
 	secondStage, err := writeCorrectedSubtitleFiles(t.TempDir(), []string{sidecar}, []string{"srt"}, []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "stale", SourceOrdinal: 1}})
 	if err != nil {
@@ -266,5 +322,84 @@ func TestPublishedOCRSnapshotSourceOwnershipMismatchFailsClosed(t *testing.T) {
 	}
 	if _, err := analyzePublishedOCRQuality(sidecar, "srt", "owner"); err == nil {
 		t.Fatal("expected source ownership mismatch to fail closed instead of reconstructing legacy evidence")
+	}
+}
+
+func TestPublishedOCRSnapshotsKeepMoreThanEightActiveBaselines(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	paths := make([]string, 0, 10)
+	for index := 0; index < 10; index++ {
+		sidecar := filepath.Join(root, "movie-"+strconv.Itoa(index)+".srt")
+		writeTestSRT(t, sidecar, "The house")
+		evidence := testPublishedOCREvidence(sidecar, "The house")
+		if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "active-"+strconv.Itoa(index), evidence, "test", ""); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, sidecar)
+	}
+	for index, sidecar := range paths {
+		if _, ok := loadPublishedCanonicalOCRSnapshot(sidecar, "srt", "active-"+strconv.Itoa(index)); !ok {
+			t.Fatalf("active OCR baseline %d was evicted", index)
+		}
+	}
+}
+
+func TestPublishedOCRSnapshotSamePathSourceReplacementFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	sidecar := filepath.Join(root, "movie.srt")
+	source := filepath.Join(root, "source.mkv")
+	writeTestSRT(t, sidecar, "The house")
+	if err := os.WriteFile(source, []byte("original-source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evidence := testPublishedOCREvidence(source, "The house")
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", "same-path", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("replacement-source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loadPublishedCanonicalOCRSnapshot(sidecar, "srt", "same-path"); ok {
+		t.Fatal("same-path source replacement reused the old OCR baseline")
+	}
+}
+
+func TestSubtitleOCRCorrectionRequiresAnalyzeRevisionEvidence(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", root)
+	sidecar := filepath.Join(root, "movie.srt")
+	writeTestSRT(t, sidecar, "The h0use")
+	if _, err := validateSubtitleQualityCorrectionInput(subtitleOCRCorrectionInput{SidecarPath: sidecar, Format: "srt", Corrections: []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}}); err == nil {
+		t.Fatal("correction without Analyze OCR revision evidence was accepted")
+	}
+}
+
+func TestSubtitleOCRScoringUsesBoundedDictionaryEvidence(t *testing.T) {
+	dictionaryRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dictionaryRoot, "en.dic"), []byte("9\nhouse\nmorning\nlearn\nturn\nclear\ninclude\nproper\nname\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() {
+		ocrDictionaryFolderOverride = previousFolder
+	}()
+	valid := "morning learn turn clear include"
+	if got := ocrConfusionCount(valid, "eng"); got != 0 {
+		t.Fatalf("valid words were treated as OCR confusions: %d", got)
+	}
+	if suggestion, ok := deterministicOCRSuggestion("The h0use", "eng"); !ok || suggestion != "The house" {
+		t.Fatalf("expected dictionary-backed OCR suggestion, got %q/%v", suggestion, ok)
+	}
+	if suggestion, ok := deterministicOCRSuggestion("Room 2024", "eng"); ok || suggestion != "" {
+		t.Fatalf("real number received an OCR substitution: %q/%v", suggestion, ok)
+	}
+	if suggestion, ok := deterministicOCRSuggestion("Xylophonia", "eng"); ok || suggestion != "" {
+		t.Fatalf("proper noun received an unsupported suggestion: %q/%v", suggestion, ok)
+	}
+	if suggestion, ok := deterministicOCRSuggestion("h0use", "zzz"); ok || suggestion != "" {
+		t.Fatalf("unsupported language received a dictionary suggestion: %q/%v", suggestion, ok)
 	}
 }

@@ -3324,19 +3324,11 @@ async function generateExternalSubtitle(
     }
   }
 
-  async function analyzeExternalSubtitle(streamIndex: number, format: 'srt' | 'ass') {
-    const key = subtitleGenerationKey(streamIndex, format);
-    const stream = snapshotData?.subtitleStreams.find((value) => value.index === streamIndex);
-    const candidates = externalSubtitles.data?.filter((value) => value.format === format && (!stream?.language || value.language === stream.language)) ?? [];
-    const sidecar = candidates.length === 1 ? candidates[0] : undefined;
-    if (!sidecar) {
-      const message = candidates.length > 1 ? `Multiple ${format.toUpperCase()} sidecars match this language; select one from the sidecar list.` : `No published ${format.toUpperCase()} sidecar is available to analyze.`;
-      setSubtitleQualityMessages((current) => ({ ...current, [key]: message }));
-      return;
-    }
+  async function analyzeExternalSubtitle(sidecar: ExternalSubtitle) {
+    const key = sidecar.path;
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Analyzing OCR quality…' }));
     try {
-      const operation = await api.analyzeSubtitleOCR({ mediaPath: asset.path, sidecarPath: sidecar.path, format });
+      const operation = await api.analyzeSubtitleOCR({ mediaPath: asset.path, sidecarPath: sidecar.path, format: sidecar.format });
       const report = await waitForSubtitleQualityOperation(operation.operationId);
       if (report) {
         setSubtitleQualityReports((current) => ({ ...current, [key]: report }));
@@ -3348,33 +3340,27 @@ async function generateExternalSubtitle(
   }
 
   async function applyExternalSubtitleCorrection(
-    streamIndex: number,
-    format: 'srt' | 'ass',
+    sidecar: ExternalSubtitle,
     report: SubtitleOCRQualityReport,
     finding: SubtitleOCRQualityFinding,
     text: string,
   ) {
-    await applyExternalSubtitleCorrections(streamIndex, format, report, [{ cueId: finding.cueId, text }]);
+    await applyExternalSubtitleCorrections(sidecar, report, [{ cueId: finding.cueId, text }]);
   }
 
   async function applyExternalSubtitleCorrections(
-    streamIndex: number,
-    format: 'srt' | 'ass',
+    sidecar: ExternalSubtitle,
     report: SubtitleOCRQualityReport,
     corrections: Array<{ cueId: number; text: string }>,
   ) {
-    const key = subtitleGenerationKey(streamIndex, format);
-    const stream = snapshotData?.subtitleStreams.find((value) => value.index === streamIndex);
-    const candidates = externalSubtitles.data?.filter((value) => value.format === format && (!stream?.language || value.language === stream.language)) ?? [];
-    const sidecar = candidates.length === 1 ? candidates[0] : undefined;
-    if (!sidecar) return;
+    const key = sidecar.path;
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Applying validated correction…' }));
     try {
       const operation = await api.correctSubtitleOCR({
         mediaPath: asset.path,
         sidecarPath: sidecar.path,
-      format,
-      baselineRevision: report.baselineRevision,
+        format: sidecar.format,
+        baselineRevision: report.baselineRevision,
       revisions: report.revisionSet,
         corrections: corrections.map((correction) => ({ ...correction, action: 'edit' as const })),
       });
@@ -4148,11 +4134,6 @@ async function generateExternalSubtitle(
                       generations={subtitleGenerations}
                       onGenerate={generateExternalSubtitle}
                       onCancel={cancelExternalSubtitle}
-                      onAnalyze={analyzeExternalSubtitle}
-                      qualityReports={subtitleQualityReports}
-                      qualityMessages={subtitleQualityMessages}
-                      onApplyCorrection={applyExternalSubtitleCorrection}
-                      onApplyCorrections={applyExternalSubtitleCorrections}
                       disabled={hasOpenJob}
                     />
                     {!isArchive ? (
@@ -4162,6 +4143,11 @@ async function generateExternalSubtitle(
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
                         disabled={hasOpenJob}
+                        onAnalyze={analyzeExternalSubtitle}
+                        qualityReports={subtitleQualityReports}
+                        qualityMessages={subtitleQualityMessages}
+                        onApplyCorrection={applyExternalSubtitleCorrection}
+                        onApplyCorrections={applyExternalSubtitleCorrections}
                         onRename={(subtitle) => {
                           setRenamingSubtitle(subtitle);
                           setSubtitleFileName(subtitle.fileName);
@@ -4551,11 +4537,6 @@ export function EmbeddedSubtitleActions({
   generations,
   onGenerate,
   onCancel,
-  onAnalyze,
-  qualityReports = {},
-  qualityMessages = {},
-  onApplyCorrection,
-  onApplyCorrections,
   disabled = false,
 }: {
   streams: MediaStreamInfo[];
@@ -4570,27 +4551,10 @@ export function EmbeddedSubtitleActions({
     streamIndex: number,
     format: 'original' | 'srt' | 'ass',
   ) => void;
-  onAnalyze?: (streamIndex: number, format: 'srt' | 'ass') => void;
-  qualityReports?: Record<string, SubtitleOCRQualityReport>;
-  qualityMessages?: Record<string, string>;
-  onApplyCorrection?: (
-    streamIndex: number,
-    format: 'srt' | 'ass',
-    report: SubtitleOCRQualityReport,
-    finding: SubtitleOCRQualityFinding,
-    text: string,
-  ) => void;
-  onApplyCorrections?: (
-    streamIndex: number,
-    format: 'srt' | 'ass',
-    report: SubtitleOCRQualityReport,
-    corrections: Array<{ cueId: number; text: string }>,
-  ) => void;
   disabled?: boolean;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
   const [ocrModes, setOcrModes] = useState<Record<number, 'raw' | 'clean' | 'accurate'>>({});
-  const [correctionText, setCorrectionText] = useState<Record<string, string>>({});
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
       <Stack spacing={1.25}>
@@ -4661,7 +4625,6 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
-                  {bitmap && onAnalyze ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(stream.index, 'srt')}>Analyze OCR</Button> : null}
                   {originalStyledFormat ? (
                     <Button
                       size="small"
@@ -4677,31 +4640,6 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                 </Stack>
               </Stack>
-              {(['srt', 'ass'] as const).map((format) => {
-                const report = qualityReports[subtitleGenerationKey(stream.index, format)];
-                const message = qualityMessages[subtitleGenerationKey(stream.index, format)];
-                if (!report && !message) return null;
-                if (!report) return <Alert key={`quality-${format}`} severity="info" sx={{ py: 0 }}>{message}</Alert>;
-                return <Box key={`quality-${format}`} sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
-                  <Typography variant="subtitle2">OCR quality · {format.toUpperCase()}</Typography>
-                  <Typography variant="caption" color="text.secondary">{report.cleanCount} clean · {report.suspiciousCount} suspicious · {report.reviewCount} review</Typography>
-                  {report.findings.filter((finding) => finding.status !== 'clean').map((finding) => {
-                    const editKey = `${stream.index}:${format}:${finding.cueId}`;
-                    const value = correctionText[editKey] ?? finding.suggestion ?? finding.originalText;
-                    return <Stack key={editKey} direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mt: 0.75 }}>
-                      <Typography variant="caption" sx={{ minWidth: 60 }}>Cue {finding.cueId}</Typography>
-                      <TextField size="small" fullWidth value={value} onChange={(event) => setCorrectionText((current) => ({ ...current, [editKey]: event.target.value }))} helperText={finding.reasons?.join('; ')} />
-                      {onApplyCorrection ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrection(stream.index, format, report, finding, value)}>Apply</Button> : null}
-                    </Stack>;
-                  })}
-                  {onApplyCorrections ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrections(stream.index, format, report, report.findings.filter((finding) => finding.status === 'suspicious').flatMap((finding) => {
-                    const editKey = `${stream.index}:${format}:${finding.cueId}`;
-                    const text = correctionText[editKey] ?? finding.suggestion ?? finding.originalText;
-                    return text !== finding.originalText ? [{ cueId: finding.cueId, text }] : [];
-                  }))}>Apply reviewed suggestions</Button> : null}
-                  {message ? <Typography variant="caption" color="text.secondary">{message}</Typography> : null}
-                </Box>;
-              })}
               {streamGenerations.map((generation) => (
                 <Box key={subtitleGenerationKey(stream.index, generation.format)}>
                   {generation.status === 'running' ? (
@@ -4803,7 +4741,7 @@ function defaultOCRLanguage(language: string) {
   return 'eng';
 }
 
-function ExternalSubtitleList({
+export function ExternalSubtitleList({
   values,
   loading,
   deleting,
@@ -4812,6 +4750,11 @@ function ExternalSubtitleList({
   onRename,
   onEdit,
   onDelete,
+  onAnalyze,
+  qualityReports = {},
+  qualityMessages = {},
+  onApplyCorrection,
+  onApplyCorrections,
 }: {
   values: ExternalSubtitle[];
   loading: boolean;
@@ -4821,45 +4764,75 @@ function ExternalSubtitleList({
   onRename: (subtitle: ExternalSubtitle) => void;
   onEdit: (subtitle: ExternalSubtitle) => void;
   onDelete: (subtitle: ExternalSubtitle) => void;
+  onAnalyze?: (subtitle: ExternalSubtitle) => void;
+  qualityReports?: Record<string, SubtitleOCRQualityReport>;
+  qualityMessages?: Record<string, string>;
+  onApplyCorrection?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, finding: SubtitleOCRQualityFinding, text: string) => void;
+  onApplyCorrections?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, corrections: Array<{ cueId: number; text: string }>) => void;
 }) {
+  const [correctionText, setCorrectionText] = useState<Record<string, string>>({});
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
       <Stack spacing={1.25}>
         <Typography variant="h3">External SRT / ASS files</Typography>
         {loading ? <Alert severity="info">Reading external subtitles…</Alert> : null}
         {!loading && values.length === 0 ? <Alert severity="info">No external SRT or ASS sidecars were found beside this asset.</Alert> : null}
-        {values.map((subtitle) => (
+        {values.map((subtitle) => {
+          const report = qualityReports[subtitle.path];
+          const message = qualityMessages[subtitle.path];
+          return (
           <Stack
             key={subtitle.path}
-            direction={{ xs: 'column', sm: 'row' }}
-            alignItems={{ xs: 'stretch', sm: 'center' }}
-            justifyContent="space-between"
             spacing={1}
             sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}
           >
-            <Stack sx={{ minWidth: 0 }}>
-              <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{subtitle.fileName}</Typography>
-              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                <Chip label={subtitle.format.toUpperCase()} size="small" />
-                {subtitle.language ? <Chip label={subtitle.language.toUpperCase()} size="small" /> : null}
-                {subtitle.default ? <Chip label="Default" color="primary" size="small" /> : null}
-                {subtitle.forced ? <Chip label="Forced" color="warning" size="small" /> : null}
-                <Chip label={formatBytes(subtitle.sizeBytes)} size="small" />
+            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
+              <Stack sx={{ minWidth: 0 }}>
+                <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{subtitle.fileName}</Typography>
+                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                  <Chip label={subtitle.format.toUpperCase()} size="small" />
+                  {subtitle.language ? <Chip label={subtitle.language.toUpperCase()} size="small" /> : null}
+                  {subtitle.default ? <Chip label="Default" color="primary" size="small" /> : null}
+                  {subtitle.forced ? <Chip label="Forced" color="warning" size="small" /> : null}
+                  <Chip label={formatBytes(subtitle.sizeBytes)} size="small" />
+                </Stack>
+              </Stack>
+              <Stack direction="row" spacing={0.5}>
+                {onAnalyze ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
+                <Tooltip title="Rename subtitle file">
+                  <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
+                </Tooltip>
+                <Tooltip title="Edit subtitle text">
+                  <IconButton size="small" color="primary" disabled={disabled} onClick={() => onEdit(subtitle)} ><EditIcon /></IconButton>
+                </Tooltip>
+                <Tooltip title="Delete external subtitle">
+                  <IconButton size="small" color="error" disabled={disabled || deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
+                </Tooltip>
               </Stack>
             </Stack>
-            <Stack direction="row" spacing={0.5}>
-              <Tooltip title="Rename subtitle file">
-                <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
-              </Tooltip>
-              <Tooltip title="Edit subtitle text">
-                <IconButton size="small" color="primary" disabled={disabled} onClick={() => onEdit(subtitle)} ><EditIcon /></IconButton>
-              </Tooltip>
-              <Tooltip title="Delete external subtitle">
-                <IconButton size="small" color="error" disabled={disabled || deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
-              </Tooltip>
-            </Stack>
+            {message && !report ? <Alert severity="info" sx={{ py: 0 }}>{message}</Alert> : null}
+            {report ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+              <Typography variant="subtitle2">OCR quality</Typography>
+              <Typography variant="caption" color="text.secondary">{report.cleanCount} clean · {report.suspiciousCount} suspicious · {report.reviewCount} review</Typography>
+              {report.findings.filter((finding) => finding.status !== 'clean').map((finding) => {
+                const editKey = `${subtitle.path}:${finding.cueId}`;
+                const value = correctionText[editKey] ?? finding.suggestion ?? finding.originalText;
+                return <Stack key={editKey} direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mt: 0.75 }}>
+                  <Typography variant="caption" sx={{ minWidth: 60 }}>Cue {finding.cueId}</Typography>
+                  <TextField size="small" fullWidth value={value} onChange={(event) => setCorrectionText((current) => ({ ...current, [editKey]: event.target.value }))} helperText={finding.reasons?.join('; ')} />
+                  {onApplyCorrection ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrection(subtitle, report, finding, value)}>Apply</Button> : null}
+                </Stack>;
+              })}
+              {onApplyCorrections ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrections(subtitle, report, report.findings.filter((finding) => finding.status === 'suspicious').flatMap((finding) => {
+                const editKey = `${subtitle.path}:${finding.cueId}`;
+                const text = correctionText[editKey] ?? finding.suggestion ?? finding.originalText;
+                return text !== finding.originalText ? [{ cueId: finding.cueId, text }] : [];
+              }))}>Apply reviewed suggestions</Button> : null}
+              {message ? <Typography variant="caption" color="text.secondary">{message}</Typography> : null}
+            </Box> : null}
           </Stack>
-        ))}
+          );
+        })}
       </Stack>
     </Box>
   );

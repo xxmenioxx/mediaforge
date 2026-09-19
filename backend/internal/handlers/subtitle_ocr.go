@@ -26,6 +26,9 @@ var (
 	ocrDroppedCountPattern         = regexp.MustCompile(`(?i)(\d+)\s+image\(s\) produced no OCR text`)
 	ocrZeroRecognitionPattern      = regexp.MustCompile(`(?i)\bno subtitles recogn(?:ised|ized)\b`)
 	ocrDisqualifyingFailurePattern = regexp.MustCompile(`(?i)\b(?:cancel(?:led|ed)|interrupt(?:ed)?|malformed|corrupt(?:ed)?|invalid input|cannot read|unable to read|segmentation fault|panic|fatal|crash(?:ed)?|signal: (?:killed|terminated))\b`)
+	ocrDictionaryCacheMu           sync.Mutex
+	ocrDictionaryCache             = map[string]map[string]struct{}{}
+	ocrDictionaryFolderOverride    string
 )
 
 const maxOCRDiagnostics = 64 * 1024
@@ -739,6 +742,9 @@ func runSeConvWithProgress(
 }
 
 func ocrDictionaryFolder() string {
+	if value := strings.TrimSpace(ocrDictionaryFolderOverride); value != "" {
+		return value
+	}
 	for _, path := range []string{"/usr/share/hunspell", "/usr/local/share/hunspell", "/opt/homebrew/share/hunspell"} {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			return path
@@ -816,7 +822,7 @@ func subtitleOCRScoreForLanguage(content, language string) float64 {
 }
 
 var ocrWordPattern = regexp.MustCompile(`(?i)[[:alpha:]][[:alpha:]'’-]*`)
-var ocrConfusionTokenPattern = regexp.MustCompile(`(?i)[[:alpha:]]+[0-9|][[:alpha:]]+`)
+var ocrConfusionTokenPattern = regexp.MustCompile(`(?i)[[:alpha:]][[:alpha:][:digit:]|]*`)
 
 func ocrWords(content string) []string {
 	raw := ocrWordPattern.FindAllString(content, -1)
@@ -838,39 +844,106 @@ func isLikelyProperNoun(word string) bool {
 	return false
 }
 
-func ocrKnownWords(language string) map[string]struct{} {
-	language = strings.ToLower(strings.TrimSpace(language))
-	if index := strings.IndexByte(language, '_'); index >= 0 {
-		language = language[:index]
-	}
-	switch language {
-	case "eng":
-		return map[string]struct{}{
-			"a": {}, "and": {}, "are": {}, "cat": {}, "come": {}, "do": {}, "for": {}, "from": {}, "go": {}, "have": {}, "hello": {}, "i": {}, "in": {}, "is": {}, "it": {}, "me": {}, "no": {}, "not": {}, "of": {}, "on": {}, "one": {}, "please": {}, "see": {}, "that": {}, "the": {}, "this": {}, "to": {}, "we": {}, "what": {}, "with": {}, "you": {},
-		}
-	case "spa":
-		return map[string]struct{}{
-			"a": {}, "al": {}, "con": {}, "de": {}, "del": {}, "el": {}, "en": {}, "es": {}, "hola": {}, "la": {}, "las": {}, "lo": {}, "los": {}, "mi": {}, "no": {}, "para": {}, "por": {}, "que": {}, "se": {}, "su": {}, "un": {}, "una": {}, "y": {}, "yo": {},
-		}
+func hunspellLanguageForOCR(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "eng", "en", "en_us", "english":
+		return "en"
+	case "spa", "es", "es_es", "spanish":
+		return "es"
 	default:
-		return nil
+		return ""
 	}
 }
 
+func ocrKnownWords(language string) map[string]struct{} {
+	language = hunspellLanguageForOCR(language)
+	if language == "" {
+		return nil
+	}
+	folder := ocrDictionaryFolder()
+	if folder == "" {
+		return nil
+	}
+	cacheKey := folder + "\x00" + language
+	ocrDictionaryCacheMu.Lock()
+	if dictionary, ok := ocrDictionaryCache[cacheKey]; ok {
+		ocrDictionaryCacheMu.Unlock()
+		return dictionary
+	}
+	ocrDictionaryCacheMu.Unlock()
+	entries, err := os.ReadDir(folder)
+	if err != nil || len(entries) > 4096 {
+		return nil
+	}
+	dictionaryPath := ""
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".dic") {
+			continue
+		}
+		base := strings.TrimSuffix(strings.ToLower(entry.Name()), filepath.Ext(entry.Name()))
+		if base == language {
+			dictionaryPath = filepath.Join(folder, entry.Name())
+			break
+		}
+		if dictionaryPath == "" && strings.HasPrefix(base, language+"_") {
+			dictionaryPath = filepath.Join(folder, entry.Name())
+		}
+	}
+	if dictionaryPath == "" {
+		return nil
+	}
+	file, err := os.Open(dictionaryPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(io.LimitReader(file, 8*1024*1024))
+	scanner.Buffer(make([]byte, 1024), 64*1024)
+	dictionary := make(map[string]struct{})
+	for scanner.Scan() && len(dictionary) < 100000 {
+		word := strings.TrimSpace(scanner.Text())
+		if word == "" || strings.HasPrefix(word, "#") {
+			continue
+		}
+		if slash := strings.IndexByte(word, '/'); slash >= 0 {
+			word = word[:slash]
+		}
+		word = strings.ToLower(strings.TrimSpace(word))
+		if word != "" && strings.IndexFunc(word, func(r rune) bool { return unicode.IsLetter(r) }) >= 0 {
+			dictionary[word] = struct{}{}
+		}
+	}
+	if err := scanner.Err(); err != nil || len(dictionary) == 0 {
+		return nil
+	}
+	ocrDictionaryCacheMu.Lock()
+	ocrDictionaryCache[cacheKey] = dictionary
+	ocrDictionaryCacheMu.Unlock()
+	return dictionary
+}
+
+func ocrDictionaryCandidate(token, language string) (string, bool) {
+	dictionary := ocrKnownWords(language)
+	if len(dictionary) == 0 || !strings.ContainsAny(token, "01|") {
+		return "", false
+	}
+	candidate := strings.NewReplacer("0", "o", "1", "l", "|", "i").Replace(token)
+	if candidate == token {
+		return "", false
+	}
+	if _, exists := dictionary[strings.ToLower(token)]; exists {
+		return "", false
+	}
+	if _, exists := dictionary[strings.ToLower(candidate)]; !exists {
+		return "", false
+	}
+	return candidate, true
+}
+
 func ocrConfusionCount(content, language string) int {
-	// These patterns are deliberately bounded and language-neutral. They are
-	// evidence for review/scoring, never a standalone correction rule.
-	words := ocrWords(content)
 	count := 0
-	count += len(ocrConfusionTokenPattern.FindAllString(content, -1))
-	for _, word := range words {
-		if strings.ContainsAny(word, "|{}[]") {
-			count++
-		}
-		if strings.Contains(word, "rn") || strings.Contains(word, "cl") {
-			count++
-		}
-		if language != "jpn" && language != "jpn_vert" && strings.ContainsAny(word, "０１２３４５６７８９") {
+	for _, token := range ocrConfusionTokenPattern.FindAllString(content, -1) {
+		if _, ok := ocrDictionaryCandidate(token, language); ok {
 			count++
 		}
 	}

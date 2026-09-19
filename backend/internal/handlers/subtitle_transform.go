@@ -1082,7 +1082,15 @@ func publishSubtitleArtifacts(
 	}
 	job.SubtitleArtifacts = sidecarArtifactsJSON(artifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
 	for index, artifact := range artifacts {
-		if alreadyPublished[index] || artifact.CanonicalEvidence == nil {
+		if alreadyPublished[index] {
+			continue
+		}
+		if artifact.CanonicalEvidence == nil {
+			if artifact.OCRRequired {
+				if err := markMVForgeOwnedLegacyOCRArtifact(destinations[index], artifact.Format, artifact.LogicalTransformKey, destinationMediaPath); err != nil {
+					return published, fmt.Errorf("cannot commit legacy OCR ownership: %w", err)
+				}
+			}
 			continue
 		}
 		if err := commitPublishedCanonicalOCRSnapshot(
