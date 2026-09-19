@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -405,10 +406,18 @@ func runSelectiveSecondaryOCR(ctx context.Context, snapshot *publishedCanonicalO
 	if err := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output); err != nil {
 		return "", "bounded cue extraction failed", err
 	}
+	preparedStreams, err := probeSubtitleStreams(ctx, segmentPath)
+	if err != nil || len(preparedStreams) != 1 {
+		return "", "prepared subtitle stream identity unavailable or ambiguous", nil
+	}
+	preparedStream := preparedStreams[0]
+	if preparedStream.CodecType != "subtitle" || !isBitmapSubtitleCodecName(preparedStream.CodecName) {
+		return "", "prepared subtitle stream is not a supported bitmap representation", nil
+	}
 	result, err := runBitmapOCRWithTiming(
 		ctx,
 		segmentPath,
-		capability.Stream,
+		preparedStream,
 		"srt",
 		snapshot.Evidence.RequestedLanguage,
 		snapshot.Evidence.OCRMode,
@@ -428,6 +437,58 @@ func runSelectiveSecondaryOCR(ctx context.Context, snapshot *publishedCanonicalO
 		}
 	}
 	return "", "selective OCR produced no materially better candidate", nil
+}
+
+func loadCanonicalOCRBothSnapshots(paths []string, logicalTransform string) ([]*publishedCanonicalOCRSnapshot, []string, error) {
+	if len(paths) != 2 || strings.TrimSpace(logicalTransform) == "" {
+		return nil, nil, errors.New("canonical both OCR requires SRT and ASS sidecars with a logical transform")
+	}
+	formats := make([]string, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for index, path := range paths {
+		format := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+		if format != "srt" && format != "ass" || seen[format] {
+			return nil, nil, errors.New("canonical both OCR requires one SRT and one ASS sidecar")
+		}
+		seen[format] = true
+		formats[index] = format
+	}
+	if !seen["srt"] || !seen["ass"] {
+		return nil, nil, errors.New("canonical both OCR requires one SRT and one ASS sidecar")
+	}
+	snapshots := make([]*publishedCanonicalOCRSnapshot, len(paths))
+	for index, path := range paths {
+		snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, formats[index], logicalTransform)
+		if !ok || snapshot == nil || snapshot.LogicalTransformKey != logicalTransform {
+			return nil, nil, errors.New("canonical both OCR evidence is unavailable or stale")
+		}
+		snapshots[index] = snapshot
+	}
+	if !canonicalOCRIdentityMatches(snapshots[0].Evidence.Identity, snapshots[1].Evidence.Identity) ||
+		!reflect.DeepEqual(snapshots[0].Evidence.Cues, snapshots[1].Evidence.Cues) {
+		return nil, nil, errors.New("canonical both OCR evidence is inconsistent")
+	}
+	return snapshots, formats, nil
+}
+
+func analyzeCanonicalOCRBoth(paths []string, logicalTransform string) (subtitleOCRQualityReport, []*publishedCanonicalOCRSnapshot, error) {
+	snapshots, formats, err := loadCanonicalOCRBothSnapshots(paths, logicalTransform)
+	if err != nil {
+		return subtitleOCRQualityReport{}, nil, err
+	}
+	for index, snapshot := range snapshots {
+		if !snapshot.CanCorrectLegacy(formats[index], len(snapshots)) {
+			return subtitleOCRQualityReport{}, nil, errors.New("canonical both OCR structural evidence is unavailable")
+		}
+	}
+	report := analyzeCanonicalOCRSnapshot(snapshots[0])
+	report.Format = "both"
+	report.RevisionSet = make([]publishedSubtitleRevision, len(snapshots))
+	for index, snapshot := range snapshots {
+		report.RevisionSet[index] = snapshot.Revision
+	}
+	report.BaselineRevision = subtitleRevisionSetKey(report.RevisionSet)
+	return report, snapshots, nil
 }
 
 func correctedSubtitleEvidence(snapshot *publishedCanonicalOCRSnapshot, cues []canonicalBitmapSubtitleCue) *canonicalOCREvidence {
@@ -602,9 +663,43 @@ func runSubtitleOCRCorrectionOperation(
 		}
 	}
 	snapshots := make([]*publishedCanonicalOCRSnapshot, len(paths))
+	if strings.EqualFold(strings.TrimSpace(input.Format), "both") {
+		var loadErr error
+		snapshots, formats, loadErr = loadCanonicalOCRBothSnapshots(paths, input.LogicalTransformKey)
+		if loadErr != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = loadErr.Error()
+			})
+			return
+		}
+	}
+	if len(snapshots) == 0 || len(snapshots) != len(paths) {
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Status = "error"
+			operation.Phase = "error"
+			operation.Message = "OCR correction failed"
+			operation.Error = "canonical structural evidence is unavailable for this representation"
+		})
+		return
+	}
 	for index, path := range paths {
-		snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, formats[index], input.LogicalTransformKey)
-		if !ok || !snapshot.CanCorrectLegacy(formats[index], len(paths)) {
+		if snapshots[index] == nil {
+			snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, formats[index], input.LogicalTransformKey)
+			if !ok {
+				updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+					operation.Status = "error"
+					operation.Phase = "error"
+					operation.Message = "OCR correction failed"
+					operation.Error = "canonical structural evidence is unavailable for this representation"
+				})
+				return
+			}
+			snapshots[index] = snapshot
+		}
+		if !snapshots[index].CanCorrectLegacy(formats[index], len(paths)) {
 			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 				operation.Status = "error"
 				operation.Phase = "error"
@@ -613,7 +708,6 @@ func runSubtitleOCRCorrectionOperation(
 			})
 			return
 		}
-		snapshots[index] = snapshot
 	}
 	for _, snapshot := range snapshots {
 		if err := validateDeterministicOCRCorrectionIntents(snapshot, input.Corrections); err != nil {
@@ -682,6 +776,45 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			operation.Phase = "error"
 			operation.Message = "OCR analysis failed"
 			operation.Error = "OCR analysis requires a published sidecar path"
+		})
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(input.Format), "both") {
+		if err := ctx.Err(); err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "cancelled"
+				operation.Phase = "cancelled"
+				operation.Message = "OCR analysis cancelled"
+			})
+			return
+		}
+		report, snapshots, err := analyzeCanonicalOCRBoth(paths, input.LogicalTransformKey)
+		if err == nil && len(snapshots) > 0 {
+			report = enrichSubtitleOCRReportWithSelective(ctx, workspace, snapshots[0], report)
+		}
+		if err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR analysis failed"
+				operation.Error = err.Error()
+			})
+			return
+		}
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Phase = "analyzing"
+			operation.Progress = 100
+			operation.Processed = len(paths)
+			operation.Total = len(paths)
+			operation.Message = "Analyzing OCR quality"
+		})
+		report.BaselineRevision = subtitleRevisionSetKey(report.RevisionSet)
+		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+			operation.Status = "completed"
+			operation.Phase = "completed"
+			operation.Progress = 100
+			operation.QualityReport = &report
+			operation.Message = "OCR analysis completed"
 		})
 		return
 	}

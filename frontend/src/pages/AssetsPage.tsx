@@ -3325,10 +3325,17 @@ async function generateExternalSubtitle(
   }
 
   async function analyzeExternalSubtitle(sidecar: ExternalSubtitle) {
-    const key = sidecar.path;
+    const selection = subtitleOCRSidecarSelection(externalSubtitles.data ?? [], sidecar);
+    const key = subtitleOCRReviewKey(sidecar);
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Analyzing OCR quality…' }));
     try {
-      const operation = await api.analyzeSubtitleOCR({ mediaPath: asset.path, sidecarPath: sidecar.path, format: sidecar.format, logicalTransformKey: sidecar.logicalTransformKey });
+      const operation = await api.analyzeSubtitleOCR({
+        mediaPath: asset.path,
+        sidecarPath: selection.sidecarPaths[0],
+        sidecarPaths: selection.sidecarPaths,
+        format: selection.format,
+        logicalTransformKey: sidecar.logicalTransformKey,
+      });
       const report = await waitForSubtitleQualityOperation(operation.operationId);
       if (report) {
         setSubtitleQualityReports((current) => ({ ...current, [key]: report }));
@@ -3353,13 +3360,15 @@ async function generateExternalSubtitle(
     report: SubtitleOCRQualityReport,
     corrections: Array<{ cueId: number; text?: string; suggestion?: string }>,
   ) {
-    const key = sidecar.path;
+    const selection = subtitleOCRSidecarSelection(externalSubtitles.data ?? [], sidecar);
+    const key = subtitleOCRReviewKey(sidecar);
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Applying validated correction…' }));
     try {
       const operation = await api.correctSubtitleOCR({
         mediaPath: asset.path,
-        sidecarPath: sidecar.path,
-        format: sidecar.format,
+        sidecarPath: selection.sidecarPaths[0],
+        sidecarPaths: selection.sidecarPaths,
+        format: selection.format,
         logicalTransformKey: sidecar.logicalTransformKey,
         baselineRevision: report.baselineRevision,
         revisions: report.revisionSet,
@@ -4744,6 +4753,24 @@ function defaultOCRLanguage(language: string) {
   return 'eng';
 }
 
+export function subtitleOCRReviewKey(subtitle: ExternalSubtitle) {
+  const logicalTransformKey = subtitle.logicalTransformKey?.trim();
+  return logicalTransformKey ? `logical:${logicalTransformKey}` : subtitle.path;
+}
+
+export function subtitleOCRSidecarSelection(values: ExternalSubtitle[], sidecar: ExternalSubtitle) {
+  const logicalTransformKey = sidecar.logicalTransformKey?.trim();
+  if (logicalTransformKey) {
+    const siblings = values.filter((candidate) => candidate.logicalTransformKey?.trim() === logicalTransformKey);
+    const srt = siblings.find((candidate) => candidate.format === 'srt');
+    const ass = siblings.find((candidate) => candidate.format === 'ass');
+    if (srt && ass) {
+      return { sidecarPaths: [srt.path, ass.path], format: 'both' as const };
+    }
+  }
+  return { sidecarPaths: [sidecar.path], format: sidecar.format };
+}
+
 export function ExternalSubtitleList({
   values,
   loading,
@@ -4781,8 +4808,16 @@ export function ExternalSubtitleList({
         {loading ? <Alert severity="info">Reading external subtitles…</Alert> : null}
         {!loading && values.length === 0 ? <Alert severity="info">No external SRT or ASS sidecars were found beside this asset.</Alert> : null}
         {values.map((subtitle) => {
-          const report = qualityReports[subtitle.path];
-          const message = qualityMessages[subtitle.path];
+          const reviewKey = subtitleOCRReviewKey(subtitle);
+          const report = qualityReports[reviewKey] ?? qualityReports[subtitle.path];
+          const message = qualityMessages[reviewKey] ?? qualityMessages[subtitle.path];
+          const logicalSiblings = subtitle.logicalTransformKey
+            ? values.filter((candidate) => candidate.logicalTransformKey === subtitle.logicalTransformKey)
+            : [];
+          const reportOwner = logicalSiblings.length > 1
+            ? [...logicalSiblings].sort((left, right) => left.path.localeCompare(right.path))[0]?.path
+            : subtitle.path;
+          const showReport = Boolean(report) && subtitle.path === reportOwner;
           return (
           <Stack
             key={subtitle.path}
@@ -4813,8 +4848,8 @@ export function ExternalSubtitleList({
                 </Tooltip>
               </Stack>
             </Stack>
-            {message && !report ? <Alert severity="info" sx={{ py: 0 }}>{message}</Alert> : null}
-            {report ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+            {message && !showReport ? <Alert severity="info" sx={{ py: 0 }}>{message}</Alert> : null}
+            {showReport && report ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
               <Typography variant="subtitle2">OCR quality</Typography>
               <Typography variant="caption" color="text.secondary">{report.cleanCount} clean · {report.suspiciousCount} suspicious · {report.reviewCount} review</Typography>
               {report.findings.filter((finding) => finding.status !== 'clean').map((finding) => {

@@ -2852,7 +2852,7 @@ func probeSubtitleStreams(ctx context.Context, path string) ([]FFProbeStream, er
 	if err := runSubtitleCommand(ctx, "ffprobe", []string{
 		"-v", "error",
 		"-select_streams", "s",
-		"-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title",
+		"-show_entries", "stream=index,id,codec_type,codec_name:stream_tags=language,title",
 		"-of", "json",
 		path,
 	}, &stdout, &stderr); err != nil {

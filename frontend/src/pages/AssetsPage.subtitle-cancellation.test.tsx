@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { EmbeddedSubtitleActions, ExternalSubtitleList, subtitleOperationStopsPolling } from './AssetsPage';
+import { EmbeddedSubtitleActions, ExternalSubtitleList, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from './AssetsPage';
 
 afterEach(cleanup);
 
@@ -33,6 +33,41 @@ function runningGeneration() {
 }
 
 describe('Asset Info subtitle cancellation controls', () => {
+  it('selects both OCR sidecars from their shared logical transform', () => {
+    const values = [
+      { path: '/library/movie.ass', format: 'ass', logicalTransformKey: 'both-4' },
+      { path: '/library/movie.srt', format: 'srt', logicalTransformKey: 'both-4' },
+    ] as never;
+    expect(subtitleOCRSidecarSelection(values, values[0])).toEqual({
+      sidecarPaths: ['/library/movie.srt', '/library/movie.ass'],
+      format: 'both',
+    });
+  });
+
+  it('renders one shared quality report for a canonical both pair', () => {
+    render(
+      <ExternalSubtitleList
+        values={[{
+          path: '/library/movie.srt', fileName: 'movie.srt', format: 'srt', default: false, forced: false,
+          sizeBytes: 100, modifiedAt: '', ocrManaged: true, ocrAnalysisAvailable: true, logicalTransformKey: 'both-4',
+        }, {
+          path: '/library/movie.ass', fileName: 'movie.ass', format: 'ass', default: false, forced: false,
+          sizeBytes: 200, modifiedAt: '', ocrManaged: true, ocrAnalysisAvailable: true, logicalTransformKey: 'both-4',
+        }] as never}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        qualityReports={{ 'logical:both-4': {
+          cleanCount: 1, suspiciousCount: 0, reviewCount: 0, canCorrect: true, baselineRevision: 'baseline', findings: [],
+        } as never }}
+      />,
+    );
+    expect(screen.getAllByText('OCR quality')).toHaveLength(1);
+  });
+
   it('treats cancellation as a terminal polling state', () => {
     expect(subtitleOperationStopsPolling('running')).toBe(false);
     expect(subtitleOperationStopsPolling('completed')).toBe(true);
