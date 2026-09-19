@@ -47,16 +47,34 @@ of existing subtitle profiles. The setting is read while resolving a request,
 not by a Worker during execution.
 
 An explicit SRT request is already satisfied and is not duplicated. The
-setting augments an effective request containing ASS; it never removes an
-explicit format or changes a request that contains neither ASS nor SRT.
+setting augments only a request for which `fallbackEligible` is true; it never
+removes an explicit format or changes a request that contains neither an
+eligible converted ASS output nor an original native ASS/SSA source.
 
 ### 2. Resolve and normalize at the canonical planning boundary
 
-The existing canonical resolver receives the explicit requested formats and
-the resolved fallback setting, adds SRT only when ASS is effective, and then
+The existing canonical resolver receives the explicit requested formats, source
+codec, requested mode, and resolved fallback setting. It computes one
+canonical eligibility decision before adding SRT, then
 normalizes/deduplicates the formats before constructing `ResolvedTrackPlan`.
 The plan records the effective outputs and the setting/effective-output
 decision as provenance where the existing snapshot/artifact metadata permits.
+
+The eligibility predicate is:
+
+```text
+fallbackEligible =
+    generateSRTFallbackForASS
+    AND
+    (
+        (mode == converted AND effective converted formats include ASS)
+        OR
+        (mode == original AND source codec is native ASS or SSA)
+    )
+```
+
+Only an eligible request may gain an implicit SRT. Original-mode SRT, PGS,
+and VobSub sources are not eligible merely because the setting is enabled.
 
 The normalization contract is:
 

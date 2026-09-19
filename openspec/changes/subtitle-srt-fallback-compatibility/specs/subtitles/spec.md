@@ -21,18 +21,31 @@ the setting.
 
 ### Requirement: Canonical effective subtitle format resolution
 
-The canonical subtitle planner SHALL combine explicit requested formats with
-the resolved fallback setting before producing the `ResolvedTrackPlan`. When
-ASS is effective and the setting is enabled, SRT SHALL be added. Explicit SRT
-requests SHALL remain SRT-only when no ASS output is requested, and normalized
+The canonical subtitle planner SHALL combine explicit requested formats,
+requested mode, source codec, and the resolved fallback setting before
+producing the `ResolvedTrackPlan`. Fallback eligibility SHALL be computed as:
+
+```text
+fallbackEligible =
+    generateSRTFallbackForASS
+    AND
+    (
+        (mode == converted AND effective converted formats include ASS)
+        OR
+        (mode == original AND source codec is native ASS or SSA)
+    )
+```
+
+Only an eligible request SHALL gain an implicit SRT. Explicit SRT requests
+SHALL remain SRT-only when no converted ASS output is effective, and normalized
 effective formats SHALL be deduplicated.
 
-#### Scenario: ASS receives an opt-in SRT fallback
+#### Scenario: Converted ASS is fallback eligible
 
-- **WHEN** the explicit subtitle request is ASS and the fallback setting is
-  enabled
-- **THEN** the resolved plan SHALL contain exactly one ASS output and one SRT
-  output
+- **WHEN** a subtitle request has `mode=converted`, effective converted format
+  ASS, and the fallback setting is enabled
+- **THEN** the resolved plan SHALL contain exactly one converted ASS output and
+  one converted SRT output using the existing logical `both` semantics
 
 #### Scenario: SRT does not create another output
 
@@ -53,6 +66,32 @@ effective formats SHALL be deduplicated.
 - **WHEN** the explicit request is ASS and the fallback setting is disabled or
   absent
 - **THEN** the resolved plan SHALL contain ASS without an added SRT output
+
+#### Scenario: Original native ASS is fallback eligible
+
+- **WHEN** a native ASS source has `mode=original` and the fallback setting is
+  enabled
+- **THEN** the resolved plan SHALL contain the lossless original ASS output and
+  one converted SRT output, without treating the pair as logical `both`
+
+#### Scenario: Original native SSA is fallback eligible
+
+- **WHEN** a native SSA source has `mode=original` and the fallback setting is
+  enabled
+- **THEN** the resolved plan SHALL contain the lossless original SSA output and
+  one converted SRT output, without treating the pair as logical `both`
+
+#### Scenario: Original non-ASS/SSA sources are not fallback eligible
+
+- **WHEN** an original-mode source is SRT, PGS, or VobSub and the fallback
+  setting is enabled
+- **THEN** the planner SHALL NOT add an implicit SRT output
+
+#### Scenario: Disabled fallback never adds implicit SRT
+
+- **WHEN** the fallback setting is disabled or absent for either converted ASS
+  or original native ASS/SSA
+- **THEN** the planner SHALL NOT add an implicit SRT output
 
 ### Requirement: Shared canonical planning across entry points
 

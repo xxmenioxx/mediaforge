@@ -5,13 +5,13 @@
 
 ## 2. Canonical effective-format resolution
 
-- [ ] 2.1 Extend the canonical subtitle planning inputs to resolve the fallback setting before `ResolvedTrackPlan` construction, and verify ASS-on, SRT-on, ASS+SRT-on, and ASS-off behavior.
+- [ ] 2.1 Extend the canonical subtitle planning boundary to compute `fallbackEligible` from the persisted setting, requested mode, source codec, and effective converted formats before `ResolvedTrackPlan` construction; verify converted ASS, original native ASS, original native SSA, original non-ASS/SSA, and disabled-setting cases.
 - [ ] 2.2 Normalize and deduplicate effective formats while preserving explicit requests, stream/rule precedence, semantic roles, forced/SDH metadata, and logical-transform identity; verify focused resolver tests.
 - [ ] 2.3 Verify Asset Info, Track Profiles, Profile Lab, and Test Encode use the same canonical resolver/effective-format contract and show the added SRT consequence wherever ASS selection is exposed.
 
 ## 3. Native subtitle representations
 
-- [ ] 3.1 Keep source codec separate from requested mode: verify converted text/bitmap ASS produces converted SRT through the canonical converted path, while `mode=original` native ASS/SSA preserves the original and adds converted SRT without treating it as logical `both`.
+- [ ] 3.1 Keep source codec separate from requested mode and apply the canonical eligibility predicate: verify converted text/bitmap ASS produces converted SRT through the canonical converted path, while `mode=original` native ASS/SSA preserves the original and adds converted SRT without treating it as logical `both`; verify original SRT/PGS/VobSub receive no implicit SRT.
 - [ ] 3.2 Verify fallback naming, sidecar metadata, role/forced/SDH qualifiers, and existing artifact satisfaction behavior for converted and original-mode native outputs.
 
 ## 4. Bitmap OCR and canonical serializer fan-out

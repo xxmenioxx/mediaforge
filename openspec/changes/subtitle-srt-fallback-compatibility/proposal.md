@@ -2,14 +2,15 @@
 
 Users who select styled ASS/SSA subtitles often need a broadly compatible SRT
 sidecar as well. Issue #8 requires that compatibility output be opt-in,
-resolved consistently by the canonical subtitle planner, and frozen before a
-queued job begins so a later settings change cannot alter the requested
+resolved consistently by the canonical subtitle planner, and frozen before
+processing begins so a later settings change cannot alter the requested
 artifacts.
 
 ## What Changes
 
 - Add a persisted `generateSRTFallbackForASS` subtitle setting whose default is
-  `false`.
+  `false`, with eligibility determined at the canonical planning boundary from
+  requested mode and source codec.
 - Resolve the setting together with explicit subtitle format requests before
   the canonical subtitle planner produces `ResolvedTrackPlan`.
 - Normalize and deduplicate effective outputs so an ASS request can add one SRT
