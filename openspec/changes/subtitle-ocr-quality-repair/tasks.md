@@ -17,15 +17,15 @@
 
 ## 3. Selective OCR repair
 
-- [ ] 3.1 Gate selective secondary OCR on a bounded supported cue-input mechanism such as prepared representation, persisted locator, or safe extraction; verify eligible DVD/VobSub cues can be processed while unavailable input leaves text unchanged/reviewable without full OCR, complete-media hashing, or heuristic scanning
-- [ ] 3.2 Compare original, canonical/accurate, selective-secondary-OCR, and optional contextual-provider candidates using deterministic validation; verify providers receive only suspicious/review candidates in bounded batches, propagate operation cancellation, can suggest text only, cannot change structure, and cannot perform translation
-- [ ] 3.3 Record candidate, correction, runtime, and validation provenance and clean temporary repair workspace through the existing bounded cleanup path; verify terminal success, failure, and cancellation leave no Library-visible temporary files
+- [x] 3.1 Gate selective secondary OCR on a bounded supported cue-input mechanism such as prepared representation, persisted locator, or safe extraction; verify eligible DVD/VobSub cues can be processed while unavailable input leaves text unchanged/reviewable without full OCR, complete-media hashing, or heuristic scanning
+- [x] 3.2 Compare original, canonical/accurate, selective-secondary-OCR, and optional contextual-provider candidates using deterministic validation; verify providers receive only suspicious/review candidates in bounded batches, propagate operation cancellation, can suggest text only, cannot change structure, and cannot perform translation
+- [x] 3.3 Record candidate, correction, runtime, and validation provenance and clean temporary repair workspace through the existing bounded cleanup path; verify terminal success, failure, and cancellation leave no Library-visible temporary files
 
 ## 4. Asset Info review and operation integration
 
 - [x] 4.1 Expose Asset Info `Analyze OCR` results with clean/suspicious/review counts, original-versus-suggestion details, reasons, and provenance through the existing subtitle operation model; verify focused backend/API and frontend review tests
 - [x] 4.2 Add keep, validated apply, manual text edit, and safe batch actions using the existing operation identity, progress, cancellation, and retry semantics; verify manual/individual/batch actions check the recorded published revision before staging, manual edits are text-only, and uncertain findings are not batch-applied
-- [ ] 4.3 Preserve subscriber/shared-flight ownership and canonical OCR cancellation behavior while adding quality work; verify one cancelled subscriber does not cancel another active equivalent request and last-subscriber cancellation cleans without committing evidence
+- [x] 4.3 Preserve subscriber/shared-flight ownership and canonical OCR cancellation behavior while adding quality work; verify one cancelled subscriber does not cancel another active equivalent request and last-subscriber cancellation cleans without committing evidence
 
 ## 5. Canonical serialization and publication
 
@@ -36,12 +36,12 @@
 
 ## 6. Compatibility and performance regressions
 
-- [ ] 6.1 Verify native ASS/SSA extraction, Japanese OCR fallback, bitmap positioning, existing OCR modes, and conversions without explicit repair remain unchanged through focused regression tests
-- [ ] 6.2 Verify NAS-safe bounded lookup uses canonical/prepared-input identity rather than whole-media hashing, respects the seven-day/256 MiB execution-cache policy, uses the durable cue snapshot after eviction, and avoids repeated expensive runtime probes
+- [x] 6.1 Verify native ASS/SSA extraction, Japanese OCR fallback, bitmap positioning, existing OCR modes, and conversions without explicit repair remain unchanged through focused regression tests
+- [x] 6.2 Verify NAS-safe bounded lookup uses canonical/prepared-input identity rather than whole-media hashing, respects the seven-day/256 MiB execution-cache policy, uses the durable cue snapshot after eviction, and avoids repeated expensive runtime probes
 - [x] 6.3 Verify cancellation, failed correction, successful retry, external sidecar edits, concurrent correction races, existing sidecar preservation, and internal workspace cleanup across text and bitmap subtitle paths
 - [x] 6.4 Add lifecycle regressions for post-correction baseline advancement, corrected-text reanalysis, stale prior findings, logical `both` baseline lineage, artifact removal, ownership changes, and orphan snapshot cleanup
 
 ## 7. Validation
 
-- [ ] 7.1 Run focused backend and frontend quality-analysis, accurate-scoring, snapshot/cache, selective-input capability, revision-conflict, provider batching/cancellation, serializer, publication, cancellation, cleanup, and provenance tests and record the passing evidence
+- [x] 7.1 Run focused backend and frontend quality-analysis, accurate-scoring, snapshot/cache, selective-input capability, revision-conflict, provider batching/cancellation, serializer, publication, cancellation, cleanup, and provenance tests and record the passing evidence
 - [x] 7.2 Run `./scripts/verify.sh --auto` and require `ALL CHECKS PASSED` before marking the implementation complete

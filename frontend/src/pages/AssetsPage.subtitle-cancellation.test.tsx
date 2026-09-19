@@ -119,6 +119,9 @@ describe('Asset Info subtitle cancellation controls', () => {
           forced: false,
           sizeBytes: 100,
           modifiedAt: '',
+          ocrManaged: true,
+          ocrAnalysisAvailable: true,
+          logicalTransformKey: 'ocr-stream-4',
         }] as never}
         loading={false}
         deleting={false}
@@ -132,5 +135,49 @@ describe('Asset Info subtitle cancellation controls', () => {
 
     await user.click(screen.getByRole('button', { name: 'Analyze OCR' }));
     expect(onAnalyze).toHaveBeenCalledWith(expect.objectContaining({ path: '/library/movie.eng.srt', format: 'srt' }));
+  });
+
+  it('batches only analyzer suggestions, not arbitrary edited field values', async () => {
+    const user = userEvent.setup();
+    const onApplyCorrections = vi.fn();
+    render(
+      <ExternalSubtitleList
+        values={[{
+          path: '/library/movie.eng.srt',
+          fileName: 'movie.eng.srt',
+          format: 'srt',
+          language: 'eng',
+          default: false,
+          forced: false,
+          sizeBytes: 100,
+          modifiedAt: '',
+          ocrAnalysisAvailable: true,
+        }] as never}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        qualityReports={{ '/library/movie.eng.srt': {
+          cleanCount: 0,
+          suspiciousCount: 1,
+          reviewCount: 0,
+          canCorrect: true,
+          baselineRevision: 'baseline',
+          findings: [{ cueId: 1, originalText: 'The h0use', suggestion: 'The house', candidateSource: 'deterministic-confusion-repair', status: 'suspicious' }],
+        } as never }}
+        onApplyCorrections={onApplyCorrections}
+      />,
+    );
+    const field = screen.getByDisplayValue('The house');
+    await user.clear(field);
+    await user.type(field, 'The hut');
+    await user.click(screen.getByRole('button', { name: 'Apply reviewed suggestions' }));
+    expect(onApplyCorrections).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/library/movie.eng.srt' }),
+      expect.anything(),
+      [{ cueId: 1, suggestion: 'The house' }],
+    );
   });
 });

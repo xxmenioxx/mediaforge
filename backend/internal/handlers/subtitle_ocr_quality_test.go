@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testPublishedOCREvidence(path string, text string) *canonicalOCREvidence {
@@ -373,6 +375,242 @@ func TestSubtitleOCRCorrectionRequiresAnalyzeRevisionEvidence(t *testing.T) {
 	writeTestSRT(t, sidecar, "The h0use")
 	if _, err := validateSubtitleQualityCorrectionInput(subtitleOCRCorrectionInput{SidecarPath: sidecar, Format: "srt", Corrections: []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}}); err == nil {
 		t.Fatal("correction without Analyze OCR revision evidence was accepted")
+	}
+}
+
+func TestExternalSubtitleInventoryExposesExactOCROwnership(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal"))
+	media := filepath.Join(root, "movie.mkv")
+	managed := filepath.Join(root, "movie.eng.srt")
+	external := filepath.Join(root, "movie.spa.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, managed, "The house")
+	writeTestSRT(t, external, "La casa")
+	evidence := testPublishedOCREvidence(managed, "The house")
+	evidence.Identity.SourcePath = media
+	info, _ := os.Stat(media)
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), managed, "srt", "ocr-stream-4", evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	values, err := externalSubtitlesForMedia(media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 {
+		t.Fatalf("expected both sidecars, got %#v", values)
+	}
+	var managedValue, externalValue ExternalSubtitle
+	for _, value := range values {
+		if value.Path == managed {
+			managedValue = value
+		}
+		if value.Path == external {
+			externalValue = value
+		}
+	}
+	if !managedValue.OCRManaged || !managedValue.OCRAnalysisAvailable || managedValue.LogicalTransformKey != "ocr-stream-4" {
+		t.Fatalf("managed sidecar lost canonical ownership metadata: %+v", managedValue)
+	}
+	if externalValue.OCRManaged || externalValue.OCRAnalysisAvailable || externalValue.LogicalTransformKey != "" {
+		t.Fatalf("generic sidecar was labeled as OCR-managed: %+v", externalValue)
+	}
+}
+
+func TestAssetInfoOCRAnalysisResolvesNonEmptyLogicalTransform(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal"))
+	media := filepath.Join(root, "movie.mkv")
+	sidecar := filepath.Join(root, "movie.eng.srt")
+	if err := os.WriteFile(media, []byte("media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSRT(t, sidecar, "The house")
+	evidence := testPublishedOCREvidence(sidecar, "The house")
+	evidence.Identity.SourcePath = media
+	info, _ := os.Stat(media)
+	evidence.Identity.SourceSize = info.Size()
+	evidence.Identity.SourceModTimeUnixNano = info.ModTime().UnixNano()
+	logicalTransform := "asset-info-ocr-stream-4"
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecar, "srt", logicalTransform, evidence, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := startSubtitleOCRAnalysisOperation(subtitleOCRAnalyzeInput{MediaPath: media, SidecarPath: sidecar, Format: "srt", LogicalTransformKey: logicalTransform})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		subtitleExtractionOperations.RLock()
+		operation := subtitleExtractionOperations.items[operationID]
+		status := ""
+		message := ""
+		hasReport := false
+		if operation != nil {
+			status, message, hasReport = operation.Status, operation.Message, operation.QualityReport != nil
+		}
+		subtitleExtractionOperations.RUnlock()
+		if status == "completed" {
+			if !hasReport {
+				t.Fatalf("Asset Info analysis completed without a quality report: %s", message)
+			}
+			return
+		}
+		if status == "error" {
+			t.Fatalf("Asset Info analysis failed for exact logical transform: %s", message)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Asset Info OCR analysis did not complete")
+}
+
+func TestSubtitleOCRCorrectionIntentSeparatesManualAndDeterministicApply(t *testing.T) {
+	dictionaryRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dictionaryRoot, "en.dic"), []byte("2\nhouse\nthe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() { ocrDictionaryFolderOverride = previousFolder }()
+	snapshot := &publishedCanonicalOCRSnapshot{Format: "srt", Evidence: canonicalOCREvidence{RequestedLanguage: "eng", Cues: []canonicalBitmapSubtitleCue{{SourceOrdinal: 1, Text: "The h0use"}}}}
+	if err := validateDeterministicOCRCorrectionIntents(snapshot, []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}); err != nil {
+		t.Fatalf("individual manual edit was rejected: %v", err)
+	}
+	if err := validateDeterministicOCRCorrectionIntents(snapshot, []subtitleOCRCorrection{{CueID: 1, Action: "apply", Suggestion: "The house"}}); err != nil {
+		t.Fatalf("deterministic suggestion apply was rejected: %v", err)
+	}
+	if err := validateDeterministicOCRCorrectionIntents(snapshot, []subtitleOCRCorrection{{CueID: 1, Action: "apply", Suggestion: "The hut"}}); err == nil {
+		t.Fatal("arbitrary client suggestion was accepted as a deterministic apply")
+	}
+	if err := validateDeterministicOCRCorrectionIntents(snapshot, []subtitleOCRCorrection{{CueID: 1, Action: "apply", Text: "The hut"}}); err == nil {
+		t.Fatal("manual text was accepted through the deterministic apply action")
+	}
+	provenance := correctionProvenanceFor(snapshot, []subtitleOCRCorrection{{CueID: 1, Action: "apply", Suggestion: "The house"}})
+	if len(provenance) != 1 || provenance[0].CandidateSource != "deterministic-confusion-repair" || provenance[0].Validation != "deterministic-suggestion" {
+		t.Fatalf("correction provenance did not retain candidate validation: %#v", provenance)
+	}
+}
+
+type testSubtitleOCRContextualProvider struct {
+	batches int
+	seen    []subtitleOCRContextualCue
+	err     error
+}
+
+func (provider *testSubtitleOCRContextualProvider) Suggest(ctx context.Context, cues []subtitleOCRContextualCue) ([]subtitleOCRContextualSuggestion, error) {
+	provider.batches++
+	provider.seen = append(provider.seen, cues...)
+	if provider.err != nil {
+		return nil, provider.err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []subtitleOCRContextualSuggestion{{CueID: cues[0].CueID, Text: "The house"}}, nil
+}
+
+func TestSubtitleOCRContextualProviderIsBoundedTextOnlyAndCancellable(t *testing.T) {
+	dictionaryRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dictionaryRoot, "en.dic"), []byte("2\nthe\nhouse\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() { ocrDictionaryFolderOverride = previousFolder }()
+	provider := &testSubtitleOCRContextualProvider{}
+	findings := make([]subtitleOCRQualityFinding, 0, maxContextualOCRBatchCues+1)
+	for index := 0; index < maxContextualOCRBatchCues+1; index++ {
+		findings = append(findings, subtitleOCRQualityFinding{CueID: index + 1, OriginalText: "The h0use", Status: subtitleOCRQualityStatusSuspect, Reasons: []string{"review"}})
+	}
+	suggestions, err := boundedContextualOCRSuggestions(context.Background(), provider, findings, "eng")
+	if err != nil || len(suggestions) != 1 || provider.batches != 1 || len(provider.seen) != maxContextualOCRBatchCues {
+		t.Fatalf("provider request was not bounded to one candidate batch: suggestions=%#v provider=%#v err=%v", suggestions, provider, err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider.err = nil
+	if _, err := boundedContextualOCRSuggestions(cancelled, provider, findings[:1], "eng"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("provider cancellation was not propagated: %v", err)
+	}
+}
+
+func TestSelectiveOCRCapabilityIsBoundedAndPreparationAware(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(source, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(source)
+	snapshot := &publishedCanonicalOCRSnapshot{Evidence: canonicalOCREvidence{Identity: canonicalOCRIdentity{
+		SourcePath: source, SourceSize: info.Size(), SourceModTimeUnixNano: info.ModTime().UnixNano(), SourceSnapshotVersion: "stat-v1",
+		StreamIndex: 4, StreamCodec: "dvd_subtitle", PreparationScope: "full-asset",
+	}}}
+	capability := selectiveOCRCueCapabilityFor(snapshot, canonicalBitmapSubtitleCue{SourceOrdinal: 1, Start: 12.5, End: 14.25})
+	if !capability.Available || capability.SourcePath != source || capability.Start != 12.5 || capability.Duration != 2 {
+		t.Fatalf("eligible bounded cue input was not recognized: %#v", capability)
+	}
+	snapshot.Evidence.Identity.PreparationScope = "segmented-test-encode"
+	snapshot.Evidence.Identity.SegmentStart = "42.500000"
+	segmented := selectiveOCRCueCapabilityFor(snapshot, canonicalBitmapSubtitleCue{SourceOrdinal: 1, Start: 2, End: 3})
+	if !segmented.Available || segmented.Start != 44.5 {
+		t.Fatalf("segmented cue input received incorrect source timing: %#v", segmented)
+	}
+	snapshot.Evidence.Identity.SegmentStart = "ambiguous"
+	if unavailable := selectiveOCRCueCapabilityFor(snapshot, canonicalBitmapSubtitleCue{SourceOrdinal: 1, Start: 2, End: 3}); unavailable.Available || unavailable.Reason == "" {
+		t.Fatalf("ambiguous segmented provenance did not fail closed: %#v", unavailable)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if unavailable := selectiveOCRCueCapabilityFor(snapshot, canonicalBitmapSubtitleCue{SourceOrdinal: 1, Start: 2, End: 3}); unavailable.Available || unavailable.Reason == "" {
+		t.Fatalf("changed source identity did not disable selective OCR: %#v", unavailable)
+	}
+}
+
+func TestSelectiveSecondaryOCRUsesOnlyBoundedCueInput(t *testing.T) {
+	root := t.TempDir()
+	bin := installCanonicalOCRTestTools(t, `#!/bin/sh
+output=""
+for argument do
+  case "$argument" in
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'The house' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+printf 'bounded subtitle input' > "$output"
+`)
+	dictionaryRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dictionaryRoot, "en.dic"), []byte("2\nthe\nhouse\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() { ocrDictionaryFolderOverride = previousFolder }()
+	source := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(source, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(source)
+	snapshot := &publishedCanonicalOCRSnapshot{Evidence: canonicalOCREvidence{
+		Identity:          canonicalOCRIdentity{SourcePath: source, SourceSize: info.Size(), SourceModTimeUnixNano: info.ModTime().UnixNano(), SourceSnapshotVersion: "stat-v1", StreamIndex: 4, StreamCodec: "dvd_subtitle"},
+		RequestedLanguage: "eng", OCRMode: "raw",
+	}}
+	candidate, sourceName, err := runSelectiveSecondaryOCR(context.Background(), snapshot, canonicalBitmapSubtitleCue{SourceOrdinal: 1, Start: 1, End: 2, Text: "The h0use"}, t.TempDir(), nil)
+	if err != nil || candidate != "The house" || sourceName != "selective-secondary-ocr" {
+		t.Fatalf("bounded selective OCR did not produce the better candidate: candidate=%q source=%q err=%v", candidate, sourceName, err)
 	}
 }
 

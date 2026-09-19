@@ -312,6 +312,9 @@ export type ExternalSubtitle = {
   forced: boolean;
   sizeBytes: number;
   modifiedAt: string;
+  ocrManaged?: boolean;
+  ocrAnalysisAvailable?: boolean;
+  logicalTransformKey?: string;
 };
 
 export type StreamMetadataOverride = {

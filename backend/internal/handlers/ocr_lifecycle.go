@@ -107,15 +107,25 @@ func (failure *canonicalOCRFailure) Unwrap() error {
 }
 
 type canonicalOCREvidence struct {
-	Identity          canonicalOCRIdentity         `json:"identity"`
-	RequestedLanguage string                       `json:"requestedLanguage"`
-	EffectiveLanguage string                       `json:"effectiveLanguage"`
-	OCRMode           string                       `json:"ocrMode"`
-	Message           string                       `json:"message"`
-	Complete          bool                         `json:"complete"`
-	Integrity         string                       `json:"integrity"`
-	Cues              []canonicalBitmapSubtitleCue `json:"cues"`
-	Geometry          []bitmapCueGeometry          `json:"geometry"`
+	Identity             canonicalOCRIdentity               `json:"identity"`
+	RequestedLanguage    string                             `json:"requestedLanguage"`
+	EffectiveLanguage    string                             `json:"effectiveLanguage"`
+	OCRMode              string                             `json:"ocrMode"`
+	Message              string                             `json:"message"`
+	Complete             bool                               `json:"complete"`
+	Integrity            string                             `json:"integrity"`
+	Cues                 []canonicalBitmapSubtitleCue       `json:"cues"`
+	Geometry             []bitmapCueGeometry                `json:"geometry"`
+	CorrectionProvenance []canonicalOCRCorrectionProvenance `json:"correctionProvenance,omitempty"`
+}
+
+type canonicalOCRCorrectionProvenance struct {
+	CueID           int    `json:"cueId"`
+	Action          string `json:"action"`
+	CandidateSource string `json:"candidateSource,omitempty"`
+	TextHash        string `json:"textHash,omitempty"`
+	Validation      string `json:"validation"`
+	SelectedBy      string `json:"selectedBy"`
 }
 
 type canonicalOCREvidenceCacheRecord struct {

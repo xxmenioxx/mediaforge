@@ -3328,7 +3328,7 @@ async function generateExternalSubtitle(
     const key = sidecar.path;
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Analyzing OCR quality…' }));
     try {
-      const operation = await api.analyzeSubtitleOCR({ mediaPath: asset.path, sidecarPath: sidecar.path, format: sidecar.format });
+      const operation = await api.analyzeSubtitleOCR({ mediaPath: asset.path, sidecarPath: sidecar.path, format: sidecar.format, logicalTransformKey: sidecar.logicalTransformKey });
       const report = await waitForSubtitleQualityOperation(operation.operationId);
       if (report) {
         setSubtitleQualityReports((current) => ({ ...current, [key]: report }));
@@ -3351,7 +3351,7 @@ async function generateExternalSubtitle(
   async function applyExternalSubtitleCorrections(
     sidecar: ExternalSubtitle,
     report: SubtitleOCRQualityReport,
-    corrections: Array<{ cueId: number; text: string }>,
+    corrections: Array<{ cueId: number; text?: string; suggestion?: string }>,
   ) {
     const key = sidecar.path;
     setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Applying validated correction…' }));
@@ -3360,9 +3360,12 @@ async function generateExternalSubtitle(
         mediaPath: asset.path,
         sidecarPath: sidecar.path,
         format: sidecar.format,
+        logicalTransformKey: sidecar.logicalTransformKey,
         baselineRevision: report.baselineRevision,
-      revisions: report.revisionSet,
-        corrections: corrections.map((correction) => ({ ...correction, action: 'edit' as const })),
+        revisions: report.revisionSet,
+        corrections: corrections.map((correction) => correction.suggestion
+          ? { cueId: correction.cueId, action: 'apply' as const, suggestion: correction.suggestion }
+          : { cueId: correction.cueId, action: 'edit' as const, text: correction.text ?? '' }),
       });
       await waitForSubtitleQualityOperation(operation.operationId);
       setSubtitleQualityReports((current) => {
@@ -4768,7 +4771,7 @@ export function ExternalSubtitleList({
   qualityReports?: Record<string, SubtitleOCRQualityReport>;
   qualityMessages?: Record<string, string>;
   onApplyCorrection?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, finding: SubtitleOCRQualityFinding, text: string) => void;
-  onApplyCorrections?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, corrections: Array<{ cueId: number; text: string }>) => void;
+  onApplyCorrections?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, corrections: Array<{ cueId: number; suggestion: string }>) => void;
 }) {
   const [correctionText, setCorrectionText] = useState<Record<string, string>>({});
   return (
@@ -4798,7 +4801,7 @@ export function ExternalSubtitleList({
                 </Stack>
               </Stack>
               <Stack direction="row" spacing={0.5}>
-                {onAnalyze ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
+                {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
                 <Tooltip title="Rename subtitle file">
                   <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
                 </Tooltip>
@@ -4823,11 +4826,7 @@ export function ExternalSubtitleList({
                   {onApplyCorrection ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrection(subtitle, report, finding, value)}>Apply</Button> : null}
                 </Stack>;
               })}
-              {onApplyCorrections ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrections(subtitle, report, report.findings.filter((finding) => finding.status === 'suspicious').flatMap((finding) => {
-                const editKey = `${subtitle.path}:${finding.cueId}`;
-                const text = correctionText[editKey] ?? finding.suggestion ?? finding.originalText;
-                return text !== finding.originalText ? [{ cueId: finding.cueId, text }] : [];
-              }))}>Apply reviewed suggestions</Button> : null}
+              {onApplyCorrections ? <Button size="small" variant="outlined" disabled={disabled || !report.canCorrect} onClick={() => onApplyCorrections(subtitle, report, report.findings.filter((finding) => finding.status === 'suspicious' && finding.candidateSource === 'deterministic-confusion-repair' && Boolean(finding.suggestion)).map((finding) => ({ cueId: finding.cueId, suggestion: finding.suggestion! })))}>Apply reviewed suggestions</Button> : null}
               {message ? <Typography variant="caption" color="text.secondary">{message}</Typography> : null}
             </Box> : null}
           </Stack>

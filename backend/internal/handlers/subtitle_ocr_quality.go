@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +95,84 @@ type subtitleOCRCorrection struct {
 	Action     string `json:"action"`
 	Text       string `json:"text,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
+}
+
+const maxSelectiveOCRCueDurationSeconds = 30
+
+type selectiveOCRCueCapability struct {
+	Available  bool
+	Reason     string
+	SourcePath string
+	Stream     FFProbeStream
+	Start      float64
+	Duration   int
+}
+
+const maxContextualOCRBatchCues = 16
+
+type subtitleOCRContextualCue struct {
+	CueID        int
+	Text         string
+	ReviewReason string
+}
+
+type subtitleOCRContextualSuggestion struct {
+	CueID int
+	Text  string
+}
+
+// subtitleOCRContextualProvider is only the bounded text-suggestion boundary.
+// The repository has no provider implementation; callers may leave it nil.
+// It cannot return timing, geometry, styles, or any other subtitle structure.
+type subtitleOCRContextualProvider interface {
+	Suggest(context.Context, []subtitleOCRContextualCue) ([]subtitleOCRContextualSuggestion, error)
+}
+
+func boundedContextualOCRSuggestions(ctx context.Context, provider subtitleOCRContextualProvider, findings []subtitleOCRQualityFinding, language string) ([]subtitleOCRContextualSuggestion, error) {
+	if provider == nil {
+		return nil, nil
+	}
+	cues := make([]subtitleOCRContextualCue, 0, maxContextualOCRBatchCues)
+	for _, finding := range findings {
+		if finding.Status == subtitleOCRQualityStatusClean || len(cues) >= maxContextualOCRBatchCues || strings.TrimSpace(finding.OriginalText) == "" || len(finding.OriginalText) > 4*1024 {
+			continue
+		}
+		cues = append(cues, subtitleOCRContextualCue{CueID: finding.CueID, Text: finding.OriginalText, ReviewReason: strings.Join(finding.Reasons, "; ")})
+	}
+	if len(cues) == 0 {
+		return nil, nil
+	}
+	suggestions, err := provider.Suggest(ctx, cues)
+	if err != nil {
+		return nil, err
+	}
+	valid := make([]subtitleOCRContextualSuggestion, 0, len(suggestions))
+	seen := make(map[int]struct{}, len(suggestions))
+	for _, suggestion := range suggestions {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[suggestion.CueID]; duplicate || strings.TrimSpace(suggestion.Text) == "" || len(suggestion.Text) > 4*1024 || strings.ContainsAny(suggestion.Text, "\r\n") {
+			continue
+		}
+		for _, cue := range cues {
+			if cue.CueID == suggestion.CueID && subtitleOCRCandidateIsMateriallyBetter(cue.Text, suggestion.Text, language) {
+				valid = append(valid, subtitleOCRContextualSuggestion{CueID: suggestion.CueID, Text: strings.TrimSpace(suggestion.Text)})
+				seen[suggestion.CueID] = struct{}{}
+				break
+			}
+		}
+	}
+	return valid, nil
+}
+
+func subtitleOCRCandidateIsMateriallyBetter(original, candidate, language string) bool {
+	if strings.TrimSpace(original) == "" || strings.TrimSpace(candidate) == "" || strings.ContainsAny(candidate, "\r\n") {
+		return false
+	}
+	originalScore := subtitleOCRScoreForLanguage(original, language)
+	candidateScore := subtitleOCRScoreForLanguage(candidate, language)
+	return candidateScore > originalScore+math.Max(5, math.Abs(originalScore)*0.05)
 }
 
 type subtitleOCRAnalyzeInput struct {
@@ -189,11 +269,12 @@ func applySubtitleOCRCorrections(cues []canonicalBitmapSubtitleCue, corrections 
 		if !ok {
 			return nil, fmt.Errorf("OCR correction references unknown cue %d", correction.CueID)
 		}
-		text := strings.TrimSpace(correction.Text)
-		if strings.EqualFold(strings.TrimSpace(correction.Action), "keep") || strings.EqualFold(strings.TrimSpace(correction.Action), "reject") {
+		action := strings.ToLower(strings.TrimSpace(correction.Action))
+		if action == "keep" || action == "reject" {
 			continue
 		}
-		if text == "" && strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
+		text := strings.TrimSpace(correction.Text)
+		if action == "apply" {
 			text = strings.TrimSpace(correction.Suggestion)
 		}
 		if text == "" {
@@ -202,6 +283,151 @@ func applySubtitleOCRCorrections(cues []canonicalBitmapSubtitleCue, corrections 
 		result[index].Text = text
 	}
 	return result, nil
+}
+
+func validateDeterministicOCRCorrectionIntents(snapshot *publishedCanonicalOCRSnapshot, corrections []subtitleOCRCorrection) error {
+	if snapshot == nil {
+		return errors.New("canonical OCR baseline is required")
+	}
+	report := analyzeCanonicalOCRSnapshot(snapshot)
+	findings := make(map[int]subtitleOCRQualityFinding, len(report.Findings))
+	for _, finding := range report.Findings {
+		findings[finding.CueID] = finding
+	}
+	for _, correction := range corrections {
+		finding, ok := findings[correction.CueID]
+		if !ok {
+			return fmt.Errorf("OCR correction references unknown cue %d", correction.CueID)
+		}
+		switch strings.ToLower(strings.TrimSpace(correction.Action)) {
+		case "keep", "reject":
+			continue
+		case "edit":
+			if strings.TrimSpace(correction.Text) == "" {
+				return fmt.Errorf("manual OCR correction for cue %d has no text", correction.CueID)
+			}
+		case "apply":
+			expected := strings.TrimSpace(finding.Suggestion)
+			candidate := strings.TrimSpace(correction.Suggestion)
+			if finding.CandidateSource != "deterministic-confusion-repair" || expected == "" || candidate != expected || strings.TrimSpace(correction.Text) != "" {
+				return fmt.Errorf("OCR correction for cue %d is not the current deterministic suggestion", correction.CueID)
+			}
+		default:
+			return fmt.Errorf("unsupported OCR correction action %q", correction.Action)
+		}
+	}
+	return nil
+}
+
+func correctionProvenanceFor(snapshot *publishedCanonicalOCRSnapshot, corrections []subtitleOCRCorrection) []canonicalOCRCorrectionProvenance {
+	if snapshot == nil || len(corrections) == 0 {
+		return nil
+	}
+	report := analyzeCanonicalOCRSnapshot(snapshot)
+	sources := make(map[int]string, len(report.Findings))
+	for _, finding := range report.Findings {
+		sources[finding.CueID] = finding.CandidateSource
+	}
+	provenance := make([]canonicalOCRCorrectionProvenance, 0, len(corrections))
+	for _, correction := range corrections {
+		if len(provenance) >= 128 {
+			break
+		}
+		text := strings.TrimSpace(correction.Text)
+		if strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
+			text = strings.TrimSpace(correction.Suggestion)
+		}
+		textHash := ""
+		if text != "" {
+			sum := sha256.Sum256([]byte(text))
+			textHash = hex.EncodeToString(sum[:])
+		}
+		selectedBy := "user"
+		validation := "manual-text"
+		if strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
+			selectedBy = "deterministic-analyzer"
+			validation = "deterministic-suggestion"
+		}
+		provenance = append(provenance, canonicalOCRCorrectionProvenance{
+			CueID: correction.CueID, Action: strings.ToLower(strings.TrimSpace(correction.Action)), CandidateSource: sources[correction.CueID], TextHash: textHash, Validation: validation, SelectedBy: selectedBy,
+		})
+	}
+	return provenance
+}
+
+func selectiveOCRCueCapabilityFor(snapshot *publishedCanonicalOCRSnapshot, cue canonicalBitmapSubtitleCue) selectiveOCRCueCapability {
+	if snapshot == nil {
+		return selectiveOCRCueCapability{Reason: "canonical OCR baseline is unavailable"}
+	}
+	identity := snapshot.Evidence.Identity
+	if !canonicalOCRSourceIdentityMatches(identity) {
+		return selectiveOCRCueCapability{Reason: "source identity is unavailable or changed"}
+	}
+	codec := strings.ToLower(strings.TrimSpace(identity.StreamCodec))
+	if codec != "dvd_subtitle" && codec != "hdmv_pgs_subtitle" && codec != "pgssub" {
+		return selectiveOCRCueCapability{Reason: "bounded selective OCR input is unsupported for this codec"}
+	}
+	if cue.End <= cue.Start || cue.Start < 0 || cue.End-cue.Start > maxSelectiveOCRCueDurationSeconds {
+		return selectiveOCRCueCapability{Reason: "cue timing is outside the bounded selective OCR window"}
+	}
+	start := cue.Start
+	if identity.PreparationScope == "segmented-test-encode" {
+		segmentStart, err := strconv.ParseFloat(identity.SegmentStart, 64)
+		if err != nil || segmentStart < 0 {
+			return selectiveOCRCueCapability{Reason: "segmented OCR timing provenance is unavailable"}
+		}
+		start += segmentStart
+	}
+	duration := int(math.Ceil(cue.End - cue.Start))
+	if duration < 1 {
+		duration = 1
+	}
+	if duration > maxSelectiveOCRCueDurationSeconds {
+		duration = maxSelectiveOCRCueDurationSeconds
+	}
+	return selectiveOCRCueCapability{
+		Available:  true,
+		SourcePath: identity.SourcePath,
+		Stream:     FFProbeStream{Index: identity.StreamIndex, CodecName: identity.StreamCodec, ID: identity.StreamID},
+		Start:      start,
+		Duration:   duration,
+	}
+}
+
+func runSelectiveSecondaryOCR(ctx context.Context, snapshot *publishedCanonicalOCRSnapshot, cue canonicalBitmapSubtitleCue, workspace string, onProgress OCRProgressFunc) (string, string, error) {
+	capability := selectiveOCRCueCapabilityFor(snapshot, cue)
+	if !capability.Available {
+		return "", capability.Reason, nil
+	}
+	segmentPath := filepath.Join(workspace, fmt.Sprintf("selective-cue-%d.mkv", cue.SourceOrdinal))
+	args := bitmapSubtitleSegmentArgs(capability.SourcePath, capability.Stream.Index, segmentPath, capability.Start, capability.Duration)
+	var output strings.Builder
+	if err := runSubtitleCommand(ctx, "ffmpeg", args, &output, &output); err != nil {
+		return "", "bounded cue extraction failed", err
+	}
+	result, err := runBitmapOCRWithTiming(
+		ctx,
+		segmentPath,
+		capability.Stream,
+		"srt",
+		snapshot.Evidence.RequestedLanguage,
+		snapshot.Evidence.OCRMode,
+		filepath.Join(workspace, fmt.Sprintf("selective-cue-%d.srt", cue.SourceOrdinal)),
+		filepath.Join(workspace, fmt.Sprintf("selective-cue-%d.raw.srt", cue.SourceOrdinal)),
+		onProgress,
+		true,
+		capability.Start,
+	)
+	if err != nil {
+		return "", "selective OCR failed", err
+	}
+	for _, candidate := range result.Cues {
+		text := strings.TrimSpace(candidate.Text)
+		if text != "" && subtitleOCRScoreForLanguage(text, snapshot.Evidence.RequestedLanguage) > subtitleOCRScoreForLanguage(cue.Text, snapshot.Evidence.RequestedLanguage) {
+			return text, "selective-secondary-ocr", nil
+		}
+	}
+	return "", "selective OCR produced no materially better candidate", nil
 }
 
 func correctedSubtitleEvidence(snapshot *publishedCanonicalOCRSnapshot, cues []canonicalBitmapSubtitleCue) *canonicalOCREvidence {
@@ -389,6 +615,20 @@ func runSubtitleOCRCorrectionOperation(
 		}
 		snapshots[index] = snapshot
 	}
+	for _, snapshot := range snapshots {
+		if err := validateDeterministicOCRCorrectionIntents(snapshot, input.Corrections); err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = err.Error()
+			})
+			return
+		}
+	}
+	for _, snapshot := range snapshots {
+		snapshot.Evidence.CorrectionProvenance = correctionProvenanceFor(snapshot, input.Corrections)
+	}
 	cues, err := applySubtitleOCRCorrections(snapshots[0].Evidence.Cues, input.Corrections)
 	if err != nil {
 		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
@@ -464,6 +704,9 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 				operation.Error = err.Error()
 			})
 			return
+		}
+		if snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, report.Format, input.LogicalTransformKey); ok {
+			report = enrichSubtitleOCRReportWithSelective(ctx, workspace, snapshot, report)
 		}
 		if index == 0 {
 			combined = report
@@ -660,6 +903,84 @@ func publishedSubtitleSnapshotPath(ownerIdentity string) string {
 
 func publishedSubtitleOwnerIdentity(path, format, logicalTransform string) string {
 	return strings.Join([]string{filepath.Clean(path), strings.ToLower(strings.TrimSpace(format)), strings.TrimSpace(logicalTransform)}, "\x00")
+}
+
+func publishedOCRExternalOwnership(path, format string) (managed, analysisAvailable bool, logicalTransform string) {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	format = strings.ToLower(strings.TrimSpace(format))
+	if cleanPath == "." || cleanPath == "" || format == "" {
+		return false, false, ""
+	}
+	entries, err := os.ReadDir(publishedSubtitleSnapshotRoot())
+	if err == nil && len(entries) <= 4096 {
+		keys := make([]string, 0, 2)
+		available := make([]bool, 0, 2)
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(publishedSubtitleSnapshotRoot(), entry.Name()))
+			if readErr != nil {
+				continue
+			}
+			var snapshot publishedCanonicalOCRSnapshot
+			if json.Unmarshal(content, &snapshot) != nil || snapshot.Revision.ArtifactPath != cleanPath || snapshot.Format != format {
+				continue
+			}
+			key := snapshot.LogicalTransformKey
+			if snapshot.OwnerIdentity != publishedSubtitleOwnerIdentity(cleanPath, format, key) {
+				continue
+			}
+			duplicate := false
+			for _, existing := range keys {
+				duplicate = duplicate || existing == key
+			}
+			if duplicate {
+				continue
+			}
+			keys = append(keys, key)
+			_, valid := loadPublishedCanonicalOCRSnapshot(cleanPath, format, key)
+			available = append(available, valid)
+		}
+		if len(keys) == 1 {
+			return true, available[0], keys[0]
+		}
+		if len(keys) > 1 {
+			return true, false, ""
+		}
+	}
+
+	legacyRoot := filepath.Join(canonicalOCRWorkspaceRoot(), "legacy-ownership")
+	legacyEntries, err := os.ReadDir(legacyRoot)
+	if err != nil || len(legacyEntries) > 4096 {
+		return false, false, ""
+	}
+	keys := make([]string, 0, 2)
+	for _, entry := range legacyEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(legacyRoot, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var ownership legacyPublishedOCROwnership
+		if json.Unmarshal(content, &ownership) != nil || ownership.ArtifactPath != cleanPath || ownership.Format != format {
+			continue
+		}
+		key := ownership.LogicalTransformKey
+		if _, ok := reconstructLegacyOCRSnapshot(cleanPath, format, key); !ok {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) == 1 {
+		return true, true, keys[0]
+	}
+	if len(keys) > 1 {
+		return true, false, ""
+	}
+	return false, false, ""
 }
 
 func canonicalOCRSourceIdentityMatches(identity canonicalOCRIdentity) bool {
@@ -894,6 +1215,44 @@ func analyzeCanonicalOCRSnapshot(snapshot *publishedCanonicalOCRSnapshot) subtit
 			report.SuspiciousCount++
 		default:
 			report.ReviewCount++
+		}
+	}
+	return report
+}
+
+func enrichSubtitleOCRReportWithSelective(ctx context.Context, workspace string, snapshot *publishedCanonicalOCRSnapshot, report subtitleOCRQualityReport) subtitleOCRQualityReport {
+	if snapshot == nil {
+		return report
+	}
+	byID := make(map[int]canonicalBitmapSubtitleCue, len(snapshot.Evidence.Cues))
+	for _, cue := range snapshot.Evidence.Cues {
+		byID[cue.SourceOrdinal] = cue
+	}
+	attempts := 0
+	for index := range report.Findings {
+		finding := &report.Findings[index]
+		if finding.Status == subtitleOCRQualityStatusClean || attempts >= 16 {
+			continue
+		}
+		cue, ok := byID[finding.CueID]
+		if !ok {
+			continue
+		}
+		attempts++
+		candidate, source, err := runSelectiveSecondaryOCR(ctx, snapshot, cue, workspace, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				return report
+			}
+			finding.Reasons = append(finding.Reasons, "selective OCR unavailable: bounded attempt failed")
+			continue
+		}
+		if candidate != "" {
+			finding.Suggestion = candidate
+			finding.CandidateSource = source
+			finding.Evidence = append(finding.Evidence, "bounded selective OCR candidate")
+		} else if source != "" {
+			finding.Reasons = append(finding.Reasons, source)
 		}
 	}
 	return report
