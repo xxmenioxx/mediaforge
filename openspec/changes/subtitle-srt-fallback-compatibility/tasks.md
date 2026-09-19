@@ -7,12 +7,12 @@
 
 - [ ] 2.1 Extend the canonical subtitle planning inputs to resolve the fallback setting before `ResolvedTrackPlan` construction, and verify ASS-on, SRT-on, ASS+SRT-on, and ASS-off behavior.
 - [ ] 2.2 Normalize and deduplicate effective formats while preserving explicit requests, stream/rule precedence, semantic roles, forced/SDH metadata, and logical-transform identity; verify focused resolver tests.
-- [ ] 2.3 Verify Asset Info, Track Profiles, Profile Lab, and Test Encode use the same effective-format result and show the added SRT consequence wherever ASS selection is exposed.
+- [ ] 2.3 Verify Asset Info, Track Profiles, Profile Lab, and Test Encode use the same canonical resolver/effective-format contract and show the added SRT consequence wherever ASS selection is exposed.
 
 ## 3. Native subtitle representations
 
-- [ ] 3.1 Preserve native ASS and SSA artifacts byte/style semantics while adding an SRT fallback through the existing canonical conversion path, and verify original-plus-SRT extraction tests.
-- [ ] 3.2 Verify fallback naming, sidecar metadata, role/forced/SDH qualifiers, and existing artifact satisfaction behavior for native ASS/SSA outputs.
+- [ ] 3.1 Keep source codec separate from requested mode: verify converted text/bitmap ASS produces converted SRT through the canonical converted path, while `mode=original` native ASS/SSA preserves the original and adds converted SRT without treating it as logical `both`.
+- [ ] 3.2 Verify fallback naming, sidecar metadata, role/forced/SDH qualifiers, and existing artifact satisfaction behavior for converted and original-mode native outputs.
 
 ## 4. Bitmap OCR and canonical serializer fan-out
 
@@ -22,8 +22,8 @@
 
 ## 5. Queue freeze and worker consumption
 
-- [ ] 5.1 Freeze effective fallback outputs and relevant provenance in the Queue `ResolvedTrackPlan` snapshot, and verify Workers consume only the snapshot.
-- [ ] 5.2 Add a regression proving settings changed after enqueue/freeze do not change the job's subtitle outputs, while a newly created retry resolves the current setting.
+- [ ] 5.1 Resolve effective fallback outputs during `QUEUED → CLAIM/PREPARING`, freeze them with relevant provenance in the Queue `ResolvedTrackPlan` snapshot, and verify Workers consume only the snapshot.
+- [ ] 5.2 Add regressions proving a setting change before successful freeze is observed during preparation, while a change after successful freeze cannot change execution or retry; verify incomplete freeze may resolve current settings and a future job resolves current settings.
 
 ## 6. Cross-entry-point and compatibility regression coverage
 

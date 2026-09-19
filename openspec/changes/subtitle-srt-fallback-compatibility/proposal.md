@@ -20,8 +20,9 @@ artifacts.
 - Expose the effective SRT consequence in existing Asset Info, Track Profile,
   and Lab/Test Encode subtitle-output surfaces before Queue execution where
   those surfaces already expose ASS selection.
-- Freeze the effective outputs in Queue snapshots; Workers consume that frozen
-  plan and do not read or reinterpret Settings.
+- Freeze the effective outputs during Queue Claim/Preparing in the Queue
+  snapshot; Workers consume that frozen plan and do not read or reinterpret
+  Settings.
 
 The default preserves current behavior. Existing native ASS/SSA extraction,
 semantic-role and disposition metadata, bitmap geometry, sidecar naming, and
@@ -43,8 +44,9 @@ None.
 - Backend settings persistence and the canonical subtitle resolution inputs are
   extended by one backward-compatible boolean setting.
 - `ResolvedTrackPlan` and Queue snapshots represent the normalized effective
-  subtitle outputs, allowing Asset Info, Track Profiles, Profile Lab,
-  Test Encode, and Queue to agree before execution.
+  subtitle outputs. Interactive entry points resolve the same canonical
+  contract, while Queue freezes its plan during Claim/Preparing before
+  execution.
 - Native ASS/SSA and bitmap OCR paths may publish an additional SRT sidecar
   when enabled, but each logical transformation still has one canonical cue
   and OCR/evidence lifecycle.

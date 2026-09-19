@@ -57,10 +57,12 @@ effective formats SHALL be deduplicated.
 ### Requirement: Shared canonical planning across entry points
 
 Asset Info, Track Profiles, Profile Lab, Test Encode, and Queue SHALL use the
-same canonical effective-format behavior. Where an entry point exposes ASS
-selection, it SHALL make the resulting SRT fallback visible before execution
-when the persisted setting is enabled. No client capability or playback policy
-SHALL alter the resolved formats.
+same canonical resolver and effective-format resolution contract. Interactive
+entry points MAY resolve equivalent current plans; Queue SHALL own and freeze
+its execution snapshot. Where an entry point exposes ASS selection, it SHALL
+make the resulting SRT fallback visible before execution when the persisted
+setting is enabled. No client capability or playback policy SHALL alter the
+resolved formats.
 
 #### Scenario: Asset Info shows the effective fallback
 
@@ -75,25 +77,50 @@ SHALL alter the resolved formats.
 - **THEN** its resolved effective outputs SHALL match the canonical plan,
   including the added SRT output
 
-### Requirement: Native ASS and SSA fallback preservation
+### Requirement: Source codec and requested subtitle mode remain distinct
 
-The system SHALL preserve native ASS/SSA extraction as the original styled
-representation with its original extension, styles, tags, and positioning. An
-effective SRT fallback SHALL be an additional canonical text/timing output and
-SHALL NOT rewrite or replace the native representation.
+The system SHALL treat source codec and requested extraction mode as separate
+dimensions. Converted text and bitmap outputs SHALL use the canonical
+normalization/serializer or OCR/cue lifecycle respectively. Native ASS/SSA
+SHALL remain lossless only when `mode=original` is requested; an effective SRT
+fallback for that mode SHALL be a separate converted output and SHALL NOT
+rewrite or replace the native representation.
 
-#### Scenario: Native ASS publishes original plus SRT
+#### Scenario: Converted text ASS receives converted SRT fallback
 
-- **WHEN** a native ASS subtitle is selected with fallback enabled
+- **WHEN** a text source is requested with `mode=converted`, `format=ass`, and
+  fallback enabled
+- **THEN** the operation SHALL produce converted ASS and converted SRT through
+  the canonical normalization and serializer path
+
+#### Scenario: Converted bitmap ASS receives converted SRT fallback
+
+- **WHEN** a bitmap source is requested with `mode=converted`, `format=ass`,
+  and fallback enabled
+- **THEN** the operation SHALL produce converted ASS and converted SRT from
+  one canonical OCR/cue lifecycle
+
+#### Scenario: Native ASS in original mode publishes original plus converted SRT
+
+- **WHEN** a native ASS subtitle is selected with `mode=original` and fallback
+  enabled
 - **THEN** the operation SHALL preserve the native ASS artifact and produce a
-  separate SRT fallback through the existing canonical conversion path
+  separate converted SRT fallback through the existing canonical conversion
+  path without treating the pair as logical `both`
 
-#### Scenario: Native SSA preserves its source representation
+#### Scenario: Native SSA in original mode preserves its source representation
 
-- **WHEN** a native SSA subtitle is selected with fallback enabled
+- **WHEN** a native SSA subtitle is selected with `mode=original` and fallback
+  enabled
 - **THEN** the operation SHALL preserve the native SSA artifact and produce the
-  additional SRT output without converting the original into a different
-  styled format
+  additional converted SRT output without converting the original into a
+  different styled format
+
+#### Scenario: Converted logical both remains one transformation
+
+- **WHEN** a converted subtitle request explicitly selects logical `both`
+- **THEN** its SRT and ASS serializers SHALL share one normalized cue/OCR
+  result, independently of the original-mode native ASS/SSA fallback case
 
 ### Requirement: Bitmap ASS and SRT share canonical OCR evidence
 
@@ -119,23 +146,43 @@ timing without geometry.
 
 ### Requirement: Queue freezes effective fallback outputs
 
-Queue preparation SHALL resolve the fallback setting and freeze the resulting
-effective subtitle outputs in the immutable `ResolvedTrackPlan`/Queue
-snapshot. Workers SHALL consume that frozen plan and SHALL NOT read or
-reinterpret Settings for subtitle output selection.
+Queue SHALL retain the existing lifecycle `QUEUED → CLAIM/PREPARING → resolve
+effective configuration → build/freeze ResolvedTrackPlan → PROCESSING`.
+Effective fallback outputs SHALL be frozen in the immutable
+`ResolvedTrackPlan`/Queue snapshot during Claim/Preparing. Workers SHALL
+consume that frozen plan and SHALL NOT read or reinterpret Settings for
+subtitle output selection.
 
-#### Scenario: Settings changes after enqueue do not change a frozen job
+Before a successful freeze, preparation or retry MAY resolve the current
+settings. After a successful freeze, the execution and any retry of that
+frozen job SHALL use the same snapshot. A new/future job SHALL resolve current
+settings.
 
-- **WHEN** a job is enqueued with fallback enabled and the setting is disabled
-  before the Worker executes the job
-- **THEN** the Worker SHALL still execute the frozen ASS+SRT plan
+#### Scenario: Settings changes before freeze are observed during preparation
 
-#### Scenario: A later retry resolves current settings
+- **WHEN** a job remains `QUEUED`, the fallback setting changes, and Claim/
+  Preparing has not successfully frozen the plan
+- **THEN** preparation SHALL resolve and freeze the new setting's effective
+  output
 
-- **WHEN** a new retry is created after the previous operation terminates and
-  the persisted fallback setting has changed
-- **THEN** the new operation SHALL receive a newly resolved plan under the
-  current setting rather than mutating the old snapshot
+#### Scenario: Settings changes after freeze do not affect execution or retry
+
+- **WHEN** a job has successfully frozen ASS+SRT, the setting changes to off,
+  and the job executes or is retried
+- **THEN** execution and retry SHALL continue to use the frozen ASS+SRT
+  snapshot
+
+#### Scenario: Incomplete freeze may resolve again
+
+- **WHEN** preparation or retry has not successfully completed the freeze
+  boundary and the persisted fallback setting changes
+- **THEN** the next preparation attempt MAY resolve current settings before
+  freezing a plan
+
+#### Scenario: A future job resolves current settings
+
+- **WHEN** a new job is created after the setting changes
+- **THEN** its Claim/Preparing phase SHALL resolve the current setting
 
 ### Requirement: Atomic fallback publication and metadata preservation
 

@@ -2,7 +2,7 @@
 
 The existing `subtitles` capability already resolves source tracks and
 requested sidecars through one canonical planner, freezes the resulting
-`ResolvedTrackPlan` for Queue execution, and routes text and bitmap subtitles
+`ResolvedTrackPlan` for Queue execution during Claim/Preparing, and routes text and bitmap subtitles
 through shared serializers/OCR evidence. Native ASS/SSA extraction preserves
 the original styled representation, while bitmap subtitles use the canonical
 OCR lifecycle and can preserve geometry for ASS positioning.
@@ -22,7 +22,8 @@ path. See `proposal.md` for motivation and
 - Keep one canonical cue/evidence lifecycle for ASS+SRT bitmap OCR and for
   corrections applied before both serializers.
 - Make the effective SRT consequence visible in existing output-selection UI
-  and keep Asset Info, Profiles, Lab/Test Encode, and Queue aligned.
+  and keep Asset Info, Profiles, Lab/Test Encode, and Queue aligned through
+  the same canonical resolution contract.
 - Preserve Queue snapshot, cancellation, validation, publication, metadata,
   and logical-`both` boundaries.
 
@@ -66,21 +67,32 @@ The normalization contract is:
 | ASS + SRT | on | ASS + SRT |
 | ASS | off | ASS |
 
-The same resolved plan is used by Asset Info, Track Profiles, Profile Lab,
-Test Encode, and Queue. Existing profile/rule precedence and semantic-role,
+Asset Info, Track Profiles, Profile Lab, Test Encode, and Queue use the same
+canonical resolver and effective-format resolution contract. Interactive entry
+points may produce equivalent current plans; Queue owns and freezes its
+execution snapshot. Existing profile/rule precedence and semantic-role,
 forced, SDH, language, stream, naming, and sidecar metadata remain unchanged.
 
-### 3. Preserve native ASS/SSA while adding the canonical fallback
+### 3. Keep source codec separate from requested extraction mode
 
-For a native ASS or SSA source, the original styled representation remains the
-native original artifact (`.ass` or `.ssa`) with its styles, tags, and
-positioning intact. If fallback is effective, a separate SRT output is
-generated through the existing canonical subtitle conversion path. SRT remains
-text/timing only; it does not rewrite the native original.
+Source codec and requested extraction mode are independent dimensions. A text
+source requested with `mode=converted` and `format=ass` is a converted ASS
+output; when fallback is enabled, it produces converted ASS plus converted
+SRT through the existing canonical normalization and serializer path. A
+bitmap source follows the same converted-output contract using the shared
+canonical OCR/cue lifecycle.
 
-The output model must distinguish the native original from the converted SRT
-while retaining the shared source/stream identity, role/disposition metadata,
-canonical naming, and existing logical-transform/publication rules.
+Separately, a native ASS/SSA source requested with `mode=original` preserves
+the native styled representation as the original artifact (`.ass` or `.ssa`)
+with its styles, tags, and positioning intact. If fallback is effective, a
+separate converted SRT output is generated through the existing canonical
+conversion path. The native original remains untouched.
+
+The original-plus-fallback case is not logical `both`: logical `both` remains
+the existing converted SRT+ASS transformation sharing one normalized cue/OCR
+result. The output model distinguishes original extraction from converted
+outputs while retaining source/stream identity, role/disposition metadata,
+canonical naming, and existing publication rules.
 
 ### 4. Share bitmap OCR and correction evidence
 
@@ -96,17 +108,21 @@ Existing Japanese orientation fallback, accurate-mode selection, geometry
 positioning, cancellation, shared-flight ownership, and all-output atomic
 publication barriers remain in force.
 
-### 5. Freeze effective outputs for Queue
+### 5. Freeze effective outputs at Queue Claim/Preparing
 
-Queue preparation resolves Settings and the canonical track plan before the
-execution snapshot is frozen. The snapshot contains the effective sidecar
-outputs and relevant provenance. Workers consume only that frozen
-`ResolvedTrackPlan`; changing the persisted fallback setting after enqueue or
-after freeze cannot add, remove, or reinterpret a sidecar for the job.
+Queue lifecycle remains `QUEUED → CLAIM/PREPARING → resolve effective
+configuration → build/freeze ResolvedTrackPlan → PROCESSING`. A setting change
+while a job is still queued and before successful freeze is therefore observed
+when preparation resolves the plan. The frozen snapshot contains the effective
+sidecar outputs and relevant provenance, and Workers consume only that frozen
+`ResolvedTrackPlan`.
 
-If a request is retried, it receives a newly resolved plan under the current
-settings. Existing stale-snapshot and operation cancellation semantics are
-preserved.
+After successful freeze, changing the persisted fallback setting cannot add,
+remove, or reinterpret a sidecar for that execution. A retry or resumed
+preparation whose freeze is incomplete may resolve again using current
+settings; a retry of a job with a complete frozen snapshot reuses that same
+execution snapshot. A new/future job resolves current settings. Existing
+stale-snapshot and operation cancellation semantics are preserved.
 
 ### 6. Keep UI and entry points observationally consistent
 
@@ -118,8 +134,9 @@ effective behavior or the same canonical settings-backed data; it is not a
 client capability check and does not make an independent output decision.
 
 Asset Info, profile resolution, Lab/Test Encode, and Queue use the same
-effective-format contract. No entry point invents a sibling transform or
-publication path.
+effective-format contract. Queue owns the frozen execution snapshot; no entry
+point invents a sibling transform, fallback interpretation, or publication
+path.
 
 ### 7. Preserve publication and compatibility boundaries
 
