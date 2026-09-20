@@ -125,8 +125,11 @@ MVForge-generated opaque anchor. The original token bytes never cross the
 provider boundary. Before reconstruction, MVForge requires every expected
 anchor exactly once and in its original order, rejects missing, duplicated,
 reordered, malformed, or unexpected anchors, and then replaces each anchor
-with its exact retained structure. Anchor validation is part of the strict
-provider-response boundary.
+with its exact retained structure. After removing only those validated
+anchors, provider-owned text is rejected if it contains ASS/SSA override
+braces, structural escapes, or physical line breaks; MVForge never sanitizes
+such injection. Anchor validation is part of the strict provider-response
+boundary.
 
 **Alternative rejected:** sending complete ASS/SSA lines to Ollama. This
 would allow a provider to rewrite tags, styles, timing, or drawing commands

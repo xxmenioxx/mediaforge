@@ -358,6 +358,15 @@ func (dialogue translationProtectedDialogue) ReconstructProviderText(providerTex
 			return "", fmt.Errorf("protected translation anchors are missing, duplicated, or reordered")
 		}
 	}
+	providerTextWithoutAnchors := providerText
+	for _, anchor := range expected {
+		providerTextWithoutAnchors = strings.Replace(providerTextWithoutAnchors, anchor, "", 1)
+	}
+	for _, forbidden := range []string{"{", "}", "\\N", "\\n", "\\h", "\r", "\n"} {
+		if strings.Contains(providerTextWithoutAnchors, forbidden) {
+			return "", fmt.Errorf("provider text contains ASS/SSA structure outside protected anchors")
+		}
+	}
 	result := providerText
 	for _, part := range dialogue.Parts {
 		if part.Protected {

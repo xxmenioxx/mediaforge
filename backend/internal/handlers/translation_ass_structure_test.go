@@ -111,10 +111,17 @@ func TestTranslationProtectedAnchorsRejectProviderMutation(t *testing.T) {
 		t.Fatalf("fixture did not produce multiple anchors: %#v", anchors)
 	}
 	cases := map[string]string{
-		"missing":    strings.Replace(providerText, anchors[0], "", 1),
-		"duplicated": providerText + anchors[0],
-		"unexpected": providerText + translationProtectedAnchor(999),
-		"malformed":  strings.Replace(providerText, anchors[0], translationProtectedAnchorPrefix+"broken", 1),
+		"missing":            strings.Replace(providerText, anchors[0], "", 1),
+		"duplicated":         providerText + anchors[0],
+		"unexpected":         providerText + translationProtectedAnchor(999),
+		"malformed":          strings.Replace(providerText, anchors[0], translationProtectedAnchorPrefix+"broken", 1),
+		"override injection": providerText + "{\\i1}",
+		"position injection": providerText + "{\\pos(10,20)}",
+		"N injection":        providerText + "\\N",
+		"n injection":        providerText + "\\n",
+		"h injection":        providerText + "\\h",
+		"newline injection":  providerText + "\n",
+		"carriage injection": providerText + "\r",
 	}
 	reordered := strings.Replace(providerText, anchors[0], "__FIRST_ANCHOR__", 1)
 	reordered = strings.Replace(reordered, anchors[1], anchors[0], 1)
@@ -126,6 +133,39 @@ func TestTranslationProtectedAnchorsRejectProviderMutation(t *testing.T) {
 				t.Fatal("provider anchor mutation was accepted")
 			}
 		})
+	}
+}
+
+func TestTranslationProtectedSourceEscapesRoundTripThroughOneProviderText(t *testing.T) {
+	source := "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\i1}Hello\\Nworld\\nnext\\hend{\\b1}!\n"
+	document, err := parseTranslationASSDocument("ass", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialogue := document.Events[0].Dialogue
+	providerText := dialogue.TranslatableText()
+	for _, sourceEscape := range []string{"\\N", "\\n", "\\h"} {
+		if strings.Contains(providerText, sourceEscape) {
+			t.Fatalf("source escape entered provider text: %q in %q", sourceEscape, providerText)
+		}
+	}
+	translated := strings.Replace(providerText, "Hello", "Hola", 1)
+	got, err := document.ReconstructDialogueProviderTexts(map[int]string{0: translated})
+	if err != nil || got != strings.Replace(source, "Hello", "Hola", 1) {
+		t.Fatalf("source-owned escapes were not restored exactly: err=%v got=%q", err, got)
+	}
+}
+
+func TestTranslationProtectedProviderTextAllowsPunctuationAndCommas(t *testing.T) {
+	source := "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,Hello, world!\n"
+	document, err := parseTranslationASSDocument("ass", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerText := strings.Replace(document.Events[0].Dialogue.TranslatableText(), "Hello, world!", "Hola, mundo; ¿sí?", 1)
+	got, err := document.ReconstructDialogueProviderTexts(map[int]string{0: providerText})
+	if err != nil || !strings.Contains(got, "Hola, mundo; ¿sí?") {
+		t.Fatalf("ordinary translated punctuation rejected: err=%v got=%q", err, got)
 	}
 }
 

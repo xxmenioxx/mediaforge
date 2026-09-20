@@ -177,6 +177,13 @@ serializer, OCR lifecycle, operation system, or publication path.
 - **THEN** MVForge rejects the response before reconstruction and publishes no
   translated artifact
 
+#### Scenario: Provider text cannot inject ASS/SSA structure
+
+- **WHEN** provider-owned translated text outside the exact expected anchors
+  contains override braces, `\\N`, `\\n`, `\\h`, or physical CR/LF line breaks
+- **THEN** MVForge rejects the response before reconstruction while allowing
+  ordinary translated punctuation such as commas
+
 #### Scenario: Providers cannot change subtitle structure
 
 - **WHEN** a provider response attempts to add markup, alter timing, merge or
