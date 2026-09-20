@@ -27,6 +27,7 @@
 - [x] 5.1 Implement the configurable Ollama HTTP adapter for NAS/LAN/container endpoints, model selection, structured JSON batches, bounded bodies/timeouts, and CPU-only operation; verify remote endpoint/model requests and actionable missing/unreachable configuration failures.
 - [x] 5.2 Propagate the existing subtitle operation context through Ollama requests and classify cancellation, timeout, HTTP, and malformed JSON failures; verify cancellation terminates provider work without producing a publishable result.
 - [x] 5.3 Add adapter seams for future OpenAI/DeepL/Google/Azure providers without implementing them; verify unknown/unimplemented provider values fail closed and Ollama remains the only V1 implementation.
+- [ ] 5.4 Add persisted translation enablement plus backend-authoritative provider readiness/testing; keep translation disabled by default, verify the configured Ollama endpoint and model explicitly, invalidate readiness when provider-defining settings change, require successful readiness before enablement, and verify runtime translation does not perform an automatic health preflight.
 
 ## 6. Bitmap OCR integration
 
@@ -43,18 +44,30 @@
 ## 8. Asset Info backend
 
 - [ ] 8.1 Add exact embedded-stream and external-artifact translation request/response APIs using existing ownership, semantic role/disposition, and artifact identity metadata; verify same-language external sidecars are never guessed and unsupported sources are rejected clearly.
-- [ ] 8.2 Wire English/Japanese, Auto, `es-419`/`es-ES`, and Ollama configuration into the canonical translation operation without changing Queue/Profile/Worker behavior; verify text SRT/ASS/SSA and bitmap PGS/VobSub entry-point scenarios.
+- [ ] 8.2 Wire English/Japanese, Auto, `es-419`/`es-ES`, and the backend-authorized enabled/ready Ollama configuration into the canonical translation operation without changing Queue/Profile/Worker behavior; expose capability availability/reason rather than allowing the frontend to infer provider state, and verify text SRT/ASS/SSA and bitmap PGS/VobSub entry-point scenarios.
 - [ ] 8.3 Expose bounded translation progress, provider diagnostics, cancellation, retry, stale-source, and malformed-response states through the existing operation response shape; verify secrets and full provider content are excluded.
 
 ## 9. Asset Info frontend
 
-- [ ] 9.1 Add `Translate...` controls to the actual eligible Asset Info embedded/external subtitle entries with source-language (`Auto`/English/Japanese), target-locale (`es-419`/`es-ES`), provider, and conditional model presentation; display backend-reported media-context status/source informationally, keep missing context non-blocking, and render output-format selection only when the backend reports multiple canonical valid formats. Verify generic external subtitles and unsupported languages do not show an enabled action and the frontend does not derive eligibility.
+- [ ] 9.1 Add `Translate...` controls to the actual eligible Asset Info embedded/external subtitle entries with source-language (`Auto`/English/Japanese), target-locale (`es-419`/`es-ES`), provider, and conditional model presentation; display backend-reported media-context status/source informationally, keep missing context non-blocking, render output-format selection only when the backend reports multiple canonical valid formats, and keep eligible translation discoverable but disabled when backend capabilities report unavailable readiness/enablement with an actionable reason. Verify the frontend does not probe providers or derive eligibility/readiness.
 - [ ] 9.2 Add translation progress, cancellation, terminal failure/cancelled distinction, retry, and translated artifact status using existing subtitle polling patterns; verify polling stops cleanly and source/existing artifact state remains visible.
-- [ ] 9.3 Add focused frontend coverage for source/target/provider mapping, conditional model visibility, available and missing media-context status/source, Auto ambiguity messaging, locale-distinct artifact display, backend-authorized multiple-format selection, single-format no-selector behavior, and redacted diagnostics without adding Queue/Profile translation controls or independent output-format eligibility.
+- [ ] 9.3 Add focused frontend coverage for source/target/provider mapping, conditional model visibility, available and missing media-context status/source, Auto ambiguity messaging, locale-distinct artifact display, backend-authorized multiple-format selection, single-format no-selector behavior, disabled/not-configured state, configured-but-untested state, ready-and-enabled state, readiness invalidation after provider/endpoint/model changes, backend-authoritative unavailable reasons, and redacted diagnostics without adding Queue/Profile translation controls or independent output-format eligibility.
 
 ## 10. Regression and final validation
 
-- [ ] 10.1 Add backend regressions for English/Japanese SRT/ASS/SSA translation, Auto ambiguity, `es-419` versus `es-ES`, cue-ID validation, ASS protection, context bounds, Ollama requests, and audit redaction.
+- [ ] 10.1 Add backend regressions for English/Japanese SRT/ASS/SSA translation, Auto ambiguity, `es-419` versus `es-ES`, cue-ID validation, ASS protection, context bounds, Ollama requests, audit redaction, disabled-by-default readiness, successful readiness, unavailable endpoint, missing configured model, provider/endpoint/model invalidation, enablement requiring successful readiness, and no automatic readiness request before normal translation.
 - [ ] 10.2 Add backend regressions for PGS/VobSub OCR reuse, Japanese fallback, OCR correction before translation, stale source rejection, source preservation, cancellation/retry, cleanup, and atomic publication.
 - [ ] 10.3 Add integration regressions proving no Queue/Profile automatic translation, no second planner/OCR/operation/publication path, existing semantic role/disposition and naming preservation, and exact artifact ownership.
 - [ ] 10.4 Run focused backend/frontend tests, then `./scripts/verify.sh --auto`, followed by `openspec validate subtitle-translation --type change --strict`; reconcile this checklist only against passing implementation evidence and leave the change unarchived.
+
+## 11. Documentation
+
+- [ ] 11.1 Add a user guide for subtitle translation and Ollama configuration, including provider enablement, Test Connection, supported V1 source/target languages, cancellation/retry, and translated artifact behavior.
+
+- [ ] 11.2 Document recommended local Ollama models and NAS sizing guidance, clearly separating recommendations from hard requirements and avoiding unverified performance claims.
+
+- [ ] 11.3 Add Mermaid architecture diagrams for text SRT, protected ASS/SSA, and PGS/VobSub OCR -> canonical cues -> provider -> validation -> serialization -> atomic publication.
+
+- [ ] 11.4 Document the provider boundary/support matrix with Ollama marked as implemented V1 and OpenAI/DeepL/Google/Azure explicitly marked future / not implemented.
+
+- [ ] 11.5 Link the subtitle translation user guide and architecture document from the repository documentation indexes.

@@ -17,6 +17,9 @@ source sidecar or introducing a second subtitle job system.
 - Add a configurable Ollama provider contract with endpoint and model
   settings, LAN/NAS/container compatibility, CPU-only support, bounded cue
   batching, cancellation, and redacted diagnostics.
+- Keep translation disabled by default and require an explicit backend
+  readiness test plus enablement before Asset Info can start provider work;
+  configuration, readiness, and enablement remain distinct.
 - Translate canonical cue text only, validate structured cue-ID responses, and
   serialize the validated canonical translated cues through existing SRT and
   ASS/SSA-aware paths.
@@ -54,8 +57,8 @@ None. Translation extends the existing canonical subtitle capability.
 ## Impact
 
 - Backend: subtitle operation planning/execution, canonical cue translation
-  seam, provider settings and Ollama adapter, Asset Info translation API, and
-  bounded audit/provenance persistence.
+  seam, provider settings/readiness and Ollama adapter, Asset Info translation
+  API/capabilities, and bounded audit/provenance persistence.
 - Frontend: Asset Info subtitle actions, source/target/provider controls,
   progress/cancellation/retry presentation, and translated artifact status.
 - Storage/publication: separate `es-419` and `es-ES` artifact identities,

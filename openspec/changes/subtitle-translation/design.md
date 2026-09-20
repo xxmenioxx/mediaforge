@@ -74,6 +74,40 @@ choice and submits that backend-authorized format. The frontend never derives,
 adds, or filters output eligibility from source filenames, client capability,
 or provider state.
 
+Provider configuration, readiness, and enablement are separate
+backend-owned states. Translation is disabled by default, including when a
+complete Ollama endpoint and model have been configured. The backend exposes a
+`Test Connection` operation for the configured provider. For Ollama, that
+operation uses a provider-native lightweight readiness/model-availability
+request to verify reachability and the configured model without translating
+subtitle text, requiring a GPU, or assuming localhost. A successful test
+produces a bounded readiness result; it does not enable translation by itself.
+Explicit enablement is allowed only after the current configuration is ready,
+and the backend capability response carries the resulting availability and
+actionable reason. The frontend does not probe or infer provider state.
+
+The readiness flow is therefore:
+
+```text
+provider configuration
+        ↓
+explicit readiness test
+        ↓
+explicit enablement
+        ↓
+Asset Info capability
+        ↓
+normal translation request
+```
+
+Changing the provider, endpoint, or model invalidates the prior readiness and
+disables translation until the new configuration is tested successfully.
+Readiness timestamps are informational and are not live health guarantees.
+An eligible subtitle may keep its `Translate...` control discoverable while
+disabled; the capability response supplies the bounded reason, such as
+configuration required, verification required, disabled, unavailable, or
+model not found.
+
 **Alternative rejected:** a separate translation queue or synchronous HTTP
 request. Either would split cancellation/progress/retry semantics from the
 existing subtitle operation contract and make atomic publication harder to
@@ -176,6 +210,20 @@ runtime; no GPU capability check is required.
 The provider contract has an explicit version and leaves room for future
 adapters selected by configuration. V1 accepts only Ollama, so a future
 adapter cannot silently be selected by an unknown provider value.
+
+Readiness is a separate provider seam from text translation, conceptually:
+
+```text
+TestConnection(ctx, configured provider) -> bounded readiness result
+Translate(ctx, TranslationBatch)       -> TranslationBatchResult
+```
+
+The Ollama readiness check uses its configured endpoint and model through the
+provider-native lightweight readiness/model API. It performs no real subtitle
+translation and no GPU check. Once explicitly enabled, a normal translation
+request calls `Translate` directly; it does not run a health or model
+preflight. A later outage therefore uses the normal Task 5.2 timeout,
+unavailable/transport, malformed-response, or cancellation semantics.
 
 **Alternative rejected:** embedding Ollama calls in Asset Info or the
 serializer. That would prevent provider replacement, make cancellation
@@ -291,11 +339,19 @@ create media-adjacent audit files.
 ### 11. Settings, deployment, and compatibility
 
 Provider settings use the existing persisted `AppSetting` path with a
-translation-specific value object containing provider, endpoint, model, and
-bounded request/context policy. Missing configuration is disabled/unavailable
-and produces an actionable Asset Info error; it does not default to localhost
-or perform a network call. Existing settings and sidecars require no data
-migration.
+translation-specific value object containing provider, endpoint, model,
+bounded request/context policy, and explicit enablement/readiness state.
+Missing configuration, untested configuration, and disabled configuration are
+not usable translation states. `Test Connection` verifies the current
+provider configuration and records only bounded, secret-safe readiness state
+and diagnostics; it does not automatically enable translation. Enablement
+revalidates the current configuration and is rejected unless readiness is
+successful. Provider, endpoint, or model changes clear readiness and
+enablement. Supported states include disabled, not configured, untested,
+ready, unavailable, model not found, and invalid configuration. A successful
+readiness check is not repeated before every translation request. Existing
+settings and sidecars require no data migration, and no localhost endpoint or
+model is inferred.
 
 The feature is additive and can be disabled by leaving the provider
 configuration unavailable. Existing extraction, OCR, quality repair, naming,
@@ -329,7 +385,8 @@ operations that do not explicitly request translation.
 ## Migration Plan
 
 1. Add persisted provider settings with missing-value-safe parsing and no
-   implicit endpoint, then add the provider contract and bounded Ollama adapter.
+   implicit endpoint, then add the provider contract, bounded Ollama adapter,
+   readiness test, and explicit enablement state.
 2. Add the operation-local canonical translation envelope, ASS/SSA protection,
    structured response validation, identity, revision, provenance, and
    serializer integration.

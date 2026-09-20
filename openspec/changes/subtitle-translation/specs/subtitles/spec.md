@@ -12,7 +12,7 @@ Queue, Track Profiles, Profile Lab, or automatic processing policy.
 #### Scenario: Embedded English text subtitle can be translated
 
 - **WHEN** Asset Info starts translation for an embedded English text subtitle
-  with target `es-419` and configured Ollama
+  with target `es-419` and an enabled, ready Ollama configuration
 - **THEN** one subtitle translation operation is created and the resulting
   Spanish artifact is produced without changing the embedded source or its
   source classification
@@ -20,7 +20,8 @@ Queue, Track Profiles, Profile Lab, or automatic processing policy.
 #### Scenario: Embedded Japanese bitmap subtitle can be translated
 
 - **WHEN** Asset Info starts translation for an embedded Japanese PGS or
-  VobSub subtitle with target `es-ES` and configured Ollama
+  VobSub subtitle with target `es-ES` and an enabled, ready Ollama
+  configuration
 - **THEN** the existing canonical OCR path supplies the source cues to one
   translation operation and a separate Spanish artifact is planned
 
@@ -52,7 +53,11 @@ The backend SHALL remain authoritative for canonical valid output formats.
 The frontend SHALL show an output-format selector only when the backend
 reports more than one valid format; with one valid format it SHALL use that
 format without requiring a choice. The frontend SHALL NOT invent, infer, add,
-or suppress output-format eligibility independently.
+or suppress output-format eligibility independently. For an intrinsically
+eligible subtitle, the backend SHALL keep `Translate...` discoverable when
+translation infrastructure is unavailable, but SHALL report it disabled with
+an actionable reason. The frontend SHALL not probe Ollama or infer provider
+readiness from endpoint/model fields.
 
 #### Scenario: Dialog displays available media context
 
@@ -88,6 +93,80 @@ or suppress output-format eligibility independently.
   suggest an output format that is absent from the backend capability response
 - **THEN** the dialog does not add or enable that format and relies on the
   backend-authorized set
+
+#### Scenario: Disabled Translate remains discoverable
+
+- **WHEN** a subtitle is intrinsically eligible but translation is disabled,
+  unconfigured, untested, unavailable, or missing its configured model
+- **THEN** Asset Info shows `Translate...` as disabled with the backend's
+  bounded actionable reason, and the frontend does not probe or enable the
+  provider itself
+
+### Requirement: Translation provider readiness and explicit enablement
+
+Translation SHALL be disabled by default. Configuration, readiness, and
+enablement SHALL remain distinct backend-authoritative states. A configured
+provider SHALL not become usable merely because its endpoint and model are
+non-empty. The backend SHALL provide an explicit `Test Connection` operation
+for the configured provider. For Ollama, readiness SHALL verify both
+reachability of the configured endpoint and availability of the configured
+model through a provider-native lightweight readiness/model request, without
+generating a subtitle translation or requiring GPU capability. The frontend
+SHALL not probe the provider or infer readiness.
+
+The backend SHALL support bounded states equivalent to `disabled`,
+`not_configured`, `untested`, `ready`, `unavailable`, `model_not_found`, and
+`invalid_configuration`, with secret-safe diagnostics. A readiness timestamp,
+if exposed, SHALL be informational and SHALL NOT be treated as a live health
+guarantee. Explicit enablement SHALL require successful readiness for the
+current configuration. Changing provider, endpoint, or model SHALL invalidate
+readiness and enablement.
+
+#### Scenario: Translation disabled by default
+
+- **WHEN** translation settings are absent or newly initialized
+- **THEN** translation is disabled and Asset Info cannot start provider work
+
+#### Scenario: Configured but untested provider
+
+- **WHEN** an Ollama endpoint and model are configured but have not passed
+  readiness testing
+- **THEN** translation remains disabled and backend capabilities report that
+  provider verification is required
+
+#### Scenario: Successful Ollama readiness
+
+- **WHEN** `Test Connection` reaches the configured Ollama endpoint and
+  confirms that the configured model is available
+- **THEN** readiness becomes `ready`, no subtitle translation is generated,
+  and translation remains disabled until explicitly enabled
+
+#### Scenario: Missing model
+
+- **WHEN** the configured Ollama endpoint is reachable but the configured
+  model is unavailable
+- **THEN** readiness reports a bounded actionable `model_not_found` state and
+  translation cannot be enabled
+
+#### Scenario: Enable after readiness
+
+- **WHEN** the current provider configuration passes readiness testing and the
+  user explicitly enables translation
+- **THEN** backend capabilities may expose translation as available for an
+  otherwise eligible subtitle
+
+#### Scenario: Configuration change invalidates readiness
+
+- **WHEN** provider, endpoint, or model changes after successful verification
+- **THEN** the prior readiness and enablement are invalidated and translation
+  cannot run until the new configuration is tested successfully and enabled
+
+#### Scenario: Runtime outage does not trigger a preflight loop
+
+- **WHEN** an enabled provider becomes unavailable after successful setup
+- **THEN** a translation attempt calls the normal provider request directly,
+  uses the existing timeout/unavailable/malformed/cancellation semantics, and
+  does not run an additional health or model preflight first
 
 ### Requirement: Source-language selection is reliable and bounded
 
@@ -237,13 +316,15 @@ operation contracts; those adapters are not part of V1.
 
 #### Scenario: Configured remote Ollama is used
 
-- **WHEN** the configured Ollama endpoint and model are reachable
+- **WHEN** translation is enabled after the configured Ollama endpoint and
+  model have passed readiness testing
 - **THEN** the operation sends bounded structured batches to that endpoint and
   records the configured provider/model identity
 
-#### Scenario: Missing or unreachable Ollama configuration fails clearly
+#### Scenario: Runtime Ollama outage fails clearly
 
-- **WHEN** endpoint or model configuration is missing, invalid, or unreachable
+- **WHEN** an enabled translation request reaches an endpoint that is missing,
+  invalid, or unreachable
 - **THEN** the operation ends with an actionable provider failure before
   publication and does not silently use localhost or another provider
 
