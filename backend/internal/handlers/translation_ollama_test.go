@@ -4,12 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestOllamaDurationMillis(t *testing.T) {
+	oldFalseOverflowThreshold := math.MaxInt64 / int64(time.Millisecond)
+	tests := []struct {
+		name        string
+		nanoseconds int64
+		wantMillis  int64
+	}{
+		{name: "zero", nanoseconds: 0, wantMillis: 0},
+		{name: "negative", nanoseconds: -1, wantMillis: 0},
+		{name: "twenty-five milliseconds", nanoseconds: 25_000_000, wantMillis: 25},
+		{
+			name:        "above old false overflow threshold",
+			nanoseconds: oldFalseOverflowThreshold + int64(time.Millisecond),
+			wantMillis:  (oldFalseOverflowThreshold + int64(time.Millisecond)) / int64(time.Millisecond),
+		},
+		{name: "maximum int64", nanoseconds: math.MaxInt64, wantMillis: math.MaxInt64 / int64(time.Millisecond)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ollamaDurationMillis(test.nanoseconds); got != test.wantMillis {
+				t.Fatalf("ollamaDurationMillis(%d)=%d, want %d", test.nanoseconds, got, test.wantMillis)
+			}
+		})
+	}
+}
 
 func TestOllamaTranslationProviderUsesConfiguredChatEndpointAndContract(t *testing.T) {
 	for _, endpointSuffix := range []string{"", "/", "/ollama"} {

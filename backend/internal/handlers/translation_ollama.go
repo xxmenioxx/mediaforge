@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -186,9 +185,6 @@ func readBoundedOllamaResponse(body io.Reader) ([]byte, error) {
 func ollamaDurationMillis(nanoseconds int64) int64 {
 	if nanoseconds <= 0 {
 		return 0
-	}
-	if nanoseconds > math.MaxInt64/int64(time.Millisecond) {
-		return math.MaxInt64 / int64(time.Millisecond)
 	}
 	return nanoseconds / int64(time.Millisecond)
 }
