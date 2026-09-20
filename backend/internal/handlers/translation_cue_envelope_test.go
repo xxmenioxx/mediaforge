@@ -50,16 +50,16 @@ func TestTranslationCueEnvelopeDoesNotMutateCanonicalCuesAndProviderPayloadIsTex
 }
 
 func TestTranslationCueStableIDChangesWithSourceCueIdentityNotTranslatedText(t *testing.T) {
-	base := canonicalBitmapSubtitleCue{Start: 1, End: 2, Text: "same", SourceOrdinal: 1}
+	base := translationSourceCue{Start: 1, End: 2, Text: "same", SourceOrdinal: 1}
 	otherOrdinal := base
 	otherOrdinal.SourceOrdinal = 2
 	otherTiming := base
 	otherTiming.Start = 1.5
-	baseID := translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{base})[0].StableID
-	if translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{otherOrdinal})[0].StableID == baseID {
+	baseID := translationCueEnvelopesForSourceCues("source", "srt", "", []translationSourceCue{base})[0].StableID
+	if translationCueEnvelopesForSourceCues("source", "srt", "", []translationSourceCue{otherOrdinal})[0].StableID == baseID {
 		t.Fatal("source ordinal did not affect stable identity")
 	}
-	if translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{otherTiming})[0].StableID == baseID {
+	if translationCueEnvelopesForSourceCues("source", "srt", "", []translationSourceCue{otherTiming})[0].StableID == baseID {
 		t.Fatal("timing did not affect stable identity")
 	}
 }
@@ -67,14 +67,14 @@ func TestTranslationCueStableIDChangesWithSourceCueIdentityNotTranslatedText(t *
 func TestTranslationCueEnvelopeSupportsCanonicalTextRepresentations(t *testing.T) {
 	for _, representation := range []string{"srt", "ass", "ssa"} {
 		t.Run(representation, func(t *testing.T) {
-			cue := canonicalBitmapSubtitleCue{
+			cue := translationSourceCue{
 				Start: 5, End: 6, Text: "Source text", SourceOrdinal: 7,
 				TimingProvenance: preparedInputLocal,
 			}
-			first := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=7", representation, "", []canonicalBitmapSubtitleCue{cue})
+			first := translationCueEnvelopesForSourceCues("asset.mkv#stream=7", representation, "", []translationSourceCue{cue})
 			changed := cue
 			changed.Text = "Translated text"
-			second := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=7", representation, "", []canonicalBitmapSubtitleCue{changed})
+			second := translationCueEnvelopesForSourceCues("asset.mkv#stream=7", representation, "", []translationSourceCue{changed})
 			if len(first) != 1 || len(second) != 1 || first[0].StableID != second[0].StableID {
 				t.Fatalf("text changed stable ID for %s: first=%#v second=%#v", representation, first, second)
 			}
@@ -93,11 +93,12 @@ func TestTranslationCueEnvelopeSupportsCanonicalTextRepresentations(t *testing.T
 }
 
 func TestTranslationCueIdentityDoesNotDependOnOutputSerializerChoice(t *testing.T) {
-	cue := canonicalBitmapSubtitleCue{Start: 1, End: 2, Text: "Source", SourceOrdinal: 3}
+	cue := translationSourceCue{Start: 1, End: 2, Text: "Source", SourceOrdinal: 3}
 	// Serializer selection is intentionally absent from the identity inputs.
-	srtView := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=3", "ass", "transform", []canonicalBitmapSubtitleCue{cue})
-	assView := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=3", "ass", "transform", []canonicalBitmapSubtitleCue{cue})
-	if len(srtView) != 1 || len(assView) != 1 || srtView[0].StableID != assView[0].StableID {
-		t.Fatalf("serializer choice changed source cue identity: srt=%#v ass=%#v", srtView, assView)
+	envelopes := translationCueEnvelopesForSourceCues("asset.mkv#stream=3", "ass", "transform", []translationSourceCue{cue})
+	srtBatch := translationBatchForCueEnvelopes("eng", "es-419", envelopes, nil)
+	assBatch := translationBatchForCueEnvelopes("eng", "es-419", envelopes, nil)
+	if len(srtBatch.Cues) != 1 || len(assBatch.Cues) != 1 || srtBatch.Cues[0].ID != assBatch.Cues[0].ID {
+		t.Fatalf("serializer choice changed source cue identity: srt=%#v ass=%#v", srtBatch, assBatch)
 	}
 }

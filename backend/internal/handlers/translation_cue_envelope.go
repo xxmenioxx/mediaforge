@@ -21,6 +21,19 @@ type translationCueEnvelope struct {
 	Geometry       *bitmapCueGeometry
 }
 
+// translationSourceCue is the smallest MVForge-owned source view needed to
+// build a translation envelope. Text parsers and the bitmap adapter can feed
+// this without sharing a persisted translation model or exposing structure to
+// the provider.
+type translationSourceCue struct {
+	SourceOrdinal    int
+	Text             string
+	Start            float64
+	End              float64
+	TimingProvenance subtitleTimingProvenance
+	Geometry         *bitmapCueGeometry
+}
+
 type translationCueTimingReference struct {
 	Start            float64
 	End              float64
@@ -33,7 +46,7 @@ type translationCueRepresentationReference struct {
 	LogicalTransformKey  string
 }
 
-func translationCueEnvelopesForCanonicalCues(sourceIdentity, sourceRepresentation, logicalTransformKey string, cues []canonicalBitmapSubtitleCue) []translationCueEnvelope {
+func translationCueEnvelopesForSourceCues(sourceIdentity, sourceRepresentation, logicalTransformKey string, cues []translationSourceCue) []translationCueEnvelope {
 	result := make([]translationCueEnvelope, 0, len(cues))
 	for _, cue := range cues {
 		result = append(result, translationCueEnvelope{
@@ -57,7 +70,18 @@ func translationCueEnvelopesForCanonicalCues(sourceIdentity, sourceRepresentatio
 }
 
 func translationCueEnvelopesForBitmapCues(sourceIdentity, sourceRepresentation, logicalTransformKey string, cues []canonicalBitmapSubtitleCue) []translationCueEnvelope {
-	return translationCueEnvelopesForCanonicalCues(sourceIdentity, sourceRepresentation, logicalTransformKey, cues)
+	sourceCues := make([]translationSourceCue, 0, len(cues))
+	for _, cue := range cues {
+		sourceCues = append(sourceCues, translationSourceCue{
+			SourceOrdinal:    cue.SourceOrdinal,
+			Text:             cue.Text,
+			Start:            cue.Start,
+			End:              cue.End,
+			TimingProvenance: cue.TimingProvenance,
+			Geometry:         cue.Geometry,
+		})
+	}
+	return translationCueEnvelopesForSourceCues(sourceIdentity, sourceRepresentation, logicalTransformKey, sourceCues)
 }
 
 func translationBatchForCueEnvelopes(sourceLanguage, targetLocale string, envelopes []translationCueEnvelope, context *TranslationContext) TranslationBatch {
@@ -74,7 +98,7 @@ func translationBatchForCueEnvelopes(sourceLanguage, targetLocale string, envelo
 	}
 }
 
-func translationCueStableID(sourceIdentity, sourceRepresentation, logicalTransformKey string, cue canonicalBitmapSubtitleCue) string {
+func translationCueStableID(sourceIdentity, sourceRepresentation, logicalTransformKey string, cue translationSourceCue) string {
 	parts := []string{
 		translationCueEnvelopeVersion,
 		sourceIdentity,
