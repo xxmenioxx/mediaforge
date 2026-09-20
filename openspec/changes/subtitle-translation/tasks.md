@@ -12,7 +12,7 @@
 ## 3. Validation, identity, revision, and audit
 
 - [x] 3.1 Implement strict cue-ID response validation for missing, duplicate, unexpected, empty-invalid, reordered, merged, split, timed, or structurally mutated provider results; verify malformed responses fail before serialization or publication.
-- [ ] 3.2 Add versioned translation identity and locale-qualified artifact/naming metadata, including source artifact/stream identity, source revision, language, locale, provider/model contract, context contract, and representation; verify `es-419` and `es-ES` never collide and exact existing artifacts can be satisfied.
+- [x] 3.2 Add versioned translation identity and locale-qualified artifact/naming metadata, including source artifact/stream identity, source revision, language, locale, provider/model contract, context contract, and representation; verify `es-419` and `es-ES` never collide and exact existing artifacts can be satisfied.
 - [ ] 3.3 Capture and recheck bounded embedded/external source revisions at the final publication boundary; verify same-path replacement or external edits fail closed, preserve source/prior translated artifacts, and publish nothing new.
 - [ ] 3.4 Persist bounded translation provenance and metrics with secret/prompt/response redaction; verify artifact metadata and Asset Info responses contain no credentials, headers, full prompts, or full provider responses and remain backward-compatible for existing artifacts.
 

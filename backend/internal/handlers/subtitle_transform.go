@@ -13,39 +13,40 @@ import (
 )
 
 type SubtitleArtifact struct {
-	ArtifactID              string                `json:"artifactId"`
-	Type                    string                `json:"type"`
-	StreamIndex             int                   `json:"streamIndex"`
-	SourceCodec             string                `json:"sourceCodec"`
-	SourceType              string                `json:"sourceType,omitempty"`
-	Format                  string                `json:"format"`
-	RequestedFormat         string                `json:"requestedFormat,omitempty"`
-	Mode                    string                `json:"mode"`
-	OCRRequired             bool                  `json:"ocrRequired"`
-	Language                string                `json:"language"`
-	Default                 bool                  `json:"default"`
-	Forced                  bool                  `json:"forced"`
-	SourceForced            bool                  `json:"sourceForced"`
-	Role                    SubtitleSemanticRole  `json:"role,omitempty"`
-	RoleProvenance          string                `json:"roleProvenance,omitempty"`
-	RoleConfidence          string                `json:"roleConfidence,omitempty"`
-	RoleClassifierVersion   string                `json:"roleClassifierVersion,omitempty"`
-	Title                   string                `json:"title,omitempty"`
-	StagedPath              string                `json:"stagedPath"`
-	PublishedPath           string                `json:"publishedPath,omitempty"`
-	SizeBytes               int64                 `json:"sizeBytes"`
-	Status                  string                `json:"status"`
-	Error                   string                `json:"error,omitempty"`
-	DisplayName             string                `json:"displayName,omitempty"`
-	FontAttachmentsExported bool                  `json:"fontAttachmentsExported"`
-	OCRLanguage             string                `json:"ocrLanguage,omitempty"`
-	EffectiveOCRLanguage    string                `json:"effectiveOcrLanguage,omitempty"`
-	OCRMode                 string                `json:"ocrMode,omitempty"`
-	Stages                  []string              `json:"stages,omitempty"`
-	Extension               string                `json:"extension,omitempty"`
-	NamingKey               string                `json:"namingKey,omitempty"`
-	LogicalTransformKey     string                `json:"logicalTransformKey,omitempty"`
-	CanonicalEvidence       *canonicalOCREvidence `json:"canonicalEvidence,omitempty"`
+	ArtifactID              string                       `json:"artifactId"`
+	Type                    string                       `json:"type"`
+	StreamIndex             int                          `json:"streamIndex"`
+	SourceCodec             string                       `json:"sourceCodec"`
+	SourceType              string                       `json:"sourceType,omitempty"`
+	Format                  string                       `json:"format"`
+	RequestedFormat         string                       `json:"requestedFormat,omitempty"`
+	Mode                    string                       `json:"mode"`
+	OCRRequired             bool                         `json:"ocrRequired"`
+	Language                string                       `json:"language"`
+	Default                 bool                         `json:"default"`
+	Forced                  bool                         `json:"forced"`
+	SourceForced            bool                         `json:"sourceForced"`
+	Role                    SubtitleSemanticRole         `json:"role,omitempty"`
+	RoleProvenance          string                       `json:"roleProvenance,omitempty"`
+	RoleConfidence          string                       `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion   string                       `json:"roleClassifierVersion,omitempty"`
+	Title                   string                       `json:"title,omitempty"`
+	StagedPath              string                       `json:"stagedPath"`
+	PublishedPath           string                       `json:"publishedPath,omitempty"`
+	SizeBytes               int64                        `json:"sizeBytes"`
+	Status                  string                       `json:"status"`
+	Error                   string                       `json:"error,omitempty"`
+	DisplayName             string                       `json:"displayName,omitempty"`
+	FontAttachmentsExported bool                         `json:"fontAttachmentsExported"`
+	OCRLanguage             string                       `json:"ocrLanguage,omitempty"`
+	EffectiveOCRLanguage    string                       `json:"effectiveOcrLanguage,omitempty"`
+	OCRMode                 string                       `json:"ocrMode,omitempty"`
+	Stages                  []string                     `json:"stages,omitempty"`
+	Extension               string                       `json:"extension,omitempty"`
+	NamingKey               string                       `json:"namingKey,omitempty"`
+	LogicalTransformKey     string                       `json:"logicalTransformKey,omitempty"`
+	Translation             *SubtitleTranslationMetadata `json:"translation,omitempty"`
+	CanonicalEvidence       *canonicalOCREvidence        `json:"canonicalEvidence,omitempty"`
 }
 
 type FontAttachmentArtifact struct {
@@ -856,14 +857,18 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 	}
 	result := make(models.JSONList, 0, len(values))
 	for _, value := range values {
-		result = append(result, map[string]interface{}{
+		encoded := map[string]interface{}{
 			"artifactId": value.ArtifactID,
 			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "sourceForced": value.SourceForced, "role": string(value.Role), "roleProvenance": value.RoleProvenance, "roleConfidence": value.RoleConfidence, "roleClassifierVersion": value.RoleClassifierVersion, "title": value.Title,
 			"ocrLanguage": value.OCRLanguage, "effectiveOcrLanguage": value.EffectiveOCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
 			"status": value.Status, "error": value.Error, "displayName": value.DisplayName, "fontAttachmentsExported": value.FontAttachmentsExported,
-		})
+		}
+		if value.Translation != nil {
+			encoded["translation"] = value.Translation
+		}
+		result = append(result, encoded)
 	}
 	return result
 }
@@ -933,6 +938,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			DisplayName:             stringFromUnknown(value["displayName"]),
 			FontAttachmentsExported: boolSetting(value["fontAttachmentsExported"], false),
 			OCRLanguage:             stringFromUnknown(value["ocrLanguage"]), EffectiveOCRLanguage: stringFromUnknown(value["effectiveOcrLanguage"]), OCRMode: stringFromUnknown(value["ocrMode"]), Stages: stringSliceFromUnknown(value["stages"]), Extension: stringFromUnknown(value["extension"]), NamingKey: stringFromUnknown(value["namingKey"]), LogicalTransformKey: stringFromUnknown(value["logicalTransformKey"]),
+			Translation: subtitleTranslationMetadataFromJSON(value["translation"]),
 		})
 	}
 	return result
