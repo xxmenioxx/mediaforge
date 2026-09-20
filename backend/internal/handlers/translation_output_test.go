@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -100,5 +101,68 @@ func TestSerializeTranslatedBitmapSelectsSRTOrASSWithoutMutatingOCRCues(t *testi
 	}
 	if _, err := serializeTranslatedBitmapCues(source, map[int]string{3: "Texto traducido"}, "ssa"); err == nil {
 		t.Fatal("bitmap SSA output accepted")
+	}
+}
+
+func TestSerializeTranslatedBitmapFanoutMergesStableIDsOnceAndPreservesGeometry(t *testing.T) {
+	geometryA := &bitmapCueGeometry{Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 100, BitmapY: 80, BitmapWidth: 400, BitmapHeight: 120, SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}
+	geometryB := &bitmapCueGeometry{Start: 3, End: 4, CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 1400, BitmapY: 800, BitmapWidth: 300, BitmapHeight: 100, SourceOrdinal: 2, TimingProvenance: originalSourceAbsolute}
+	source := []canonicalBitmapSubtitleCue{
+		{Start: 1, End: 2, Text: "Hello", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute, Geometry: geometryA},
+		{Start: 3, End: 4, Text: "World", SourceOrdinal: 2, TimingProvenance: originalSourceAbsolute, Geometry: geometryB},
+	}
+	before := cloneCanonicalCues(source)
+	envelopes := translationCueEnvelopesForBitmapCues("source", "bitmap", "logical-both", source)
+	translated := []TranslatedCue{{ID: envelopes[0].StableID, Text: "Hola"}, {ID: envelopes[1].StableID, Text: "Mundo"}}
+	merged, err := mergeTranslatedBitmapCues(source, envelopes, translated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged[0].Text != "Hola" || merged[1].Text != "Mundo" || merged[0].Start != 1 || merged[1].End != 4 || !reflect.DeepEqual(merged[0].Geometry, geometryA) || !reflect.DeepEqual(merged[1].Geometry, geometryB) {
+		t.Fatalf("merged canonical cues lost source structure: %#v", merged)
+	}
+	outputs, err := serializeTranslatedBitmapCuesFromResult(source, envelopes, translated, "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srt := string(outputs[translationRepresentationSRT])
+	ass := string(outputs[translationRepresentationASS])
+	if !strings.Contains(srt, "Hola") || !strings.Contains(srt, "Mundo") || strings.Contains(srt, "\\an") || strings.Contains(srt, "\\pos") {
+		t.Fatalf("translated SRT=%q contains missing text or geometry", srt)
+	}
+	if !strings.Contains(ass, "Hola") || !strings.Contains(ass, "Mundo") || !strings.Contains(ass, "{\\an") {
+		t.Fatalf("translated ASS=%q did not retain canonical positioning", ass)
+	}
+	if !reflect.DeepEqual(source, before) {
+		t.Fatalf("translation fan-out mutated source evidence: before=%#v after=%#v", before, source)
+	}
+	second, err := serializeTranslatedBitmapCuesFromResult(source, envelopes, translated, "ass")
+	if err != nil || string(second[translationRepresentationASS]) != ass {
+		t.Fatalf("second serialization changed canonical output: err=%v output=%q", err, second[translationRepresentationASS])
+	}
+}
+
+func TestMergeTranslatedBitmapCuesRejectsUnsafeStableIDMapping(t *testing.T) {
+	source := []canonicalBitmapSubtitleCue{
+		{Start: 1, End: 2, Text: "One", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute},
+		{Start: 3, End: 4, Text: "Two", SourceOrdinal: 2, TimingProvenance: originalSourceAbsolute},
+	}
+	envelopes := translationCueEnvelopesForBitmapCues("source", "bitmap", "logical", source)
+	valid := []TranslatedCue{{ID: envelopes[0].StableID, Text: "Uno"}, {ID: envelopes[1].StableID, Text: "Dos"}}
+	cases := []struct {
+		name   string
+		result []TranslatedCue
+	}{
+		{name: "missing", result: valid[:1]},
+		{name: "duplicate", result: []TranslatedCue{{ID: envelopes[0].StableID, Text: "Uno"}, {ID: envelopes[0].StableID, Text: "Dos"}}},
+		{name: "unexpected", result: []TranslatedCue{{ID: envelopes[0].StableID, Text: "Uno"}, {ID: "unexpected", Text: "Dos"}}},
+		{name: "reordered", result: []TranslatedCue{{ID: envelopes[1].StableID, Text: "Dos"}, {ID: envelopes[0].StableID, Text: "Uno"}}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if merged, err := mergeTranslatedBitmapCues(source, envelopes, test.result); err == nil || merged != nil {
+				t.Fatalf("unsafe mapping returned merged=%#v err=%v", merged, err)
+			}
+		})
 	}
 }

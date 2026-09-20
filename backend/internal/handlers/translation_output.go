@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -48,20 +49,98 @@ func translatedBitmapCueView(source []canonicalBitmapSubtitleCue, translated map
 	return result
 }
 
+// mergeTranslatedBitmapCues is the stable-ID boundary between provider output
+// and canonical bitmap cues. The provider result is already contract-validated
+// by Task 3.1; this helper additionally verifies that the envelopes still
+// describe the exact immutable source cues before changing text in a deep copy.
+func mergeTranslatedBitmapCues(source []canonicalBitmapSubtitleCue, envelopes []translationCueEnvelope, translated []TranslatedCue) ([]canonicalBitmapSubtitleCue, error) {
+	if len(source) == 0 || len(source) != len(envelopes) || len(source) != len(translated) {
+		return nil, fmt.Errorf("translated bitmap cue count does not match canonical envelopes")
+	}
+	expected := make(map[string]int, len(envelopes))
+	for index, envelope := range envelopes {
+		if strings.TrimSpace(envelope.StableID) == "" {
+			return nil, fmt.Errorf("translation envelope has an empty stable ID")
+		}
+		if _, exists := expected[envelope.StableID]; exists {
+			return nil, fmt.Errorf("translation envelopes contain duplicate stable ID %q", envelope.StableID)
+		}
+		if envelope.SourceOrdinal != source[index].SourceOrdinal || envelope.Text != source[index].Text || envelope.Timing.Start != source[index].Start || envelope.Timing.End != source[index].End || envelope.Timing.TimingProvenance != source[index].TimingProvenance || !reflect.DeepEqual(envelope.Geometry, source[index].Geometry) {
+			return nil, fmt.Errorf("translation envelope does not match canonical cue %d", index)
+		}
+		expected[envelope.StableID] = index
+	}
+	result := cloneCanonicalCues(source)
+	seen := make(map[string]struct{}, len(translated))
+	for index, cue := range translated {
+		if strings.TrimSpace(cue.ID) == "" {
+			return nil, fmt.Errorf("translated bitmap cue has an empty stable ID")
+		}
+		if _, exists := seen[cue.ID]; exists {
+			return nil, fmt.Errorf("translated bitmap cues contain duplicate stable ID %q", cue.ID)
+		}
+		seen[cue.ID] = struct{}{}
+		expectedIndex, exists := expected[cue.ID]
+		if !exists {
+			return nil, fmt.Errorf("translated bitmap cue contains unexpected stable ID %q", cue.ID)
+		}
+		if expectedIndex != index {
+			return nil, fmt.Errorf("translated bitmap cues reordered stable ID %q", cue.ID)
+		}
+		if strings.TrimSpace(cue.Text) == "" {
+			return nil, fmt.Errorf("translated bitmap cue %q has empty text", cue.ID)
+		}
+		result[expectedIndex].Text = cue.Text
+	}
+	return result, nil
+}
+
+func serializeTranslatedBitmapCuesFromResult(source []canonicalBitmapSubtitleCue, envelopes []translationCueEnvelope, result []TranslatedCue, requestedRepresentation string) (map[string][]byte, error) {
+	cues, err := mergeTranslatedBitmapCues(source, envelopes, result)
+	if err != nil {
+		return nil, err
+	}
+	return serializeTranslatedBitmapCueFanout(cues, requestedRepresentation)
+}
+
+func serializeTranslatedBitmapCueFanout(cues []canonicalBitmapSubtitleCue, requestedRepresentation string) (map[string][]byte, error) {
+	requested := strings.ToLower(strings.TrimSpace(requestedRepresentation))
+	if requested == "" {
+		requested = translationRepresentationSRT
+	}
+	if requested != translationRepresentationSRT && requested != translationRepresentationASS && requested != "both" {
+		return nil, fmt.Errorf("bitmap translation does not support output representation %s", requested)
+	}
+	formats := []string{requested}
+	if requested == "both" {
+		formats = []string{translationRepresentationSRT, translationRepresentationASS}
+	}
+	outputs := make(map[string][]byte, len(formats))
+	for _, format := range formats {
+		var content []byte
+		if format == translationRepresentationSRT {
+			content = renderBitmapSRTCues(cues)
+		} else {
+			content = renderBitmapASSCues(cues)
+		}
+		if !validSubtitleSidecar(format, content) {
+			return nil, fmt.Errorf("translated bitmap %s output failed validation", format)
+		}
+		outputs[format] = content
+	}
+	return outputs, nil
+}
+
 func serializeTranslatedBitmapCues(source []canonicalBitmapSubtitleCue, translated map[int]string, requestedRepresentation string) ([]byte, error) {
 	output, err := resolveTranslationOutputRepresentation(translationRepresentationBitmap, requestedRepresentation)
 	if err != nil {
 		return nil, err
 	}
-	cues := translatedBitmapCueView(source, translated)
-	switch output {
-	case translationRepresentationSRT:
-		return renderBitmapSRTCues(cues), nil
-	case translationRepresentationASS:
-		return renderBitmapASSCues(cues), nil
-	default:
-		return nil, fmt.Errorf("unsupported bitmap translation output %s", output)
+	outputs, err := serializeTranslatedBitmapCueFanout(translatedBitmapCueView(source, translated), output)
+	if err != nil {
+		return nil, err
 	}
+	return outputs[output], nil
 }
 
 func serializeTranslatedTextCues(sourceRepresentation string, source []canonicalBitmapSubtitleCue, translated map[int]string, requestedRepresentation string) ([]byte, error) {
