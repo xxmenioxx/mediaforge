@@ -59,6 +59,21 @@ An Asset Info control is shown only for an exact eligible embedded stream or
 external subtitle entry. External entries carry the existing ownership/path
 identity; translation must not locate a source using language alone.
 
+The `Translate...` dialog is driven by a backend capability response for that
+exact subtitle entry. It exposes source language (`Auto`, `English`, or
+`Japanese`), target locale (`Spanish (Latin America) / es-419` or `Spanish
+(Spain) / es-ES`), and the configured provider. It exposes a model control
+only when the selected provider reports model selection as supported. The
+response also carries informational media-context status and source, which the
+dialog displays when available; missing context never disables translation.
+
+The backend returns the canonical valid output-format set for the selected
+source. The frontend renders an output-format selector only when that set has
+more than one member. With exactly one valid format, the dialog presents no
+choice and submits that backend-authorized format. The frontend never derives,
+adds, or filters output eligibility from source filenames, client capability,
+or provider state.
+
 **Alternative rejected:** a separate translation queue or synchronous HTTP
 request. Either would split cancellation/progress/retry semantics from the
 existing subtitle operation contract and make atomic publication harder to

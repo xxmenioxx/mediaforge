@@ -38,6 +38,57 @@ Queue, Track Profiles, Profile Lab, or automatic processing policy.
 - **THEN** no translation provider is invoked and existing subtitle planning
   and publication behavior remains unchanged
 
+### Requirement: Asset Info translation controls reflect backend capabilities
+
+The Asset Info `Translate...` dialog SHALL expose source language (`Auto`,
+`English`, `Japanese`), target locale (`Spanish (Latin America) / es-419`,
+`Spanish (Spain) / es-ES`), and provider. It SHALL expose a model control only
+when the selected provider reports model selection as supported. The backend
+response SHALL provide informational media-context status and source, and the
+dialog SHALL display them when available. Missing context SHALL remain
+informational and SHALL NOT block translation.
+
+The backend SHALL remain authoritative for canonical valid output formats.
+The frontend SHALL show an output-format selector only when the backend
+reports more than one valid format; with one valid format it SHALL use that
+format without requiring a choice. The frontend SHALL NOT invent, infer, add,
+or suppress output-format eligibility independently.
+
+#### Scenario: Dialog displays available media context
+
+- **WHEN** the selected subtitle has backend-reported media context with a
+  status and source
+- **THEN** the dialog displays that context status and source as informational
+  fields alongside the source language, target locale, provider, and supported
+  model controls
+
+#### Scenario: Missing media context does not block translation
+
+- **WHEN** the backend reports that media context is unavailable or empty for
+  an otherwise eligible subtitle
+- **THEN** the dialog indicates that context is unavailable, leaves the
+  translation action enabled, and does not invent replacement context
+
+#### Scenario: Multiple backend-authorized formats show a selector
+
+- **WHEN** the backend reports more than one canonical valid output format for
+  the exact subtitle entry
+- **THEN** the dialog shows an output-format selector containing only those
+  backend-reported formats
+
+#### Scenario: One backend-authorized format needs no selector
+
+- **WHEN** the backend reports exactly one canonical valid output format
+- **THEN** the dialog does not require an output-format choice and submits the
+  single backend-authorized format
+
+#### Scenario: Frontend does not decide output eligibility
+
+- **WHEN** a source, filename, client capability, or provider state could
+  suggest an output format that is absent from the backend capability response
+- **THEN** the dialog does not add or enable that format and relies on the
+  backend-authorized set
+
 ### Requirement: Source-language selection is reliable and bounded
 
 The operation SHALL accept `Auto`, `English`, or `Japanese` as source

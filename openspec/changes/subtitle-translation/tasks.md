@@ -48,13 +48,13 @@
 
 ## 9. Asset Info frontend
 
-- [ ] 9.1 Add `Translate...` controls to the actual eligible Asset Info embedded/external subtitle entries with source-language, target-locale, and provider/model configuration presentation; verify generic external subtitles and unsupported languages do not show an enabled action.
+- [ ] 9.1 Add `Translate...` controls to the actual eligible Asset Info embedded/external subtitle entries with source-language (`Auto`/English/Japanese), target-locale (`es-419`/`es-ES`), provider, and conditional model presentation; display backend-reported media-context status/source informationally, keep missing context non-blocking, and render output-format selection only when the backend reports multiple canonical valid formats. Verify generic external subtitles and unsupported languages do not show an enabled action and the frontend does not derive eligibility.
 - [ ] 9.2 Add translation progress, cancellation, terminal failure/cancelled distinction, retry, and translated artifact status using existing subtitle polling patterns; verify polling stops cleanly and source/existing artifact state remains visible.
-- [ ] 9.3 Add focused frontend coverage for source/target/provider mapping, Auto ambiguity messaging, locale-distinct artifact display, and redacted diagnostics without adding Queue/Profile translation controls.
+- [ ] 9.3 Add focused frontend coverage for source/target/provider mapping, conditional model visibility, available and missing media-context status/source, Auto ambiguity messaging, locale-distinct artifact display, backend-authorized multiple-format selection, single-format no-selector behavior, and redacted diagnostics without adding Queue/Profile translation controls or independent output-format eligibility.
 
 ## 10. Regression and final validation
 
 - [ ] 10.1 Add backend regressions for English/Japanese SRT/ASS/SSA translation, Auto ambiguity, `es-419` versus `es-ES`, cue-ID validation, ASS protection, context bounds, Ollama requests, and audit redaction.
 - [ ] 10.2 Add backend regressions for PGS/VobSub OCR reuse, Japanese fallback, OCR correction before translation, stale source rejection, source preservation, cancellation/retry, cleanup, and atomic publication.
 - [ ] 10.3 Add integration regressions proving no Queue/Profile automatic translation, no second planner/OCR/operation/publication path, existing semantic role/disposition and naming preservation, and exact artifact ownership.
-- [ ] 10.4 Run focused backend/frontend tests and `openspec validate subtitle-translation --type change --strict`; reconcile this checklist only against passing implementation evidence and leave the change unarchived.
+- [ ] 10.4 Run focused backend/frontend tests, then `./scripts/verify.sh --auto`, followed by `openspec validate subtitle-translation --type change --strict`; reconcile this checklist only against passing implementation evidence and leave the change unarchived.
