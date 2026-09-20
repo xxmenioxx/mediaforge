@@ -58,7 +58,7 @@ func loadTranslationSettings(db *gorm.DB) translationSettings {
 		return defaults
 	}
 	settings, err := translationSettingsFromValue(setting.Value, false)
-	if err != nil {
+	if err != nil || !translationSettingsUsable(settings) {
 		return defaults
 	}
 	return settings
@@ -66,7 +66,13 @@ func loadTranslationSettings(db *gorm.DB) translationSettings {
 
 func translationSettingsFromValue(value models.JSONMap, strict bool) (translationSettings, error) {
 	settings := defaultTranslationSettings()
-	provider := stringSettingValue(value, "provider")
+	provider, valid := optionalStringSettingValue(value, "provider")
+	if !valid {
+		if strict {
+			return translationSettings{}, fmt.Errorf("provider must be a string")
+		}
+		return settings, nil
+	}
 	if provider != "" && provider != translationProviderOllama {
 		if strict {
 			return translationSettings{}, fmt.Errorf("provider must be %q or empty", translationProviderOllama)
@@ -74,22 +80,34 @@ func translationSettingsFromValue(value models.JSONMap, strict bool) (translatio
 		return settings, nil
 	}
 	settings.Provider = provider
-	settings.OllamaEndpoint = stringSettingValue(value, "ollamaEndpoint")
-	settings.OllamaModel = stringSettingValue(value, "ollamaModel")
+	settings.OllamaEndpoint, valid = optionalStringSettingValue(value, "ollamaEndpoint")
+	if !valid {
+		if strict {
+			return translationSettings{}, fmt.Errorf("ollamaEndpoint must be a string")
+		}
+		return settings, nil
+	}
+	settings.OllamaModel, valid = optionalStringSettingValue(value, "ollamaModel")
+	if !valid {
+		if strict {
+			return translationSettings{}, fmt.Errorf("ollamaModel must be a string")
+		}
+		return settings, nil
+	}
 	if settings.OllamaEndpoint != "" {
 		parsed, err := url.ParseRequestURI(settings.OllamaEndpoint)
 		if err != nil || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			if strict {
 				return translationSettings{}, fmt.Errorf("ollamaEndpoint must be an http or https URL without credentials")
 			}
-			return settings, nil
+			return defaultTranslationSettings(), nil
 		}
 	}
 	if settings.OllamaModel != "" && len(settings.OllamaModel) > 256 {
 		if strict {
 			return translationSettings{}, fmt.Errorf("ollamaModel exceeds 256 characters")
 		}
-		return settings, nil
+		return defaultTranslationSettings(), nil
 	}
 
 	fields := []struct {
@@ -113,7 +131,7 @@ func translationSettingsFromValue(value models.JSONMap, strict bool) (translatio
 			if strict {
 				return translationSettings{}, fmt.Errorf("%s must be an integer between %d and %d", field.key, field.minimum, field.maximum)
 			}
-			return settings, nil
+			return defaultTranslationSettings(), nil
 		}
 		*field.dest = parsed
 	}
@@ -132,9 +150,20 @@ func translationSettingsValue(settings translationSettings) models.JSONMap {
 	}
 }
 
-func stringSettingValue(value models.JSONMap, key string) string {
-	text, _ := value[key].(string)
-	return strings.TrimSpace(text)
+func optionalStringSettingValue(value models.JSONMap, key string) (string, bool) {
+	raw, present := value[key]
+	if !present {
+		return "", true
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(text), true
+}
+
+func translationSettingsUsable(settings translationSettings) bool {
+	return settings.Provider == translationProviderOllama && settings.OllamaEndpoint != "" && settings.OllamaModel != ""
 }
 
 func integerSettingValue(value any) (int, bool) {

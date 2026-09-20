@@ -98,3 +98,43 @@ func TestTranslationSettingsMalformedLegacyValueFallsBackSafely(t *testing.T) {
 		t.Fatalf("malformed legacy value lost safe defaults: %#v", settings)
 	}
 }
+
+func TestTranslationSettingsMalformedPersistedValuesNeverRemainUsable(t *testing.T) {
+	longModel := strings.Repeat("m", 257)
+	for name, value := range map[string]models.JSONMap{
+		"invalid endpoint": {
+			"provider":       translationProviderOllama,
+			"ollamaEndpoint": "not-a-url",
+			"ollamaModel":    "qwen2.5:7b",
+		},
+		"oversized model": {
+			"provider":       translationProviderOllama,
+			"ollamaEndpoint": "https://ollama.lan:11434",
+			"ollamaModel":    longModel,
+		},
+		"invalid policy": {
+			"provider":        translationProviderOllama,
+			"ollamaEndpoint":  "https://ollama.lan:11434",
+			"ollamaModel":     "qwen2.5:7b",
+			"maxContextChars": 16385,
+		},
+		"unsupported provider": {
+			"provider":       "openai",
+			"ollamaEndpoint": "https://ollama.lan:11434",
+			"ollamaModel":    "qwen2.5:7b",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings, err := translationSettingsFromValue(value, false)
+			if err != nil {
+				t.Fatalf("non-strict parsing returned error: %v", err)
+			}
+			if translationSettingsUsable(settings) {
+				t.Fatalf("malformed persisted value remained usable: %#v", settings)
+			}
+			if settings.Provider != "" || settings.OllamaEndpoint != "" || settings.OllamaModel != "" {
+				t.Fatalf("malformed persisted value retained partial configuration: %#v", settings)
+			}
+		})
+	}
+}

@@ -32,6 +32,14 @@ func TestTranslationProviderContractCarriesOnlyBoundedTextInputs(t *testing.T) {
 	if err := validateTranslationBatch(batch, defaultTranslationSettings()); err != nil {
 		t.Fatalf("valid bounded batch rejected: %v", err)
 	}
+	batch.Context = nil
+	if err := validateTranslationBatch(batch, defaultTranslationSettings()); err != nil {
+		t.Fatalf("nil context rejected: %v", err)
+	}
+	if batch.Context != nil {
+		t.Fatal("nil context unexpectedly populated")
+	}
+	batch.Context = &TranslationContext{}
 	batch.Context.NeighboringCues = make([]TranslationContextCue, defaultTranslationSettings().MaxContextCues+1)
 	if err := validateTranslationBatch(batch, defaultTranslationSettings()); err == nil {
 		t.Fatal("oversized context accepted")
