@@ -111,6 +111,16 @@ func TestBitmapTranslationSourceForVobSubReusesCanonicalEvidenceAndGeometry(t *t
 			t.Fatalf("canonical bitmap geometry was not retained: %#v", source.Envelopes[0].Geometry)
 		}
 	}
+	if first.Envelopes[0].Representation.SourceIdentity != "source-identity" {
+		t.Fatalf("explicit source identity changed: %q", first.Envelopes[0].Representation.SourceIdentity)
+	}
+	emptyIdentity, err := bitmapTranslationSourceFor(context.Background(), mediaPath, stream, "jpn", "accurate", 0, 0, "", "vobsub", "logical-2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := emptyIdentity.Envelopes[0].Representation.SourceIdentity, emptyIdentity.Evidence.Identity.key(); got != want {
+		t.Fatalf("fallback source identity=%q, want final evidence identity %q", got, want)
+	}
 	if first.Evidence.OCRMode != "accurate" || second.Evidence.OCRMode != "accurate" {
 		t.Fatalf("accurate canonical evidence was not reused: %#v %#v", first.Evidence, second.Evidence)
 	}
@@ -122,13 +132,11 @@ func TestBitmapTranslationSourceRejectsUnsupportedCodecBeforeProviderWork(t *tes
 	if err := os.WriteFile(mediaPath, []byte("unsupported source"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	providerCalls := 0
-	_, err := bitmapTranslationSourceFor(context.Background(), mediaPath, FFProbeStream{Index: 1, CodecName: "unsupported_bitmap"}, "eng", "raw", 0, 0, "source", "bitmap", "logical", nil)
-	if err == nil || !strings.Contains(err.Error(), "does not support subtitle codec") {
-		t.Fatalf("unsupported codec error=%v", err)
-	}
-	if providerCalls != 0 {
-		t.Fatalf("provider was called before canonical bitmap preparation: %d", providerCalls)
+	for _, codec := range []string{"unsupported_bitmap", "dvb_subtitle"} {
+		_, err := bitmapTranslationSourceFor(context.Background(), mediaPath, FFProbeStream{Index: 1, CodecName: codec}, "eng", "raw", 0, 0, "source", "bitmap", "logical", nil)
+		if err == nil || !strings.Contains(err.Error(), "does not support subtitle codec") {
+			t.Fatalf("codec=%q error=%v", codec, err)
+		}
 	}
 }
 

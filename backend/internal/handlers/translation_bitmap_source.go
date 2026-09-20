@@ -36,7 +36,7 @@ func bitmapTranslationSourceFor(
 	}
 	codec := strings.ToLower(strings.TrimSpace(stream.CodecName))
 	switch codec {
-	case "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvb_subtitle":
+	case "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle":
 	default:
 		return nil, fmt.Errorf("bitmap translation does not support subtitle codec %q", stream.CodecName)
 	}
@@ -56,7 +56,7 @@ func bitmapTranslationSourceFor(
 		return nil, err
 	}
 	if strings.TrimSpace(sourceIdentity) == "" {
-		sourceIdentity = request.Identity.key()
+		sourceIdentity = finalEvidence.Identity.key()
 	}
 	if strings.TrimSpace(sourceRepresentation) == "" {
 		sourceRepresentation = codec
