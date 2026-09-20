@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+const (
+	translationProtectedAnchorPrefix = "\ue000MVFORGE-PROTECTED-"
+	translationProtectedAnchorSuffix = "\ue001"
+	maxTranslationProtectedAnchors   = 256
+)
+
 type translationASSDocument struct {
 	Representation string
 	Source         string
@@ -28,6 +34,7 @@ type translationProtectedDialogue struct {
 type translationDialoguePart struct {
 	Protected bool
 	Text      string
+	Anchor    string
 }
 
 func parseTranslationASSDocument(representation, source string) (translationASSDocument, error) {
@@ -122,11 +129,20 @@ func parseTranslationASSEvent(line string, lineStart int, format []string, sourc
 	for index, name := range format {
 		fieldIndex[name] = index
 	}
-	start, err := parseTranslationASSTimestamp(fields[fieldIndex["start"]])
+	startIndex, startOK := fieldIndex["start"]
+	endIndex, endOK := fieldIndex["end"]
+	textIndex, textOK := fieldIndex["text"]
+	if !startOK || !endOK || !textOK {
+		return translationASSEvent{}, fmt.Errorf("Events Format must contain Start, End, and Text fields")
+	}
+	if textIndex != len(format)-1 {
+		return translationASSEvent{}, fmt.Errorf("Events Format Text field must be final")
+	}
+	start, err := parseTranslationASSTimestamp(fields[startIndex])
 	if err != nil {
 		return translationASSEvent{}, fmt.Errorf("invalid Dialogue start: %w", err)
 	}
-	end, err := parseTranslationASSTimestamp(fields[fieldIndex["end"]])
+	end, err := parseTranslationASSTimestamp(fields[endIndex])
 	if err != nil || end < start {
 		return translationASSEvent{}, fmt.Errorf("invalid Dialogue end")
 	}
@@ -188,6 +204,9 @@ func parseTranslationASSTimestamp(value string) (float64, error) {
 }
 
 func parseTranslationProtectedDialogue(source string) (translationProtectedDialogue, error) {
+	if strings.Contains(source, translationProtectedAnchorPrefix) || strings.Contains(source, translationProtectedAnchorSuffix) {
+		return translationProtectedDialogue{}, fmt.Errorf("dialogue contains reserved translation anchor marker")
+	}
 	result := translationProtectedDialogue{}
 	textStart := 0
 	drawingMode := false
@@ -247,7 +266,22 @@ func parseTranslationProtectedDialogue(source string) (translationProtectedDialo
 	} else {
 		flushText(len(source))
 	}
+	protectedCount := 0
+	for index := range result.Parts {
+		if !result.Parts[index].Protected {
+			continue
+		}
+		protectedCount++
+		if protectedCount > maxTranslationProtectedAnchors {
+			return translationProtectedDialogue{}, fmt.Errorf("dialogue contains too many protected anchors")
+		}
+		result.Parts[index].Anchor = translationProtectedAnchor(protectedCount)
+	}
 	return result, nil
+}
+
+func translationProtectedAnchor(index int) string {
+	return fmt.Sprintf("%s%04d%s", translationProtectedAnchorPrefix, index, translationProtectedAnchorSuffix)
 }
 
 func updateTranslationDrawingMode(block string, drawingMode *bool) {
@@ -273,11 +307,64 @@ func updateTranslationDrawingMode(block string, drawingMode *bool) {
 func (dialogue translationProtectedDialogue) TranslatableText() string {
 	parts := make([]string, 0, len(dialogue.Parts))
 	for _, part := range dialogue.Parts {
-		if !part.Protected {
+		if part.Protected {
+			parts = append(parts, part.Anchor)
+		} else {
 			parts = append(parts, part.Text)
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func (dialogue translationProtectedDialogue) HasTranslatableText() bool {
+	for _, part := range dialogue.Parts {
+		if !part.Protected && strings.TrimSpace(part.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (dialogue translationProtectedDialogue) ReconstructProviderText(providerText string) (string, error) {
+	expected := make([]string, 0, len(dialogue.Parts))
+	for _, part := range dialogue.Parts {
+		if part.Protected {
+			expected = append(expected, part.Anchor)
+		}
+	}
+	actual := make([]string, 0, len(expected))
+	for searchFrom := 0; searchFrom < len(providerText); {
+		start := strings.Index(providerText[searchFrom:], translationProtectedAnchorPrefix)
+		if start < 0 {
+			break
+		}
+		start += searchFrom
+		endOffset := strings.Index(providerText[start:], translationProtectedAnchorSuffix)
+		if endOffset < 0 {
+			return "", fmt.Errorf("malformed protected translation anchor")
+		}
+		end := start + endOffset + len(translationProtectedAnchorSuffix)
+		actual = append(actual, providerText[start:end])
+		searchFrom = end
+	}
+	if strings.Count(providerText, translationProtectedAnchorSuffix) != len(actual) {
+		return "", fmt.Errorf("unexpected protected translation anchor")
+	}
+	if len(actual) != len(expected) {
+		return "", fmt.Errorf("protected translation anchors count mismatch")
+	}
+	for index := range expected {
+		if actual[index] != expected[index] || strings.Count(providerText, expected[index]) != 1 {
+			return "", fmt.Errorf("protected translation anchors are missing, duplicated, or reordered")
+		}
+	}
+	result := providerText
+	for _, part := range dialogue.Parts {
+		if part.Protected {
+			result = strings.Replace(result, part.Anchor, part.Text, 1)
+		}
+	}
+	return result, nil
 }
 
 func (dialogue translationProtectedDialogue) OriginalTextSegments() []string {
@@ -327,13 +414,30 @@ func (document translationASSDocument) ReconstructDialogueSegments(replacements 
 	return result, nil
 }
 
+func (document translationASSDocument) ReconstructDialogueProviderTexts(replacements map[int]string) (string, error) {
+	result := document.Source
+	for index := len(document.Events) - 1; index >= 0; index-- {
+		event := document.Events[index]
+		providerText, replace := replacements[event.SourceOrdinal]
+		if !replace {
+			continue
+		}
+		text, err := event.Dialogue.ReconstructProviderText(providerText)
+		if err != nil {
+			return "", err
+		}
+		result = result[:event.TextStart] + text + result[event.TextEnd:]
+	}
+	return result, nil
+}
+
 func (document translationASSDocument) TranslationSourceCues(sourceIdentity, logicalTransformKey string) []translationSourceCue {
 	result := make([]translationSourceCue, 0, len(document.Events))
 	for _, event := range document.Events {
-		text := event.Dialogue.TranslatableText()
-		if strings.TrimSpace(text) == "" {
+		if !event.Dialogue.HasTranslatableText() {
 			continue
 		}
+		text := event.Dialogue.TranslatableText()
 		result = append(result, translationSourceCue{
 			SourceOrdinal:    event.SourceOrdinal,
 			Text:             text,

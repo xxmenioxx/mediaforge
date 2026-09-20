@@ -119,6 +119,15 @@ representation selected by Asset Info; when no text representation exists,
 the default translated sidecar is canonical SRT, with any explicitly selected
 ASS output using the existing geometry-aware serializer.
 
+For one-cue/one-result provider requests, each protected ASS/SSA structure
+token is represented in the provider-facing text only by a bounded,
+MVForge-generated opaque anchor. The original token bytes never cross the
+provider boundary. Before reconstruction, MVForge requires every expected
+anchor exactly once and in its original order, rejects missing, duplicated,
+reordered, malformed, or unexpected anchors, and then replaces each anchor
+with its exact retained structure. Anchor validation is part of the strict
+provider-response boundary.
+
 **Alternative rejected:** sending complete ASS/SSA lines to Ollama. This
 would allow a provider to rewrite tags, styles, timing, or drawing commands
 and would make structural validation depend on model behavior.

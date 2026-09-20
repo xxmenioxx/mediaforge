@@ -162,6 +162,21 @@ serializer, OCR lifecycle, operation system, or publication path.
   preserves the source representation's structural fields while changing only
   eligible dialogue text
 
+#### Scenario: ASS/SSA protected anchors make one provider result reversible
+
+- **WHEN** an ASS or SSA dialogue cue contains override blocks, positioning,
+  karaoke, drawing data, or `\\N`/`\\n`/`\\h` escapes
+- **THEN** the provider-facing cue text contains only eligible human dialogue
+  plus bounded MVForge-owned opaque anchors, and exact-once ordered anchor
+  validation restores the retained structure before serialization
+
+#### Scenario: Invalid protected anchors fail closed
+
+- **WHEN** a provider removes, duplicates, reorders, malforms, or invents a
+  protected ASS/SSA anchor
+- **THEN** MVForge rejects the response before reconstruction and publishes no
+  translated artifact
+
 #### Scenario: Providers cannot change subtitle structure
 
 - **WHEN** a provider response attempts to add markup, alter timing, merge or
