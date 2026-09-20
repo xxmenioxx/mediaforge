@@ -160,6 +160,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.DELETE("/queue/batches/:batchId", queue.DismissBatch)
 		api.GET("/settings", settings.List)
 		api.POST("/settings/:key", settings.Update)
+		api.POST("/settings/subtitle-translation/test-connection", settings.TestTranslationConnection)
+		api.POST("/settings/subtitle-translation/enable", settings.EnableTranslation)
 		api.POST("/import/mwp", imports.ImportMWP)
 		api.GET("/system/versions", handlers.Versions)
 		api.GET("/system/runtime", runtime.Latest)

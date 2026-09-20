@@ -27,7 +27,7 @@
 - [x] 5.1 Implement the configurable Ollama HTTP adapter for NAS/LAN/container endpoints, model selection, structured JSON batches, bounded bodies/timeouts, and CPU-only operation; verify remote endpoint/model requests and actionable missing/unreachable configuration failures.
 - [x] 5.2 Propagate the existing subtitle operation context through Ollama requests and classify cancellation, timeout, HTTP, and malformed JSON failures; verify cancellation terminates provider work without producing a publishable result.
 - [x] 5.3 Add adapter seams for future OpenAI/DeepL/Google/Azure providers without implementing them; verify unknown/unimplemented provider values fail closed and Ollama remains the only V1 implementation.
-- [ ] 5.4 Add persisted translation enablement plus backend-authoritative provider readiness/testing; keep translation disabled by default, verify the configured Ollama endpoint and model explicitly, invalidate readiness when provider-defining settings change, require successful readiness before enablement, and verify runtime translation does not perform an automatic health preflight.
+- [x] 5.4 Add persisted translation enablement plus backend-authoritative provider readiness/testing; keep translation disabled by default, verify the configured Ollama endpoint and model explicitly, invalidate readiness when provider-defining settings change, require successful readiness before enablement, and verify runtime translation does not perform an automatic health preflight.
 
 ## 6. Bitmap OCR integration
 

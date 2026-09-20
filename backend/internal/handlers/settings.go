@@ -100,7 +100,7 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		}
 	}
 	if key == translationSettingsKey {
-		normalized, err := normalizeTranslationSettingsValue(input.Value)
+		normalized, err := translationSettingsForUpdate(h.db, input.Value)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
