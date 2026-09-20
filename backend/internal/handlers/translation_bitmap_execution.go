@@ -67,9 +67,21 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
-	if err := validateBitmapTranslationQualityForTranslation(source.Evidence); err != nil {
+	preparedEvidence, err := prepareCanonicalOCREvidenceForTranslation(ctx, source.Evidence, request.OnProgress)
+	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
+	source.Evidence = preparedEvidence
+	if len(source.Envelopes) == 0 {
+		return bitmapTranslationExecutionResult{}, fmt.Errorf("canonical bitmap OCR produced no usable translation envelopes")
+	}
+	representation := source.Envelopes[0].Representation
+	source.Envelopes = translationCueEnvelopesForBitmapCues(
+		representation.SourceIdentity,
+		representation.SourceRepresentation,
+		representation.LogicalTransformKey,
+		preparedEvidence.Cues,
+	)
 
 	effectiveLanguage, found, err := translationLanguageFromMetadata([]string{source.EffectiveLanguage})
 	if err != nil {
@@ -125,37 +137,6 @@ func validateBitmapTranslationRequestedRepresentation(value string) error {
 	default:
 		return fmt.Errorf("bitmap translation does not support output representation %s", value)
 	}
-}
-
-// validateBitmapTranslationQualityForTranslation keeps unresolved OCR findings
-// out of provider requests. It deliberately does not run selective OCR: that
-// capability is bounded and owned by the OCR quality lifecycle, and a source
-// that still needs it is not safe translation input in this task.
-func validateBitmapTranslationQualityForTranslation(evidence *canonicalOCREvidence) error {
-	if evidence == nil || !evidence.Complete || len(evidence.Cues) == 0 {
-		return fmt.Errorf("canonical OCR evidence is incomplete for translation")
-	}
-	snapshot := &publishedCanonicalOCRSnapshot{Evidence: *cloneCanonicalOCREvidence(evidence)}
-	report := analyzeCanonicalOCRSnapshot(snapshot)
-	byID := make(map[int]canonicalBitmapSubtitleCue, len(evidence.Cues))
-	for _, cue := range evidence.Cues {
-		byID[cue.SourceOrdinal] = cue
-	}
-	for _, finding := range report.Findings {
-		if finding.Status == subtitleOCRQualityStatusClean {
-			continue
-		}
-		cue, ok := byID[finding.CueID]
-		if !ok {
-			return fmt.Errorf("canonical OCR cue %d cannot be safely translated", finding.CueID)
-		}
-		capability := selectiveOCRCueCapabilityFor(snapshot, cue)
-		if !capability.Available {
-			return fmt.Errorf("canonical OCR cue %d requires review before translation: %s", finding.CueID, capability.Reason)
-		}
-		return fmt.Errorf("canonical OCR cue %d requires bounded selective correction before translation", finding.CueID)
-	}
-	return nil
 }
 
 func aggregateTranslationProviderMetrics(total, current TranslationProviderMetrics) TranslationProviderMetrics {

@@ -534,6 +534,115 @@ func correctedCanonicalOCREvidenceForTranslation(evidence *canonicalOCREvidence)
 	return working, nil
 }
 
+// prepareCanonicalOCREvidenceForTranslation completes the same bounded OCR
+// quality path used by #39 before translation sees any cues. Deterministic
+// repairs have already been applied by correctedCanonicalOCREvidenceForTranslation;
+// remaining findings may use only the existing bounded selective OCR seam.
+func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *canonicalOCREvidence, onProgress OCRProgressFunc) (*canonicalOCREvidence, error) {
+	if ctx == nil {
+		return nil, errors.New("canonical OCR translation preparation requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if evidence == nil || !evidence.Complete || len(evidence.Cues) == 0 {
+		return nil, errors.New("canonical OCR evidence is incomplete for translation")
+	}
+
+	working := cloneCanonicalOCREvidence(evidence)
+	snapshot := &publishedCanonicalOCRSnapshot{Evidence: *working}
+	report := analyzeCanonicalOCRSnapshot(snapshot)
+	needsSelective := false
+	for _, finding := range report.Findings {
+		if finding.Status != subtitleOCRQualityStatusClean {
+			needsSelective = true
+			break
+		}
+	}
+	if !needsSelective {
+		return working, nil
+	}
+
+	root := canonicalOCRWorkspaceRoot()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot create selective OCR workspace: %w", err)
+	}
+	workspace, err := os.MkdirTemp(root, ".mvforge-translation-selective-*")
+	if err != nil {
+		return nil, fmt.Errorf("cannot create selective OCR workspace: %w", err)
+	}
+	defer cleanupSubtitleOperationWorkspace(workspace)
+
+	byID := make(map[int]canonicalBitmapSubtitleCue, len(working.Cues))
+	for _, cue := range working.Cues {
+		byID[cue.SourceOrdinal] = cue
+	}
+	for _, finding := range report.Findings {
+		if finding.Status == subtitleOCRQualityStatusClean {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		cue, ok := byID[finding.CueID]
+		if !ok {
+			return nil, fmt.Errorf("canonical OCR cue %d cannot be safely translated", finding.CueID)
+		}
+		capability := selectiveOCRCueCapabilityFor(snapshot, cue)
+		if !capability.Available {
+			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation: %s", finding.CueID, capability.Reason)
+		}
+		candidate, source, err := runSelectiveSecondaryOCR(ctx, snapshot, cue, workspace, onProgress)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err)
+		}
+		candidate = strings.TrimSpace(candidate)
+		if source != "selective-secondary-ocr" || len(candidate) > 4*1024 || strings.TrimSpace(candidate) == "" || strings.ContainsAny(candidate, "\r\n") {
+			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation: selective candidate was not safely validated", finding.CueID)
+		}
+		corrected, err := applySubtitleOCRCorrections(working.Cues, []subtitleOCRCorrection{{CueID: finding.CueID, Action: "edit", Text: candidate}})
+		if err != nil {
+			return nil, fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err)
+		}
+		working.Cues = corrected
+		working.CorrectionProvenance = append(working.CorrectionProvenance, selectiveOCRCorrectionProvenance(finding.CueID, candidate))
+		byID[finding.CueID] = correctedCueByOrdinal(corrected, finding.CueID)
+		snapshot.Evidence = *working
+	}
+
+	finalReport := analyzeCanonicalOCRSnapshot(snapshot)
+	for _, finding := range finalReport.Findings {
+		if finding.Status != subtitleOCRQualityStatusClean {
+			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation after selective correction", finding.CueID)
+		}
+	}
+	return working, nil
+}
+
+func correctedCueByOrdinal(cues []canonicalBitmapSubtitleCue, ordinal int) canonicalBitmapSubtitleCue {
+	for _, cue := range cues {
+		if cue.SourceOrdinal == ordinal {
+			return cue
+		}
+	}
+	return canonicalBitmapSubtitleCue{SourceOrdinal: ordinal}
+}
+
+func selectiveOCRCorrectionProvenance(cueID int, text string) canonicalOCRCorrectionProvenance {
+	sum := sha256.Sum256([]byte(text))
+	return canonicalOCRCorrectionProvenance{
+		CueID:           cueID,
+		Action:          "apply",
+		CandidateSource: "selective-secondary-ocr",
+		TextHash:        hex.EncodeToString(sum[:]),
+		Validation:      "deterministic-score",
+		SelectedBy:      "canonical-ocr-quality",
+	}
+}
+
 func validateSubtitleQualityCorrectionInput(input subtitleOCRCorrectionInput) ([]publishedSubtitleRevision, error) {
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	if len(paths) == 0 {

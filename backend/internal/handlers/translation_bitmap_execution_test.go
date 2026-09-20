@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,40 @@ func bitmapTranslationExecutionTestSettings() translationSettings {
 func cacheBitmapTranslationExecutionEvidence(t *testing.T, mediaPath string, stream FFProbeStream, language string, cues []canonicalBitmapSubtitleCue) {
 	t.Helper()
 	cacheBitmapTranslationEvidence(t, mediaPath, stream, language, "accurate", "eng", cues)
+}
+
+func setupSelectiveBitmapTranslationFixture(t *testing.T, candidate string) (string, FFProbeStream, []canonicalBitmapSubtitleCue, string) {
+	t.Helper()
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := installCanonicalOCRTestTools(t, fmt.Sprintf(`#!/bin/sh
+output=""
+for argument do
+  case "$argument" in
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+printf '1\n00:00:01,000 --> 00:00:02,000\n%%s\n' '%s' > "$output"
+printf 'selective\n' >> "$SELECTIVE_OCR_LOG"
+`, candidate))
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+printf 'bounded subtitle input' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "ffprobe"), `#!/bin/sh
+printf '%s' '{"streams":[{"index":0,"id":"0x1","codec_type":"subtitle","codec_name":"dvd_subtitle"}]}'
+`)
+	logPath := filepath.Join(root, "selective.log")
+	t.Setenv("SELECTIVE_OCR_LOG", logPath)
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	stream := FFProbeStream{Index: 1, ID: "vob-1", CodecName: "dvd_subtitle"}
+	cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "The h�use", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}}
+	cacheBitmapTranslationExecutionEvidence(t, mediaPath, stream, "eng", cues)
+	return mediaPath, stream, cues, logPath
 }
 
 func TestExecuteBitmapTranslationRunsProviderAfterCanonicalPreparationAndFansOutOnce(t *testing.T) {
@@ -133,6 +168,89 @@ func TestExecuteBitmapTranslationFailsClosedBeforeProviderForReviewCue(t *testin
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
 		t.Fatalf("review cue was not gated before provider: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+}
+
+func TestExecuteBitmapTranslationRunsAcceptedSelectiveOCRBeforeProvider(t *testing.T) {
+	mediaPath, stream, original, logPath := setupSelectiveBitmapTranslationFixture(t, "The house")
+	provider := &bitmapTranslationProviderSpy{}
+	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
+		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
+		TargetLocale: "es-419", RequestedRepresentation: "srt", Provider: provider,
+		Settings: bitmapTranslationExecutionTestSettings(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 || result.Source == nil || len(result.Outputs) != 1 {
+		t.Fatalf("accepted selective correction did not reach provider/output: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+	if result.Source.Evidence.Cues[0].Text != "The house" || provider.batches[0].Cues[0].Text != "The house" {
+		t.Fatalf("corrected cue did not reach provider: source=%#v batch=%#v", result.Source.Evidence.Cues, provider.batches[0].Cues)
+	}
+	if original[0].Text != "The h�use" {
+		t.Fatalf("canonical source evidence was mutated: %#v", original)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil || strings.Count(string(log), "selective") != 3 {
+		t.Fatalf("selective correction did not run exactly once without full OCR: log=%q err=%v", log, err)
+	}
+}
+
+func TestExecuteBitmapTranslationRejectsUnacceptableSelectiveCandidate(t *testing.T) {
+	mediaPath, stream, _, _ := setupSelectiveBitmapTranslationFixture(t, "The h�use")
+	provider := &bitmapTranslationProviderSpy{}
+	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
+		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
+		TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
+		t.Fatalf("unacceptable selective candidate was accepted: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+}
+
+func TestExecuteBitmapTranslationCancellationDuringSelectiveOCRDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := installCanonicalOCRTestTools(t, `#!/bin/sh
+touch "$SELECTIVE_OCR_STARTED"
+while true; do sleep 1; done
+`)
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+printf 'bounded subtitle input' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "ffprobe"), `#!/bin/sh
+printf '%s' '{"streams":[{"index":0,"id":"0x1","codec_type":"subtitle","codec_name":"dvd_subtitle"}]}'
+`)
+	started := filepath.Join(root, "selective-started")
+	t.Setenv("SELECTIVE_OCR_STARTED", started)
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	stream := FFProbeStream{Index: 1, ID: "vob-1", CodecName: "dvd_subtitle"}
+	cacheBitmapTranslationExecutionEvidence(t, mediaPath, stream, "eng", []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "The h�use", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}})
+	provider := &bitmapTranslationProviderSpy{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := executeBitmapTranslation(ctx, bitmapTranslationExecutionRequest{
+			MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate", TargetLocale: "es-419",
+			Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
+		})
+		done <- err
+	}()
+	waitForFile(t, started)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) || provider.calls != 0 {
+			t.Fatalf("selective OCR cancellation was not preserved: calls=%d err=%v", provider.calls, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("translation did not return after selective OCR cancellation")
 	}
 }
 
