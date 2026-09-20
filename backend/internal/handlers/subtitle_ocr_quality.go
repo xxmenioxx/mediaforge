@@ -600,7 +600,7 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 			return nil, fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err)
 		}
 		candidate = strings.TrimSpace(candidate)
-		if source != "selective-secondary-ocr" || len(candidate) > 4*1024 || strings.TrimSpace(candidate) == "" || strings.ContainsAny(candidate, "\r\n") {
+		if source != "selective-secondary-ocr" || len(candidate) > 4*1024 || strings.TrimSpace(candidate) == "" || strings.ContainsAny(candidate, "\r\n") || !subtitleOCRCandidateIsMateriallyBetter(cue.Text, candidate, snapshot.Evidence.RequestedLanguage) {
 			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation: selective candidate was not safely validated", finding.CueID)
 		}
 		corrected, err := applySubtitleOCRCorrections(working.Cues, []subtitleOCRCorrection{{CueID: finding.CueID, Action: "edit", Text: candidate}})

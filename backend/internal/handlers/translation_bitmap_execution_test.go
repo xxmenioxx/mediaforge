@@ -46,7 +46,7 @@ func cacheBitmapTranslationExecutionEvidence(t *testing.T, mediaPath string, str
 	cacheBitmapTranslationEvidence(t, mediaPath, stream, language, "accurate", "eng", cues)
 }
 
-func setupSelectiveBitmapTranslationFixture(t *testing.T, candidate string) (string, FFProbeStream, []canonicalBitmapSubtitleCue, string) {
+func setupSelectiveBitmapTranslationFixture(t *testing.T, originalText, candidate string) (string, FFProbeStream, []canonicalBitmapSubtitleCue, string) {
 	t.Helper()
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "movie.mkv")
@@ -75,7 +75,7 @@ printf '%s' '{"streams":[{"index":0,"id":"0x1","codec_type":"subtitle","codec_na
 	t.Setenv("SELECTIVE_OCR_LOG", logPath)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	stream := FFProbeStream{Index: 1, ID: "vob-1", CodecName: "dvd_subtitle"}
-	cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "The h�use", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}}
+	cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: originalText, SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}}
 	cacheBitmapTranslationExecutionEvidence(t, mediaPath, stream, "eng", cues)
 	return mediaPath, stream, cues, logPath
 }
@@ -172,7 +172,7 @@ func TestExecuteBitmapTranslationFailsClosedBeforeProviderForReviewCue(t *testin
 }
 
 func TestExecuteBitmapTranslationRunsAcceptedSelectiveOCRBeforeProvider(t *testing.T) {
-	mediaPath, stream, original, logPath := setupSelectiveBitmapTranslationFixture(t, "The house")
+	mediaPath, stream, original, logPath := setupSelectiveBitmapTranslationFixture(t, "The h�use", "The house")
 	provider := &bitmapTranslationProviderSpy{}
 	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
@@ -198,7 +198,7 @@ func TestExecuteBitmapTranslationRunsAcceptedSelectiveOCRBeforeProvider(t *testi
 }
 
 func TestExecuteBitmapTranslationRejectsUnacceptableSelectiveCandidate(t *testing.T) {
-	mediaPath, stream, _, _ := setupSelectiveBitmapTranslationFixture(t, "The h�use")
+	mediaPath, stream, _, _ := setupSelectiveBitmapTranslationFixture(t, "The h�use", "The h�use")
 	provider := &bitmapTranslationProviderSpy{}
 	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
@@ -206,6 +206,26 @@ func TestExecuteBitmapTranslationRejectsUnacceptableSelectiveCandidate(t *testin
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
 		t.Fatalf("unacceptable selective candidate was accepted: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+}
+
+func TestExecuteBitmapTranslationRejectsSelectiveCandidateBelowCanonicalThreshold(t *testing.T) {
+	originalText := "Xyz{"
+	candidateText := "Xyza"
+	if subtitleOCRScoreForLanguage(candidateText, "eng") <= subtitleOCRScoreForLanguage(originalText, "eng") {
+		t.Fatalf("test candidate is not raw-score better: original=%v candidate=%v", subtitleOCRScoreForLanguage(originalText, "eng"), subtitleOCRScoreForLanguage(candidateText, "eng"))
+	}
+	if subtitleOCRCandidateIsMateriallyBetter(originalText, candidateText, "eng") {
+		t.Fatalf("test candidate unexpectedly passes canonical material-improvement threshold: original=%v candidate=%v", subtitleOCRScoreForLanguage(originalText, "eng"), subtitleOCRScoreForLanguage(candidateText, "eng"))
+	}
+	mediaPath, stream, _, _ := setupSelectiveBitmapTranslationFixture(t, originalText, candidateText)
+	provider := &bitmapTranslationProviderSpy{}
+	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
+		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
+		TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
+		t.Fatalf("below-threshold selective candidate was accepted: result=%#v calls=%d err=%v", result, provider.calls, err)
 	}
 }
 
