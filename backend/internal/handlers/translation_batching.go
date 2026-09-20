@@ -20,40 +20,63 @@ func translationBatchesForCueEnvelopes(sourceLanguage, targetLocale string, enve
 // provider validator is the authoritative check for both cue-count and the
 // encoded JSON request-size limit, including any context attached to a batch.
 func translationBatchesForCues(sourceLanguage, targetLocale string, cues []TranslationCue, context *TranslationContext, settings translationSettings) ([]TranslationBatch, error) {
+	return translationBatchesForCuesWithContextBuilder(sourceLanguage, targetLocale, cues, func(_ int, _ int, _ []TranslationCue, _ string, _ string, _ translationSettings) (*TranslationContext, error) {
+		return context, nil
+	}, settings)
+}
+
+type translationBatchContextBuilder func(start, end int, allCues []TranslationCue, sourceLanguage, targetLocale string, settings translationSettings) (*TranslationContext, error)
+
+func translationBatchesForCuesWithContextBuilder(sourceLanguage, targetLocale string, cues []TranslationCue, contextBuilder translationBatchContextBuilder, settings translationSettings) ([]TranslationBatch, error) {
 	if settings.MaxCuesPerRequest <= 0 || settings.MaxRequestBytes <= 0 {
 		return nil, fmt.Errorf("translation batching limits must be positive")
+	}
+	if contextBuilder == nil {
+		return nil, fmt.Errorf("translation context builder is required")
 	}
 	if len(cues) == 0 {
 		return []TranslationBatch{}, nil
 	}
 
-	base := TranslationBatch{
-		ContractVersion: translationProviderContractVersion,
-		SourceLanguage:  sourceLanguage,
-		TargetLocale:    targetLocale,
-		Context:         context,
-	}
 	batches := make([]TranslationBatch, 0, (len(cues)+settings.MaxCuesPerRequest-1)/settings.MaxCuesPerRequest)
-	current := base
-	for _, cue := range cues {
-		candidate := batchWithCue(current, cue)
-		if err := validateTranslationBatch(candidate, settings); err == nil {
-			current = candidate
-			continue
+	for start := 0; start < len(cues); {
+		var lastValid TranslationBatch
+		for end := start + 1; end <= len(cues); end++ {
+			context, err := contextBuilder(start, end, cues, sourceLanguage, targetLocale, settings)
+			if err != nil {
+				return nil, err
+			}
+			candidate := TranslationBatch{
+				ContractVersion: translationProviderContractVersion,
+				SourceLanguage:  sourceLanguage,
+				TargetLocale:    targetLocale,
+				Cues:            append([]TranslationCue(nil), cues[start:end]...),
+				Context:         context,
+			}
+			if err := validateTranslationBatch(candidate, settings); err != nil {
+				break
+			}
+			lastValid = candidate
+			if end-start == settings.MaxCuesPerRequest {
+				break
+			}
 		}
-
-		if len(current.Cues) == 0 {
-			return nil, oversizedTranslationCueError(candidate, cue, settings)
+		if len(lastValid.Cues) == 0 {
+			context, err := contextBuilder(start, start+1, cues, sourceLanguage, targetLocale, settings)
+			if err != nil {
+				return nil, err
+			}
+			candidate := TranslationBatch{
+				ContractVersion: translationProviderContractVersion,
+				SourceLanguage:  sourceLanguage,
+				TargetLocale:    targetLocale,
+				Cues:            append([]TranslationCue(nil), cues[start:start+1]...),
+				Context:         context,
+			}
+			return nil, oversizedTranslationCueError(candidate, cues[start], settings)
 		}
-		batches = append(batches, current)
-		single := batchWithCue(base, cue)
-		if err := validateTranslationBatch(single, settings); err != nil {
-			return nil, oversizedTranslationCueError(single, cue, settings)
-		}
-		current = single
-	}
-	if len(current.Cues) > 0 {
-		batches = append(batches, current)
+		batches = append(batches, lastValid)
+		start += len(lastValid.Cues)
 	}
 
 	for index, batch := range batches {

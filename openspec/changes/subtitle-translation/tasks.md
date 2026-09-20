@@ -19,7 +19,7 @@
 ## 4. Batching and advisory context
 
 - [x] 4.1 Implement bounded cue batching by cue count and encoded request size with stable global cue identity/order; verify large subtitle inputs use multiple bounded requests rather than one request per cue.
-- [ ] 4.2 Add bounded neighboring-cue and optional media metadata context handling for title/year, movie/series, season/episode, synopsis, and known characters; verify missing context does not block translation and context cannot alter structure or source-language decisions.
+- [x] 4.2 Add bounded neighboring-cue and optional media metadata context handling for title/year, movie/series, season/episode, synopsis, and known characters; verify missing context does not block translation and context cannot alter structure or source-language decisions.
 - [ ] 4.3 Add reliable Auto English/Japanese evidence resolution using bounded existing metadata/cue evidence and explicit-language override behavior; verify ambiguity and unsupported evidence fail before provider work.
 
 ## 5. Ollama provider
