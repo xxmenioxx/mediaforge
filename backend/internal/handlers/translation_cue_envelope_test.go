@@ -1,0 +1,65 @@
+package handlers
+
+import "testing"
+
+func TestTranslationCueEnvelopeHasDeterministicIdentityAndPreservesReferences(t *testing.T) {
+	geometry := &bitmapCueGeometry{
+		Start: 1, End: 2, CanvasWidth: 1920, CanvasHeight: 1080,
+		BitmapX: 600, BitmapY: 80, BitmapWidth: 720, BitmapHeight: 120,
+		SourceOrdinal: 4, TimingProvenance: preparedInputLocal,
+	}
+	cue := canonicalBitmapSubtitleCue{
+		Start: 1, End: 2, Text: "Original", SourceOrdinal: 4,
+		TimingProvenance: preparedInputLocal, Geometry: geometry,
+	}
+	first := translationCueEnvelopesForBitmapCues("asset/source.mkv#stream=4", "pgs", "transform-1", []canonicalBitmapSubtitleCue{cue})
+	changedText := cue
+	changedText.Text = "Translated or corrected later"
+	second := translationCueEnvelopesForBitmapCues("asset/source.mkv#stream=4", "pgs", "transform-1", []canonicalBitmapSubtitleCue{changedText})
+
+	if len(first) != 1 || len(second) != 1 || first[0].StableID != second[0].StableID {
+		t.Fatalf("cue identity changed with text: first=%#v second=%#v", first, second)
+	}
+	if first[0].SourceOrdinal != 4 || first[0].Timing.Start != 1 || first[0].Timing.End != 2 || first[0].Timing.TimingProvenance != preparedInputLocal {
+		t.Fatalf("canonical timing/reference data was not preserved: %#v", first[0])
+	}
+	if first[0].Geometry != geometry {
+		t.Fatal("bitmap geometry was copied instead of referenced")
+	}
+	if first[0].Representation.SourceIdentity != "asset/source.mkv#stream=4" || first[0].Representation.Format != "pgs" || first[0].Representation.LogicalTransformKey != "transform-1" {
+		t.Fatalf("representation reference was not preserved: %#v", first[0].Representation)
+	}
+}
+
+func TestTranslationCueEnvelopeDoesNotMutateCanonicalCuesAndProviderPayloadIsTextOnly(t *testing.T) {
+	geometry := &bitmapCueGeometry{SourceOrdinal: 2, BitmapX: 10, BitmapY: 20}
+	cues := []canonicalBitmapSubtitleCue{{Start: 3, End: 4, Text: "Hello", SourceOrdinal: 2, Geometry: geometry}}
+	before := cues[0]
+	envelopes := translationCueEnvelopesForBitmapCues("asset.mkv#stream=2", "srt", "", cues)
+	batch := translationBatchForCueEnvelopes("eng", "es-419", envelopes, nil)
+
+	if cues[0].Text != before.Text || cues[0].Start != before.Start || cues[0].End != before.End || cues[0].Geometry != before.Geometry {
+		t.Fatalf("building envelope mutated canonical cue: before=%#v after=%#v", before, cues[0])
+	}
+	if len(batch.Cues) != 1 || batch.Cues[0].ID != envelopes[0].StableID || batch.Cues[0].Text != "Hello" || batch.Context != nil {
+		t.Fatalf("unexpected provider payload: %#v", batch)
+	}
+	if err := validateTranslationBatch(batch, defaultTranslationSettings()); err != nil {
+		t.Fatalf("provider payload rejected: %v", err)
+	}
+}
+
+func TestTranslationCueStableIDChangesWithSourceCueIdentityNotTranslatedText(t *testing.T) {
+	base := canonicalBitmapSubtitleCue{Start: 1, End: 2, Text: "same", SourceOrdinal: 1}
+	otherOrdinal := base
+	otherOrdinal.SourceOrdinal = 2
+	otherTiming := base
+	otherTiming.Start = 1.5
+	baseID := translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{base})[0].StableID
+	if translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{otherOrdinal})[0].StableID == baseID {
+		t.Fatal("source ordinal did not affect stable identity")
+	}
+	if translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{otherTiming})[0].StableID == baseID {
+		t.Fatal("timing did not affect stable identity")
+	}
+}
