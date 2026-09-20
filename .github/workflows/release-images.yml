@@ -40,9 +40,26 @@ jobs:
           ARCHIVE_PATH: /tmp/mvforge/archive
           REPORTS_PATH: /tmp/mvforge/reports
         run: docker compose -f deploy/nas/compose.yml config --quiet
+      - name: Verify licensing and release guardrails
+        run: ./scripts/verify-compliance.sh
+
+  release-gate:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      MVFORGE_PUBLIC_RELEASES_ENABLED: ${{ vars.MVFORGE_PUBLIC_RELEASES_ENABLED }}
+    steps:
+      - name: Enforce temporary public-release hold
+        shell: bash
+        run: |
+          if [ "${MVFORGE_PUBLIC_RELEASES_ENABLED:-false}" != "true" ]; then
+            echo "Public MVForge releases are paused by compliance policy."
+            echo "Set MVFORGE_PUBLIC_RELEASES_ENABLED=true only after issue #57 is cleared."
+            exit 1
+          fi
 
   publish:
-    needs: verify
+    needs: release-gate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -85,6 +102,8 @@ jobs:
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
@@ -108,5 +127,9 @@ jobs:
           mvforge-compose.yml
           mvforge.env.example
           mvforge-backup.sh
+          LICENSE
+          NOTICE
+          LEGAL.md
+          THIRD_PARTY_LICENSES.md
           --generate-notes
           --title "MVForge $GITHUB_REF_NAME"

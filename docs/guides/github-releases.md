@@ -87,6 +87,18 @@ flowchart TD
 
 El lint del frontend está temporalmente marcado como informativo mientras se corrige la línea base existente. El build TypeScript continúa siendo obligatorio.
 
+## Gate de compliance para releases públicos
+
+La publicación está protegida por la variable de repositorio
+`MVFORGE_PUBLIC_RELEASES_ENABLED`.
+
+Mientras el audit de compliance del issue #57 esté abierto, deja la variable
+sin definir o con valor `false`. En ese estado, los tags pueden ejecutar las
+validaciones, pero el workflow se detiene antes de publicar imágenes a GHCR.
+
+Sólo después de completar el release gate de compliance define
+`MVFORGE_PUBLIC_RELEASES_ENABLED=true` en **Settings → Secrets and variables → Actions → Variables**.
+
 ## Crear una versión
 
 Usa Semantic Versioning:
@@ -123,7 +135,7 @@ ghcr.io/xxmenioxx/mvforge-web:0.1.0
 ghcr.io/xxmenioxx/mvforge-web:0.1
 ```
 
-También genera tags por SHA y publica la imagen `linux/amd64` usada por el NAS Intel objetivo.
+También genera tags por SHA y publica la imagen `linux/amd64` usada por el NAS Intel objetivo. BuildKit publica además SBOM/provenance attestations para las imágenes.
 
 El GitHub Release adjunta:
 
@@ -131,6 +143,10 @@ El GitHub Release adjunta:
 mvforge-compose.yml
 mvforge.env.example
 mvforge-backup.sh
+LICENSE
+NOTICE
+LEGAL.md
+THIRD_PARTY_LICENSES.md
 ```
 
 El workflow sustituye automáticamente `MVFORGE_VERSION` en el `.env` adjunto por la versión publicada.

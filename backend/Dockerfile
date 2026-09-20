@@ -106,6 +106,20 @@ RUN git clone https://github.com/oneapi-src/oneVPL-intel-gpu.git /src/vpl-gpu \
     && test -x "${INTEL_PREFIX}/bin/vpl-inspect" \
     && find "${INTEL_PREFIX}" -type f \( -name 'libvpl.so*' -o -name 'libmfx-gen.so*' \) | grep .
 
+RUN install -d \
+      "${INTEL_PREFIX}/share/licenses/libva" \
+      "${INTEL_PREFIX}/share/licenses/libva-utils" \
+      "${INTEL_PREFIX}/share/licenses/gmmlib" \
+      "${INTEL_PREFIX}/share/licenses/media-driver" \
+      "${INTEL_PREFIX}/share/licenses/libvpl" \
+      "${INTEL_PREFIX}/share/licenses/libvpl-tools" \
+    && cp /src/libva/COPYING "${INTEL_PREFIX}/share/licenses/libva/" \
+    && cp /src/libva-utils/COPYING "${INTEL_PREFIX}/share/licenses/libva-utils/" \
+    && cp /src/gmmlib/LICENSE.md "${INTEL_PREFIX}/share/licenses/gmmlib/" \
+    && cp /src/media-driver/LICENSE.md "${INTEL_PREFIX}/share/licenses/media-driver/" \
+    && cp /src/libvpl/LICENSE "${INTEL_PREFIX}/share/licenses/libvpl/" \
+    && cp /src/libvpl-tools/LICENSE "${INTEL_PREFIX}/share/licenses/libvpl-tools/"
+
 FROM debian:trixie-slim AS ffmpeg
 
 ARG FFMPEG_VERSION=8.1.2
@@ -176,6 +190,10 @@ RUN apt-get update \
        --enable-opencl \
     && make -j"$(nproc)" \
     && make install \
+    && install -d /opt/ffmpeg/share/licenses/ffmpeg /opt/ffmpeg/share/licenses/svt-av1 \
+    && cp /src/COPYING.GPLv3 /src/LICENSE.md /opt/ffmpeg/share/licenses/ffmpeg/ \
+    && cp /src/svt-av1/LICENSE.md /src/svt-av1/LICENSE-BSD2.md /src/svt-av1/PATENTS.md \
+       /opt/ffmpeg/share/licenses/svt-av1/ \
     && LD_LIBRARY_PATH=/opt/ffmpeg/lib:/opt/intel/lib/x86_64-linux-gnu:/opt/intel/lib \
        /opt/ffmpeg/bin/ffmpeg -hide_banner -buildconf 2>&1 | grep -F -- "--enable-libvpl" \
     && LD_LIBRARY_PATH=/opt/ffmpeg/lib:/opt/intel/lib/x86_64-linux-gnu:/opt/intel/lib \
@@ -240,6 +258,9 @@ COPY --from=ffmpeg /opt/ffmpeg/lib/ /opt/ffmpeg/lib/
 COPY --from=intel-media /opt/intel/ /opt/intel/
 COPY --from=seconv /usr/local/bin/seconv /usr/local/bin/seconv
 COPY --from=seconv /out/native/ /usr/local/lib/
+COPY --from=ffmpeg /opt/ffmpeg/share/licenses/ /usr/share/licenses/mvforge/
+COPY --from=intel-media /opt/intel/share/licenses/ /usr/share/licenses/mvforge/
+COPY licenses/ /usr/share/licenses/mvforge/
 
 RUN printf '%s\n' /opt/intel/lib/x86_64-linux-gnu /opt/intel/lib /opt/ffmpeg/lib /usr/local/lib \
       > /etc/ld.so.conf.d/mvforge-media.conf \
