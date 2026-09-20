@@ -54,22 +54,23 @@ type translationIdentity struct {
 // subtitle. It extends SubtitleArtifact rather than creating another artifact
 // type or publication path.
 type SubtitleTranslationMetadata struct {
-	IdentityKey                string `json:"identityKey"`
-	IdentityVersion            int    `json:"identityVersion"`
-	TranslationContractVersion string `json:"translationContractVersion"`
-	SourceArtifactIdentity     string `json:"sourceArtifactIdentity"`
-	SourceRevision             string `json:"sourceRevision"`
-	SourceRepresentation       string `json:"sourceRepresentation"`
-	SourceProvenance           string `json:"sourceProvenance"`
-	RequestedSourceLanguage    string `json:"requestedSourceLanguage"`
-	EffectiveSourceLanguage    string `json:"effectiveSourceLanguage"`
-	TargetLocale               string `json:"targetLocale"`
-	Provider                   string `json:"provider"`
-	ProviderContractVersion    string `json:"providerContractVersion"`
-	ProviderModel              string `json:"providerModel"`
-	ContextContractVersion     string `json:"contextContractVersion"`
-	ContextMode                string `json:"contextMode"`
-	OutputRepresentation       string `json:"outputRepresentation"`
+	IdentityKey                string                         `json:"identityKey"`
+	IdentityVersion            int                            `json:"identityVersion"`
+	TranslationContractVersion string                         `json:"translationContractVersion"`
+	SourceArtifactIdentity     string                         `json:"sourceArtifactIdentity"`
+	SourceRevision             string                         `json:"sourceRevision"`
+	SourceRepresentation       string                         `json:"sourceRepresentation"`
+	SourceProvenance           string                         `json:"sourceProvenance"`
+	RequestedSourceLanguage    string                         `json:"requestedSourceLanguage"`
+	EffectiveSourceLanguage    string                         `json:"effectiveSourceLanguage"`
+	TargetLocale               string                         `json:"targetLocale"`
+	Provider                   string                         `json:"provider"`
+	ProviderContractVersion    string                         `json:"providerContractVersion"`
+	ProviderModel              string                         `json:"providerModel"`
+	ContextContractVersion     string                         `json:"contextContractVersion"`
+	ContextMode                string                         `json:"contextMode"`
+	OutputRepresentation       string                         `json:"outputRepresentation"`
+	Provenance                 *SubtitleTranslationProvenance `json:"provenance,omitempty"`
 }
 
 func newTranslationIdentity(input translationIdentityInput) (translationIdentity, error) {
@@ -156,7 +157,34 @@ func translationArtifactMatchesIdentity(artifact SubtitleArtifact, identity tran
 	if artifact.Translation == nil {
 		return false
 	}
-	return *artifact.Translation == identity.metadata()
+	actual := *artifact.Translation
+	actual.Provenance = nil
+	return actual == identity.metadata()
+}
+
+func translationIdentityFromMetadata(metadata SubtitleTranslationMetadata) (translationIdentity, error) {
+	identity, err := newTranslationIdentity(translationIdentityInput{
+		SourceArtifactIdentity:  metadata.SourceArtifactIdentity,
+		SourceRevision:          metadata.SourceRevision,
+		SourceRepresentation:    metadata.SourceRepresentation,
+		SourceProvenance:        metadata.SourceProvenance,
+		RequestedSourceLanguage: metadata.RequestedSourceLanguage,
+		EffectiveSourceLanguage: metadata.EffectiveSourceLanguage,
+		TargetLocale:            metadata.TargetLocale,
+		Provider:                metadata.Provider,
+		ProviderContractVersion: metadata.ProviderContractVersion,
+		ProviderModel:           metadata.ProviderModel,
+		ContextContractVersion:  metadata.ContextContractVersion,
+		ContextMode:             metadata.ContextMode,
+		OutputRepresentation:    metadata.OutputRepresentation,
+	})
+	if err != nil {
+		return translationIdentity{}, err
+	}
+	if metadata.IdentityVersion != identity.Version || metadata.TranslationContractVersion != identity.TranslationContractVersion || metadata.IdentityKey != identity.key() {
+		return translationIdentity{}, fmt.Errorf("translation metadata identity key or version does not match canonical identity")
+	}
+	return identity, nil
 }
 
 func subtitleTranslationArtifactID(source SubtitleArtifact, metadata SubtitleTranslationMetadata) string {
@@ -243,5 +271,6 @@ func subtitleTranslationMetadataFromJSON(value any) *SubtitleTranslationMetadata
 		ContextContractVersion:     stringFromUnknown(raw["contextContractVersion"]),
 		ContextMode:                stringFromUnknown(raw["contextMode"]),
 		OutputRepresentation:       stringFromUnknown(raw["outputRepresentation"]),
+		Provenance:                 subtitleTranslationProvenanceFromJSON(raw["provenance"]),
 	}
 }
