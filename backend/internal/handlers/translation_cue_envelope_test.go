@@ -26,7 +26,7 @@ func TestTranslationCueEnvelopeHasDeterministicIdentityAndPreservesReferences(t 
 	if first[0].Geometry != geometry {
 		t.Fatal("bitmap geometry was copied instead of referenced")
 	}
-	if first[0].Representation.SourceIdentity != "asset/source.mkv#stream=4" || first[0].Representation.Format != "pgs" || first[0].Representation.LogicalTransformKey != "transform-1" {
+	if first[0].Representation.SourceIdentity != "asset/source.mkv#stream=4" || first[0].Representation.SourceRepresentation != "pgs" || first[0].Representation.LogicalTransformKey != "transform-1" {
 		t.Fatalf("representation reference was not preserved: %#v", first[0].Representation)
 	}
 }
@@ -61,5 +61,43 @@ func TestTranslationCueStableIDChangesWithSourceCueIdentityNotTranslatedText(t *
 	}
 	if translationCueEnvelopesForBitmapCues("source", "srt", "", []canonicalBitmapSubtitleCue{otherTiming})[0].StableID == baseID {
 		t.Fatal("timing did not affect stable identity")
+	}
+}
+
+func TestTranslationCueEnvelopeSupportsCanonicalTextRepresentations(t *testing.T) {
+	for _, representation := range []string{"srt", "ass", "ssa"} {
+		t.Run(representation, func(t *testing.T) {
+			cue := canonicalBitmapSubtitleCue{
+				Start: 5, End: 6, Text: "Source text", SourceOrdinal: 7,
+				TimingProvenance: preparedInputLocal,
+			}
+			first := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=7", representation, "", []canonicalBitmapSubtitleCue{cue})
+			changed := cue
+			changed.Text = "Translated text"
+			second := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=7", representation, "", []canonicalBitmapSubtitleCue{changed})
+			if len(first) != 1 || len(second) != 1 || first[0].StableID != second[0].StableID {
+				t.Fatalf("text changed stable ID for %s: first=%#v second=%#v", representation, first, second)
+			}
+			if first[0].SourceOrdinal != cue.SourceOrdinal || first[0].Timing.Start != cue.Start || first[0].Timing.End != cue.End {
+				t.Fatalf("canonical references were not preserved for %s: %#v", representation, first[0])
+			}
+			batch := translationBatchForCueEnvelopes("eng", "es-419", first, nil)
+			if len(batch.Cues) != 1 || batch.Cues[0].ID != first[0].StableID || batch.Cues[0].Text != cue.Text {
+				t.Fatalf("unexpected provider payload for %s: %#v", representation, batch)
+			}
+			if err := validateTranslationBatch(batch, defaultTranslationSettings()); err != nil {
+				t.Fatalf("provider payload rejected for %s: %v", representation, err)
+			}
+		})
+	}
+}
+
+func TestTranslationCueIdentityDoesNotDependOnOutputSerializerChoice(t *testing.T) {
+	cue := canonicalBitmapSubtitleCue{Start: 1, End: 2, Text: "Source", SourceOrdinal: 3}
+	// Serializer selection is intentionally absent from the identity inputs.
+	srtView := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=3", "ass", "transform", []canonicalBitmapSubtitleCue{cue})
+	assView := translationCueEnvelopesForCanonicalCues("asset.mkv#stream=3", "ass", "transform", []canonicalBitmapSubtitleCue{cue})
+	if len(srtView) != 1 || len(assView) != 1 || srtView[0].StableID != assView[0].StableID {
+		t.Fatalf("serializer choice changed source cue identity: srt=%#v ass=%#v", srtView, assView)
 	}
 }

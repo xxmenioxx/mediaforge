@@ -28,16 +28,16 @@ type translationCueTimingReference struct {
 }
 
 type translationCueRepresentationReference struct {
-	SourceIdentity      string
-	Format              string
-	LogicalTransformKey string
+	SourceIdentity       string
+	SourceRepresentation string
+	LogicalTransformKey  string
 }
 
-func translationCueEnvelopesForBitmapCues(sourceIdentity, format, logicalTransformKey string, cues []canonicalBitmapSubtitleCue) []translationCueEnvelope {
+func translationCueEnvelopesForCanonicalCues(sourceIdentity, sourceRepresentation, logicalTransformKey string, cues []canonicalBitmapSubtitleCue) []translationCueEnvelope {
 	result := make([]translationCueEnvelope, 0, len(cues))
 	for _, cue := range cues {
 		result = append(result, translationCueEnvelope{
-			StableID:      translationCueStableID(sourceIdentity, format, logicalTransformKey, cue),
+			StableID:      translationCueStableID(sourceIdentity, sourceRepresentation, logicalTransformKey, cue),
 			SourceOrdinal: cue.SourceOrdinal,
 			Text:          cue.Text,
 			Timing: translationCueTimingReference{
@@ -46,14 +46,18 @@ func translationCueEnvelopesForBitmapCues(sourceIdentity, format, logicalTransfo
 				TimingProvenance: cue.TimingProvenance,
 			},
 			Representation: translationCueRepresentationReference{
-				SourceIdentity:      sourceIdentity,
-				Format:              format,
-				LogicalTransformKey: logicalTransformKey,
+				SourceIdentity:       sourceIdentity,
+				SourceRepresentation: sourceRepresentation,
+				LogicalTransformKey:  logicalTransformKey,
 			},
 			Geometry: cue.Geometry,
 		})
 	}
 	return result
+}
+
+func translationCueEnvelopesForBitmapCues(sourceIdentity, sourceRepresentation, logicalTransformKey string, cues []canonicalBitmapSubtitleCue) []translationCueEnvelope {
+	return translationCueEnvelopesForCanonicalCues(sourceIdentity, sourceRepresentation, logicalTransformKey, cues)
 }
 
 func translationBatchForCueEnvelopes(sourceLanguage, targetLocale string, envelopes []translationCueEnvelope, context *TranslationContext) TranslationBatch {
@@ -70,11 +74,11 @@ func translationBatchForCueEnvelopes(sourceLanguage, targetLocale string, envelo
 	}
 }
 
-func translationCueStableID(sourceIdentity, format, logicalTransformKey string, cue canonicalBitmapSubtitleCue) string {
+func translationCueStableID(sourceIdentity, sourceRepresentation, logicalTransformKey string, cue canonicalBitmapSubtitleCue) string {
 	parts := []string{
 		translationCueEnvelopeVersion,
 		sourceIdentity,
-		format,
+		sourceRepresentation,
 		logicalTransformKey,
 		strconv.Itoa(cue.SourceOrdinal),
 		strconv.FormatFloat(cue.Start, 'g', -1, 64),
