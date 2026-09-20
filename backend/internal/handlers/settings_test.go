@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -50,6 +51,63 @@ func TestSettingsUpdateUpsertsExistingKey(t *testing.T) {
 	assignments, ok := setting.Value["assignments"].(map[string]any)
 	if !ok || assignments["new"] != "profile" {
 		t.Fatalf("unexpected value: %#v", setting.Value)
+	}
+}
+
+func TestGenerateSRTFallbackForASSMissingDefaultsFalse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-subtitle-fallback-missing?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if enabled := generateSRTFallbackForASSSetting(db); enabled {
+		t.Fatalf("missing subtitle fallback setting=%t, want false", enabled)
+	}
+}
+
+func TestGenerateSRTFallbackForASSPersistsTrueAndFalse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-subtitle-fallback-persistence?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+
+	for _, test := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "true", enabled: true},
+		{name: "false", enabled: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/settings/"+subtitleSettingsKey, strings.NewReader(fmt.Sprintf(`{"value":{"%s":%t}}`, generateSRTFallbackForASSKey, test.enabled)))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+
+			var reloaded models.AppSetting
+			if err := db.First(&reloaded, "key = ?", subtitleSettingsKey).Error; err != nil {
+				t.Fatal(err)
+			}
+			if enabled := generateSRTFallbackForASSValue(reloaded.Value); enabled != test.enabled {
+				t.Fatalf("reloaded setting=%t, want %t", enabled, test.enabled)
+			}
+			if enabled := generateSRTFallbackForASSSetting(db); enabled != test.enabled {
+				t.Fatalf("setting helper=%t, want %t", enabled, test.enabled)
+			}
+		})
 	}
 }
 

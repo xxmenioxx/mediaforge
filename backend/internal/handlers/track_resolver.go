@@ -111,6 +111,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 					formats = []string{strings.ToLower(strings.TrimSpace(transform.Format))}
 				}
 			}
+			formats = effectiveSubtitleSidecarFormats(codec, formats, subtitleSRTFallbackEnabled(profile))
 			resolvedFormats := map[string]bool{}
 			for _, requested := range formats {
 				requestedFormats := []string{requested}
@@ -356,6 +357,73 @@ func normalizedSubtitleSidecarFormats(raw any) []string {
 			seen[format] = true
 			result = append(result, format)
 		}
+	}
+	return result
+}
+
+func subtitleSRTFallbackEnabled(profile map[string]any) bool {
+	settings := settingProfileObject(profile[subtitleSettingsKey])
+	if settings == nil {
+		return false
+	}
+	return generateSRTFallbackForASSValue(models.JSONMap(settings))
+}
+
+func subtitleFallbackEligible(codec, requested string, enabled bool) bool {
+	if !enabled {
+		return false
+	}
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "original" {
+		return codec == "ass" || codec == "ssa"
+	}
+	if requested != "ass" && requested != "both" {
+		return false
+	}
+	_, mode, err := resolveSubtitleSidecarFormat(codec, "ass")
+	return err == nil && mode == "converted"
+}
+
+func effectiveSubtitleSidecarFormats(codec string, formats []string, fallbackEnabled bool) []string {
+	normalized := normalizedSubtitleSidecarFormats(formats)
+	hasConvertedASS := false
+	hasConvertedSRT := false
+	for _, requested := range normalized {
+		switch requested {
+		case "both":
+			hasConvertedASS = true
+			hasConvertedSRT = true
+		case "ass":
+			if _, mode, err := resolveSubtitleSidecarFormat(codec, "ass"); err == nil && mode == "converted" {
+				hasConvertedASS = true
+			}
+		case "srt":
+			if _, mode, err := resolveSubtitleSidecarFormat(codec, "srt"); err == nil && mode == "converted" {
+				hasConvertedSRT = true
+			}
+		}
+	}
+	combineConverted := hasConvertedASS && (hasConvertedSRT || subtitleFallbackEligible(codec, "ass", fallbackEnabled))
+	result := make([]string, 0, len(normalized)+1)
+	convertedAdded := false
+	for _, requested := range normalized {
+		switch requested {
+		case "original":
+			result = append(result, requested)
+		case "ass", "srt", "both":
+			if combineConverted {
+				if !convertedAdded {
+					result = append(result, "both")
+					convertedAdded = true
+				}
+				continue
+			}
+			result = append(result, requested)
+		}
+	}
+	if subtitleFallbackEligible(codec, "original", fallbackEnabled) && !hasConvertedSRT && !combineConverted {
+		result = append(result, "srt")
 	}
 	return result
 }

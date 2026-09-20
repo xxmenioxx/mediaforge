@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -100,6 +101,73 @@ func TestResolveTrackPlanASSCompatibilitySidecars(t *testing.T) {
 	}
 }
 
+func TestResolveTrackPlanSRTFallbackEligibilityAndNormalization(t *testing.T) {
+	tests := []struct {
+		name             string
+		codec            string
+		formats          []string
+		fallback         bool
+		wantFormats      []string
+		wantModes        []string
+		wantRequested    []string
+		logicalBoth      bool
+		logicalDifferent bool
+	}{
+		{name: "converted ASS enabled", codec: "ass", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
+		{name: "converted PGS ASS enabled", codec: "hdmv_pgs_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
+		{name: "converted VobSub ASS enabled", codec: "dvd_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
+		{name: "converted SRT enabled", codec: "subrip", formats: []string{"srt"}, fallback: true, wantFormats: []string{"srt"}, wantModes: []string{"converted"}, wantRequested: []string{"srt"}},
+		{name: "explicit converted ASS and SRT enabled", codec: "ass", formats: []string{"ass", "srt"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
+		{name: "converted ASS disabled", codec: "ass", formats: []string{"ass"}, fallback: false, wantFormats: []string{"ass"}, wantModes: []string{"converted"}, wantRequested: []string{"ass"}},
+		{name: "original native ASS enabled", codec: "ass", formats: []string{"original"}, fallback: true, wantFormats: []string{"ass", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, logicalDifferent: true},
+		{name: "original native SSA enabled", codec: "ssa", formats: []string{"original"}, fallback: true, wantFormats: []string{"ssa", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, logicalDifferent: true},
+		{name: "original SRT enabled", codec: "subrip", formats: []string{"original"}, fallback: true, wantFormats: []string{"srt"}, wantModes: []string{"original"}, wantRequested: []string{"original"}},
+		{name: "original PGS enabled", codec: "hdmv_pgs_subtitle", formats: []string{"original"}, fallback: true, wantFormats: []string{"sup"}, wantModes: []string{"original"}, wantRequested: []string{"original"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scan := models.ScanResult{SubtitleStreams: models.JSONList{models.JSONMap{
+				"index": 4, "codec": test.codec, "language": "eng", "forced": true,
+			}}}
+			plan, err := resolveTrackPlan(scan, map[string]any{
+				"trackDispositionVersion": 1,
+				"subtitleDisposition":     "extract",
+				"subtitleSidecarFormats":  test.formats,
+				"subtitleSettings":        map[string]any{generateSRTFallbackForASSKey: test.fallback},
+				"attachmentPolicy":        "auto",
+				"chapterPolicy":           "keep",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.SidecarOutputs) != len(test.wantFormats) {
+				t.Fatalf("sidecars=%#v, want %v", plan.SidecarOutputs, test.wantFormats)
+			}
+			for index, sidecar := range plan.SidecarOutputs {
+				if sidecar.Format != test.wantFormats[index] || sidecar.Mode != test.wantModes[index] || sidecar.RequestedFormat != test.wantRequested[index] {
+					t.Fatalf("sidecar[%d]=%#v", index, sidecar)
+				}
+				if !sidecar.Forced || !sidecar.SourceForced {
+					t.Fatalf("forced metadata was not preserved: %#v", sidecar)
+				}
+			}
+			if test.logicalBoth && plan.SidecarOutputs[0].LogicalTransformKey != plan.SidecarOutputs[1].LogicalTransformKey {
+				t.Fatalf("converted fallback did not share logical both identity: %#v", plan.SidecarOutputs)
+			}
+			if test.logicalDifferent && plan.SidecarOutputs[0].LogicalTransformKey == plan.SidecarOutputs[1].LogicalTransformKey {
+				t.Fatalf("original native output collapsed into logical both: %#v", plan.SidecarOutputs)
+			}
+		})
+	}
+
+	for _, codec := range []string{"hdmv_pgs_subtitle", "dvd_subtitle"} {
+		if got := effectiveSubtitleSidecarFormats(codec, []string{"original"}, true); !reflect.DeepEqual(got, []string{"original"}) {
+			t.Fatalf("original %s fallback formats=%#v, want [original]", codec, got)
+		}
+	}
+}
+
 func TestResolveTrackPlanAssetSidecarFormatOverride(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "spa"}}}
 	plan, err := resolveTrackPlan(scan, map[string]any{
@@ -193,6 +261,109 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 		t.Fatalf("lab plan=%#v err=%v", labOverride.ResolvedTrackPlan, err)
 	}
 	compare("Profile Lab", labOverride.ResolvedTrackPlan.SidecarOutputs[0], profileDecision)
+}
+
+func TestInteractiveSubtitleEntryPointsUsePersistedASSFallback(t *testing.T) {
+	path := filepath.Clean("/media/raw/show/episode.mkv")
+	scan := models.ScanResult{Path: path, SubtitleStreams: models.JSONList{map[string]any{
+		"index": 3, "codec": "ass", "language": "eng",
+	}}}
+	profile := map[string]any{
+		"scope": "asset", "trackDispositionVersion": 1, "subtitleDisposition": "extract",
+		"subtitleSidecarFormats": []string{"ass"}, "attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}
+	db, err := gorm.Open(sqlite.Open("file:subtitle-entrypoint-fallback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: subtitleSettingsKey, Value: models.JSONMap{generateSRTFallbackForASSKey: true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := resolveTrackPlan(scan, applyPersistedSubtitleSettings(profile, generateSRTFallbackForASSSetting(db)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetPlans, unsupported := subtitleExtractionPlansForRequest(path, []FFProbeStream{{
+		Index: 3, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "eng"},
+	}}, SubtitleExtractionInput{StreamIndex: intPointer(3), Format: "ass", GenerateSRTFallbackForASS: generateSRTFallbackForASSSetting(db)})
+	if len(unsupported) != 0 || len(assetPlans) != 2 || len(plan.SidecarOutputs) != 2 {
+		t.Fatalf("asset=%#v unsupported=%#v planner=%#v", assetPlans, unsupported, plan.SidecarOutputs)
+	}
+	if assetPlans[0].Decision.LogicalTransformKey != plan.SidecarOutputs[0].LogicalTransformKey || assetPlans[1].Decision.LogicalTransformKey != plan.SidecarOutputs[1].LogicalTransformKey {
+		t.Fatalf("asset/planner logical transforms diverged: asset=%#v planner=%#v", assetPlans, plan.SidecarOutputs)
+	}
+
+	lab, err := resolveLabTrackOverride(db, path, models.JSONMap(profile), AssetConversionOverrideState{})
+	if err != nil || lab.ResolvedTrackPlan == nil || len(lab.ResolvedTrackPlan.SidecarOutputs) != 2 {
+		t.Fatalf("lab=%#v err=%v", lab.ResolvedTrackPlan, err)
+	}
+	for index := range plan.SidecarOutputs {
+		if lab.ResolvedTrackPlan.SidecarOutputs[index].Format != plan.SidecarOutputs[index].Format || lab.ResolvedTrackPlan.SidecarOutputs[index].LogicalTransformKey != plan.SidecarOutputs[index].LogicalTransformKey {
+			t.Fatalf("lab/planner decision %d diverged: lab=%#v planner=%#v", index, lab.ResolvedTrackPlan.SidecarOutputs, plan.SidecarOutputs)
+		}
+	}
+}
+
+func TestSRTFallbackPreservesRoleForcedAndSDHMetadata(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "ass", "language": "spa", "role": "signs", "forced": true},
+		map[string]any{"index": 4, "codec": "ssa", "language": "eng", "role": "sdh", "forced": true},
+	}}
+	plan, err := resolveTrackPlan(scan, map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "extract",
+		"subtitleSidecarFormats":  []string{"original"},
+		"subtitleSettings":        map[string]any{generateSRTFallbackForASSKey: true},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SidecarOutputs) != 4 {
+		t.Fatalf("fallback metadata sidecars=%#v", plan.SidecarOutputs)
+	}
+	for _, sidecar := range plan.SidecarOutputs {
+		if !sidecar.Forced || !sidecar.SourceForced || sidecar.Language == "" {
+			t.Fatalf("forced/language metadata was lost: %#v", sidecar)
+		}
+		if sidecar.StreamIndex == 3 && sidecar.Role != SubtitleRoleSigns {
+			t.Fatalf("signs role was lost: %#v", sidecar)
+		}
+		if sidecar.StreamIndex == 4 && sidecar.Role != SubtitleRoleSDH {
+			t.Fatalf("SDH role was lost: %#v", sidecar)
+		}
+		wantMode := "original"
+		wantFormat := "ass"
+		if sidecar.StreamIndex == 4 {
+			wantFormat = "ssa"
+		}
+		if sidecar.RequestedFormat == "srt" {
+			wantMode, wantFormat = "converted", "srt"
+		}
+		if sidecar.Mode != wantMode || sidecar.Format != wantFormat {
+			t.Fatalf("unexpected fallback representation: %#v", sidecar)
+		}
+		if sidecar.NamingKey != "subtitle:"+strconv.Itoa(sidecar.StreamIndex)+":"+sidecar.Mode+":"+sidecar.Format {
+			t.Fatalf("unexpected naming key: %#v", sidecar)
+		}
+	}
+	byStream := map[int][]ResolvedTrackSidecar{}
+	for _, sidecar := range plan.SidecarOutputs {
+		byStream[sidecar.StreamIndex] = append(byStream[sidecar.StreamIndex], sidecar)
+	}
+	for streamIndex, sidecars := range byStream {
+		if len(sidecars) != 2 || sidecars[0].LogicalTransformKey == sidecars[1].LogicalTransformKey {
+			t.Fatalf("stream %d original/fallback logical identity=%#v", streamIndex, sidecars)
+		}
+	}
 }
 
 func intPointer(value int) *int { return &value }

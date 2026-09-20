@@ -817,6 +817,15 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'pipeline' ? (
+              <SubtitleCompatibilityCard
+                key={JSON.stringify(subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
+                value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value })}
+              />
+            ) : null}
+
+            {section === 'pipeline' ? (
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <WorkersCard form={form} setForm={setForm} />
@@ -1859,6 +1868,60 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
           <Typography color="text.secondary" variant="caption">
             Periodically cleans staging for published jobs. It does not move recovered originals back to Archive.
           </Typography>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+export type SubtitleSRTFallbackSettings = {
+  generateSRTFallbackForASS: boolean;
+};
+
+export function subtitleSRTFallbackValue(value: Record<string, unknown> | undefined): SubtitleSRTFallbackSettings {
+  return {
+    generateSRTFallbackForASS: value?.generateSRTFallbackForASS === true,
+  };
+}
+
+export function SubtitleCompatibilityCard({ value, saving, onSave }: { value: SubtitleSRTFallbackSettings; saving: boolean; onSave: (value: SubtitleSRTFallbackSettings) => void }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack>
+            <Typography variant="h3">Subtitle compatibility</Typography>
+            <Typography color="text.secondary" variant="body2">
+              Optional compatibility sidecars resolved by the canonical subtitle planner.
+            </Typography>
+          </Stack>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={draft.generateSRTFallbackForASS}
+                onChange={(event) => setDraft({ generateSRTFallbackForASS: event.target.checked })}
+              />
+            }
+            label="Generate SRT fallback for ASS compatibility"
+          />
+          <Typography color="text.secondary" variant="caption">
+            Disabled by default. When enabled, eligible ASS requests can also produce an SRT compatibility sidecar.
+          </Typography>
+          <Button
+            startIcon={<SaveIcon />}
+            variant="contained"
+            onClick={() => onSave(draft)}
+            disabled={saving}
+            sx={{ alignSelf: 'flex-start' }}
+          >
+            Save Subtitle Settings
+          </Button>
         </Stack>
       </CardContent>
     </Card>

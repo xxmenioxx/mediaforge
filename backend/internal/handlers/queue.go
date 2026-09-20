@@ -822,6 +822,7 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 	prepared := make([]models.QueueJob, 0, len(jobsInput))
 
 	for _, item := range jobsInput {
+		item.deferFreeze = true
 		job, status, err := h.prepareBatchQueueJob(item)
 		if err != nil {
 			c.JSON(status, gin.H{
@@ -1228,31 +1229,6 @@ func (h QueueHandler) Create(c *gin.Context) {
 		Stage:             JobStageQueued,
 		Notes:             input.Notes,
 	}
-	if err := h.captureSupplementalProfiles(&job); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
-		if err := h.captureOverrideOnlyProfile(
-			&job,
-			"queue_create_override_only",
-		); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-			})
-			return
-		}
-	} else {
-		if err := h.captureProfile(
-			&job,
-			input.ProfileID,
-			"queue_create",
-		); err != nil {
-			h.profileCaptureError(c, err)
-			return
-		}
-	}
-
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var highest int64
 		if err := tx.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
@@ -1266,14 +1242,6 @@ func (h QueueHandler) Create(c *gin.Context) {
 			return err
 		}
 		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {
-			return err
-		}
-
-		if _, err := scheduler.CreatePendingExecutionPlan(
-			tx,
-			&job,
-			"Execution plan created from queued profile snapshot",
-		); err != nil {
 			return err
 		}
 
@@ -1423,6 +1391,18 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 }
 
 func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
+	return h.captureSupplementalProfilesWithSettings(job, false)
+}
+
+// captureSupplementalProfilesAtClaim resolves execution-time subtitle settings
+// immediately before the immutable Queue snapshot is built. The generic
+// capture path is also used by intent/update workflows and must not read a
+// mutable setting there.
+func (h QueueHandler) captureSupplementalProfilesAtClaim(job *models.QueueJob) error {
+	return h.captureSupplementalProfilesWithSettings(job, true)
+}
+
+func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJob, applyCurrentSubtitleSettings bool) error {
 	if strings.TrimSpace(job.AudioProfileKey) != "" {
 		if job.AudioProfileKey == assetDefaultsCustomAudioKey {
 			profile := profileDataForQueueJob(*job, "audio")
@@ -1469,6 +1449,9 @@ func (h QueueHandler) captureSupplementalProfiles(job *models.QueueJob) error {
 		if !canonical {
 			job.TrackProfileSnapshot = models.JSONMap(resolved)
 			return nil
+		}
+		if applyCurrentSubtitleSettings {
+			resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(h.db))
 		}
 		trackPlan, err := resolveTrackPlan(scan, resolved)
 		if err != nil {

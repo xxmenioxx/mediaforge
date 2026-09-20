@@ -84,6 +84,14 @@ export function invalidLanguageScopedSubtitleRuleIndexes(profile: TrackProfile):
   return profile.subtitleRules.flatMap((rule, index) => rule.streamIndex === undefined && !rule.language?.trim() ? [index] : []);
 }
 
+export function subtitleSRTFallbackEnabled(settings?: AppSetting[]): boolean {
+  return settings?.find((setting) => setting.key === 'subtitleSettings')?.value.generateSRTFallbackForASS === true;
+}
+
+export function subtitleSRTFallbackNotice(enabled: boolean, formats?: SubtitleSidecarFormat[]): string | undefined {
+  return enabled && formats?.includes('ass') ? 'ASS + SRT compatibility fallback' : undefined;
+}
+
 export function getTrackProfiles(settings?: AppSetting[], includeDisabled = false): TrackProfile[] {
   const value = settings?.find((setting) => setting.key === 'trackProfiles')?.value.profiles;
   if (!Array.isArray(value)) return [];

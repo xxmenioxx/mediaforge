@@ -1398,6 +1398,9 @@ func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing
 
 	for index, want := range expected {
 		got := queued[index]
+		if want.batchID != "" && (queueJobFreezeComplete(got) || got.ActiveExecutionPlanID != nil) {
+			t.Fatalf("ordinary batch job %q was frozen while queued: %#v", got.MediaPath, got)
+		}
 
 		if filepath.Base(got.MediaPath) != want.file {
 			t.Fatalf(
@@ -2040,10 +2043,24 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 	if err := db.Create(&assignment).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: sourceDir, MediaType: "tracks", Selection: "profile", ProfileKey: "tracks"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.ScanResult{Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}}}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}}, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{
+		"key": "tracks", "scope": "path", "trackDispositionVersion": 1,
+		"subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"ass"},
+		"subtitleRules":    models.JSONList{models.JSONMap{"streamIndex": 4, "action": "extract", "sidecarFormats": models.JSONList{"ass"}}},
+		"attachmentPolicy": "auto", "chapterPolicy": "keep",
+	}}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: subtitleSettingsKey, Value: models.JSONMap{generateSRTFallbackForASSKey: false}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"reviewMode": "automatic"}}).Error; err != nil {
@@ -2064,6 +2081,7 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 	if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil {
 		t.Fatalf("Queue commit froze execution state: %#v", job)
 	}
+	setFallbackFreezeTestSetting(t, db, true)
 	if err := db.Model(&assignment).Update("video_profile_id", second.ID).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -2078,19 +2096,25 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.ProfileID != second.ID || snapshotQualityValue(prepared.ProfileSnapshot) != 21 || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil {
+	frozenTrackPlan, frozenTrackPlanOK := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
+	if prepared.ProfileID != second.ID || snapshotQualityValue(prepared.ProfileSnapshot) != 21 || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil || !frozenTrackPlanOK || !sameStringSlice(resolvedFallbackFormats(frozenTrackPlan), []string{"srt", "ass"}) {
 		t.Fatalf("claim did not freeze the latest effective configuration: %#v", prepared)
 	}
 	second.QualityValue = 30
 	if err := db.Save(&second).Error; err != nil {
 		t.Fatal(err)
 	}
+	setFallbackFreezeTestSetting(t, db, false)
 	again, err := NewWorkerHandler(db).prepareClaimedQueueJob(prepared)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snapshotQualityValue(again.ProfileSnapshot) != 21 {
 		t.Fatalf("completed freeze changed after profile edit: %#v", again.ProfileSnapshot)
+	}
+	againPlan, againPlanOK := ResolvedTrackPlanFromSnapshot(again.TrackProfileSnapshot)
+	if !againPlanOK || !sameStringSlice(resolvedFallbackFormats(againPlan), []string{"srt", "ass"}) {
+		t.Fatalf("completed fallback freeze changed after setting edit: %#v", again.TrackProfileSnapshot)
 	}
 	var scans int64
 	if err := db.Model(&models.ScanResult{}).Where("path = ?", mediaPath).Count(&scans).Error; err != nil || scans != 1 {
