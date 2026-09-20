@@ -6,7 +6,7 @@
 ## 2. Canonical cue envelope and protected structure
 
 - [x] 2.1 Adapt the existing canonical subtitle cue/parser path into an operation-local translation envelope with stable cue IDs, source ordinals, text, timing, representation, and geometry references; verify SRT/ASS/SSA inputs produce deterministic IDs without changing existing serializers.
-- [ ] 2.2 Implement ASS/SSA protected-structure extraction and reconstruction so only eligible dialogue text is translatable; verify styles, override tags, margins, positioning, karaoke/drawing tokens, line breaks, timing, order, and semantic metadata survive round-trip tests.
+- [x] 2.2 Implement ASS/SSA protected-structure extraction and reconstruction so only eligible dialogue text is translatable; verify styles, override tags, margins, positioning, karaoke/drawing tokens, line breaks, timing, order, and semantic metadata survive round-trip tests.
 - [ ] 2.3 Define source-format-preserving text output and canonical bitmap output selection without adding a planner; verify SRT remains text/timing-only and ASS/SSA output retains existing structure and geometry behavior.
 
 ## 3. Validation, identity, revision, and audit
