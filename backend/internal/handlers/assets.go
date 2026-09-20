@@ -106,6 +106,7 @@ type subtitleExtractionOperation struct {
 	Error                  string                    `json:"error,omitempty"`
 	CreatedAt              time.Time                 `json:"createdAt"`
 	UpdatedAt              time.Time                 `json:"updatedAt"`
+	translationRequest     *subtitleTranslationOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}

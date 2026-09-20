@@ -37,7 +37,7 @@
 
 ## 7. Existing operation lifecycle and publication
 
-- [ ] 7.1 Add translation as an operation kind/request in the existing Asset Info subtitle operation model with phases, processed/total progress, cancellation, bounded cleanup, terminal `cancelled`/failure states, and new-identity retry; verify polling/progress behavior and retry semantics.
+- [x] 7.1 Add translation as an operation kind/request in the existing Asset Info subtitle operation model with phases, processed/total progress, cancellation, bounded cleanup, terminal `cancelled`/failure states, and new-identity retry; verify polling/progress behavior and retry semantics.
 - [ ] 7.2 Reuse existing staging, validation, source-revision checks, and atomic all-output publication barrier; verify failure or cancellation during any batch/serializer member publishes no new partial output and preserves existing source/translated artifacts.
 - [ ] 7.3 Verify operation-owned workspace cleanup, completion-vs-cancellation publication race behavior, and no media-adjacent temporary/raw artifacts through focused lifecycle tests.
 
