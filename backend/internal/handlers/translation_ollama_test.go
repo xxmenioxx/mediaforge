@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -152,6 +154,235 @@ func TestOllamaTranslationProviderConfigurationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestOllamaTranslationProviderCancellationBeforeWork(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+	provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "model"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := provider.Translate(ctx, ollamaTestBatch())
+	if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorCancelled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation was not classified correctly: class=%q err=%v", translationProviderErrorClassOf(err), err)
+	}
+	assertEmptyOllamaResult(t, result)
+	if requests != 0 {
+		t.Fatalf("cancelled request reached server: %d", requests)
+	}
+}
+
+func TestOllamaTranslationProviderCancellationDuringRequest(t *testing.T) {
+	started := make(chan struct{})
+	requestCancelled := make(chan struct{})
+	client := &http.Client{Transport: ollamaRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-req.Context().Done()
+		close(requestCancelled)
+		return nil, req.Context().Err()
+	})}
+	provider, err := newOllamaTranslationProviderWithClient(ollamaTestSettings("http://ollama.test", "model"), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type translationCall struct {
+		result TranslationBatchResult
+		err    error
+	}
+	call := make(chan translationCall, 1)
+	go func() {
+		result, err := provider.Translate(ctx, ollamaTestBatch())
+		call <- translationCall{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("provider request did not reach server")
+	}
+	cancel()
+	var outcome translationCall
+	select {
+	case outcome = <-call:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not return after cancellation")
+	}
+	if outcome.err == nil || translationProviderErrorClassOf(outcome.err) != translationProviderErrorCancelled || !errors.Is(outcome.err, context.Canceled) {
+		t.Fatalf("in-flight cancellation was not classified correctly: class=%q err=%v", translationProviderErrorClassOf(outcome.err), outcome.err)
+	}
+	assertEmptyOllamaResult(t, outcome.result)
+	select {
+	case <-requestCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP transport did not observe request cancellation")
+	}
+}
+
+func TestOllamaTranslationProviderCallerDeadlineIsTimeout(t *testing.T) {
+	started := make(chan struct{})
+	deadlineObserved := make(chan struct{})
+	client := &http.Client{Transport: ollamaRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-req.Context().Done()
+		close(deadlineObserved)
+		return nil, req.Context().Err()
+	})}
+	provider, err := newOllamaTranslationProviderWithClient(ollamaTestSettings("http://ollama.test", "model"), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	type translationCall struct {
+		result TranslationBatchResult
+		err    error
+	}
+	call := make(chan translationCall, 1)
+	go func() {
+		result, err := provider.Translate(ctx, ollamaTestBatch())
+		call <- translationCall{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("provider request did not reach server")
+	}
+	select {
+	case outcome := <-call:
+		if outcome.err == nil || translationProviderErrorClassOf(outcome.err) != translationProviderErrorTimeout || !errors.Is(outcome.err, context.DeadlineExceeded) {
+			t.Fatalf("deadline was not classified correctly: class=%q err=%v", translationProviderErrorClassOf(outcome.err), outcome.err)
+		}
+		assertEmptyOllamaResult(t, outcome.result)
+	case <-time.After(time.Second):
+		t.Fatal("provider did not return after deadline")
+	}
+	select {
+	case <-deadlineObserved:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP transport did not observe request deadline")
+	}
+}
+
+func TestOllamaTranslationProviderHTTPClientTimeoutIsTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+	provider, err := newOllamaTranslationProviderWithClient(ollamaTestSettings(server.URL, "model"), &http.Client{Timeout: 25 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Translate(context.Background(), ollamaTestBatch())
+	if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorTimeout {
+		t.Fatalf("HTTP client timeout was not classified correctly: class=%q err=%v", translationProviderErrorClassOf(err), err)
+	}
+	if translationProviderErrorClassOf(err) == translationProviderErrorCancelled {
+		t.Fatalf("HTTP client timeout was classified as cancellation: %v", err)
+	}
+	assertEmptyOllamaResult(t, result)
+}
+
+func TestOllamaTranslationProviderResponseReadCancellation(t *testing.T) {
+	started := make(chan struct{})
+	client := &http.Client{Transport: ollamaRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &ollamaBlockingResponseBody{ctx: req.Context(), started: started},
+			Request:    req,
+		}, nil
+	})}
+	provider, err := newOllamaTranslationProviderWithClient(ollamaTestSettings("http://ollama.test", "model"), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type translationCall struct {
+		result TranslationBatchResult
+		err    error
+	}
+	call := make(chan translationCall, 1)
+	go func() {
+		result, err := provider.Translate(ctx, ollamaTestBatch())
+		call <- translationCall{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("response read did not start")
+	}
+	cancel()
+	select {
+	case outcome := <-call:
+		if outcome.err == nil || translationProviderErrorClassOf(outcome.err) != translationProviderErrorCancelled || !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("response-read cancellation was not classified correctly: class=%q err=%v", translationProviderErrorClassOf(outcome.err), outcome.err)
+		}
+		assertEmptyOllamaResult(t, outcome.result)
+	case <-time.After(time.Second):
+		t.Fatal("provider did not return after response-read cancellation")
+	}
+}
+
+func TestOllamaTranslationProviderHTTPStatusFailures(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("status-%d", status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, "sensitive provider response body")
+			}))
+			defer server.Close()
+			provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "model"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Translate(context.Background(), ollamaTestBatch())
+			if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorUnavailable {
+				t.Fatalf("HTTP failure class=%q err=%v", translationProviderErrorClassOf(err), err)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", status)) || strings.Contains(err.Error(), "sensitive provider response body") {
+				t.Fatalf("HTTP failure diagnostic was not bounded: %v", err)
+			}
+			assertEmptyOllamaResult(t, result)
+		})
+	}
+}
+
+func TestOllamaTranslationProviderMalformedResponses(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{name: "invalid outer JSON", payload: "{"},
+		{name: "missing message", payload: `{}`},
+		{name: "empty assistant content", payload: `{"message":{"content":""}}`},
+		{name: "invalid inner JSON", payload: `{"message":{"content":"not-json"}}`},
+		{name: "unknown inner field", payload: `{"message":{"content":"{\"contractVersion\":\"translation-provider-v1\",\"cues\":[{\"id\":\"cue-1\",\"text\":\"Hola\",\"start\":1}]}"}}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, test.payload)
+			}))
+			defer server.Close()
+			provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "model"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Translate(context.Background(), ollamaTestBatch())
+			if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorMalformed {
+				t.Fatalf("malformed response class=%q err=%v", translationProviderErrorClassOf(err), err)
+			}
+			assertEmptyOllamaResult(t, result)
+		})
+	}
+}
+
 func TestOllamaTranslationProviderRejectsConfiguredRequestBodyOverflow(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
@@ -210,9 +441,39 @@ func TestOllamaTranslationProviderUnreachableEndpointIsActionable(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Translate(context.Background(), ollamaTestBatch()); err == nil || !strings.Contains(strings.ToLower(err.Error()), "ollama") {
+	result, err := provider.Translate(context.Background(), ollamaTestBatch())
+	if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorUnavailable || !strings.Contains(strings.ToLower(err.Error()), "ollama") {
 		t.Fatalf("unreachable endpoint error was not actionable: %v", err)
 	}
+	assertEmptyOllamaResult(t, result)
+}
+
+func assertEmptyOllamaResult(t *testing.T, result TranslationBatchResult) {
+	t.Helper()
+	if result.ContractVersion != "" || len(result.Cues) != 0 || result.Metrics != (TranslationProviderMetrics{}) {
+		t.Fatalf("failed request returned a result: %#v", result)
+	}
+}
+
+type ollamaRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f ollamaRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type ollamaBlockingResponseBody struct {
+	ctx     context.Context
+	started chan<- struct{}
+}
+
+func (b *ollamaBlockingResponseBody) Read([]byte) (int, error) {
+	close(b.started)
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (b *ollamaBlockingResponseBody) Close() error {
+	return nil
 }
 
 func ollamaTestSettings(endpoint, model string) translationSettings {

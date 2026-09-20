@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -92,6 +94,12 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	if provider == nil || provider.client == nil || provider.chatURL == nil {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: fmt.Errorf("ollama translation provider is not configured")}
 	}
+	if ctx == nil {
+		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: fmt.Errorf("translation context is required")}
+	}
+	if err := ctx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	}
 	settings := defaultTranslationSettings()
 	if provider.maxCuesPerRequest > 0 {
 		settings.MaxCuesPerRequest = provider.maxCuesPerRequest
@@ -125,6 +133,9 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	if provider.maxRequestBytes > 0 && len(encodedRequest) > provider.maxRequestBytes {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: fmt.Errorf("Ollama request exceeds configured translation request size of %d bytes", provider.maxRequestBytes)}
 	}
+	if err := ctx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.chatURL.String(), bytes.NewReader(encodedRequest))
 	if err != nil {
@@ -133,23 +144,35 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	req.Header.Set("Content-Type", "application/json")
 	response, err := provider.client.Do(req)
 	if err != nil {
-		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: fmt.Errorf("Ollama request failed: %w", err)}
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 	defer response.Body.Close()
+	if err := ctx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: fmt.Errorf("Ollama returned HTTP status %d", response.StatusCode)}
 	}
-	encodedResponse, err := readBoundedOllamaResponse(response.Body)
+	encodedResponse, err := readBoundedOllamaResponse(ctx, response.Body)
 	if err != nil {
-		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: err}
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 	var outer ollamaChatResponse
 	if err := json.Unmarshal(encodedResponse, &outer); err != nil {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorMalformed, Err: fmt.Errorf("decode Ollama response: %w", err)}
 	}
+	if strings.TrimSpace(outer.Message.Content) == "" {
+		return TranslationBatchResult{}, malformedTranslationResultError("Ollama response has no assistant message content")
+	}
 	result, err := decodeTranslationBatchResult([]byte(outer.Message.Content))
 	if err != nil {
 		return TranslationBatchResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 	result.Metrics = TranslationProviderMetrics{
 		Provider:      translationProviderOllama,
@@ -170,16 +193,44 @@ func ollamaTranslationPrompt(batch TranslationBatch) (string, error) {
 	return "Translate only the target cue text in this translation-provider batch. Preserve every cue ID exactly once, return exactly one translated text for every target cue, and do not add, remove, merge, split, or reorder cues. Do not translate neighboring or media context. Do not emit explanations or markdown. Return only the structured translation result JSON.\n\n" + string(payload), nil
 }
 
-func readBoundedOllamaResponse(body io.Reader) ([]byte, error) {
+func readBoundedOllamaResponse(ctx context.Context, body io.Reader) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	limited := io.LimitReader(body, ollamaTranslationMaxResponseBody+1)
 	encoded, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("read bounded Ollama response: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(encoded) > ollamaTranslationMaxResponseBody {
 		return nil, fmt.Errorf("Ollama response exceeds %d-byte adapter limit", ollamaTranslationMaxResponseBody)
 	}
 	return encoded, nil
+}
+
+func ollamaProviderErrorForRequest(ctx context.Context, err error) *TranslationProviderError {
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				return &TranslationProviderError{Class: translationProviderErrorCancelled, Err: ctxErr}
+			}
+			return &TranslationProviderError{Class: translationProviderErrorTimeout, Err: ctxErr}
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return &TranslationProviderError{Class: translationProviderErrorCancelled, Err: err}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &TranslationProviderError{Class: translationProviderErrorTimeout, Err: err}
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return &TranslationProviderError{Class: translationProviderErrorTimeout, Err: err}
+	}
+	return &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: fmt.Errorf("Ollama request failed: %w", err)}
 }
 
 func ollamaDurationMillis(nanoseconds int64) int64 {
