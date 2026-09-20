@@ -120,7 +120,11 @@ func TestSubtitleTranslationProvenanceIsSecretSafeAndAPIProjectionIsBounded(t *t
 		}
 	}
 
-	view := provenance.APISafeView()
+	metadata.Provenance = provenance
+	view, err := translationProvenanceAPISafeView(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
 	viewJSON, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +138,123 @@ func TestSubtitleTranslationProvenanceIsSecretSafeAndAPIProjectionIsBounded(t *t
 			t.Fatalf("API-safe projection exposed forbidden field: %q", forbiddenField)
 		}
 	}
+}
+
+func TestPersistedSubtitleTranslationProvenanceMustMatchMetadata(t *testing.T) {
+	identity, err := newTranslationIdentity(translationIdentityTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseMetadata := identity.metadata()
+	validProvenance, err := buildSubtitleTranslationProvenance(baseMetadata, "operation-123", "media-metadata", "validated", TranslationProviderMetrics{Provider: identity.Provider, Model: identity.ProviderModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provenanceMutationCases := []struct {
+		name   string
+		mutate func(*SubtitleTranslationProvenance)
+	}{
+		{name: "translation contract version", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.TranslationContractVersion = "other-contract"
+		}},
+		{name: "provider", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.Provider = "other" }},
+		{name: "model", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.ProviderModel = "other-model" }},
+		{name: "provider contract version", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.ProviderContractVersion = "other-provider-contract"
+		}},
+		{name: "requested language", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.RequestedSourceLanguage = "ja" }},
+		{name: "effective language", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.EffectiveSourceLanguage = "ja" }},
+		{name: "target locale", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.TargetLocale = "es-ES" }},
+		{name: "context contract version", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.ContextContractVersion = "other-context-contract"
+		}},
+		{name: "context mode", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.ContextMode = "other-context-mode" }},
+		{name: "source revision", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.SourceRevision = "revision-2" }},
+		{name: "output representation", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.OutputRepresentation = "ass" }},
+		{name: "identity key", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.IdentityKey = "stale-key" }},
+		{name: "contract", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.TranslationContractVersion = "stale-contract"
+		}},
+	}
+	for _, test := range provenanceMutationCases {
+		t.Run(test.name, func(t *testing.T) {
+			provenance := *validProvenance
+			test.mutate(&provenance)
+			metadata := baseMetadata
+			metadata.Provenance = &provenance
+			artifact := persistedTranslationArtifact(t, metadata)
+			if translationArtifactMatchesIdentity(artifact, identity) {
+				t.Fatal("inconsistent persisted provenance was reusable")
+			}
+			if view, err := translationProvenanceAPISafeView(*artifact.Translation); err == nil || view != nil {
+				t.Fatalf("inconsistent persisted provenance was projected: view=%#v err=%v", view, err)
+			}
+		})
+	}
+}
+
+func TestPersistedSubtitleTranslationProvenanceBoundsAreValidated(t *testing.T) {
+	identity, err := newTranslationIdentity(translationIdentityTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validProvenance, err := buildSubtitleTranslationProvenance(identity.metadata(), "operation-123", "media-metadata", "validated", TranslationProviderMetrics{Provider: identity.Provider, Model: identity.ProviderModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*SubtitleTranslationProvenance)
+	}{
+		{name: "oversized operation", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.OperationID = strings.Repeat("x", maxTranslationProvenanceOperationID+1)
+		}},
+		{name: "oversized context", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.ContextSource = strings.Repeat("x", maxTranslationProvenanceContextSource+1)
+		}},
+		{name: "empty status", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.ValidationStatus = "" }},
+		{name: "oversized status", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.ValidationStatus = strings.Repeat("x", maxTranslationProvenanceStatus+1)
+		}},
+		{name: "negative requests", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.RequestCount = -1 }},
+		{name: "negative tokens", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.InputTokens = -1 }},
+		{name: "negative output tokens", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.OutputTokens = -1 }},
+		{name: "negative latency", mutate: func(provenance *SubtitleTranslationProvenance) { provenance.LatencyMillis = -1 }},
+		{name: "excessive requests", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.RequestCount = maxTranslationProvenanceRequests + 1
+		}},
+		{name: "excessive tokens", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.OutputTokens = maxTranslationProvenanceTokens + 1
+		}},
+		{name: "excessive latency", mutate: func(provenance *SubtitleTranslationProvenance) {
+			provenance.LatencyMillis = maxTranslationProvenanceLatencyMs + 1
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			provenance := *validProvenance
+			test.mutate(&provenance)
+			metadata := identity.metadata()
+			metadata.Provenance = &provenance
+			artifact := persistedTranslationArtifact(t, metadata)
+			if translationArtifactMatchesIdentity(artifact, identity) {
+				t.Fatal("out-of-range persisted provenance was reusable")
+			}
+			if view, err := translationProvenanceAPISafeView(*artifact.Translation); err == nil || view != nil {
+				t.Fatalf("out-of-range persisted provenance was projected: view=%#v err=%v", view, err)
+			}
+		})
+	}
+}
+
+func persistedTranslationArtifact(t *testing.T, metadata SubtitleTranslationMetadata) SubtitleArtifact {
+	t.Helper()
+	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON([]SubtitleArtifact{{ArtifactID: "translated", Type: "subtitle_sidecar", Format: "srt", Translation: &metadata}}))
+	if len(decoded) != 1 || decoded[0].Translation == nil {
+		t.Fatalf("translation metadata did not round-trip: %#v", decoded)
+	}
+	return decoded[0]
 }
 
 func TestSubtitleTranslationProvenanceAndLegacyMetadataRemainBackwardCompatible(t *testing.T) {

@@ -157,6 +157,11 @@ func translationArtifactMatchesIdentity(artifact SubtitleArtifact, identity tran
 	if artifact.Translation == nil {
 		return false
 	}
+	if artifact.Translation.Provenance != nil {
+		if err := validateSubtitleTranslationProvenance(*artifact.Translation, artifact.Translation.Provenance); err != nil {
+			return false
+		}
+	}
 	actual := *artifact.Translation
 	actual.Provenance = nil
 	return actual == identity.metadata()
