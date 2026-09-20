@@ -221,10 +221,11 @@ func boundedSubtitleTranslationError(err error) string {
 		return ""
 	}
 	message := strings.TrimSpace(err.Error())
-	if len(message) <= maxSubtitleTranslationOperationError {
+	runes := []rune(message)
+	if len(runes) <= maxSubtitleTranslationOperationError {
 		return message
 	}
-	return string([]rune(message)[:maxSubtitleTranslationOperationError]) + "..."
+	return string(runes[:maxSubtitleTranslationOperationError]) + "..."
 }
 
 var subtitleTranslationPhaseRank = map[string]int{

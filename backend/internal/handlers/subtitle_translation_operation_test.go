@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -247,5 +248,40 @@ func TestSubtitleTranslationOperationRequestIsBounded(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(err), "secret") {
 		t.Fatal("bounded request validation exposed an unrelated secret")
+	}
+}
+
+func TestBoundedSubtitleTranslationErrorIsUnicodeSafe(t *testing.T) {
+	const suffix = "..."
+	tests := []struct {
+		name       string
+		message    string
+		wantExact  bool
+		wantSuffix bool
+	}{
+		{name: "short ASCII", message: "provider unavailable", wantExact: true},
+		{name: "long ASCII", message: strings.Repeat("a", maxSubtitleTranslationOperationError+10), wantSuffix: true},
+		{name: "multibyte bytes exceed rune bound", message: strings.Repeat("界", maxSubtitleTranslationOperationError/2+1), wantExact: true},
+		{name: "multibyte rune bound", message: strings.Repeat("界", maxSubtitleTranslationOperationError+1), wantSuffix: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := boundedSubtitleTranslationError(errors.New(test.message))
+			if !utf8.ValidString(got) {
+				t.Fatal("bounded diagnostic is not valid UTF-8")
+			}
+			if test.wantExact && got != test.message {
+				t.Fatalf("short diagnostic changed: got %q want %q", got, test.message)
+			}
+			if test.wantSuffix {
+				if !strings.HasSuffix(got, suffix) {
+					t.Fatalf("bounded diagnostic lacks suffix: %q", got)
+				}
+				if gotRunes := len([]rune(got)); gotRunes != maxSubtitleTranslationOperationError+len([]rune(suffix)) {
+					t.Fatalf("bounded diagnostic rune length=%d want=%d", gotRunes, maxSubtitleTranslationOperationError+len([]rune(suffix)))
+				}
+			}
+		})
 	}
 }
