@@ -139,6 +139,15 @@ func runSubtitleTranslationOperation(
 		return
 	}
 	err := runner(ctx, operationID, workspace, request)
+	if subtitleOperationPublicationCommitted(operationID) {
+		cleanupErr := cleanupSubtitleOperationWorkspace(workspace)
+		message := "Subtitle translation completed"
+		if cleanupErr != nil {
+			message += "; cleanup diagnostic: " + boundedSubtitleTranslationError(cleanupErr)
+		}
+		setSubtitleTranslationTerminal(operationID, "completed", "completed", message, "")
+		return
+	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 		finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", nil)
 		return
