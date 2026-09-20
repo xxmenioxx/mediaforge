@@ -498,6 +498,42 @@ func correctedSubtitleEvidence(snapshot *publishedCanonicalOCRSnapshot, cues []c
 	return evidence
 }
 
+// correctedCanonicalOCREvidenceForTranslation applies only the same bounded
+// deterministic suggestions that the OCR repair workflow permits to be safely
+// applied. Review-only and provider/selective candidates remain reviewable and
+// are never silently applied while preparing a translation source.
+func correctedCanonicalOCREvidenceForTranslation(evidence *canonicalOCREvidence) (*canonicalOCREvidence, error) {
+	if evidence == nil {
+		return nil, errors.New("canonical OCR evidence is required")
+	}
+	working := cloneCanonicalOCREvidence(evidence)
+	snapshot := &publishedCanonicalOCRSnapshot{Evidence: *working}
+	report := analyzeCanonicalOCRSnapshot(snapshot)
+	corrections := make([]subtitleOCRCorrection, 0)
+	for _, finding := range report.Findings {
+		if finding.CandidateSource == "deterministic-confusion-repair" && strings.TrimSpace(finding.Suggestion) != "" {
+			corrections = append(corrections, subtitleOCRCorrection{
+				CueID:      finding.CueID,
+				Action:     "apply",
+				Suggestion: finding.Suggestion,
+			})
+		}
+	}
+	if len(corrections) == 0 {
+		return working, nil
+	}
+	if err := validateDeterministicOCRCorrectionIntents(snapshot, corrections); err != nil {
+		return nil, err
+	}
+	cues, err := applySubtitleOCRCorrections(working.Cues, corrections)
+	if err != nil {
+		return nil, err
+	}
+	working.Cues = cues
+	working.CorrectionProvenance = correctionProvenanceFor(snapshot, corrections)
+	return working, nil
+}
+
 func validateSubtitleQualityCorrectionInput(input subtitleOCRCorrectionInput) ([]publishedSubtitleRevision, error) {
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	if len(paths) == 0 {

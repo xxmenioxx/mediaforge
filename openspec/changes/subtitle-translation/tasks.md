@@ -31,7 +31,7 @@
 
 ## 6. Bitmap OCR integration
 
-- [ ] 6.1 Route PGS/VobSub translation through the existing canonical OCR lifecycle and correction boundary; verify OCR, Japanese orientation fallback, accurate selection, and OCR quality correction execute before provider translation and never through a translation-specific OCR path.
+- [x] 6.1 Route PGS/VobSub translation through the existing canonical OCR lifecycle and correction boundary; verify OCR, Japanese orientation fallback, accurate selection, and OCR quality correction execute before provider translation and never through a translation-specific OCR path.
 - [ ] 6.2 Preserve canonical bitmap geometry/positioning and serializer fan-out after translated cue text is merged; verify SRT remains geometry-free and ASS retains geometry while both use the translated canonical cues where requested.
 - [ ] 6.3 Verify OCR failure, zero-recognition, unavailable selective input, and cancellation prevent provider invocation and publication while preserving existing OCR operation semantics.
 
