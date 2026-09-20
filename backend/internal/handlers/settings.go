@@ -99,6 +99,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 			return
 		}
 	}
+	if key == translationSettingsKey {
+		normalized, err := normalizeTranslationSettingsValue(input.Value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Value = normalized
+	}
 	if key == "originalRetentionPolicy" {
 		if err := validateOriginalRetentionPolicy(input.Value); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

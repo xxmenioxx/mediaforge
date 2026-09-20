@@ -1,7 +1,7 @@
 ## 1. Settings and provider contract
 
-- [ ] 1.1 Add the persisted subtitle-translation settings value through the existing `AppSetting` API for provider, endpoint, model, and bounded request/context policy; verify missing/legacy values are safe, no localhost endpoint is inferred, and secrets are not returned in UI/API settings responses.
-- [ ] 1.2 Define the text-only `TranslationProvider` boundary, versioned request/response contract, provider error classification, and cancellation contract; verify contract tests cover source/target language, locale, cue IDs, bounded payloads, and context omission.
+- [x] 1.1 Add the persisted subtitle-translation settings value through the existing `AppSetting` API for provider, endpoint, model, and bounded request/context policy; verify missing/legacy values are safe, no localhost endpoint is inferred, and secrets are not returned in UI/API settings responses.
+- [x] 1.2 Define the text-only `TranslationProvider` boundary, versioned request/response contract, provider error classification, and cancellation contract; verify contract tests cover source/target language, locale, cue IDs, bounded payloads, and context omission.
 
 ## 2. Canonical cue envelope and protected structure
 
