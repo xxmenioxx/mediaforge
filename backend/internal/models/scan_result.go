@@ -14,6 +14,7 @@ type ScanResult struct {
 	Width                        int       `json:"width"`
 	Height                       int       `json:"height"`
 	HDR                          bool      `json:"hdr"`
+	ColorPolicy                  JSONMap   `json:"colorPolicy,omitempty" gorm:"-"`
 	AudioTracks                  int       `json:"audioTracks"`
 	SubtitleTracks               int       `json:"subtitleTracks"`
 	Chapters                     int       `json:"chapters"`

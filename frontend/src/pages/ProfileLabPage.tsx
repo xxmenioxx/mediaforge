@@ -6528,6 +6528,10 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
     : recommendation?.recommendation.effectiveBFramePolicy
       ? `${recommendation.recommendation.effectiveBFramePolicy}${recommendation.recommendation.observedBFrameCount != null ? ` · maximum ${recommendation.recommendation.observedBFrameCount}` : ''}`
       : 'Encoder default · no -bf override';
+  const effectiveColorConfig = recommendation?.effectiveProfile?.workerConfig ?? {};
+  const effectiveColorPolicy = String(effectiveColorConfig.effectiveFinalColorPolicy || videoWorkerValue(profile, 'finalColorPolicy', 'preserve'));
+  const effectiveColorDecision = String(effectiveColorConfig.colorPolicyDecision || '');
+  const effectiveColorWarning = String(effectiveColorConfig.colorPolicyWarning || '');
   const sourceFrameStructureLabel = sourceFrameStructure
     ? `GOP ${sourceFrameStructure.averageGopLength.toFixed(1)} avg · I ${sourceFrameStructure.iFrames} / P ${sourceFrameStructure.pFrames} / B ${sourceFrameStructure.bFrames} · B-run ${sourceFrameStructure.maxConsecutiveBFrames}`
     : 'Not analyzed';
@@ -6544,7 +6548,8 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
     ['Frame rate', video?.avgFrameRate || 'Unknown', 'Preserve source', 'No CFR override'],
     ['Field handling', video?.fieldOrder || source?.interlaceAnalysis?.status || 'Unknown', deinterlace, deinterlace === 'off' ? 'No deinterlacing' : 'Filter applied when required'],
     ['Preview color domain', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', previewNormalization === 'normalize_bt709' ? 'Normalize preview to BT.709' : 'Preserve source domain', 'LAB/Fidelity only · not saved in the profile'],
-    ['Final output color policy', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', finalColorPolicyReviewLabel(videoWorkerValue(profile, 'finalColorPolicy', 'preserve')), videoWorkerValue(profile, 'finalColorPolicy', 'preserve') === 'normalize_bt709' ? 'Pixel conversion and BT.709 metadata applied by pipeline' : 'No forced BT.709 output conversion'],
+    ['Final output color policy', [video?.colorSpace, video?.colorTransfer, video?.colorPrimaries, video?.colorRange].filter(Boolean).join(' · ') || 'Unknown', finalColorPolicyReviewLabel(effectiveColorPolicy), effectiveColorDecision || (effectiveColorPolicy === 'normalize_bt709' ? 'Pixel conversion and BT.709 metadata applied by pipeline' : 'No forced BT.709 output conversion')],
+    ...(effectiveColorWarning ? [['Color policy warning', 'Backend-resolved policy', effectiveColorWarning, 'Review required']] : []),
     ['Quality / rate control', source?.bitrate ? `${(source.bitrate / 1_000_000).toFixed(2)} Mbps source` : 'Unknown', quality, 'Configured output target'],
     ['Frame structure source', sourceFrameStructureLabel, frameRecommendation ? `MVForge: GOP ${frameRecommendation.targetGopFrames} · B max ${frameRecommendation.maxBFrames}` : 'No recommendation available', sourceFrameStructure?.confidence ? `Analysis confidence: ${sourceFrameStructure.confidence}` : 'Run Asset Info analysis for evidence'],
     ['GOP', sourceFrameStructure ? `${sourceFrameStructure.averageGopLength.toFixed(1)} average` : 'Unknown', requestedGop, `${effectiveGop}${gopMode === 'auto' ? '' : ' · explicit profile override'}`],

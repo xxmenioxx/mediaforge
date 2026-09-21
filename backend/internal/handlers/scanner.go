@@ -218,6 +218,7 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 	}
 	normalizeScanResultRestorationCollections(&snapshot)
 	normalizeScanResultAttachmentStreams(&snapshot)
+	snapshot.ColorPolicy = colorPolicyPresentationForScan(snapshot)
 	if statErr != nil || info.IsDir() {
 		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}})
 		return
@@ -1487,6 +1488,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		SubtitleStreams:              streamSummaries(probe.Streams, "subtitle"),
 		AttachmentStreams:            attachmentStreamSummaries(probe.Streams),
 		AttachmentInventoryAvailable: true,
+		ColorPolicy:                  colorPolicyPresentationForSource(MediaStream{Codec: video.CodecName, ColorSpace: video.ColorSpace, ColorTransfer: video.ColorTransfer, ColorPrimaries: video.ColorPrimaries, ColorRange: video.ColorRange}),
 		RawProbe:                     raw,
 		InterlaceAnalysis:            interlaceAnalysisFromRaw(raw),
 		CadenceAnalysis:              analysisMapFromRaw(raw, "cadenceAnalysis"),
@@ -1500,6 +1502,28 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
 	result.HEVCLevelRecommendation = hevcLevelRecommendationMap(result)
 	return result
+}
+
+func colorPolicyPresentationForScan(scan models.ScanResult) models.JSONMap {
+	if len(scan.VideoStreams) == 0 {
+		return colorPolicyPresentationForSource(MediaStream{})
+	}
+	stream := MediaStream{}
+	switch value := scan.VideoStreams[0].(type) {
+	case models.JSONMap:
+		stream.Codec = stringFromUnknown(value["codec"])
+		stream.ColorSpace = stringFromUnknown(value["colorSpace"])
+		stream.ColorTransfer = stringFromUnknown(value["colorTransfer"])
+		stream.ColorPrimaries = stringFromUnknown(value["colorPrimaries"])
+		stream.ColorRange = stringFromUnknown(value["colorRange"])
+	case map[string]any:
+		stream.Codec = stringFromUnknown(value["codec"])
+		stream.ColorSpace = stringFromUnknown(value["colorSpace"])
+		stream.ColorTransfer = stringFromUnknown(value["colorTransfer"])
+		stream.ColorPrimaries = stringFromUnknown(value["colorPrimaries"])
+		stream.ColorRange = stringFromUnknown(value["colorRange"])
+	}
+	return colorPolicyPresentationForSource(stream)
 }
 
 // captureFinalAssetSnapshot persists the technical state of the published

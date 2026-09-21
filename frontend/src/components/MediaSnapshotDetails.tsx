@@ -1,4 +1,4 @@
-import { Box, Card, CardContent, Checkbox, Chip, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
+import { Alert, Box, Card, CardContent, Checkbox, Chip, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 import { formatHEVCLevel } from '../utils/hevcLevel';
 
@@ -36,6 +36,21 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
   const cadence = scan.cadenceAnalysis;
   const cadenceRecommendation = scan.cadenceRecommendation;
   const snapshotCache = snapshotCacheDetails(scan.rawProbe);
+  const colorPolicy = scan.colorPolicy;
+  const colorPolicyStatus = colorPolicy?.status === 'complete'
+    ? 'Complete'
+    : colorPolicy?.status === 'incomplete_unsupported'
+      ? 'Incomplete / unsupported'
+      : colorPolicy?.status === 'not_applicable'
+        ? 'Not applicable'
+        : 'Unknown';
+  const colorPolicyAction = colorPolicy?.action === 'review'
+    ? 'Review required'
+    : colorPolicy?.status === 'not_applicable'
+      ? 'Not applicable'
+    : colorPolicy?.action === 'none'
+      ? 'No review required'
+      : 'Unknown';
 
   return (
     <Stack spacing={1.5}>
@@ -73,6 +88,18 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
           ['Recommended B depth', frameRecommendation?.recommendedMaxBFrames !== undefined ? String(frameRecommendation.recommendedMaxBFrames) : 'Unavailable'],
         ] : [['Status', 'Run Process Asset to refresh frame analysis']]} />
       </Grid>
+      <Grid size={{ xs: 12, md: 6 }}>
+        <TechnicalFactGroup title="Color characteristics" facts={[
+          ['Color space / matrix', video?.colorSpace || 'Unknown'],
+          ['Primaries', video?.colorPrimaries || 'Unknown'],
+          ['Transfer', video?.colorTransfer || 'Unknown'],
+          ['Range', video?.colorRange || 'Unknown'],
+          ['Metadata status', colorPolicyStatus],
+          ['Action', colorPolicyAction],
+          ['Reason', colorPolicy?.reason || 'None'],
+        ]} />
+      </Grid>
+      {colorPolicy?.warning ? <Grid size={{ xs: 12 }}><Alert severity="warning">{colorPolicy.warning}</Alert></Grid> : null}
       <Grid size={{ xs: 12, md: 6 }}>
         <TechnicalFactGroup title="Motion & geometry" facts={[
           ['Scan type', interlaceLabel(scan)],

@@ -475,28 +475,28 @@ func profileWithFinalColorPolicy(profile models.Profile, source MediaStream, enc
 		policy = "preserve"
 	}
 	profile.WorkerConfig["effectiveFinalColorPolicy"] = policy
-	for _, key := range []string{"outputColorSpace", "outputColorTransfer", "outputColorPrimaries", "outputColorRange", "automaticColorConversion"} {
+	for _, key := range []string{"outputColorSpace", "outputColorTransfer", "outputColorPrimaries", "outputColorRange", "automaticColorConversion", "colorPolicyDecision", "colorPolicyWarning"} {
 		delete(profile.WorkerConfig, key)
 	}
-	matrix, matrixOK := colorspaceColorAlias(source.ColorSpace, "matrix")
-	primaries, primariesOK := colorspaceColorAlias(source.ColorPrimaries, "primaries")
-	transfer, transferOK := colorspaceColorAlias(source.ColorTransfer, "transfer")
-	inputRange, rangeOK := colorspaceColorAlias(source.ColorRange, "range")
-	if !matrixOK || !primariesOK || !transferOK || !rangeOK {
-		profile.WorkerConfig["colorPolicyWarning"] = "source color characteristics are incomplete or unsupported"
+	metadata := resolveColorMetadata(source)
+	if !metadata.complete {
+		profile.WorkerConfig["effectiveFinalColorPolicy"] = "preserve"
+		profile.WorkerConfig["colorPolicyDecision"] = "color normalization was skipped because source color metadata is incomplete or unsupported"
+		profile.WorkerConfig["colorPolicyWarning"] = metadata.warning
 		return profile
 	}
 	delete(profile.WorkerConfig, "colorPolicyWarning")
 	normalize := policy == "normalize_bt709" || (policy == "automatic" && encoder == "hevc_videotoolbox" && !sourceUsesBT709(source) && !sourceUsesHDRTransfer(source))
 	if !normalize {
-		setProfileOutputColorMetadata(profile.WorkerConfig, matrix, transfer, primaries, inputRange)
+		setProfileOutputColorMetadata(profile.WorkerConfig, metadata.matrix, metadata.transfer, metadata.primaries, metadata.inputRange)
 		profile.WorkerConfig["effectiveFinalColorPolicy"] = "preserve"
 		profile.WorkerConfig["colorPolicyDecision"] = "source characteristics explicitly preserved"
 		return profile
 	}
 	if sourceUsesHDRTransfer(source) {
-		setProfileOutputColorMetadata(profile.WorkerConfig, matrix, transfer, primaries, inputRange)
+		setProfileOutputColorMetadata(profile.WorkerConfig, metadata.matrix, metadata.transfer, metadata.primaries, metadata.inputRange)
 		profile.WorkerConfig["effectiveFinalColorPolicy"] = "preserve"
+		profile.WorkerConfig["colorPolicyDecision"] = "source HDR characteristics explicitly preserved"
 		profile.WorkerConfig["colorPolicyWarning"] = "BT.709 normalization was skipped for HDR because tone mapping was not requested"
 		return profile
 	}
@@ -504,7 +504,7 @@ func profileWithFinalColorPolicy(profile models.Profile, source MediaStream, enc
 	if !strings.Contains(strings.ToLower(existing), "colorspace=") {
 		colorFilter := fmt.Sprintf(
 			"colorspace=ispace=%s:iprimaries=%s:itrc=%s:irange=%s:space=bt709:primaries=bt709:trc=bt709:range=tv",
-			matrix, primaries, transfer, inputRange,
+			metadata.matrix, metadata.primaries, metadata.transfer, metadata.inputRange,
 		)
 		if existing != "" {
 			existing += ","
@@ -535,6 +535,8 @@ func sourceUsesHDRTransfer(source MediaStream) bool {
 
 func normalizedFFmpegRange(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
 	case "pc", "full":
 		return "pc"
 	default:
@@ -760,6 +762,70 @@ func profileWithEffectiveProgressiveOutput(profile models.Profile, interlace Int
 	return profile
 }
 
+type colorMetadataResolution struct {
+	matrix     string
+	primaries  string
+	transfer   string
+	inputRange string
+	complete   bool
+	issues     []string
+	warning    string
+}
+
+func resolveColorMetadata(source MediaStream) colorMetadataResolution {
+	resolution := colorMetadataResolution{complete: true}
+	fields := []struct {
+		label string
+		value string
+		kind  string
+		set   func(string)
+	}{
+		{label: "Matrix", value: source.ColorSpace, kind: "matrix", set: func(value string) { resolution.matrix = value }},
+		{label: "Primaries", value: source.ColorPrimaries, kind: "primaries", set: func(value string) { resolution.primaries = value }},
+		{label: "Transfer", value: source.ColorTransfer, kind: "transfer", set: func(value string) { resolution.transfer = value }},
+		{label: "Range", value: source.ColorRange, kind: "range", set: func(value string) { resolution.inputRange = value }},
+	}
+	for _, field := range fields {
+		value := strings.TrimSpace(field.value)
+		alias, supported := colorspaceColorAlias(value, field.kind)
+		if value == "" {
+			resolution.complete = false
+			resolution.issues = append(resolution.issues, field.label+" characteristics are missing.")
+			continue
+		}
+		if !supported {
+			resolution.complete = false
+			resolution.issues = append(resolution.issues, fmt.Sprintf("%s value %q is unsupported.", field.label, value))
+			continue
+		}
+		field.set(alias)
+	}
+	if !resolution.complete {
+		resolution.warning = strings.Join(resolution.issues, " ") + " Automatic color normalization was not applied."
+	}
+	return resolution
+}
+
+func colorPolicyPresentationForSource(source MediaStream) models.JSONMap {
+	if strings.TrimSpace(source.Codec) == "" && source.Width == 0 && source.Height == 0 &&
+		strings.TrimSpace(source.ColorSpace) == "" && strings.TrimSpace(source.ColorTransfer) == "" &&
+		strings.TrimSpace(source.ColorPrimaries) == "" && strings.TrimSpace(source.ColorRange) == "" {
+		return models.JSONMap{"status": "not_applicable", "action": "none"}
+	}
+	metadata := resolveColorMetadata(source)
+	presentation := models.JSONMap{
+		"status": "complete",
+		"action": "none",
+	}
+	if !metadata.complete {
+		presentation["status"] = "incomplete_unsupported"
+		presentation["action"] = "review"
+		presentation["reason"] = strings.Join(metadata.issues, " ")
+		presentation["warning"] = metadata.warning
+	}
+	return presentation
+}
+
 func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 	fps := workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"])
 	gopFrames := workerIntValue(profile.WorkerConfig["frameStructureGopFrames"], 0)
@@ -785,6 +851,8 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 		"hevcTier":                  workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
 		"hevcLevelWarning":          workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
 		"effectiveFinalColorPolicy": workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
+		"colorPolicyDecision":       workerStringValue(profile.WorkerConfig["colorPolicyDecision"]),
+		"colorPolicyWarning":        workerStringValue(profile.WorkerConfig["colorPolicyWarning"]),
 	}
 	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
 		decision["upscale"] = upscale
