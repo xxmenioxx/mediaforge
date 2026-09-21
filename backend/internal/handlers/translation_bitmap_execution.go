@@ -13,6 +13,7 @@ type bitmapTranslationExecutionRequest struct {
 	MediaPath               string
 	Stream                  FFProbeStream
 	RequestedLanguage       string
+	OCRLanguage             string
 	SourceLanguageMetadata  []string
 	OCRMode                 string
 	SegmentStart            float64
@@ -57,7 +58,7 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 		ctx,
 		request.MediaPath,
 		request.Stream,
-		request.RequestedLanguage,
+		request.OCRLanguage,
 		request.OCRMode,
 		request.SegmentStart,
 		request.SegmentDuration,

@@ -313,14 +313,15 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 		}
 		updateSubtitleTranslationProgress(operationID, "ocr", 0, 0, "Preparing canonical OCR subtitles")
 		ocrLanguage := request.RequestedSourceLanguage
-		if strings.TrimSpace(ocrLanguage) == "auto" {
+		if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 			ocrLanguage = ""
 		}
 		ocrLanguage = normalizedOCRLanguage(ocrLanguage, source.Language)
 		result, err := executeBitmapTranslation(ctx, bitmapTranslationExecutionRequest{
 			MediaPath:               mediaPath,
 			Stream:                  *stream,
-			RequestedLanguage:       ocrLanguage,
+			RequestedLanguage:       request.RequestedSourceLanguage,
+			OCRLanguage:             ocrLanguage,
 			SourceLanguageMetadata:  []string{source.Language},
 			OCRMode:                 "clean",
 			SourceIdentity:          request.SourceIdentity,

@@ -508,6 +508,57 @@ func TestAssetInfoTranslationEntryPointBitmapPGSAndVobSub(t *testing.T) {
 	}
 }
 
+func TestAssetInfoTranslationBitmapAutoAmbiguityStopsBeforeProvider(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	writeTestFile(t, mediaPath, "media fixture")
+	installTranslationSourceFFProbe(t, `{"streams":[{"index":4,"id":"pgs-ambiguous","codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","tags":{"language":"und"},"disposition":{}}]}`)
+	bin := installCanonicalOCRTestTools(t, `#!/bin/sh
+output=
+for argument do
+  case "$argument" in
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' '123 !!!' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	db := translationSourceTestDB(t, root, mediaPath)
+	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newAssetInfoTranslationOllamaFixture()
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	beforeSource, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, responseBody := postAssetInfoTranslationStart(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"embedded","embedded":{"streamIndex":4}},"sourceLanguage":"auto","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath))
+	if status != http.StatusAccepted {
+		t.Fatalf("translation start status=%d body=%s", status, responseBody)
+	}
+	var response struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(responseBody), &response); err != nil {
+		t.Fatal(err)
+	}
+	operation := waitForSubtitleTranslationOperation(t, response.Operation.ID, "error")
+	if fixture.callsSnapshot() != 0 {
+		t.Fatalf("ambiguous Auto source invoked provider %d times", fixture.callsSnapshot())
+	}
+	if operation.Status != "error" || !strings.Contains(operation.Error, "ambiguous") {
+		t.Fatalf("unexpected ambiguous Auto operation: %#v", operation)
+	}
+	if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, beforeSource) {
+		t.Fatalf("bitmap source changed: err=%v", err)
+	}
+	if published := assetInfoPublishedFiles(t, root, mediaPath); len(published) != 0 {
+		t.Fatalf("ambiguous Auto source published translated files: %v", published)
+	}
+}
+
 func TestTranslationPublicationTargetsUseCanonicalArtifactType(t *testing.T) {
 	request := subtitleTranslationOperationRequest{
 		SourceIdentity:          "external:/media/episode.eng.srt:revision",

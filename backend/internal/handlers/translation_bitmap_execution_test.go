@@ -140,7 +140,7 @@ func TestExecuteBitmapTranslationUsesCanonicalEffectiveJapaneseLanguage(t *testi
 	cacheBitmapTranslationEvidence(t, mediaPath, stream, "jpn", "accurate", "jpn_vert", []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "こんにちは", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}})
 	provider := &bitmapTranslationProviderSpy{}
 	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
-		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "jpn", OCRMode: "accurate",
+		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "ja", OCRLanguage: "jpn", OCRMode: "accurate",
 		SourceRepresentation: "vobsub", TargetLocale: "es-ES", RequestedRepresentation: "srt",
 		Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
 	})
@@ -149,6 +149,59 @@ func TestExecuteBitmapTranslationUsesCanonicalEffectiveJapaneseLanguage(t *testi
 	}
 	if result.Source.EffectiveLanguage != "jpn_vert" || len(provider.batches) != 1 || provider.batches[0].SourceLanguage != "ja" {
 		t.Fatalf("canonical effective language was not normalized for provider: source=%q batches=%#v", result.Source.EffectiveLanguage, provider.batches)
+	}
+}
+
+func TestExecuteBitmapTranslationPreservesRequestedLanguageIntent(t *testing.T) {
+	type testCase struct {
+		name              string
+		requestedLanguage string
+		ocrLanguage       string
+		metadata          string
+		cachedLanguage    string
+		effectiveOCR      string
+		text              string
+		wantSource        string
+		wantError         bool
+	}
+	cases := []testCase{
+		{name: "auto english metadata", requestedLanguage: "auto", ocrLanguage: "eng", metadata: "eng", cachedLanguage: "eng", effectiveOCR: "eng", text: "Hello world", wantSource: "en"},
+		{name: "auto japanese metadata", requestedLanguage: "auto", ocrLanguage: "jpn", metadata: "jpn", cachedLanguage: "jpn", effectiveOCR: "jpn", text: "こんにちは", wantSource: "ja"},
+		{name: "auto japanese cue evidence", requestedLanguage: "auto", ocrLanguage: "eng", metadata: "und", cachedLanguage: "eng", effectiveOCR: "eng", text: "こんにちは 世界", wantSource: "ja"},
+		{name: "auto ambiguous evidence", requestedLanguage: "auto", ocrLanguage: "eng", metadata: "und", cachedLanguage: "eng", effectiveOCR: "eng", text: "123 !!!", wantError: true},
+		{name: "explicit english", requestedLanguage: "en", ocrLanguage: "eng", metadata: "und", cachedLanguage: "eng", effectiveOCR: "eng", text: "Hello world", wantSource: "en"},
+		{name: "explicit japanese", requestedLanguage: "ja", ocrLanguage: "jpn", metadata: "und", cachedLanguage: "jpn", effectiveOCR: "jpn", text: "こんにちは", wantSource: "ja"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "movie.mkv")
+			if err := os.WriteFile(mediaPath, []byte("source"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+			stream := FFProbeStream{Index: 2, ID: "bitmap-2", CodecName: "dvd_subtitle", Tags: map[string]string{"language": testCase.metadata}}
+			cacheBitmapTranslationEvidence(t, mediaPath, stream, testCase.cachedLanguage, "accurate", testCase.effectiveOCR, []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: testCase.text, SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}})
+			provider := &bitmapTranslationProviderSpy{}
+			result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
+				MediaPath: mediaPath, Stream: stream, RequestedLanguage: testCase.requestedLanguage, OCRLanguage: testCase.ocrLanguage,
+				SourceLanguageMetadata: []string{testCase.metadata}, OCRMode: "accurate", SourceRepresentation: "vobsub",
+				TargetLocale: "es-419", RequestedRepresentation: "srt", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
+			})
+			if testCase.wantError {
+				if err == nil || provider.calls != 0 || result.Outputs != nil {
+					t.Fatalf("ambiguous Auto result=%#v err=%v providerCalls=%d, want fail closed before provider", result, err, provider.calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.batches) != 1 || provider.batches[0].SourceLanguage != testCase.wantSource {
+				t.Fatalf("provider source language=%q batches=%#v, want %q", provider.batches[0].SourceLanguage, provider.batches, testCase.wantSource)
+			}
+		})
 	}
 }
 
