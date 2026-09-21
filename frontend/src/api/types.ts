@@ -848,6 +848,10 @@ export type AssetDefaultsDomain = {
   custom: Record<string, unknown>;
   [key: string]: unknown;
 };
+export type PreferredSubtitleRule = {
+  language: string;
+  action: 'keep' | 'extract' | 'keep_and_extract';
+};
 export type AssetDefaultsValue = {
   schemaVersion: number;
   video: AssetDefaultsDomain;
@@ -887,7 +891,7 @@ export type TrackProfileResolutionPreview = {
 		videoStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		audioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
 		removedAudioStreams: Array<{ streamIndex: number; codec?: string; language?: string }>;
-		subtitleStreams: Array<{ streamIndex: number; codec?: string; language?: string; action: 'keep' | 'remove' | 'extract' | 'keep_and_extract'; role?: SubtitleSemanticRole; roleProvenance?: string; roleConfidence?: string; roleOverrideState?: string; forced?: boolean; effectiveForced?: boolean }>;
+		subtitleStreams: Array<{ streamIndex: number; codec?: string; language?: string; action: 'keep' | 'remove' | 'extract' | 'keep_and_extract'; actionSource?: string; role?: SubtitleSemanticRole; roleProvenance?: string; roleConfidence?: string; roleOverrideState?: string; forced?: boolean; effectiveForced?: boolean }>;
 		attachmentPolicy: 'auto' | 'keep' | 'remove';
 		attachmentsKept: boolean;
 		attachmentReason: string;

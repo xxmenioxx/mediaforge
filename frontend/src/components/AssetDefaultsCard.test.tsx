@@ -66,4 +66,33 @@ describe('AssetDefaultsCard', () => {
     expect(screen.getByRole('option', { name: 'libx265' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'h264_nvenc' })).toBeNull();
   });
+
+  it('adds canonical preferred subtitle rules with mixed actions and preserves them on save', async () => {
+    const onSave = vi.fn();
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={value} settings={settings} profiles={profiles} saving={false} onSave={onSave} />);
+
+    await user.click(screen.getByRole('button', { name: '+ Add language' }));
+    await user.click(screen.getByRole('combobox', { name: 'Language 1' }));
+    await user.click(screen.getByRole('option', { name: 'Spanish · spa' }));
+    await user.click(screen.getByRole('combobox', { name: 'Action' }));
+    await user.click(screen.getByRole('option', { name: 'Keep and extract' }));
+    await user.click(screen.getByRole('button', { name: '+ Add language' }));
+    await user.click(screen.getByRole('combobox', { name: 'Language 2' }));
+    await user.click(screen.getByRole('option', { name: 'English · eng' }));
+    await user.click(screen.getAllByRole('combobox', { name: 'Action' })[1]);
+    await user.click(screen.getByRole('option', { name: 'Extract' }));
+    await user.click(screen.getByRole('button', { name: 'Save Asset Defaults' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      tracks: expect.objectContaining({
+        custom: expect.objectContaining({
+          preferredSubtitleRules: [
+            { language: 'spa', action: 'keep_and_extract' },
+            { language: 'eng', action: 'extract' },
+          ],
+        }),
+      }),
+    }));
+  });
 });

@@ -39,6 +39,46 @@ func TestAssetDefaultsValidationAndCompatibilityDefaults(t *testing.T) {
 	}
 }
 
+func TestAssetDefaultsPreferredSubtitleRulesNormalizeAndValidate(t *testing.T) {
+	value, err := validateAssetDefaultsValue(nil, models.JSONMap{
+		"tracks": models.JSONMap{"custom": models.JSONMap{
+			"preferredSubtitleRules": models.JSONList{
+				models.JSONMap{"language": "es", "action": "keep_and_extract"},
+				models.JSONMap{"language": "eng", "action": "extract"},
+				models.JSONMap{"language": "spa", "action": "keep"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := settingProfileObject(assetDefaultsDomain(value, "tracks")["custom"])["preferredSubtitleRules"]
+	if got := workerSliceValue(rules); len(got) != 2 {
+		t.Fatalf("preferred rules were not deduplicated: %#v", rules)
+	}
+	first := settingProfileObject(workerSliceValue(rules)[0])
+	if first["language"] != "spa" || first["action"] != "keep" {
+		t.Fatalf("canonical preferred rule=%#v", first)
+	}
+	for _, language := range []string{"foo", "spanish", "xyz-custom"} {
+		_, err := validateAssetDefaultsValue(nil, models.JSONMap{
+			"tracks": models.JSONMap{"custom": models.JSONMap{
+				"preferredSubtitleRules": models.JSONList{models.JSONMap{"language": language, "action": "keep"}},
+			}},
+		})
+		if err == nil {
+			t.Fatalf("unsupported preferred language %q was accepted", language)
+		}
+	}
+	if _, err := validateAssetDefaultsValue(nil, models.JSONMap{
+		"tracks": models.JSONMap{"custom": models.JSONMap{
+			"preferredSubtitleRules": models.JSONList{models.JSONMap{"language": "spa", "action": "remove"}},
+		}},
+	}); err == nil {
+		t.Fatal("remove was accepted as a preferred subtitle action")
+	}
+}
+
 func TestAssetDefaultsPreserveDomainPrecedenceAndDisabledStates(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:asset-defaults-precedence?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

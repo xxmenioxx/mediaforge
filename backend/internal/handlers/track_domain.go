@@ -247,6 +247,7 @@ type ResolvedSubtitleTrack struct {
 	RoleOverrideState             string               `json:"roleOverrideState,omitempty"`
 	RoleSourceSnapshotFingerprint string               `json:"roleSourceSnapshotFingerprint,omitempty"`
 	RoleStreamSignature           string               `json:"roleStreamSignature,omitempty"`
+	ActionSource                  string               `json:"actionSource,omitempty"`
 	Forced                        bool                 `json:"forced"`
 	EffectiveForced               bool                 `json:"effectiveForced"`
 }

@@ -1,6 +1,8 @@
-import type { AssetDefaultsDomain, AssetDefaultsValue } from '../api/types';
+import type { AssetDefaultsDomain, AssetDefaultsValue, PreferredSubtitleRule } from '../api/types';
+import { subtitleLanguageOptions } from './subtitleLanguages';
 
 export type { AssetDefaultsDomain, AssetDefaultsSource, AssetDefaultsValue } from '../api/types';
+export type { PreferredSubtitleRule } from '../api/types';
 
 const defaults: AssetDefaultsValue = {
   schemaVersion: 1,
@@ -29,6 +31,7 @@ const defaults: AssetDefaultsValue = {
       ocrMode: 'accurate',
       defaultAudioLanguage: '',
       defaultSubtitleLanguage: '',
+      preferredSubtitleRules: [] as PreferredSubtitleRule[],
     },
   },
 };
@@ -47,6 +50,17 @@ function merge(base: Record<string, unknown>, overlay: Record<string, unknown>):
 
 export function assetDefaultsValue(value: unknown): AssetDefaultsValue {
   return merge(defaults, isRecord(value) ? value : {}) as AssetDefaultsValue;
+}
+
+export function preferredSubtitleRulesValue(value: unknown): PreferredSubtitleRule[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return [];
+    const rule = raw as Record<string, unknown>;
+    const language = typeof rule.language === 'string' && subtitleLanguageOptions.some((option) => option.value === rule.language) ? rule.language : null;
+    const action = rule.action === 'keep' || rule.action === 'extract' || rule.action === 'keep_and_extract' ? rule.action : null;
+    return language && action ? [{ language, action }] : [];
+  });
 }
 
 export function updateAssetDefaultsDomain(

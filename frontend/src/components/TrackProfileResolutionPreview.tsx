@@ -99,7 +99,7 @@ function subtitleActionLabel(action: 'keep' | 'remove' | 'extract' | 'keep_and_e
 function trackPreviewReasonLabel(reason: string) {
   const labels: Record<string, string> = {
     first_video: 'First video', all_video: 'Keep all video', additional_video: 'Additional video',
-    language_match: 'Language match', language_not_selected: 'Language not selected', commentary: 'Commentary rule',
+    language_match: 'Language match', language_not_selected: 'Language not selected', preferred_subtitle_language: 'Preferred subtitle language', commentary: 'Commentary rule',
     default_track: 'Default track', not_default: 'Not default', all_audio: 'Keep all audio', audio_disabled: 'Audio disabled',
     forced: 'Forced subtitle', not_forced: 'Not forced', all_subtitles: 'Keep all subtitles', subtitle_disabled: 'Subtitles disabled',
   };

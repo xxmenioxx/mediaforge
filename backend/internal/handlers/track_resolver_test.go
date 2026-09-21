@@ -47,6 +47,58 @@ func TestResolveTrackPlanSubtitleActionsAndLanguageRules(t *testing.T) {
 	}
 }
 
+func TestResolveTrackPlanPreferredSubtitleRulesRespectProfilePrecedenceAndUnknownLanguages(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "es"},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 5, "codec": "subrip", "language": "jpn"},
+		map[string]any{"index": 6, "codec": "subrip", "language": "und"},
+	}}
+	profile := map[string]any{
+		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
+		"subtitleRules": []any{map[string]any{"language": "spa", "action": "extract"}},
+		"preferredSubtitleRules": []any{
+			map[string]any{"language": "spa", "action": "keep_and_extract"},
+			map[string]any{"language": "eng", "action": "extract"},
+			map[string]any{"language": "jpn", "action": "keep_and_extract"},
+		},
+	}
+	plan, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleDisposition{SubtitleDispositionExtract, SubtitleDispositionExtract, SubtitleDispositionKeepAndExtract, SubtitleDispositionKeep}
+	for index, action := range want {
+		if plan.SubtitleStreams[index].Action != action {
+			t.Fatalf("subtitle[%d] action=%q want=%q", index, plan.SubtitleStreams[index].Action, action)
+		}
+	}
+	if plan.SubtitleStreams[0].ActionSource != "" {
+		t.Fatalf("explicit Track Profile rule was incorrectly attributed to global preference: %#v", plan.SubtitleStreams[0])
+	}
+	if plan.SubtitleStreams[1].ActionSource != "preferred_subtitle_language" || plan.SubtitleStreams[2].ActionSource != "preferred_subtitle_language" {
+		t.Fatalf("global preferred-rule provenance missing: %#v", plan.SubtitleStreams)
+	}
+	if plan.SubtitleStreams[3].ActionSource != "" {
+		t.Fatalf("und matched a preferred language: %#v", plan.SubtitleStreams[3])
+	}
+}
+
+func TestResolveTrackPlanPreferredBitmapLanguageKeepsCanonicalOCRPath(t *testing.T) {
+	plan, err := resolveTrackPlan(models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 7, "codec": "hdmv_pgs_subtitle", "language": "jpn"},
+	}}, map[string]any{
+		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
+		"preferredSubtitleRules": []any{map[string]any{"language": "jpn", "action": "extract"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SidecarOutputs) != 1 || !plan.SidecarOutputs[0].OCRRequired || plan.SidecarOutputs[0].SourceType != "bitmap" {
+		t.Fatalf("preferred bitmap action did not use canonical OCR sidecar path: %#v", plan.SidecarOutputs)
+	}
+}
+
 func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{
 		map[string]any{"index": 8, "codec": "subrip", "language": "spa"},

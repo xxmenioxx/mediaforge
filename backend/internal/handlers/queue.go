@@ -1017,6 +1017,13 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			validationContext:         validation,
 		}
 		queueInput.resolvedProfileResolution = resolveProfileAssignmentsFromEffective(&queueInput, effective)
+		var enrichErr error
+		queueInput.resolvedProfileResolution, enrichErr = h.enrichPreferredSubtitleRules(queueInput.resolvedProfileResolution)
+		if enrichErr != nil {
+			result.Outcome, result.Reason, result.Message = "failed", "invalid_configuration", enrichErr.Error()
+			response.Results = append(response.Results, result)
+			continue
+		}
 		job, status, err := h.prepareBatchQueueJob(queueInput)
 		if err != nil {
 			result.Outcome, result.Reason, result.Message = "failed", "invalid_configuration", err.Error()
@@ -1276,7 +1283,8 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	if err != nil {
 		return nil, err
 	}
-	return resolveProfileAssignmentsFromEffective(input, effective), nil
+	resolution := resolveProfileAssignmentsFromEffective(input, effective)
+	return h.enrichPreferredSubtitleRules(resolution)
 }
 
 func effectiveConfigurationWithFrozenAssetDefaults(effective EffectiveAssetConfiguration, resolution models.JSONMap) EffectiveAssetConfiguration {
@@ -1433,6 +1441,7 @@ func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJ
 				return fmt.Errorf("track profile: %w", err)
 			}
 		}
+		profile = applyQueuedPreferredSubtitleRules(*job, profile)
 		profile = applyAssetDefaultsAudioToTrackProfile(*job, profile)
 		resolved := resolveTrackProfileForAsset(h.db, job.MediaPath, profile)
 		if storedSettingProfileScope(profile) == "path" && strings.TrimSpace(workerStringValue(resolved["resolvedForAsset"])) == "" {
