@@ -1,5 +1,5 @@
 import type { AssetDefaultsDomain, AssetDefaultsValue, PreferredSubtitleRule } from '../api/types';
-import { subtitleLanguageOptions } from './subtitleLanguages';
+import { canonicalSubtitleLanguage } from './subtitleLanguages';
 
 export type { AssetDefaultsDomain, AssetDefaultsSource, AssetDefaultsValue } from '../api/types';
 export type { PreferredSubtitleRule } from '../api/types';
@@ -57,7 +57,7 @@ export function preferredSubtitleRulesValue(value: unknown): PreferredSubtitleRu
   return value.flatMap((raw) => {
     if (!raw || typeof raw !== 'object') return [];
     const rule = raw as Record<string, unknown>;
-    const language = typeof rule.language === 'string' && subtitleLanguageOptions.some((option) => option.value === rule.language) ? rule.language : null;
+    const language = canonicalSubtitleLanguage(rule.language);
     const action = rule.action === 'keep' || rule.action === 'extract' || rule.action === 'keep_and_extract' ? rule.action : null;
     return language && action ? [{ language, action }] : [];
   });

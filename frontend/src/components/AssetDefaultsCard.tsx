@@ -25,7 +25,7 @@ import {
   type AssetDefaultsValue,
   updateAssetDefaultsDomain,
 } from '../utils/assetDefaults';
-import { subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
+import { canonicalSubtitleLanguage, subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
 
 type Props = {
   value: unknown;
@@ -115,6 +115,7 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
   const trackCustom = tracks.custom;
   const formats = Array.isArray(trackCustom.subtitleSidecarFormats) ? trackCustom.subtitleSidecarFormats.join(',') : 'srt';
   const preferredRules = preferredSubtitleRulesValue(trackCustom.preferredSubtitleRules);
+  const defaultSubtitleLanguage = canonicalSubtitleLanguage(trackCustom.defaultSubtitleLanguage);
   const updatePreferredRules = (next: typeof preferredRules) => update('tracks', { custom: { preferredSubtitleRules: next } });
 
   return <Stack spacing={2}>
@@ -164,7 +165,7 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
             }} disabled={preferredRules.length >= subtitleLanguageOptions.length}>+ Add language</Button>
           </Stack>
         </Grid>
-        <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Default subtitle language" value={String(trackCustom.defaultSubtitleLanguage ?? '')} onChange={(event) => update('tracks', { custom: { defaultSubtitleLanguage: event.target.value } })} placeholder="eng" /></Grid>
+        <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Default subtitle language" value={defaultSubtitleLanguage} onChange={(event) => update('tracks', { custom: { defaultSubtitleLanguage: event.target.value } })}><MenuItem value="">None</MenuItem>{subtitleLanguageOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label} · {option.value}</MenuItem>)}</TextField></Grid>
       </Grid>
     </AssetDefaultsDomainCard>
     <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Asset Defaults</Button>

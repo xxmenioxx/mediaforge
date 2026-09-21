@@ -418,7 +418,6 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 	if len(explicit.SubtitleRoleOverrides) > 0 {
 		resolved["subtitleRoleOverrides"] = bindSubtitleRoleOverrides(scan, explicit.SubtitleRoleOverrides)
 	}
-	resolved = applyCurrentPreferredSubtitleRules(db, resolved)
 	resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(db))
 	trackPlan, err := resolveTrackPlan(scan, resolved)
 	if err != nil {

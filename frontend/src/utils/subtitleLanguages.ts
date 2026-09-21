@@ -12,6 +12,20 @@ export const subtitleLanguageOptions = [
 
 export type CanonicalSubtitleLanguage = typeof subtitleLanguageOptions[number]['value'];
 
+const subtitleLanguageAliases: Record<string, CanonicalSubtitleLanguage> = {
+  es: 'spa',
+  esp: 'spa',
+  en: 'eng',
+  ja: 'jpn',
+};
+
+export function canonicalSubtitleLanguage(value: unknown): CanonicalSubtitleLanguage | '' {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLowerCase();
+  if (subtitleLanguageOptions.some((option) => option.value === normalized)) return normalized as CanonicalSubtitleLanguage;
+  return subtitleLanguageAliases[normalized] ?? '';
+}
+
 export const subtitlePreferredActionOptions = [
   { value: 'keep', label: 'Keep' },
   { value: 'extract', label: 'Extract' },

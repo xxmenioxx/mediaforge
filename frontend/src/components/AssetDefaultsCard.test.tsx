@@ -95,4 +95,31 @@ describe('AssetDefaultsCard', () => {
       }),
     }));
   });
+
+  it('uses the canonical selector for the optional default subtitle language', async () => {
+    const onSave = vi.fn();
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={{ ...value, tracks: { source: 'custom', custom: { defaultSubtitleLanguage: 'es' } } }} settings={settings} profiles={profiles} saving={false} onSave={onSave} />);
+
+    const selector = screen.getByRole('combobox', { name: 'Default subtitle language' });
+    expect(selector).toHaveValue('spa');
+    await user.click(selector);
+    await user.click(screen.getByRole('option', { name: 'Japanese · jpn' }));
+    await user.click(screen.getByRole('button', { name: 'Save Asset Defaults' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      tracks: expect.objectContaining({
+        custom: expect.objectContaining({ defaultSubtitleLanguage: 'jpn' }),
+      }),
+    }));
+  });
+
+  it('allows an empty default subtitle language', async () => {
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={value} settings={settings} profiles={profiles} saving={false} onSave={vi.fn()} />);
+    const selector = screen.getByRole('combobox', { name: 'Default subtitle language' });
+    expect(selector).toHaveValue('');
+    await user.click(selector);
+    expect(screen.getByRole('option', { name: 'None' })).toBeTruthy();
+  });
 });

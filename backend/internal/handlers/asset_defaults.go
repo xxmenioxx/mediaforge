@@ -193,6 +193,14 @@ func validateAssetDefaultsValueWithWarnings(db *gorm.DB, value models.JSONMap) (
 		if ocrMode != "" && ocrMode != "raw" && ocrMode != "clean" && ocrMode != "accurate" {
 			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.ocrMode must be raw, clean, or accurate")
 		}
+		defaultSubtitleLanguage := strings.TrimSpace(workerStringValue(custom["defaultSubtitleLanguage"]))
+		if defaultSubtitleLanguage == "" {
+			custom["defaultSubtitleLanguage"] = ""
+		} else if canonical, ok := canonicalSubtitleLanguage(defaultSubtitleLanguage); ok {
+			custom["defaultSubtitleLanguage"] = canonical
+		} else {
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.defaultSubtitleLanguage language %q is unsupported", defaultSubtitleLanguage)
+		}
 		preferredRules, err := normalizePreferredSubtitleRules(custom["preferredSubtitleRules"])
 		if err != nil {
 			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
@@ -424,57 +432,6 @@ func applyAssetDefaultsAudioToTrackProfile(job models.QueueJob, profile map[stri
 		}
 	}
 	return profile
-}
-
-func applyQueuedPreferredSubtitleRules(job models.QueueJob, profile map[string]any) map[string]any {
-	if len(profile) == 0 || job.ProfileResolution == nil {
-		return profile
-	}
-	tracks := settingProfileObject(job.ProfileResolution["tracks"])
-	if tracks == nil {
-		return profile
-	}
-	if rules, exists := tracks["preferredSubtitleRules"]; exists {
-		profile["preferredSubtitleRules"] = rules
-	}
-	return profile
-}
-
-func applyCurrentPreferredSubtitleRules(db *gorm.DB, profile map[string]any) map[string]any {
-	if len(profile) == 0 {
-		return profile
-	}
-	defaults, err := loadAssetDefaults(db)
-	if err != nil {
-		return profile
-	}
-	custom, ok := assetDefaultsProfileData(defaults, "tracks")
-	if !ok {
-		return profile
-	}
-	if rules, exists := custom["preferredSubtitleRules"]; exists {
-		profile["preferredSubtitleRules"] = rules
-	}
-	return profile
-}
-
-func (h QueueHandler) enrichPreferredSubtitleRules(resolution models.JSONMap) (models.JSONMap, error) {
-	defaults, err := loadAssetDefaults(h.db)
-	if err != nil {
-		return resolution, err
-	}
-	custom, ok := assetDefaultsProfileData(defaults, "tracks")
-	if !ok {
-		return resolution, nil
-	}
-	tracks := settingProfileObject(resolution["tracks"])
-	if tracks == nil {
-		return resolution, nil
-	}
-	if rules, exists := custom["preferredSubtitleRules"]; exists {
-		tracks["preferredSubtitleRules"] = rules
-	}
-	return resolution, nil
 }
 
 func captureCustomProfileSnapshot(profile models.Profile, source string) (models.JSONMap, *time.Time, error) {
