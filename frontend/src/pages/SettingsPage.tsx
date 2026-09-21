@@ -44,7 +44,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
-import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe } from '../api/types';
+import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 
@@ -822,6 +822,15 @@ export function SettingsPage() {
                 value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
                 saving={updateSetting.isPending}
                 onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value })}
+              />
+            ) : null}
+
+            {section === 'pipeline' ? (
+              <SubtitleTranslationSettingsCard
+                key={JSON.stringify(subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value))}
+                value={subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'subtitleTranslationSettings', value })}
               />
             ) : null}
 
@@ -1922,6 +1931,230 @@ export function SubtitleCompatibilityCard({ value, saving, onSave }: { value: Su
           >
             Save Subtitle Settings
           </Button>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+const subtitleTranslationReadinessLabels: Record<SubtitleTranslationReadinessState, string> = {
+  disabled: 'Disabled',
+  not_configured: 'Not configured',
+  untested: 'Untested',
+  ready: 'Ready',
+  unavailable: 'Unavailable',
+  model_not_found: 'Model not found',
+  invalid_configuration: 'Invalid configuration',
+};
+
+const defaultSubtitleTranslationSettings: SubtitleTranslationSettingsValue = {
+  provider: '',
+  ollamaEndpoint: '',
+  ollamaModel: '',
+  maxCuesPerRequest: 32,
+  maxRequestBytes: 64 * 1024,
+  maxContextCues: 8,
+  maxContextChars: 4096,
+  enabled: false,
+  readiness: 'not_configured',
+};
+
+function subtitleTranslationReadinessState(value: unknown): SubtitleTranslationReadinessState {
+  return value === 'disabled' ||
+    value === 'not_configured' ||
+    value === 'untested' ||
+    value === 'ready' ||
+    value === 'unavailable' ||
+    value === 'model_not_found' ||
+    value === 'invalid_configuration'
+    ? value
+    : 'not_configured';
+}
+
+export function subtitleTranslationSettingsValue(value: Record<string, unknown> | undefined): SubtitleTranslationSettingsValue {
+  const source = value ?? {};
+  return {
+    provider: stringValue(source.provider, ''),
+    ollamaEndpoint: stringValue(source.ollamaEndpoint, ''),
+    ollamaModel: stringValue(source.ollamaModel, ''),
+    maxCuesPerRequest: numberValue(source.maxCuesPerRequest, defaultSubtitleTranslationSettings.maxCuesPerRequest),
+    maxRequestBytes: numberValue(source.maxRequestBytes, defaultSubtitleTranslationSettings.maxRequestBytes),
+    maxContextCues: numberValue(source.maxContextCues, defaultSubtitleTranslationSettings.maxContextCues),
+    maxContextChars: numberValue(source.maxContextChars, defaultSubtitleTranslationSettings.maxContextChars),
+    enabled: booleanValue(source.enabled, false),
+    readiness: subtitleTranslationReadinessState(source.readiness),
+    readinessConfigIdentity: stringValue(source.readinessConfigIdentity, '') || undefined,
+    readinessCheckedAt: stringValue(source.readinessCheckedAt, '') || undefined,
+    readinessDiagnostic: stringValue(source.readinessDiagnostic, '') || undefined,
+  };
+}
+
+function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSettingsValue, enabled?: boolean): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    provider: value.provider,
+    ollamaEndpoint: value.ollamaEndpoint,
+    ollamaModel: value.ollamaModel,
+    maxCuesPerRequest: value.maxCuesPerRequest,
+    maxRequestBytes: value.maxRequestBytes,
+    maxContextCues: value.maxContextCues,
+    maxContextChars: value.maxContextChars,
+  };
+  if (enabled !== undefined) {
+    payload.enabled = enabled;
+  }
+  return payload;
+}
+
+function subtitleTranslationReadinessForSettings(value: SubtitleTranslationSettingsValue): SubtitleTranslationReadiness {
+  return {
+    configured: value.readiness !== 'not_configured',
+    enabled: value.enabled,
+    readiness: value.readiness,
+    lastCheckedAt: value.readinessCheckedAt,
+    diagnostic: value.readinessDiagnostic,
+  };
+}
+
+function subtitleTranslationErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function formatSubtitleTranslationCheckedAt(value?: string) {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+export function SubtitleTranslationSettingsCard({
+  value,
+  saving,
+  onSave,
+}: {
+  value: SubtitleTranslationSettingsValue;
+  saving: boolean;
+  onSave: (value: Record<string, unknown>) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState(value);
+  const [readinessOverride, setReadinessOverride] = useState<SubtitleTranslationReadiness | null>(null);
+  const testConnection = useMutation({
+    mutationFn: api.testSubtitleTranslationConnection,
+    onSuccess: async (result) => {
+      setReadinessOverride(result);
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+  });
+  const enable = useMutation({
+    mutationFn: api.enableSubtitleTranslation,
+    onSuccess: async (result) => {
+      setReadinessOverride(result);
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+  });
+
+  useEffect(() => {
+    setDraft(value);
+    setReadinessOverride(null);
+  }, [value]);
+
+  const persistedReadiness = subtitleTranslationReadinessForSettings(value);
+  const readiness = readinessOverride ?? persistedReadiness;
+  const dirty = draft.provider !== value.provider || draft.ollamaEndpoint !== value.ollamaEndpoint || draft.ollamaModel !== value.ollamaModel;
+  const structurallyConfigured = draft.provider === 'ollama' && Boolean(draft.ollamaEndpoint.trim()) && Boolean(draft.ollamaModel.trim());
+  const canTest = structurallyConfigured && !dirty && !testConnection.isPending;
+  const canEnable = structurallyConfigured && !dirty && !readiness.enabled && !enable.isPending;
+
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack>
+            <Typography variant="h3">Subtitle translation</Typography>
+            <Typography color="text.secondary" variant="body2">
+              Configure the backend-authorized Ollama provider. Readiness is checked by MVForge and is not inferred from these fields.
+            </Typography>
+          </Stack>
+          <TextField
+            select
+            label="Provider"
+            value={draft.provider}
+            onChange={(event) => setDraft((current) => ({ ...current, provider: event.target.value }))}
+            fullWidth
+          >
+            <MenuItem value="">Not configured</MenuItem>
+            <MenuItem value="ollama">Ollama</MenuItem>
+          </TextField>
+          {draft.provider === 'ollama' ? (
+            <>
+              <TextField
+                label="Ollama endpoint"
+                placeholder="http://192.168.1.100:11434"
+                value={draft.ollamaEndpoint}
+                onChange={(event) => setDraft((current) => ({ ...current, ollamaEndpoint: event.target.value }))}
+                fullWidth
+              />
+              <TextField
+                label="Ollama model"
+                placeholder="qwen2.5:7b"
+                value={draft.ollamaModel}
+                onChange={(event) => setDraft((current) => ({ ...current, ollamaModel: event.target.value }))}
+                fullWidth
+              />
+            </>
+          ) : null}
+          <Stack spacing={0.5}>
+            <Typography variant="body2">Configured: {readiness.configured ? 'Yes' : 'No'}</Typography>
+            <Typography variant="body2">Enabled: {readiness.enabled ? 'Yes' : 'No'}</Typography>
+            <Typography variant="body2">Readiness: {subtitleTranslationReadinessLabels[readiness.readiness]}</Typography>
+            {readiness.diagnostic ? <Typography color="text.secondary" variant="body2">{readiness.diagnostic}</Typography> : null}
+            {readiness.lastCheckedAt ? <Typography color="text.secondary" variant="caption">Last checked: {formatSubtitleTranslationCheckedAt(readiness.lastCheckedAt)}</Typography> : null}
+          </Stack>
+          {dirty ? <Alert severity="info">Save configuration before testing or enabling.</Alert> : null}
+          {testConnection.isError ? <Alert severity="warning">{subtitleTranslationErrorMessage(testConnection.error, 'Connection test failed.')}</Alert> : null}
+          {enable.isError ? <Alert severity="warning">{subtitleTranslationErrorMessage(enable.error, 'Translation could not be enabled.')}</Alert> : null}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
+            <Button
+              startIcon={<SaveIcon />}
+              variant="contained"
+              onClick={() => onSave(subtitleTranslationConfigurationPayload(draft))}
+              disabled={saving}
+            >
+              Save translation configuration
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={() => testConnection.mutate()}
+              disabled={!canTest}
+            >
+              {testConnection.isPending ? 'Testing…' : 'Test Connection'}
+            </Button>
+            {readiness.enabled ? (
+              <Button
+                variant="outlined"
+                color="warning"
+                onClick={() => onSave(subtitleTranslationConfigurationPayload(value, false))}
+                disabled={saving}
+              >
+                Disable translation
+              </Button>
+            ) : (
+              <Button
+                variant="outlined"
+                onClick={() => enable.mutate()}
+                disabled={!canEnable}
+              >
+                {enable.isPending ? 'Enabling…' : 'Enable translation'}
+              </Button>
+            )}
+          </Stack>
         </Stack>
       </CardContent>
     </Card>

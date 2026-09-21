@@ -12,11 +12,13 @@ Este directorio separa las guías operativas, las especificaciones técnicas y e
 6. [Cómo funciona el scheduler](guides/scheduler.md)
 7. [Checklist de validación del scheduler](scheduler-v1-validation.md)
 8. [Diagnóstico y troubleshooting](guides/troubleshooting.md)
+9. [Traducción de subtítulos con Ollama](guides/subtitle-translation.md)
 
 ## Para mantenedores
 
 - [Releases con GitHub Actions y GHCR](guides/github-releases.md)
 - [Guía técnica completa del Scheduler v1](scheduler-v1-guide.md)
+- [Arquitectura de traducción de subtítulos](architecture/subtitle-translation.md)
 - [Contexto general del proyecto](context.md)
 - [Visión de producto](vision.md)
 - [Visión V2](v2_mvforge.md)
@@ -38,8 +40,10 @@ flowchart TD
     USER --> USE[Uso diario]
     USER --> PROFILES[Perfiles]
     USER --> SCHEDULER[Scheduler]
+    USER --> SUBTRAN["Traducción de subtítulos"]
     MAINTAINER --> RELEASES[GitHub Releases y GHCR]
     MAINTAINER --> SPEC["Especificaciones v1/v2"]
+    MAINTAINER --> SUBARCH["Arquitectura de traducción"]
     ROADMAP --> NEXT[Próximo ciclo]
     ROADMAP --> FUTURE[Visión futura]
 ```

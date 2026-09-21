@@ -317,6 +317,105 @@ export type ExternalSubtitle = {
   logicalTransformKey?: string;
 };
 
+export type SubtitleTranslationSourceSelector =
+  | {
+      type: 'embedded';
+      embedded: {
+        streamIndex: number;
+      };
+    }
+  | {
+      type: 'external';
+      external: {
+        subtitlePath: string;
+      };
+    };
+
+export type SubtitleTranslationSource = {
+  type: 'embedded' | 'external';
+  sourceIdentity: string;
+  sourceRevision: string;
+  representation: string;
+  streamIndex?: number;
+  streamId?: string;
+  externalPath?: string;
+  artifactId?: string;
+  codec: string;
+  language?: string;
+  title?: string;
+  default: boolean;
+  sourceForced: boolean;
+  effectiveForced: boolean;
+  role: SubtitleSemanticRole;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+};
+
+export type SubtitleTranslationCapability = {
+  source: SubtitleTranslationSource;
+  eligible: boolean;
+  available: boolean;
+  reason?: string;
+  sourceLanguages: string[];
+  targetLocales: string[];
+  provider: {
+    name?: string;
+    model?: string;
+    modelSelectable: boolean;
+  };
+  outputRepresentations: string[];
+  context: {
+    status: string;
+    source?: string;
+  };
+};
+
+export type SubtitleTranslationReadinessState =
+  | 'disabled'
+  | 'not_configured'
+  | 'untested'
+  | 'ready'
+  | 'unavailable'
+  | 'model_not_found'
+  | 'invalid_configuration';
+
+export type SubtitleTranslationReadiness = {
+  configured: boolean;
+  enabled: boolean;
+  readiness: SubtitleTranslationReadinessState;
+  lastCheckedAt?: string;
+  diagnostic?: string;
+};
+
+export type SubtitleTranslationSettingsValue = {
+  provider: string;
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  maxCuesPerRequest: number;
+  maxRequestBytes: number;
+  maxContextCues: number;
+  maxContextChars: number;
+  enabled: boolean;
+  readiness: SubtitleTranslationReadinessState;
+  readinessConfigIdentity?: string;
+  readinessCheckedAt?: string;
+  readinessDiagnostic?: string;
+};
+
+export type SubtitleTranslationCapabilityInput = {
+  path: string;
+  source: SubtitleTranslationSourceSelector;
+};
+
+export type StartSubtitleTranslationInput = {
+  path: string;
+  source: SubtitleTranslationSourceSelector;
+  sourceLanguage: string;
+  targetLocale: string;
+  outputRepresentation: string;
+};
+
 export type StreamMetadataOverride = {
   title?: string;
   language?: string;
@@ -1878,18 +1977,37 @@ export type SubtitleExtractionResult = {
     type: 'subtitle_sidecar';
     streamIndex: number;
     sourceCodec: string;
-    sourceType?: 'text' | 'bitmap';
+    sourceType?: string;
     format: 'srt' | 'ass' | 'ssa' | 'sup';
     requestedFormat?: string;
-    mode: 'original' | 'converted';
+    mode: 'original' | 'converted' | 'translation' | string;
     ocrRequired?: boolean;
     language?: string;
     stages?: string[];
     extension?: string;
     namingKey?: string;
     stagedPath: string;
+    publishedPath?: string;
     sizeBytes: number;
     status: string;
+    translation?: {
+      identityKey: string;
+      identityVersion: number;
+      translationContractVersion: string;
+      sourceArtifactIdentity: string;
+      sourceRevision: string;
+      sourceRepresentation: string;
+      sourceProvenance: string;
+      requestedSourceLanguage: string;
+      effectiveSourceLanguage: string;
+      targetLocale: string;
+      provider: string;
+      providerContractVersion: string;
+      providerModel: string;
+      contextContractVersion: string;
+      contextMode: string;
+      outputRepresentation: string;
+    };
   }>;
 };
 
@@ -1899,6 +2017,8 @@ export type SubtitleExtractionOperation = {
   status: 'running' | 'completed' | 'cancelled' | 'error';
   phase:
     | 'preparing'
+    | 'translating'
+    | 'validating'
     | 'analyzing'
     | 'extracting'
     | 'ocr'
@@ -1915,7 +2035,20 @@ export type SubtitleExtractionOperation = {
   message?: string;
   result?: SubtitleExtractionResult;
   error?: string;
-  kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | string;
+  kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | 'translation' | string;
+  translation?: {
+    provider?: string;
+    model?: string;
+    requestedSourceLanguage?: string;
+    targetLocale?: string;
+    outputRepresentation?: string;
+    contextMode?: string;
+    contextSource?: string;
+    failureClass?: string;
+    diagnostic?: string;
+    retryable: boolean;
+    cancellable: boolean;
+  };
   qualityReport?: SubtitleOCRQualityReport;
   createdAt: string;
   updatedAt: string;

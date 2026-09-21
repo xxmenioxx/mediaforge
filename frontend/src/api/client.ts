@@ -59,6 +59,10 @@ import type {
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
   SubtitleExtractionResult,
+  SubtitleTranslationCapability,
+  SubtitleTranslationCapabilityInput,
+  SubtitleTranslationReadiness,
+  StartSubtitleTranslationInput,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -90,6 +94,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const payload = await response.clone().json();
       if (payload && typeof payload.error === 'string' && payload.error.trim()) {
         message = payload.error;
+      } else if (payload && typeof payload.reason === 'string' && payload.reason.trim()) {
+        message = payload.reason;
       }
     } catch {
       const text = await response.text().catch(() => '');
@@ -263,6 +269,50 @@ export const api = {
     request<SubtitleExtractionOperationList>(
       `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
     ),
+
+  subtitleOperation: (operationId: string) =>
+    request<SubtitleExtractionOperation>(
+      `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}`,
+    ),
+
+  subtitleOperations: (path: string) =>
+    request<SubtitleExtractionOperationList>(
+      `/api/assets/subtitle-operations?path=${encodeURIComponent(path)}`,
+    ),
+
+  cancelSubtitleOperation: (operationId: string) =>
+    request<SubtitleExtractionOperation>(
+      `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/cancel`,
+      { method: 'POST' },
+    ),
+
+  retrySubtitleTranslation: (operationId: string) =>
+    request<{ operation: SubtitleExtractionOperation }>(
+      `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/retry`,
+      { method: 'POST' },
+    ),
+
+  subtitleTranslationCapability: (input: SubtitleTranslationCapabilityInput) =>
+    request<SubtitleTranslationCapability>('/api/assets/subtitle-translation/capability', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  testSubtitleTranslationConnection: () =>
+    request<SubtitleTranslationReadiness>('/api/settings/subtitle-translation/test-connection', {
+      method: 'POST',
+    }),
+
+  enableSubtitleTranslation: () =>
+    request<SubtitleTranslationReadiness>('/api/settings/subtitle-translation/enable', {
+      method: 'POST',
+    }),
+
+  startSubtitleTranslation: (input: StartSubtitleTranslationInput) =>
+    request<{ operation: SubtitleExtractionOperation }>('/api/assets/subtitle-translation', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
 
   analyzeSubtitleOCR: (input: {
     mediaPath?: string;

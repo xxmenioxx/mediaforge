@@ -410,7 +410,7 @@ func snapshotSubtitleOperation(id string) subtitleExtractionOperation {
 	subtitleExtractionOperations.RLock()
 	defer subtitleExtractionOperations.RUnlock()
 	if operation := subtitleExtractionOperations.items[id]; operation != nil {
-		return *operation
+		return cloneSubtitleExtractionOperationSnapshot(operation)
 	}
 	return subtitleExtractionOperation{}
 }

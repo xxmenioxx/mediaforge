@@ -591,6 +591,9 @@ func markSubtitlePublicationCommitted(operationID string) {
 		return
 	}
 	operation.publicationCommitted = true
+	if operation.Translation != nil {
+		operation.Translation.Cancellable = false
+	}
 	if operation.publicationCommittedCh != nil {
 		close(operation.publicationCommittedCh)
 	}
@@ -610,6 +613,17 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
+	// Translation publication waits on subtitlePublicationMu and checks its
+	// context before the final source recheck. Signal translation cancellation
+	// before taking that mutex so a queued publisher cannot pass the barrier
+	// merely because the cancel request was waiting behind it. Extraction and
+	// OCR operations retain their existing lock ordering below.
+	subtitleExtractionOperations.RLock()
+	if operation, exists := subtitleExtractionOperations.items[id]; exists && operation.Kind == subtitleTranslationOperationKind && operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
+		operation.cancel()
+	}
+	subtitleExtractionOperations.RUnlock()
+
 	subtitlePublicationMu.Lock()
 	defer subtitlePublicationMu.Unlock()
 	subtitleExtractionOperations.Lock()
@@ -622,7 +636,7 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 	if operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
 		operation.cancel()
 	}
-	snapshot := *operation
+	snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 	subtitleExtractionOperations.Unlock()
 
 	if snapshot.Status == "running" {

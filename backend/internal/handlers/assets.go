@@ -30,8 +30,9 @@ import (
 )
 
 type AssetHandler struct {
-	db                      *gorm.DB
-	trackMaintenanceRuntime *trackMaintenanceRuntime
+	db                         *gorm.DB
+	trackMaintenanceRuntime    *trackMaintenanceRuntime
+	translationProviderFactory func(translationSettings) (TranslationProvider, error)
 }
 
 type SubtitleExtractionResult struct {
@@ -90,22 +91,24 @@ type previewGeneration struct {
 }
 
 type subtitleExtractionOperation struct {
-	ID                     string                    `json:"id"`
-	Status                 string                    `json:"status"`
-	Phase                  string                    `json:"phase"`
-	Progress               float64                   `json:"progress"`
-	Processed              int                       `json:"processed"`
-	Total                  int                       `json:"total"`
-	StreamIndex            int                       `json:"streamIndex"`
-	Format                 string                    `json:"format"`
-	AssetPath              string                    `json:"assetPath"`
-	Message                string                    `json:"message,omitempty"`
-	Result                 *SubtitleExtractionResult `json:"result,omitempty"`
-	Kind                   string                    `json:"kind,omitempty"`
-	QualityReport          *subtitleOCRQualityReport `json:"qualityReport,omitempty"`
-	Error                  string                    `json:"error,omitempty"`
-	CreatedAt              time.Time                 `json:"createdAt"`
-	UpdatedAt              time.Time                 `json:"updatedAt"`
+	ID                     string                            `json:"id"`
+	Status                 string                            `json:"status"`
+	Phase                  string                            `json:"phase"`
+	Progress               float64                           `json:"progress"`
+	Processed              int                               `json:"processed"`
+	Total                  int                               `json:"total"`
+	StreamIndex            int                               `json:"streamIndex"`
+	Format                 string                            `json:"format"`
+	AssetPath              string                            `json:"assetPath"`
+	Message                string                            `json:"message,omitempty"`
+	Result                 *SubtitleExtractionResult         `json:"result,omitempty"`
+	Kind                   string                            `json:"kind,omitempty"`
+	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
+	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
+	Error                  string                            `json:"error,omitempty"`
+	CreatedAt              time.Time                         `json:"createdAt"`
+	UpdatedAt              time.Time                         `json:"updatedAt"`
+	translationRequest     *subtitleTranslationOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}
@@ -1098,7 +1101,7 @@ func (h *AssetHandler) ListSubtitleExtractionOperations(c *gin.Context) {
 			continue
 		}
 
-		snapshot := *operation
+		snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 		operations = append(operations, snapshot)
 	}
 
@@ -1128,7 +1131,7 @@ func (h *AssetHandler) GetSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
-	snapshot := *operation
+	snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 	subtitleExtractionOperations.RUnlock()
 
 	c.JSON(http.StatusOK, snapshot)
@@ -1521,27 +1524,9 @@ func (h AssetHandler) externalSubtitleAsset(c *gin.Context) (string, models.Asse
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return "", models.AssetRecord{}, false
 	}
-	var record models.AssetRecord
-	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "asset not found in inventory"})
-		return "", models.AssetRecord{}, false
-	}
-	if record.Status == "archive" {
-		c.JSON(http.StatusConflict, gin.H{"error": "archived originals cannot manage external subtitles"})
-		return "", models.AssetRecord{}, false
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "asset is not readable from the backend container"})
-		return "", models.AssetRecord{}, false
-	}
-	allowed, err := h.pathBelongsToLibrary(path)
+	path, record, err := h.resolveOwnedSubtitleAsset(path)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return "", models.AssetRecord{}, false
-	}
-	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "asset is outside configured media roots"})
+		writeSubtitleAssetResolutionError(c, err)
 		return "", models.AssetRecord{}, false
 	}
 	return path, record, true
