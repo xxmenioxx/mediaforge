@@ -352,34 +352,45 @@ func canonicalOCREvidenceForRequest(
 
 	canonicalOCRFlights.Lock()
 	flight := canonicalOCRFlights.items[key]
-	if flight != nil && flight.ctx.Err() != nil {
-		// A cancelled flight with no subscribers is no longer reusable. A retry
-		// gets a fresh identity/flight while the old process tree finishes its
-		// bounded termination path.
-		delete(canonicalOCRFlights.items, key)
-		flight = nil
-	}
-	created := false
-	if flight == nil {
-		flightCtx, cancel := context.WithCancel(context.Background())
-		workspace, err := os.MkdirTemp(root, ".mvforge-ocr-flight-*")
-		if err != nil {
+	if flight != nil {
+		flight.mu.Lock()
+		reusable := !flight.finished && flight.ctx.Err() == nil
+		if !reusable {
+			flight.mu.Unlock()
+			// Terminal or cancelled flights are never reusable. A fresh request
+			// must rerun OCR after cache invalidation instead of receiving stale
+			// in-memory evidence while registry cleanup is still completing.
+			delete(canonicalOCRFlights.items, key)
+			flight = nil
+		} else {
+			subscription := &canonicalOCRSubscription{flight: flight, onProgress: onProgress}
+			flight.subscribers[subscription] = onProgress
+			progress := flight.progress
+			flight.mu.Unlock()
 			canonicalOCRFlights.Unlock()
-			cancel()
-			return nil, fmt.Errorf("cannot create shared OCR workspace: %w", err)
+			if progress.total > 0 && onProgress != nil {
+				onProgress(progress.processed, progress.total)
+			}
+			return subscription.wait(ctx)
 		}
-		flight = &canonicalOCRFlight{
-			key:         key,
-			request:     request,
-			ctx:         flightCtx,
-			cancel:      cancel,
-			workspace:   workspace,
-			done:        make(chan struct{}),
-			subscribers: map[*canonicalOCRSubscription]OCRProgressFunc{},
-		}
-		canonicalOCRFlights.items[key] = flight
-		created = true
 	}
+	flightCtx, cancel := context.WithCancel(context.Background())
+	workspace, err := os.MkdirTemp(root, ".mvforge-ocr-flight-*")
+	if err != nil {
+		canonicalOCRFlights.Unlock()
+		cancel()
+		return nil, fmt.Errorf("cannot create shared OCR workspace: %w", err)
+	}
+	flight = &canonicalOCRFlight{
+		key:         key,
+		request:     request,
+		ctx:         flightCtx,
+		cancel:      cancel,
+		workspace:   workspace,
+		done:        make(chan struct{}),
+		subscribers: map[*canonicalOCRSubscription]OCRProgressFunc{},
+	}
+	canonicalOCRFlights.items[key] = flight
 	subscription := &canonicalOCRSubscription{flight: flight, onProgress: onProgress}
 	flight.mu.Lock()
 	flight.subscribers[subscription] = onProgress
@@ -390,9 +401,7 @@ func canonicalOCREvidenceForRequest(
 	if progress.total > 0 && onProgress != nil {
 		onProgress(progress.processed, progress.total)
 	}
-	if created {
-		go flight.execute()
-	}
+	go flight.execute()
 	return subscription.wait(ctx)
 }
 
