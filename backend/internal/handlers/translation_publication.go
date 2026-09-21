@@ -127,6 +127,9 @@ func validateSubtitleTranslationPublicationRequest(request subtitleTranslationPu
 	if len(request.Targets) == 0 {
 		return errors.New("translation publication requires at least one output")
 	}
+	if (request.CommitMetadata == nil) != (request.RollbackMetadata == nil) {
+		return errors.New("translation metadata commit and rollback must be configured together")
+	}
 	sourcePath := translationSourceRevisionPath(request.SourceRevision)
 	seenFormats := make(map[string]struct{}, len(request.Targets))
 	seenDestinations := make(map[string]struct{}, len(request.Targets))

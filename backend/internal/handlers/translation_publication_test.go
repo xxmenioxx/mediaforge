@@ -111,6 +111,7 @@ func TestPublishSubtitleTranslationSingleOutputAndMetadata(t *testing.T) {
 			committed = append([]SubtitleArtifact(nil), artifacts...)
 			return nil
 		},
+		RollbackMetadata: func([]SubtitleArtifact) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +217,8 @@ func TestPublishSubtitleTranslationRejectsInvalidStageAndMetadataFailure(t *test
 	}
 	_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 		Ctx: context.Background(), OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: staged,
-		CommitMetadata: func([]SubtitleArtifact) error { return errors.New("metadata commit failed") },
+		CommitMetadata:   func([]SubtitleArtifact) error { return errors.New("metadata commit failed") },
+		RollbackMetadata: func([]SubtitleArtifact) error { return nil },
 	})
 	if err == nil {
 		t.Fatal("metadata failure unexpectedly committed translation")
@@ -230,6 +232,53 @@ func TestPublishSubtitleTranslationRejectsInvalidStageAndMetadataFailure(t *test
 	}
 	if source, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(source), "Hello") {
 		t.Fatalf("source subtitle changed after metadata failure: %q (%v)", source, err)
+	}
+}
+
+func TestPublishSubtitleTranslationRequiresPairedMetadataCallbacks(t *testing.T) {
+	sourcePath, revision, workspace, targets := stageExternalTranslationFixture(t, translationRepresentationSRT)
+	operationID := translationPublicationOperationID(t)
+	registerSubtitleTranslationPublicationOperation(t, operationID)
+	commitCalled := false
+	rollbackCalled := false
+	commitOnlyErr := func() error {
+		_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+			Ctx: context.Background(), OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
+			CommitMetadata: func([]SubtitleArtifact) error {
+				commitCalled = true
+				return nil
+			},
+		})
+		return err
+	}
+	if err := commitOnlyErr(); err == nil || !strings.Contains(err.Error(), "commit and rollback must be configured together") {
+		t.Fatalf("commit without rollback was accepted: %v", err)
+	}
+	if commitCalled {
+		t.Fatal("invalid commit-only request invoked CommitMetadata")
+	}
+	if _, err := os.Stat(targets[0].FinalPath); !os.IsNotExist(err) {
+		t.Fatalf("invalid commit-only request changed final destination: %v", err)
+	}
+
+	_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+		Ctx: context.Background(), OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
+		RollbackMetadata: func([]SubtitleArtifact) error {
+			rollbackCalled = true
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "commit and rollback must be configured together") {
+		t.Fatalf("rollback without commit was accepted: %v", err)
+	}
+	if rollbackCalled {
+		t.Fatal("invalid rollback-only request invoked RollbackMetadata")
+	}
+	if snapshotSubtitleOperation(operationID).publicationCommitted {
+		t.Fatal("invalid metadata callback configuration marked publication committed")
+	}
+	if source, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(source), "Hello") {
+		t.Fatalf("metadata callback validation changed source: %q (%v)", source, err)
 	}
 }
 
