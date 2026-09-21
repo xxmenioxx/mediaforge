@@ -59,6 +59,9 @@ import type {
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
   SubtitleExtractionResult,
+  SubtitleTranslationCapability,
+  SubtitleTranslationCapabilityInput,
+  StartSubtitleTranslationInput,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -263,6 +266,18 @@ export const api = {
     request<SubtitleExtractionOperationList>(
       `/api/assets/extract-subtitles?path=${encodeURIComponent(path)}`,
     ),
+
+  subtitleTranslationCapability: (input: SubtitleTranslationCapabilityInput) =>
+    request<SubtitleTranslationCapability>('/api/assets/subtitle-translation/capability', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  startSubtitleTranslation: (input: StartSubtitleTranslationInput) =>
+    request<{ operation: SubtitleExtractionOperation }>('/api/assets/subtitle-translation', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
 
   analyzeSubtitleOCR: (input: {
     mediaPath?: string;

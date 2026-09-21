@@ -64,7 +64,8 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, UpscaleMode, UpscaleSharpen } from '../api/types';
+import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2569,6 +2570,7 @@ function AssetRow({
   const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
   const [subtitleQualityReports, setSubtitleQualityReports] = useState<Record<string, SubtitleOCRQualityReport>>({});
   const [subtitleQualityMessages, setSubtitleQualityMessages] = useState<Record<string, string>>({});
+  const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
@@ -4150,10 +4152,12 @@ async function generateExternalSubtitle(
                     <EmbeddedSubtitleActions
                       streams={snapshotData.subtitleStreams}
                       generations={subtitleGenerations}
-						 srtFallbackEnabled={srtFallbackEnabled}
+			 srtFallbackEnabled={srtFallbackEnabled}
                       onGenerate={generateExternalSubtitle}
                       onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob}
+                      translationDisabled={rowLocked}
+                      onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     {!isArchive ? (
                       <ExternalSubtitleList
@@ -4162,6 +4166,8 @@ async function generateExternalSubtitle(
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
                         disabled={hasOpenJob}
+                        translationDisabled={rowLocked}
+                        onTranslate={(subtitle) => setTranslationSource({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
                         qualityReports={subtitleQualityReports}
                         qualityMessages={subtitleQualityMessages}
@@ -4481,6 +4487,14 @@ async function generateExternalSubtitle(
           </Stack>
         </DialogContent>
       </Dialog>
+      {translationSource ? (
+        <SubtitleTranslationDialog
+          open
+          path={asset.path}
+          source={translationSource}
+          onClose={() => setTranslationSource(null)}
+        />
+      ) : null}
     </>
   );
 }
@@ -4556,8 +4570,10 @@ export function EmbeddedSubtitleActions({
   generations,
   onGenerate,
   onCancel,
+  onTranslate,
   srtFallbackEnabled = false,
   disabled = false,
+  translationDisabled = false,
 }: {
   streams: MediaStreamInfo[];
   generations: Record<string, SubtitleGenerationState>;
@@ -4571,8 +4587,10 @@ export function EmbeddedSubtitleActions({
     streamIndex: number,
     format: 'original' | 'srt' | 'ass',
   ) => void;
+  onTranslate?: (streamIndex: number) => void;
   srtFallbackEnabled?: boolean;
   disabled?: boolean;
+  translationDisabled?: boolean;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
   const [ocrModes, setOcrModes] = useState<Record<number, 'raw' | 'clean' | 'accurate'>>({});
@@ -4647,6 +4665,7 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  {onTranslate ? <Button size="small" variant="outlined" disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
                   {originalStyledFormat ? (
                     <Button
                       size="small"
@@ -4734,6 +4753,8 @@ type SubtitleGenerationState = {
   progress?: number;
   phase?:
     | 'preparing'
+    | 'translating'
+    | 'validating'
     | 'analyzing'
     | 'extracting'
     | 'ocr'
@@ -4787,9 +4808,11 @@ export function ExternalSubtitleList({
   deleting,
   renaming,
   disabled,
+  translationDisabled = false,
   onRename,
   onEdit,
   onDelete,
+  onTranslate,
   onAnalyze,
   qualityReports = {},
   qualityMessages = {},
@@ -4801,9 +4824,11 @@ export function ExternalSubtitleList({
   deleting: boolean;
   renaming: boolean;
   disabled?: boolean;
+  translationDisabled?: boolean;
   onRename: (subtitle: ExternalSubtitle) => void;
   onEdit: (subtitle: ExternalSubtitle) => void;
   onDelete: (subtitle: ExternalSubtitle) => void;
+  onTranslate?: (subtitle: ExternalSubtitle) => void;
   onAnalyze?: (subtitle: ExternalSubtitle) => void;
   qualityReports?: Record<string, SubtitleOCRQualityReport>;
   qualityMessages?: Record<string, string>;
@@ -4847,6 +4872,7 @@ export function ExternalSubtitleList({
               </Stack>
               <Stack direction="row" spacing={0.5}>
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
+                {onTranslate ? <Button size="small" variant="outlined" disabled={translationDisabled} onClick={() => onTranslate(subtitle)}>Translate...</Button> : null}
                 <Tooltip title="Rename subtitle file">
                   <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
                 </Tooltip>
