@@ -141,6 +141,134 @@ la configuración queda disponible para reutilizarla más adelante.
 | **Invalid configuration** | La configuración no es válida estructuralmente. |
 | **Disabled** | La traducción está deshabilitada de forma intencional. |
 
+## Modelos Ollama y dimensionamiento
+
+Esta sección separa los requisitos de MVForge de las recomendaciones para
+elegir un modelo. Las recomendaciones son puntos de partida, no
+certificaciones de compatibilidad ni garantías de calidad, velocidad o
+consumo.
+
+### Requisitos de MVForge
+
+El modelo configurado debe existir en el servidor Ollama, poder usarse mediante
+`/api/chat`, seguir la instrucción acotada de MVForge y devolver JSON
+estructurado. Debe conservar exactamente los IDs de los cues, devolver un
+texto por cada cue solicitado, traducir inglés/japonés al locale español
+solicitado y completar la solicitud dentro de los límites de request y timeout
+del proveedor.
+
+MVForge envía una solicitud equivalente a:
+
+```json
+{
+  "model": "...",
+  "messages": [{
+    "role": "user",
+    "content": "<instrucción estructurada de traducción de MVForge>"
+  }],
+  "stream": false,
+  "format": "json"
+}
+```
+
+Que un modelo esté instalado o sea multilingüe no garantiza este contrato.
+**Test Connection** comprueba alcance del proveedor y existencia del modelo;
+no comprueba calidad, JSON correcto para todos los subtítulos ni rendimiento
+aceptable en el NAS.
+
+### Candidatos recomendados para empezar
+
+La familia **Qwen 3.5** es un candidato actual razonable para evaluar por su
+cobertura de instrucciones multilingües, que incluye inglés, japonés y
+español. Debe probarse con el contrato JSON e IDs de cues de MVForge.
+
+| Candidato | Tamaño aproximado del paquete Ollama | Uso sugerido | Estado |
+| --- | ---: | --- | --- |
+| `qwen3.5:4b` | ≈ 3.4 GB | Primer candidato para NAS compartido o limitado | Recomendación inicial |
+| `qwen3.5:9b` | ≈ 6.6 GB | Host con más margen de memoria | Candidato recomendado para evaluar |
+| `qwen3.5:27b` | ≈ 17 GB | Host dedicado o con mucha memoria | Opcional; no es la opción NAS predeterminada |
+| `translategemma:4b` | ≈ 3.3 GB | Experimento especializado | No validado aún con el contrato estructurado de MVForge |
+
+Los tamaños son aproximaciones de paquetes/modelos Ollama, no RAM o VRAM de
+ejecución. Qwen 3.5 no está certificado por MVForge y no se afirma que sea el
+mejor, más rápido o perfecto.
+
+Para un NAS con recursos limitados y uso principalmente CPU, `qwen3.5:4b` es
+un candidato inicial conservador. `qwen3.5:9b` merece evaluación cuando el host
+puede dedicar más memoria a Ollama sin competir demasiado con los servicios de
+media; su tamaño no demuestra por sí solo mayor calidad. `qwen3.5:27b` no es la
+recomendación predeterminada para un NAS compartido: su paquete ronda 17 GB y
+la ejecución requiere memoria adicional.
+
+Las instalaciones existentes de Qwen 3 también pueden evaluarse. Como
+referencias, `qwen3:4b` ronda 2.5 GB y `qwen3:8b` ronda 5.2 GB. Son alternativas
+para usuarios que ya ejecutan Qwen 3, no un catálogo completo.
+
+**TranslateGemma** es una familia especializada de traducción multilingüe. Sus
+variantes `translategemma:4b`, `:12b` y `:27b` rondan 3.3 GB, 8.1 GB y 17 GB.
+Su contrato documentado suele orientarse a devolver texto traducido
+directamente, mientras MVForge requiere lotes JSON con IDs exactos y resultado
+estructurado. Es un candidato especializado prometedor, pero no el modelo
+predeterminado y todavía no está validado con MVForge. Esto no afirma una
+incompatibilidad absoluta; una prueba futura podría cambiar la recomendación.
+
+Los nombres, tags y tamaños cambian entre versiones de Ollama. Verifica el
+catálogo actual antes de instalar un modelo. Las cifras y capacidades citadas
+se basan en el catálogo oficial de Ollama y documentación del editor, no en
+benchmarks de la comunidad.
+
+### Memoria y carga del NAS
+
+El tamaño del paquete es sólo una parte de la memoria de ejecución. También
+influyen la arquitectura, cuantización, context/KV cache, offload a CPU/GPU,
+overhead de Ollama, solicitudes concurrentes, modelos cargados, MVForge,
+Docker, servicios multimedia y la caché del sistema. Un paquete de 3.4 GB no
+significa que requiera exactamente 4 GB de RAM.
+
+Esta es orientación no vinculante:
+
+- **Alrededor de 8 GB de RAM total**: no es un objetivo recomendado para
+  compartir MVForge y Ollama; puede quedar poco margen para Jellyfin, bases de
+  datos, Docker y otros servicios. No se clasifica como soportado o no
+  soportado de forma absoluta.
+- **Alrededor de 16 GB**: 4B es un punto de partida más sensato, pero no se
+  garantiza que 4B siempre quepa ni se afirma que 9B no pueda funcionar.
+- **Alrededor de 24–32 GB**: rango más práctico para evaluar 4B y posiblemente
+  9B, según la carga restante. Observa el consumo antes de usar traducción
+  durante otras cargas pesadas.
+- **Hosts mayores o dedicados**: 27B se maneja mejor en un host Ollama
+  dedicado o con margen sustancial; una cantidad concreta de RAM no garantiza
+  que un modelo cargue.
+
+Ollama puede ejecutarse en el NAS o en otro host de la LAN. Separarlo es una
+estrategia válida cuando el NAS también ejecuta Jellyfin/Plex/Emby,
+transcodificación, Immich, automatización de descargas u otros contenedores.
+MVForge usa un endpoint HTTP configurable.
+
+MVForge no requiere GPU. CPU-only está permitido, pero no significa que todo
+modelo sea suficientemente rápido: la latencia depende de CPU, modelo,
+cuantización, lote y carga del host. MVForge no selecciona GPU, administra VRAM,
+controla el offload de Ollama ni programa traducciones según GPU.
+
+MVForge usa lotes de cues acotados, no una solicitud por cue. Esto limita el
+número de solicitudes, pero no elimina el coste de memoria del modelo. Empieza
+con una sola carga de traducción, observa CPU y memoria y decide después si la
+concurrencia es razonable. Una ventana de contexto enorme tampoco es un
+requisito: MVForge envía lotes acotados.
+
+### Evaluar un candidato
+
+Prueba muestras representativas: inglés y japonés hacia `es-419` y `es-ES`,
+cues cortos y multilínea, nombres propios, diálogo informal, subtítulos
+forced/de signos y ASS con estructura protegida. Evalúa significado, español
+natural y regional, nombres/terminología, ausencia de texto de origen o
+comentarios añadidos y cumplimiento del JSON con IDs exactos. No se define una
+puntuación numérica ficticia ni un tiempo esperado.
+
+**Test Connection** sólo demuestra endpoint alcanzable, modelo existente y
+readiness del proveedor. Ejecuta una traducción real para comprobar calidad,
+formato y carga del host.
+
 ## Iniciar una traducción
 
 1. Abre **Asset Info** para el asset.

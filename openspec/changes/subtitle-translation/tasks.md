@@ -65,7 +65,7 @@
 
 - [x] 11.1 Add a user guide for subtitle translation and Ollama configuration, including provider enablement, Test Connection, supported V1 source/target languages, cancellation/retry, and translated artifact behavior.
 
-- [ ] 11.2 Document recommended local Ollama models and NAS sizing guidance, clearly separating recommendations from hard requirements and avoiding unverified performance claims.
+- [x] 11.2 Document recommended local Ollama models and NAS sizing guidance, clearly separating recommendations from hard requirements and avoiding unverified performance claims.
 
 - [ ] 11.3 Add Mermaid architecture diagrams for text SRT, protected ASS/SSA, and PGS/VobSub OCR -> canonical cues -> provider -> validation -> serialization -> atomic publication.
 
