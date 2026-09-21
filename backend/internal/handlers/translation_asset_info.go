@@ -231,7 +231,7 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": reason})
 		return
 	}
-	provider, err := translationProviderForSettings(settings)
+	provider, err := h.translationProviderForSettings(settings)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 		return
@@ -274,6 +274,13 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
 }
 
+func (h AssetHandler) translationProviderForSettings(settings translationSettings) (TranslationProvider, error) {
+	if h.translationProviderFactory != nil {
+		return h.translationProviderFactory(settings)
+	}
+	return translationProviderForSettings(settings)
+}
+
 func (h AssetHandler) runAssetInfoSubtitleTranslation(
 	ctx context.Context,
 	operationID, workspace string,
@@ -305,10 +312,15 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 			return errors.New("embedded bitmap subtitle stream is unavailable")
 		}
 		updateSubtitleTranslationProgress(operationID, "ocr", 0, 0, "Preparing canonical OCR subtitles")
+		ocrLanguage := request.RequestedSourceLanguage
+		if strings.TrimSpace(ocrLanguage) == "auto" {
+			ocrLanguage = ""
+		}
+		ocrLanguage = normalizedOCRLanguage(ocrLanguage, source.Language)
 		result, err := executeBitmapTranslation(ctx, bitmapTranslationExecutionRequest{
 			MediaPath:               mediaPath,
 			Stream:                  *stream,
-			RequestedLanguage:       request.RequestedSourceLanguage,
+			RequestedLanguage:       ocrLanguage,
 			SourceLanguageMetadata:  []string{source.Language},
 			OCRMode:                 "clean",
 			SourceIdentity:          request.SourceIdentity,
@@ -412,7 +424,11 @@ func readAssetInfoTranslationSource(ctx context.Context, workspace, mediaPath st
 	plan := MediaJobPlan{InputPath: mediaPath}
 	args := textSubtitleExtractionArgs(plan, *source.StreamIndex, source.Representation, outputPath)
 	if source.Representation == translationRepresentationASS || source.Representation == translationRepresentationSSA {
-		args = originalSubtitleExtractionArgs(plan, *source.StreamIndex, source.Representation, outputPath)
+		format, muxer, supported := originalSubtitleExtractionFormat(stream.CodecName)
+		if !supported || format != source.Representation {
+			return nil, fmt.Errorf("embedded subtitle codec %q does not support representation %q", stream.CodecName, source.Representation)
+		}
+		args = originalSubtitleExtractionArgs(plan, *source.StreamIndex, muxer, outputPath)
 	}
 	if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
 		return nil, fmt.Errorf("embedded subtitle extraction failed: %w", err)
@@ -649,7 +665,7 @@ func translationPublicationTargets(
 		metadata.Provenance = provenance
 		artifact := SubtitleArtifact{
 			ArtifactID:            subtitleTranslationArtifactID(SubtitleArtifact{ArtifactID: source.ArtifactID, StreamIndex: request.StreamIndex, Mode: "original", Format: source.Representation}, metadata),
-			Type:                  "subtitle",
+			Type:                  "subtitle_sidecar",
 			StreamIndex:           request.StreamIndex,
 			SourceCodec:           source.Codec,
 			SourceType:            source.Type,

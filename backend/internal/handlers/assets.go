@@ -30,8 +30,9 @@ import (
 )
 
 type AssetHandler struct {
-	db                      *gorm.DB
-	trackMaintenanceRuntime *trackMaintenanceRuntime
+	db                         *gorm.DB
+	trackMaintenanceRuntime    *trackMaintenanceRuntime
+	translationProviderFactory func(translationSettings) (TranslationProvider, error)
 }
 
 type SubtitleExtractionResult struct {

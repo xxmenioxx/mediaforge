@@ -150,7 +150,7 @@ func TestSubtitleTranslationMetadataRoundTripsAndLegacyArtifactsRemainReadable(t
 	metadata := identity.metadata()
 	translated := SubtitleArtifact{ArtifactID: "translated", Type: "subtitle_sidecar", Format: "srt", Translation: &metadata}
 	decoded := subtitleArtifactsFromJSON(subtitleArtifactsJSON([]SubtitleArtifact{translated}))
-	if len(decoded) != 1 || decoded[0].Translation == nil || *decoded[0].Translation != metadata {
+	if len(decoded) != 1 || decoded[0].Type != "subtitle_sidecar" || decoded[0].Translation == nil || *decoded[0].Translation != metadata {
 		t.Fatalf("translation metadata did not round-trip: %#v", decoded)
 	}
 
