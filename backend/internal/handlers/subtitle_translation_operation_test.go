@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -89,7 +90,7 @@ func TestSubtitleTranslationOperationLifecycleAndPolling(t *testing.T) {
 	if initial.ID != operationID || initial.Kind != subtitleTranslationOperationKind || initial.Status != "running" || initial.Phase != "preparing" {
 		t.Fatalf("unexpected translation operation creation: %#v", initial)
 	}
-	if initial.Progress < 0 || initial.Progress > 100 || initial.translationRequest == nil {
+	if initial.Progress < 0 || initial.Progress > 100 || initial.translationRequest == nil || initial.Translation == nil || !initial.Translation.Cancellable || initial.Translation.Retryable {
 		t.Fatalf("translation operation did not retain bounded request/progress: %#v", initial)
 	}
 
@@ -100,7 +101,7 @@ func TestSubtitleTranslationOperationLifecycleAndPolling(t *testing.T) {
 	}
 	close(release)
 	completed := waitForSubtitleTranslationOperation(t, operationID, "completed")
-	if completed.Phase != "completed" || completed.Progress != 100 || completed.Processed != 3 || completed.Total != 3 {
+	if completed.Phase != "completed" || completed.Progress != 100 || completed.Processed != 3 || completed.Total != 3 || completed.Translation == nil || completed.Translation.Cancellable || completed.Translation.Retryable {
 		t.Fatalf("unexpected completed translation operation: %#v", completed)
 	}
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
@@ -248,6 +249,51 @@ func TestSubtitleTranslationOperationRequestIsBounded(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(err), "secret") {
 		t.Fatal("bounded request validation exposed an unrelated secret")
+	}
+}
+
+func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		status       string
+		failureClass subtitleTranslationFailureClass
+		diagnostic   string
+	}{
+		{name: "unavailable", err: &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderUnavailable, diagnostic: "Translation provider is unavailable."},
+		{name: "timeout", err: &TranslationProviderError{Class: translationProviderErrorTimeout, Err: errors.New("PRIVATE_PROVIDER_RESPONSE_456")}, status: "error", failureClass: subtitleTranslationFailureProviderTimeout, diagnostic: "Translation provider request timed out."},
+		{name: "configuration", err: &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: errors.New("Authorization: Bearer SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderConfiguration, diagnostic: "Translation provider configuration is invalid."},
+		{name: "malformed", err: malformedTranslationResultError("provider response PRIVATE_PROVIDER_RESPONSE_456"), status: "error", failureClass: subtitleTranslationFailureMalformedResponse, diagnostic: "Translation provider returned a malformed response."},
+		{name: "stale source", err: staleTranslationSourceError("source changed at /private/source"), status: "error", failureClass: subtitleTranslationFailureStaleSource, diagnostic: "Subtitle source changed before publication."},
+		{name: "cancelled", err: context.Canceled, status: "cancelled", failureClass: subtitleTranslationFailureCancelled, diagnostic: "Subtitle translation cancelled."},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+			request := testSubtitleTranslationOperationRequest(filepath.Join(root, "movie.mkv"))
+			operationID, err := startSubtitleTranslationOperation(request, func(context.Context, string, string, subtitleTranslationOperationRequest) error {
+				return test.err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer deleteSubtitleTranslationOperation(operationID)
+			operation := waitForSubtitleTranslationOperation(t, operationID, test.status)
+			if operation.Translation == nil || operation.Translation.FailureClass != string(test.failureClass) || operation.Translation.Diagnostic != test.diagnostic || !operation.Translation.Retryable || operation.Translation.Cancellable {
+				t.Fatalf("unexpected translation view: %#v", operation.Translation)
+			}
+			encoded, err := json.Marshal(operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			serialized := string(encoded)
+			for _, secret := range []string{"SUPER_SECRET_TOKEN_123", "PRIVATE_PROVIDER_RESPONSE_456", "Authorization: Bearer", "/private/source"} {
+				if strings.Contains(serialized, secret) {
+					t.Fatalf("serialized operation leaked %q: %s", secret, serialized)
+				}
+			}
+		})
 	}
 }
 

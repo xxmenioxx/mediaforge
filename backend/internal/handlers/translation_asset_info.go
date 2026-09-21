@@ -269,7 +269,82 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 		return
 	}
 	subtitleExtractionOperations.RLock()
-	operation := *subtitleExtractionOperations.items[operationID]
+	operation := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[operationID])
+	subtitleExtractionOperations.RUnlock()
+	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
+}
+
+func (h AssetHandler) RetrySubtitleTranslation(c *gin.Context) {
+	operationID := strings.TrimSpace(c.Param("id"))
+	if operationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "operation id is required"})
+		return
+	}
+	oldRequest, err := subtitleTranslationRetryRequest(operationID)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+		return
+	}
+	settings := loadTranslationSettings(h.db)
+	available, reason := translationCapabilityAvailability(settings)
+	if !available {
+		c.JSON(http.StatusConflict, gin.H{"error": reason})
+		return
+	}
+	provider, err := h.translationProviderForSettings(settings)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+		return
+	}
+
+	mediaPath, source, stream, err := h.resolveTranslationExecutionSource(c.Request.Context(), oldRequest)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+		return
+	}
+	requestedLanguage, err := normalizeTranslationLanguage(oldRequest.RequestedSourceLanguage, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	requestedRepresentation, err := requestedTranslationOutput(source.Representation, oldRequest.RequestedRepresentation)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	sourceRevision, err := translationSourceRevisionForResolvedSource(source, stream)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "subtitle source revision is unavailable"})
+		return
+	}
+	freshRequest := oldRequest
+	freshRequest.AssetPath = mediaPath
+	freshRequest.SourceType = source.Type
+	freshRequest.Format = source.Representation
+	freshRequest.SourceIdentity = source.SourceIdentity
+	freshRequest.RequestedSourceLanguage = requestedLanguage
+	freshRequest.RequestedRepresentation = requestedRepresentation
+	freshRequest.Provider = settings.Provider
+	freshRequest.ProviderModel = settings.OllamaModel
+	freshRequest.SourceRevision = sourceRevision.key()
+	if source.StreamIndex != nil {
+		freshRequest.StreamIndex = *source.StreamIndex
+	}
+	if source.Type == "external" {
+		freshRequest.SourceReference = source.ExternalPath
+	} else if source.StreamIndex != nil {
+		freshRequest.SourceReference = strconv.Itoa(*source.StreamIndex)
+	}
+	runner := func(ctx context.Context, retryID, workspace string, request subtitleTranslationOperationRequest) error {
+		return h.runAssetInfoSubtitleTranslation(ctx, retryID, workspace, request, provider, settings)
+	}
+	newOperationID, err := retrySubtitleTranslationOperationWithRequest(operationID, freshRequest, runner)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+		return
+	}
+	subtitleExtractionOperations.RLock()
+	operation := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[newOperationID])
 	subtitleExtractionOperations.RUnlock()
 	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
 }
@@ -330,6 +405,12 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 			RequestedRepresentation: request.RequestedRepresentation,
 			Provider:                provider,
 			Settings:                settings,
+			OnProgress: func(processed, total int) {
+				updateSubtitleTranslationProgress(operationID, "ocr", processed, total, "Preparing canonical OCR subtitles")
+			},
+			OnBatch: func(processed, total int) {
+				updateSubtitleTranslationProgress(operationID, "translating", processed, total, "Translating subtitle batches")
+			},
 		})
 		if err != nil {
 			return err
@@ -366,7 +447,8 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 	if err != nil {
 		return err
 	}
-	_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+	updateSubtitleTranslationProgress(operationID, "publishing", -1, -1, "Publishing translated subtitles")
+	publishedArtifacts, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 		Ctx:            ctx,
 		OperationID:    operationID,
 		Workspace:      workspace,
@@ -376,6 +458,9 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 		},
 		Targets: targets,
 	})
+	if err == nil {
+		setSubtitleTranslationResult(operationID, publishedArtifacts)
+	}
 	return err
 }
 

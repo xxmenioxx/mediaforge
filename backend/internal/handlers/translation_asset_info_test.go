@@ -374,7 +374,10 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			startAssetInfoTranslationAndWait(t, handler, request)
+			operation := startAssetInfoTranslationAndWait(t, handler, request)
+			if operation.Result == nil || len(operation.Result.Artifacts) != 1 || len(operation.Result.Created) != 1 {
+				t.Fatalf("translation result did not expose the published artifact: %#v", operation.Result)
+			}
 			if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, beforeSource) {
 				t.Fatalf("source changed during translation: err=%v", err)
 			}
@@ -487,6 +490,9 @@ func TestAssetInfoTranslationEntryPointBitmapPGSAndVobSub(t *testing.T) {
 			if fixture.callsSnapshot() != 1 {
 				t.Fatalf("provider calls=%d, want one shared translation", fixture.callsSnapshot())
 			}
+			if operation.Result == nil || len(operation.Result.Artifacts) != testCase.wantOutputs {
+				t.Fatalf("bitmap translation result=%#v, want %d published artifacts", operation.Result, testCase.wantOutputs)
+			}
 			for _, path := range fixture.pathsSnapshot() {
 				if path != "/api/chat" {
 					t.Fatalf("bitmap translation performed readiness preflight: %v", fixture.pathsSnapshot())
@@ -548,7 +554,7 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' '123 !!!' > "$output"
 	if fixture.callsSnapshot() != 0 {
 		t.Fatalf("ambiguous Auto source invoked provider %d times", fixture.callsSnapshot())
 	}
-	if operation.Status != "error" || !strings.Contains(operation.Error, "ambiguous") {
+	if operation.Status != "error" || operation.Translation == nil || operation.Translation.FailureClass != string(subtitleTranslationFailureTranslationFailed) {
 		t.Fatalf("unexpected ambiguous Auto operation: %#v", operation)
 	}
 	if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, beforeSource) {

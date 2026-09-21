@@ -16,6 +16,32 @@ const (
 	maxSubtitleTranslationOperationError = 2048
 )
 
+type subtitleTranslationFailureClass string
+
+const (
+	subtitleTranslationFailureProviderConfiguration subtitleTranslationFailureClass = "provider_configuration"
+	subtitleTranslationFailureProviderUnavailable   subtitleTranslationFailureClass = "provider_unavailable"
+	subtitleTranslationFailureProviderTimeout       subtitleTranslationFailureClass = "provider_timeout"
+	subtitleTranslationFailureMalformedResponse     subtitleTranslationFailureClass = "malformed_response"
+	subtitleTranslationFailureStaleSource           subtitleTranslationFailureClass = "stale_source"
+	subtitleTranslationFailureCancelled             subtitleTranslationFailureClass = "cancelled"
+	subtitleTranslationFailureTranslationFailed     subtitleTranslationFailureClass = "translation_failed"
+)
+
+type subtitleTranslationOperationView struct {
+	Provider                string `json:"provider,omitempty"`
+	Model                   string `json:"model,omitempty"`
+	RequestedSourceLanguage string `json:"requestedSourceLanguage,omitempty"`
+	TargetLocale            string `json:"targetLocale,omitempty"`
+	OutputRepresentation    string `json:"outputRepresentation,omitempty"`
+	ContextMode             string `json:"contextMode,omitempty"`
+	ContextSource           string `json:"contextSource,omitempty"`
+	FailureClass            string `json:"failureClass,omitempty"`
+	Diagnostic              string `json:"diagnostic,omitempty"`
+	Retryable               bool   `json:"retryable"`
+	Cancellable             bool   `json:"cancellable"`
+}
+
 // subtitleTranslationOperationRequest is the bounded, secret-free execution
 // snapshot retained for a possible retry. It deliberately contains no cue
 // payloads, credentials, prompts, or provider responses.
@@ -114,6 +140,7 @@ func startSubtitleTranslationOperation(
 		Format:                 request.Format,
 		AssetPath:              request.AssetPath,
 		Message:                "Preparing subtitle translation",
+		Translation:            newSubtitleTranslationOperationView(request),
 		CreatedAt:              now,
 		UpdatedAt:              now,
 		translationRequest:     &requestSnapshot,
@@ -129,6 +156,83 @@ func startSubtitleTranslationOperation(
 		runSubtitleTranslationOperation(workCtx, operationID, workspace, requestSnapshot, runner)
 	}()
 	return operationID, nil
+}
+
+func newSubtitleTranslationOperationView(request subtitleTranslationOperationRequest) *subtitleTranslationOperationView {
+	return &subtitleTranslationOperationView{
+		Provider:                request.Provider,
+		Model:                   request.ProviderModel,
+		RequestedSourceLanguage: request.RequestedSourceLanguage,
+		TargetLocale:            request.TargetLocale,
+		OutputRepresentation:    request.RequestedRepresentation,
+		ContextMode:             request.ContextMode,
+		ContextSource:           request.ContextSource,
+		Cancellable:             true,
+	}
+}
+
+func cloneSubtitleExtractionOperationSnapshot(operation *subtitleExtractionOperation) subtitleExtractionOperation {
+	snapshot := *operation
+	if operation.Translation != nil {
+		translation := *operation.Translation
+		snapshot.Translation = &translation
+	}
+	if operation.Result != nil {
+		result := *operation.Result
+		result.Created = append([]string(nil), operation.Result.Created...)
+		result.Existing = append([]string(nil), operation.Result.Existing...)
+		result.Unsupported = append([]string(nil), operation.Result.Unsupported...)
+		result.Artifacts = append([]SubtitleArtifact(nil), operation.Result.Artifacts...)
+		snapshot.Result = &result
+	}
+	return snapshot
+}
+
+func subtitleTranslationFailureClassOf(err error) subtitleTranslationFailureClass {
+	if errors.Is(err, errTranslationSourceStale) {
+		return subtitleTranslationFailureStaleSource
+	}
+	if errors.Is(err, context.Canceled) {
+		return subtitleTranslationFailureCancelled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return subtitleTranslationFailureProviderTimeout
+	}
+	var providerErr *TranslationProviderError
+	if errors.As(err, &providerErr) && providerErr != nil {
+		switch providerErr.Class {
+		case translationProviderErrorConfiguration:
+			return subtitleTranslationFailureProviderConfiguration
+		case translationProviderErrorUnavailable:
+			return subtitleTranslationFailureProviderUnavailable
+		case translationProviderErrorTimeout:
+			return subtitleTranslationFailureProviderTimeout
+		case translationProviderErrorMalformed:
+			return subtitleTranslationFailureMalformedResponse
+		case translationProviderErrorCancelled:
+			return subtitleTranslationFailureCancelled
+		}
+	}
+	return subtitleTranslationFailureTranslationFailed
+}
+
+func subtitleTranslationDiagnostic(class subtitleTranslationFailureClass) string {
+	switch class {
+	case subtitleTranslationFailureProviderConfiguration:
+		return "Translation provider configuration is invalid."
+	case subtitleTranslationFailureProviderUnavailable:
+		return "Translation provider is unavailable."
+	case subtitleTranslationFailureProviderTimeout:
+		return "Translation provider request timed out."
+	case subtitleTranslationFailureMalformedResponse:
+		return "Translation provider returned a malformed response."
+	case subtitleTranslationFailureStaleSource:
+		return "Subtitle source changed before publication."
+	case subtitleTranslationFailureCancelled:
+		return "Subtitle translation cancelled."
+	default:
+		return "Subtitle translation failed."
+	}
 }
 
 func runSubtitleTranslationOperation(
@@ -149,7 +253,7 @@ func runSubtitleTranslationOperation(
 		if cleanupErr != nil {
 			message += "; cleanup diagnostic: " + boundedSubtitleTranslationError(cleanupErr)
 		}
-		setSubtitleTranslationTerminal(operationID, "completed", "completed", message, "")
+		setSubtitleTranslationTerminal(operationID, "completed", "completed", message, nil)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
@@ -166,7 +270,7 @@ func runSubtitleTranslationOperation(
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; cleanup diagnostic: %v", err, cleanupErr)
 		}
-		setSubtitleTranslationTerminal(operationID, "error", "error", "Subtitle translation failed", boundedSubtitleTranslationError(err))
+		setSubtitleTranslationTerminal(operationID, "error", "error", "Subtitle translation failed", err)
 		return
 	}
 
@@ -182,10 +286,10 @@ func runSubtitleTranslationOperation(
 		return
 	}
 	if cleanupErr != nil {
-		setSubtitleTranslationTerminal(operationID, "error", "error", "Subtitle translation failed", boundedSubtitleTranslationError(cleanupErr))
+		setSubtitleTranslationTerminal(operationID, "error", "error", "Subtitle translation failed", cleanupErr)
 		return
 	}
-	setSubtitleTranslationTerminal(operationID, "completed", "completed", "Subtitle translation completed", "")
+	setSubtitleTranslationTerminal(operationID, "completed", "completed", "Subtitle translation completed", nil)
 }
 
 func finishSubtitleTranslationOperation(
@@ -208,27 +312,63 @@ func finishSubtitleTranslationOperation(
 		}
 	}
 	if status == "cancelled" {
-		if err != nil && strings.TrimSpace(err.Error()) != context.Canceled.Error() {
-			message += "; diagnostic: " + boundedSubtitleTranslationError(err)
-		}
+		message = "Subtitle translation cancelled"
 		if cleanupErr != nil {
-			message += "; cleanup diagnostic: " + boundedSubtitleTranslationError(cleanupErr)
+			message += "; cleanup diagnostic unavailable"
 		}
-		setSubtitleTranslationTerminal(operationID, "cancelled", "cleanup", message, "")
+		setSubtitleTranslationTerminal(operationID, "cancelled", "cleanup", message, err)
 		return
 	}
-	setSubtitleTranslationTerminal(operationID, "error", "error", message, boundedSubtitleTranslationError(err))
+	setSubtitleTranslationTerminal(operationID, "error", "error", message, err)
 }
 
-func setSubtitleTranslationTerminal(operationID, status, phase, message, operationError string) {
+func setSubtitleTranslationTerminal(operationID, status, phase, message string, err error) {
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		operation.Status = status
 		operation.Phase = phase
 		operation.Message = message
-		operation.Error = operationError
+		failureClass := subtitleTranslationFailureClassOf(err)
+		if status == "cancelled" {
+			failureClass = subtitleTranslationFailureCancelled
+		}
+		if status == "completed" {
+			failureClass = ""
+		}
+		if operation.Translation == nil && operation.translationRequest != nil {
+			operation.Translation = newSubtitleTranslationOperationView(*operation.translationRequest)
+		}
+		if operation.Translation != nil {
+			operation.Translation.FailureClass = string(failureClass)
+			operation.Translation.Diagnostic = ""
+			operation.Translation.Retryable = status == "error" || status == "cancelled"
+			operation.Translation.Cancellable = false
+			if failureClass != "" {
+				operation.Translation.Diagnostic = subtitleTranslationDiagnostic(failureClass)
+			}
+		}
+		if status == "cancelled" || status == "completed" {
+			operation.Error = ""
+		} else if failureClass != "" {
+			operation.Error = subtitleTranslationDiagnostic(failureClass)
+		} else {
+			operation.Error = subtitleTranslationDiagnostic(subtitleTranslationFailureTranslationFailed)
+		}
 		if status == "completed" {
 			operation.Progress = 100
 		}
+	})
+}
+
+func setSubtitleTranslationResult(operationID string, artifacts []SubtitleArtifact) {
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		created := make([]string, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			if artifact.PublishedPath != "" {
+				created = append(created, artifact.PublishedPath)
+			}
+		}
+		copiedArtifacts := append([]SubtitleArtifact(nil), artifacts...)
+		operation.Result = &SubtitleExtractionResult{Created: created, Artifacts: copiedArtifacts}
 	})
 }
 
@@ -249,7 +389,17 @@ var subtitleTranslationPhaseRank = map[string]int{
 	"ocr":         1,
 	"translating": 2,
 	"validating":  3,
-	"cleanup":     4,
+	"publishing":  4,
+	"cleanup":     5,
+}
+
+var subtitleTranslationPhaseProgress = map[string][2]float64{
+	"preparing":   {1, 10},
+	"ocr":         {10, 40},
+	"translating": {40, 80},
+	"validating":  {85, 85},
+	"publishing":  {90, 90},
+	"cleanup":     {95, 95},
 }
 
 func updateSubtitleTranslationProgress(operationID, phase string, processed, total int, message string) {
@@ -265,31 +415,41 @@ func updateSubtitleTranslationProgress(operationID, phase string, processed, tot
 		if requestedRank < currentRank {
 			return
 		}
-		if processed >= 0 && processed > operation.Processed {
-			operation.Processed = processed
+		phaseChanged := requestedRank > currentRank
+		if phaseChanged && (processed >= 0 || total >= 0) {
+			operation.Processed = 0
+			operation.Total = 0
 		}
-		if total > operation.Total {
+		if processed >= 0 {
+			if phaseChanged || processed > operation.Processed {
+				operation.Processed = processed
+			}
+		}
+		if total >= 0 && (phaseChanged || total > operation.Total) {
 			operation.Total = total
 		}
 		if operation.Total > 0 && operation.Processed > operation.Total {
 			operation.Processed = operation.Total
 		}
-		progress := operation.Progress
+		bounds := subtitleTranslationPhaseProgress[phase]
+		progress := bounds[0]
 		if operation.Total > 0 {
-			candidate := float64(operation.Processed) / float64(operation.Total) * 100
-			if candidate > progress {
-				progress = candidate
-			}
+			ratio := float64(operation.Processed) / float64(operation.Total)
+			progress = bounds[0] + ratio*(bounds[1]-bounds[0])
 		}
 		if progress > 100 {
 			progress = 100
 		}
-		if progress >= operation.Progress {
-			operation.Progress = progress
+		if progress < operation.Progress {
+			progress = operation.Progress
 		}
+		operation.Progress = progress
 		operation.Phase = phase
 		if message != "" {
 			operation.Message = message
+		}
+		if operation.Translation != nil && operation.Status == "running" {
+			operation.Translation.Cancellable = !operation.publicationCommitted
 		}
 	})
 }
@@ -298,29 +458,48 @@ func updateSubtitleTranslationProgress(operationID, phase string, processed, tot
 // bounded request snapshot. Terminal state, progress, cancellation, and
 // workspace are never copied into the new operation.
 func retrySubtitleTranslationOperation(operationID string, runner subtitleTranslationRunner) (string, error) {
+	request, err := subtitleTranslationRetryRequest(operationID)
+	if err != nil {
+		return "", err
+	}
+	return startSubtitleTranslationOperation(request, runner)
+}
+
+func subtitleTranslationRetryRequest(operationID string) (subtitleTranslationOperationRequest, error) {
 	subtitleExtractionOperations.RLock()
 	operation, exists := subtitleExtractionOperations.items[operationID]
 	if !exists {
 		subtitleExtractionOperations.RUnlock()
-		return "", errors.New("subtitle translation operation not found")
+		return subtitleTranslationOperationRequest{}, errors.New("subtitle translation operation not found")
 	}
 	if operation.Kind != subtitleTranslationOperationKind {
 		subtitleExtractionOperations.RUnlock()
-		return "", errors.New("operation is not a subtitle translation")
+		return subtitleTranslationOperationRequest{}, errors.New("operation is not a subtitle translation")
 	}
 	if operation.Status == "running" {
 		subtitleExtractionOperations.RUnlock()
-		return "", errors.New("running subtitle translation cannot be retried")
+		return subtitleTranslationOperationRequest{}, errors.New("running subtitle translation cannot be retried")
 	}
 	if operation.Status != "error" && operation.Status != "cancelled" {
 		subtitleExtractionOperations.RUnlock()
-		return "", errors.New("only failed or cancelled subtitle translation can be retried")
+		return subtitleTranslationOperationRequest{}, errors.New("only failed or cancelled subtitle translation can be retried")
 	}
 	if operation.translationRequest == nil {
 		subtitleExtractionOperations.RUnlock()
-		return "", errors.New("subtitle translation retry request is unavailable")
+		return subtitleTranslationOperationRequest{}, errors.New("subtitle translation retry request is unavailable")
 	}
 	request := *operation.translationRequest
 	subtitleExtractionOperations.RUnlock()
+	return request, nil
+}
+
+func retrySubtitleTranslationOperationWithRequest(
+	operationID string,
+	request subtitleTranslationOperationRequest,
+	runner subtitleTranslationRunner,
+) (string, error) {
+	if _, err := subtitleTranslationRetryRequest(operationID); err != nil {
+		return "", err
+	}
 	return startSubtitleTranslationOperation(request, runner)
 }

@@ -94,6 +94,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/assets/subtitle-operations", assets.ListSubtitleExtractionOperations)
 		api.GET("/assets/subtitle-operations/:id", assets.GetSubtitleExtractionOperation)
 		api.POST("/assets/subtitle-operations/:id/cancel", assets.CancelSubtitleExtractionOperation)
+		api.POST("/assets/subtitle-operations/:id/retry", assets.RetrySubtitleTranslation)
 		api.GET("/assets/external-subtitles", assets.ExternalSubtitles)
 		api.GET("/assets/external-subtitles/content", assets.ExternalSubtitleContent)
 		api.PUT("/assets/external-subtitles", assets.UpdateExternalSubtitle)

@@ -95,17 +95,22 @@ func TestExecuteBitmapTranslationRunsProviderAfterCanonicalPreparationAndFansOut
 	}
 	cacheBitmapTranslationExecutionEvidence(t, mediaPath, stream, "eng", cues)
 	provider := &bitmapTranslationProviderSpy{}
+	var batchProgress [][2]int
 	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
 		SourceIdentity: "source", SourceRepresentation: "vobsub", LogicalTransformKey: "logical",
 		TargetLocale: "es-419", RequestedRepresentation: "both", Provider: provider,
 		Settings: bitmapTranslationExecutionTestSettings(),
+		OnBatch:  func(processed, total int) { batchProgress = append(batchProgress, [2]int{processed, total}) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if provider.calls != 2 || len(result.Outputs) != 2 {
 		t.Fatalf("provider calls=%d outputs=%v, want two bounded calls and SRT/ASS", provider.calls, result.Outputs)
+	}
+	if len(batchProgress) != 2 || batchProgress[0] != [2]int{1, 2} || batchProgress[1] != [2]int{2, 2} {
+		t.Fatalf("unexpected bitmap translation batch progress: %#v", batchProgress)
 	}
 	if !strings.Contains(string(result.Outputs[translationRepresentationSRT]), "Hola Hello") || strings.Contains(string(result.Outputs[translationRepresentationSRT]), "\\an") {
 		t.Fatalf("translated SRT=%q", result.Outputs[translationRepresentationSRT])

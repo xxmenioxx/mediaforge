@@ -27,6 +27,7 @@ type bitmapTranslationExecutionRequest struct {
 	Settings                translationSettings
 	TranslationContext      *TranslationContext
 	OnProgress              OCRProgressFunc
+	OnBatch                 func(processed, total int)
 }
 
 type bitmapTranslationExecutionResult struct {
@@ -136,6 +137,9 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 		}
 		translated = append(translated, validated...)
 		metrics = aggregateTranslationProviderMetrics(metrics, result.Metrics)
+		if request.OnBatch != nil {
+			request.OnBatch(index+1, len(batches))
+		}
 	}
 
 	outputs, err := serializeTranslatedBitmapCuesFromResult(source.Evidence.Cues, source.Envelopes, translated, request.RequestedRepresentation)

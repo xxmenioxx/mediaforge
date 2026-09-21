@@ -91,22 +91,23 @@ type previewGeneration struct {
 }
 
 type subtitleExtractionOperation struct {
-	ID                     string                    `json:"id"`
-	Status                 string                    `json:"status"`
-	Phase                  string                    `json:"phase"`
-	Progress               float64                   `json:"progress"`
-	Processed              int                       `json:"processed"`
-	Total                  int                       `json:"total"`
-	StreamIndex            int                       `json:"streamIndex"`
-	Format                 string                    `json:"format"`
-	AssetPath              string                    `json:"assetPath"`
-	Message                string                    `json:"message,omitempty"`
-	Result                 *SubtitleExtractionResult `json:"result,omitempty"`
-	Kind                   string                    `json:"kind,omitempty"`
-	QualityReport          *subtitleOCRQualityReport `json:"qualityReport,omitempty"`
-	Error                  string                    `json:"error,omitempty"`
-	CreatedAt              time.Time                 `json:"createdAt"`
-	UpdatedAt              time.Time                 `json:"updatedAt"`
+	ID                     string                            `json:"id"`
+	Status                 string                            `json:"status"`
+	Phase                  string                            `json:"phase"`
+	Progress               float64                           `json:"progress"`
+	Processed              int                               `json:"processed"`
+	Total                  int                               `json:"total"`
+	StreamIndex            int                               `json:"streamIndex"`
+	Format                 string                            `json:"format"`
+	AssetPath              string                            `json:"assetPath"`
+	Message                string                            `json:"message,omitempty"`
+	Result                 *SubtitleExtractionResult         `json:"result,omitempty"`
+	Kind                   string                            `json:"kind,omitempty"`
+	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
+	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
+	Error                  string                            `json:"error,omitempty"`
+	CreatedAt              time.Time                         `json:"createdAt"`
+	UpdatedAt              time.Time                         `json:"updatedAt"`
 	translationRequest     *subtitleTranslationOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
@@ -1100,7 +1101,7 @@ func (h *AssetHandler) ListSubtitleExtractionOperations(c *gin.Context) {
 			continue
 		}
 
-		snapshot := *operation
+		snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 		operations = append(operations, snapshot)
 	}
 
@@ -1130,7 +1131,7 @@ func (h *AssetHandler) GetSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
-	snapshot := *operation
+	snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 	subtitleExtractionOperations.RUnlock()
 
 	c.JSON(http.StatusOK, snapshot)

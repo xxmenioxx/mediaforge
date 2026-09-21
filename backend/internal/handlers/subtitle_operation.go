@@ -591,6 +591,9 @@ func markSubtitlePublicationCommitted(operationID string) {
 		return
 	}
 	operation.publicationCommitted = true
+	if operation.Translation != nil {
+		operation.Translation.Cancellable = false
+	}
 	if operation.publicationCommittedCh != nil {
 		close(operation.publicationCommittedCh)
 	}
@@ -633,7 +636,7 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 	if operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
 		operation.cancel()
 	}
-	snapshot := *operation
+	snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 	subtitleExtractionOperations.Unlock()
 
 	if snapshot.Status == "running" {
