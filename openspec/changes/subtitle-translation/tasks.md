@@ -69,6 +69,6 @@
 
 - [x] 11.3 Add Mermaid architecture diagrams for text SRT, protected ASS/SSA, and PGS/VobSub OCR -> canonical cues -> provider -> validation -> serialization -> atomic publication.
 
-- [ ] 11.4 Document the provider boundary/support matrix with Ollama marked as implemented V1 and OpenAI/DeepL/Google/Azure explicitly marked future / not implemented.
+- [x] 11.4 Document the provider boundary/support matrix with Ollama marked as implemented V1 and OpenAI/DeepL/Google/Azure explicitly marked future / not implemented.
 
 - [ ] 11.5 Link the subtitle translation user guide and architecture document from the repository documentation indexes.

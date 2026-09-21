@@ -201,6 +201,148 @@ exacto de cues, IDs, orden/ownership, ausencia de faltantes, duplicados o IDs
 inesperados y, cuando aplica, la estructura específica de ASS/SSA. El provider
 nunca posee timestamps finales ni paths de artifacts.
 
+## Frontera de provider y matriz de soporte
+
+La interfaz común de traducción es text-only y está versionada como
+`translation-provider-v1`:
+
+```go
+type TranslationProvider interface {
+    Translate(
+        context.Context,
+        TranslationBatch,
+    ) (TranslationBatchResult, error)
+}
+```
+
+El provider sólo recibe texto de subtítulos, idioma de origen, locale de
+destino, IDs de cues y contexto acotado cuando el caller lo suministra. Puede
+devolver texto traducido y métricas acotadas. MVForge conserva ownership y
+revisión de fuente, identidad/orden/timing de cues, estructura protegida
+ASS/SSA, geometría/layout, rol y disposición semánticos, identidad de
+artifact, validación, serialización, staging, publicación y lifecycle de
+cancelación.
+
+El resultado conceptual es:
+
+```text
+TranslationBatchResult
+  contract version
+  translated cues:
+    cue ID
+    translated text
+  optional provider metrics
+```
+
+Antes de aceptar el resultado, MVForge exige la versión de contrato, el
+conjunto exacto de IDs solicitados, un ID por cue, orden/ownership válido y
+ningún cue faltante, duplicado o inesperado. El texto del provider no es
+confiable hasta pasar esta validación.
+
+Las clases de error normalizadas por el adapter incluyen `configuration`,
+`unavailable`/`transport`, `timeout`, `malformed response` y `cancelled`.
+Representan categorías de MVForge y no prometen que todos los proveedores
+futuros expongan los mismos códigos de error de vendor.
+
+### Traducción y readiness son interfaces separadas
+
+La traducción normal llama a `TranslationProvider.Translate(...)`. La
+comprobación explícita usa la interfaz separada:
+
+```go
+type TranslationProviderReadinessChecker interface {
+    TestConnection(context.Context) TranslationProviderReadiness
+}
+```
+
+El lifecycle autorizado es:
+
+```text
+configure
+  → Test Connection explícito
+  → Enable explícito
+  → requests normales de traducción
+```
+
+La traducción normal no llama automáticamente a `Test Connection` antes de
+cada request. Una caída posterior al enablement se reporta como error normal
+del provider, no como un loop de preflight.
+
+`translationProviderForSettings(...)` es el seam actual de selección del
+adapter y `translationProviderReadinessCheckerForSettings(...)` el seam de
+readiness. Ambos construyen actualmente sólo el adapter de Ollama; no existe
+plugin discovery dinámico.
+
+| Provider | Translation adapter | Readiness adapter | Configurable en V1 | Estado |
+| --- | --- | --- | --- | --- |
+| Ollama | Sí | Sí | Sí | Implementado V1 |
+| OpenAI | No | No | No | Futuro / no implementado |
+| DeepL | No | No | No | Futuro / no implementado |
+| Google | No | No | No | Futuro / no implementado |
+| Azure | No | No | No | Futuro / no implementado |
+
+La configuración persistida acepta `provider = ollama` o ausencia de provider.
+`translationSettingsFromValue(...)` no acepta OpenAI, DeepL, Google o Azure
+como providers V1 utilizables. Los identificadores `openai`, `deepl`, `google`
+y `azure` son boundaries futuros explícitos: los seams devuelven
+`translation provider \"<name>\" is not implemented`.
+
+### Ollama V1
+
+`ollamaTranslationProvider` usa:
+
+```text
+POST <configured-endpoint>/api/chat
+```
+
+con `model`, `messages`, `stream = false` y `format = json`. La comprobación de
+readiness/modelo usa:
+
+```text
+POST <configured-endpoint>/api/show
+```
+
+El endpoint y el modelo son explícitos; MVForge no infiere localhost. URLs con
+credenciales embebidas se rechazan. Ollama V1 no implementa bearer tokens,
+API keys ni configuración de credenciales para otros proveedores.
+
+La compatibilidad requiere más que soporte de idiomas: el modelo debe seguir
+la instrucción de MVForge y producir JSON con IDs exactos y texto traducido,
+sin comentarios o estructura de subtítulo inventada. Ser multilingüe,
+especializado en traducción o estar instalado en Ollama no garantiza ese
+resultado.
+
+Los estados backend-authoritative de readiness son `disabled`,
+`not_configured`, `untested`, `ready`, `unavailable`, `model_not_found` e
+`invalid_configuration`. `Ready` no significa `Enabled`: Test Connection puede
+dejar el provider ready mientras la traducción continúa deshabilitada. Enable
+vuelve a comprobar la configuración actual y sólo habilita tras una comprobación
+exitosa. Cambiar provider, endpoint o modelo invalida readiness y enablement;
+readiness no es una garantía permanente de salud.
+
+Los adapters futuros, si se implementan, deberán satisfacer el mismo límite:
+implementar `TranslationProvider`, traducir sólo texto propiedad del provider,
+conservar IDs exactos, devolver resultados estructurados, respetar cancelación,
+mapear fallos a las categorías comunes y respetar requests acotados. Su
+readiness se integraría mediante `TranslationProviderReadinessChecker` y el
+enablement seguiría siendo backend-authoritative. No se prescribe aquí ningún
+endpoint, credential format, pricing, rate limit, batching o streaming para
+esos providers.
+
+Las métricas comunes pueden registrar provider, modelo, cantidad de requests,
+tokens de entrada/salida y latencia cuando el adapter las suministra. Son
+datos informativos de auditoría; ningún provider está obligado a exponer
+conteos de tokens y MVForge no calcula costos aquí.
+
+MVForge V1 no hace fallback de Ollama a otro provider, no selecciona otro
+provider automáticamente, no reintenta contra un segundo provider y no enruta
+por idioma del subtítulo. Retry crea otra operación usando la configuración
+persistida actual, pero no cambia de provider.
+
+La configuración del provider tampoco agrega política de traducción a Queue,
+Track Profiles, Profile Lab o Workers. La frontera de provider sólo se alcanza
+desde la operación explícita de traducción de Asset Info.
+
 ## Publicación común
 
 ```mermaid
