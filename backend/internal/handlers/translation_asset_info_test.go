@@ -127,6 +127,72 @@ func TestExecuteTextTranslationSRTUsesExactCueContract(t *testing.T) {
 	}
 }
 
+func TestExecuteTextTranslationAutoAmbiguityStopsBeforeProvider(t *testing.T) {
+	provider := &assetInfoTranslationProviderStub{}
+	provider.fn = provider.resultFor
+	settings := defaultTranslationSettings()
+	source := subtitleTranslationSourceResponse{
+		Type:           "external",
+		SourceIdentity: "external:/media/movie.und.srt:revision",
+		SourceRevision: "revision",
+		Representation: "srt",
+		ExternalPath:   "/media/movie.und.srt",
+		Codec:          "srt",
+		Language:       "und",
+	}
+
+	result, err := executeTextTranslation(context.Background(), source, []byte("1\n00:00:01,000 --> 00:00:02,000\n123 !!!\n\n"), subtitleTranslationOperationRequest{
+		RequestedSourceLanguage: "auto",
+		TargetLocale:            "es-419",
+		RequestedRepresentation: "srt",
+		SourceIdentity:          source.SourceIdentity,
+	}, provider, settings, nil, nil)
+	if err == nil {
+		t.Fatal("expected ambiguous Auto source language to fail closed")
+	}
+	if provider.calls != 0 {
+		t.Fatalf("ambiguous Auto source invoked provider %d times", provider.calls)
+	}
+	if result.Outputs != nil {
+		t.Fatalf("ambiguous Auto source returned translated outputs: %#v", result.Outputs)
+	}
+}
+
+func TestExecuteTextTranslationJapaneseSourceUsesCanonicalLanguage(t *testing.T) {
+	provider := &assetInfoTranslationProviderStub{}
+	var observed TranslationBatch
+	provider.fn = func(batch TranslationBatch) TranslationBatchResult {
+		observed = batch
+		return provider.resultFor(batch)
+	}
+	settings := defaultTranslationSettings()
+	source := subtitleTranslationSourceResponse{
+		Type:           "external",
+		SourceIdentity: "external:/media/movie.jpn.srt:revision",
+		SourceRevision: "revision",
+		Representation: "srt",
+		ExternalPath:   "/media/movie.jpn.srt",
+		Codec:          "srt",
+		Language:       "jpn",
+	}
+
+	result, err := executeTextTranslation(context.Background(), source, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n"), subtitleTranslationOperationRequest{
+		RequestedSourceLanguage: "ja",
+		TargetLocale:            "es-419",
+		RequestedRepresentation: "srt",
+		SourceIdentity:          source.SourceIdentity,
+	}, provider, settings, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 || observed.SourceLanguage != "ja" || observed.TargetLocale != "es-419" {
+		t.Fatalf("provider batch=%#v calls=%d, want Japanese es-419 batch and one call", observed, provider.calls)
+	}
+	if !strings.Contains(string(result.Outputs["srt"]), "Hola") {
+		t.Fatalf("Japanese source did not produce translated SRT: %q", result.Outputs["srt"])
+	}
+}
+
 func TestExecuteTextTranslationASSAndSSAKeepProtectedStructure(t *testing.T) {
 	fixtures := []struct {
 		name, representation, format string
@@ -368,17 +434,18 @@ func startAssetInfoTranslationAndWait(t *testing.T, handler AssetHandler, body s
 
 func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 	for _, testCase := range []struct {
-		name, extension, locale, expected string
+		name, extension, language, sourceLanguage, locale, expected string
 	}{
-		{name: "SRT", extension: "srt", locale: "es-419", expected: "Hola"},
-		{name: "ASS", extension: "ass", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}"},
+		{name: "English SRT", extension: "srt", language: "eng", sourceLanguage: "en", locale: "es-419", expected: "Hola"},
+		{name: "Japanese SRT", extension: "srt", language: "jpn", sourceLanguage: "ja", locale: "es-419", expected: "Hola"},
+		{name: "English ASS", extension: "ass", language: "eng", sourceLanguage: "en", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 			mediaPath := filepath.Join(root, "episode.mkv")
 			writeTestFile(t, mediaPath, "media fixture")
-			sourcePath := filepath.Join(root, "episode.eng."+testCase.extension)
+			sourcePath := filepath.Join(root, "episode."+testCase.language+"."+testCase.extension)
 			content := "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n"
 			if testCase.extension == "ass" {
 				content = "[Script Info]\nTitle: Fixture\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,1,2,0,2,10,10,10,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Hello{\\pos(10,20)}\n"
@@ -390,7 +457,7 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 				t.Fatal(err)
 			}
 			handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
-			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":%q,"outputRepresentation":%q}`, mediaPath, sourcePath, testCase.locale, testCase.extension)
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":%q,"targetLocale":%q,"outputRepresentation":%q}`, mediaPath, sourcePath, testCase.sourceLanguage, testCase.locale, testCase.extension)
 			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
 			if capabilityStatus != http.StatusOK {
 				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
