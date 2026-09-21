@@ -93,6 +93,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const payload = await response.clone().json();
       if (payload && typeof payload.error === 'string' && payload.error.trim()) {
         message = payload.error;
+      } else if (payload && typeof payload.reason === 'string' && payload.reason.trim()) {
+        message = payload.reason;
       }
     } catch {
       const text = await response.text().catch(() => '');

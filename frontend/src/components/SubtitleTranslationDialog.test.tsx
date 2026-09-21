@@ -166,6 +166,18 @@ describe('SubtitleTranslationDialog', () => {
     ]);
   });
 
+  it('uses a sole backend-authorized SSA output without showing a format selector', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({ outputRepresentations: ['ssa'] }));
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', false));
+    expect(screen.queryByRole('combobox', { name: 'Output format' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0].outputRepresentation).toBe('ssa');
+  });
+
   it('renders exactly the backend-provided multiple output representations', async () => {
     const user = userEvent.setup();
     vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
@@ -179,6 +191,8 @@ describe('SubtitleTranslationDialog', () => {
     expect(await screen.findByRole('option', { name: 'SRT' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'ASS' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'BOTH' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'SSA' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'SUP' })).toBeNull();
     expect(screen.getByText('Media context: available · configured metadata')).toBeTruthy();
   });
 
@@ -345,4 +359,219 @@ describe('SubtitleTranslationDialog', () => {
     expect(api.retrySubtitleTranslation).toHaveBeenCalledTimes(1);
     expect(api.subtitleOperation).toHaveBeenCalledWith('translation-2');
   });
+
+  it('renders only the backend-provided source languages', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({ sourceLanguages: ['auto', 'ja'] }));
+    renderDialog();
+
+    const sourceLanguage = await screen.findByRole('combobox', { name: 'Source language' });
+    await user.click(sourceLanguage);
+
+    expect(await screen.findByRole('option', { name: 'Auto' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Japanese' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'English' })).toBeNull();
+  });
+
+  it('keeps es-419 and es-ES distinct in the start request', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(await screen.findByRole('combobox', { name: 'Target locale' }));
+    await user.click(screen.getByRole('option', { name: 'Spanish (Spain)' }));
+    await user.click(screen.getByRole('button', { name: 'Start translation' }));
+
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0].targetLocale).toBe('es-ES');
+  });
+
+  it('presents the configured provider and model without making them operation inputs', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
+      provider: { name: 'ollama', model: 'qwen2.5', modelSelectable: true },
+    }));
+    renderDialog();
+
+    expect(await screen.findByText('Provider: Ollama · Model: qwen2.5')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).not.toHaveProperty('provider');
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).not.toHaveProperty('model');
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).not.toHaveProperty('endpoint');
+  });
+
+  it('hides the model when the backend says it is not selectable', async () => {
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
+      provider: { name: 'ollama', model: 'qwen2.5', modelSelectable: false },
+    }));
+    renderDialog();
+
+    expect(await screen.findByText('Provider: Ollama')).toBeTruthy();
+    expect(screen.queryByText(/qwen2\.5/)).toBeNull();
+  });
+
+  it('does not render an empty configured model', async () => {
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
+      provider: { name: 'ollama', model: '', modelSelectable: true },
+    }));
+    renderDialog();
+
+    expect(await screen.findByText('Provider: Ollama')).toBeTruthy();
+    expect(screen.queryByText(/Model:/)).toBeNull();
+  });
+
+  it('shows missing media context informationally without blocking translation', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
+      context: { status: 'unavailable', source: 'none' },
+    }));
+    renderDialog();
+
+    expect(await screen.findByText('Media context: unavailable · none')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', false);
+    await user.click(screen.getByRole('button', { name: 'Start translation' }));
+    expect(api.startSubtitleTranslation).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Start and does not invent an output when the backend returns none', async () => {
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({ outputRepresentations: [] }));
+    renderDialog();
+
+    expect(await screen.findByText('No valid translation output is available for this subtitle.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('combobox', { name: 'Output format' })).toBeNull();
+    expect(api.startSubtitleTranslation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'Translation provider is not configured.',
+    'Translation provider configuration must be tested.',
+    'Translation provider is unavailable.',
+    'Configured translation model is unavailable.',
+    'Translation provider configuration is invalid.',
+    'Subtitle translation is disabled.',
+  ])('surfaces the backend-authoritative unavailable reason: %s', async (reason) => {
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({ available: false, reason }));
+    renderDialog();
+
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', true);
+    expect(api.startSubtitleTranslation).not.toHaveBeenCalled();
+  });
+
+  it('trusts refreshed capability availability after readiness is invalidated', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const first = capability({ available: true });
+    const invalidated = capability({ available: false, reason: 'Translation provider configuration must be tested.' });
+    vi.mocked(api.subtitleTranslationCapability)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(invalidated);
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <SubtitleTranslationDialog open path="/media/episode.mkv" source={source} onClose={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', false));
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <SubtitleTranslationDialog open={false} path="/media/episode.mkv" source={source} onClose={() => undefined} />
+      </QueryClientProvider>,
+    );
+    await queryClient.invalidateQueries({ queryKey: ['subtitleTranslationCapability'] });
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <SubtitleTranslationDialog open path="/media/episode.mkv" source={source} onClose={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('Translation provider configuration must be tested.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', true);
+    expect(api.subtitleTranslationCapability).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps Auto unchanged when the backend reports ambiguous source language', async () => {
+    const user = userEvent.setup();
+    const diagnostic = 'Select English or Japanese explicitly because source language could not be determined.';
+    const failed = operation({
+      status: 'error',
+      phase: 'error',
+      error: 'SUPER_SECRET_TOKEN_123 PRIVATE_PROVIDER_RESPONSE_456 http://private-nas:11434',
+      translation: { failureClass: 'translation_failed', diagnostic, retryable: true, cancellable: false },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failed });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(failed);
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).toEqual(expect.objectContaining({ sourceLanguage: 'auto' }));
+    expect(await screen.findByText(`translation_failed: ${diagnostic}`)).toBeTruthy();
+    expect(screen.queryByText(/SUPER_SECRET_TOKEN_123|PRIVATE_PROVIDER_RESPONSE_456|private-nas:11434/)).toBeNull();
+  });
+
+  it('renders locale-distinct translation artifacts and filters non-translation artifacts', async () => {
+    const user = userEvent.setup();
+    const result = {
+      created: [],
+      existing: [],
+      unsupported: [],
+      artifacts: [
+        { artifactId: 'es-419-srt', type: 'subtitle_sidecar' as const, streamIndex: -1, sourceCodec: 'srt', sourceType: 'text', format: 'srt' as const, mode: 'translation', publishedPath: '/media/episode.es-419.srt', stagedPath: '', sizeBytes: 10, status: 'published', translation: { targetLocale: 'es-419' } as never },
+        { artifactId: 'es-es-ass', type: 'subtitle_sidecar' as const, streamIndex: -1, sourceCodec: 'ass', sourceType: 'text', format: 'ass' as const, mode: 'translation', publishedPath: '/media/episode.es-ES.ass', stagedPath: '', sizeBytes: 10, status: 'published', translation: { targetLocale: 'es-ES' } as never },
+        { artifactId: 'original', type: 'subtitle_sidecar' as const, streamIndex: 4, sourceCodec: 'ass', sourceType: 'embedded', format: 'ass' as const, mode: 'original', publishedPath: '/media/episode.ass', stagedPath: '', sizeBytes: 10, status: 'published' },
+      ],
+    };
+    const completed = operation({ status: 'completed', phase: 'completed', progress: 100, result });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: completed });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(completed);
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText('ES-419')).toBeTruthy();
+    expect(screen.getByText('ES-ES')).toBeTruthy();
+    expect(screen.getByText('/media/episode.es-419.srt')).toBeTruthy();
+    expect(screen.getByText('/media/episode.es-ES.ass')).toBeTruthy();
+    expect(screen.queryByText('/media/episode.ass')).toBeNull();
+  });
+
+  it('honors backend cancellable and retryable flags instead of deriving controls from status', async () => {
+    const user = userEvent.setup();
+    const terminal = operation({
+      status: 'error',
+      phase: 'error',
+      translation: { failureClass: 'translation_failed', diagnostic: 'Translation failed.', retryable: false, cancellable: false },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: terminal });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(terminal);
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText('translation_failed: Translation failed.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel translation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry translation' })).toBeNull();
+  });
+
+  it.each([
+    { status: 'error' as const, phase: 'error' as const, message: 'translation_failed: Translation failed.' },
+    { status: 'cancelled' as const, phase: 'cancelled' as const, message: 'Translation cancelled.' },
+  ])('stops polling after terminal $status', async ({ status, phase, message }) => {
+    const user = userEvent.setup();
+    const terminal = operation({
+      status,
+      phase,
+      translation: { failureClass: status === 'error' ? 'translation_failed' : undefined, diagnostic: status === 'error' ? 'Translation failed.' : undefined, retryable: false, cancellable: false },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: terminal });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(terminal);
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText(message)).toBeTruthy();
+    await waitFor(() => expect(api.subtitleOperation).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(api.subtitleOperation).toHaveBeenCalledTimes(1);
+  }, 5000);
 });
