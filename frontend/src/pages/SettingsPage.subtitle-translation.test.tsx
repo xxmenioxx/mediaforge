@@ -17,12 +17,12 @@ function renderCard(value = subtitleTranslationSettingsValue(undefined), onSave 
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <SubtitleTranslationSettingsCard value={value} saving={false} onSave={onSave} />
     </QueryClientProvider>,
   );
-  return { queryClient, onSave };
+  return { queryClient, onSave, view };
 }
 
 function configuredValue(overrides: Record<string, unknown> = {}) {
@@ -159,6 +159,74 @@ describe('SubtitleTranslationSettingsCard', () => {
       value: expect.objectContaining({ enabled: true }),
     }));
     expect(await screen.findByText('Enabled: Yes')).toBeTruthy();
+  });
+
+  it('refreshes settings after a failed Enable and renders the persisted unavailable state', async () => {
+    const user = userEvent.setup();
+    const { queryClient, view } = renderCard(configuredValue({ readiness: 'ready', enabled: false }));
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(api.enableSubtitleTranslation).mockRejectedValue(new Error('Request failed with 409'));
+
+    await user.click(screen.getByRole('button', { name: 'Enable translation' }));
+    await waitFor(() => expect(api.enableSubtitleTranslation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings'] }));
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <SubtitleTranslationSettingsCard
+          value={configuredValue({
+            enabled: false,
+            readiness: 'unavailable',
+            readinessDiagnostic: 'Translation provider is unavailable.',
+            readinessCheckedAt: '2026-09-21T00:15:00Z',
+          })}
+          saving={false}
+          onSave={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Enabled: No')).toBeTruthy();
+      expect(screen.getByText('Readiness: Unavailable')).toBeTruthy();
+      expect(screen.getByText('Translation provider is unavailable.')).toBeTruthy();
+      expect(screen.getByText(/Last checked:/)).toBeTruthy();
+    });
+    expect(screen.queryByText('Readiness: Ready')).toBeNull();
+  });
+
+  it('refreshes settings after a failed Test Connection and renders refreshed diagnostics', async () => {
+    const user = userEvent.setup();
+    const { queryClient, view } = renderCard(configuredValue({ readiness: 'untested', enabled: false }));
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    vi.mocked(api.testSubtitleTranslationConnection).mockRejectedValue(new Error('Request failed with 503'));
+
+    await user.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await waitFor(() => expect(api.testSubtitleTranslationConnection).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings'] }));
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <SubtitleTranslationSettingsCard
+          value={configuredValue({
+            enabled: false,
+            readiness: 'model_not_found',
+            readinessDiagnostic: 'Configured translation model is unavailable.',
+            readinessCheckedAt: '2026-09-21T00:16:00Z',
+          })}
+          saving={false}
+          onSave={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Enabled: No')).toBeTruthy();
+      expect(screen.getByText('Readiness: Model not found')).toBeTruthy();
+      expect(screen.getByText('Configured translation model is unavailable.')).toBeTruthy();
+      expect(screen.getByText(/Last checked:/)).toBeTruthy();
+    });
+    expect(screen.queryByText('Readiness: Untested')).toBeNull();
   });
 
   it('disables without testing or enabling and preserves configuration policy', async () => {

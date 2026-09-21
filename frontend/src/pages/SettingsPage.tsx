@@ -2045,11 +2045,17 @@ export function SubtitleTranslationSettingsCard({
       setReadinessOverride(result);
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
   });
   const enable = useMutation({
     mutationFn: api.enableSubtitleTranslation,
     onSuccess: async (result) => {
       setReadinessOverride(result);
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
