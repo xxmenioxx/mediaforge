@@ -442,3 +442,117 @@ cancelación o fallo. No forma parte de ese ownership incidental:
 - `backend/internal/handlers/translation_revision.go`
 - `backend/internal/handlers/translation_ollama.go`
 - `backend/internal/handlers/subtitle_operation.go`
+
+
+## Follow-up: media context as optional enrichment
+
+The current V1 implementation does **not** enrich Asset Info translation with
+media metadata. It reports media context as unavailable/none. Follow-up work
+(#107 and #108) will add this without changing translation eligibility.
+
+The design rule is:
+
+```text
+media metadata available
+  → use bounded media context + neighboring cues
+
+media metadata unavailable / ambiguous / stale
+  → continue translation with neighboring cues only
+```
+
+Media context is a translation quality enhancement. It is never a requirement
+for SRT/ASS/SSA/PGS/VobSub translation.
+
+This is important for RAW-first installations, where an asset may not yet be
+known to Jellyfin/Plex and may not have adjacent metadata files:
+
+```text
+RAW
+  → no NFO
+  → no Jellyfin/Plex item
+  → no confirmed external provider match
+  → translation remains available
+```
+
+MVForge must also support Library-first installations where assets already live
+in a media-server Library. The metadata resolver must work in either workflow;
+the product must not remove RAW merely to make metadata lookup easier.
+
+### Canonical metadata sources
+
+Follow-up #107 owns a canonical MediaMetadata resolver. Translation must consume
+that canonical result and must not call Jellyfin, Plex or TMDB directly.
+
+Planned sources include:
+
+```text
+Local NFO
+Jellyfin API
+Plex API
+TMDB
+future providers
+```
+
+Local NFO is a first-class source. Jellyfin can read/write NFO metadata for
+movies, shows, seasons and episodes. Common Jellyfin-compatible names include
+`movie.nfo`, `tvshow.nfo`, `season.nfo` and an episode's
+`<filename>.nfo`. NFO metadata can also carry provider IDs such as TMDB, TVDB
+and IMDb.
+
+### Matching and ambiguity
+
+Metadata must never be silently guessed from title similarity alone.
+
+The canonical metadata resolver should expose bounded states such as:
+
+```text
+resolved
+needs_confirmation
+ambiguous
+not_found
+unavailable
+stale
+```
+
+Stable evidence such as an external provider ID, exact adjacent NFO, explicit
+canonical link or exact series/season/episode identity may resolve
+automatically.
+
+Search-based or conflicting candidates require explicit confirmation. The
+Translate dialog should not implement its own matcher. It should reuse the
+canonical candidate picker from #107.
+
+A compact interaction is preferred:
+
+```text
+Media context (optional)
+
+✓ Samurai Champloo · S01E01
+  Local NFO
+  [ Change ]
+```
+
+or, when unresolved:
+
+```text
+Media context (optional)
+
+3 possible matches
+[ Choose ]   [ Translate without context ]
+```
+
+The user must always be able to continue without media context.
+
+Once the user selects a match, that selection belongs to canonical Asset/media
+identity and provenance so Advisor, reports and future operations can reuse it.
+
+### TMDB credentials
+
+A direct TMDB integration is opt-in and requires application credentials
+created by the user. When implemented, Settings must support the authentication
+form chosen by the adapter (TMDB v3 API key or API Read Access Token/Bearer
+token) and must keep credentials out of logs, reports, profile snapshots and
+translation prompts.
+
+Translation receives only bounded canonical media fields; it never receives
+TMDB/Jellyfin/Plex credentials or raw provider payloads.
