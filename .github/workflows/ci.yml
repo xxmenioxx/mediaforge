@@ -9,6 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify licensing and release guardrails
+        run: ./scripts/verify-compliance.sh
+
   backend:
     runs-on: ubuntu-latest
     defaults:

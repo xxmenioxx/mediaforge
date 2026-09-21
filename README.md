@@ -228,6 +228,14 @@ Empieza por el [índice de documentación](docs/README.md):
 
 MVForge está en desarrollo activo. La versión `0.1.x` debe tratarse como un piloto controlado: conserva backups, procesa primero copias o archivos descartables y revisa manualmente los resultados antes de automatizar la publicación de una colección completa.
 
-## Licencia
+## Licencia y uso responsable
 
-El repositorio aún debe declarar explícitamente su archivo de licencia antes de una distribución pública estable.
+El código propio de MVForge se distribuye bajo la [Apache License 2.0](LICENSE).
+
+Los componentes de terceros mantienen sus licencias originales. Consulta
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) para el inventario y los
+notices de redistribución, y [LEGAL.md](LEGAL.md) para los límites de uso y
+alcance del proyecto.
+
+Los releases públicos permanecen sujetos al gate de compliance definido por
+el proyecto.
