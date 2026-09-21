@@ -185,3 +185,71 @@ git diff -U2 -- path/to/file
 
 Completion reports should contain only validation scope/check count,
 noteworthy warnings, and material limitations unless more detail is requested.
+<<<<<<< Updated upstream
+=======
+
+## Mandatory task completion: commit and push
+
+Unless the user explicitly says `do not commit`, `do not push`, or the task is
+review/investigation-only, every implementation or documentation task that
+modifies repository files MUST finish by committing and pushing its own changes.
+
+This is the default completion behavior and does not need to be repeated in the
+task prompt.
+
+After the requested scope and required validations pass:
+
+1. Update only the completed OpenSpec task checkbox(es), when applicable.
+2. Stage only files belonging to the current task.
+3. Create one scoped commit using:
+   `<type>(<scope>): <imperative description>`
+4. Push the current feature branch to `origin`.
+5. Report commit SHA, commit message, branch, validation result, and remaining tasks.
+
+Do not stop after tests or reporting while there are valid uncommitted changes
+from the completed task.
+
+Never:
+- commit or push directly to `main`;
+- commit when required validation is failing;
+- stage unrelated user changes;
+- force push;
+- amend/rewrite commits unless explicitly requested;
+- create a PR or merge automatically unless explicitly requested.
+
+If the current branch is `main`, stop and report the branch problem.
+
+### GitHub restriction clarification
+
+Normal Git transport to the configured repository remote is allowed and required
+by this workflow.
+
+Instructions such as `do not use GitHub` mean:
+
+- do not use GitHub web UI for repository investigation;
+- do not use GitHub APIs or GitHub connectors for repository investigation;
+- do not create or modify Issues, PRs, Releases, or repository settings unless
+  explicitly requested.
+
+They do NOT prohibit normal Git commands against the configured remote,
+including:
+
+- `git fetch`
+- `git pull`
+- `git push origin <current-branch>`
+
+Resolve the current branch with `git branch --show-current`, confirm it is not
+`main`, then push that branch explicitly with:
+
+`git push origin <current-branch>`
+
+Verify `origin/<current-branch>` contains the new commit.
+
+When a task modifies repository files and validation passes, the required push
+must still be performed.
+
+A task is not complete while its task commit exists only locally.
+
+If `git push origin HEAD` fails, keep the local commit intact and report the
+exact failure. Never force push.
+>>>>>>> Stashed changes
