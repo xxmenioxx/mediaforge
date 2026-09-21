@@ -409,6 +409,24 @@ func TestBuildScanResultCreatesCanonicalAttachmentInventory(t *testing.T) {
 	}
 }
 
+func TestBuildScanResultExposesBackendColorPolicyPresentation(t *testing.T) {
+	probe := FFProbeResult{Streams: []FFProbeStream{
+		{Index: 0, CodecType: "video", CodecName: "h264", ColorSpace: "bt709", ColorTransfer: "bt709", ColorPrimaries: "bt709", ColorRange: "tv"},
+	}}
+	result := buildScanResult("/media/raw/movie.mkv", 100, probe, models.JSONMap{"streams": models.JSONList{}})
+
+	if got := workerStringValue(result.ColorPolicy["status"]); got != "complete" {
+		t.Fatalf("expected complete backend color policy, got %#v", result.ColorPolicy)
+	}
+
+	probe.Streams[0].ColorTransfer = ""
+	result = buildScanResult("/media/raw/movie.mkv", 100, probe, models.JSONMap{"streams": models.JSONList{}})
+	if got := workerStringValue(result.ColorPolicy["action"]); got != "review" {
+		t.Fatalf("expected review action for incomplete metadata, got %#v", result.ColorPolicy)
+	}
+	assertContains(t, workerStringValue(result.ColorPolicy["reason"]), "Transfer characteristics are missing.")
+}
+
 func TestBuildScanResultSerializesKnownEmptyAttachmentInventoryAsArray(t *testing.T) {
 	result := buildScanResult("/media/raw/movie.mkv", 100, FFProbeResult{Streams: []FFProbeStream{}}, models.JSONMap{"streams": models.JSONList{}})
 	if result.AttachmentStreams == nil || len(result.AttachmentStreams) != 0 {

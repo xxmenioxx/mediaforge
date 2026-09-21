@@ -1335,6 +1335,13 @@ export type MediaStreamInfo = {
   bitDepth?: number;
 };
 
+export type ColorPolicyPresentation = {
+  status?: 'complete' | 'incomplete_unsupported' | string;
+  action?: 'none' | 'review' | string;
+  reason?: string;
+  warning?: string;
+};
+
 export type AttachmentStreamInfo = {
   index: number;
   type: 'attachment';
@@ -1379,6 +1386,7 @@ export type ScanResult = {
   width: number;
   height: number;
   hdr: boolean;
+  colorPolicy?: ColorPolicyPresentation;
   audioTracks: number;
   subtitleTracks: number;
   chapters: number;
@@ -1825,6 +1833,8 @@ export type EffectiveVideoDecision = {
   hevcTier?: string;
   hevcLevelWarning?: string;
   effectiveFinalColorPolicy?: string;
+  colorPolicyDecision?: string;
+  colorPolicyWarning?: string;
   upscale?: ResolvedUpscaleDecision;
   restoration?: ResolvedRestorationPlan;
 };

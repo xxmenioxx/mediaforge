@@ -1768,6 +1768,61 @@ func TestFinalColorPolicyDoesNotNormalizeHDRWithoutToneMapping(t *testing.T) {
 	assertContains(t, shellJoin(videoColorMetadataArgs(effective)), "-color_trc smpte2084")
 }
 
+func TestColorPolicyPresentationReportsCompleteBT709Metadata(t *testing.T) {
+	presentation := colorPolicyPresentationForSource(MediaStream{
+		ColorSpace: "bt709", ColorTransfer: "bt709", ColorPrimaries: "bt709", ColorRange: "tv",
+	})
+
+	if got := presentation["status"]; got != "complete" {
+		t.Fatalf("expected complete color metadata, got %#v", presentation)
+	}
+	if got := presentation["action"]; got != "none" {
+		t.Fatalf("complete metadata should not require review: %#v", presentation)
+	}
+}
+
+func TestColorPolicyPresentationReportsMissingTransferAndReview(t *testing.T) {
+	presentation := colorPolicyPresentationForSource(MediaStream{
+		ColorSpace: "bt709", ColorPrimaries: "bt709", ColorRange: "tv",
+	})
+
+	if got := presentation["status"]; got != "incomplete_unsupported" {
+		t.Fatalf("expected incomplete metadata, got %#v", presentation)
+	}
+	if got := presentation["action"]; got != "review" {
+		t.Fatalf("expected review action, got %#v", presentation)
+	}
+	assertContains(t, workerStringValue(presentation["reason"]), "Transfer characteristics are missing.")
+	assertContains(t, workerStringValue(presentation["warning"]), "Automatic color normalization was not applied.")
+}
+
+func TestColorPolicyPresentationReportsUnsupportedMatrixAndPrimaries(t *testing.T) {
+	presentation := colorPolicyPresentationForSource(MediaStream{
+		ColorSpace: "unknown-matrix", ColorTransfer: "bt709", ColorPrimaries: "unknown-primaries", ColorRange: "tv",
+	})
+
+	assertContains(t, workerStringValue(presentation["reason"]), `Matrix value "unknown-matrix" is unsupported.`)
+	assertContains(t, workerStringValue(presentation["reason"]), `Primaries value "unknown-primaries" is unsupported.`)
+}
+
+func TestFinalColorPolicySkipsNormalizationForIncompleteMetadata(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"finalColorPolicy": "normalize_bt709"}}
+	source := MediaStream{ColorSpace: "bt709", ColorPrimaries: "bt709", ColorRange: "tv"}
+	effective := profileWithFinalColorPolicy(profile, source, "libx265")
+
+	if got := workerStringValue(effective.WorkerConfig["effectiveFinalColorPolicy"]); got != "preserve" {
+		t.Fatalf("incomplete metadata must resolve to preserve, got %q", got)
+	}
+	if filter := workerStringValue(effective.WorkerConfig["videoFilters"]); strings.Contains(filter, "colorspace=") {
+		t.Fatalf("incomplete metadata must not normalize pixels: %q", filter)
+	}
+	assertContains(t, workerStringValue(effective.WorkerConfig["colorPolicyDecision"]), "normalization was skipped")
+	assertContains(t, workerStringValue(effective.WorkerConfig["colorPolicyWarning"]), "Transfer characteristics are missing.")
+	decision := effectiveVideoDecision(effective)
+	assertContains(t, workerStringValue(decision["colorPolicyDecision"]), "normalization was skipped")
+	assertContains(t, workerStringValue(decision["colorPolicyWarning"]), "Automatic color normalization was not applied.")
+}
+
 func TestFFmpegCommandBuilderAddsProfileAudioAndSubtitleCompatibility(t *testing.T) {
 	plan := MediaJobPlan{
 		InputPath:      "/media/raw/episode.mkv",
