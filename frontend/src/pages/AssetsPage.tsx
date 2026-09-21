@@ -4665,7 +4665,7 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
-                  {onTranslate ? <Button size="small" variant="outlined" disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
+                  {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate subtitle stream ${stream.index}`} disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
                   {originalStyledFormat ? (
                     <Button
                       size="small"
@@ -4872,7 +4872,7 @@ export function ExternalSubtitleList({
               </Stack>
               <Stack direction="row" spacing={0.5}>
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
-                {onTranslate ? <Button size="small" variant="outlined" disabled={translationDisabled} onClick={() => onTranslate(subtitle)}>Translate...</Button> : null}
+                {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate ${subtitle.fileName}`} disabled={translationDisabled} onClick={() => onTranslate(subtitle)}>Translate...</Button> : null}
                 <Tooltip title="Rename subtitle file">
                   <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
                 </Tooltip>
