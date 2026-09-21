@@ -63,7 +63,7 @@
 
 ## 11. Documentation
 
-- [ ] 11.1 Add a user guide for subtitle translation and Ollama configuration, including provider enablement, Test Connection, supported V1 source/target languages, cancellation/retry, and translated artifact behavior.
+- [x] 11.1 Add a user guide for subtitle translation and Ollama configuration, including provider enablement, Test Connection, supported V1 source/target languages, cancellation/retry, and translated artifact behavior.
 
 - [ ] 11.2 Document recommended local Ollama models and NAS sizing guidance, clearly separating recommendations from hard requirements and avoiding unverified performance claims.
 
