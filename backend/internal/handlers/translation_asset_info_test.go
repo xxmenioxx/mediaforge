@@ -877,22 +877,50 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' '123 !!!' > "$output"
 
 func TestTranslationPublicationTargetsUseCanonicalArtifactType(t *testing.T) {
 	request := subtitleTranslationOperationRequest{
-		SourceIdentity:          "external:/media/episode.eng.srt:revision",
-		SourceRevision:          "revision",
+		SourceIdentity:          "external:/media/episode.eng.forced.ass:revision-forced",
+		SourceRevision:          "revision-forced",
 		RequestedSourceLanguage: "en",
 		TargetLocale:            "es-419",
-		RequestedRepresentation: "srt",
+		RequestedRepresentation: "ass",
 		Provider:                translationProviderOllama,
 		ProviderModel:           "fixture-model",
 		ContextMode:             "none",
 		ContextSource:           "none",
 	}
-	source := subtitleTranslationSourceResponse{Type: "external", SourceIdentity: request.SourceIdentity, Representation: "srt", Codec: "srt", ArtifactID: "external-subtitle:fixture"}
-	targets, err := translationPublicationTargets(request, source, "en", TranslationProviderMetrics{}, "operation", map[string][]byte{"srt": []byte("fixture")}, filepath.Join(t.TempDir(), "episode.mkv"))
+	source := subtitleTranslationSourceResponse{
+		Type:            "external",
+		SourceIdentity:  request.SourceIdentity,
+		Representation:  "ass",
+		Codec:           "ass",
+		ArtifactID:      "external-subtitle:forced",
+		Title:           "Forced SDH",
+		Default:         true,
+		SourceForced:    true,
+		EffectiveForced: true,
+		Role:            SubtitleRoleSDH,
+		RoleProvenance:  "classifier",
+		RoleConfidence:  "high",
+		RoleClassifier:  "classifier-v1",
+	}
+	targets, err := translationPublicationTargets(request, source, "en", TranslationProviderMetrics{}, "operation", map[string][]byte{"ass": []byte("fixture")}, filepath.Join(t.TempDir(), "episode.mkv"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 1 || targets[0].Artifact.Type != "subtitle_sidecar" {
-		t.Fatalf("translation artifact type=%q, want subtitle_sidecar", targets[0].Artifact.Type)
+	if len(targets) != 1 {
+		t.Fatalf("translation targets=%d, want 1", len(targets))
+	}
+	target := targets[0]
+	artifact := target.Artifact
+	if artifact.Type != "subtitle_sidecar" || artifact.Mode != "translation" || artifact.Language != "es-419" || artifact.Format != "ass" {
+		t.Fatalf("translation artifact identity=%#v", artifact)
+	}
+	if artifact.Default != source.Default || artifact.Forced != source.EffectiveForced || artifact.SourceForced != source.SourceForced || artifact.Role != source.Role || artifact.RoleProvenance != source.RoleProvenance || artifact.RoleConfidence != source.RoleConfidence || artifact.RoleClassifierVersion != source.RoleClassifier || artifact.Title != source.Title {
+		t.Fatalf("translation artifact lost source metadata: %#v", artifact)
+	}
+	if artifact.Translation == nil || artifact.Translation.SourceArtifactIdentity != source.SourceIdentity || artifact.Translation.SourceRevision != request.SourceRevision || artifact.Translation.SourceRepresentation != source.Representation || artifact.Translation.OutputRepresentation != "ass" {
+		t.Fatalf("translation metadata is not bound to exact source: %#v", artifact.Translation)
+	}
+	if !strings.HasSuffix(target.FinalPath, ".es-419.forced.sdh.ass") {
+		t.Fatalf("translated path=%q, want locale/forced/sdh naming", target.FinalPath)
 	}
 }

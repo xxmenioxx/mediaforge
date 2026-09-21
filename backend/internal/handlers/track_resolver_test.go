@@ -250,7 +250,17 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	translationSettings := defaultTranslationSettings()
+	translationSettings.Provider = translationProviderOllama
+	translationSettings.OllamaEndpoint = "http://ollama.example"
+	translationSettings.OllamaModel = "translation-model"
+	translationSettings.Enabled = true
+	translationSettings.Readiness = translationReadinessReady
+	translationSettings.ReadinessIdentity = translationProviderConfigurationIdentity(translationSettings)
+	if err := saveTranslationSettings(db, translationSettings); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&scan).Error; err != nil {
@@ -261,6 +271,15 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 		t.Fatalf("lab plan=%#v err=%v", labOverride.ResolvedTrackPlan, err)
 	}
 	compare("Profile Lab", labOverride.ResolvedTrackPlan.SidecarOutputs[0], profileDecision)
+	for name, decision := range map[string]ResolvedTrackSidecar{
+		"Asset Info":  assetDecision,
+		"Profile":     profileDecision,
+		"Profile Lab": labOverride.ResolvedTrackPlan.SidecarOutputs[0],
+	} {
+		if decision.Mode == "translation" {
+			t.Fatalf("%s unexpectedly created a translation sidecar: %#v", name, decision)
+		}
+	}
 }
 
 func TestInteractiveSubtitleEntryPointsUsePersistedASSFallback(t *testing.T) {
@@ -745,6 +764,16 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	if err := db.Create(&setting).Error; err != nil {
 		t.Fatal(err)
 	}
+	translationSettings := defaultTranslationSettings()
+	translationSettings.Provider = translationProviderOllama
+	translationSettings.OllamaEndpoint = "http://ollama.example"
+	translationSettings.OllamaModel = "translation-model"
+	translationSettings.Enabled = true
+	translationSettings.Readiness = translationReadinessReady
+	translationSettings.ReadinessIdentity = translationProviderConfigurationIdentity(translationSettings)
+	if err := saveTranslationSettings(db, translationSettings); err != nil {
+		t.Fatal(err)
+	}
 	job := models.QueueJob{MediaPath: path, TrackProfileKey: "tracks"}
 	if err := NewQueueHandler(db).captureSupplementalProfiles(&job); err != nil {
 		t.Fatal(err)
@@ -752,6 +781,11 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
 	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || frozen.SubtitleStreams[0].Role != SubtitleRoleFull || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
 		t.Fatalf("canonical plan was not frozen: %#v", job.TrackProfileSnapshot)
+	}
+	for _, sidecar := range frozen.SidecarOutputs {
+		if sidecar.Mode == "translation" {
+			t.Fatalf("Queue unexpectedly created a translation sidecar: %#v", sidecar)
+		}
 	}
 	setting.Value["profiles"] = models.JSONList{models.JSONMap{"key": "tracks", "scope": "path", "subtitleDisposition": "remove", "subtitleSidecarFormats": models.JSONList{"original"}, "attachmentPolicy": "remove", "fontAttachmentExportPolicy": "none", "chapterPolicy": "remove"}}
 	if err := db.Save(&setting).Error; err != nil {
@@ -764,6 +798,11 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	override := currentConversionOverrideForJob(job, nil)
 	if override.ResolvedTrackPlan == nil || override.ResolvedTrackPlan.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || len(override.ResolvedTrackPlan.SidecarOutputs) != 2 {
 		t.Fatalf("worker did not restore frozen track plan: %#v", override)
+	}
+	for _, sidecar := range override.ResolvedTrackPlan.SidecarOutputs {
+		if sidecar.Mode == "translation" {
+			t.Fatalf("worker unexpectedly restored a translation sidecar: %#v", sidecar)
+		}
 	}
 }
 
