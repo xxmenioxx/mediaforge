@@ -185,8 +185,6 @@ git diff -U2 -- path/to/file
 
 Completion reports should contain only validation scope/check count,
 noteworthy warnings, and material limitations unless more detail is requested.
-<<<<<<< Updated upstream
-=======
 
 ## Mandatory task completion: commit and push
 
@@ -252,4 +250,3 @@ A task is not complete while its task commit exists only locally.
 
 If `git push origin HEAD` fails, keep the local commit intact and report the
 exact failure. Never force push.
->>>>>>> Stashed changes
