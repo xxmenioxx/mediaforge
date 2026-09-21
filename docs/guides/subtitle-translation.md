@@ -313,10 +313,11 @@ estado actual del proveedor.
 
 ## Datos enviados y privacidad
 
-El texto de los cues se envía al proveedor Ollama configurado. Cuando está
-disponible, también puede enviarse contexto multimedia opcional y acotado para
-ayudar a la traducción. El endpoint y el modelo del proveedor se persisten en
-MVForge.
+El texto de los cues se envía al proveedor Ollama configurado.
+
+En la V1 actual, **Asset Info** no añade contexto multimedia opcional a la
+traducción: el backend reporta ese contexto como `unavailable`/`none`. El
+endpoint y el modelo del proveedor se persisten en MVForge.
 
 La procedencia y la auditoría conservan metadata acotada de la operación, pero
 no retienen intencionalmente prompts completos, respuestas completas del
