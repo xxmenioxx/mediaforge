@@ -303,7 +303,9 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 		if err := request.CommitMetadata(publishedArtifacts); err != nil {
 			rollback()
 			if request.RollbackMetadata != nil {
-				_ = request.RollbackMetadata(publishedArtifacts)
+				if rollbackErr := request.RollbackMetadata(publishedArtifacts); rollbackErr != nil {
+					return nil, fmt.Errorf("cannot commit translated artifact metadata: %w; metadata rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
+				}
 			}
 			return nil, fmt.Errorf("cannot commit translated artifact metadata: %w", err)
 		}
