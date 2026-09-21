@@ -371,6 +371,38 @@ export type SubtitleTranslationCapability = {
   };
 };
 
+export type SubtitleTranslationReadinessState =
+  | 'disabled'
+  | 'not_configured'
+  | 'untested'
+  | 'ready'
+  | 'unavailable'
+  | 'model_not_found'
+  | 'invalid_configuration';
+
+export type SubtitleTranslationReadiness = {
+  configured: boolean;
+  enabled: boolean;
+  readiness: SubtitleTranslationReadinessState;
+  lastCheckedAt?: string;
+  diagnostic?: string;
+};
+
+export type SubtitleTranslationSettingsValue = {
+  provider: string;
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  maxCuesPerRequest: number;
+  maxRequestBytes: number;
+  maxContextCues: number;
+  maxContextChars: number;
+  enabled: boolean;
+  readiness: SubtitleTranslationReadinessState;
+  readinessConfigIdentity?: string;
+  readinessCheckedAt?: string;
+  readinessDiagnostic?: string;
+};
+
 export type SubtitleTranslationCapabilityInput = {
   path: string;
   source: SubtitleTranslationSourceSelector;

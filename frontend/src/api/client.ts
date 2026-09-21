@@ -61,6 +61,7 @@ import type {
   SubtitleExtractionResult,
   SubtitleTranslationCapability,
   SubtitleTranslationCapabilityInput,
+  SubtitleTranslationReadiness,
   StartSubtitleTranslationInput,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
@@ -295,6 +296,16 @@ export const api = {
     request<SubtitleTranslationCapability>('/api/assets/subtitle-translation/capability', {
       method: 'POST',
       body: JSON.stringify(input),
+    }),
+
+  testSubtitleTranslationConnection: () =>
+    request<SubtitleTranslationReadiness>('/api/settings/subtitle-translation/test-connection', {
+      method: 'POST',
+    }),
+
+  enableSubtitleTranslation: () =>
+    request<SubtitleTranslationReadiness>('/api/settings/subtitle-translation/enable', {
+      method: 'POST',
     }),
 
   startSubtitleTranslation: (input: StartSubtitleTranslationInput) =>
