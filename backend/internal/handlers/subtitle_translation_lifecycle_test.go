@@ -323,16 +323,20 @@ func TestSubtitleTranslationCancelBetweenMembersRollsBackLifecycle(t *testing.T)
 	assertNoMediaAdjacentTranslationArtifacts(t, root)
 }
 
-func TestSubtitleTranslationCompletionWinsCancellationAfterMetadataCommit(t *testing.T) {
+func TestSubtitleTranslationCancellationDuringMetadataCommitRollsBack(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	sourcePath, revision := writeTranslationLifecycleSource(t, root)
 	request := testSubtitleTranslationOperationRequest(sourcePath)
 	request.SourceRevision = revision.key()
 	finalPath := filepath.Join(root, "translated.srt")
-	metadataCommitted := make(chan struct{})
+	old := []byte("1\n00:00:01,000 --> 00:00:02,000\nOld translation\n")
+	if err := os.WriteFile(finalPath, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadataEntered := make(chan struct{})
+	metadataRollback := make(chan struct{})
 	cancelDone := make(chan *httptest.ResponseRecorder, 1)
-	operationID := ""
 	runner := func(ctx context.Context, operationIDValue, workspace string, _ subtitleTranslationOperationRequest) error {
 		target := subtitleTranslationPublicationTarget{Format: translationRepresentationSRT, FinalPath: finalPath, Artifact: translationPublicationArtifact(t, sourcePath, revision, translationRepresentationSRT)}
 		staged, err := stageSubtitleTranslationOutputs(workspace, map[string][]byte{translationRepresentationSRT: []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n")}, []subtitleTranslationPublicationTarget{target})
@@ -342,7 +346,7 @@ func TestSubtitleTranslationCompletionWinsCancellationAfterMetadataCommit(t *tes
 		_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 			Ctx: ctx, OperationID: operationIDValue, Workspace: workspace, SourceRevision: revision, Targets: staged,
 			CommitMetadata: func([]SubtitleArtifact) error {
-				close(metadataCommitted)
+				close(metadataEntered)
 				go func() {
 					response := httptest.NewRecorder()
 					subtitleTranslationCancelRouter().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/subtitle-operations/"+operationIDValue+"/cancel", nil))
@@ -351,29 +355,147 @@ func TestSubtitleTranslationCompletionWinsCancellationAfterMetadataCommit(t *tes
 				<-ctx.Done()
 				return nil
 			},
+			RollbackMetadata: func([]SubtitleArtifact) error {
+				close(metadataRollback)
+				return nil
+			},
 		})
 		return err
 	}
 
-	var err error
-	operationID, err = startSubtitleTranslationOperation(request, runner)
+	operationID, err := startSubtitleTranslationOperation(request, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer deleteSubtitleTranslationOperation(operationID)
-	<-metadataCommitted
+	<-metadataEntered
+	cancelled := waitForSubtitleTranslationOperation(t, operationID, "cancelled")
+	response := <-cancelDone
+	if response.Code != http.StatusAccepted && response.Code != http.StatusOK {
+		t.Fatalf("metadata-commit cancel returned status=%d body=%s", response.Code, response.Body.String())
+	}
+	<-metadataRollback
+	if cancelled.Status != "cancelled" || cancelled.publicationCommitted {
+		t.Fatalf("cancellation during metadata commit crossed publication barrier: %#v", cancelled)
+	}
+	if got, err := os.ReadFile(finalPath); err != nil || string(got) != string(old) {
+		t.Fatalf("metadata-commit cancellation did not restore old translation: %q (%v)", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ocr-cache")); err != nil {
+		t.Fatalf("expected internal workspace root to remain usable: %v", err)
+	}
+	assertNoMediaAdjacentTranslationArtifacts(t, root)
+}
+
+func TestSubtitleTranslationCompletionWinsCancellationAfterCommitMarker(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	sourcePath, revision := writeTranslationLifecycleSource(t, root)
+	request := testSubtitleTranslationOperationRequest(sourcePath)
+	request.SourceRevision = revision.key()
+	finalPath := filepath.Join(root, "translated.srt")
+	cancelDone := make(chan *httptest.ResponseRecorder, 1)
+	runner := func(ctx context.Context, operationIDValue, workspace string, _ subtitleTranslationOperationRequest) error {
+		target := subtitleTranslationPublicationTarget{Format: translationRepresentationSRT, FinalPath: finalPath, Artifact: translationPublicationArtifact(t, sourcePath, revision, translationRepresentationSRT)}
+		staged, err := stageSubtitleTranslationOutputs(workspace, map[string][]byte{translationRepresentationSRT: []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n")}, []subtitleTranslationPublicationTarget{target})
+		if err != nil {
+			return err
+		}
+		_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{Ctx: ctx, OperationID: operationIDValue, Workspace: workspace, SourceRevision: revision, Targets: staged})
+		return err
+	}
+
+	operationID, err := startSubtitleTranslationOperation(request, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(operationID)
+	subtitleExtractionOperations.RLock()
+	publicationCommittedCh := subtitleExtractionOperations.items[operationID].publicationCommittedCh
+	subtitleExtractionOperations.RUnlock()
+	<-publicationCommittedCh
+	go func() {
+		response := httptest.NewRecorder()
+		subtitleTranslationCancelRouter().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/subtitle-operations/"+operationID+"/cancel", nil))
+		cancelDone <- response
+	}()
 	completed := waitForSubtitleTranslationOperation(t, operationID, "completed")
 	response := <-cancelDone
 	if response.Code != http.StatusAccepted && response.Code != http.StatusOK {
-		t.Fatalf("late cancel returned status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("post-marker cancel returned status=%d body=%s", response.Code, response.Body.String())
 	}
 	if completed.Status != "completed" || completed.Progress != 100 || !completed.publicationCommitted {
-		t.Fatalf("completion did not win after metadata commit: %#v", completed)
+		t.Fatalf("completion did not win after publication marker: %#v", completed)
 	}
 	if got, err := os.ReadFile(finalPath); err != nil || !strings.Contains(string(got), "Hola") {
-		t.Fatalf("committed translation was rolled back after late cancellation: %q (%v)", got, err)
+		t.Fatalf("committed translation was rolled back after post-marker cancellation: %q (%v)", got, err)
 	}
 	assertNoMediaAdjacentTranslationArtifacts(t, root)
+}
+
+func TestSubtitleTranslationCancellationMetadataRollbackFailurePreservesDiagnostic(t *testing.T) {
+	sourcePath, revision, workspace, targets := stageExternalTranslationFixture(t, translationRepresentationSRT)
+	old := []byte("1\n00:00:01,000 --> 00:00:02,000\nOld translation\n")
+	if err := os.WriteFile(targets[0].FinalPath, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	operationID := translationPublicationOperationID(t)
+	registerSubtitleTranslationPublicationOperation(t, operationID)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+		Ctx: ctx, OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
+		CommitMetadata: func([]SubtitleArtifact) error {
+			cancel()
+			return nil
+		},
+		RollbackMetadata: func([]SubtitleArtifact) error { return errors.New("metadata rollback unavailable") },
+	})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "metadata rollback diagnostic") {
+		t.Fatalf("cancellation or metadata rollback diagnostic was lost: %v", err)
+	}
+	if snapshotSubtitleOperation(operationID).publicationCommitted {
+		t.Fatal("metadata rollback failure marked publication committed")
+	}
+	if got, readErr := os.ReadFile(targets[0].FinalPath); readErr != nil || string(got) != string(old) {
+		t.Fatalf("metadata rollback failure did not restore old translation: %q (%v)", got, readErr)
+	}
+	if source, readErr := os.ReadFile(sourcePath); readErr != nil || !strings.Contains(string(source), "Hello") {
+		t.Fatalf("metadata rollback failure changed source: %q (%v)", source, readErr)
+	}
+}
+
+func TestSubtitleTranslationCancellationDuringMetadataCommitRemovesNewOutput(t *testing.T) {
+	sourcePath, revision, workspace, targets := stageExternalTranslationFixture(t, translationRepresentationSRT)
+	operationID := translationPublicationOperationID(t)
+	registerSubtitleTranslationPublicationOperation(t, operationID)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	metadataRollback := make(chan struct{})
+	_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+		Ctx: ctx, OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
+		CommitMetadata: func([]SubtitleArtifact) error {
+			cancel()
+			return nil
+		},
+		RollbackMetadata: func([]SubtitleArtifact) error {
+			close(metadataRollback)
+			return nil
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("new-output metadata cancellation lost context cancellation: %v", err)
+	}
+	<-metadataRollback
+	if _, statErr := os.Stat(targets[0].FinalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("cancelled new-output publication left a final sidecar: %v", statErr)
+	}
+	if snapshotSubtitleOperation(operationID).publicationCommitted {
+		t.Fatal("cancelled new-output publication was marked committed")
+	}
+	if source, readErr := os.ReadFile(sourcePath); readErr != nil || !strings.Contains(string(source), "Hello") {
+		t.Fatalf("cancelled new-output publication changed source: %q (%v)", source, readErr)
+	}
 }
 
 func TestSubtitleTranslationFailurePreservesSharedOCREvidence(t *testing.T) {

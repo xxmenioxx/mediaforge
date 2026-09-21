@@ -149,12 +149,12 @@ func runSubtitleTranslationOperation(
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
-		finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", nil)
+		finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", err)
 		return
 	}
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
-			finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", nil)
+			finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", err)
 			return
 		}
 		updateSubtitleTranslationProgress(operationID, "cleanup", -1, -1, "Cleaning up subtitle translation")
@@ -204,6 +204,9 @@ func finishSubtitleTranslationOperation(
 		}
 	}
 	if status == "cancelled" {
+		if err != nil && strings.TrimSpace(err.Error()) != context.Canceled.Error() {
+			message += "; diagnostic: " + boundedSubtitleTranslationError(err)
+		}
 		if cleanupErr != nil {
 			message += "; cleanup diagnostic: " + boundedSubtitleTranslationError(cleanupErr)
 		}

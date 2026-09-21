@@ -364,14 +364,16 @@ func TestPublishSubtitleTranslationCancellationRollsBackAndCommittedRunWins(t *t
 		defer cancel()
 		operationID := translationPublicationOperationID(t)
 		registerSubtitleTranslationPublicationOperation(t, operationID)
-		_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
-			Ctx: ctx, OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
-			CommitMetadata: func([]SubtitleArtifact) error {
-				cancel()
-				return nil
-			},
-		})
-		if err != nil || !snapshotSubtitleOperation(operationID).publicationCommitted {
+		publicationDone := make(chan error, 1)
+		go func() {
+			_, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
+				Ctx: ctx, OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: targets,
+			})
+			publicationDone <- err
+		}()
+		<-snapshotSubtitleOperation(operationID).publicationCommittedCh
+		cancel()
+		if err := <-publicationDone; err != nil || !snapshotSubtitleOperation(operationID).publicationCommitted {
 			t.Fatalf("late cancellation invalidated committed publication: err=%v op=%#v", err, snapshotSubtitleOperation(operationID))
 		}
 		if _, err := os.Stat(targets[0].FinalPath); err != nil {

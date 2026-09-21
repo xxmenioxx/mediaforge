@@ -310,6 +310,15 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 			return nil, fmt.Errorf("cannot commit translated artifact metadata: %w", err)
 		}
 	}
+	if err := request.Ctx.Err(); err != nil {
+		rollback()
+		if request.CommitMetadata != nil && request.RollbackMetadata != nil {
+			if rollbackErr := request.RollbackMetadata(publishedArtifacts); rollbackErr != nil {
+				return nil, fmt.Errorf("%w; metadata rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
+			}
+		}
+		return nil, err
+	}
 	markSubtitlePublicationCommitted(request.OperationID)
 	return publishedArtifacts, nil
 }
