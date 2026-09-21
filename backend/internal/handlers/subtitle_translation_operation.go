@@ -192,12 +192,6 @@ func subtitleTranslationFailureClassOf(err error) subtitleTranslationFailureClas
 	if errors.Is(err, errTranslationSourceStale) {
 		return subtitleTranslationFailureStaleSource
 	}
-	if errors.Is(err, context.Canceled) {
-		return subtitleTranslationFailureCancelled
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return subtitleTranslationFailureProviderTimeout
-	}
 	var providerErr *TranslationProviderError
 	if errors.As(err, &providerErr) && providerErr != nil {
 		switch providerErr.Class {
@@ -212,6 +206,9 @@ func subtitleTranslationFailureClassOf(err error) subtitleTranslationFailureClas
 		case translationProviderErrorCancelled:
 			return subtitleTranslationFailureCancelled
 		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return subtitleTranslationFailureCancelled
 	}
 	return subtitleTranslationFailureTranslationFailed
 }
@@ -275,7 +272,11 @@ func runSubtitleTranslationOperation(
 	}
 
 	if err := ctx.Err(); err != nil {
-		finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", nil)
+		if errors.Is(err, context.Canceled) {
+			finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", err)
+		} else {
+			finishSubtitleTranslationOperation(operationID, workspace, "error", "Subtitle translation failed", err)
+		}
 		return
 	}
 	updateSubtitleTranslationProgress(operationID, "validating", -1, -1, "Validating translated subtitles")

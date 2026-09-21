@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -175,12 +176,14 @@ func TestTranslationCapabilityOutputsAreBackendSelected(t *testing.T) {
 }
 
 type assetInfoTranslationOllamaFixture struct {
-	mu             sync.Mutex
-	paths          []string
-	batches        []TranslationBatch
-	calls          int
-	factoryCalls   int
-	readinessCalls int
+	mu              sync.Mutex
+	paths           []string
+	batches         []TranslationBatch
+	failures        []error
+	factorySettings []translationSettings
+	calls           int
+	factoryCalls    int
+	readinessCalls  int
 }
 
 func newAssetInfoTranslationOllamaFixture() *assetInfoTranslationOllamaFixture {
@@ -193,6 +196,11 @@ func (fixture *assetInfoTranslationOllamaFixture) Translate(_ context.Context, b
 	fixture.paths = append(fixture.paths, "/api/chat")
 	fixture.batches = append(fixture.batches, batch)
 	fixture.calls++
+	if len(fixture.failures) > 0 {
+		err := fixture.failures[0]
+		fixture.failures = fixture.failures[1:]
+		return TranslationBatchResult{}, err
+	}
 	result := TranslationBatchResult{ContractVersion: batch.ContractVersion}
 	for _, cue := range batch.Cues {
 		result.Cues = append(result.Cues, TranslatedCue{ID: cue.ID, Text: strings.ReplaceAll(cue.Text, "Hello", "Hola")})
@@ -232,12 +240,19 @@ func (fixture *assetInfoTranslationOllamaFixture) factoryCallsSnapshot() int {
 }
 
 func (fixture *assetInfoTranslationOllamaFixture) factory() func(translationSettings) (TranslationProvider, error) {
-	return func(translationSettings) (TranslationProvider, error) {
+	return func(settings translationSettings) (TranslationProvider, error) {
 		fixture.mu.Lock()
 		fixture.factoryCalls++
+		fixture.factorySettings = append(fixture.factorySettings, settings)
 		fixture.mu.Unlock()
 		return fixture, nil
 	}
+}
+
+func (fixture *assetInfoTranslationOllamaFixture) factorySettingsSnapshot() []translationSettings {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return append([]translationSettings(nil), fixture.factorySettings...)
 }
 
 func readyAssetInfoTranslationSettings(endpoint string) translationSettings {
@@ -271,6 +286,22 @@ func postAssetInfoTranslationCapability(t *testing.T, handler AssetHandler, body
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 	return recorder.Code, recorder.Body.String()
+}
+
+func postAssetInfoTranslationRetry(t *testing.T, handler AssetHandler, operationID string) (int, string) {
+	t.Helper()
+	router := gin.New()
+	router.POST("/api/assets/subtitle-operations/:id/retry", handler.RetrySubtitleTranslation)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/subtitle-operations/"+operationID+"/retry", nil)
+	router.ServeHTTP(recorder, request)
+	return recorder.Code, recorder.Body.String()
+}
+
+func subtitleTranslationOperationCountForTest() int {
+	subtitleExtractionOperations.RLock()
+	defer subtitleExtractionOperations.RUnlock()
+	return len(subtitleExtractionOperations.items)
 }
 
 func configureAssetInfoTranslationFixture(t *testing.T, dbPath, endpoint string) *gorm.DB {
@@ -410,6 +441,218 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello v1\n\n")
+	db := translationSourceTestDB(t, root, mediaPath)
+	settingsV1 := readyAssetInfoTranslationSettings("http://nas:11434")
+	settingsV1.OllamaModel = "model-v1"
+	settingsV1.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV1)
+	if err := saveTranslationSettings(db, settingsV1); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newAssetInfoTranslationOllamaFixture()
+	fixture.failures = []error{&TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("first provider attempt")}}
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	startBody := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	status, responseBody := postAssetInfoTranslationStart(t, handler, startBody)
+	if status != http.StatusAccepted {
+		t.Fatalf("initial translation status=%d body=%s", status, responseBody)
+	}
+	var startResponse struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(responseBody), &startResponse); err != nil {
+		t.Fatal(err)
+	}
+	oldID := startResponse.Operation.ID
+	oldOperation := waitForSubtitleTranslationOperation(t, oldID, "error")
+	if oldOperation.Translation == nil || !oldOperation.Translation.Retryable || oldOperation.Translation.Model != "model-v1" {
+		t.Fatalf("unexpected terminal predecessor: %#v", oldOperation.Translation)
+	}
+	oldRevision := oldOperation.translationRequest.SourceRevision
+
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello v2\n\n")
+	settingsV2 := settingsV1
+	settingsV2.OllamaModel = "model-v2"
+	settingsV2.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV2)
+	if err := saveTranslationSettings(db, settingsV2); err != nil {
+		t.Fatal(err)
+	}
+
+	retryStatus, retryBody := postAssetInfoTranslationRetry(t, handler, oldID)
+	if retryStatus != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", retryStatus, retryBody)
+	}
+	var retryResponse struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(retryBody), &retryResponse); err != nil {
+		t.Fatal(err)
+	}
+	if retryResponse.Operation.ID == "" || retryResponse.Operation.ID == oldID {
+		t.Fatalf("retry did not create a new operation: %#v", retryResponse.Operation)
+	}
+	newOperation := waitForSubtitleTranslationOperation(t, retryResponse.Operation.ID, "completed")
+	if newOperation.translationRequest.SourceRevision == oldRevision {
+		t.Fatalf("retry reused source revision %q", oldRevision)
+	}
+	if newOperation.Translation == nil || newOperation.Translation.Provider != "ollama" || newOperation.Translation.Model != "model-v2" {
+		t.Fatalf("retry did not use current provider configuration: %#v", newOperation.Translation)
+	}
+	if oldAfter := snapshotSubtitleOperation(oldID); oldAfter.ID != oldID || oldAfter.Status != "error" || oldAfter.translationRequest.SourceRevision != oldRevision {
+		t.Fatalf("predecessor changed during retry: %#v", oldAfter)
+	}
+	if fixture.readinessCallsSnapshot() != 0 {
+		t.Fatalf("retry performed readiness preflight: %d", fixture.readinessCallsSnapshot())
+	}
+	settingsSeen := fixture.factorySettingsSnapshot()
+	if len(settingsSeen) != 2 || settingsSeen[0].OllamaModel != "model-v1" || settingsSeen[1].OllamaModel != "model-v2" {
+		t.Fatalf("provider factory settings=%v, want model-v1 then model-v2", settingsSeen)
+	}
+	published := assetInfoPublishedFiles(t, root, mediaPath)
+	var translated []byte
+	for name, content := range published {
+		if strings.Contains(name, ".es-419.") {
+			translated = content
+		}
+	}
+	if !strings.Contains(string(translated), "Hola v2") {
+		t.Fatalf("retry output did not use current source: %q", translated)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(got), "Hello v2") {
+		t.Fatalf("exact source changed after retry: err=%v content=%q", err, got)
+	}
+}
+
+func TestAssetInfoTranslationRetryRejectsDisappearedExactSourceThroughHTTP(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	db := translationSourceTestDB(t, root, mediaPath)
+	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newAssetInfoTranslationOllamaFixture()
+	fixture.failures = []error{&TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("first provider attempt")}}
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	body := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	status, responseBody := postAssetInfoTranslationStart(t, handler, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("initial translation status=%d body=%s", status, responseBody)
+	}
+	var response struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(responseBody), &response); err != nil {
+		t.Fatal(err)
+	}
+	waitForSubtitleTranslationOperation(t, response.Operation.ID, "error")
+	if err := os.Remove(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	before := subtitleTranslationOperationCountForTest()
+	retryStatus, retryBody := postAssetInfoTranslationRetry(t, handler, response.Operation.ID)
+	if retryStatus < http.StatusBadRequest || retryStatus >= http.StatusInternalServerError {
+		t.Fatalf("missing exact source retry status=%d body=%s", retryStatus, retryBody)
+	}
+	if after := subtitleTranslationOperationCountForTest(); after != before {
+		t.Fatalf("missing source retry created an operation: before=%d after=%d", before, after)
+	}
+}
+
+func TestAssetInfoTranslationRetryRejectsRunningAndCompletedThroughHTTP(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	request := testSubtitleTranslationOperationRequest(filepath.Join(root, "episode.mkv"))
+	release := make(chan struct{})
+	runningID, err := startSubtitleTranslationOperation(request, func(ctx context.Context, _ string, _ string, _ subtitleTranslationOperationRequest) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(runningID)
+	if status, body := postAssetInfoTranslationRetry(t, AssetHandler{}, runningID); status != http.StatusConflict {
+		t.Fatalf("running retry status=%d body=%s, want %d", status, body, http.StatusConflict)
+	}
+	subtitleExtractionOperations.RLock()
+	runningCancel := subtitleExtractionOperations.items[runningID].cancel
+	subtitleExtractionOperations.RUnlock()
+	runningCancel()
+	waitForSubtitleTranslationOperation(t, runningID, "cancelled")
+
+	completedID, err := startSubtitleTranslationOperation(request, func(context.Context, string, string, subtitleTranslationOperationRequest) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(completedID)
+	waitForSubtitleTranslationOperation(t, completedID, "completed")
+	if status, body := postAssetInfoTranslationRetry(t, AssetHandler{}, completedID); status != http.StatusConflict {
+		t.Fatalf("completed retry status=%d body=%s, want %d", status, body, http.StatusConflict)
+	}
+	close(release)
+}
+
+func TestAssetInfoTranslationRetryAcceptsCancelledThroughHTTP(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	db := translationSourceTestDB(t, root, mediaPath)
+	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newAssetInfoTranslationOllamaFixture()
+	fixture.failures = []error{context.Canceled}
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	body := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	status, responseBody := postAssetInfoTranslationStart(t, handler, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("initial translation status=%d body=%s", status, responseBody)
+	}
+	var response struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(responseBody), &response); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := waitForSubtitleTranslationOperation(t, response.Operation.ID, "cancelled")
+	if cancelled.Translation == nil || !cancelled.Translation.Retryable {
+		t.Fatalf("cancelled operation was not retryable: %#v", cancelled.Translation)
+	}
+	retryStatus, retryBody := postAssetInfoTranslationRetry(t, handler, response.Operation.ID)
+	if retryStatus != http.StatusAccepted {
+		t.Fatalf("cancelled retry status=%d body=%s", retryStatus, retryBody)
+	}
+	var retryResponse struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(retryBody), &retryResponse); err != nil {
+		t.Fatal(err)
+	}
+	if retryResponse.Operation.ID == response.Operation.ID {
+		t.Fatal("cancelled retry reused the predecessor identity")
+	}
+	waitForSubtitleTranslationOperation(t, retryResponse.Operation.ID, "completed")
 }
 
 func TestAssetInfoTranslationEntryPointEmbeddedSSAUsesCanonicalMuxer(t *testing.T) {

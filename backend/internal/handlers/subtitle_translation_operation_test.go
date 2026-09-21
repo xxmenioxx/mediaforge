@@ -297,6 +297,21 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 	}
 }
 
+func TestSubtitleTranslationFailureClassDoesNotTreatPlainDeadlineAsProviderTimeout(t *testing.T) {
+	if got := subtitleTranslationFailureClassOf(context.DeadlineExceeded); got != subtitleTranslationFailureTranslationFailed {
+		t.Fatalf("plain deadline class=%q, want %q", got, subtitleTranslationFailureTranslationFailed)
+	}
+
+	typed := &TranslationProviderError{Class: translationProviderErrorTimeout, Err: context.DeadlineExceeded}
+	if got := subtitleTranslationFailureClassOf(typed); got != subtitleTranslationFailureProviderTimeout {
+		t.Fatalf("typed deadline class=%q, want %q", got, subtitleTranslationFailureProviderTimeout)
+	}
+	wrapper := fmt.Errorf("provider request: %w", typed)
+	if got := subtitleTranslationFailureClassOf(wrapper); got != subtitleTranslationFailureProviderTimeout {
+		t.Fatalf("wrapped typed deadline class=%q, want %q", got, subtitleTranslationFailureProviderTimeout)
+	}
+}
+
 func TestBoundedSubtitleTranslationErrorIsUnicodeSafe(t *testing.T) {
 	const suffix = "..."
 	tests := []struct {
