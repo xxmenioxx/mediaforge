@@ -59,7 +59,7 @@
 - [x] 10.1 Add backend regressions for English/Japanese SRT/ASS/SSA translation, Auto ambiguity, `es-419` versus `es-ES`, cue-ID validation, ASS protection, context bounds, Ollama requests, audit redaction, disabled-by-default readiness, successful readiness, unavailable endpoint, missing configured model, provider/endpoint/model invalidation, enablement requiring successful readiness, and no automatic readiness request before normal translation.
 - [x] 10.2 Add backend regressions for PGS/VobSub OCR reuse, Japanese fallback, OCR correction before translation, stale source rejection, source preservation, cancellation/retry, cleanup, and atomic publication.
 - [x] 10.3 Add integration regressions proving no Queue/Profile automatic translation, no second planner/OCR/operation/publication path, existing semantic role/disposition and naming preservation, and exact artifact ownership.
-- [ ] 10.4 Run focused backend/frontend tests, then `./scripts/verify.sh --auto`, followed by `openspec validate subtitle-translation --type change --strict`; reconcile this checklist only against passing implementation evidence and leave the change unarchived.
+- [x] 10.4 Run focused backend/frontend tests, then `./scripts/verify.sh --auto`, followed by `openspec validate subtitle-translation --type change --strict`; reconcile this checklist only against passing implementation evidence and leave the change unarchived.
 
 ## 11. Documentation
 
