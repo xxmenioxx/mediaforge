@@ -143,16 +143,16 @@ export function SubtitleTranslationDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const capability = useQuery({
-    queryKey: ['subtitleTranslationCapability', path, source],
-    queryFn: () => api.subtitleTranslationCapability({ path, source }),
-    enabled: open,
-    retry: false,
-  });
   const [sourceLanguage, setSourceLanguage] = useState('');
   const [targetLocale, setTargetLocale] = useState('');
   const [outputRepresentation, setOutputRepresentation] = useState('');
   const [operation, setOperation] = useState<SubtitleExtractionOperation | null>(null);
+  const capability = useQuery({
+    queryKey: ['subtitleTranslationCapability', path, source],
+    queryFn: () => api.subtitleTranslationCapability({ path, source }),
+    enabled: open && !operation,
+    retry: false,
+  });
   const completedOperationRef = useRef<string | null>(null);
   const operationQuery = useQuery({
     queryKey: ['subtitleOperation', operation?.id ?? ''],

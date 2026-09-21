@@ -80,7 +80,7 @@ function operation(overrides: Partial<SubtitleExtractionOperation> = {}): Subtit
 function renderDialog(selectedSource = source, queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })) {
-  return render(
+  render(
     <QueryClientProvider client={queryClient}>
       <SubtitleTranslationDialog
         open
@@ -90,6 +90,7 @@ function renderDialog(selectedSource = source, queryClient = new QueryClient({
       />
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 describe('SubtitleTranslationDialog', () => {
@@ -315,5 +316,33 @@ describe('SubtitleTranslationDialog', () => {
     expect(screen.getByText('/media/episode.es-419.srt')).toBeTruthy();
     await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['externalSubtitles', '/media/episode.mkv'] }));
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables capability refetches after start and across retry', async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const failed = operation({
+      status: 'error',
+      phase: 'error',
+      translation: { failureClass: 'provider_unavailable', diagnostic: 'Provider unavailable.', retryable: true, cancellable: false },
+    });
+    vi.mocked(api.subtitleOperation)
+      .mockResolvedValueOnce(failed)
+      .mockResolvedValue(operation({ id: 'translation-2' }));
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: operation() });
+    vi.mocked(api.retrySubtitleTranslation).mockResolvedValue({ operation: operation({ id: 'translation-2' }) });
+    renderDialog(source, queryClient);
+
+    await waitFor(() => expect(api.subtitleTranslationCapability).toHaveBeenCalledTimes(1));
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    await user.click(await screen.findByRole('button', { name: 'Retry translation' }));
+    await queryClient.refetchQueries({ queryKey: ['subtitleTranslationCapability'] });
+
+    expect(api.subtitleTranslationCapability).toHaveBeenCalledTimes(1);
+    expect(api.startSubtitleTranslation).toHaveBeenCalledTimes(1);
+    expect(api.retrySubtitleTranslation).toHaveBeenCalledTimes(1);
+    expect(api.subtitleOperation).toHaveBeenCalledWith('translation-2');
   });
 });
