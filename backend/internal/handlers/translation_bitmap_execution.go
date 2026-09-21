@@ -13,6 +13,7 @@ type bitmapTranslationExecutionRequest struct {
 	MediaPath               string
 	Stream                  FFProbeStream
 	RequestedLanguage       string
+	SourceLanguageMetadata  []string
 	OCRMode                 string
 	SegmentStart            float64
 	SegmentDuration         int
@@ -28,9 +29,10 @@ type bitmapTranslationExecutionRequest struct {
 }
 
 type bitmapTranslationExecutionResult struct {
-	Source  *bitmapTranslationSource
-	Outputs map[string][]byte
-	Metrics TranslationProviderMetrics
+	Source            *bitmapTranslationSource
+	Outputs           map[string][]byte
+	Metrics           TranslationProviderMetrics
+	EffectiveLanguage string
 }
 
 // executeBitmapTranslation is the single provider boundary for bitmap
@@ -83,13 +85,25 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 		preparedEvidence.Cues,
 	)
 
-	effectiveLanguage, found, err := translationLanguageFromMetadata([]string{source.EffectiveLanguage})
+	languageCues := make([]translationSourceCue, 0, len(preparedEvidence.Cues))
+	for _, cue := range preparedEvidence.Cues {
+		languageCues = append(languageCues, translationSourceCue{
+			SourceOrdinal:    cue.SourceOrdinal,
+			Text:             cue.Text,
+			Start:            cue.Start,
+			End:              cue.End,
+			TimingProvenance: cue.TimingProvenance,
+		})
+	}
+	language, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{
+		RequestedLanguage:      request.RequestedLanguage,
+		SourceLanguageMetadata: request.SourceLanguageMetadata,
+		Cues:                   languageCues,
+	})
 	if err != nil {
-		return bitmapTranslationExecutionResult{}, fmt.Errorf("canonical OCR effective language is unavailable: %w", err)
+		return bitmapTranslationExecutionResult{}, fmt.Errorf("canonical OCR source language is unavailable: %w", err)
 	}
-	if !found || (effectiveLanguage != "en" && effectiveLanguage != "ja") {
-		return bitmapTranslationExecutionResult{}, fmt.Errorf("canonical OCR effective language %q is unsupported for translation", source.EffectiveLanguage)
-	}
+	effectiveLanguage := language.EffectiveLanguage
 	if err := ctx.Err(); err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
@@ -127,7 +141,7 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
-	return bitmapTranslationExecutionResult{Source: source, Outputs: outputs, Metrics: metrics}, nil
+	return bitmapTranslationExecutionResult{Source: source, Outputs: outputs, Metrics: metrics, EffectiveLanguage: effectiveLanguage}, nil
 }
 
 func validateBitmapTranslationRequestedRepresentation(value string) error {

@@ -21,6 +21,7 @@ const (
 // payloads, credentials, prompts, or provider responses.
 type subtitleTranslationOperationRequest struct {
 	AssetPath               string
+	SourceType              string
 	StreamIndex             int
 	Format                  string
 	SourceIdentity          string
@@ -37,7 +38,7 @@ type subtitleTranslationOperationRequest struct {
 
 // subtitleTranslationRunner is the operation-owned execution seam. The
 // runner reports bounded progress through updateSubtitleTranslationProgress;
-// Task 8 can supply the source-specific translation execution later.
+// Asset Info supplies the exact source-specific execution request.
 type subtitleTranslationRunner func(
 	context.Context,
 	string,
@@ -64,6 +65,9 @@ func validateSubtitleTranslationOperationRequest(request subtitleTranslationOper
 		{"context mode", request.ContextMode},
 		{"context source", request.ContextSource},
 		{"source revision", request.SourceRevision},
+	}
+	if len(request.SourceType) > maxSubtitleTranslationRequestField {
+		return fmt.Errorf("translation source type exceeds %d bytes", maxSubtitleTranslationRequestField)
 	}
 	for _, field := range fields {
 		if len(field.value) > maxSubtitleTranslationRequestField {

@@ -41,24 +41,26 @@ type externalSubtitleTranslationSource struct {
 // exact source contract for the later translation operation and never carries
 // subtitle text, prompts, provider responses, or credentials.
 type subtitleTranslationSourceResponse struct {
-	Type            string               `json:"type"`
-	SourceIdentity  string               `json:"sourceIdentity"`
-	SourceRevision  string               `json:"sourceRevision"`
-	Representation  string               `json:"representation"`
-	StreamIndex     *int                 `json:"streamIndex,omitempty"`
-	StreamID        string               `json:"streamId,omitempty"`
-	ExternalPath    string               `json:"externalPath,omitempty"`
-	ArtifactID      string               `json:"artifactId,omitempty"`
-	Codec           string               `json:"codec"`
-	Language        string               `json:"language,omitempty"`
-	Title           string               `json:"title,omitempty"`
-	Default         bool                 `json:"default"`
-	SourceForced    bool                 `json:"sourceForced"`
-	EffectiveForced bool                 `json:"effectiveForced"`
-	Role            SubtitleSemanticRole `json:"role"`
-	RoleProvenance  string               `json:"roleProvenance,omitempty"`
-	RoleConfidence  string               `json:"roleConfidence,omitempty"`
-	RoleClassifier  string               `json:"roleClassifierVersion,omitempty"`
+	Type                string               `json:"type"`
+	SourceIdentity      string               `json:"sourceIdentity"`
+	SourceRevision      string               `json:"sourceRevision"`
+	Representation      string               `json:"representation"`
+	StreamIndex         *int                 `json:"streamIndex,omitempty"`
+	StreamID            string               `json:"streamId,omitempty"`
+	ExternalPath        string               `json:"externalPath,omitempty"`
+	ArtifactID          string               `json:"artifactId,omitempty"`
+	Codec               string               `json:"codec"`
+	Language            string               `json:"language,omitempty"`
+	Title               string               `json:"title,omitempty"`
+	Default             bool                 `json:"default"`
+	SourceForced        bool                 `json:"sourceForced"`
+	EffectiveForced     bool                 `json:"effectiveForced"`
+	Role                SubtitleSemanticRole `json:"role"`
+	RoleProvenance      string               `json:"roleProvenance,omitempty"`
+	RoleConfidence      string               `json:"roleConfidence,omitempty"`
+	RoleClassifier      string               `json:"roleClassifierVersion,omitempty"`
+	SourcePath          string               `json:"-"`
+	LogicalTransformKey string               `json:"-"`
 }
 
 type subtitleAssetResolutionError struct {
@@ -241,6 +243,7 @@ func (h AssetHandler) resolveEmbeddedSubtitleTranslationSource(ctx context.Conte
 		RoleProvenance:  role.Provenance,
 		RoleConfidence:  role.Confidence,
 		RoleClassifier:  role.ClassifierVersion,
+		SourcePath:      mediaPath,
 	}, nil
 }
 
@@ -280,20 +283,22 @@ func resolveExternalSubtitleTranslationSource(mediaPath, requestedPath string) (
 		roleConfidence = "high"
 	}
 	return subtitleTranslationSourceResponse{
-		Type:            "external",
-		SourceIdentity:  fmt.Sprintf("external:%s:%s", filepath.Clean(subtitlePath), revisionKey),
-		SourceRevision:  revisionKey,
-		Representation:  strings.ToLower(strings.TrimSpace(selected.Format)),
-		ExternalPath:    filepath.Clean(subtitlePath),
-		ArtifactID:      fmt.Sprintf("external-subtitle:%s", revision.External.ArtifactIdentity),
-		Codec:           strings.ToLower(strings.TrimSpace(selected.Format)),
-		Language:        strings.ToLower(strings.TrimSpace(selected.Language)),
-		Default:         selected.Default,
-		SourceForced:    selected.Forced,
-		EffectiveForced: selected.Forced,
-		Role:            role,
-		RoleProvenance:  roleProvenance,
-		RoleConfidence:  roleConfidence,
+		Type:                "external",
+		SourceIdentity:      fmt.Sprintf("external:%s:%s", filepath.Clean(subtitlePath), revisionKey),
+		SourceRevision:      revisionKey,
+		Representation:      strings.ToLower(strings.TrimSpace(selected.Format)),
+		ExternalPath:        filepath.Clean(subtitlePath),
+		ArtifactID:          fmt.Sprintf("external-subtitle:%s", revision.External.ArtifactIdentity),
+		Codec:               strings.ToLower(strings.TrimSpace(selected.Format)),
+		Language:            strings.ToLower(strings.TrimSpace(selected.Language)),
+		Default:             selected.Default,
+		SourceForced:        selected.Forced,
+		EffectiveForced:     selected.Forced,
+		Role:                role,
+		RoleProvenance:      roleProvenance,
+		RoleConfidence:      roleConfidence,
+		SourcePath:          mediaPath,
+		LogicalTransformKey: selected.LogicalTransformKey,
 	}, nil
 }
 

@@ -44,7 +44,7 @@
 ## 8. Asset Info backend
 
 - [x] 8.1 Add exact embedded-stream and external-artifact translation request/response APIs using existing ownership, semantic role/disposition, and artifact identity metadata; verify same-language external sidecars are never guessed and unsupported sources are rejected clearly.
-- [ ] 8.2 Wire English/Japanese, Auto, `es-419`/`es-ES`, and the backend-authorized enabled/ready Ollama configuration into the canonical translation operation without changing Queue/Profile/Worker behavior; expose capability availability/reason rather than allowing the frontend to infer provider state, and verify text SRT/ASS/SSA and bitmap PGS/VobSub entry-point scenarios.
+- [x] 8.2 Wire English/Japanese, Auto, `es-419`/`es-ES`, and the backend-authorized enabled/ready Ollama configuration into the canonical translation operation without changing Queue/Profile/Worker behavior; expose capability availability/reason rather than allowing the frontend to infer provider state, and verify text SRT/ASS/SSA and bitmap PGS/VobSub entry-point scenarios.
 - [ ] 8.3 Expose bounded translation progress, provider diagnostics, cancellation, retry, stale-source, and malformed-response states through the existing operation response shape; verify secrets and full provider content are excluded.
 
 ## 9. Asset Info frontend
