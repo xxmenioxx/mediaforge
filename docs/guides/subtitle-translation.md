@@ -478,3 +478,82 @@ hardware.
 - `backend/internal/handlers/translation_publication.go`
 - `frontend/src/components/SubtitleTranslationDialog.tsx`
 - `frontend/src/pages/SettingsPage.tsx`
+
+
+## Media context (planned enhancement)
+
+The current V1 does not add movie/series metadata to translation prompts.
+Asset Info therefore reports media context as unavailable/none.
+
+Planned follow-up work (#107 and #108) treats media context as an **optional
+quality enhancement**, not as a requirement to translate.
+
+This distinction matters for RAW-first workflows. A RAW asset may not yet:
+
+- exist in Jellyfin/Plex;
+- have an adjacent NFO;
+- have been identified by Radarr/Sonarr;
+- have a confirmed TMDB/provider identity.
+
+That is a normal state. Translation must still work:
+
+```text
+RAW asset
+  → no media metadata
+  → neighboring subtitle cues only
+  → Translate remains available
+```
+
+Users who keep assets directly in a consumable Library may have richer metadata
+earlier, but MVForge does not require that workflow.
+
+### Local NFO
+
+The planned canonical metadata resolver will treat local NFO as a first-class
+source in addition to media-server/provider APIs.
+
+Jellyfin-compatible metadata commonly uses:
+
+```text
+movie.nfo
+tvshow.nfo
+season.nfo
+<episode filename>.nfo
+```
+
+These files may contain title/year/plot, show/season/episode identity, actors
+and external provider IDs. If another application already created a reliable
+NFO, MVForge can consume it without requiring that application to remain
+available.
+
+### When MVForge is not sure about the match
+
+MVForge should not silently attach a similar-looking movie or episode merely
+because the title matches.
+
+When metadata identity is not strong enough, the UI should stay simple:
+
+```text
+Media context (optional)
+
+3 possible matches
+[ Choose ]   [ Translate without context ]
+```
+
+The candidate picker should show only decision-relevant fields such as title,
+year, media type, series/season/episode and provider/source evidence.
+
+The user can leave metadata unset and translate normally. A confirmed selection
+is saved through the canonical metadata layer so it can be reused by Asset
+Info, Advisor and future operations.
+
+### TMDB setup
+
+Direct TMDB lookup is optional. When the TMDB adapter is implemented, the user
+must create/configure TMDB application credentials in MVForge Settings.
+Supported authentication should follow the adapter design and TMDB's
+application authentication model, using either a v3 API key or an API Read
+Access Token/Bearer token.
+
+TMDB credentials must never be written to reports/logs, embedded in profile
+snapshots or sent to the translation model.
