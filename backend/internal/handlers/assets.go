@@ -1522,27 +1522,9 @@ func (h AssetHandler) externalSubtitleAsset(c *gin.Context) (string, models.Asse
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return "", models.AssetRecord{}, false
 	}
-	var record models.AssetRecord
-	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "asset not found in inventory"})
-		return "", models.AssetRecord{}, false
-	}
-	if record.Status == "archive" {
-		c.JSON(http.StatusConflict, gin.H{"error": "archived originals cannot manage external subtitles"})
-		return "", models.AssetRecord{}, false
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "asset is not readable from the backend container"})
-		return "", models.AssetRecord{}, false
-	}
-	allowed, err := h.pathBelongsToLibrary(path)
+	path, record, err := h.resolveOwnedSubtitleAsset(path)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return "", models.AssetRecord{}, false
-	}
-	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "asset is outside configured media roots"})
+		writeSubtitleAssetResolutionError(c, err)
 		return "", models.AssetRecord{}, false
 	}
 	return path, record, true
