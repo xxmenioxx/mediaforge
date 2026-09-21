@@ -892,6 +892,7 @@ func TestTranslationPublicationTargetsUseCanonicalArtifactType(t *testing.T) {
 		SourceIdentity:  request.SourceIdentity,
 		Representation:  "ass",
 		Codec:           "ass",
+		Language:        "eng",
 		ArtifactID:      "external-subtitle:forced",
 		Title:           "Forced SDH",
 		Default:         true,
@@ -920,7 +921,7 @@ func TestTranslationPublicationTargetsUseCanonicalArtifactType(t *testing.T) {
 	if artifact.Translation == nil || artifact.Translation.SourceArtifactIdentity != source.SourceIdentity || artifact.Translation.SourceRevision != request.SourceRevision || artifact.Translation.SourceRepresentation != source.Representation || artifact.Translation.OutputRepresentation != "ass" {
 		t.Fatalf("translation metadata is not bound to exact source: %#v", artifact.Translation)
 	}
-	if !strings.HasSuffix(target.FinalPath, ".es-419.forced.sdh.ass") {
-		t.Fatalf("translated path=%q, want locale/forced/sdh naming", target.FinalPath)
+	if got, want := filepath.Base(target.FinalPath), "episode.es-419.eng.forced.sdh.ass"; got != want {
+		t.Fatalf("translated path basename=%q, want %q", got, want)
 	}
 }

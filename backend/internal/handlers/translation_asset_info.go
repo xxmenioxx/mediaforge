@@ -771,7 +771,9 @@ func translationPublicationTargets(
 			Status:                "ready",
 			Translation:           &metadata,
 		}
-		finalPath, err := resolvedTranslatedSubtitleStagedPath(base, artifact, metadata, used)
+		namingArtifact := artifact
+		namingArtifact.Language = source.Language
+		finalPath, err := resolvedTranslatedSubtitleStagedPath(base, namingArtifact, metadata, used)
 		if err != nil {
 			return nil, err
 		}
