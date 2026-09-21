@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 func cacheBitmapTranslationEvidence(t *testing.T, mediaPath string, stream FFProbeStream, language, mode, effectiveLanguage string, cues []canonicalBitmapSubtitleCue) {
 	t.Helper()
+	ensureCanonicalOCRTestRuntime(t)
 	request := canonicalOCRRequestFor(mediaPath, stream, language, mode, 0, 0)
 	withRuntime, err := canonicalOCRRequestWithRuntime(context.Background(), request)
 	if err != nil {
@@ -25,6 +27,17 @@ func cacheBitmapTranslationEvidence(t *testing.T, mediaPath string, stream FFPro
 		Cues:              cloneCanonicalCues(cues),
 	}
 	commitCanonicalOCREvidence(withRuntime, withRuntime.Identity.key(), evidence)
+}
+
+func ensureCanonicalOCRTestRuntime(t *testing.T) {
+	t.Helper()
+	if _, seconvErr := exec.LookPath("seconv"); seconvErr == nil {
+		if _, tesseractErr := exec.LookPath("tesseract"); tesseractErr == nil {
+			return
+		}
+	}
+	bin := installCanonicalRuntimeTools(t, "seconv-test-runtime", "eng spa jpn jpn_vert")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestBitmapTranslationSourceForPGSUsesCanonicalOCRAndBuildsEnvelopes(t *testing.T) {
