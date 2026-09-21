@@ -427,6 +427,22 @@ func TestBuildScanResultExposesBackendColorPolicyPresentation(t *testing.T) {
 	assertContains(t, workerStringValue(result.ColorPolicy["reason"]), "Transfer characteristics are missing.")
 }
 
+func TestBuildScanResultMarksNoVideoColorPolicyNotApplicable(t *testing.T) {
+	result := buildScanResult("/media/raw/audio.mka", 100, FFProbeResult{Streams: []FFProbeStream{
+		{Index: 0, CodecType: "audio", CodecName: "aac"},
+	}}, models.JSONMap{"streams": models.JSONList{}})
+
+	if got := workerStringValue(result.ColorPolicy["status"]); got != "not_applicable" {
+		t.Fatalf("expected no-video scan to be not applicable, got %#v", result.ColorPolicy)
+	}
+	if got := workerStringValue(result.ColorPolicy["action"]); got != "none" {
+		t.Fatalf("no-video scan should not require review, got %#v", result.ColorPolicy)
+	}
+	if _, ok := result.ColorPolicy["warning"]; ok {
+		t.Fatalf("no-video scan should not include a color warning: %#v", result.ColorPolicy)
+	}
+}
+
 func TestBuildScanResultSerializesKnownEmptyAttachmentInventoryAsArray(t *testing.T) {
 	result := buildScanResult("/media/raw/movie.mkv", 100, FFProbeResult{Streams: []FFProbeStream{}}, models.JSONMap{"streams": models.JSONList{}})
 	if result.AttachmentStreams == nil || len(result.AttachmentStreams) != 0 {

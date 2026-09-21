@@ -41,9 +41,13 @@ export function MediaTechnicalSnapshotSummary({ scan }: { scan: ScanResult }) {
     ? 'Complete'
     : colorPolicy?.status === 'incomplete_unsupported'
       ? 'Incomplete / unsupported'
-      : 'Unknown';
+      : colorPolicy?.status === 'not_applicable'
+        ? 'Not applicable'
+        : 'Unknown';
   const colorPolicyAction = colorPolicy?.action === 'review'
     ? 'Review required'
+    : colorPolicy?.status === 'not_applicable'
+      ? 'Not applicable'
     : colorPolicy?.action === 'none'
       ? 'No review required'
       : 'Unknown';

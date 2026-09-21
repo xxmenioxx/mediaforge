@@ -1488,7 +1488,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		SubtitleStreams:              streamSummaries(probe.Streams, "subtitle"),
 		AttachmentStreams:            attachmentStreamSummaries(probe.Streams),
 		AttachmentInventoryAvailable: true,
-		ColorPolicy:                  colorPolicyPresentationForSource(MediaStream{ColorSpace: video.ColorSpace, ColorTransfer: video.ColorTransfer, ColorPrimaries: video.ColorPrimaries, ColorRange: video.ColorRange}),
+		ColorPolicy:                  colorPolicyPresentationForSource(MediaStream{Codec: video.CodecName, ColorSpace: video.ColorSpace, ColorTransfer: video.ColorTransfer, ColorPrimaries: video.ColorPrimaries, ColorRange: video.ColorRange}),
 		RawProbe:                     raw,
 		InterlaceAnalysis:            interlaceAnalysisFromRaw(raw),
 		CadenceAnalysis:              analysisMapFromRaw(raw, "cadenceAnalysis"),
@@ -1511,11 +1511,13 @@ func colorPolicyPresentationForScan(scan models.ScanResult) models.JSONMap {
 	stream := MediaStream{}
 	switch value := scan.VideoStreams[0].(type) {
 	case models.JSONMap:
+		stream.Codec = stringFromUnknown(value["codec"])
 		stream.ColorSpace = stringFromUnknown(value["colorSpace"])
 		stream.ColorTransfer = stringFromUnknown(value["colorTransfer"])
 		stream.ColorPrimaries = stringFromUnknown(value["colorPrimaries"])
 		stream.ColorRange = stringFromUnknown(value["colorRange"])
 	case map[string]any:
+		stream.Codec = stringFromUnknown(value["codec"])
 		stream.ColorSpace = stringFromUnknown(value["colorSpace"])
 		stream.ColorTransfer = stringFromUnknown(value["colorTransfer"])
 		stream.ColorPrimaries = stringFromUnknown(value["colorPrimaries"])

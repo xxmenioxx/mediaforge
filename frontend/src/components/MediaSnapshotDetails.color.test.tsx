@@ -60,4 +60,21 @@ describe('MediaSnapshotDetails color metadata', () => {
     expect(screen.getByText('Transfer characteristics are missing. Automatic color normalization was not applied.')).toBeTruthy();
     expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0);
   });
+
+  it('renders no-video scans as not applicable without a color review warning', () => {
+    const scan = {
+      videoStreams: [],
+      audioStreams: [],
+      subtitleStreams: [],
+      attachmentStreams: [],
+      colorPolicy: { status: 'not_applicable', action: 'none' },
+      rawProbe: {},
+    } as unknown as ScanResult;
+
+    render(<MediaSnapshotDetails scan={scan} section="general" />);
+
+    expect(screen.getByText('Metadata status').parentElement?.textContent).toContain('Not applicable');
+    expect(screen.queryByText('Review required')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

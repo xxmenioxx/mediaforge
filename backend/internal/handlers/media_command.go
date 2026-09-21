@@ -535,6 +535,8 @@ func sourceUsesHDRTransfer(source MediaStream) bool {
 
 func normalizedFFmpegRange(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
 	case "pc", "full":
 		return "pc"
 	default:
@@ -805,6 +807,11 @@ func resolveColorMetadata(source MediaStream) colorMetadataResolution {
 }
 
 func colorPolicyPresentationForSource(source MediaStream) models.JSONMap {
+	if strings.TrimSpace(source.Codec) == "" && source.Width == 0 && source.Height == 0 &&
+		strings.TrimSpace(source.ColorSpace) == "" && strings.TrimSpace(source.ColorTransfer) == "" &&
+		strings.TrimSpace(source.ColorPrimaries) == "" && strings.TrimSpace(source.ColorRange) == "" {
+		return models.JSONMap{"status": "not_applicable", "action": "none"}
+	}
 	metadata := resolveColorMetadata(source)
 	presentation := models.JSONMap{
 		"status": "complete",

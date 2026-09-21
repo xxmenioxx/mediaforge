@@ -1336,7 +1336,7 @@ export type MediaStreamInfo = {
 };
 
 export type ColorPolicyPresentation = {
-  status?: 'complete' | 'incomplete_unsupported' | string;
+  status?: 'complete' | 'incomplete_unsupported' | 'not_applicable' | string;
   action?: 'none' | 'review' | string;
   reason?: string;
   warning?: string;

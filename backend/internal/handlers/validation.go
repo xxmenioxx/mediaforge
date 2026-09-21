@@ -626,9 +626,15 @@ func checksToJSON(checks []CheckResult) []models.JSONMap {
 
 func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, string) {
 	policy := "preserve"
-	if worker := unknownRecord(job.ProfileSnapshot["workerConfig"]); worker != nil {
+	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	effectivePolicy := ""
+	if worker != nil {
 		if value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["finalColorPolicy"]))); value != "" {
 			policy = value
+		}
+		switch value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["effectiveFinalColorPolicy"]))); value {
+		case "preserve", "normalize_bt709":
+			effectivePolicy = value
 		}
 	}
 	override := conversionOverrideForJob(job, assetConversionOverrides(db))
@@ -648,10 +654,17 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, s
 		ColorSpace: stringFromUnknown(source["colorSpace"]), ColorTransfer: stringFromUnknown(source["colorTransfer"]),
 		ColorPrimaries: stringFromUnknown(source["colorPrimaries"]), ColorRange: stringFromUnknown(source["colorRange"]),
 	}
-	normalize := policy == "normalize_bt709" ||
-		(policy == "automatic" && strings.Contains(strings.ToLower(job.Notes), "-c:v hevc_videotoolbox") && !sourceUsesBT709(sourceStream) && !sourceUsesHDRTransfer(sourceStream))
-	if normalize && !sourceUsesHDRTransfer(sourceStream) {
-		effective = "normalize_bt709"
+	if effectivePolicy != "" {
+		effective = effectivePolicy
+	} else {
+		metadata := resolveColorMetadata(sourceStream)
+		normalize := metadata.complete && (policy == "normalize_bt709" ||
+			(policy == "automatic" && strings.Contains(strings.ToLower(job.Notes), "-c:v hevc_videotoolbox") && !sourceUsesBT709(sourceStream) && !sourceUsesHDRTransfer(sourceStream)))
+		if normalize && !sourceUsesHDRTransfer(sourceStream) {
+			effective = "normalize_bt709"
+		}
+	}
+	if effective == "normalize_bt709" {
 		expected = models.JSONMap{"colorSpace": "bt709", "colorTransfer": "bt709", "colorPrimaries": "bt709", "colorRange": "tv"}
 	}
 	report["effectivePolicy"] = effective
@@ -894,13 +907,14 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 		if !ok || !strings.EqualFold(stringFromUnknown(stream["codec_type"]), "video") {
 			continue
 		}
+		rawColorRange := strings.TrimSpace(stringFromUnknown(stream["color_range"]))
 		result := models.JSONMap{
 			"codec":              strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["codec_name"]))),
 			"profile":            strings.TrimSpace(stringFromUnknown(stream["profile"])),
 			"colorSpace":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_space"]))),
 			"colorTransfer":      strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_transfer"]))),
 			"colorPrimaries":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["color_primaries"]))),
-			"colorRange":         normalizedFFmpegRange(stringFromUnknown(stream["color_range"])),
+			"colorRange":         normalizedFFmpegRange(rawColorRange),
 			"pixelFormat":        strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["pix_fmt"]))),
 			"bitDepth":           bitDepthFromPixelFormat(stringFromUnknown(stream["pix_fmt"])),
 			"frameSize":          characteristicString(stream["width"]) + "x" + characteristicString(stream["height"]),
