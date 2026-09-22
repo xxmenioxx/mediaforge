@@ -112,6 +112,7 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
   const audio = draft.audio;
   const tracks = draft.tracks;
   const audioCustom = audio.custom;
+  const addCompatibleTrack = Boolean(audioCustom.addCompatibleTrack);
   const trackCustom = tracks.custom;
   const formats = Array.isArray(trackCustom.subtitleSidecarFormats) ? trackCustom.subtitleSidecarFormats.join(',') : 'srt';
   const preferredRules = preferredSubtitleRulesValue(trackCustom.preferredSubtitleRules);
@@ -135,9 +136,9 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
     <AssetDefaultsDomainCard title="Audio General" domain={audio} options={audioOptions} onChange={(patch) => update('audio', patch)}>
       <Grid container spacing={1.5}>
         <Grid size={{ xs: 12, md: 4 }}><FormControlLabel control={<Switch checked={Boolean(audioCustom.addCompatibleTrack)} onChange={(event) => update('audio', { custom: { addCompatibleTrack: event.target.checked } })} />} label="Add compatible track" /></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><TextField fullWidth type="number" label="Quality / bitrate" value={Number(audioCustom.compatibleTrackQuality ?? 192)} onChange={(event) => update('audio', { custom: { compatibleTrackQuality: Number(event.target.value) } })} /></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Channels" value={String(audioCustom.compatibleTrackChannels ?? 2)} onChange={(event) => update('audio', { custom: { compatibleTrackChannels: Number(event.target.value) } })}><MenuItem value="1">1</MenuItem><MenuItem value="2">2</MenuItem><MenuItem value="6">6</MenuItem><MenuItem value="8">8</MenuItem></TextField></Grid>
-        <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Source stream" value={String(audioCustom.compatibleTrackSource ?? 'resolved')} onChange={(event) => update('audio', { custom: { compatibleTrackSource: event.target.value } })}><MenuItem value="resolved">Resolved audio stream</MenuItem><MenuItem value="default">Default audio stream</MenuItem></TextField></Grid>
+        <Grid size={{ xs: 12, md: 4 }}><TextField disabled={!addCompatibleTrack} fullWidth type="number" label="Quality / bitrate" value={Number(audioCustom.compatibleTrackQuality ?? 192)} onChange={(event) => update('audio', { custom: { compatibleTrackQuality: Number(event.target.value) } })} /></Grid>
+        <Grid size={{ xs: 12, md: 4 }}><TextField disabled={!addCompatibleTrack} select fullWidth label="Channels" value={String(audioCustom.compatibleTrackChannels ?? 2)} onChange={(event) => update('audio', { custom: { compatibleTrackChannels: Number(event.target.value) } })}><MenuItem value="1">1</MenuItem><MenuItem value="2">2</MenuItem><MenuItem value="6">6</MenuItem><MenuItem value="8">8</MenuItem></TextField></Grid>
+        <Grid size={{ xs: 12, md: 6 }}><TextField disabled={!addCompatibleTrack} select fullWidth label="Source stream" value={String(audioCustom.compatibleTrackSource ?? 'resolved')} onChange={(event) => update('audio', { custom: { compatibleTrackSource: event.target.value } })}><MenuItem value="resolved">Resolved audio stream</MenuItem><MenuItem value="default">Default audio stream</MenuItem></TextField></Grid>
         <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Preferred default language" value={String(audioCustom.preferredDefaultLanguage ?? '')} onChange={(event) => update('audio', { custom: { preferredDefaultLanguage: event.target.value } })} placeholder="eng" /></Grid>
       </Grid>
     </AssetDefaultsDomainCard>

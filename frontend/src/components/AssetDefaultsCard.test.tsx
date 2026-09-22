@@ -67,6 +67,77 @@ describe('AssetDefaultsCard', () => {
     expect(screen.queryByRole('option', { name: 'h264_nvenc' })).toBeNull();
   });
 
+  it('disables compatible track fields without clearing dormant values', async () => {
+    const onSave = vi.fn();
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={{ ...value, audio: { source: 'custom', custom: {
+      addCompatibleTrack: false,
+      compatibleTrackQuality: 384,
+      compatibleTrackChannels: 8,
+      compatibleTrackSource: 'default',
+      preferredDefaultLanguage: 'jpn',
+    } } }} settings={settings} profiles={profiles} saving={false} onSave={onSave} />);
+
+    expect((screen.getByLabelText('Quality / bitrate') as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByRole('combobox', { name: 'Channels' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('combobox', { name: 'Source stream' }).getAttribute('aria-disabled')).toBe('true');
+    expect((screen.getByLabelText('Preferred default language') as HTMLInputElement).disabled).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Save Asset Defaults' }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      audio: expect.objectContaining({
+        custom: expect.objectContaining({
+          addCompatibleTrack: false,
+          compatibleTrackQuality: 384,
+          compatibleTrackChannels: 8,
+          compatibleTrackSource: 'default',
+        }),
+      }),
+    }));
+  });
+
+  it('enables compatible track fields when Add compatible track is selected', async () => {
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={value} settings={settings} profiles={profiles} saving={false} onSave={vi.fn()} />);
+
+    await user.click(screen.getByRole('switch', { name: 'Add compatible track' }));
+    expect((screen.getByLabelText('Quality / bitrate') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByRole('combobox', { name: 'Channels' }).getAttribute('aria-disabled')).not.toBe('true');
+    expect(screen.getByRole('combobox', { name: 'Source stream' }).getAttribute('aria-disabled')).not.toBe('true');
+  });
+
+  it('preserves non-default compatible track values across an off/on toggle', async () => {
+    const user = userEvent.setup();
+    render(<AssetDefaultsCard value={{ ...value, audio: { source: 'custom', custom: {
+      addCompatibleTrack: true,
+      compatibleTrackQuality: 384,
+      compatibleTrackChannels: 8,
+      compatibleTrackSource: 'default',
+    } } }} settings={settings} profiles={profiles} saving={false} onSave={vi.fn()} />);
+
+    const quality = () => screen.getByLabelText('Quality / bitrate') as HTMLInputElement;
+    const channels = () => screen.getByRole('combobox', { name: 'Channels' });
+    const source = () => screen.getByRole('combobox', { name: 'Source stream' });
+    const assertValues = () => {
+      expect(quality().value).toBe('384');
+      expect(channels().textContent).toContain('8');
+      expect(source().textContent).toContain('Default audio stream');
+    };
+
+    assertValues();
+    await user.click(screen.getByRole('switch', { name: 'Add compatible track' }));
+    expect(quality().disabled).toBe(true);
+    expect(channels().getAttribute('aria-disabled')).toBe('true');
+    expect(source().getAttribute('aria-disabled')).toBe('true');
+    assertValues();
+
+    await user.click(screen.getByRole('switch', { name: 'Add compatible track' }));
+    expect(quality().disabled).toBe(false);
+    expect(channels().getAttribute('aria-disabled')).not.toBe('true');
+    expect(source().getAttribute('aria-disabled')).not.toBe('true');
+    assertValues();
+  });
+
   it('adds canonical preferred subtitle rules with mixed actions and preserves them on save', async () => {
     const onSave = vi.fn();
     const user = userEvent.setup();
