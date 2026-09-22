@@ -196,10 +196,42 @@ func TestCadenceValidationUsesMeasuredThenAverageThenBaseRateEvidence(t *testing
 			if result["status"] != test.want {
 				t.Fatalf("status=%v want %s: %#v", result["status"], test.want, result)
 			}
-			if test.name == "base disagreement" && result["baseRateDiagnostic"] == nil {
+			if (test.name == "base disagreement" || test.name == "real only") && result["baseRateDiagnostic"] == nil {
 				t.Fatalf("base-rate disagreement was not retained diagnostically: %#v", result)
 			}
 		})
+	}
+}
+
+func TestCadenceValidationDoesNotTreatDeclaredFrameCountAsMeasured(t *testing.T) {
+	probe := map[string]any{
+		"streams": []interface{}{
+			map[string]interface{}{
+				"codec_type":     "video",
+				"avg_frame_rate": "24000/1001",
+				"r_frame_rate":   "30000/1001",
+				"nb_frames":      float64(600),
+				"duration":       "20",
+			},
+		},
+	}
+	output := firstVideoFrameCharacteristics(probe)
+	if jsonFloat64(output["frameCount"]) > 0 {
+		t.Fatalf("declared nb_frames was treated as measured frameCount: %#v", output)
+	}
+	if jsonFloat64(output["declaredFrameCount"]) != 600 {
+		t.Fatalf("declared frame count was not retained diagnostically: %#v", output)
+	}
+
+	result := validateCadenceOutputFrameRate(map[string]interface{}{"effectiveOutputFrameRate": "24000/1001"}, output)
+	if result["status"] != "validated" {
+		t.Fatalf("matching avg_frame_rate should validate without measured frames: %#v", result)
+	}
+	if _, ok := result["measuredFrameRate"]; ok {
+		t.Fatalf("declared frame count created measured FPS evidence: %#v", result)
+	}
+	if result["baseRateDiagnostic"] == nil {
+		t.Fatalf("r_frame_rate disagreement was not retained diagnostically: %#v", result)
 	}
 }
 

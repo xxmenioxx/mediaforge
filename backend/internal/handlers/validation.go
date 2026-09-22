@@ -957,8 +957,8 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 			"fieldOrder":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["field_order"]))),
 			"chromaLocation":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["chroma_location"]))),
 		}
-		if jsonFloat64(result["frameCount"]) <= 0 {
-			result["frameCount"] = stream["nb_frames"]
+		if _, ok := stream["nb_frames"]; ok {
+			result["declaredFrameCount"] = stream["nb_frames"]
 		}
 		levelIDC := workerIntValue(stream["level"], 0)
 		result["hevcLevelIdc"] = levelIDC
