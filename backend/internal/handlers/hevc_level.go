@@ -290,7 +290,7 @@ func x265HEVCRateConstraint(profile models.Profile) hevcRateConstraint {
 			continue
 		}
 		name = strings.ToLower(strings.TrimSpace(name))
-		if name != "vbv-maxrate" && name != "vbv-bufsize" && name != "maxrate" && name != "bufsize" {
+		if name != "vbv-maxrate" && name != "vbv-bufsize" {
 			continue
 		}
 		if parsed, ok := parseHEVCRateKbps(value); ok {
@@ -298,18 +298,13 @@ func x265HEVCRateConstraint(profile models.Profile) hevcRateConstraint {
 		}
 	}
 	maxrate := values["vbv-maxrate"]
-	if maxrate == 0 {
-		maxrate = values["maxrate"]
-	}
 	buffer := values["vbv-bufsize"]
-	if buffer == 0 {
-		buffer = values["bufsize"]
-	}
+	completeVBVPair := maxrate > 0 && buffer > 0
 	return hevcRateConstraint{
 		MaxrateKbps:     maxrate,
 		BufferKbps:      buffer,
-		Bounded:         maxrate > 0,
-		ExplicitVBVPair: values["vbv-maxrate"] > 0 && values["vbv-bufsize"] > 0,
+		Bounded:         completeVBVPair,
+		ExplicitVBVPair: completeVBVPair,
 		Source:          "x265_vbv",
 	}
 }

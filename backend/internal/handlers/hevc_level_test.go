@@ -409,6 +409,30 @@ func TestX265HEVCLevelEnforcementIsDeterministic(t *testing.T) {
 	if got := effectiveX265Params(hard); got != "vbv-maxrate=20000:vbv-bufsize=40000:level-idc=4.1:high-tier=0" {
 		t.Fatalf("bounded Auto x265 decision was not hard-enforced: %s config=%#v", got, hard.WorkerConfig)
 	}
+	recommended := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "recommended", "x265Params": "vbv-maxrate=20000:vbv-bufsize=40000",
+	}}, streams)
+	if workerStringValue(recommended.WorkerConfig["hevcLevelEnforcement"]) != hevcLevelEnforcementHard || !boolSetting(recommended.WorkerConfig["hevcRateControlBounded"], false) || !strings.Contains(effectiveX265Params(recommended), "level-idc=4.1") {
+		t.Fatalf("complete VBV Recommended decision was not hard-enforced: %#v", recommended.WorkerConfig)
+	}
+	maxrateOnly := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "vbv-maxrate=20000",
+	}}, streams)
+	if boolSetting(maxrateOnly.WorkerConfig["hevcRateControlBounded"], false) || workerStringValue(maxrateOnly.WorkerConfig["hevcLevelEnforcement"]) != hevcLevelEnforcementAdvisory || strings.Contains(effectiveX265Params(maxrateOnly), "level-idc=") || strings.Contains(effectiveX265Params(maxrateOnly), "high-tier=") {
+		t.Fatalf("maxrate-only x265 constraint was treated as deterministic VBV: %#v", maxrateOnly.WorkerConfig)
+	}
+	bufsizeOnly := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "vbv-bufsize=40000",
+	}}, streams)
+	if boolSetting(bufsizeOnly.WorkerConfig["hevcRateControlBounded"], false) || workerStringValue(bufsizeOnly.WorkerConfig["hevcLevelEnforcement"]) != hevcLevelEnforcementAdvisory || strings.Contains(effectiveX265Params(bufsizeOnly), "level-idc=") || strings.Contains(effectiveX265Params(bufsizeOnly), "high-tier=") {
+		t.Fatalf("bufsize-only x265 constraint was treated as deterministic VBV: %#v", bufsizeOnly.WorkerConfig)
+	}
+	genericNames := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "maxrate=20000:bufsize=40000",
+	}}, streams)
+	if boolSetting(genericNames.WorkerConfig["hevcRateControlBounded"], false) || workerStringValue(genericNames.WorkerConfig["hevcLevelEnforcement"]) != hevcLevelEnforcementAdvisory || strings.Contains(effectiveX265Params(genericNames), "level-idc=") || strings.Contains(effectiveX265Params(genericNames), "high-tier=") {
+		t.Fatalf("generic x265 rate names were treated as canonical VBV: %#v", genericNames.WorkerConfig)
+	}
 	explicit := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
 		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1", "x265Params": "vbv-maxrate=20000:vbv-bufsize=40000",
 	}}, streams)
@@ -416,7 +440,7 @@ func TestX265HEVCLevelEnforcementIsDeterministic(t *testing.T) {
 		t.Fatalf("explicit bounded x265 Level was not deterministically enforced: %s config=%#v", got, explicit.WorkerConfig)
 	}
 	blocked := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
-		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1",
+		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1", "x265Params": "vbv-maxrate=20000",
 	}}, streams)
 	if workerStringValue(blocked.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionIncompatible || hevcLevelPlanningError(blocked) == nil || !strings.Contains(workerStringValue(blocked.WorkerConfig["hevcLevelResolutionWarning"]), "vbv-maxrate") {
 		t.Fatalf("explicit x265 Level without deterministic VBV was not blocked: %#v", blocked.WorkerConfig)
