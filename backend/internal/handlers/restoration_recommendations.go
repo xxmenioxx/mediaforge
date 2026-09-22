@@ -212,7 +212,7 @@ func frameStructureRestorationRecommendation(interlace InterlaceAnalysis, resolv
 	filters := strings.ToLower(workerStringValue(resolved.WorkerConfig["videoFilters"]))
 	if operation == "inverse_telecine" || strings.Contains(filters, "fieldmatch") {
 		patch := models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "deinterlaceMode": "off", "deinterlaceFieldOrder": "auto"}
-		if order := normalizedRecommendationFieldOrder(interlace.DetectedFieldOrder, interlace.RecommendedMode); order != "" {
+		if order := canonicalIVTCFieldOrder(filters); order != "" {
 			patch["cadenceFieldOrder"] = order
 			patch["deinterlaceMode"] = "ivtc_" + order
 		} else {

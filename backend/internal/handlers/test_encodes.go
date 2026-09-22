@@ -768,6 +768,7 @@ func testEncodeValidationReportWithTiming(plan MediaJobPlan, streams MediaStream
 		video := streams.Video[0]
 		cadenceValidation = validateCadenceOutputFrameRate(map[string]interface{}(plan.Profile.WorkerConfig), models.JSONMap{
 			"frameRate": video.FrameRate, "realFrameRate": video.RealFrameRate,
+			"frameCount": video.DecodedFrames, "duration": streams.Duration,
 		})
 		if cadenceValidation["status"] == "mismatch" || cadenceValidation["status"] == "unverified" {
 			warnings = append(warnings, fmt.Sprintf("Output cadence validation is %s", cadenceValidation["status"]))

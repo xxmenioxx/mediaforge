@@ -18,7 +18,7 @@ func TestRestorationRecommendationsReuseMatureResolvers(t *testing.T) {
 		want        string
 	}{
 		{
-			name: "telecine", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .95, RecommendedMode: "ivtc_tff"},
+			name: "telecine", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .95, RecommendedMode: "ivtc_tff", IVTCValidation: &IVTCValidation{SelectedOrder: "tff", Confidence: .95}, RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate"},
 			cadence:     CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .95},
 			cadencePlan: CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .95}, want: "ivtc",
 		},
@@ -82,7 +82,7 @@ func TestRestorationRecommendationUsesNeutralUpscaleInputAndOnlyAnnotatesCurrent
 
 func TestRestorationRecommendationUsesNeutralMotionInput(t *testing.T) {
 	scan := recommendationScan(
-		InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff"},
+		InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff", IVTCValidation: &IVTCValidation{SelectedOrder: "tff", Confidence: .99}, RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate"},
 		CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .99},
 		CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
 	)
@@ -125,7 +125,7 @@ func TestMotionRecommendationPatchesReplaceConflictingState(t *testing.T) {
 		want        models.JSONMap
 	}{
 		{
-			name: "ivtc", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff"},
+			name: "ivtc", interlace: InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine", Confidence: .99, DetectedFieldOrder: "tff", RecommendedMode: "ivtc_tff", IVTCValidation: &IVTCValidation{SelectedOrder: "tff", Confidence: .99}, RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate"},
 			cadence: CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .99}, cadencePlan: CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
 			current: models.JSONMap{"fieldStructureMode": "deinterlace", "cadenceMode": "preserve", "deinterlaceMode": "force", "deinterlaceFieldOrder": "bff"},
 			want:    models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "deinterlaceMode": "ivtc_tff", "cadenceFieldOrder": "tff", "deinterlaceFieldOrder": "auto"},
