@@ -34,8 +34,41 @@ func TestAssetDefaultsValidationAndCompatibilityDefaults(t *testing.T) {
 	if _, err := validateAssetDefaultsValue(nil, models.JSONMap{"video": models.JSONMap{"source": "invalid"}}); err == nil {
 		t.Fatal("invalid source was accepted")
 	}
-	if _, err := validateAssetDefaultsValue(nil, models.JSONMap{"audio": models.JSONMap{"custom": models.JSONMap{"compatibleTrackChannels": 0}}}); err == nil {
-		t.Fatal("invalid audio channel count was accepted")
+	for name, custom := range map[string]models.JSONMap{
+		"channels": {"addCompatibleTrack": true, "compatibleTrackChannels": 0},
+		"quality":  {"addCompatibleTrack": true, "compatibleTrackQuality": 0},
+		"source":   {"addCompatibleTrack": true, "compatibleTrackSource": "unsupported"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validateAssetDefaultsValue(nil, models.JSONMap{"audio": models.JSONMap{"custom": custom}}); err == nil {
+				t.Fatalf("invalid enabled audio compatibility value was accepted: %#v", custom)
+			}
+		})
+	}
+}
+
+func TestAssetDefaultsDormantCompatibleTrackValuesRemainUnvalidatedAndPersisted(t *testing.T) {
+	value, err := validateAssetDefaultsValue(nil, models.JSONMap{"audio": models.JSONMap{"custom": models.JSONMap{
+		"addCompatibleTrack":      false,
+		"compatibleTrackQuality":  0,
+		"compatibleTrackChannels": 0,
+		"compatibleTrackSource":   "unsupported",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := settingProfileObject(assetDefaultsDomain(value, "audio")["custom"])
+	if boolValue(custom["addCompatibleTrack"], true) {
+		t.Fatalf("compatible track unexpectedly enabled: %#v", custom)
+	}
+	if assetDefaultsIntSetting(custom["compatibleTrackQuality"], -1) != 0 || assetDefaultsIntSetting(custom["compatibleTrackChannels"], -1) != 0 || workerStringValue(custom["compatibleTrackSource"]) != "unsupported" {
+		t.Fatalf("dormant compatible track values were changed: %#v", custom)
+	}
+	job := models.QueueJob{ProfileResolution: models.JSONMap{"audio": models.JSONMap{"profileData": custom}}}
+	profile := models.Profile{}
+	applyAssetDefaultsAudioToVideoProfile(&profile, job)
+	if effectiveAACOption(MediaJobPlan{Profile: profile}, nil, "addAacStereoTrack", "addAacStereoDefault", false) {
+		t.Fatalf("dormant compatible track values enabled a derived audio track: %#v", profile.WorkerConfig)
 	}
 }
 

@@ -159,17 +159,19 @@ func validateAssetDefaultsValueWithWarnings(db *gorm.DB, value models.JSONMap) (
 	}
 	if audio := assetDefaultsDomain(result, "audio"); audio != nil {
 		custom := settingProfileObject(audio["custom"])
-		channels := assetDefaultsIntSetting(custom["compatibleTrackChannels"], 2)
-		if channels < 1 || channels > 8 {
-			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackChannels must be between 1 and 8")
-		}
-		quality := assetDefaultsIntSetting(custom["compatibleTrackQuality"], 192)
-		if quality < 1 {
-			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackQuality must be positive")
-		}
-		source := strings.ToLower(strings.TrimSpace(workerStringValue(custom["compatibleTrackSource"])))
-		if source != "resolved" && source != "default" {
-			return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackSource must be resolved or default")
+		if boolValue(custom["addCompatibleTrack"], false) {
+			channels := assetDefaultsIntSetting(custom["compatibleTrackChannels"], 2)
+			if channels < 1 || channels > 8 {
+				return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackChannels must be between 1 and 8")
+			}
+			quality := assetDefaultsIntSetting(custom["compatibleTrackQuality"], 192)
+			if quality < 1 {
+				return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackQuality must be positive")
+			}
+			source := strings.ToLower(strings.TrimSpace(workerStringValue(custom["compatibleTrackSource"])))
+			if source != "resolved" && source != "default" {
+				return nil, nil, fmt.Errorf("assetDefaults.audio.custom.compatibleTrackSource must be resolved or default")
+			}
 		}
 	}
 	if tracks := assetDefaultsDomain(result, "tracks"); tracks != nil {
