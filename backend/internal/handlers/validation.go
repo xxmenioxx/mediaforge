@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -182,6 +183,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	timingReport := models.JSONMap{"status": "unverified"}
 	var sourceProbe map[string]any
 	var outputProbe map[string]any
+	var hevcEvidence models.JSONMap
 	if strings.TrimSpace(job.MediaPath) != "" {
 		sourceProbe = ffprobeJSON(job.MediaPath)
 		if _, failed := sourceProbe["error"].(string); !failed {
@@ -192,6 +194,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 	if outputExists {
 		outputProbe = ffprobeJSON(job.OutputPath)
+		hevcEvidence = hevcBitstreamEvidenceForValidation(job.OutputPath, outputProbe)
 		if probeError, failed := outputProbe["error"].(string); failed {
 			warnings = append(warnings, "DirectPlay analysis could not inspect the final file: "+probeError)
 		} else if report, directPlayErr := scheduler.EvaluateActualDirectPlay(db, models.JSONMap(outputProbe)); directPlayErr != nil {
@@ -245,7 +248,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		if colorWarning != "" {
 			warnings = append(warnings, colorWarning)
 		}
-		if fidelity := validateJobFrameFidelity(db, job); len(fidelity) > 0 {
+		if fidelity := validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence); len(fidelity) > 0 {
 			colorReport["frameFidelity"] = fidelity
 		}
 	}
@@ -282,6 +285,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	report["avTiming"] = timingReport
 	report["smartUpscale"] = smartUpscaleReport
 	report["restoration"] = restorationReport
+	if len(hevcEvidence) > 0 {
+		report["hevcBitstreamEvidence"] = hevcEvidence
+	}
 
 	return ValidationResult{
 		JobID:    job.ID,
@@ -681,9 +687,42 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, s
 // color policy: frame geometry, aspect, fields, chroma siting and output bit
 // depth. It is informational by design; codec, depth and field order can be
 // deliberate profile changes and must not make an otherwise valid job fail.
-func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob) models.JSONMap {
-	source := firstVideoFrameCharacteristics(ffprobeJSON(job.MediaPath))
-	output := firstVideoFrameCharacteristics(ffprobeJSON(job.OutputPath))
+func hevcBitstreamEvidenceForValidation(path string, outputProbe map[string]any) models.JSONMap {
+	output := firstVideoFrameCharacteristics(outputProbe)
+	if !strings.EqualFold(stringFromUnknown(output["codec"]), "hevc") {
+		return nil
+	}
+	structure, err := measureHEVCBitstreamStructure(context.Background(), path)
+	evidence := hevcBitstreamEvidenceFromStructure(structure, err)
+	evidence["stream"] = "0:v:0"
+	evidence["probe"] = "ffmpeg_trace_headers"
+	return evidence
+}
+
+func hevcBitstreamEvidenceFromStructure(structure HEVCBitstreamStructure, err error) models.JSONMap {
+	evidence := models.JSONMap{
+		"probeStatus":            "unverified",
+		"levelEvidenceAvailable": structure.LevelKnown,
+		"tierEvidenceAvailable":  structure.TierKnown,
+		"generalLevelIdc":        structure.LevelIDC,
+		"generalTierFlag":        structure.TierFlag,
+		"generalLevel":           hevcLevelFromIDC(structure.LevelIDC),
+		"generalTier":            map[int]string{0: "main", 1: "high"}[structure.TierFlag],
+	}
+	if err != nil {
+		evidence["probeStatus"] = "unavailable"
+		evidence["error"] = err.Error()
+		return evidence
+	}
+	if !structure.LevelKnown || !structure.TierKnown {
+		evidence["probeStatus"] = "unavailable"
+	}
+	return evidence
+}
+
+func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob, sourceProbe, outputProbe map[string]any, hevcEvidence models.JSONMap) models.JSONMap {
+	source := firstVideoFrameCharacteristics(sourceProbe)
+	output := firstVideoFrameCharacteristics(outputProbe)
 	if len(source) == 0 || len(output) == 0 {
 		return models.JSONMap{"status": "unverified", "source": source, "output": output}
 	}
@@ -736,11 +775,11 @@ func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob) models.JSONMap {
 	fields["pixelFormat"] = frameFidelityValue(source, output, "pixelFormat", true)
 	fields["bitDepth"] = frameFidelityValue(source, output, "bitDepth", true)
 	fields["frameSize"] = frameFidelityValue(source, output, "frameSize", strings.Contains(filters, "crop=") || strings.Contains(filters, "scale="))
-	fields["hevcLevel"] = validateHEVCLevelField(worker, source, output)
+	fields["hevcLevel"] = validateHEVCLevelField(worker, source, output, hevcEvidence)
 
 	status := "passed"
 	for _, raw := range fields {
-		if value, ok := raw.(models.JSONMap); ok && (value["status"] == "changed_unexpectedly" || value["status"] == "mismatch" || value["status"] == "unverified") {
+		if value, ok := raw.(models.JSONMap); ok && (value["status"] == "changed_unexpectedly" || value["status"] == "mismatch" || value["status"] == "unverified" || value["status"] == "unavailable") {
 			status = "warning"
 			break
 		}
@@ -810,82 +849,91 @@ func measuredFrameRate(output models.JSONMap) (rate, frameCount, duration float6
 	return frameCount / duration, frameCount, duration, true
 }
 
-func validateHEVCLevelField(worker map[string]interface{}, source, output models.JSONMap) models.JSONMap {
+func validateHEVCLevelField(worker map[string]interface{}, source, output models.JSONMap, evidence ...models.JSONMap) models.JSONMap {
 	if !strings.EqualFold(stringFromUnknown(output["codec"]), "hevc") {
 		return models.JSONMap{"status": "not_applicable"}
 	}
-	mode := ""
-	if worker != nil {
-		mode = normalizedHEVCLevelMode(stringFromUnknown(worker["hevcLevelMode"]))
-	}
+	mode := normalizedHEVCLevelMode(stringFromUnknown(worker["hevcLevelMode"]))
 	if mode == "" {
 		mode = "auto"
 	}
 	configuredEncoder := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoEncoder"])))
 	if configuredEncoder != "" && configuredEncoder != "auto" && configuredEncoder != "libx265" && configuredEncoder != "hevc_qsv" {
-		return models.JSONMap{"mode": mode, "output": stringFromUnknown(output["hevcLevel"]), "status": "encoder_selected", "reason": "the selected encoder has no validated explicit-Level mapping"}
+		return models.JSONMap{"mode": mode, "status": "unavailable", "reason": "the selected runtime has no validated HEVC Level/Tier evidence mapping"}
 	}
-	expected := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevelEffective"]))
-	if expected == "" {
-		expected = normalizedHEVCLevel(stringFromUnknown(worker["hevcLevel"]))
+	expectedLevel := normalizedHEVCLevel(stringFromUnknown(worker["hevcLevelEffective"]))
+	expectedTier := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["hevcLevelTier"])))
+	if expectedTier == "" {
+		expectedTier = "main"
 	}
-	unknownEffectiveInputs := boolSetting(worker["effectiveOutputFrameRateUnknown"], false) || boolSetting(worker["effectiveOutputGeometryUnknown"], false)
-	if mode == "auto" && expected == "" && !unknownEffectiveInputs {
-		fps := parseFrameRateValue(stringFromUnknown(worker["effectiveOutputFrameRate"]))
-		if fps <= 0 {
-			fps = parseFrameRateValue(stringFromUnknown(source["frameRate"]))
-		}
-		recommendation := recommendHEVCLevel(
-			workerIntValue(worker["effectiveOutputWidth"], workerIntValue(source["width"], 0)),
-			workerIntValue(worker["effectiveOutputHeight"], workerIntValue(source["height"], 0)),
-			fps,
-			0,
-		)
-		expected = recommendation.RecommendedLevel
+	bitstream := models.JSONMap{}
+	if len(evidence) > 0 {
+		bitstream = evidence[0]
 	}
-	observed := stringFromUnknown(output["hevcLevel"])
-	effectiveTier := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["hevcLevelTier"])))
-	if effectiveTier == "" {
-		effectiveTier = "main"
+	actualLevel := normalizedHEVCLevel(stringFromUnknown(bitstream["generalLevel"]))
+	actualTier := strings.ToLower(strings.TrimSpace(stringFromUnknown(bitstream["generalTier"])))
+	if actualTier != "main" && actualTier != "high" {
+		actualTier = ""
 	}
-	status := "validated"
-	if expected == "" || observed == "" {
-		status = "unverified"
-	} else if expected != observed {
+	levelStatus := "unavailable"
+	if boolSetting(bitstream["levelEvidenceAvailable"], false) && actualLevel != "" {
+		levelStatus = "validated"
+	}
+	tierStatus := "unavailable"
+	if boolSetting(bitstream["tierEvidenceAvailable"], false) && actualTier != "" {
+		tierStatus = "validated"
+	}
+	status := "unavailable"
+	if expectedLevel != "" && levelStatus == "validated" && actualLevel != expectedLevel {
+		levelStatus = "mismatch"
+	}
+	if expectedTier != "" && tierStatus == "validated" && actualTier != expectedTier {
+		tierStatus = "mismatch"
+	}
+	if levelStatus == "mismatch" || tierStatus == "mismatch" {
 		status = "mismatch"
+	} else if (expectedLevel == "" || expectedTier == "") && levelStatus == "validated" && tierStatus == "validated" {
+		status = "unverified"
+	} else if expectedLevel != "" && expectedTier != "" && levelStatus == "validated" && tierStatus == "validated" {
+		status = "validated"
+	} else if levelStatus == "unverified" || tierStatus == "unverified" {
+		status = "unverified"
 	}
-	observedBitrate := int64(workerIntValue(output["bitrate"], 0))
-	bitrateStatus := "unverified"
-	requirementsStatus := "unverified"
-	maxBitrate := int64(0)
-	if limit, ok := hevcLevelLimitFor(observed); ok {
-		maxBitrate = limit.MaxBitrateKbps * 1000
+
+	requirementsStatus := "unavailable"
+	if expectedLimit, ok := hevcLevelLimitFor(expectedLevel); ok {
 		width := workerIntValue(output["width"], 0)
 		height := workerIntValue(output["height"], 0)
 		fps := parseFrameRateValue(stringFromUnknown(output["frameRate"]))
 		if width > 0 && height > 0 && fps > 0 {
 			requirementsStatus = "validated"
 			pictureSize := int64(width) * int64(height)
-			if pictureSize > limit.MaxLumaPicture || float64(pictureSize)*fps > limit.MaxLumaRate {
-				requirementsStatus = "exceeds_level_limits"
+			if pictureSize > expectedLimit.MaxLumaPicture || float64(pictureSize)*fps > expectedLimit.MaxLumaRate {
+				requirementsStatus = "mismatch"
 				status = "mismatch"
 			}
-		}
-		if observedBitrate > 0 {
-			bitrateStatus = "validated"
-			if observedBitrate > maxBitrate {
-				bitrateStatus = "exceeds_main_tier"
-				status = "mismatch"
-			}
-		}
-		if requirementsStatus == "exceeds_level_limits" {
-			status = "mismatch"
 		}
 	}
+	observedBitrate := int64(workerIntValue(output["bitrate"], 0))
+	bitrateStatus := "unavailable"
+	if observedBitrate > 0 {
+		// ffprobe average bit_rate is informative only. It cannot prove HEVC
+		// MaxBR or CPB peak conformance.
+		bitrateStatus = "unverified"
+		if status == "validated" {
+			status = "unverified"
+		}
+	}
+	maxBitrate := int64(0)
+	if limit, ok := hevcLevelLimitFor(actualLevel); ok {
+		maxBitrate = limit.MaxBitrateKbps * 1000
+	}
 	return models.JSONMap{
-		"mode": mode, "requested": expected, "effective": expected, "output": observed, "status": status,
-		"effectiveTier": effectiveTier, "observedTier": "not_reported",
-		"observedBitrate": observedBitrate, "maxMainTierBitrate": maxBitrate, "bitrateStatus": bitrateStatus, "requirementsStatus": requirementsStatus,
+		"mode": mode, "requested": expectedLevel, "effective": expectedLevel, "expectedLevel": expectedLevel, "actualLevel": actualLevel,
+		"output": actualLevel, "status": status, "levelStatus": levelStatus, "expectedTier": expectedTier,
+		"effectiveTier": expectedTier, "observedTier": actualTier, "tierStatus": tierStatus,
+		"observedBitrate": observedBitrate, "maxMainTierBitrate": maxBitrate, "bitrateStatus": bitrateStatus,
+		"requirementsStatus": requirementsStatus, "bitstreamEvidence": bitstream,
 	}
 }
 

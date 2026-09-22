@@ -694,6 +694,9 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	} else {
 		profile = resolveEffectiveVideoEncodingProfile(profile, streams, qualityAnalysisPath)
 	}
+	if err := hevcLevelPlanningError(profile); err != nil {
+		return MediaJobPlan{}, err
+	}
 	return MediaJobPlan{
 		InputPath:             inputPath,
 		SourceAssetPath:       inputPath,
@@ -839,28 +842,40 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 		gopSeconds = float64(gopFrames) / parsedFPS
 	}
 	decision := models.JSONMap{
-		"encoder":                   resolvedVideoEncoder(profile),
-		"codec":                     profile.VideoCodec,
-		"profile":                   map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
-		"pixelFormat":               workerStringValue(profile.WorkerConfig["pixFmt"]),
-		"frameStructureMode":        workerStringValue(profile.WorkerConfig["frameStructureMode"]),
-		"cadenceOperation":          workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]),
-		"effectiveFrameRate":        fps,
-		"effectiveWidth":            workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
-		"effectiveHeight":           workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], 0),
-		"geometryUnknown":           profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false),
-		"gopFrames":                 gopFrames,
-		"gopSeconds":                gopSeconds,
-		"maxBFrames":                workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 0),
-		"hevcLevel":                 workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
-		"hevcTier":                  workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
-		"hevcLevelWarning":          workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
-		"effectiveFinalColorPolicy": workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
-		"colorPolicyDecision":       workerStringValue(profile.WorkerConfig["colorPolicyDecision"]),
-		"colorPolicyWarning":        workerStringValue(profile.WorkerConfig["colorPolicyWarning"]),
+		"encoder":                    resolvedVideoEncoder(profile),
+		"codec":                      profile.VideoCodec,
+		"profile":                    map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
+		"pixelFormat":                workerStringValue(profile.WorkerConfig["pixFmt"]),
+		"frameStructureMode":         workerStringValue(profile.WorkerConfig["frameStructureMode"]),
+		"cadenceOperation":           workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]),
+		"effectiveFrameRate":         fps,
+		"effectiveWidth":             workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
+		"effectiveHeight":            workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], 0),
+		"geometryUnknown":            profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false),
+		"gopFrames":                  gopFrames,
+		"gopSeconds":                 gopSeconds,
+		"maxBFrames":                 workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 0),
+		"hevcLevel":                  workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
+		"hevcTier":                   workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
+		"hevcLevelMode":              workerStringValue(profile.WorkerConfig["hevcLevelMode"]),
+		"hevcLevelInputFingerprint":  workerStringValue(profile.WorkerConfig["hevcLevelInputFingerprint"]),
+		"hevcLevelResolutionState":   workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]),
+		"hevcLevelEnforcement":       workerStringValue(profile.WorkerConfig["hevcLevelEnforcement"]),
+		"hevcRateControlSource":      workerStringValue(profile.WorkerConfig["hevcRateControlSource"]),
+		"hevcRateControlBounded":     profileWorkerBool(profile, "hevcRateControlBounded", false),
+		"hevcRateControlTargetKbps":  workerIntValue(profile.WorkerConfig["hevcRateControlTargetKbps"], 0),
+		"hevcRateControlMaxrateKbps": workerIntValue(profile.WorkerConfig["hevcRateControlMaxrateKbps"], 0),
+		"hevcRateControlBufferKbps":  workerIntValue(profile.WorkerConfig["hevcRateControlBufferKbps"], 0),
+		"hevcLevelWarning":           workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
+		"effectiveFinalColorPolicy":  workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
+		"colorPolicyDecision":        workerStringValue(profile.WorkerConfig["colorPolicyDecision"]),
+		"colorPolicyWarning":         workerStringValue(profile.WorkerConfig["colorPolicyWarning"]),
 	}
 	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
 		decision["upscale"] = upscale
+	}
+	if consequences := unknownRecord(profile.WorkerConfig["hevcLevelRateControlConsequences"]); consequences != nil {
+		decision["hevcLevelRateControlConsequences"] = consequences
 	}
 	if restoration, ok := resolvedRestorationPlanFromProfile(profile); ok {
 		decision["restoration"] = restoration
@@ -2028,6 +2043,11 @@ func qsvRateControlArgs(profile models.Profile) []string {
 		target := workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0)
 		maxrate := workerIntValue(profile.WorkerConfig["qsvMaxrate"], target)
 		buffer := workerIntValue(profile.WorkerConfig["qsvBuffer"], target*2)
+		if profileWorkerBool(profile, "hevcRateControlFrozen", false) {
+			target = workerIntValue(profile.WorkerConfig["hevcRateControlTargetBps"], target)
+			maxrate = workerIntValue(profile.WorkerConfig["hevcRateControlMaxrateBps"], target)
+			buffer = workerIntValue(profile.WorkerConfig["hevcRateControlBufferBps"], target*2)
+		}
 		if target > 0 {
 			return []string{"-b:v", fmt.Sprintf("%d", target), "-maxrate", fmt.Sprintf("%d", maxrate), "-bufsize", fmt.Sprintf("%d", buffer)}
 		}

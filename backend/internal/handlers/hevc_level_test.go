@@ -87,15 +87,15 @@ func TestHEVCLevelSemanticAdaptersKeepRepresentationsSeparate(t *testing.T) {
 	}
 }
 
-func TestHEVCLevelAutoRecalculatesWhileRecommendedKeepsStoredValue(t *testing.T) {
+func TestHEVCLevelAutoAndRecommendedUseCurrentOutputRequirements(t *testing.T) {
 	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "60/1", Bitrate: 40_000_000}}}
 	auto := resolveHEVCLevel(models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto", "hevcLevel": "4.0"}}, streams)
 	recommended := resolveHEVCLevel(models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "recommended", "hevcLevel": "4.0"}}, streams)
 	if auto.WorkerConfig["hevcLevelEffective"] != "4.1" {
 		t.Fatalf("Auto did not recalculate for 1080p60: %#v", auto.WorkerConfig)
 	}
-	if recommended.WorkerConfig["hevcLevelEffective"] != "4.0" {
-		t.Fatalf("Recommended did not keep the stored snapshot value: %#v", recommended.WorkerConfig)
+	if recommended.WorkerConfig["hevcLevelEffective"] != "4.1" {
+		t.Fatalf("Recommended did not recalculate without a matching fingerprint: %#v", recommended.WorkerConfig)
 	}
 }
 
@@ -174,8 +174,8 @@ func TestHEVCLevelUnknownCustomFPSDoesNotFallbackToSource(t *testing.T) {
 	base.WorkerConfig["hevcLevelMode"] = "custom"
 	base.WorkerConfig["hevcLevel"] = "4.1"
 	manual := resolveHEVCLevel(base, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
-	if workerStringValue(manual.WorkerConfig["hevcLevelEffective"]) != "4.1" {
-		t.Fatalf("manual Level did not win with unknown FPS: %#v", manual.WorkerConfig)
+	if workerStringValue(manual.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(manual.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved {
+		t.Fatalf("manual Level was emitted without a compatibility preflight: %#v", manual.WorkerConfig)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
 		profile = resolveHEVCLevel(profile, streams)
 		profile.WorkerConfig["videoFilters"] = "scale_qsv=1280:720"
 		profile = resolveHEVCLevel(profile, streams)
-		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelTier"]) != "" || !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(profile.WorkerConfig["hevcLevelTier"]) != "" || workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved || !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
 			t.Fatalf("unknown geometry retained stale successful state: %#v", profile.WorkerConfig)
 		}
 	})
@@ -253,7 +253,7 @@ func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
 		profile.WorkerConfig["hevcLevelMode"] = "custom"
 		profile.WorkerConfig["hevcLevel"] = "4.1"
 		profile = resolveHEVCLevel(profile, streams)
-		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.1" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.1" || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
 			t.Fatalf("manual pass retained Auto state: %#v", profile.WorkerConfig)
 		}
 		profile.WorkerConfig["hevcLevelMode"] = "auto"
@@ -275,7 +275,7 @@ func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
 		}
 		profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
 		profile = resolveHEVCLevel(profile, streams)
-		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || profile.WorkerConfig["hevcLevelRecommendation"] != nil || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
 			t.Fatalf("unknown FPS retained stale successful state: %#v", profile.WorkerConfig)
 		}
 	})
@@ -311,7 +311,7 @@ func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
 	}
 }
 
-func TestCustomHEVCLevelResolvesWithoutProbeForLabCommandDisplay(t *testing.T) {
+func TestCustomHEVCLevelRequiresCompatibilityPreflight(t *testing.T) {
 	profile := resolveHEVCLevel(models.Profile{
 		VideoCodec: "hevc",
 		WorkerConfig: models.JSONMap{
@@ -320,8 +320,8 @@ func TestCustomHEVCLevelResolvesWithoutProbeForLabCommandDisplay(t *testing.T) {
 		},
 	}, MediaStreamInventory{})
 	command := shellJoin(videoCodecArgsForResolvedEncoder(profile, nil, "hevc_qsv"))
-	if !strings.Contains(command, "-level:v 40 -tier main") {
-		t.Fatalf("LAB Custom Level missing from displayed command: %s", command)
+	if strings.Contains(command, "-level:v 40 -tier main") || workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved {
+		t.Fatalf("LAB Custom Level was rendered without a compatibility preflight: %s %#v", command, profile.WorkerConfig)
 	}
 }
 
@@ -330,5 +330,88 @@ func TestHEVCLevelAutoEmitsMinimumLevelForAsset(t *testing.T) {
 	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
 	if args := strings.Join(hevcLevelArgs(resolved, "hevc_qsv"), " "); args != "-level:v 40 -tier main" {
 		t.Fatalf("auto mode did not emit the asset recommendation: args=%q config=%#v", args, resolved.WorkerConfig)
+	}
+}
+
+func TestResolveHEVCLevelIgnoresSourceAverageBitrate(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}}
+	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1", Bitrate: 40_000_000}}})
+	if got := workerStringValue(resolved.WorkerConfig["hevcLevelEffective"]); got != "4.0" {
+		t.Fatalf("source average bitrate promoted output Level: got %q config=%#v", got, resolved.WorkerConfig)
+	}
+	if workerIntValue(resolved.WorkerConfig["hevcRateControlMaxrateKbps"], 0) != 0 {
+		t.Fatalf("source average bitrate became a bounded output constraint: %#v", resolved.WorkerConfig)
+	}
+}
+
+func TestResolveHEVCLevelUsesOnlyRenderedQSVPeakConstraint(t *testing.T) {
+	base := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "useHardwareIfAvailable": true, "hevcLevelMode": "auto", "qsvEffectiveRateControl": "vbr", "qsvTargetBitrate": int64(2_000_000),
+	}}
+	withTargetOnly := qsvHEVCRateConstraint(base)
+	if !withTargetOnly.Bounded || withTargetOnly.MaxrateKbps != 2_000 || withTargetOnly.BufferKbps != 4_000 {
+		t.Fatalf("rendered QSV target/maxrate default was not bounded: %#v", withTargetOnly)
+	}
+	base.WorkerConfig["qsvMaxrate"] = int64(20_000_000)
+	withPeak := qsvHEVCRateConstraint(base)
+	if !withPeak.Bounded || withPeak.MaxrateKbps != 20_000 {
+		t.Fatalf("QSV maxrate did not participate in Level planning: %#v", withPeak)
+	}
+	base.WorkerConfig["qsvMaxrate"] = int64(40_000_000)
+	base.WorkerConfig["qsvBuffer"] = int64(80_000_000)
+	constraint := qsvHEVCRateConstraint(base)
+	base.WorkerConfig["hevcRateControlFrozen"] = true
+	base.WorkerConfig["hevcRateControlTargetBps"] = int64(2_000_000)
+	base.WorkerConfig["hevcRateControlMaxrateBps"] = int64(40_000_000)
+	base.WorkerConfig["hevcRateControlBufferBps"] = int64(80_000_000)
+	args := strings.Join(qsvRateControlArgs(base), " ")
+	if !strings.Contains(args, "-maxrate 40000000 -bufsize 80000000") {
+		t.Fatalf("QSV rendered maxrate/buffer did not match frozen decision: %s constraint=%#v", args, constraint)
+	}
+}
+
+func TestRecommendedHEVCLevelFingerprintIsDeterministic(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "recommended"}}
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}}
+	first := resolveHEVCLevel(profile, streams)
+	reused := resolveHEVCLevel(first, streams)
+	if workerStringValue(reused.WorkerConfig["hevcLevelEffective"]) != "4.0" || workerStringValue(reused.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
+		t.Fatalf("matching Recommended fingerprint was not reused: %#v", reused.WorkerConfig)
+	}
+	changed := resolveHEVCLevel(first, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "60/1"}}})
+	if workerStringValue(changed.WorkerConfig["hevcLevelEffective"]) != "4.1" || workerStringValue(changed.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+		t.Fatalf("changed Recommended fingerprint did not recompute: %#v", changed.WorkerConfig)
+	}
+	unknown := first
+	unknown.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
+	unknown = resolveHEVCLevel(unknown, streams)
+	if workerStringValue(unknown.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(unknown.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved || len(hevcLevelArgs(unknown, "hevc_qsv")) != 0 {
+		t.Fatalf("stale Recommended Level reached enforcement after inputs became insufficient: %#v", unknown.WorkerConfig)
+	}
+}
+
+func TestX265HEVCLevelEnforcementIsDeterministic(t *testing.T) {
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}}
+	advisory := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "level-idc=5.0:high-tier=1:aq-mode=3",
+	}}, streams)
+	if got := effectiveX265Params(advisory); got != "aq-mode=3" {
+		t.Fatalf("unbounded Auto x265 decision was not advisory: %s", got)
+	}
+	hard := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "vbv-maxrate=20000:vbv-bufsize=40000",
+	}}, streams)
+	consequences := unknownRecord(hard.WorkerConfig["hevcLevelRateControlConsequences"])
+	if workerIntValue(consequences["maxrateKbps"], 0) != 20_000 || workerIntValue(consequences["bufferKbps"], 0) != 40_000 || stringFromUnknown(consequences["vbvConsequence"]) != "existing_vbv_frozen" {
+		t.Fatalf("x265 VBV consequences were not frozen before rendering: %#v", consequences)
+	}
+	if got := effectiveX265Params(hard); got != "vbv-maxrate=20000:vbv-bufsize=40000:level-idc=4.1:high-tier=0" {
+		t.Fatalf("bounded Auto x265 decision was not hard-enforced: %s config=%#v", got, hard.WorkerConfig)
+	}
+	incompatible := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.0",
+	}}, MediaStreamInventory{Video: []MediaStream{{Width: 3840, Height: 2160, FrameRate: "24/1"}}})
+	if workerStringValue(incompatible.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionIncompatible || hevcLevelPlanningError(incompatible) == nil {
+		t.Fatalf("incompatible explicit Level was not blocked: %#v", incompatible.WorkerConfig)
 	}
 }

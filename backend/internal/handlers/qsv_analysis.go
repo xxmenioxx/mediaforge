@@ -165,6 +165,10 @@ type HEVCBitstreamStructure struct {
 	ReorderFrames  int
 	DPBFrames      int
 	TemporalLayers int
+	LevelIDC       int
+	LevelKnown     bool
+	TierFlag       int
+	TierKnown      bool
 }
 
 func parseHEVCTraceHeaders(output string) HEVCBitstreamStructure {
@@ -175,6 +179,12 @@ func parseHEVCTraceHeaders(output string) HEVCBitstreamStructure {
 			continue
 		}
 		switch {
+		case strings.Contains(line, "general_level_idc"):
+			result.LevelKnown = true
+			result.LevelIDC = value
+		case strings.Contains(line, "general_tier_flag"):
+			result.TierKnown = true
+			result.TierFlag = value
 		case strings.Contains(line, "sps_max_num_reorder_pics"):
 			result.Known = true
 			result.ReorderFrames = max(result.ReorderFrames, value)
@@ -194,7 +204,11 @@ func traceHeaderInt(line string) (int, bool) {
 	if separator < 0 {
 		return 0, false
 	}
-	value, err := strconv.Atoi(strings.TrimSpace(line[separator+1:]))
+	valueText := strings.TrimSpace(line[separator+1:])
+	if fields := strings.Fields(valueText); len(fields) > 0 {
+		valueText = fields[0]
+	}
+	value, err := strconv.Atoi(valueText)
 	return value, err == nil
 }
 

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -54,6 +56,7 @@ type HEVCLevelRecommendation struct {
 	LimitingFactor   string   `json:"limitingFactor,omitempty"`
 	Reasons          []string `json:"reasons"`
 	Warnings         []string `json:"warnings,omitempty"`
+	Fingerprint      string   `json:"fingerprint,omitempty"`
 }
 
 func recommendHEVCLevel(width, height int, fps float64, bitrate int64) HEVCLevelRecommendation {
@@ -73,7 +76,7 @@ func recommendHEVCLevel(width, height int, fps float64, bitrate int64) HEVCLevel
 		bitrateKbps = int64(math.Ceil(float64(bitrate) / 1000))
 	} else {
 		result.Confidence = "medium"
-		result.Warnings = append(result.Warnings, "Video bitrate was unavailable; the recommendation covers picture size and sample rate, and the output bitrate must be verified after encoding.")
+		result.Warnings = append(result.Warnings, "No bounded output peak-rate constraint was available; the recommendation covers picture size and sample rate, and peak-rate conformance must be verified from the output bitstream.")
 	}
 
 	for _, limit := range hevcMainTierLevelLimits {
@@ -90,7 +93,7 @@ func recommendHEVCLevel(width, height int, fps float64, bitrate int64) HEVCLevel
 			fmt.Sprintf("%dx%d at %.3f fps produces %.0f luma samples/s; HEVC Level %s Main Tier allows up to %.0f.", width, height, fps, result.LumaSampleRate, limit.Level, limit.MaxLumaRate),
 		)
 		if bitrateKbps > 0 {
-			result.Reasons = append(result.Reasons, fmt.Sprintf("Observed video bitrate %.2f Mbps is within the %.2f Mbps Main Tier limit.", float64(bitrateKbps)/1000, float64(limit.MaxBitrateKbps)/1000))
+			result.Reasons = append(result.Reasons, fmt.Sprintf("Bounded output peak rate %.2f Mbps is within the %.2f Mbps Main Tier limit.", float64(bitrateKbps)/1000, float64(limit.MaxBitrateKbps)/1000))
 		}
 		return result
 	}
@@ -230,6 +233,149 @@ func hevcLevelLimitFor(level string) (hevcLevelLimit, bool) {
 	return hevcLevelLimit{}, false
 }
 
+const (
+	hevcLevelResolutionResolved     = "resolved"
+	hevcLevelResolutionUnresolved   = "unresolved"
+	hevcLevelResolutionIncompatible = "incompatible"
+	hevcLevelEnforcementAdvisory    = "advisory"
+	hevcLevelEnforcementHard        = "hard"
+)
+
+type hevcRateConstraint struct {
+	TargetKbps  int64
+	MaxrateKbps int64
+	BufferKbps  int64
+	Bounded     bool
+	Source      string
+}
+
+func hevcRateConstraintForProfile(profile models.Profile) hevcRateConstraint {
+	switch resolvedVideoEncoder(profile) {
+	case "hevc_qsv":
+		return qsvHEVCRateConstraint(profile)
+	case "libx265":
+		return x265HEVCRateConstraint(profile)
+	default:
+		return hevcRateConstraint{}
+	}
+}
+
+func qsvHEVCRateConstraint(profile models.Profile) hevcRateConstraint {
+	mode := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["qsvEffectiveRateControl"])))
+	if mode != "vbr" && mode != "cbr" {
+		return hevcRateConstraint{Source: "qsv_" + mode}
+	}
+	target := workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0)
+	if target <= 0 {
+		return hevcRateConstraint{Source: "qsv_" + mode}
+	}
+	maxrate := workerIntValue(profile.WorkerConfig["qsvMaxrate"], target)
+	buffer := workerIntValue(profile.WorkerConfig["qsvBuffer"], target*2)
+	if maxrate <= 0 {
+		return hevcRateConstraint{TargetKbps: int64(math.Ceil(float64(target) / 1000)), Source: "qsv_" + mode}
+	}
+	return hevcRateConstraint{
+		TargetKbps: int64(math.Ceil(float64(target) / 1000)), MaxrateKbps: int64(math.Ceil(float64(maxrate) / 1000)),
+		BufferKbps: int64(math.Ceil(float64(buffer) / 1000)), Bounded: true, Source: "qsv_" + mode,
+	}
+}
+
+func x265HEVCRateConstraint(profile models.Profile) hevcRateConstraint {
+	params := workerStringValue(profile.WorkerConfig["x265Params"])
+	values := map[string]int64{}
+	for _, raw := range strings.Split(params, ":") {
+		name, value, ok := strings.Cut(strings.TrimSpace(raw), "=")
+		if !ok {
+			continue
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "vbv-maxrate" && name != "vbv-bufsize" && name != "maxrate" && name != "bufsize" {
+			continue
+		}
+		if parsed, ok := parseHEVCRateKbps(value); ok {
+			values[name] = parsed
+		}
+	}
+	maxrate := values["vbv-maxrate"]
+	if maxrate == 0 {
+		maxrate = values["maxrate"]
+	}
+	buffer := values["vbv-bufsize"]
+	if buffer == 0 {
+		buffer = values["bufsize"]
+	}
+	return hevcRateConstraint{MaxrateKbps: maxrate, BufferKbps: buffer, Bounded: maxrate > 0, Source: "x265_vbv"}
+}
+
+func parseHEVCRateKbps(value string) (int64, bool) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return 0, false
+	}
+	multiplier := float64(1)
+	switch {
+	case strings.HasSuffix(value, "k"):
+		value = strings.TrimSuffix(value, "k")
+	case strings.HasSuffix(value, "m"):
+		value = strings.TrimSuffix(value, "m")
+		multiplier = 1000
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return int64(math.Round(parsed * multiplier)), true
+}
+
+func freezeHEVCRateConstraint(profile *models.Profile) hevcRateConstraint {
+	constraint := hevcRateConstraintForProfile(*profile)
+	profile.WorkerConfig["hevcRateControlFrozen"] = true
+	profile.WorkerConfig["hevcRateControlSource"] = constraint.Source
+	profile.WorkerConfig["hevcRateControlBounded"] = constraint.Bounded
+	profile.WorkerConfig["hevcRateControlTargetKbps"] = constraint.TargetKbps
+	profile.WorkerConfig["hevcRateControlMaxrateKbps"] = constraint.MaxrateKbps
+	profile.WorkerConfig["hevcRateControlBufferKbps"] = constraint.BufferKbps
+	if resolvedVideoEncoder(*profile) == "hevc_qsv" {
+		profile.WorkerConfig["hevcRateControlTargetBps"] = workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0)
+		profile.WorkerConfig["hevcRateControlMaxrateBps"] = workerIntValue(profile.WorkerConfig["qsvMaxrate"], workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0))
+		profile.WorkerConfig["hevcRateControlBufferBps"] = workerIntValue(profile.WorkerConfig["qsvBuffer"], workerIntValue(profile.WorkerConfig["qsvTargetBitrate"], 0)*2)
+	}
+	return constraint
+}
+
+func hevcLevelFingerprint(width, height int, fps float64, profile models.Profile, constraint hevcRateConstraint) string {
+	input := struct {
+		Encoder     string  `json:"encoder"`
+		Width       int     `json:"width"`
+		Height      int     `json:"height"`
+		FPS         float64 `json:"fps"`
+		TargetKbps  int64   `json:"targetKbps"`
+		MaxrateKbps int64   `json:"maxrateKbps"`
+		BufferKbps  int64   `json:"bufferKbps"`
+		Bounded     bool    `json:"bounded"`
+		RateSource  string  `json:"rateSource"`
+	}{resolvedVideoEncoder(profile), width, height, fps, constraint.TargetKbps, constraint.MaxrateKbps, constraint.BufferKbps, constraint.Bounded, constraint.Source}
+	encoded, _ := json.Marshal(input)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func hevcRecommendationFromWorkerConfig(config models.JSONMap) (HEVCLevelRecommendation, bool) {
+	encoded, ok := config["hevcLevelRecommendation"]
+	if !ok {
+		return HEVCLevelRecommendation{}, false
+	}
+	bytes, err := json.Marshal(encoded)
+	if err != nil {
+		return HEVCLevelRecommendation{}, false
+	}
+	var recommendation HEVCLevelRecommendation
+	if err := json.Unmarshal(bytes, &recommendation); err != nil {
+		return HEVCLevelRecommendation{}, false
+	}
+	return recommendation, recommendation.RecommendedLevel != ""
+}
+
 func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) models.Profile {
 	profile = profileWithoutStaleHEVCLevelDecision(profile)
 	if profile.VideoCodec == "copy" || videoCodecFamily(profile.VideoCodec) != "hevc" {
@@ -245,10 +391,13 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 	}
 	profile.WorkerConfig["hevcLevelMode"] = mode
 	requested := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevel"]))
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionUnresolved
 	var source MediaStream
+	width, height := 0, 0
+	geometryKnown := false
 	if len(streams.Video) > 0 {
 		source = streams.Video[0]
-		width, height, geometryKnown := resolveEffectiveVideoGeometry(profile, source)
+		width, height, geometryKnown = resolveEffectiveVideoGeometry(profile, source)
 		if geometryKnown {
 			profile.WorkerConfig["effectiveOutputWidth"] = width
 			profile.WorkerConfig["effectiveOutputHeight"] = height
@@ -259,51 +408,90 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 			profile.WorkerConfig["effectiveOutputGeometryUnknown"] = true
 		}
 	}
+	constraint := freezeHEVCRateConstraint(&profile)
+	fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
+	if fps <= 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+		fps = parseFrameRateValue(source.FrameRate)
+	}
+	inputsSufficient := len(streams.Video) > 0 && geometryKnown && fps > 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false)
+	fingerprint := hevcLevelFingerprint(width, height, fps, profile, constraint)
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = fingerprint
+	if !inputsSufficient {
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level/Tier is unresolved because current effective output geometry or FPS is unavailable."
+		return profile
+	}
+
 	if mode == "auto" {
-		if len(streams.Video) == 0 {
-			return profile
-		}
-		if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) || profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) {
-			profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level Auto is unresolved because effective output FPS or geometry is unknown"
-			delete(profile.WorkerConfig, "hevcLevelEffective")
-			return profile
-		}
-		// CRF and ICQ do not provide a target output bitrate up front. The source
-		// bitrate must not be treated as an output requirement.
-		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
-		if fps <= 0 {
-			fps = parseFrameRateValue(source.FrameRate)
-		}
-		width := workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], source.Width)
-		height := workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], source.Height)
-		recommendation := recommendHEVCLevel(width, height, fps, 0)
+		recommendation := recommendHEVCLevel(width, height, fps, hevcRecommendationBitrate(constraint))
+		recommendation.Fingerprint = fingerprint
 		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
 		requested = recommendation.RecommendedLevel
-	} else if mode == "recommended" && requested == "" {
-		if len(streams.Video) == 0 {
-			return profile
+	} else if mode == "recommended" {
+		stored, hasStored := hevcRecommendationFromWorkerConfig(profile.WorkerConfig)
+		if hasStored && stored.Fingerprint == fingerprint {
+			requested = normalizedHEVCLevel(stored.RecommendedLevel)
+		} else {
+			recommendation := recommendHEVCLevel(width, height, fps, hevcRecommendationBitrate(constraint))
+			recommendation.Fingerprint = fingerprint
+			profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
+			requested = recommendation.RecommendedLevel
+			if hasStored {
+				profile.WorkerConfig["hevcLevelResolutionWarning"] = "Stored Recommended Level was stale; MVForge synchronously recalculated it from current output requirements."
+			}
 		}
-		if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) || profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) {
-			profile.WorkerConfig["hevcLevelResolutionWarning"] = "Recommended HEVC Level is unresolved because effective output FPS or geometry is unknown"
-			return profile
-		}
-		fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
-		if fps <= 0 {
-			fps = parseFrameRateValue(source.FrameRate)
-		}
-		width := workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], source.Width)
-		height := workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], source.Height)
-		recommendation := recommendHEVCLevel(width, height, fps, 0)
-		profile.WorkerConfig["hevcLevelRecommendation"] = recommendation
-		requested = recommendation.RecommendedLevel
-		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Stored Recommended Level was unavailable; MVForge recalculated it from the current asset."
 	}
 	if requested == "" {
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level/Tier is unresolved because no compatible supported Level was found."
+		return profile
+	}
+	if !hevcLevelFitsRequirements(requested, width, height, fps, constraint) {
+		profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionIncompatible
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = fmt.Sprintf("HEVC Level %s is incompatible with the current output requirements; command planning is blocked.", requested)
 		return profile
 	}
 	profile.WorkerConfig["hevcLevelEffective"] = requested
 	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelEnforcement"] = hevcLevelEnforcementAdvisory
+	if mode == "custom" || encoder == "hevc_qsv" || constraint.Bounded {
+		profile.WorkerConfig["hevcLevelEnforcement"] = hevcLevelEnforcementHard
+	}
+	vbvConsequence := "none"
+	if encoder == "libx265" {
+		switch {
+		case constraint.Bounded:
+			vbvConsequence = "existing_vbv_frozen"
+		case mode == "custom":
+			vbvConsequence = "x265_level_constraints"
+		}
+	}
+	profile.WorkerConfig["hevcLevelRateControlConsequences"] = models.JSONMap{
+		"maxrateKbps":          constraint.MaxrateKbps,
+		"bufferKbps":           constraint.BufferKbps,
+		"bounded":              constraint.Bounded,
+		"source":               constraint.Source,
+		"vbvConsequence":       vbvConsequence,
+		"levelIdcMayImposeVBV": vbvConsequence == "x265_level_constraints",
+	}
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
 	return profile
+}
+
+func hevcRecommendationBitrate(constraint hevcRateConstraint) int64 {
+	if !constraint.Bounded || constraint.MaxrateKbps <= 0 {
+		return 0
+	}
+	return constraint.MaxrateKbps * 1000
+}
+
+func hevcLevelFitsRequirements(level string, width, height int, fps float64, constraint hevcRateConstraint) bool {
+	limit, ok := hevcLevelLimitFor(level)
+	if !ok || width <= 0 || height <= 0 || fps <= 0 {
+		return false
+	}
+	if int64(width)*int64(height) > limit.MaxLumaPicture || float64(width*height)*fps > limit.MaxLumaRate {
+		return false
+	}
+	return !constraint.Bounded || constraint.MaxrateKbps <= limit.MaxBitrateKbps
 }
 
 func profileWithoutStaleHEVCLevelDecision(profile models.Profile) models.Profile {
@@ -311,8 +499,20 @@ func profileWithoutStaleHEVCLevelDecision(profile models.Profile) models.Profile
 	for _, key := range []string{
 		"hevcLevelEffective",
 		"hevcLevelTier",
-		"hevcLevelRecommendation",
+		"hevcLevelEnforcement",
+		"hevcLevelRateControlConsequences",
+		"hevcLevelResolutionState",
 		"hevcLevelResolutionWarning",
+		"hevcLevelInputFingerprint",
+		"hevcRateControlFrozen",
+		"hevcRateControlSource",
+		"hevcRateControlBounded",
+		"hevcRateControlTargetKbps",
+		"hevcRateControlMaxrateKbps",
+		"hevcRateControlBufferKbps",
+		"hevcRateControlTargetBps",
+		"hevcRateControlMaxrateBps",
+		"hevcRateControlBufferBps",
 		"effectiveOutputWidth",
 		"effectiveOutputHeight",
 		"effectiveOutputGeometryUnknown",
@@ -372,8 +572,15 @@ func resolveEffectiveVideoGeometry(profile models.Profile, source MediaStream) (
 			default:
 				return 0, 0, false
 			}
-		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "eq", "hqdn3d", "unsharp", "format", "colorspace", "setfield", "setsar", "setdar", "null":
+		case "fps", "bwdif", "yadif", "fieldmatch", "decimate", "eq", "hqdn3d", "unsharp", "deblock", "noise", "cas", "exposure", "deband", "chromanr", "format", "colorspace", "setfield", "setsar", "setdar", "null":
 			// These filters preserve pixel dimensions in MVForge's current use.
+		case "zscale":
+			// Structured restoration may carry the final zscale dimensions in
+			// resolvedUpscaleDecision. Without that frozen decision, an
+			// unparameterized zscale is not safe to infer from source geometry.
+			if _, ok := resolvedUpscaleDecisionFromProfile(profile); !ok {
+				return 0, 0, false
+			}
 		default:
 			// An advanced/custom filter may change geometry. Unknown is safer
 			// than deriving Auto Level from the source dimensions.
@@ -395,6 +602,10 @@ func scaledDimension(value, reference, target int, even bool) int {
 }
 
 func hevcLevelArgs(profile models.Profile, encoder string) []string {
+	state := workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"])
+	if state != "" && state != hevcLevelResolutionResolved {
+		return nil
+	}
 	level := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevelEffective"]))
 	if level == "" {
 		return nil
@@ -406,8 +617,24 @@ func hevcLevelArgs(profile models.Profile, encoder string) []string {
 	return nil
 }
 
+func hevcLevelPlanningError(profile models.Profile) error {
+	switch workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]) {
+	case hevcLevelResolutionUnresolved:
+		return fmt.Errorf("HEVC Level/Tier decision is unresolved: %s", workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]))
+	case hevcLevelResolutionIncompatible:
+		return fmt.Errorf("HEVC Level/Tier decision is incompatible: %s", workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]))
+	default:
+		return nil
+	}
+}
+
 func x265ParamsWithHEVCLevel(profile models.Profile, params string) string {
 	level := normalizedHEVCLevel(workerStringValue(profile.WorkerConfig["hevcLevelEffective"]))
+	state := workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"])
+	enforcement := workerStringValue(profile.WorkerConfig["hevcLevelEnforcement"])
+	if state != "" && state != hevcLevelResolutionResolved {
+		level = ""
+	}
 	parts := strings.Split(params, ":")
 	result := make([]string, 0, len(parts)+2)
 	for _, part := range parts {
@@ -421,7 +648,7 @@ func x265ParamsWithHEVCLevel(profile models.Profile, params string) string {
 		}
 		result = append(result, part)
 	}
-	if level != "" {
+	if level != "" && (enforcement == hevcLevelEnforcementHard || enforcement == "") {
 		result = append(result, "level-idc="+level, "high-tier=0")
 	}
 	return strings.Join(result, ":")

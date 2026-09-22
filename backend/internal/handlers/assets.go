@@ -3904,6 +3904,15 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "generated preview validation failed: " + outputErr.Error()})
 			return
 		}
+		var hevcBitstreamEvidence models.JSONMap
+		var measuredHEVC HEVCBitstreamStructure
+		var measuredHEVCError error
+		if strings.EqualFold(output.Codec, "hevc") {
+			measuredHEVC, measuredHEVCError = measureHEVCBitstreamStructure(c.Request.Context(), cachePath)
+			hevcBitstreamEvidence = hevcBitstreamEvidenceFromStructure(measuredHEVC, measuredHEVCError)
+			hevcBitstreamEvidence["stream"] = "0:v:0"
+			hevcBitstreamEvidence["probe"] = "ffmpeg_trace_headers"
+		}
 
 		sourceFrameStructure, sourceFrameErr := analyzeVideoFrameStructureInterval(c.Request.Context(), path, fmt.Sprintf("%d%%+%d", previewTimestampSeconds(start), seconds))
 		if sourceFrameErr != nil {
@@ -3972,12 +3981,12 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 				TargetUsage:        actualContext.TargetUsage,
 				ContextSource:      contextSource,
 			}
-			if measured, measureErr := measureHEVCBitstreamStructure(c.Request.Context(), cachePath); measureErr == nil && measured.Known {
+			if measuredHEVCError == nil && measuredHEVC.Known {
 				qsvFeatureStatus.MeasuredKnown = true
-				qsvFeatureStatus.ReorderFrames = measured.ReorderFrames
-				qsvFeatureStatus.DPBFrames = measured.DPBFrames
-				qsvFeatureStatus.TemporalLayers = measured.TemporalLayers
-				qsvFeatureStatus.EstimatedDPBMiB = estimatedDPBMiB(output.Width, output.Height, output.BitDepth, measured.DPBFrames)
+				qsvFeatureStatus.ReorderFrames = measuredHEVC.ReorderFrames
+				qsvFeatureStatus.DPBFrames = measuredHEVC.DPBFrames
+				qsvFeatureStatus.TemporalLayers = measuredHEVC.TemporalLayers
+				qsvFeatureStatus.EstimatedDPBMiB = estimatedDPBMiB(output.Width, output.Height, output.BitDepth, measuredHEVC.DPBFrames)
 			}
 			if qsvFeatureStatus.GPBEffective && qsvFeatureStatus.GopRefDist == 1 {
 				qsvFeatureStatus.InterpretationMode = "qsv_gpb"
@@ -4013,6 +4022,7 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 			"requestedQSVRateControl": requestedQSVRateControl,
 			"effectiveQSVRateControl": effectiveQSVRateControl,
 			"effectiveVideoDecision":  resolvedVideoDecision,
+			"hevcBitstreamEvidence":   hevcBitstreamEvidence,
 			"frameStructureRecommendation": previewFrameStructureRecommendation(
 				h.db,
 				path,
@@ -4072,7 +4082,11 @@ func resolvePreviewVideoProfile(db *gorm.DB, path string, profile models.Profile
 	if err != nil {
 		return models.Profile{}, err
 	}
-	return resolveEffectiveVideoEncodingProfile(profile, streams, path, upscaleAnalysisEvidenceForPath(db, path)), nil
+	profile = resolveEffectiveVideoEncodingProfile(profile, streams, path, upscaleAnalysisEvidenceForPath(db, path))
+	if err := hevcLevelPlanningError(profile); err != nil {
+		return models.Profile{}, err
+	}
+	return profile, nil
 }
 
 func profileWithPreviewDisplayNormalization(profile models.Profile, displayFilter string) models.Profile {
@@ -4754,11 +4768,34 @@ func requestedFrameStructureBFrames(profile models.Profile) *int {
 	return nil
 }
 
+type boundedDiagnosticBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *boundedDiagnosticBuffer) Write(value []byte) (int, error) {
+	originalLength := len(value)
+	remaining := b.limit - b.buffer.Len()
+	if remaining > 0 {
+		if len(value) > remaining {
+			value = value[:remaining]
+		}
+		_, _ = b.buffer.Write(value)
+	}
+	return originalLength, nil
+}
+
+func (b *boundedDiagnosticBuffer) String() string {
+	return b.buffer.String()
+}
+
 func measureHEVCBitstreamStructure(ctx context.Context, path string) (HEVCBitstreamStructure, error) {
-	args := []string{"-hide_banner", "-loglevel", "info", "-i", path, "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers", "-f", "null", "-"}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	probeContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	args := []string{"-hide_banner", "-loglevel", "info", "-i", path, "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "trace_headers", "-frames:v", "1", "-f", "null", "-"}
+	cmd := exec.CommandContext(probeContext, "ffmpeg", args...)
+	stderr := &boundedDiagnosticBuffer{limit: 256 * 1024}
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return HEVCBitstreamStructure{}, fmt.Errorf("inspect HEVC headers: %w", err)
 	}
