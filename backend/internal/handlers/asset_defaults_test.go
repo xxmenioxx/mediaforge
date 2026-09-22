@@ -72,6 +72,30 @@ func TestAssetDefaultsDormantCompatibleTrackValuesRemainUnvalidatedAndPersisted(
 	}
 }
 
+func TestAssetDefaultsEnabledCompatibleTrackMapsCanonicalAACSettings(t *testing.T) {
+	job := models.QueueJob{ProfileResolution: models.JSONMap{"audio": models.JSONMap{"profileData": models.JSONMap{
+		"addCompatibleTrack":      true,
+		"compatibleTrackQuality":  384,
+		"compatibleTrackChannels": 8,
+		"compatibleTrackSource":   "default",
+	}}}}
+	profile := models.Profile{}
+	applyAssetDefaultsAudioToVideoProfile(&profile, job)
+
+	if !effectiveAACOption(MediaJobPlan{Profile: profile}, nil, "addAacStereoTrack", "addAacStereoDefault", false) {
+		t.Fatalf("enabled compatible track did not reach the canonical AAC decision: %#v", profile.WorkerConfig)
+	}
+	if got := workerNumberValue(profile.WorkerConfig["aacStereoBitrateKbps"], 0); got != 384 {
+		t.Fatalf("compatible bitrate=%v want 384: %#v", got, profile.WorkerConfig)
+	}
+	if got := workerNumberValue(profile.WorkerConfig["aacStereoChannels"], 0); got != 8 {
+		t.Fatalf("compatible channels=%v want 8: %#v", got, profile.WorkerConfig)
+	}
+	if got := workerNumberValue(profile.WorkerConfig["aacStereoSourceStreamIndex"], 0); got != -1 {
+		t.Fatalf("compatible source stream=%v want default sentinel -1: %#v", got, profile.WorkerConfig)
+	}
+}
+
 func TestAssetDefaultsPreferredSubtitleRulesNormalizeAndValidate(t *testing.T) {
 	value, err := validateAssetDefaultsValue(nil, models.JSONMap{
 		"tracks": models.JSONMap{"custom": models.JSONMap{
