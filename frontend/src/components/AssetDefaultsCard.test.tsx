@@ -102,7 +102,8 @@ describe('AssetDefaultsCard', () => {
     render(<AssetDefaultsCard value={{ ...value, tracks: { source: 'custom', custom: { defaultSubtitleLanguage: 'es' } } }} settings={settings} profiles={profiles} saving={false} onSave={onSave} />);
 
     const selector = screen.getByRole('combobox', { name: 'Default subtitle language' });
-    expect(selector).toHaveValue('spa');
+    const selectorInput = selector.parentElement?.querySelector('input') as HTMLInputElement;
+    expect(selectorInput.value).toBe('spa');
     await user.click(selector);
     await user.click(screen.getByRole('option', { name: 'Japanese · jpn' }));
     await user.click(screen.getByRole('button', { name: 'Save Asset Defaults' }));
@@ -118,7 +119,8 @@ describe('AssetDefaultsCard', () => {
     const user = userEvent.setup();
     render(<AssetDefaultsCard value={value} settings={settings} profiles={profiles} saving={false} onSave={vi.fn()} />);
     const selector = screen.getByRole('combobox', { name: 'Default subtitle language' });
-    expect(selector).toHaveValue('');
+    const selectorInput = selector.parentElement?.querySelector('input') as HTMLInputElement;
+    expect(selectorInput.value).toBe('');
     await user.click(selector);
     expect(screen.getByRole('option', { name: 'None' })).toBeTruthy();
   });
