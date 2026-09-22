@@ -32,8 +32,11 @@ effective frame rate or progressive output state.
 An explicit inverse-telecine request SHALL resolve a usable field order before
 the output can be reported as progressive 24000/1001. The rendered processing
 plan SHALL contain the canonical fieldmatch-plus-decimate operation for that
-field order; an unresolved or invalid field order SHALL remain conservative and
-reviewable rather than silently selecting an unsafe order.
+field order. The only valid automatic detection input is the validated IVTC
+field-order evidence accepted by the existing automatic-IVTC path; a generic
+interlace-analysis detected field order is insufficient. If no usable order is
+available, the result SHALL be unresolved/review-only rather than silently
+selecting TFF or BFF.
 
 #### Scenario: Explicit field order renders canonical IVTC
 
@@ -46,16 +49,19 @@ reviewable rather than silently selecting an unsafe order.
 
 - **WHEN** inverse telecine is requested and neither an explicit nor validated
   detected field order is available
-- **THEN** the system SHALL use the existing conservative fallback or mark the
-  result for review, and SHALL NOT claim an unverified progressive 24000/1001
-  result
+- **THEN** the system SHALL not render fieldmatch+decimate, SHALL not freeze
+  `effectiveOutputFrameRate` as 24000/1001, SHALL not claim trusted progressive
+  output, and SHALL expose the existing review/unknown warning state
 
 ### Requirement: Field-order precedence is deterministic
 
 Field order SHALL be selected in this order: an explicit valid
-`cadenceFieldOrder`, then a validated detected field order, then the existing
-conservative fallback. Invalid, unsupported, or unvalidated detected values
-SHALL NOT override a valid explicit order or be treated as proof of a safe
+`cadenceFieldOrder`, then a validated IVTC field order accepted by the existing
+automatic-IVTC path, then unresolved/review. The validated detected value SHALL
+come from the canonical IVTC validation boundary, such as its selected order;
+generic `InterlaceAnalysis.DetectedFieldOrder` SHALL NOT qualify on its own.
+Invalid, unsupported, conflicting, or unvalidated detected values SHALL NOT
+override a valid explicit order or be treated as proof of a safe
 inverse-telecine render.
 
 #### Scenario: Explicit order wins over detected order
@@ -76,8 +82,8 @@ inverse-telecine render.
 
 - **WHEN** field order is automatic and detection is missing, conflicting, or
   not validated
-- **THEN** the system SHALL use the existing conservative fallback and SHALL
-  expose review-required or unknown state rather than guessing an order
+- **THEN** the system SHALL leave field order unresolved, SHALL expose the
+  existing review-required or unknown state, and SHALL not guess TFF or BFF
 
 ### Requirement: Progressive output state requires processing or reliable evidence
 
@@ -129,11 +135,14 @@ reported effective FPS consistent.
 
 ### Requirement: Validation uses a weighted frame-rate evidence hierarchy
 
-Validation SHALL treat stream `avg_frame_rate` as the primary stream-rate
-evidence, `r_frame_rate` as corroborating or base-rate metadata, and measured
-frame count plus duration as stronger evidence when both are available.
-Conflicting or incomplete evidence SHALL produce a bounded validation warning
-or unknown result rather than an invented exact FPS.
+Validation SHALL use reliable frame count plus duration as the strongest
+measured evidence. When reliable measured evidence is unavailable, it SHALL
+use stream `avg_frame_rate` as the primary ffprobe stream-rate evidence.
+`r_frame_rate` SHALL be diagnostic/corroborating base-rate metadata only and
+SHALL not validate a result by itself. A reliable measured rate SHALL override
+stream metadata for the effective validation result. Conflicting or incomplete
+evidence SHALL produce a bounded mismatch, warning, or unverified result rather
+than an invented exact FPS.
 
 #### Scenario: Average stream rate is primary evidence
 
@@ -149,11 +158,25 @@ or unknown result rather than an invented exact FPS.
 - **THEN** validation SHALL use it as corroborating evidence and SHALL not
   replace the primary average-rate decision solely because it is present
 
-#### Scenario: Measured frame count and duration strengthen validation
+#### Scenario: Average rate without base-rate agreement remains primary
+
+- **WHEN** `avg_frame_rate` matches the expected rate but `r_frame_rate` differs
+- **THEN** the primary FPS result MAY remain validated and the disagreement
+  SHALL remain available as diagnostic evidence
+
+#### Scenario: Base rate alone is unverified
+
+- **WHEN** `avg_frame_rate` is missing and only `r_frame_rate` matches the
+  expected rate
+- **THEN** validation SHALL remain unverified rather than accepting the base
+  rate as proof
+
+#### Scenario: Measured frame count and duration override stream metadata
 
 - **WHEN** reliable frame count and duration are available
-- **THEN** validation SHALL use the measured rate as stronger evidence while
-  retaining the stream metadata for diagnosis and conflict reporting
+- **THEN** validation SHALL use the measured rate as the effective result while
+  retaining stream metadata for diagnosis and conflict reporting; a measured
+  contradiction SHALL be reported as a mismatch
 
 ### Requirement: Preview, Test Encode, and Queue share frozen cadence intent
 

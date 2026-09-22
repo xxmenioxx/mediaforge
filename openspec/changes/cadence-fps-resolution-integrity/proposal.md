@@ -14,15 +14,18 @@ the resolved processing plan.
 - Require explicit inverse telecine to resolve field order and render the
   canonical fieldmatch+decimate chain before reporting 24000/1001 or
   progressive output.
-- Apply deterministic field-order precedence: explicit `cadenceFieldOrder`,
-  validated detected field order, then the existing conservative fallback.
+- Apply deterministic field-order precedence: explicit valid
+  `cadenceFieldOrder`, validated IVTC field order accepted by the existing
+  automatic-IVTC path, then unresolved/review. Missing or unusable order SHALL
+  not silently default to TFF or BFF.
 - Require `effectiveOutputProgressive` to be supported by resolved processing
   and/or reliable analysis evidence; retain review-only behavior for suspected
   or unvalidated telecine.
 - Keep validated automatic IVTC unchanged and keep soft-telecine removal's FPS
   filter consistent with its effective output FPS.
-- Make validation distinguish primary `avg_frame_rate`, corroborating
-  `r_frame_rate`, and stronger measured frame-count/duration evidence.
+- Make validation use reliable frame count/duration first, `avg_frame_rate` as
+  primary ffprobe stream-rate evidence, and `r_frame_rate` only as diagnostic
+  corroborating/base-rate metadata.
 - Prove Preview, Test Encode, and Queue resolve identical cadence intent from
   identical frozen inputs.
 

@@ -52,14 +52,18 @@ choice, rendered filter chain, or actual output rate.
 ### 2. Resolve field order before explicit IVTC rendering
 
 Explicit inverse telecine will use one precedence function: a valid explicit
-`cadenceFieldOrder`, then validated detected field order, then the current
-conservative fallback. The selected order is passed into the canonical
-fieldmatch+decimate render construction. The result cannot claim progressive
-24000/1001 until that chain is present in the resolved plan.
+`cadenceFieldOrder`, then the validated IVTC field order accepted by the
+existing automatic-IVTC path, then unresolved/review. The latter evidence is
+the canonical selected IVTC order (for example, `IVTCValidation.SelectedOrder`)
+or the equivalent existing representation consumed by that automatic path. A
+generic `InterlaceAnalysis.DetectedFieldOrder` is not sufficient because it can
+describe non-IVTC/interlaced evidence.
 
-Invalid or unvalidated detection will not be upgraded by a UI label or by an
-implicit guess. Existing automatic IVTC output is preserved when its analysis
-has already validated the field order and operation.
+When no usable order exists, explicit inverse telecine will not render
+fieldmatch+decimate, will not freeze `effectiveOutputFrameRate` as 24000/1001,
+and will not claim trusted progressive output. It will expose the existing
+review/unknown warning state. Existing automatic IVTC output is preserved when
+its established validation boundary has accepted the order and operation.
 
 **Alternative considered:** Let FFmpeg or each entry point infer field order at
 render time. Rejected because it would make Preview, Test Encode, and Queue
@@ -86,17 +90,18 @@ not alter the existing decision to remove or preserve soft telecine.
 
 ### 5. Use explicit evidence roles during validation
 
-Validation will retain all available rate evidence but assign it stable roles:
-`avg_frame_rate` is the primary stream-rate observation, `r_frame_rate` is
-corroborating/base-rate metadata, and frame count divided by duration is the
-stronger measured observation when both values are reliable. The expected
-effective rate comes from the frozen resolved motion plan. Conflicts produce a
-bounded warning/unknown result rather than silently choosing a contradictory
-value.
+Validation will retain all available rate evidence but assign it a strict
+precedence. Reliable frame count divided by duration is the strongest measured
+evidence. When that is unavailable, usable `avg_frame_rate` is the primary
+ffprobe stream-rate observation. `r_frame_rate` is diagnostic/corroborating
+base-rate metadata only and cannot validate a result by itself. The expected
+effective rate comes from the frozen resolved motion plan.
 
-This keeps diagnostics useful for container metadata while preventing
-`r_frame_rate` from falsely validating a conversion that did not render the
-expected rate.
+Thus, an average rate matching the expected rate can remain validated when only
+the base rate differs, with that disagreement retained diagnostically. If the
+average rate is missing and only the base rate matches, the result is
+unverified. A reliable measured rate that contradicts the expected rate is a
+mismatch and overrides stream metadata for the effective validation result.
 
 ### 6. Reuse the frozen cross-entry-point plan
 
@@ -113,7 +118,7 @@ second cadence decision path.
 
 ### 7. Preserve compatibility and safety defaults
 
-Existing validated automatic IVTC, conservative fallback behavior, FFmpeg
+Existing validated automatic IVTC, conservative review behavior, FFmpeg
 command generation outside cadence, and unrelated encoder policies remain
 unchanged. Missing or unsupported analysis must not cause BT.709-like implicit
 normalization of cadence, a false progressive state, or a fabricated exact FPS.

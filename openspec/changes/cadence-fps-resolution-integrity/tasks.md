@@ -1,8 +1,8 @@
 ## 1. Canonical cadence resolution
 
 - [ ] 1.1 Define the resolved motion-plan cadence output contract so effective FPS is derived from the operations that will be rendered, preserving the existing effective-rate fields, unknown flags, and warnings; verify resolver tests reject a mode-only 24000/1001 result when no matching rendered cadence operation exists.
-- [ ] 1.2 Implement and test deterministic field-order precedence: valid explicit `cadenceFieldOrder`, validated detected order, then the existing conservative fallback; verify conflicting, missing, invalid, and unvalidated detection cases remain conservative.
-- [ ] 1.3 Require explicit inverse telecine to render the canonical fieldmatch+decimate chain with the resolved field order before reporting progressive 24000/1001; verify both `tff` and `bff` plans and the unresolved-order review path.
+- [ ] 1.2 Implement and test deterministic field-order precedence: valid explicit `cadenceFieldOrder`, validated IVTC order accepted by the existing automatic-IVTC validation boundary, then unresolved/review; verify generic non-IVTC detected order is insufficient and no TFF/BFF guess is introduced.
+- [ ] 1.3 Require explicit inverse telecine to render the canonical fieldmatch+decimate chain with a usable resolved field order before reporting progressive 24000/1001; verify both `tff` and `bff` plans plus the no-order path produces no chain, no frozen 24000/1001, and review/unknown state.
 - [ ] 1.4 Gate `effectiveOutputProgressive` on resolved progressive-producing processing or reliable analysis evidence, preserving existing unknown/unreliable state; verify a progressive operation label without supporting evidence does not become trusted output metadata.
 
 ## 2. Preserve existing cadence safety behavior
@@ -13,8 +13,8 @@
 
 ## 3. Validation evidence and effective-plan checks
 
-- [ ] 3.1 Update cadence validation to treat `avg_frame_rate` as primary stream-rate evidence and `r_frame_rate` as corroborating/base-rate metadata; verify a conflicting base rate cannot replace the primary average-rate decision.
-- [ ] 3.2 Use reliable frame count plus duration as stronger measured evidence when available, while retaining bounded stream metadata for diagnostics; verify missing, conflicting, and measured-rate cases produce the expected validation result or review warning.
+- [ ] 3.1 Update cadence validation to use reliable frame count/duration first, `avg_frame_rate` as primary ffprobe stream-rate evidence, and `r_frame_rate` as diagnostic/corroborating base-rate metadata only; verify matching average rate with conflicting base rate remains primary and base-rate-only evidence is unverified.
+- [ ] 3.2 Use reliable frame count plus duration as the strongest evidence when available, overriding stream metadata for the effective validation result; verify a measured contradiction is a mismatch and stream disagreements remain bounded diagnostics.
 - [ ] 3.3 Make validation consume the frozen/resolved effective cadence decision rather than reconstructing expected FPS or progressive state from requested settings; verify explicit IVTC, soft-telecine removal, and conservative review cases end with no false normalization expectation.
 
 ## 4. Entry-point parity and Queue freezing
