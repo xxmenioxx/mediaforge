@@ -5127,7 +5127,7 @@ function FrameImage({ label, characteristics, src, onError }: { label: string; c
       <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
         <Stack spacing={0.25}>
           <Typography fontWeight={700} variant="body2">{label}</Typography>
-          <Typography variant="caption" color="text.secondary">Native {squarePixelDimensions(characteristics)}</Typography>
+          <Typography variant="caption" color="text.secondary">Native {characteristics.width}×{characteristics.height}</Typography>
         </Stack>
         <Button component="a" href={src} target="_blank" rel="noreferrer" size="small">Open full size</Button>
       </Stack>

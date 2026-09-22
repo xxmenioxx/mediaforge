@@ -13,12 +13,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function characteristics(width: number, height: number, displayAspectRatio: string): PreviewVideoCharacteristics {
+function characteristics(width: number, height: number, displayAspectRatio: string, sampleAspectRatio = '1:1'): PreviewVideoCharacteristics {
   return {
     codec: 'h264',
     width,
     height,
-    sampleAspectRatio: '1:1',
+    sampleAspectRatio,
     displayAspectRatio,
   };
 }
@@ -62,6 +62,13 @@ describe('LAB fidelity comparison geometry', () => {
     expect(screen.getByText('Native 1920×1080')).toBeTruthy();
     expect(screen.getAllByTestId('lab-comparison-viewport')).toHaveLength(2);
     expect(screen.getAllByRole('img').every((image) => image.getAttribute('data-lab-comparison-geometry') === 'shared-viewport-contain')).toBe(true);
+  });
+
+  it('reports encoded native dimensions instead of SAR-adjusted geometry', () => {
+    render(<FrameFidelityComparison inspection={inspection(characteristics(720, 480, '4:3', '8:9'), characteristics(1920, 1080, '16:9'))} />);
+
+    expect(screen.getByText('Native 720×480')).toBeTruthy();
+    expect(screen.queryByText('Native 640×480')).toBeNull();
   });
 
   it('uses contain geometry for different aspect ratios and slider/blink layers', async () => {
