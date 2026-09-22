@@ -242,11 +242,12 @@ const (
 )
 
 type hevcRateConstraint struct {
-	TargetKbps  int64
-	MaxrateKbps int64
-	BufferKbps  int64
-	Bounded     bool
-	Source      string
+	TargetKbps      int64
+	MaxrateKbps     int64
+	BufferKbps      int64
+	Bounded         bool
+	ExplicitVBVPair bool
+	Source          string
 }
 
 func hevcRateConstraintForProfile(profile models.Profile) hevcRateConstraint {
@@ -304,7 +305,13 @@ func x265HEVCRateConstraint(profile models.Profile) hevcRateConstraint {
 	if buffer == 0 {
 		buffer = values["bufsize"]
 	}
-	return hevcRateConstraint{MaxrateKbps: maxrate, BufferKbps: buffer, Bounded: maxrate > 0, Source: "x265_vbv"}
+	return hevcRateConstraint{
+		MaxrateKbps:     maxrate,
+		BufferKbps:      buffer,
+		Bounded:         maxrate > 0,
+		ExplicitVBVPair: values["vbv-maxrate"] > 0 && values["vbv-bufsize"] > 0,
+		Source:          "x265_vbv",
+	}
 }
 
 func parseHEVCRateKbps(value string) (int64, bool) {
@@ -332,6 +339,7 @@ func freezeHEVCRateConstraint(profile *models.Profile) hevcRateConstraint {
 	profile.WorkerConfig["hevcRateControlFrozen"] = true
 	profile.WorkerConfig["hevcRateControlSource"] = constraint.Source
 	profile.WorkerConfig["hevcRateControlBounded"] = constraint.Bounded
+	profile.WorkerConfig["hevcRateControlExplicitVBVPair"] = constraint.ExplicitVBVPair
 	profile.WorkerConfig["hevcRateControlTargetKbps"] = constraint.TargetKbps
 	profile.WorkerConfig["hevcRateControlMaxrateKbps"] = constraint.MaxrateKbps
 	profile.WorkerConfig["hevcRateControlBufferKbps"] = constraint.BufferKbps
@@ -345,16 +353,17 @@ func freezeHEVCRateConstraint(profile *models.Profile) hevcRateConstraint {
 
 func hevcLevelFingerprint(width, height int, fps float64, profile models.Profile, constraint hevcRateConstraint) string {
 	input := struct {
-		Encoder     string  `json:"encoder"`
-		Width       int     `json:"width"`
-		Height      int     `json:"height"`
-		FPS         float64 `json:"fps"`
-		TargetKbps  int64   `json:"targetKbps"`
-		MaxrateKbps int64   `json:"maxrateKbps"`
-		BufferKbps  int64   `json:"bufferKbps"`
-		Bounded     bool    `json:"bounded"`
-		RateSource  string  `json:"rateSource"`
-	}{resolvedVideoEncoder(profile), width, height, fps, constraint.TargetKbps, constraint.MaxrateKbps, constraint.BufferKbps, constraint.Bounded, constraint.Source}
+		Encoder         string  `json:"encoder"`
+		Width           int     `json:"width"`
+		Height          int     `json:"height"`
+		FPS             float64 `json:"fps"`
+		TargetKbps      int64   `json:"targetKbps"`
+		MaxrateKbps     int64   `json:"maxrateKbps"`
+		BufferKbps      int64   `json:"bufferKbps"`
+		Bounded         bool    `json:"bounded"`
+		ExplicitVBVPair bool    `json:"explicitVBVPair"`
+		RateSource      string  `json:"rateSource"`
+	}{resolvedVideoEncoder(profile), width, height, fps, constraint.TargetKbps, constraint.MaxrateKbps, constraint.BufferKbps, constraint.Bounded, constraint.ExplicitVBVPair, constraint.Source}
 	encoded, _ := json.Marshal(input)
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:])
@@ -420,6 +429,11 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 		profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level/Tier is unresolved because current effective output geometry or FPS is unavailable."
 		return profile
 	}
+	if mode == "custom" && encoder == "libx265" && !constraint.ExplicitVBVPair {
+		profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionIncompatible
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Explicit x265 HEVC Level requires explicit vbv-maxrate and vbv-bufsize for deterministic Level enforcement; command planning is blocked."
+		return profile
+	}
 
 	if mode == "auto" {
 		recommendation := recommendHEVCLevel(width, height, fps, hevcRecommendationBitrate(constraint))
@@ -468,6 +482,7 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 		"maxrateKbps":          constraint.MaxrateKbps,
 		"bufferKbps":           constraint.BufferKbps,
 		"bounded":              constraint.Bounded,
+		"explicitVBVPair":      constraint.ExplicitVBVPair,
 		"source":               constraint.Source,
 		"vbvConsequence":       vbvConsequence,
 		"levelIdcMayImposeVBV": vbvConsequence == "x265_level_constraints",
@@ -507,6 +522,7 @@ func profileWithoutStaleHEVCLevelDecision(profile models.Profile) models.Profile
 		"hevcRateControlFrozen",
 		"hevcRateControlSource",
 		"hevcRateControlBounded",
+		"hevcRateControlExplicitVBVPair",
 		"hevcRateControlTargetKbps",
 		"hevcRateControlMaxrateKbps",
 		"hevcRateControlBufferKbps",

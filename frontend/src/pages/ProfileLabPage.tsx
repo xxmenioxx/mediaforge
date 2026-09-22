@@ -4902,7 +4902,7 @@ function validateHEVCLevelForLab(
   if (codec !== 'hevc') {
     return { verdict: 'review' as const, status: 'unavailable' as const, reason: 'The selected output is not HEVC, so HEVC Level/Tier does not apply.' };
   }
-  if (!evidence || evidence.probeStatus === 'unavailable' || !evidence.levelEvidenceAvailable || !evidence.tierEvidenceAvailable) {
+  if (!evidence || evidence.probeOutcome === 'unavailable' || evidence.probeStatus === 'unavailable' || !evidence.levelEvidenceAvailable || !evidence.tierEvidenceAvailable) {
     return { verdict: 'review' as const, status: 'unavailable' as const, reason: 'Authoritative HEVC Level/Tier bitstream evidence was unavailable.' };
   }
   if (!expectedLevel || !expectedTier || !actualLevel || !actualTier) {

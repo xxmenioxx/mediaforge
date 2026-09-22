@@ -701,7 +701,7 @@ func hevcBitstreamEvidenceForValidation(path string, outputProbe map[string]any)
 
 func hevcBitstreamEvidenceFromStructure(structure HEVCBitstreamStructure, err error) models.JSONMap {
 	evidence := models.JSONMap{
-		"probeStatus":            "unverified",
+		"probeOutcome":           "unavailable",
 		"levelEvidenceAvailable": structure.LevelKnown,
 		"tierEvidenceAvailable":  structure.TierKnown,
 		"generalLevelIdc":        structure.LevelIDC,
@@ -714,7 +714,9 @@ func hevcBitstreamEvidenceFromStructure(structure HEVCBitstreamStructure, err er
 		evidence["error"] = err.Error()
 		return evidence
 	}
-	if !structure.LevelKnown || !structure.TierKnown {
+	if structure.LevelKnown && structure.TierKnown {
+		evidence["probeOutcome"] = "available"
+	} else {
 		evidence["probeStatus"] = "unavailable"
 	}
 	return evidence
@@ -920,9 +922,6 @@ func validateHEVCLevelField(worker map[string]interface{}, source, output models
 		// ffprobe average bit_rate is informative only. It cannot prove HEVC
 		// MaxBR or CPB peak conformance.
 		bitrateStatus = "unverified"
-		if status == "validated" {
-			status = "unverified"
-		}
 	}
 	maxBitrate := int64(0)
 	if limit, ok := hevcLevelLimitFor(actualLevel); ok {

@@ -558,6 +558,96 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	}
 }
 
+func TestQueuePreparingFreezesHEVCDecisionBeforeProfileMutation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-hevc-preparing-freeze?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{
+		Name: "HEVC Queue Freeze", Container: "mkv", VideoCodec: "hevc", CodecFamily: "hevc",
+		EncoderPolicy: "locked", PreferredEncoder: "libx265", AllowedEncoders: models.StringList{"libx265"},
+		FallbackPolicy: "wait", BitDepth: 8, PixelFormat: "yuv420p", QualityStrategy: "high",
+		ProfileVersion: 1, AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+		WorkerConfig: models.JSONMap{
+			"videoEncoder": "libx265", "hevcLevelMode": "auto",
+			"x265Params": "vbv-maxrate=10000:vbv-bufsize=20000",
+		},
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/queue-hevc-freeze.mkv"
+	job := models.QueueJob{MediaPath: path, LibraryID: 1, ProfileID: profile.ID, ProcessingMode: ProcessingModeFullEncode, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	streams := MediaStreamInventory{Video: []MediaStream{{Index: 0, Width: 1920, Height: 1080, FrameRate: "24/1", PixelFormat: "yuv420p"}}}
+	requested, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := resolveMediaJobVideoProfile(requested, streams, path, InterlaceAnalysis{Status: "progressive"}, CadenceAnalysis{Type: "native"}, CadenceRecommendation{Operation: "preserve"})
+	if workerStringValue(resolved.WorkerConfig["hevcLevelEffective"]) != "4.0" || workerStringValue(resolved.WorkerConfig["hevcLevelEnforcement"]) != hevcLevelEnforcementHard {
+		t.Fatalf("Queue PREPARING did not resolve bounded HEVC decision: %#v", resolved.WorkerConfig)
+	}
+	decisionBeforeFreeze := configurationHash(effectiveVideoDecision(resolved))
+	commandBeforeFreeze := shellJoin((FFmpegCommandBuilder{}).Build(MediaJobPlan{
+		InputPath: path, OutputPath: "/tmp/queue-hevc-freeze.mkv", Profile: resolved,
+		ProcessingMode: ProcessingModeFullEncode, Streams: streams, Overwrite: true,
+	}))
+	fingerprint := workerStringValue(resolved.WorkerConfig["hevcLevelInputFingerprint"])
+	maxrate := workerIntValue(resolved.WorkerConfig["hevcRateControlMaxrateKbps"], 0)
+	if fingerprint == "" || maxrate != 10_000 {
+		t.Fatalf("prepared HEVC decision did not freeze its fingerprint/rate: %#v", resolved.WorkerConfig)
+	}
+	job.ProfileSnapshot[assetConversionOverrideSnapshotKey] = models.JSONMap{"videoCodec": "hevc"}
+	if err := freezeQueuePreparedProfileSnapshot(db, &job, resolved); err != nil {
+		t.Fatal(err)
+	}
+
+	profile.WorkerConfig["x265Params"] = "vbv-maxrate=40000:vbv-bufsize=80000"
+	profile.ProfileVersion = 2
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	mutated := resolveHEVCLevel(profile, streams)
+	if workerStringValue(mutated.WorkerConfig["hevcLevelInputFingerprint"]) == fingerprint || workerIntValue(mutated.WorkerConfig["hevcRateControlMaxrateKbps"], 0) == maxrate {
+		t.Fatalf("test mutation did not change the resolver inputs: %#v", mutated.WorkerConfig)
+	}
+
+	var restoredJob models.QueueJob
+	if err := db.First(&restoredJob, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restoredJob.ProfileSnapshot[assetConversionOverrideSnapshotKey]; !ok {
+		t.Fatalf("Queue preparation dropped the existing conversion override snapshot: %#v", restoredJob.ProfileSnapshot)
+	}
+	restored, err := scheduler.RestoreProfileSnapshot(restoredJob.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configurationHash(effectiveVideoDecision(restored)); got != decisionBeforeFreeze {
+		t.Fatalf("restored Queue decision changed after profile mutation: got=%s want=%s config=%#v", got, decisionBeforeFreeze, restored.WorkerConfig)
+	}
+	if workerStringValue(restored.WorkerConfig["hevcLevelInputFingerprint"]) != fingerprint || workerIntValue(restored.WorkerConfig["hevcRateControlMaxrateKbps"], 0) != maxrate {
+		t.Fatalf("restored Queue snapshot lost frozen HEVC state: %#v", restored.WorkerConfig)
+	}
+	commandAfterRestore := shellJoin((FFmpegCommandBuilder{}).Build(MediaJobPlan{
+		InputPath: path, OutputPath: "/tmp/queue-hevc-freeze.mkv", Profile: restored,
+		ProcessingMode: ProcessingModeFullEncode, Streams: streams, Overwrite: true,
+	}))
+	if commandAfterRestore != commandBeforeFreeze {
+		t.Fatalf("restored Queue command changed after profile mutation:\nbefore=%s\nafter=%s", commandBeforeFreeze, commandAfterRestore)
+	}
+}
+
 func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-interlace-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

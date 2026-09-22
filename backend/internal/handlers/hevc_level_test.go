@@ -59,9 +59,9 @@ func TestResolveHEVCLevelAndEncoderArguments(t *testing.T) {
 		t.Fatalf("QSV effective=%#v args=%s", qsv.WorkerConfig, qsvArgs)
 	}
 
-	x265 := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1", "x265Params": "aq-mode=3:level-idc=5.0:high-tier=1"}}, streams)
+	x265 := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1", "x265Params": "aq-mode=3:vbv-maxrate=20000:vbv-bufsize=40000:level-idc=5.0:high-tier=1"}}, streams)
 	params := effectiveX265Params(x265)
-	if params != "aq-mode=3:level-idc=4.1:high-tier=0" {
+	if params != "aq-mode=3:vbv-maxrate=20000:vbv-bufsize=40000:level-idc=4.1:high-tier=0" {
 		t.Fatalf("x265 params=%s", params)
 	}
 }
@@ -252,6 +252,7 @@ func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
 		profile := resolveHEVCLevel(base, streams)
 		profile.WorkerConfig["hevcLevelMode"] = "custom"
 		profile.WorkerConfig["hevcLevel"] = "4.1"
+		profile.WorkerConfig["x265Params"] = "vbv-maxrate=10000:vbv-bufsize=20000"
 		profile = resolveHEVCLevel(profile, streams)
 		if workerStringValue(profile.WorkerConfig["hevcLevelEffective"]) != "4.1" || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) != "" {
 			t.Fatalf("manual pass retained Auto state: %#v", profile.WorkerConfig)
@@ -302,7 +303,7 @@ func TestHEVCLevelResolutionIsIdempotent(t *testing.T) {
 
 func TestAssetHEVCLevelOverrideWinsOverProfileAuto(t *testing.T) {
 	profile := applyAssetConversionOverrideToProfile(
-		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto"}},
+		models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{"videoEncoder": "libx265", "hevcLevelMode": "auto", "x265Params": "vbv-maxrate=10000:vbv-bufsize=20000"}},
 		AssetConversionOverrideState{HEVCLevelMode: "custom", HEVCLevel: "4.1"},
 	)
 	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24/1"}}})
@@ -408,8 +409,20 @@ func TestX265HEVCLevelEnforcementIsDeterministic(t *testing.T) {
 	if got := effectiveX265Params(hard); got != "vbv-maxrate=20000:vbv-bufsize=40000:level-idc=4.1:high-tier=0" {
 		t.Fatalf("bounded Auto x265 decision was not hard-enforced: %s config=%#v", got, hard.WorkerConfig)
 	}
+	explicit := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1", "x265Params": "vbv-maxrate=20000:vbv-bufsize=40000",
+	}}, streams)
+	if got := effectiveX265Params(explicit); got != "vbv-maxrate=20000:vbv-bufsize=40000:level-idc=4.1:high-tier=0" || hevcLevelPlanningError(explicit) != nil {
+		t.Fatalf("explicit bounded x265 Level was not deterministically enforced: %s config=%#v", got, explicit.WorkerConfig)
+	}
+	blocked := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
+		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.1",
+	}}, streams)
+	if workerStringValue(blocked.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionIncompatible || hevcLevelPlanningError(blocked) == nil || !strings.Contains(workerStringValue(blocked.WorkerConfig["hevcLevelResolutionWarning"]), "vbv-maxrate") {
+		t.Fatalf("explicit x265 Level without deterministic VBV was not blocked: %#v", blocked.WorkerConfig)
+	}
 	incompatible := resolveHEVCLevel(models.Profile{VideoCodec: "x265", WorkerConfig: models.JSONMap{
-		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.0",
+		"videoEncoder": "libx265", "hevcLevelMode": "custom", "hevcLevel": "4.0", "x265Params": "vbv-maxrate=20000:vbv-bufsize=40000",
 	}}, MediaStreamInventory{Video: []MediaStream{{Width: 3840, Height: 2160, FrameRate: "24/1"}}})
 	if workerStringValue(incompatible.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionIncompatible || hevcLevelPlanningError(incompatible) == nil {
 		t.Fatalf("incompatible explicit Level was not blocked: %#v", incompatible.WorkerConfig)

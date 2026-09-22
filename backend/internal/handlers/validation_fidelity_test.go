@@ -188,7 +188,7 @@ func TestHEVCLevelValidationChecksRecommendedOutputLevel(t *testing.T) {
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1", "bitrate": "6418000"}
 
 	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "bitrate": 6418000}, testHEVCBitstreamEvidence("4.0", "main"))
-	if validated["status"] != "unverified" || validated["levelStatus"] != "validated" || validated["requested"] != "4.0" {
+	if validated["status"] != "validated" || validated["levelStatus"] != "validated" || validated["tierStatus"] != "validated" || validated["bitrateStatus"] != "unverified" || validated["requested"] != "4.0" {
 		t.Fatalf("validated result=%#v", validated)
 	}
 
@@ -229,11 +229,11 @@ func TestHEVCLevelValidationFallbackUsesEffectiveOutputFPS(t *testing.T) {
 }
 
 func TestHEVCLevelValidationChecksObservedMainTierBitrate(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
+	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelEffective": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
 	output := models.JSONMap{"codec": "hevc", "bitrate": 13_000_000}
 	validated := validateHEVCLevelField(worker, source, output, testHEVCBitstreamEvidence("4.0", "main"))
-	if validated["status"] != "unverified" || validated["bitrateStatus"] != "unverified" || validated["effectiveTier"] != "main" {
+	if validated["status"] != "validated" || validated["bitrateStatus"] != "unverified" || validated["effectiveTier"] != "main" {
 		t.Fatalf("Main Tier bitrate validation=%#v", validated)
 	}
 }
@@ -273,5 +273,9 @@ func TestHEVCLevelValidationEvidenceStatusVocabulary(t *testing.T) {
 	failedProbe := hevcBitstreamEvidenceFromStructure(HEVCBitstreamStructure{}, fmt.Errorf("trace_headers unavailable"))
 	if failedProbe["probeStatus"] != "unavailable" || failedProbe["levelEvidenceAvailable"] != false || failedProbe["tierEvidenceAvailable"] != false {
 		t.Fatalf("failed bounded probe did not remain unavailable: %#v", failedProbe)
+	}
+	availableProbe := hevcBitstreamEvidenceFromStructure(HEVCBitstreamStructure{LevelIDC: 123, LevelKnown: true, TierFlag: 0, TierKnown: true}, nil)
+	if availableProbe["probeOutcome"] != "available" || availableProbe["probeStatus"] != nil || availableProbe["generalLevel"] != "4.1" || availableProbe["generalTier"] != "main" {
+		t.Fatalf("successful bounded probe was described as insufficient: %#v", availableProbe)
 	}
 }

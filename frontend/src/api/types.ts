@@ -1856,6 +1856,7 @@ export type EffectiveVideoDecision = {
 export type HEVCBitstreamEvidence = {
   stream?: string;
   probe?: string;
+  probeOutcome?: 'available' | 'unavailable' | string;
   probeStatus?: 'validated' | 'mismatch' | 'unavailable' | 'unverified' | string;
   levelEvidenceAvailable?: boolean;
   tierEvidenceAvailable?: boolean;
