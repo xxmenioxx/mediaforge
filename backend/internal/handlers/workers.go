@@ -1070,6 +1070,9 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	if err := freezeQueuePreparedProfileSnapshot(h.db, &job, plan.Profile); err != nil {
+		return job, http.StatusInternalServerError, fmt.Errorf("persist prepared HEVC Level/Tier decision: %w", err)
+	}
 	plan.SourceAssetPath = job.MediaPath
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
 	if len(plan.Override.SubtitleTransforms) > 0 || (plan.ResolvedTracks != nil && (len(plan.ResolvedTracks.SidecarOutputs) > 0 || len(plan.ResolvedTracks.FontAttachments) > 0)) {
@@ -1201,6 +1204,43 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	return job, http.StatusAccepted, nil
+}
+
+// freezeQueuePreparedProfileSnapshot persists the final effective profile after
+// the PREPARING plan has resolved output geometry, cadence/FPS, and HEVC rate
+// constraints. The command and later validation must consume this snapshot;
+// neither may resolve HEVC again from mutable profile state.
+func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profile models.Profile) error {
+	if job == nil || job.ID == 0 {
+		return fmt.Errorf("queue job must be persisted before freezing the prepared profile")
+	}
+	capturedAt := time.Now()
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, capturedAt, "queue_preparing")
+	if err != nil {
+		return err
+	}
+	// CaptureProfileSnapshot owns the canonical profile payload, while these
+	// existing Queue snapshot keys carry immutable job intent/evidence outside
+	// the profile schema. Preserve them when replacing the pre-preparation
+	// snapshot with the final resolved profile.
+	for _, key := range []string{
+		assetConversionOverrideSnapshotKey,
+		interlaceAnalysisSnapshotKey,
+		cadenceAnalysisSnapshotKey,
+		cadenceRecommendationSnapshotKey,
+	} {
+		if value, ok := job.ProfileSnapshot[key]; ok {
+			snapshot[key] = value
+		}
+	}
+	job.ProfileSnapshot = snapshot
+	job.ProfileVersion = max(profile.ProfileVersion, 1)
+	job.ProfileCapturedAt = &capturedAt
+	return db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{
+		"profile_version":     job.ProfileVersion,
+		"profile_snapshot":    job.ProfileSnapshot,
+		"profile_captured_at": job.ProfileCapturedAt,
+	}).Error
 }
 
 func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) models.Profile {

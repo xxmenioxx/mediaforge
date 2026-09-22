@@ -120,7 +120,7 @@ func TestLabDraftTestEncodeDoesNotApplyPersistedAssetVideoOverrides(t *testing.T
 	effective = resolveHEVCLevel(effective, MediaStreamInventory{})
 	command := shellJoin(videoCodecArgsForResolvedEncoder(effective, nil, "hevc_qsv"))
 	assertContains(t, command, "-bf 3")
-	assertContains(t, command, "-level:v 41 -tier main")
+	assertNotContains(t, command, "-level:v 41 -tier main")
 	assertNotContains(t, command, "-bf 1")
 }
 
@@ -272,8 +272,8 @@ func TestTestEncodeResolvesAutomaticGOPAfterFrozenCadence(t *testing.T) {
 	if level := validateHEVCLevelField(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
 		"width": 720, "height": 480, "frameRate": "30000/1001",
 	}, models.JSONMap{
-		"codec": "hevc", "hevcLevel": "3.0", "width": 720, "height": 480, "frameRate": "24000/1001",
-	}); level["status"] != "validated" {
+		"codec": "hevc", "width": 720, "height": 480, "frameRate": "24000/1001",
+	}, testHEVCBitstreamEvidence("3.0", "main")); level["status"] != "validated" {
 		t.Fatalf("HEVC Level validation=%#v want validated", level)
 	}
 }
@@ -382,8 +382,8 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 		t.Fatalf("target rendering mutated the effective video decision: before=%s after=%s", decisionBeforeRender, decisionAfterRender)
 	}
 	assertContains(t, command, "-vf fps=24000/1001,scale=1280:720")
-	if !strings.Contains(command, "-level:v 31") && !strings.Contains(command, "level-idc=3.1") {
-		t.Fatalf("command did not emit HEVC Level 3.1: %s", command)
+	if strings.Contains(command, "-level:v 31") || strings.Contains(command, "level-idc=3.1") {
+		t.Fatalf("unbounded Auto x265 command unexpectedly enforced HEVC Level 3.1: %s", command)
 	}
 	assertContains(t, command, fmt.Sprintf("-g %d", workerIntValue(effective.WorkerConfig["frameStructureGopFrames"], 0)))
 	previewRendered := profileWithPreviewDisplayNormalization(previewProfile, "colorspace=space=bt709:primaries=bt709:trc=bt709")
@@ -396,8 +396,8 @@ func TestEffectiveDecisionSnapshotCommandAndValidationRemainConsistent(t *testin
 	if level := validateHEVCLevelField(map[string]interface{}(effective.WorkerConfig), models.JSONMap{
 		"width": 720, "height": 480, "frameRate": "30000/1001",
 	}, models.JSONMap{
-		"codec": "hevc", "hevcLevel": "3.1", "width": 1280, "height": 720, "frameRate": "24000/1001",
-	}); level["status"] != "validated" {
+		"codec": "hevc", "width": 1280, "height": 720, "frameRate": "24000/1001",
+	}, testHEVCBitstreamEvidence("3.1", "main")); level["status"] != "validated" {
 		t.Fatalf("validation disagrees with effective snapshot and command: %#v", level)
 	}
 }
@@ -653,8 +653,8 @@ func TestMediaJobPlanWithOverridePreservesResolvedVideoDecisionThroughRender(t *
 	}
 	assertContains(t, command, "-vf fps=24000/1001,scale=1280:720")
 	assertContains(t, command, fmt.Sprintf("-g %d", workerIntValue(after["gopFrames"], 0)))
-	if !strings.Contains(command, "-level:v 31") && !strings.Contains(command, "level-idc=3.1") {
-		t.Fatalf("command did not render the effective HEVC Level 3.1: %s", command)
+	if strings.Contains(command, "-level:v 31") || strings.Contains(command, "level-idc=3.1") {
+		t.Fatalf("unbounded Auto x265 command unexpectedly rendered HEVC Level 3.1: %s", command)
 	}
 }
 

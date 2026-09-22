@@ -551,9 +551,11 @@ func TestParseHEVCTraceHeaders(t *testing.T) {
 [trace_headers] sps_max_sub_layers_minus1  u(3) = 0
 [trace_headers] sps_max_dec_pic_buffering_minus1[0] ue(v) = 6
 [trace_headers] sps_max_num_reorder_pics[0] ue(v) = 1
+[trace_headers] general_level_idc  u(8) = 123
+[trace_headers] general_tier_flag  u(1) = 0
 `
 	measured := parseHEVCTraceHeaders(trace)
-	if !measured.Known || measured.TemporalLayers != 1 || measured.DPBFrames != 7 || measured.ReorderFrames != 1 {
+	if !measured.Known || measured.TemporalLayers != 1 || measured.DPBFrames != 7 || measured.ReorderFrames != 1 || !measured.LevelKnown || measured.LevelIDC != 123 || !measured.TierKnown || measured.TierFlag != 0 {
 		t.Fatalf("unexpected measured HEVC structure: %#v", measured)
 	}
 	if memory := estimatedDPBMiB(1920, 1080, 10, measured.DPBFrames); math.Abs(memory-41.53) > 0.1 {

@@ -1805,6 +1805,7 @@ export type PreviewInspection = {
   requestedQSVRateControl: string;
   effectiveQSVRateControl: string;
   effectiveVideoDecision?: EffectiveVideoDecision;
+  hevcBitstreamEvidence?: HEVCBitstreamEvidence;
   frameStructureRecommendation?: FrameStructureRecommendationSet;
   ffmpegArgs: string[];
   normalization: {
@@ -1835,12 +1836,35 @@ export type EffectiveVideoDecision = {
   maxBFrames?: number;
   hevcLevel?: string;
   hevcTier?: string;
+  hevcLevelMode?: string;
+  hevcLevelInputFingerprint?: string;
+  hevcLevelResolutionState?: string;
+  hevcLevelEnforcement?: 'advisory' | 'hard' | string;
+  hevcRateControlSource?: string;
+  hevcRateControlBounded?: boolean;
+  hevcRateControlTargetKbps?: number;
+  hevcRateControlMaxrateKbps?: number;
+  hevcRateControlBufferKbps?: number;
   hevcLevelWarning?: string;
   effectiveFinalColorPolicy?: string;
   colorPolicyDecision?: string;
   colorPolicyWarning?: string;
   upscale?: ResolvedUpscaleDecision;
   restoration?: ResolvedRestorationPlan;
+};
+
+export type HEVCBitstreamEvidence = {
+  stream?: string;
+  probe?: string;
+  probeOutcome?: 'available' | 'unavailable' | string;
+  probeStatus?: 'validated' | 'mismatch' | 'unavailable' | 'unverified' | string;
+  levelEvidenceAvailable?: boolean;
+  tierEvidenceAvailable?: boolean;
+  generalLevelIdc?: number;
+  generalLevel?: string;
+  generalTierFlag?: number;
+  generalTier?: 'main' | 'high' | string;
+  error?: string;
 };
 
 export type PreviewFrameMetrics = {
