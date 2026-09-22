@@ -350,39 +350,23 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
 		return
 	}
+	if !queueBatchCanBeDismissed(jobs) {
+		c.JSON(http.StatusConflict, gin.H{"error": "batch can be removed only when all jobs are canceled"})
+		return
+	}
 
 	now := time.Now()
-	removedPlaceholders := 0
 	dismissedJobs := 0
-	preservedCompleted := 0
-	canceledProcesses := map[uint]bool{}
+	cleanedExecutionPlans := 0
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		for index := range jobs {
 			job := &jobs[index]
-			if job.Status == JobStatusCompleted {
-				preservedCompleted++
-				continue
-			}
 			if job.ExecutionNumber == nil && job.StartedAt == nil {
-				if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
-					return err
+				result := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{})
+				if result.Error != nil {
+					return result.Error
 				}
-				if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
-					return err
-				}
-				if err := tx.Delete(job).Error; err != nil {
-					return err
-				}
-				removedPlaceholders++
-				continue
-			}
-			if job.Status == JobStatusRunning {
-				canceledProcesses[job.ID] = cancelRunningJobProcess(job.ID)
-				job.Status = JobStatusCanceled
-				job.FinishedAt = &now
-				if err := transitionJobStage(tx, job, JobStageCanceled); err != nil {
-					return err
-				}
+				cleanedExecutionPlans += int(result.RowsAffected)
 			}
 			job.DismissedAt = &now
 			if err := tx.Save(job).Error; err != nil {
@@ -400,16 +384,27 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		return
 	}
 	for _, job := range jobs {
-		if job.Status == JobStatusCanceled && !canceledProcesses[job.ID] {
+		if job.Status == JobStatusCanceled {
 			_ = cleanupCanceledJob(h.db, job)
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"batchId":             batchID,
-		"removedPlaceholders": removedPlaceholders,
-		"dismissedJobs":       dismissedJobs,
-		"preservedCompleted":  preservedCompleted,
+		"batchId":               batchID,
+		"dismissedJobs":         dismissedJobs,
+		"cleanedExecutionPlans": cleanedExecutionPlans,
 	})
+}
+
+func queueBatchCanBeDismissed(jobs []models.QueueJob) bool {
+	if len(jobs) == 0 {
+		return false
+	}
+	for _, job := range jobs {
+		if job.Status != JobStatusCanceled {
+			return false
+		}
+	}
+	return true
 }
 
 func queueUsesOverrideOnlyVideo(resolution models.JSONMap) bool {

@@ -515,7 +515,7 @@ export const api = {
       method: 'DELETE',
     }),
   dismissQueueBatch: (batchId: string) =>
-    request<{ batchId: string; removedPlaceholders: number; dismissedJobs: number; preservedCompleted: number }>(`/api/queue/batches/${encodeURIComponent(batchId)}`, {
+    request<{ batchId: string; dismissedJobs: number; cleanedExecutionPlans: number }>(`/api/queue/batches/${encodeURIComponent(batchId)}`, {
       method: 'DELETE',
     }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),

@@ -349,7 +349,7 @@ func TestDismissQueueJobRejectsRunningAndCompleted(t *testing.T) {
 	}
 }
 
-func TestDismissBatchRemovesPlaceholdersAndPreservesCompletedHistory(t *testing.T) {
+func TestDismissBatchRemovesFullyCanceledJobsAndPreservesHistory(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-dismiss-batch?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -362,18 +362,17 @@ func TestDismissBatchRemovesPlaceholdersAndPreservesCompletedHistory(t *testing.
 	started := time.Now().Add(-time.Minute)
 	executionNumber := uint(9)
 	jobs := []models.QueueJob{
-		{BatchID: "digimon", MediaPath: "/raw/e01.mp4", Status: JobStatusQueued, Stage: JobStageQueued},
-		{BatchID: "digimon", MediaPath: "/raw/e02.mp4", Status: JobStatusCanceled, Stage: JobStageCanceled, StartedAt: &started, ExecutionNumber: &executionNumber},
-		{BatchID: "digimon", MediaPath: "/raw/e03.mp4", Status: JobStatusCompleted, Stage: JobStageCompleted, StartedAt: &started},
+		{BatchID: "digimon", MediaPath: "/raw/e01.mp4", Status: JobStatusCanceled, Stage: JobStageCanceled},
+		{BatchID: "digimon", MediaPath: "/raw/e02.mp4", Status: JobStatusCanceled, Stage: JobStageCanceled, StartedAt: &started, ExecutionNumber: &executionNumber, Notes: "audit trail"},
 	}
 	for index := range jobs {
 		if err := db.Create(&jobs[index]).Error; err != nil {
 			t.Fatal(err)
 		}
+		if err := scheduler.LockQueuedAsset(db, jobs[index]); err != nil {
+			t.Fatal(err)
+		}
 		if index == 0 {
-			if err := scheduler.LockQueuedAsset(db, jobs[index]); err != nil {
-				t.Fatal(err)
-			}
 			if err := db.Create(&models.ExecutionPlan{JobID: jobs[index].ID, Version: 1, Status: scheduler.ExecutionPlanPendingEvaluation}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -388,26 +387,132 @@ func TestDismissBatchRemovesPlaceholdersAndPreservesCompletedHistory(t *testing.
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	var placeholderCount int64
-	if err := db.Model(&models.QueueJob{}).Where("id = ?", jobs[0].ID).Count(&placeholderCount).Error; err != nil {
+	var responseBody struct {
+		BatchID               string `json:"batchId"`
+		DismissedJobs         int    `json:"dismissedJobs"`
+		CleanedExecutionPlans int    `json:"cleanedExecutionPlans"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
 		t.Fatal(err)
 	}
-	if placeholderCount != 0 {
-		t.Fatal("queued placeholder was preserved")
+	if responseBody.BatchID != "digimon" || responseBody.DismissedJobs != 2 || responseBody.CleanedExecutionPlans != 1 {
+		t.Fatalf("unexpected batch cleanup response: %#v", responseBody)
 	}
-	var canceled models.QueueJob
-	if err := db.First(&canceled, jobs[1].ID).Error; err != nil {
+	for index := range jobs {
+		var stored models.QueueJob
+		if err := db.First(&stored, jobs[index].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != JobStatusCanceled || stored.DismissedAt == nil {
+			t.Fatalf("cancelled history was not preserved and dismissed: %#v", stored)
+		}
+	}
+	var canceledHistory models.QueueJob
+	if err := db.First(&canceledHistory, jobs[1].ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if canceled.DismissedAt == nil {
-		t.Fatal("started canceled job was not dismissed")
+	if canceledHistory.ExecutionNumber == nil || canceledHistory.StartedAt == nil || canceledHistory.Notes != "audit trail" {
+		t.Fatalf("cancelled audit fields were not preserved: %#v", canceledHistory)
 	}
-	var completed models.QueueJob
-	if err := db.First(&completed, jobs[2].ID).Error; err != nil {
+
+	var plans int64
+	if err := db.Model(&models.ExecutionPlan{}).Where("job_id = ?", jobs[0].ID).Count(&plans).Error; err != nil {
 		t.Fatal(err)
 	}
-	if completed.DismissedAt != nil {
-		t.Fatal("completed history was dismissed")
+	if plans != 0 {
+		t.Fatalf("cancelled placeholder plan was preserved: %d", plans)
+	}
+	router.GET("/api/queue/jobs", NewQueueHandler(db).List)
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/api/queue/jobs", nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var visible []models.QueueJob
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &visible); err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 0 {
+		t.Fatalf("dismissed jobs remain in active Queue: %#v", visible)
+	}
+}
+
+func TestDismissBatchRejectsNonCanceledWithoutMutation(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		statuses []string
+	}{
+		{name: "canceled-completed", statuses: []string{JobStatusCanceled, JobStatusCompleted}},
+		{name: "canceled-failed", statuses: []string{JobStatusCanceled, JobStatusFailed}},
+		{name: "failed-only", statuses: []string{JobStatusFailed}},
+		{name: "canceled-queued", statuses: []string{JobStatusCanceled, JobStatusQueued}},
+		{name: "canceled-running", statuses: []string{JobStatusCanceled, JobStatusRunning}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open("file:queue-dismiss-batch-reject-"+test.name+"?mode=memory&cache=shared"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.QueueJob{}, &models.SchedulerReservation{}); err != nil {
+				t.Fatal(err)
+			}
+			jobs := make([]models.QueueJob, 0, len(test.statuses))
+			for index, status := range test.statuses {
+				job := models.QueueJob{BatchID: "protected", MediaPath: fmt.Sprintf("/raw/%s-%d.mkv", test.name, index), Status: status, Stage: status}
+				if status == JobStatusRunning {
+					startedAt := time.Now().Add(-time.Minute)
+					execution := uint(12)
+					job.StartedAt = &startedAt
+					job.ExecutionNumber = &execution
+				}
+				jobs = append(jobs, job)
+			}
+			for index := range jobs {
+				job := &jobs[index]
+				if err := db.Create(job).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := scheduler.LockQueuedAsset(db, *job); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.DELETE("/api/queue/batches/:batchId", NewQueueHandler(db).DismissBatch)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/queue/batches/protected", nil))
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+
+			var stored []models.QueueJob
+			if err := db.Where("batch_id = ?", "protected").Order("id asc").Find(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(stored) != len(test.statuses) {
+				t.Fatalf("rejected batch was partially mutated: %#v", stored)
+			}
+			for index := range stored {
+				if stored[index].DismissedAt != nil || stored[index].Status != test.statuses[index] {
+					t.Fatalf("rejected batch was partially mutated: %#v", stored)
+				}
+				if test.statuses[index] == JobStatusRunning && stored[index].FinishedAt != nil {
+					t.Fatalf("running job was changed while rejecting batch: %#v", stored[index])
+				}
+			}
+			jobIDs := make([]uint, 0, len(jobs))
+			for index := range jobs {
+				jobIDs = append(jobIDs, jobs[index].ID)
+			}
+			var reservations int64
+			if err := db.Model(&models.SchedulerReservation{}).Where("job_id IN ?", jobIDs).Count(&reservations).Error; err != nil {
+				t.Fatal(err)
+			}
+			if reservations != int64(len(jobs)) {
+				t.Fatalf("rejected batch released reservations: %d", reservations)
+			}
+		})
 	}
 }
 
