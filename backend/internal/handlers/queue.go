@@ -350,12 +350,15 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
 		return
 	}
+	if !queueBatchCanBeDismissed(jobs) {
+		c.JSON(http.StatusConflict, gin.H{"error": "batch can be removed only after all jobs are terminal"})
+		return
+	}
 
 	now := time.Now()
 	removedPlaceholders := 0
 	dismissedJobs := 0
 	preservedCompleted := 0
-	canceledProcesses := map[uint]bool{}
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		for index := range jobs {
 			job := &jobs[index]
@@ -370,19 +373,7 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 				if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
 					return err
 				}
-				if err := tx.Delete(job).Error; err != nil {
-					return err
-				}
 				removedPlaceholders++
-				continue
-			}
-			if job.Status == JobStatusRunning {
-				canceledProcesses[job.ID] = cancelRunningJobProcess(job.ID)
-				job.Status = JobStatusCanceled
-				job.FinishedAt = &now
-				if err := transitionJobStage(tx, job, JobStageCanceled); err != nil {
-					return err
-				}
 			}
 			job.DismissedAt = &now
 			if err := tx.Save(job).Error; err != nil {
@@ -400,7 +391,7 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		return
 	}
 	for _, job := range jobs {
-		if job.Status == JobStatusCanceled && !canceledProcesses[job.ID] {
+		if job.Status == JobStatusCanceled {
 			_ = cleanupCanceledJob(h.db, job)
 		}
 	}
@@ -410,6 +401,21 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		"dismissedJobs":       dismissedJobs,
 		"preservedCompleted":  preservedCompleted,
 	})
+}
+
+func queueBatchCanBeDismissed(jobs []models.QueueJob) bool {
+	removable := false
+	for _, job := range jobs {
+		switch job.Status {
+		case JobStatusCompleted:
+			continue
+		case JobStatusFailed, JobStatusCanceled:
+			removable = true
+		default:
+			return false
+		}
+	}
+	return removable
 }
 
 func queueUsesOverrideOnlyVideo(resolution models.JSONMap) bool {

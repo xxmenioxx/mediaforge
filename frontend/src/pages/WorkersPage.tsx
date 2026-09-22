@@ -213,8 +213,9 @@ export function WorkersPage() {
                       onCancelJob={cancelJob}
                       onCancelBatch={cancelBatch}
                       onRemoveBatch={(item) => {
-                        const removable = item.jobs.filter((job) => job.status !== 'completed').length;
-                        if (!removable || !window.confirm(`Remove ${removable} non-completed job${removable === 1 ? '' : 's'} from “${item.name}”? Logs and completed jobs will be preserved.`)) return;
+                        const removable = item.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
+                        const canRemove = removable > 0 && item.jobs.every((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'canceled');
+                        if (!canRemove || !window.confirm(`Remove ${removable} failed/canceled job${removable === 1 ? '' : 's'} from “${item.name}”? Completed history, logs, and reports will be preserved.`)) return;
                         removeBatch.mutate(item.batchId);
                       }}
                       onDetails={setDetailsJob}
@@ -377,6 +378,8 @@ function WorkerBatchCard({
 }) {
   const pending = batch.jobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const completed = batch.jobs.filter((job) => job.status === 'completed').length;
+  const removable = batch.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
+  const canRemove = removable > 0 && batch.jobs.every((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'canceled');
   const progress = Math.round(batch.jobs.reduce((sum, job) => sum + job.progress, 0) / Math.max(1, batch.jobs.length));
 
   return (
@@ -417,7 +420,7 @@ function WorkerBatchCard({
           {batch.batchId ? (
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ '& .MuiButton-root': { width: { xs: '100%', sm: 'auto' } } }}>
               <Button startIcon={<CancelIcon />} color="warning" variant="outlined" onClick={() => onCancelBatch(batch)} disabled={!pending.length || isUpdating}>Cancel Batch</Button>
-              <Button startIcon={<RemoveCircleOutlineIcon />} color="error" variant="outlined" onClick={() => onRemoveBatch(batch)} disabled={isUpdating || batch.jobs.every((job) => job.status === 'completed')}>Remove Batch</Button>
+              {canRemove ? <Button startIcon={<RemoveCircleOutlineIcon />} color="error" variant="outlined" onClick={() => onRemoveBatch(batch)} disabled={isUpdating}>Remove Batch</Button> : null}
             </Stack>
           ) : null}
         </Stack>

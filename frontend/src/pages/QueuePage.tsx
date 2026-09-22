@@ -644,6 +644,11 @@ type QueueJobGroup = {
   queued: number;
 };
 
+export function canRemoveQueueBatch(jobs: QueueJob[]) {
+  const nonCompleted = jobs.filter((job) => job.status !== 'completed');
+  return nonCompleted.length > 0 && nonCompleted.every((job) => job.status === 'failed' || job.status === 'canceled');
+}
+
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
   const selected = assets.find((asset) => asset.path === value) ?? null;
 
@@ -897,11 +902,11 @@ export function QueueGroupCard({
   }
 
   function removeBatch() {
-    const removable = group.jobs.filter((job) => job.status !== 'completed');
+    if (!canRemoveQueueBatch(group.jobs)) return;
+    const removable = group.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled');
     const count = removable.length;
-    const onlyPlaceholders = removable.every((job) => !job.executionNumber && !job.startedAt);
     if (!count) return;
-    if (!onlyPlaceholders && !window.confirm(`Remove ${count} non-completed job${count === 1 ? '' : 's'} from “${group.name}”? Running jobs will be canceled first. Logs and reports will be preserved.`)) return;
+    if (!window.confirm(`Remove ${count} failed/canceled job${count === 1 ? '' : 's'} from “${group.name}”? Completed history, logs, and reports will be preserved.`)) return;
     batchAction.mutate('remove');
   }
 
@@ -949,7 +954,7 @@ export function QueueGroupCard({
                   Cancel Batch
                 </Button>
               ) : null}
-              {group.isBatch && group.jobs.some((job) => job.status !== 'completed') ? (
+              {group.isBatch && canRemoveQueueBatch(group.jobs) ? (
                 <Button
                   startIcon={<RemoveCircleOutlineIcon />}
                   color="error"
