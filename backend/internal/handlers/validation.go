@@ -698,19 +698,6 @@ func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob) models.JSONMap {
 			}
 		}
 	}
-	if cadence, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey]); ok &&
-		cadence.Operation == "remove_soft_telecine" && cadence.Confidence >= 0.95 {
-		mode := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["cadenceMode"])))
-		filters := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoFilters"])))
-		if mode != "preserve" && mode != "off" && !strings.Contains(filters, "fps=") {
-			workerCopy := make(map[string]interface{}, len(worker)+1)
-			for key, value := range worker {
-				workerCopy[key] = value
-			}
-			workerCopy["effectiveOutputFrameRate"] = cadence.OutputFrameRate
-			worker = workerCopy
-		}
-	}
 	if override := conversionOverrideForJob(job, nil); normalizedHEVCLevelMode(override.HEVCLevelMode) != "" {
 		workerCopy := make(map[string]interface{}, len(worker)+2)
 		for key, value := range worker {
@@ -771,16 +758,56 @@ func validateCadenceOutputFrameRate(worker map[string]interface{}, output models
 	}
 	observed := strings.TrimSpace(stringFromUnknown(output["frameRate"]))
 	realObserved := strings.TrimSpace(stringFromUnknown(output["realFrameRate"]))
-	status := "validated"
 	expectedFPS := parseFrameRateValue(expected)
 	avgFPS := parseFrameRateValue(observed)
 	realFPS := parseFrameRateValue(realObserved)
-	if expectedFPS > 0 && (avgFPS > 0 && !nearFPS(avgFPS, expectedFPS, 0.01) || realFPS > 0 && !nearFPS(realFPS, expectedFPS, 0.01)) {
-		status = "mismatch"
-	} else if expectedFPS <= 0 || avgFPS <= 0 || realFPS <= 0 {
-		status = "unverified"
+	result := models.JSONMap{"expected": expected, "avgFrameRate": observed, "realFrameRate": realObserved}
+	if expectedFPS <= 0 {
+		result["status"] = "unverified"
+		return result
 	}
-	return models.JSONMap{"expected": expected, "avgFrameRate": observed, "realFrameRate": realObserved, "status": status}
+	if measuredFPS, frameCount, duration, ok := measuredFrameRate(output); ok {
+		result["measuredFrameRate"] = measuredFPS
+		result["measuredFrameCount"] = frameCount
+		result["measuredDuration"] = duration
+		if nearFPS(measuredFPS, expectedFPS, 0.01) {
+			result["status"] = "validated"
+		} else {
+			result["status"] = "mismatch"
+		}
+		if avgFPS > 0 && !nearFPS(avgFPS, measuredFPS, 0.01) {
+			result["streamRateDiagnostic"] = "avg_frame_rate differs from measured frame count/duration"
+		}
+		if realFPS > 0 && !nearFPS(realFPS, measuredFPS, 0.01) {
+			result["baseRateDiagnostic"] = "r_frame_rate differs from measured frame count/duration"
+		}
+		return result
+	}
+	if avgFPS > 0 {
+		if nearFPS(avgFPS, expectedFPS, 0.01) {
+			result["status"] = "validated"
+		} else {
+			result["status"] = "mismatch"
+		}
+		if realFPS > 0 && !nearFPS(realFPS, avgFPS, 0.01) {
+			result["baseRateDiagnostic"] = "r_frame_rate differs from avg_frame_rate; avg_frame_rate remains primary"
+		}
+		return result
+	}
+	result["status"] = "unverified"
+	if realFPS > 0 {
+		result["baseRateDiagnostic"] = "r_frame_rate is available only as corroborating metadata"
+	}
+	return result
+}
+
+func measuredFrameRate(output models.JSONMap) (rate, frameCount, duration float64, ok bool) {
+	frameCount = jsonFloat64(output["frameCount"])
+	duration = jsonFloat64(output["duration"])
+	if frameCount <= 0 || duration <= 0 {
+		return 0, frameCount, duration, false
+	}
+	return frameCount / duration, frameCount, duration, true
 }
 
 func validateHEVCLevelField(worker map[string]interface{}, source, output models.JSONMap) models.JSONMap {
@@ -922,11 +949,16 @@ func firstVideoFrameCharacteristics(probe map[string]any) models.JSONMap {
 			"displayAspectRatio": strings.TrimSpace(stringFromUnknown(stream["display_aspect_ratio"])),
 			"frameRate":          strings.TrimSpace(stringFromUnknown(stream["avg_frame_rate"])),
 			"realFrameRate":      strings.TrimSpace(stringFromUnknown(stream["r_frame_rate"])),
+			"frameCount":         stream["nb_read_frames"],
+			"duration":           stream["duration"],
 			"width":              stream["width"],
 			"height":             stream["height"],
 			"bitrate":            stream["bit_rate"],
 			"fieldOrder":         strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["field_order"]))),
 			"chromaLocation":     strings.ToLower(strings.TrimSpace(stringFromUnknown(stream["chroma_location"]))),
+		}
+		if jsonFloat64(result["frameCount"]) <= 0 {
+			result["frameCount"] = stream["nb_frames"]
 		}
 		levelIDC := workerIntValue(stream["level"], 0)
 		result["hevcLevelIdc"] = levelIDC

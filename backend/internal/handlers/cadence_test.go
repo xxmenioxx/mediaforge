@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -174,23 +175,78 @@ func TestForceDeinterlacePreventsContradictorySoftCadenceNormalization(t *testin
 	}
 }
 
-func TestCadenceValidationRequiresAverageAndRealFrameRates(t *testing.T) {
+func TestCadenceValidationUsesMeasuredThenAverageThenBaseRateEvidence(t *testing.T) {
 	worker := map[string]interface{}{"effectiveOutputFrameRate": "24000/1001"}
 	for _, test := range []struct {
-		name, avg, real, want string
+		name, avg, real string
+		frames          int64
+		duration        float64
+		want            string
 	}{
 		{name: "both match", avg: "24000/1001", real: "24000/1001", want: "validated"},
-		{name: "average only", avg: "24000/1001", want: "unverified"},
+		{name: "average only", avg: "24000/1001", want: "validated"},
 		{name: "real only", real: "24000/1001", want: "unverified"},
-		{name: "real mismatch", avg: "24000/1001", real: "30000/1001", want: "mismatch"},
+		{name: "base disagreement", avg: "24000/1001", real: "30000/1001", want: "validated"},
 		{name: "average mismatch", avg: "30000/1001", real: "24000/1001", want: "mismatch"},
+		{name: "measured match overrides streams", avg: "30000/1001", real: "30000/1001", frames: 480, duration: 20.02, want: "validated"},
+		{name: "measured mismatch overrides streams", avg: "24000/1001", real: "24000/1001", frames: 600, duration: 20, want: "mismatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := validateCadenceOutputFrameRate(worker, models.JSONMap{"frameRate": test.avg, "realFrameRate": test.real})
+			result := validateCadenceOutputFrameRate(worker, models.JSONMap{"frameRate": test.avg, "realFrameRate": test.real, "frameCount": test.frames, "duration": test.duration})
 			if result["status"] != test.want {
 				t.Fatalf("status=%v want %s: %#v", result["status"], test.want, result)
 			}
+			if test.name == "base disagreement" && result["baseRateDiagnostic"] == nil {
+				t.Fatalf("base-rate disagreement was not retained diagnostically: %#v", result)
+			}
 		})
+	}
+}
+
+func TestExplicitInverseTelecineRequiresValidatedFieldOrderAndRenderedChain(t *testing.T) {
+	tests := []struct {
+		name              string
+		fieldOrder        string
+		analysis          InterlaceAnalysis
+		wantOrder         string
+		wantEffectiveRate string
+		wantProgressive   bool
+		wantFilter        bool
+	}{
+		{name: "explicit tff wins over validated bff", fieldOrder: "tff", analysis: InterlaceAnalysis{Status: "telecine", IVTCValidation: &IVTCValidation{SelectedOrder: "bff"}}, wantOrder: "tff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
+		{name: "explicit bff", fieldOrder: "bff", wantOrder: "bff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
+		{name: "validated ivtc detection", fieldOrder: "auto", analysis: InterlaceAnalysis{Status: "telecine", IVTCValidation: &IVTCValidation{SelectedOrder: "bff"}}, wantOrder: "bff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
+		{name: "generic interlace detection is insufficient", fieldOrder: "auto", analysis: InterlaceAnalysis{DetectedFieldOrder: "tff"}, wantOrder: "", wantEffectiveRate: "", wantProgressive: false, wantFilter: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{WorkerConfig: models.JSONMap{"fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine", "cadenceFieldOrder": test.fieldOrder}}
+			resolved := resolveEffectiveVideoMotionProfile(profile, test.analysis, CadenceAnalysis{}, CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001"})
+			if got := workerStringValue(resolved.WorkerConfig["deinterlaceMode"]); test.wantOrder != "" && got != "ivtc_"+test.wantOrder {
+				t.Fatalf("field order=%q want ivtc_%s: %#v", got, test.wantOrder, resolved.WorkerConfig)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != test.wantEffectiveRate {
+				t.Fatalf("effective rate=%q want %q: %#v", got, test.wantEffectiveRate, resolved.WorkerConfig)
+			}
+			if got := profileWorkerBool(resolved, "effectiveOutputProgressive", false); got != test.wantProgressive {
+				t.Fatalf("progressive=%v want %v: %#v", got, test.wantProgressive, resolved.WorkerConfig)
+			}
+			filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
+			if strings.Contains(filters, "fieldmatch=") != test.wantFilter || strings.Contains(filters, "decimate") != test.wantFilter {
+				t.Fatalf("filters=%q want canonical chain=%v", filters, test.wantFilter)
+			}
+			if test.wantOrder == "" && workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) == "" {
+				t.Fatalf("missing review warning: %#v", resolved.WorkerConfig)
+			}
+		})
+	}
+}
+
+func TestProgressiveOutputRequiresResolvedProcessingOrReliableEvidence(t *testing.T) {
+	profile := models.Profile{WorkerConfig: models.JSONMap{"effectiveCadenceOperation": "inverse_telecine", "effectiveOutputFrameRate": "24000/1001"}}
+	resolved := profileWithEffectiveProgressiveOutput(profile, InterlaceAnalysis{}, CadenceAnalysis{}, CadenceRecommendation{Operation: "inverse_telecine", Confidence: 1})
+	if profileWorkerBool(resolved, "effectiveOutputProgressive", false) || !profileWorkerBool(resolved, "effectiveOutputProgressiveUnreliable", false) {
+		t.Fatalf("label-only progressive state was trusted: %#v", resolved.WorkerConfig)
 	}
 }
 

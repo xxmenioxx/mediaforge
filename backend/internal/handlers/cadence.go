@@ -339,13 +339,30 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 	mode := normalizedCadenceMode(workerStringValue(profile.WorkerConfig["cadenceMode"]))
 	if mode == "inverse_telecine" || mode == "auto" && recommendation.Operation == "inverse_telecine" {
 		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-		target := recommendation.OutputFrameRate
-		if target == "" {
-			target = "24000/1001"
+		filters := strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+		order := resolvedIVTCFieldOrder(profile)
+		if mode == "inverse_telecine" && order != "" {
+			filters = ensureCanonicalIVTCFilter(filters, order)
+			profile.WorkerConfig["videoFilters"] = filters
+		} else if mode == "inverse_telecine" {
+			filters = stripCanonicalIVTCFilters(filters)
+			profile.WorkerConfig["videoFilters"] = filters
 		}
-		profile.WorkerConfig["effectiveCadenceOperation"] = "inverse_telecine"
-		profile.WorkerConfig["effectiveOutputFrameRate"] = target
-		delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
+		if hasCanonicalIVTCFilter(filters) {
+			target := recommendation.OutputFrameRate
+			if target == "" {
+				target = "24000/1001"
+			}
+			profile.WorkerConfig["effectiveCadenceOperation"] = "inverse_telecine"
+			profile.WorkerConfig["effectiveOutputFrameRate"] = target
+			delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
+			delete(profile.WorkerConfig, "cadenceResolutionWarning")
+		} else {
+			delete(profile.WorkerConfig, "effectiveOutputFrameRate")
+			profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
+			profile.WorkerConfig["cadenceResolutionWarning"] = "inverse telecine requires an explicit or validated field order; review required"
+			delete(profile.WorkerConfig, "effectiveCadenceOperation")
+		}
 	}
 	return profile
 }
@@ -388,6 +405,90 @@ func legacyCadenceMode(profile models.Profile) string {
 	}
 }
 
+func validatedIVTCFieldOrder(analysis InterlaceAnalysis) string {
+	if analysis.IVTCValidation == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(analysis.IVTCValidation.SelectedOrder)) {
+	case "tff", "bff":
+		return strings.ToLower(strings.TrimSpace(analysis.IVTCValidation.SelectedOrder))
+	default:
+		return ""
+	}
+}
+
+func resolvedIVTCFieldOrder(profile models.Profile) string {
+	if order := normalizedCadenceFieldOrder(workerStringValue(profile.WorkerConfig["cadenceFieldOrder"])); order == "tff" || order == "bff" {
+		return order
+	}
+	switch strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["deinterlaceMode"]))) {
+	case "ivtc_tff":
+		return "tff"
+	case "ivtc_bff":
+		return "bff"
+	}
+	return ""
+}
+
+func hasCanonicalIVTCFilter(filters string) bool {
+	return canonicalIVTCFieldOrder(filters) != ""
+}
+
+func canonicalIVTCFieldOrder(filters string) string {
+	fieldMatchOrder := ""
+	for _, filter := range strings.Split(strings.ToLower(filters), ",") {
+		filter = strings.TrimSpace(filter)
+		if strings.HasPrefix(filter, "fieldmatch=order=tff") {
+			fieldMatchOrder = "tff"
+			continue
+		}
+		if strings.HasPrefix(filter, "fieldmatch=order=bff") {
+			fieldMatchOrder = "bff"
+			continue
+		}
+		if fieldMatchOrder != "" && filter == "decimate" {
+			return fieldMatchOrder
+		}
+		fieldMatchOrder = ""
+	}
+	return ""
+}
+
+func ensureCanonicalIVTCFilter(filters, order string) string {
+	canonical := "fieldmatch=order=" + order + ",decimate,setfield=prog"
+	parts := stripCanonicalIVTCFilterParts(filters)
+	if len(parts) == 0 {
+		return canonical
+	}
+	return canonical + "," + strings.Join(parts, ",")
+}
+
+func stripCanonicalIVTCFilters(filters string) string {
+	return strings.Join(stripCanonicalIVTCFilterParts(filters), ",")
+}
+
+func stripCanonicalIVTCFilterParts(filters string) []string {
+	parts := make([]string, 0, len(strings.Split(filters, ","))+3)
+	removingIVTC := false
+	for _, raw := range strings.Split(filters, ",") {
+		filter := strings.TrimSpace(raw)
+		lower := strings.ToLower(filter)
+		if strings.HasPrefix(lower, "fieldmatch=order=tff") || strings.HasPrefix(lower, "fieldmatch=order=bff") {
+			removingIVTC = true
+			continue
+		}
+		if removingIVTC && lower == "decimate" {
+			removingIVTC = false
+			continue
+		}
+		removingIVTC = false
+		if filter != "" && lower != "setfield=prog" {
+			parts = append(parts, filter)
+		}
+	}
+	return parts
+}
+
 func profileWithResolvedFieldAndCadenceModes(profile models.Profile, analysis InterlaceAnalysis) models.Profile {
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	fieldMode := normalizedFieldStructureMode(workerStringValue(profile.WorkerConfig["fieldStructureMode"]))
@@ -417,20 +518,25 @@ func profileWithResolvedFieldAndCadenceModes(profile models.Profile, analysis In
 		profile.WorkerConfig["deinterlaceMode"] = "auto"
 	}
 	if cadenceMode == "inverse_telecine" {
-		order := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["cadenceFieldOrder"])))
+		order := normalizedCadenceFieldOrder(workerStringValue(profile.WorkerConfig["cadenceFieldOrder"]))
+		if order == "auto" {
+			order = ""
+		}
 		if order == "" && legacy == "ivtc_bff" {
 			order = "bff"
 		}
 		if order == "" && legacy == "ivtc_tff" {
 			order = "tff"
 		}
-		if order != "tff" && order != "bff" {
-			order = analysis.DetectedFieldOrder
+		if order == "" {
+			order = validatedIVTCFieldOrder(analysis)
 		}
-		if order != "bff" {
-			order = "tff"
+		if order == "tff" || order == "bff" {
+			profile.WorkerConfig["deinterlaceMode"] = "ivtc_" + order
+		} else {
+			profile.WorkerConfig["deinterlaceMode"] = "inverse_telecine"
+			profile.WorkerConfig["cadenceResolutionWarning"] = "inverse telecine requires an explicit or validated field order; review required"
 		}
-		profile.WorkerConfig["deinterlaceMode"] = "ivtc_" + order
 	}
 	return profile
 }

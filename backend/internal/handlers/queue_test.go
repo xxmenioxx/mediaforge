@@ -497,6 +497,62 @@ func TestQueueProfileSnapshotFreezesCurrentInterlaceAnalysis(t *testing.T) {
 	}
 }
 
+func TestQueueProfileSnapshotFreezesResolvedCadencePlan(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-cadence-resolution-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["cadenceMode"] = "inverse_telecine"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/cadence-snapshot.mkv"
+	if err := db.Create(&models.ScanResult{
+		Path: path,
+		InterlaceAnalysis: models.JSONMap{
+			"version": float64(interlaceAnalysisVersion), "status": "telecine", "confidence": .99,
+			"ivtcValidation": models.JSONMap{"selectedOrder": "bff", "confidence": .99},
+		},
+		CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "hard_telecine", "confidence": .99},
+		CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "inverse_telecine", "outputFrameRate": "24000/1001", "confidence": .99},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozen := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	if frozen == nil {
+		t.Fatal("resolved worker configuration was not frozen")
+	}
+	if got := stringFromUnknown(frozen["deinterlaceMode"]); got != "ivtc_bff" {
+		t.Fatalf("frozen field order=%q want ivtc_bff: %#v", got, frozen)
+	}
+	if got := stringFromUnknown(frozen["effectiveOutputFrameRate"]); got != "24000/1001" {
+		t.Fatalf("frozen effective FPS=%q want 24000/1001: %#v", got, frozen)
+	}
+	if filters := stringFromUnknown(frozen["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff,decimate") {
+		t.Fatalf("frozen cadence chain=%q", filters)
+	}
+
+	profile.WorkerConfig["cadenceFieldOrder"] = "tff"
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	frozen = unknownRecord(job.ProfileSnapshot["workerConfig"])
+	if got := stringFromUnknown(frozen["deinterlaceMode"]); got != "ivtc_bff" {
+		t.Fatalf("mutable profile changed frozen field order to %q: %#v", got, frozen)
+	}
+}
+
 func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

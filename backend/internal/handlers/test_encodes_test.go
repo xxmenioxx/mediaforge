@@ -526,6 +526,70 @@ func TestResolvedRestorationPlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 	}
 }
 
+func TestResolvedCadencePlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
+	db := testEncodeTestDB(t, "cadence-entrypoint-parity")
+	path := filepath.Clean("/media/raw/cadence-parity.mkv")
+	interlace := InterlaceAnalysis{
+		Version:           interlaceAnalysisVersion,
+		Status:            "telecine",
+		Confidence:        .99,
+		IVTCValidation:    &IVTCValidation{SelectedOrder: "bff", Confidence: .99},
+		RecommendedAction: "inverse_telecine",
+		RecommendedMode:   "ivtc_bff",
+		RecommendedFilter: "fieldmatch=order=bff,decimate",
+		AutomaticFilter:   "fieldmatch=order=bff,decimate",
+	}
+	cadence := CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", Confidence: .99}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+	job := models.QueueJob{MediaPath: path, ProfileSnapshot: models.JSONMap{
+		interlaceAnalysisSnapshotKey:     interlace,
+		cadenceAnalysisSnapshotKey:       cadenceAnalysisMap(cadence),
+		cadenceRecommendationSnapshotKey: cadenceRecommendationMap(recommendation),
+	}}
+	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"fieldStructureMode": "preserve",
+		"cadenceMode":        "inverse_telecine",
+		"cadenceFieldOrder":  "auto",
+		"videoFilters":       "scale=1280:720",
+	}}
+	streams := MediaStreamInventory{Video: []MediaStream{{
+		Index: 0, Codec: "mpeg2video", FieldOrder: "bb", Width: 720, Height: 480, FrameRate: "30000/1001",
+	}}}
+
+	preview, err := resolvePreviewVideoProfile(db, path, requested, streams, interlace, cadence, recommendation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode, err := resolveTestEncodeVideoProfile(db, path, job, requested, AssetConversionOverrideState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testEncode = resolveMediaJobVideoProfile(testEncode, streams, path, interlace, cadence, recommendation)
+	queue, err := resolveQueueVideoProfile(db, path, job, requested, AssetConversionOverrideState{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue = resolveMediaJobVideoProfile(queue, streams, path, interlace, cadence, recommendation)
+
+	want := queue.WorkerConfig
+	for name, profile := range map[string]models.Profile{"preview": preview, "test_encode": testEncode} {
+		for _, key := range []string{"videoFilters", "effectiveCadenceOperation", "effectiveOutputFrameRate", "deinterlaceMode"} {
+			if got := workerStringValue(profile.WorkerConfig[key]); got != workerStringValue(want[key]) {
+				t.Fatalf("%s cadence %s diverged: got=%q queue=%q", name, key, got, workerStringValue(want[key]))
+			}
+		}
+		if got := profileWorkerBool(profile, "effectiveOutputProgressive", false); got != profileWorkerBool(queue, "effectiveOutputProgressive", false) {
+			t.Fatalf("%s progressive state diverged: got=%v queue=%v", name, got, profileWorkerBool(queue, "effectiveOutputProgressive", false))
+		}
+	}
+	if got := workerStringValue(queue.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" {
+		t.Fatalf("queue effective cadence rate=%q", got)
+	}
+	if filters := workerStringValue(queue.WorkerConfig["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff,decimate") {
+		t.Fatalf("queue did not render the validated IVTC chain: %q", filters)
+	}
+}
+
 func TestMediaJobPlanWithOverridePreservesResolvedVideoDecisionThroughRender(t *testing.T) {
 	db := testEncodeTestDB(t, "media-job-plan-override-parity")
 	path := filepath.Clean("/media/raw/soft-telecine.mkv")
@@ -633,7 +697,7 @@ func TestTestEncodeValidationReportsCadenceAndDecodedFrames(t *testing.T) {
 		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0}}},
 	}
 	passed := testEncodeValidationReport(plan, MediaStreamInventory{
-		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", RealFrameRate: "24000/1001", DecodedFrames: 480}}, Duration: 20,
+		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", RealFrameRate: "24000/1001", DecodedFrames: 480}}, Duration: 20.02,
 	}, 20)
 	if passed["passed"] != true {
 		t.Fatalf("matching cadence did not validate: %#v", passed)

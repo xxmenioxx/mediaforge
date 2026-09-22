@@ -744,14 +744,19 @@ func profileWithEffectiveProgressiveOutput(profile models.Profile, interlace Int
 	filters := strings.ToLower(workerStringValue(profile.WorkerConfig["videoFilters"]))
 	operation := strings.ToLower(workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]))
 	progressive := strings.Contains(filters, "bwdif=") || strings.Contains(filters, "yadif=") ||
-		strings.Contains(filters, "fieldmatch") || operation == "inverse_telecine" || operation == "remove_soft_telecine"
+		(strings.Contains(filters, "fieldmatch=order=") && strings.Contains(filters, "decimate"))
 	reliable := progressive
 	if !progressive && strings.EqualFold(strings.TrimSpace(interlace.Status), "progressive") {
 		progressive = true
 		reliable = interlace.Confidence >= .8
 	}
-	if (operation == "inverse_telecine" || operation == "remove_soft_telecine") && recommendation.Confidence > 0 {
-		reliable = recommendation.Confidence >= .8 && cadence.Confidence >= .8
+	if operation == "remove_soft_telecine" && strings.Contains(filters, "fps=") {
+		progressive = true
+		reliable = recommendation.Operation == "remove_soft_telecine" && recommendation.Confidence >= .8 && cadence.Confidence >= .8
+	}
+	if operation == "inverse_telecine" && !strings.Contains(filters, "fieldmatch=order=") {
+		progressive = false
+		reliable = false
 	}
 	profile.WorkerConfig["effectiveOutputProgressive"] = progressive
 	if reliable {
