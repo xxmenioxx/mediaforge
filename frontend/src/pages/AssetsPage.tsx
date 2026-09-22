@@ -3963,6 +3963,7 @@ async function generateExternalSubtitle(
               key={`${asset.path}-${previewMode}`}
               component="video"
               controls
+              crossOrigin="anonymous"
               preload="metadata"
               src={previewMode === 'compatible' ? api.compatibleAssetPreviewUrl({ path: asset.path }) : api.assetPreviewUrl(asset.path)}
               sx={{

@@ -826,7 +826,7 @@ function AudioPreviewPlayer({ label, src }: { label: string; src: string }) {
 
     async function draw() {
       try {
-        const response = await fetch(src);
+        const response = await fetch(src, { credentials: 'omit' });
         if (!response.ok) {
           throw new Error(`Preview failed with ${response.status}`);
         }

@@ -3,8 +3,12 @@ package routes
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -75,5 +79,57 @@ func TestProductionMiddlewarePreservesIncomingRequestID(t *testing.T) {
 
 	if got := response.Header().Get("X-Request-ID"); got != "known-request" {
 		t.Fatalf("request ID=%q", got)
+	}
+}
+
+func TestProductionLoggingDoesNotIncludeSensitiveHeaders(t *testing.T) {
+	logDir := t.TempDir()
+	if err := applog.Initialize(logDir); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(productionLogger(), productionRecovery())
+	router.GET("/ok", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.GET("/panic", func(c *gin.Context) { panic("test panic") })
+
+	for _, path := range []string{"/ok", "/panic"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Cookie", "mvforge-cookie-secret")
+		request.Header.Set("Authorization", "Bearer mvforge-authorization-secret")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+	}
+
+	contents, err := os.ReadFile(filepath.Join(logDir, "backend.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(contents)
+	for _, forbidden := range []string{"mvforge-cookie-secret", "mvforge-authorization-secret", `"Cookie"`, `"Authorization"`} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("production log contains sensitive request header data %q: %s", forbidden, logText)
+		}
+	}
+}
+
+func TestCORSRemainsNonCredentialed(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:routes-cors-non-credentialed?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(db)
+
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("allow-origin=%q", got)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("allow-credentials=%q, want it absent", got)
 	}
 }

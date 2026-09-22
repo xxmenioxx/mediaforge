@@ -16,7 +16,7 @@ import (
 
 func New(db *gorm.DB) *gin.Engine {
 	router := gin.New()
-	router.Use(productionLogger(), productionRecovery())
+	router.Use(stripInboundCookies(), productionLogger(), productionRecovery())
 	if err := router.SetTrustedProxies(nil); err != nil {
 		panic(err)
 	}
