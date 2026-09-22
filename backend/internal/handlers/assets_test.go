@@ -380,6 +380,150 @@ func TestRenameAssetRejectsActiveWorkForThatAsset(t *testing.T) {
 	}
 }
 
+func TestRenameAssetRenamesOwnedSubtitleSidecars(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-owned-subtitles?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Movie.mkv")
+	newPath := filepath.Join(root, "Movie Renamed.mkv")
+	owned := map[string]string{
+		"Movie.eng.srt":          "english srt",
+		"Movie.spa.ass":          "spanish ass",
+		"Movie.eng.6.forced.srt": "track suffix",
+	}
+	writeTestFile(t, oldPath, "media")
+	for name, content := range owned {
+		writeTestFile(t, filepath.Join(root, name), content)
+	}
+	unrelated := filepath.Join(root, "notes.srt")
+	writeTestFile(t, unrelated, "unrelated")
+	library := models.Library{Name: "Movies", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: oldPath, RootPath: root, RelativePath: filepath.Base(oldPath), FileName: filepath.Base(oldPath), LibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := postAssetRename(t, db, oldPath, filepath.Base(newPath))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old media still exists: %v", err)
+	}
+	for name, content := range owned {
+		target := filepath.Join(root, "Movie Renamed"+strings.TrimPrefix(name, "Movie"))
+		got, err := os.ReadFile(target)
+		if err != nil || string(got) != content {
+			t.Fatalf("renamed sidecar %q = %q, err=%v", target, got, err)
+		}
+	}
+	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "unrelated" {
+		t.Fatalf("unrelated sidecar changed: %q err=%v", got, err)
+	}
+}
+
+func TestRenameAssetRejectsOwnedSubtitleTargetCollisionBeforeMutation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-owned-subtitle-collision?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Movie.mkv")
+	oldSidecar := filepath.Join(root, "Movie.eng.srt")
+	targetSidecar := filepath.Join(root, "Movie Renamed.eng.srt")
+	writeTestFile(t, oldPath, "media")
+	writeTestFile(t, oldSidecar, "old subtitle")
+	writeTestFile(t, targetSidecar, "existing subtitle")
+	library := models.Library{Name: "Movies", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: oldPath, FileName: filepath.Base(oldPath), LibraryID: library.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := postAssetRename(t, db, oldPath, "Movie Renamed.mkv")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{oldPath, oldSidecar, targetSidecar} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("collision check changed %q: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "Movie Renamed.mkv")); !os.IsNotExist(err) {
+		t.Fatalf("media target was created despite sidecar collision: %v", err)
+	}
+}
+
+func TestRenameAssetRollsBackOwnedSubtitleSidecarsAfterReconciliationFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-owned-subtitle-rollback?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Movie.mkv")
+	oldSidecar := filepath.Join(root, "Movie.eng.srt")
+	targetPath := filepath.Join(root, "Movie Renamed.mkv")
+	writeTestFile(t, oldPath, "media")
+	writeTestFile(t, oldSidecar, "subtitle")
+	library := models.Library{Name: "Movies", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]models.AssetRecord{
+		{Path: oldPath, FileName: filepath.Base(oldPath), LibraryID: library.ID},
+		{Path: targetPath, FileName: filepath.Base(targetPath), LibraryID: library.ID},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := postAssetRename(t, db, oldPath, filepath.Base(targetPath))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{oldPath, oldSidecar} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("filesystem rollback did not restore %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{targetPath, filepath.Join(root, "Movie Renamed.eng.srt")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("filesystem rollback left %q: %v", path, err)
+		}
+	}
+	var record models.AssetRecord
+	if err := db.Where("path = ?", oldPath).First(&record).Error; err != nil {
+		t.Fatalf("original AssetRecord was not preserved: %v", err)
+	}
+}
+
+func postAssetRename(t *testing.T, db *gorm.DB, path, fileName string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/assets/rename", NewAssetHandler(db).Rename)
+	body := fmt.Sprintf(`{"path":%q,"fileName":%q}`, path, fileName)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	return response
+}
+
 func TestAssetGroupsPreserveImmediateContainingSubpath(t *testing.T) {
 	records := []models.AssetRecord{
 		{
