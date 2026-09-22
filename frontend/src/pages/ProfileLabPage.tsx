@@ -5075,17 +5075,17 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
               <Stack spacing={0.75}>
                 <Stack direction="row" justifyContent="flex-end"><Button component="a" href={blinkSource && comparisonMode === 'blink' ? sourceUrl : outputUrl} target="_blank" rel="noreferrer" size="small">Open full size</Button></Stack>
                 <LabComparisonViewport>
-                  <Box component="img" data-lab-comparison-layer="profile-result" data-lab-comparison-geometry="shared-viewport-contain" src={outputUrl} alt="Profile result frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} sx={labComparisonLayerSx} />
+                  <Box component="img" data-lab-comparison-layer="profile-result" data-lab-comparison-geometry="shared-viewport-contain" crossOrigin="anonymous" src={outputUrl} alt="Profile result frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} sx={labComparisonLayerSx} />
                   {comparisonMode === 'slider' ? (
                     <>
-                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }} />
+                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" crossOrigin="anonymous" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }} />
                       <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${comparisonPosition}%`, width: 2, bgcolor: 'primary.main' }} />
                       <Chip size="small" label="Canonical source" sx={{ position: 'absolute', left: 12, top: 12 }} />
                       <Chip size="small" label="Profile result" sx={{ position: 'absolute', right: 12, top: 12 }} />
                     </>
                   ) : (
                     <>
-                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, opacity: blinkSource ? 1 : 0 }} />
+                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" crossOrigin="anonymous" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, opacity: blinkSource ? 1 : 0 }} />
                       <Chip size="small" color={blinkSource ? 'info' : 'warning'} label={blinkSource ? 'Canonical source' : 'Profile result'} sx={{ position: 'absolute', left: 12, top: 12 }} />
                     </>
                   )}
@@ -5135,6 +5135,7 @@ function FrameImage({ label, characteristics, src, onError }: { label: string; c
         <Box
           component="img"
           data-lab-comparison-geometry="shared-viewport-contain"
+          crossOrigin="anonymous"
           src={src}
           alt={`${label} frame`}
           onError={onError}
@@ -5446,7 +5447,7 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
         controller.abort();
       };
     }
-    fetch(src, { signal: controller.signal })
+    fetch(src, { credentials: 'omit', signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Preview failed with ${response.status}`);
         const blob = await response.blob();
@@ -5481,6 +5482,7 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
       <Box
         component="video"
         controls
+        crossOrigin="anonymous"
         src={videoSrc}
         data-testid="lab-comparison-video"
         onCanPlay={() => onStatusChange?.('ready')}
@@ -5536,7 +5538,7 @@ function AudioPreview({
 
     async function draw() {
       try {
-        const response = await fetch(src, { signal: controller.signal });
+        const response = await fetch(src, { credentials: 'omit', signal: controller.signal });
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(errorText || `Preview failed with ${response.status}`);

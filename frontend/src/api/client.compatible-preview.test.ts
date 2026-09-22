@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CompatiblePreviewOptions, ProfileInput } from './types';
-import { api } from './client';
+import { api, request } from './client';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -38,6 +38,7 @@ describe('compatible preview request transport', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/assets/preview/compatible/requests');
     expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('omit');
     const posted = JSON.parse(String(init.body)) as CompatiblePreviewOptions;
     expect(posted.profile?.workerConfig?.upscaleSharpenCustomStrength).toBe(0.16);
     expect(posted.profile?.workerConfig?.deinterlaceFieldOrder).toBe('bff');
@@ -49,6 +50,19 @@ describe('compatible preview request transport', () => {
     expect(sourceFrameURL.length).toBeLessThan(200);
     expect(videoURL).not.toContain('profile=');
     expect(sourceFrameURL).not.toContain('profile=');
+  });
+
+  it('keeps the canonical request credentialless when the caller requests credentials', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await request('/api/test', { credentials: 'include', headers: { 'X-Test': 'available' } });
+
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('omit');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ 'X-Test': 'available' });
   });
 
   it('rejects structured profiles on the legacy scalar compatible URL', () => {
