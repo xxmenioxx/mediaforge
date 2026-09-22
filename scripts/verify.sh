@@ -21,6 +21,7 @@ START_TIME="$(date +%s)"
 declare -a FAILED_CHECKS=()
 declare -a FAILED_LOGS=()
 declare -a FAILED_COMMANDS=()
+declare -a FAILED_LOG_MODES=()
 declare -a CHANGED_FILES=()
 declare -a FOCUSED_FRONTEND_TESTS=()
 
@@ -61,6 +62,7 @@ record_check_result() {
     local log_file="$2"
     local command_text="$3"
     local exit_code="$4"
+    local log_mode="${5:-tail}"
 
     TOTAL=$((TOTAL + 1))
 
@@ -73,6 +75,7 @@ record_check_result() {
     FAILED_CHECKS+=("$name")
     FAILED_LOGS+=("$log_file")
     FAILED_COMMANDS+=("$command_text")
+    FAILED_LOG_MODES+=("$log_mode")
     return "$exit_code"
 }
 
@@ -111,6 +114,31 @@ run_check_in_dir() {
     fi
 
     record_check_result "$name" "$log_file" "$command_text" "$exit_code"
+}
+
+run_go_test_in_dir() {
+    local name="$1"
+    local dir="$2"
+    shift 2
+
+    local raw_log="$TMP_DIR/${name}.json"
+    local log_file="$TMP_DIR/${name}.log"
+    local command_text exit_code
+
+    command_text="cd $(printf '%q' "$dir") && $(format_command go test -json "$@")"
+
+    if (cd "$dir" && go test -json "$@") >"$raw_log" 2>&1; then
+        exit_code=0
+        : >"$log_file"
+    else
+        exit_code=$?
+        if ! go run "$ROOT_DIR/scripts/filter-go-test-json.go" "$raw_log" >"$log_file" 2>&1 ||
+           [[ ! -s "$log_file" ]]; then
+            tail -n 60 "$raw_log" >"$log_file"
+        fi
+    fi
+
+    record_check_result "$name" "$log_file" "$command_text" "$exit_code" "full"
 }
 
 append_frontend_test() {
@@ -190,10 +218,10 @@ run_focused_checks() {
     local test_file
 
     if [[ "$FOCUSED_BACKEND_HANDLERS" == true ]]; then
-        run_check_in_dir \
+        run_go_test_in_dir \
             "focused-go-test-handlers" \
             "$ROOT_DIR/backend" \
-            go test ./internal/handlers || return 1
+            ./internal/handlers || return 1
 
         SKIP_CANONICAL_HANDLER_TEST=true
     fi
@@ -210,13 +238,13 @@ run_focused_checks() {
 
 run_backend_checks() {
     if [[ "$SKIP_CANONICAL_HANDLER_TEST" != true ]]; then
-        run_check_in_dir \
+        run_go_test_in_dir \
             "go-test-handlers" \
             "$ROOT_DIR/backend" \
-            go test ./internal/handlers || return 1
+            ./internal/handlers || return 1
     fi
 
-    run_check_in_dir "go-test-all" "$ROOT_DIR/backend" go test ./... || return 1
+    run_go_test_in_dir "go-test-all" "$ROOT_DIR/backend" ./... || return 1
     run_check_in_dir "go-vet" "$ROOT_DIR/backend" go vet ./... || return 1
     run_check_in_dir "go-build" "$ROOT_DIR/backend" go build ./... || return 1
 }
@@ -243,8 +271,13 @@ print_failure_details() {
         printf 'Failed check: %s\n' "${FAILED_CHECKS[$i]}"
         printf 'Command:      %s\n' "${FAILED_COMMANDS[$i]}"
         echo
-        echo "---- failure output (last 60 lines) ----"
-        tail -n 60 "${FAILED_LOGS[$i]}"
+        if [[ "${FAILED_LOG_MODES[$i]}" == "full" ]]; then
+            echo "---- failure output (failed tests only; max 60 lines/test) ----"
+            cat "${FAILED_LOGS[$i]}"
+        else
+            echo "---- failure output (last 60 lines) ----"
+            tail -n 60 "${FAILED_LOGS[$i]}"
+        fi
         echo "---- end failure output ----"
     done
 }
