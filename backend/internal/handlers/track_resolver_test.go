@@ -85,18 +85,56 @@ func TestResolveTrackPlanPreferredSubtitleRulesRespectProfilePrecedenceAndUnknow
 }
 
 func TestResolveTrackPlanPreferredBitmapLanguageKeepsCanonicalOCRPath(t *testing.T) {
-	plan, err := resolveTrackPlan(models.ScanResult{SubtitleStreams: models.JSONList{
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
 		map[string]any{"index": 7, "codec": "hdmv_pgs_subtitle", "language": "jpn"},
-	}}, map[string]any{
-		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
-		"preferredSubtitleRules": []any{map[string]any{"language": "jpn", "action": "extract"}},
+	}}
+	preferredRules := []any{map[string]any{"language": "jpn", "action": "extract"}}
+
+	t.Run("original sidecar preserves bitmap extraction", func(t *testing.T) {
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"subtitleDisposition":    "keep",
+			"attachmentPolicy":       "auto",
+			"chapterPolicy":          "keep",
+			"preferredSubtitleRules": preferredRules,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SubtitleStreams) != 1 || plan.SubtitleStreams[0].Action != SubtitleDispositionExtract {
+			t.Fatalf("preferred bitmap action=%#v", plan.SubtitleStreams)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("original bitmap sidecar outputs=%#v", plan.SidecarOutputs)
+		}
+		sidecar := plan.SidecarOutputs[0]
+		if sidecar.OCRRequired || sidecar.SourceType != "bitmap" || sidecar.Mode != "original" || !reflect.DeepEqual(sidecar.Stages, []string{"extract"}) {
+			t.Fatalf("original bitmap sidecar unexpectedly used OCR: %#v", sidecar)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.SidecarOutputs) != 1 || !plan.SidecarOutputs[0].OCRRequired || plan.SidecarOutputs[0].SourceType != "bitmap" {
-		t.Fatalf("preferred bitmap action did not use canonical OCR sidecar path: %#v", plan.SidecarOutputs)
-	}
+
+	t.Run("canonical SRT sidecar uses OCR pipeline", func(t *testing.T) {
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"trackDispositionVersion": canonicalTrackDispositionVersion,
+			"subtitleDisposition":     "keep",
+			"subtitleSidecarFormats":  []string{"srt"},
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+			"preferredSubtitleRules":  preferredRules,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SubtitleStreams) != 1 || plan.SubtitleStreams[0].Action != SubtitleDispositionExtract {
+			t.Fatalf("preferred bitmap action=%#v", plan.SubtitleStreams)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("canonical SRT bitmap sidecar outputs=%#v", plan.SidecarOutputs)
+		}
+		sidecar := plan.SidecarOutputs[0]
+		if !sidecar.OCRRequired || sidecar.SourceType != "bitmap" || sidecar.Format != "srt" || !reflect.DeepEqual(sidecar.Stages, []string{"ocr", "normalize", "render"}) {
+			t.Fatalf("canonical SRT bitmap sidecar did not use OCR pipeline: %#v", sidecar)
+		}
+	})
 }
 
 func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
