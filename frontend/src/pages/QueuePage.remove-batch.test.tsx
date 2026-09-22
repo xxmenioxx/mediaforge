@@ -103,9 +103,8 @@ describe('Queue batch removal', () => {
   it('requires confirmation and refreshes Queue after a successful removal', async () => {
     const dismiss = vi.spyOn(api, 'dismissQueueBatch').mockResolvedValue({
       batchId: 'batch-1',
-      removedPlaceholders: 0,
       dismissedJobs: 2,
-      preservedCompleted: 0,
+      cleanedExecutionPlans: 1,
     });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const { queryClient } = renderGroup([job(1, 'canceled'), job(2, 'canceled')]);

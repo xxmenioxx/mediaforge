@@ -351,29 +351,22 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		return
 	}
 	if !queueBatchCanBeDismissed(jobs) {
-		c.JSON(http.StatusConflict, gin.H{"error": "batch can be removed only after all jobs are terminal"})
+		c.JSON(http.StatusConflict, gin.H{"error": "batch can be removed only when all jobs are canceled"})
 		return
 	}
 
 	now := time.Now()
-	removedPlaceholders := 0
 	dismissedJobs := 0
-	preservedCompleted := 0
+	cleanedExecutionPlans := 0
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		for index := range jobs {
 			job := &jobs[index]
-			if job.Status == JobStatusCompleted {
-				preservedCompleted++
-				continue
-			}
 			if job.ExecutionNumber == nil && job.StartedAt == nil {
-				if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
-					return err
+				result := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{})
+				if result.Error != nil {
+					return result.Error
 				}
-				if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
-					return err
-				}
-				removedPlaceholders++
+				cleanedExecutionPlans += int(result.RowsAffected)
 			}
 			job.DismissedAt = &now
 			if err := tx.Save(job).Error; err != nil {
@@ -396,10 +389,9 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"batchId":             batchID,
-		"removedPlaceholders": removedPlaceholders,
-		"dismissedJobs":       dismissedJobs,
-		"preservedCompleted":  preservedCompleted,
+		"batchId":               batchID,
+		"dismissedJobs":         dismissedJobs,
+		"cleanedExecutionPlans": cleanedExecutionPlans,
 	})
 }
 

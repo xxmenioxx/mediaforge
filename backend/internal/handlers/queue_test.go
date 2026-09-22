@@ -387,6 +387,17 @@ func TestDismissBatchRemovesFullyCanceledJobsAndPreservesHistory(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+	var responseBody struct {
+		BatchID               string `json:"batchId"`
+		DismissedJobs         int    `json:"dismissedJobs"`
+		CleanedExecutionPlans int    `json:"cleanedExecutionPlans"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatal(err)
+	}
+	if responseBody.BatchID != "digimon" || responseBody.DismissedJobs != 2 || responseBody.CleanedExecutionPlans != 1 {
+		t.Fatalf("unexpected batch cleanup response: %#v", responseBody)
+	}
 	for index := range jobs {
 		var stored models.QueueJob
 		if err := db.First(&stored, jobs[index].ID).Error; err != nil {
