@@ -10,9 +10,9 @@ returning no observed Tier.
 
 The repository also has an FFmpeg `trace_headers` path used for bounded
 bitstream-structure analysis. Its parser currently extracts frame-structure
-fields, not `general_level_idc` or `general_tier_flag`. This change should reuse
-that evidence path and the existing canonical resolver rather than create a
-parallel HEVC policy.
+fields, not `general_level_idc` or `general_tier_flag`. This follow-up tightens
+the contract around that existing resolver and evidence boundary; it does not
+implement application code.
 
 ## Goals / Non-Goals
 
@@ -20,12 +20,12 @@ parallel HEVC policy.
 
 - Make effective output requirements, resolved Level/Tier, command arguments,
   output evidence, validation, and Fidelity one traceable chain.
+- Make x265 enforcement and stale Recommended behavior deterministic.
+- Use one precise evidence-status vocabulary across validation and Fidelity.
+- Run bounded output inspection at most once per output validation and reuse the
+  stored result through the existing report/job-artifact boundary.
 - Include only rate constraints that are genuinely bounded in the rendered
   command, including QSV VBR/CBR behavior.
-- Preserve the distinction between planned intent, encoder enforcement, and
-  observed bitstream evidence.
-- Make stale recommendations and post-freeze configuration changes explicit.
-- Keep header inspection bounded and suitable for a resource-constrained NAS.
 
 **Non-Goals:**
 
@@ -35,35 +35,35 @@ parallel HEVC policy.
 - Changing unrelated encoder quality policy or inventing encoder capabilities.
 - Treating Main Tier as High Tier, or silently switching to High Tier when a
   supported Main-Tier constraint cannot be satisfied.
+- Introducing a new global cache or persistence subsystem for output evidence.
 
 ## Decisions
 
-### 1. Extend the existing resolver with a complete immutable decision
+### 1. Extend the existing resolver with a complete frozen decision
 
 `resolveHEVCLevel` remains the only policy authority. Its inputs are assembled
 after effective motion/cadence and geometry decisions and after quality intent
-has produced the effective encoder rate-control settings. The resulting
+has produced the effective encoder rate-control settings. The canonical frozen
 decision records, at minimum:
 
 - effective width, height, and FPS;
 - selected Level and supported Tier;
-- whether the Level is Auto, Recommended, or explicit intent;
-- bounded-rate value and source when present, or an unavailable/unverified
-  reason;
+- Auto, Recommended, or explicit intent;
+- the effective bounded maxrate/VBV constraint and its source, or an explicit
+  unavailable reason;
 - limiting factor and compatibility status;
-- x265 enforcement mode (`hard` or `advisory`) and any rate-control impact;
+- x265 enforcement mode and every maxrate/buffer/VBV consequence;
 - an input fingerprint covering geometry, FPS, encoder, rate-control mode,
   target/maxrate/buffer and other values that can change the resolution.
 
-This preserves the current resolution order and prevents command builders or
-Fidelity code from recomputing a different answer. The recommendation object
-may evolve to carry this evidence, but the implementation must not add a
-second resolver in command generation, validation, or React.
+Command builders, validation, and Fidelity consume this frozen decision. They
+do not recalculate Level/Tier independently. The recommendation object can
+carry the additional evidence, but a second HEVC resolver is not introduced.
 
 ### 2. Use effective bounded rate evidence, not source bitrate
 
-The resolver will consume the effective output constraint, not the source
-stream's average bitrate. The rate input is selected as follows:
+The resolver consumes the effective output constraint, not the source stream's
+average bitrate. The rate input is selected as follows:
 
 1. Use an applied maxrate or equivalent VBV/HRD ceiling when one exists.
 2. For QSV VBR/CBR, use the values that the same plan will render. A target
@@ -79,13 +79,23 @@ size, luma sample rate, and the selected bounded rate. If the requirements
 cannot fit the supported Main-Tier table, it returns a visible incompatible or
 unresolved decision; it does not infer High Tier.
 
-### 3. Treat Recommended as derived and freeze only prepared execution
+### 3. Make Auto, Recommended, and explicit intent deterministic
 
-Auto is recomputed from current effective inputs. Recommended is a persisted
-derived result with an input fingerprint; a fingerprint mismatch causes
-recalculation or an explicit stale state before command emission. Explicit
-Level remains user intent and is not silently raised, but an incompatible
-explicit request prevents a valid command plan from being emitted.
+Auto resolves from current effective inputs. Recommended is a derived result
+with an input fingerprint and follows exactly this state machine:
+
+1. Matching fingerprint: reuse the stored recommendation.
+2. Changed fingerprint with sufficient current geometry, FPS, and applicable
+   rate-control inputs: synchronously recompute before command planning and
+   replace the stale recommendation.
+3. Changed fingerprint with insufficient current inputs: mark the decision
+   unresolved, never use the stale recommendation as authority, and emit no
+   Level/Tier enforcement from it.
+
+Explicit Level is separate user intent. It is never replaced by Recommended
+data, silently up-leveled, or treated as a stored recommendation. Explicit
+Level always undergoes compatibility preflight; an incompatible request
+prevents a valid command plan.
 
 Preview and Test Encode freeze the decision at their final command-preparation
 boundary. Queue freezes it at PREPARING after current effective configuration,
@@ -93,100 +103,126 @@ analysis, and required overrides are resolved. The Queue snapshot, command,
 output inspection, final validation, and Fidelity all use that frozen decision.
 Changes after the freeze affect a later operation only.
 
-### 4. Make x265 enforcement semantics explicit
+### 4. Make x265 enforcement deterministic
 
-QSV continues to receive the resolved Level/Tier command arguments and the same
-bounded rate-control values used for planning. For x265, `level-idc` and
-`high-tier=0` are not treated as harmless metadata because x265 can derive or
-enable VBV constraints from Level.
+The x265 enforcement state is resolved before command rendering using exactly
+these rules:
 
-The plan therefore has an enforcement state:
+- Auto or Recommended with no real bounded peak-rate constraint uses advisory
+  enforcement. The command does not inject `level-idc` or `high-tier`, so CRF/
+  ICQ quality semantics remain unbounded.
+- Auto or Recommended with a real bounded maxrate/VBV constraint uses hard
+  enforcement after compatibility preflight. Every maxrate, buffer, and VBV
+  consequence of that enforcement is already represented in the canonical
+  frozen decision before the command is rendered.
+- Explicit Level uses hard enforcement. Compatibility failure prevents a valid
+  command plan; the implementation never silently up-levels it. Any x265
+  maxrate, buffer, or VBV consequence is recorded in the frozen decision before
+  rendering.
 
-- Auto/Recommended with no bounded peak-rate input are advisory for x265. The
-  command does not inject `level-idc` merely to claim conformance, preserving
-  CRF/ICQ semantics while allowing final evidence to be unverified or
-  different.
-- Auto/Recommended with a real bounded rate input may use hard enforcement when
-  the bounded rate is part of the resolved plan.
-- Explicit Level uses hard enforcement only as an explicit user conformance
-  request, and the plan reports the resulting VBV/quality consequence.
+QSV receives the resolved Level/Tier command arguments and the same bounded
+rate-control values used for planning. This policy is preferred over allowing
+the command builder to decide whether `level-idc` is safe, because x265 can
+derive or enable VBV constraints from Level and that decision must remain
+visible and immutable.
 
-This keeps one resolved decision while making the command's enforcement choice
-observable instead of silently changing quality behavior.
+### 5. Use precise evidence-status semantics
 
-### 5. Require bounded bitstream-header evidence for final Level/Tier claims
+For applicable HEVC validation and Fidelity fields, the status vocabulary is
+exactly:
 
-Plain ffprobe stream fields are useful for codec/geometry and may provide a
+- `validated`: authoritative evidence exists and matches the claim.
+- `mismatch`: authoritative evidence exists and differs from the claim.
+- `unavailable`: authoritative evidence could not be obtained, including an
+  unsupported runtime, missing or invalid parameter-set evidence, a legacy
+  output with no stored evidence, or a failed bounded probe.
+- `unverified`: evidence is available but insufficient to prove the claim, such
+  as ffprobe average `bit_rate` for MaxBR/CPB conformance.
+
+Mismatch is never inferred from insufficient evidence. A missing authoritative
+Level/Tier header is `unavailable`; an average bitrate that cannot prove a
+peak-rate claim is `unverified`. Existing non-HEVC `not_applicable` behavior
+remains outside this HEVC evidence vocabulary.
+
+### 6. Require bounded bitstream-header evidence for final Level/Tier claims
+
+Plain ffprobe stream fields are useful for codec/geometry and can provide a
 normalized Level cross-check, but they are not the authoritative source for
-both `general_level_idc` and `general_tier_flag`. In particular, ordinary
-ffprobe metadata does not reliably expose Tier, and average `bit_rate` does not
-represent HEVC MaxBR/CPB peak behavior.
+both `general_level_idc` and `general_tier_flag`. Ordinary ffprobe metadata does
+not reliably expose Tier, and average `bit_rate` does not represent HEVC
+MaxBR/CPB peak behavior.
 
-Final output evidence will use a bounded FFmpeg `trace_headers` inspection of
-the selected video stream to extract `general_level_idc` and
-`general_tier_flag`. The implementation should reuse the existing
-trace-header execution and parser boundary, extend its evidence type, and use
-argument arrays with a context timeout and bounded stderr/output handling. It
-must inspect only the header/parameter-set evidence needed for the decision,
-not decode or transcode the output. A runtime without a usable filter or a
-stream without parseable headers yields unavailable/unverified evidence.
+Final output evidence uses a bounded FFmpeg `trace_headers` inspection of the
+selected video stream to extract `general_level_idc` and
+`general_tier_flag`. The implementation reuses the existing trace-header
+execution and parser boundary, extends its evidence type, and uses argument
+arrays with a context timeout and bounded stderr/output handling. It inspects
+only the header/parameter-set evidence needed for the decision, not a decode or
+transcode. A runtime without a usable filter or a stream without parseable
+headers produces `unavailable` authoritative Level/Tier evidence.
 
 Peak-rate status is separate from Level/Tier header status. A configured
 maxrate or VBV/HRD value proves the planned bound, not necessarily the actual
-encoded peak. Actual peak conformance is validated only when output evidence
+encoded peak. Actual peak conformance is `validated` only when output evidence
 specifically represents a peak/CPB/HRD bound; ffprobe average bitrate remains
-informational.
+informational and produces `unverified` for that claim.
 
-### 6. Compare Fidelity against the frozen plan, with evidence-aware states
+### 7. Run and reuse output evidence once per validation
 
-The final Fidelity field receives the frozen expected Level/Tier and the output
-evidence record. It reports expected and actual values independently, with
-separate evidence-aware statuses for Level, Tier, and rate constraint where
-needed. A missing actual Tier is not filled from the expected Main Tier. The
-overall result can be `validated` only when the required evidence exists and
-matches; differing evidence is `mismatch`; missing or unsupported evidence is
-`unavailable`/`unverified`.
+For each applicable HEVC output validation, the bounded `trace_headers` probe
+runs at most once. Its parsed Level/Tier evidence, probe outcome, and evidence
+status are stored in the existing validation report or job-artifact boundary
+used by the operation. Fidelity and report refreshes consume that stored record
+and do not rerun FFmpeg merely to render the report. No new global cache or
+persistence subsystem is introduced unless implementation proves the existing
+boundary cannot store the result.
 
-Validation may use the existing job artifact/profile snapshot selection to get
-the effective worker configuration, but it must not call a fresh resolver that
+The existing frame-structure `trace_headers` consumers can share the low-level
+parser/probe without becoming another Level/Tier policy owner.
+
+### 8. Compare Fidelity against the frozen plan
+
+The final Fidelity field receives the frozen expected Level/Tier and the stored
+output evidence record. It reports expected and actual values independently,
+with the exact status vocabulary above for Level, Tier, and rate constraint. A
+missing actual Tier is not filled from expected Main Tier. The overall result
+can be `validated` only when required authoritative evidence exists and matches;
+authoritative differing evidence is `mismatch`; missing authoritative evidence
+is `unavailable`; insufficient evidence is `unverified`.
+
+Validation can use the existing job artifact/profile snapshot selection to get
+the effective worker configuration, but it does not call a fresh resolver that
 can reinterpret the output after the execution freeze.
-
-### 7. Reuse existing plan and evidence boundaries
-
-The implementation should update the current effective profile path, QSV/x265
-renderers, job-output validation, and Fidelity serialization in place. Header
-inspection should be performed once per output validation and its parsed result
-stored with the validation evidence or job artifact so repeated Fidelity views
-do not rerun FFmpeg. Existing frame-structure `trace_headers` consumers may
-share the low-level parser/probe without becoming another Level/Tier policy
-owner.
 
 ## Risks / Trade-offs
 
-- [Header probe is unavailable on some FFmpeg builds] → Keep expected values,
-  mark actual Level/Tier unavailable/unverified, and expose the capability
-  limitation instead of inferring a pass.
+- [Header probe is unavailable on some FFmpeg builds] → Mark authoritative
+  Level/Tier evidence `unavailable` and expose the capability limitation
+  instead of inferring a pass.
 - [A bounded header probe still consumes runtime resources] → Inspect one video
   stream, stop after required parameter-set evidence, use a context deadline,
-  cap captured diagnostic output, and cache evidence for the output/job.
-- [x265 hard Level enforcement can reduce CRF quality] → Use advisory mode for
-  unbounded Auto/Recommended decisions and surface hard enforcement plus its
-  rate-control consequence for bounded or explicit decisions.
+  cap captured diagnostic output, and run it at most once per output
+  validation.
+- [x265 hard Level enforcement can reduce quality] → Use advisory mode exactly
+  for unbounded Auto/Recommended decisions and record every hard-enforcement
+  rate-control consequence before rendering.
 - [Existing stored recommendations lack an input fingerprint] → Treat them as
-  stale on first resolution and recompute from current effective inputs; keep
-  old records readable.
+  changed/insufficient and unresolved until current inputs are sufficient for a
+  synchronous recomputation; never use the old value as authority.
 - [Older validation records lack actual header evidence] → Preserve them and
-  report only the affected comparisons as unavailable/unverified.
-- [A command's configured maxrate does not prove its actual peak output] → Keep
-  planned constraint and observed peak evidence separate; never upgrade an
-  average bitrate comparison to validated MaxBR conformance.
+  report affected comparisons as `unavailable`.
+- [A configured maxrate does not prove actual peak output] → Keep planned
+  constraint and observed peak evidence separate; average bitrate yields
+  `unverified`, never `validated`, for MaxBR/CPB conformance.
 
 ## Migration Plan
 
 No media, sidecar, or production database migration is required. New decision
 and evidence fields are additive to profile snapshots, job artifacts, and
 Fidelity responses. On first use, existing stored Recommended values are
-treated as stale when their inputs cannot be proven current. Existing outputs
-remain validatable, but fields without header or peak evidence report
-unavailable/unverified. Rollback is a code rollback; the additive fields can be
-ignored by older readers without rewriting source media.
+treated as changed; they are synchronously recomputed when current inputs are
+sufficient and otherwise remain unresolved. Existing outputs remain readable,
+but fields without authoritative header or peak evidence report
+`unavailable` or `unverified` according to the vocabulary above. Rollback is a
+code rollback; older readers can ignore additive fields without rewriting source
+media.
