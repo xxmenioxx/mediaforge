@@ -3392,7 +3392,7 @@ func (h AssetHandler) Rename(c *gin.Context) {
 	}
 	plan, err := buildManualAssetRenamePlan(resolvedPath, target, record.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "plan renamed asset: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plan asset rename: " + err.Error()})
 		return
 	}
 	manualRenameLibrary := models.Library{DestinationPath: filepath.Dir(resolvedPath)}
