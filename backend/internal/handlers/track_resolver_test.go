@@ -47,6 +47,96 @@ func TestResolveTrackPlanSubtitleActionsAndLanguageRules(t *testing.T) {
 	}
 }
 
+func TestResolveTrackPlanPreferredSubtitleRulesRespectProfilePrecedenceAndUnknownLanguages(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "es"},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 5, "codec": "subrip", "language": "jpn"},
+		map[string]any{"index": 6, "codec": "subrip", "language": "und"},
+	}}
+	profile := map[string]any{
+		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
+		"subtitleRules": []any{map[string]any{"language": "spa", "action": "extract"}},
+		"preferredSubtitleRules": []any{
+			map[string]any{"language": "spa", "action": "keep_and_extract"},
+			map[string]any{"language": "eng", "action": "extract"},
+			map[string]any{"language": "jpn", "action": "keep_and_extract"},
+		},
+	}
+	plan, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleDisposition{SubtitleDispositionExtract, SubtitleDispositionExtract, SubtitleDispositionKeepAndExtract, SubtitleDispositionKeep}
+	for index, action := range want {
+		if plan.SubtitleStreams[index].Action != action {
+			t.Fatalf("subtitle[%d] action=%q want=%q", index, plan.SubtitleStreams[index].Action, action)
+		}
+	}
+	if plan.SubtitleStreams[0].ActionSource != "" {
+		t.Fatalf("explicit Track Profile rule was incorrectly attributed to global preference: %#v", plan.SubtitleStreams[0])
+	}
+	if plan.SubtitleStreams[1].ActionSource != "preferred_subtitle_language" || plan.SubtitleStreams[2].ActionSource != "preferred_subtitle_language" {
+		t.Fatalf("global preferred-rule provenance missing: %#v", plan.SubtitleStreams)
+	}
+	if plan.SubtitleStreams[3].ActionSource != "" {
+		t.Fatalf("und matched a preferred language: %#v", plan.SubtitleStreams[3])
+	}
+}
+
+func TestResolveTrackPlanPreferredBitmapLanguageKeepsCanonicalOCRPath(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 7, "codec": "hdmv_pgs_subtitle", "language": "jpn"},
+	}}
+	preferredRules := []any{map[string]any{"language": "jpn", "action": "extract"}}
+
+	t.Run("original sidecar preserves bitmap extraction", func(t *testing.T) {
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"subtitleDisposition":    "keep",
+			"attachmentPolicy":       "auto",
+			"chapterPolicy":          "keep",
+			"preferredSubtitleRules": preferredRules,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SubtitleStreams) != 1 || plan.SubtitleStreams[0].Action != SubtitleDispositionExtract {
+			t.Fatalf("preferred bitmap action=%#v", plan.SubtitleStreams)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("original bitmap sidecar outputs=%#v", plan.SidecarOutputs)
+		}
+		sidecar := plan.SidecarOutputs[0]
+		if sidecar.OCRRequired || sidecar.SourceType != "bitmap" || sidecar.Mode != "original" || !reflect.DeepEqual(sidecar.Stages, []string{"extract"}) {
+			t.Fatalf("original bitmap sidecar unexpectedly used OCR: %#v", sidecar)
+		}
+	})
+
+	t.Run("canonical SRT sidecar uses OCR pipeline", func(t *testing.T) {
+		plan, err := resolveTrackPlan(scan, map[string]any{
+			"trackDispositionVersion": canonicalTrackDispositionVersion,
+			"subtitleDisposition":     "keep",
+			"subtitleSidecarFormats":  []string{"srt"},
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+			"preferredSubtitleRules":  preferredRules,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SubtitleStreams) != 1 || plan.SubtitleStreams[0].Action != SubtitleDispositionExtract {
+			t.Fatalf("preferred bitmap action=%#v", plan.SubtitleStreams)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("canonical SRT bitmap sidecar outputs=%#v", plan.SidecarOutputs)
+		}
+		sidecar := plan.SidecarOutputs[0]
+		if !sidecar.OCRRequired || sidecar.SourceType != "bitmap" || sidecar.Format != "srt" || !reflect.DeepEqual(sidecar.Stages, []string{"ocr", "normalize", "render"}) {
+			t.Fatalf("canonical SRT bitmap sidecar did not use OCR pipeline: %#v", sidecar)
+		}
+	})
+}
+
 func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{
 		map[string]any{"index": 8, "codec": "subrip", "language": "spa"},

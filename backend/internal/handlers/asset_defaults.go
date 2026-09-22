@@ -73,6 +73,7 @@ func defaultAssetDefaultsValue() models.JSONMap {
 				"ocrMode":                    "accurate",
 				"defaultAudioLanguage":       "",
 				"defaultSubtitleLanguage":    "",
+				"preferredSubtitleRules":     models.JSONList{},
 			},
 		},
 	}
@@ -192,6 +193,19 @@ func validateAssetDefaultsValueWithWarnings(db *gorm.DB, value models.JSONMap) (
 		if ocrMode != "" && ocrMode != "raw" && ocrMode != "clean" && ocrMode != "accurate" {
 			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.ocrMode must be raw, clean, or accurate")
 		}
+		defaultSubtitleLanguage := strings.TrimSpace(workerStringValue(custom["defaultSubtitleLanguage"]))
+		if defaultSubtitleLanguage == "" {
+			custom["defaultSubtitleLanguage"] = ""
+		} else if canonical, ok := canonicalSubtitleLanguage(defaultSubtitleLanguage); ok {
+			custom["defaultSubtitleLanguage"] = canonical
+		} else {
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom.defaultSubtitleLanguage language %q is unsupported", defaultSubtitleLanguage)
+		}
+		preferredRules, err := normalizePreferredSubtitleRules(custom["preferredSubtitleRules"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("assetDefaults.tracks.custom: %w", err)
+		}
+		custom["preferredSubtitleRules"] = preferredRules
 	}
 	return result, warnings, nil
 }

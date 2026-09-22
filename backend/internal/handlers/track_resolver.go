@@ -58,6 +58,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	subtitles := make([]ResolvedSubtitleTrack, 0, len(scan.SubtitleStreams))
 	sidecars := []ResolvedTrackSidecar{}
 	warnings := []string{}
+	preferredRuleSource := map[int]bool{}
 	for _, raw := range scan.SubtitleStreams {
 		stream := settingProfileObject(raw)
 		index := streamIndexValue(stream["index"])
@@ -83,13 +84,23 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 			}
 		}
 		if !resolvedCanonicalPathSelection || selectedSubtitles[index] {
-			action = matchingSubtitleRuleAction(
+			var profileRuleMatched bool
+			action, profileRuleMatched = matchingSubtitleRuleActionWithMatch(
 				profile,
 				index,
 				language,
 				role.Role,
 				action,
 			)
+			if !profileRuleMatched {
+				var preferredRuleMatched bool
+				action, preferredRuleMatched = matchingPreferredSubtitleRuleAction(profile, language, action)
+				if preferredRuleMatched {
+					// Kept on the resolved track for the preview and downstream
+					// diagnostics; this is not a second resolution path.
+					preferredRuleSource[index] = true
+				}
+			}
 		}
 		sourceForced := boolValue(stream["forced"], false)
 		effectiveForced := sourceForced || role.Role == SubtitleRoleForced
@@ -99,6 +110,9 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 			RoleClassifierVersion: role.ClassifierVersion,
 			RoleOverrideState:     role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
 			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
+		}
+		if preferredRuleSource[index] {
+			resolved.ActionSource = "preferred_subtitle_language"
 		}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
@@ -586,8 +600,14 @@ func subtitleTransformsByIndex(raw any) map[int]SubtitleTransform {
 // language, a concrete streamIndex (asset scope), or both. Rules are applied in
 // persisted order; a stream-specific match wins over language-only rules.
 func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole, fallback SubtitleDisposition) SubtitleDisposition {
+	action, _ := matchingSubtitleRuleActionWithMatch(profile, streamIndex, language, role, fallback)
+	return action
+}
+
+func matchingSubtitleRuleActionWithMatch(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole, fallback SubtitleDisposition) (SubtitleDisposition, bool) {
 	action := fallback
 	streamSpecific := false
+	matchedAny := false
 	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
 		rule := settingProfileObject(raw)
 		rawAction := workerStringValue(rule["action"])
@@ -601,23 +621,41 @@ func matchingSubtitleRuleAction(profile map[string]any, streamIndex int, languag
 		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
 		if specific {
 			if matched {
-				action, streamSpecific = parsed, true
+				action, streamSpecific, matchedAny = parsed, true, true
 			}
 			continue
 		}
 		if matched && !streamSpecific {
-			action = parsed
+			action, matchedAny = parsed, true
 		}
 	}
-	return action
+	return action, matchedAny
 }
 
 func normalizedTrackLanguage(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return "und"
+	return normalizedTrackLanguageValue(value)
+}
+
+func matchingPreferredSubtitleRuleAction(profile map[string]any, language string, fallback SubtitleDisposition) (SubtitleDisposition, bool) {
+	if language == "" || language == "und" {
+		return fallback, false
 	}
-	return value
+	for _, raw := range workerSliceValue(profile["preferredSubtitleRules"]) {
+		rule := settingProfileObject(raw)
+		if rule == nil {
+			continue
+		}
+		preferredLanguage, ok := canonicalSubtitleLanguage(workerStringValue(rule["language"]))
+		if !ok || preferredLanguage != language {
+			continue
+		}
+		action, err := ParseSubtitleDisposition(workerStringValue(rule["action"]))
+		if err != nil || action == SubtitleDispositionRemove {
+			continue
+		}
+		return action, true
+	}
+	return fallback, false
 }
 
 func subtitleSidecarFormat(codec string) string {

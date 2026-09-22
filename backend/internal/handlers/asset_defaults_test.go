@@ -39,6 +39,147 @@ func TestAssetDefaultsValidationAndCompatibilityDefaults(t *testing.T) {
 	}
 }
 
+func TestAssetDefaultsPreferredSubtitleRulesNormalizeAndValidate(t *testing.T) {
+	value, err := validateAssetDefaultsValue(nil, models.JSONMap{
+		"tracks": models.JSONMap{"custom": models.JSONMap{
+			"preferredSubtitleRules": models.JSONList{
+				models.JSONMap{"language": "es", "action": "keep_and_extract"},
+				models.JSONMap{"language": "eng", "action": "extract"},
+				models.JSONMap{"language": "spa", "action": "keep"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := settingProfileObject(assetDefaultsDomain(value, "tracks")["custom"])["preferredSubtitleRules"]
+	if got := workerSliceValue(rules); len(got) != 2 {
+		t.Fatalf("preferred rules were not deduplicated: %#v", rules)
+	}
+	first := settingProfileObject(workerSliceValue(rules)[0])
+	if first["language"] != "spa" || first["action"] != "keep" {
+		t.Fatalf("canonical preferred rule=%#v", first)
+	}
+	for _, language := range []string{"foo", "spanish", "xyz-custom"} {
+		_, err := validateAssetDefaultsValue(nil, models.JSONMap{
+			"tracks": models.JSONMap{"custom": models.JSONMap{
+				"preferredSubtitleRules": models.JSONList{models.JSONMap{"language": language, "action": "keep"}},
+			}},
+		})
+		if err == nil {
+			t.Fatalf("unsupported preferred language %q was accepted", language)
+		}
+	}
+	if _, err := validateAssetDefaultsValue(nil, models.JSONMap{
+		"tracks": models.JSONMap{"custom": models.JSONMap{
+			"preferredSubtitleRules": models.JSONList{models.JSONMap{"language": "spa", "action": "remove"}},
+		}},
+	}); err == nil {
+		t.Fatal("remove was accepted as a preferred subtitle action")
+	}
+}
+
+func TestAssetDefaultsDefaultSubtitleLanguageNormalizeAndValidate(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "canonical", input: "jpn", want: "jpn"},
+		{name: "legacy spanish", input: "es", want: "spa"},
+		{name: "legacy english", input: "en", want: "eng"},
+		{name: "legacy japanese", input: "ja", want: "jpn"},
+		{name: "blank", input: "", want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := validateAssetDefaultsValue(nil, models.JSONMap{
+				"tracks": models.JSONMap{"custom": models.JSONMap{"defaultSubtitleLanguage": test.input}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := workerStringValue(settingProfileObject(assetDefaultsDomain(value, "tracks")["custom"])["defaultSubtitleLanguage"])
+			if got != test.want {
+				t.Fatalf("default subtitle language=%q, want %q", got, test.want)
+			}
+		})
+	}
+	for _, language := range []string{"foo", "spanish", "xyz-custom"} {
+		_, err := validateAssetDefaultsValue(nil, models.JSONMap{
+			"tracks": models.JSONMap{"custom": models.JSONMap{"defaultSubtitleLanguage": language}},
+		})
+		if err == nil {
+			t.Fatalf("unsupported default subtitle language %q was accepted", language)
+		}
+	}
+}
+
+func TestAssetDefaultsPreferredSubtitleRulesStayInGlobalCustomFallback(t *testing.T) {
+	global := models.JSONMap{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "remove",
+		"subtitleSidecarFormats":  []string{"srt"},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+		"preferredSubtitleRules": models.JSONList{
+			models.JSONMap{"language": "spa", "action": "keep_and_extract"},
+			models.JSONMap{"language": "eng", "action": "extract"},
+			models.JSONMap{"language": "jpn", "action": "keep"},
+		},
+	}
+	globalEffective := EffectiveAssetConfiguration{Tracks: AssetConfigurationValue{
+		Selection:   configSelectionValue,
+		Source:      assetDefaultsGlobalSource,
+		ProfileData: global,
+	}}
+	globalInput := QueueJobInput{}
+	globalResolution := resolveProfileAssignmentsFromEffective(&globalInput, globalEffective)
+	globalProfile := settingProfileObject(settingProfileObject(globalResolution["tracks"])["profileData"])
+	globalPlan, err := resolveTrackPlan(models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 5, "codec": "subrip", "language": "jpn"},
+	}}, globalProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []SubtitleDisposition{globalPlan.SubtitleStreams[0].Action, globalPlan.SubtitleStreams[1].Action, globalPlan.SubtitleStreams[2].Action}; !reflect.DeepEqual(got, []SubtitleDisposition{SubtitleDispositionKeepAndExtract, SubtitleDispositionExtract, SubtitleDispositionKeep}) {
+		t.Fatalf("global preferred rules were not applied: %#v", got)
+	}
+
+	explicit := models.JSONMap{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "remove",
+		"subtitleSidecarFormats":  []string{"srt"},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+		"subtitleRules":           []any{map[string]any{"language": "spa", "action": "keep"}},
+	}
+	explicitEffective := EffectiveAssetConfiguration{Tracks: AssetConfigurationValue{
+		Selection:   "profile",
+		Source:      assetScopePath,
+		ProfileKey:  "explicit",
+		ProfileData: explicit,
+	}}
+	explicitInput := QueueJobInput{}
+	explicitResolution := resolveProfileAssignmentsFromEffective(&explicitInput, explicitEffective)
+	explicitTracks := settingProfileObject(explicitResolution["tracks"])
+	explicitProfile := settingProfileObject(explicitTracks["profileData"])
+	if _, exists := explicitProfile["preferredSubtitleRules"]; exists {
+		t.Fatal("global preferred rules leaked into an explicit Track Profile")
+	}
+	explicitPlan, err := resolveTrackPlan(models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+	}}, explicitProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicitPlan.SubtitleStreams[0].Action != SubtitleDispositionKeep || explicitPlan.SubtitleStreams[1].Action != SubtitleDispositionRemove {
+		t.Fatalf("explicit Track Profile rules were overridden: %#v", explicitPlan.SubtitleStreams)
+	}
+}
+
 func TestAssetDefaultsPreserveDomainPrecedenceAndDisabledStates(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:asset-defaults-precedence?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -1276,7 +1276,8 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	if err != nil {
 		return nil, err
 	}
-	return resolveProfileAssignmentsFromEffective(input, effective), nil
+	resolution := resolveProfileAssignmentsFromEffective(input, effective)
+	return resolution, nil
 }
 
 func effectiveConfigurationWithFrozenAssetDefaults(effective EffectiveAssetConfiguration, resolution models.JSONMap) EffectiveAssetConfiguration {

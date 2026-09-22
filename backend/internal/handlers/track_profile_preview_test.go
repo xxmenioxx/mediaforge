@@ -99,6 +99,17 @@ func TestPreviewTrackProfileResolutionUsesPersistedASSFallback(t *testing.T) {
 	}
 }
 
+func TestTrackProfilePreviewReportsPreferredSubtitleLanguageProvenance(t *testing.T) {
+	scan := models.ScanResult{Path: "/media/title.mkv", SubtitleStreams: models.JSONList{
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+	}}
+	plan := ResolvedTrackPlan{SubtitleStreams: []ResolvedSubtitleTrack{{StreamIndex: 4, Action: SubtitleDispositionExtract, ActionSource: "preferred_subtitle_language"}}}
+	preview := buildTrackProfileResolutionPreview(scan, map[string]any{}, plan)
+	if len(preview.Subtitle) != 1 || preview.Subtitle[0].Reason != "preferred_subtitle_language" {
+		t.Fatalf("preferred subtitle provenance was not exposed: %#v", preview.Subtitle)
+	}
+}
+
 func assertIndexesEqual(t *testing.T, got, want []int) {
 	t.Helper()
 	if len(got) != len(want) {

@@ -5,6 +5,7 @@ import {
   CardContent,
   FormControlLabel,
   Grid,
+  IconButton,
   MenuItem,
   Stack,
   Switch,
@@ -12,16 +13,19 @@ import {
   Typography,
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
+import DeleteIcon from '@mui/icons-material/DeleteOutline';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AppSetting, Profile } from '../api/types';
 import {
   assetDefaultProfileReference,
   assetDefaultsValue,
+  preferredSubtitleRulesValue,
   type AssetDefaultsDomain,
   type AssetDefaultsValue,
   updateAssetDefaultsDomain,
 } from '../utils/assetDefaults';
+import { canonicalSubtitleLanguage, subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
 
 type Props = {
   value: unknown;
@@ -110,6 +114,9 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
   const audioCustom = audio.custom;
   const trackCustom = tracks.custom;
   const formats = Array.isArray(trackCustom.subtitleSidecarFormats) ? trackCustom.subtitleSidecarFormats.join(',') : 'srt';
+  const preferredRules = preferredSubtitleRulesValue(trackCustom.preferredSubtitleRules);
+  const defaultSubtitleLanguage = canonicalSubtitleLanguage(trackCustom.defaultSubtitleLanguage);
+  const updatePreferredRules = (next: typeof preferredRules) => update('tracks', { custom: { preferredSubtitleRules: next } });
 
   return <Stack spacing={2}>
     <Alert severity="info">These defaults apply only when no asset, path, logical-group, or source-group policy is present. Existing assignments and queued snapshots remain authoritative.</Alert>
@@ -141,7 +148,24 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
         <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Attachment policy" value={String(trackCustom.attachmentPolicy ?? 'auto')} onChange={(event) => update('tracks', { custom: { attachmentPolicy: event.target.value } })}><MenuItem value="auto">Auto</MenuItem><MenuItem value="keep">Keep</MenuItem><MenuItem value="remove">Remove</MenuItem></TextField></Grid>
         <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Font attachment policy" value={String(trackCustom.fontAttachmentExportPolicy ?? 'none')} onChange={(event) => update('tracks', { custom: { fontAttachmentExportPolicy: event.target.value } })}><MenuItem value="none">Do not export</MenuItem><MenuItem value="all">Export font attachments</MenuItem></TextField></Grid>
         <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Bitmap OCR mode" value={String(trackCustom.ocrMode ?? 'accurate')} onChange={(event) => update('tracks', { custom: { ocrMode: event.target.value } })}><MenuItem value="raw">Raw · one pass</MenuItem><MenuItem value="clean">Clean · corrected</MenuItem><MenuItem value="accurate">Accurate · two passes</MenuItem></TextField></Grid>
-        <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Preferred subtitle language" value={String(trackCustom.defaultSubtitleLanguage ?? '')} onChange={(event) => update('tracks', { custom: { defaultSubtitleLanguage: event.target.value } })} placeholder="eng" /></Grid>
+        <Grid size={{ xs: 12 }}>
+          <Stack spacing={1}>
+            <Typography variant="subtitle1">Preferred subtitle languages</Typography>
+            <Typography variant="body2" color="text.secondary">Apply these actions by canonical subtitle language when no more-specific stream or Track Profile rule applies.</Typography>
+            {preferredRules.map((rule, index) => <Grid container spacing={1} key={`${rule.language}-${index}`} alignItems="center">
+              <Grid size={{ xs: 12, md: 5 }}><TextField select fullWidth label={`Language ${index + 1}`} value={rule.language} onChange={(event) => updatePreferredRules(preferredRules.map((item, itemIndex) => itemIndex === index ? { ...item, language: event.target.value } : item))}>
+                {subtitleLanguageOptions.filter((option) => option.value === rule.language || !preferredRules.some((item, itemIndex) => itemIndex !== index && item.language === option.value)).map((option) => <MenuItem key={option.value} value={option.value}>{option.label} · {option.value}</MenuItem>)}
+              </TextField></Grid>
+              <Grid size={{ xs: 12, md: 5 }}><TextField select fullWidth label="Action" value={rule.action} onChange={(event) => updatePreferredRules(preferredRules.map((item, itemIndex) => itemIndex === index ? { ...item, action: event.target.value as typeof rule.action } : item))}>{subtitlePreferredActionOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}</TextField></Grid>
+              <Grid size={{ xs: 12, md: 2 }}><IconButton aria-label={`Remove preferred subtitle language ${rule.language}`} onClick={() => updatePreferredRules(preferredRules.filter((_, itemIndex) => itemIndex !== index))}><DeleteIcon /></IconButton></Grid>
+            </Grid>)}
+            <Button variant="outlined" onClick={() => {
+              const language = subtitleLanguageOptions.find((option) => !preferredRules.some((rule) => rule.language === option.value))?.value;
+              if (language) updatePreferredRules([...preferredRules, { language, action: 'keep_and_extract' }]);
+            }} disabled={preferredRules.length >= subtitleLanguageOptions.length}>+ Add language</Button>
+          </Stack>
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Default subtitle language" value={defaultSubtitleLanguage} onChange={(event) => update('tracks', { custom: { defaultSubtitleLanguage: event.target.value } })}><MenuItem value="">None</MenuItem>{subtitleLanguageOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label} · {option.value}</MenuItem>)}</TextField></Grid>
       </Grid>
     </AssetDefaultsDomainCard>
     <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Asset Defaults</Button>

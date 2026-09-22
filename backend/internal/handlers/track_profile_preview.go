@@ -129,7 +129,14 @@ func buildTrackProfileResolutionPreview(scan models.ScanResult, resolved map[str
 		}
 		index := streamIndexValue(stream["index"])
 		kept := subtitleKept[index]
-		preview.Subtitle = append(preview.Subtitle, TrackProfilePreviewDecision{Index: index, Type: "subtitle", Kept: kept, Reason: subtitleTrackPreviewReason(stream, resolved, kept)})
+		actionSource := ""
+		for _, resolvedSubtitle := range plan.SubtitleStreams {
+			if resolvedSubtitle.StreamIndex == index {
+				actionSource = resolvedSubtitle.ActionSource
+				break
+			}
+		}
+		preview.Subtitle = append(preview.Subtitle, TrackProfilePreviewDecision{Index: index, Type: "subtitle", Kept: kept, Reason: subtitleTrackPreviewReason(stream, resolved, kept, actionSource)})
 	}
 	if boolValue(resolved["audioRequired"], true) && len(preview.KeepAudioStreams) == 0 {
 		preview.Warnings = append(preview.Warnings, "No audio stream matches this required Path rule.")
@@ -190,7 +197,10 @@ func audioTrackPreviewReason(stream, profile map[string]any, kept bool) string {
 	}
 }
 
-func subtitleTrackPreviewReason(stream, profile map[string]any, kept bool) string {
+func subtitleTrackPreviewReason(stream, profile map[string]any, kept bool, actionSource string) string {
+	if actionSource == "preferred_subtitle_language" {
+		return "preferred_subtitle_language"
+	}
 	mode := workerStringValue(profile["subtitleMode"])
 	forced := boolValue(stream["forced"], false)
 	if kept && forced && (mode == "forced" || mode == "forced-or-languages") {
