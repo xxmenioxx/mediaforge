@@ -14,8 +14,14 @@ is important on the resource-constrained NAS because `/video`, `/inspect`,
 
 - Define the registered Compatible Preview lifecycle and its bounded in-memory
   request-record behavior, without adding restart persistence owned by #14.
+- Consume the merged #12/#128 backend effective video decision, including its
+  current HEVC Level/Tier result and provenance, without introducing another
+  video resolver or changing #12 behavior.
 - Distinguish `requestId`, canonical encode signature, `artifactId`/
   `cacheIdentity`, and artifact retention policy in the API and backend model.
+- Keep request-record lifecycle independent from artifact-generation lifecycle:
+  request expiry removes only the request handle, while canceled/failed
+  artifacts leave a valid request eligible to retry.
 - Derive one canonical artifact identity from effective encode semantics and
   source revision evidence, independent of consumer operation, diagnostics
   verbosity, HTTP details, or random timestamps.
@@ -24,6 +30,19 @@ is important on the resource-constrained NAS because `/video`, `/inspect`,
 - Separate consumer cancellation from backend generation cancellation and real
   FFmpeg failure; publish only complete artifacts and make canceled/failed
   generations retryable.
+- Cancel an in-flight generation once its attached-consumer count reaches zero
+  (with only a short bounded handoff grace period permitted), while protecting
+  ready artifacts and never canceling while another consumer remains attached.
+- Keep registry locks limited to in-memory state transitions; preparation,
+  filesystem work, probes, analysis, DB access, resolver work, and FFmpeg run
+  outside global registry locks and unrelated requests can progress
+  independently.
+- Bound registration preparation, store its canonical descriptor on the
+  request record, and reuse it for consumers unless source revision or another
+  material input invalidates it; registration is not a Fidelity workflow.
+- Define ephemeral artifacts as request-scoped shared artifacts with bounded
+  idle/TTL and cache-limit cleanup, never as per-consumer temporary files or
+  persistent cross-request cache entries.
 - Preserve bounded encoder diagnostics for QSV inspection as artifact metadata
   without giving `/inspect` a different encode identity.
 - Keep source-frame generation on the source asset, while output-frame,
