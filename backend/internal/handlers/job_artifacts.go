@@ -33,6 +33,7 @@ type jobArtifact struct {
 	SourceProbe          map[string]any        `json:"sourceProbe,omitempty"`
 	OutputProbe          map[string]any        `json:"outputProbe,omitempty"`
 	Result               map[string]any        `json:"result,omitempty"`
+	ValidationReport     models.JSONMap        `json:"validationReport,omitempty"`
 	Notes                string                `json:"notes,omitempty"`
 	ExecutionPlan        models.JSONMap        `json:"executionPlan,omitempty"`
 	EncoderDecision      models.JSONMap        `json:"encoderDecision,omitempty"`
@@ -661,13 +662,14 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 	}
 	override := conversionOverrideForJob(job, assetConversionOverrides(db))
 	artifact := jobArtifact{
-		GeneratedAt:     time.Now(),
-		Kind:            "result",
-		Job:             job,
-		AssetConversion: assetConversionReport(override),
-		OutputProbe:     ffprobeJSON(probePath),
-		Result:          result,
-		Notes:           job.Notes,
+		GeneratedAt:      time.Now(),
+		Kind:             "result",
+		Job:              job,
+		AssetConversion:  assetConversionReport(override),
+		OutputProbe:      ffprobeJSON(probePath),
+		Result:           result,
+		ValidationReport: job.ValidationReport,
+		Notes:            job.Notes,
 	}
 	if asIs, _, err := readLatestJobArtifact(db, job, "as-is"); err == nil {
 		if raw, ok := asIs["streamPlan"]; ok {

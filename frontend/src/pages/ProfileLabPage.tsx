@@ -62,6 +62,7 @@ import type {
   PreviewVideoCharacteristics,
   PreviewInspection,
   EffectiveVideoDecision,
+  HEVCBitstreamEvidence,
   PreviewFrameMetrics,
   ScanResult,
   SnapshotOperation,
@@ -204,8 +205,11 @@ type LabFidelityInspection = {
   frameRecommendation: { targetGopFrames: number; targetGopSeconds: number; maxBFrames: number; confidence: string; reasons: string[] };
   frameValidation: { verdict: 'safe' | 'review' | 'reject'; confidence: string; reasons: string[] };
   requestedHEVCLevel?: string;
+  expectedHEVCTier?: string;
   measuredHEVCLevel?: string;
-  hevcLevelValidation: { verdict: 'safe' | 'review' | 'reject'; reason: string };
+  measuredHEVCTier?: string;
+  hevcBitstreamEvidence?: HEVCBitstreamEvidence;
+  hevcLevelValidation: { verdict: 'safe' | 'review' | 'reject'; status: 'validated' | 'mismatch' | 'unavailable' | 'unverified'; reason: string };
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -1268,9 +1272,19 @@ export function ProfileLabPage() {
         conversionInspection.frameStructureRecommendation,
       );
       const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, conversion.profile ?? videoDraft, conversionInspection.qsvFeatureStatus);
-      const requestedHEVCLevel = hevcLevelForLab(conversion.profile ?? videoDraft, selectedAssetSnapshot, conversionInspection.effectiveEncoder);
-      const measuredHEVCLevel = conversionInspection.output.codec === 'hevc' ? formatHEVCLevel(conversionInspection.output.level) : undefined;
-      const hevcLevelValidation = validateHEVCLevelForLab(requestedHEVCLevel, measuredHEVCLevel, conversionInspection.output.codec);
+      const requestedHEVCLevel = conversionInspection.effectiveVideoDecision?.hevcLevel;
+      const expectedHEVCTier = conversionInspection.effectiveVideoDecision?.hevcTier;
+      const hevcBitstreamEvidence = conversionInspection.hevcBitstreamEvidence;
+      const measuredHEVCLevel = hevcBitstreamEvidence?.generalLevel;
+      const measuredHEVCTier = hevcBitstreamEvidence?.generalTier;
+      const hevcLevelValidation = validateHEVCLevelForLab(
+        requestedHEVCLevel,
+        expectedHEVCTier,
+        measuredHEVCLevel,
+        measuredHEVCTier,
+        hevcBitstreamEvidence,
+        conversionInspection.output.codec,
+      );
       return {
         assetPath: conversion.path,
         draftSignature: JSON.stringify(conversion.profile ?? null),
@@ -1291,7 +1305,10 @@ export function ProfileLabPage() {
         frameRecommendation,
         frameValidation,
         requestedHEVCLevel,
+        expectedHEVCTier,
         measuredHEVCLevel,
+        measuredHEVCTier,
+        hevcBitstreamEvidence,
         hevcLevelValidation,
         requestedEncoder: conversionInspection.requestedEncoder,
         effectiveEncoder: conversionInspection.effectiveEncoder,
@@ -4874,27 +4891,31 @@ function frameStructureRecommendationForLab(
   };
 }
 
-function hevcLevelForLab(profile: ProfileInput | undefined, scan: ScanResult | undefined, encoder: string) {
-  if (encoder !== 'libx265' && encoder !== 'hevc_qsv') return undefined;
-  const mode = profile ? videoWorkerValue(profile, 'hevcLevelMode', 'auto') : 'auto';
-  if (mode === 'auto') return scan?.hevcLevelRecommendation?.recommendedLevel;
-  if (mode === 'recommended') {
-    const level = profile ? videoWorkerValue(profile, 'hevcLevel', '') : '';
-    return level || scan?.hevcLevelRecommendation?.recommendedLevel;
+function validateHEVCLevelForLab(
+  expectedLevel: string | undefined,
+  expectedTier: string | undefined,
+  actualLevel: string | undefined,
+  actualTier: string | undefined,
+  evidence: HEVCBitstreamEvidence | undefined,
+  codec: string,
+) {
+  if (codec !== 'hevc') {
+    return { verdict: 'review' as const, status: 'unavailable' as const, reason: 'The selected output is not HEVC, so HEVC Level/Tier does not apply.' };
   }
-  if (mode === 'custom') {
-    const level = profile ? videoWorkerValue(profile, 'hevcLevel', '') : '';
-    return level || undefined;
+  if (!evidence || evidence.probeOutcome === 'unavailable' || evidence.probeStatus === 'unavailable' || !evidence.levelEvidenceAvailable || !evidence.tierEvidenceAvailable) {
+    return { verdict: 'review' as const, status: 'unavailable' as const, reason: 'Authoritative HEVC Level/Tier bitstream evidence was unavailable.' };
   }
-  return undefined;
-}
-
-function validateHEVCLevelForLab(requested: string | undefined, measured: string | undefined, codec: string) {
-  if (codec !== 'hevc') return { verdict: 'review' as const, reason: 'The selected output is not HEVC, so HEVC Level does not apply.' };
-  if (!requested) return { verdict: 'review' as const, reason: measured ? `Encoder Auto produced Level ${measured}; no explicit Level constraint was requested.` : 'The output did not report an HEVC Level.' };
-  if (!measured) return { verdict: 'review' as const, reason: `Level ${requested} was requested, but FFprobe did not report the output Level.` };
-  if (requested !== measured) return { verdict: 'reject' as const, reason: `Level ${requested} was requested, but the output signaled Level ${measured}.` };
-  return { verdict: 'safe' as const, reason: `The output verified the requested HEVC Level ${requested}.` };
+  if (!expectedLevel || !expectedTier || !actualLevel || !actualTier) {
+    return { verdict: 'review' as const, status: 'unverified' as const, reason: 'HEVC bitstream evidence exists, but the frozen expected Level/Tier decision is insufficient for comparison.' };
+  }
+  if (expectedLevel !== actualLevel || expectedTier.toLowerCase() !== actualTier.toLowerCase()) {
+    return {
+      verdict: 'reject' as const,
+      status: 'mismatch' as const,
+      reason: `Expected HEVC Level ${expectedLevel} ${expectedTier}; output signaled Level ${actualLevel} ${actualTier}.`,
+    };
+  }
+  return { verdict: 'safe' as const, status: 'validated' as const, reason: `Output bitstream validated the expected HEVC Level ${expectedLevel} ${expectedTier}.` };
 }
 
 function frameStructureGopFramesByMode(
@@ -5214,7 +5235,7 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
         <Alert severity="success">No unexpected geometry or color metadata differences were detected in the generated profile preview.</Alert>
       )}
       {inspection.conversion.codec === 'hevc' || inspection.requestedHEVCLevel ? <Alert severity={inspection.hevcLevelValidation.verdict === 'safe' ? 'success' : inspection.hevcLevelValidation.verdict === 'reject' ? 'error' : 'warning'}>
-        <strong>HEVC Level:</strong> requested {inspection.requestedHEVCLevel ?? 'Auto'} · measured {inspection.measuredHEVCLevel ?? 'not reported'}. {inspection.hevcLevelValidation.reason}
+        <strong>HEVC Level/Tier:</strong> expected {inspection.requestedHEVCLevel ?? 'unresolved'} {inspection.expectedHEVCTier ?? ''} · actual {inspection.measuredHEVCLevel ?? 'unavailable'} {inspection.measuredHEVCTier ?? ''} · {inspection.hevcLevelValidation.status}. {inspection.hevcLevelValidation.reason}
       </Alert> : null}
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small" aria-label="Preview fidelity characteristics">

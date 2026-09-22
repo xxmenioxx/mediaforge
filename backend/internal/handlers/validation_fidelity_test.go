@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -183,24 +184,24 @@ func TestQueueValidationBlocksSmartUpscaleGeometryMismatch(t *testing.T) {
 }
 
 func TestHEVCLevelValidationChecksRecommendedOutputLevel(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "recommended", "hevcLevel": "4.0"}
+	worker := map[string]interface{}{"hevcLevelMode": "recommended", "hevcLevel": "4.0", "hevcLevelEffective": "4.0", "hevcLevelTier": "main"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1", "bitrate": "6418000"}
 
-	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.0"})
-	if validated["status"] != "validated" || validated["requested"] != "4.0" {
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "bitrate": 6418000}, testHEVCBitstreamEvidence("4.0", "main"))
+	if validated["status"] != "validated" || validated["levelStatus"] != "validated" || validated["tierStatus"] != "validated" || validated["bitrateStatus"] != "unverified" || validated["requested"] != "4.0" {
 		t.Fatalf("validated result=%#v", validated)
 	}
 
-	mismatch := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "5.0"})
+	mismatch := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc"}, testHEVCBitstreamEvidence("5.0", "main"))
 	if mismatch["status"] != "mismatch" || mismatch["output"] != "5.0" {
 		t.Fatalf("mismatch result=%#v", mismatch)
 	}
 }
 
 func TestHEVCLevelValidationChecksAutoOutputAgainstAssetRecommendation(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv"}
+	worker := map[string]interface{}{"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv", "hevcLevelEffective": "4.0", "hevcLevelTier": "main"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1", "bitrate": "6418000"}
-	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.0"})
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc"}, testHEVCBitstreamEvidence("4.0", "main"))
 	if validated["status"] != "validated" || validated["requested"] != "4.0" {
 		t.Fatalf("auto Level validation=%#v", validated)
 	}
@@ -212,36 +213,69 @@ func TestHEVCLevelValidationUsesFrozenEffectiveLevel(t *testing.T) {
 		"hevcLevel": "4.0", "hevcLevelEffective": "4.1", "effectiveOutputFrameRate": "60/1",
 	}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
-	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.1"})
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc"}, testHEVCBitstreamEvidence("4.1", "main"))
 	if validated["status"] != "validated" || validated["requested"] != "4.1" {
 		t.Fatalf("validation ignored frozen effective Level: %#v", validated)
 	}
 }
 
 func TestHEVCLevelValidationFallbackUsesEffectiveOutputFPS(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv", "effectiveOutputFrameRate": "60/1"}
+	worker := map[string]interface{}{"hevcLevelMode": "auto", "videoEncoder": "hevc_qsv", "effectiveOutputFrameRate": "60/1", "hevcLevelEffective": "4.1", "hevcLevelTier": "main"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
-	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc", "hevcLevel": "4.1"})
+	validated := validateHEVCLevelField(worker, source, models.JSONMap{"codec": "hevc"}, testHEVCBitstreamEvidence("4.1", "main"))
 	if validated["status"] != "validated" || validated["requested"] != "4.1" {
 		t.Fatalf("validation fallback used stale source FPS: %#v", validated)
 	}
 }
 
 func TestHEVCLevelValidationChecksObservedMainTierBitrate(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
+	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelEffective": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
 	source := models.JSONMap{"width": 1920, "height": 1080, "frameRate": "24/1"}
-	output := models.JSONMap{"codec": "hevc", "hevcLevel": "4.0", "bitrate": 13_000_000}
-	validated := validateHEVCLevelField(worker, source, output)
-	if validated["status"] != "mismatch" || validated["bitrateStatus"] != "exceeds_main_tier" || validated["effectiveTier"] != "main" {
+	output := models.JSONMap{"codec": "hevc", "bitrate": 13_000_000}
+	validated := validateHEVCLevelField(worker, source, output, testHEVCBitstreamEvidence("4.0", "main"))
+	if validated["status"] != "validated" || validated["bitrateStatus"] != "unverified" || validated["effectiveTier"] != "main" {
 		t.Fatalf("Main Tier bitrate validation=%#v", validated)
 	}
 }
 
 func TestHEVCLevelValidationRejectsCustomLevelBelowOutputGeometry(t *testing.T) {
-	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "videoEncoder": "hevc_qsv"}
-	output := models.JSONMap{"codec": "hevc", "hevcLevel": "4.0", "width": 3840, "height": 2160, "frameRate": "24/1"}
-	validated := validateHEVCLevelField(worker, models.JSONMap{}, output)
-	if validated["status"] != "mismatch" || validated["requirementsStatus"] != "exceeds_level_limits" {
+	worker := map[string]interface{}{"hevcLevelMode": "custom", "hevcLevel": "4.0", "hevcLevelEffective": "4.0", "videoEncoder": "hevc_qsv"}
+	output := models.JSONMap{"codec": "hevc", "width": 3840, "height": 2160, "frameRate": "24/1"}
+	validated := validateHEVCLevelField(worker, models.JSONMap{}, output, testHEVCBitstreamEvidence("4.0", "main"))
+	if validated["status"] != "mismatch" || validated["requirementsStatus"] != "mismatch" {
 		t.Fatalf("Custom Level geometry validation=%#v", validated)
+	}
+}
+
+func testHEVCBitstreamEvidence(level, tier string) models.JSONMap {
+	return models.JSONMap{
+		"levelEvidenceAvailable": true,
+		"tierEvidenceAvailable":  true,
+		"generalLevel":           level,
+		"generalTier":            tier,
+	}
+}
+
+func TestHEVCLevelValidationEvidenceStatusVocabulary(t *testing.T) {
+	output := models.JSONMap{"codec": "hevc"}
+	worker := map[string]interface{}{"hevcLevelEffective": "4.0", "hevcLevelTier": "main", "videoEncoder": "hevc_qsv"}
+	if got := validateHEVCLevelField(worker, nil, output)["status"]; got != "unavailable" {
+		t.Fatalf("missing trace_headers evidence status=%v", got)
+	}
+	malformed := models.JSONMap{"levelEvidenceAvailable": true, "generalLevel": "4.0", "tierEvidenceAvailable": false}
+	if got := validateHEVCLevelField(worker, nil, output, malformed)["status"]; got != "unavailable" {
+		t.Fatalf("incomplete parameter-set evidence status=%v", got)
+	}
+	withoutExpected := validateHEVCLevelField(map[string]interface{}{"videoEncoder": "hevc_qsv"}, nil, output, testHEVCBitstreamEvidence("4.0", "main"))
+	if withoutExpected["status"] != "unverified" || withoutExpected["expectedLevel"] != "" || withoutExpected["actualLevel"] != "4.0" {
+		t.Fatalf("evidence without frozen expected decision was not unverified: %#v", withoutExpected)
+	}
+	failedProbe := hevcBitstreamEvidenceFromStructure(HEVCBitstreamStructure{}, fmt.Errorf("trace_headers unavailable"))
+	if failedProbe["probeStatus"] != "unavailable" || failedProbe["levelEvidenceAvailable"] != false || failedProbe["tierEvidenceAvailable"] != false {
+		t.Fatalf("failed bounded probe did not remain unavailable: %#v", failedProbe)
+	}
+	availableProbe := hevcBitstreamEvidenceFromStructure(HEVCBitstreamStructure{LevelIDC: 123, LevelKnown: true, TierFlag: 0, TierKnown: true}, nil)
+	if availableProbe["probeOutcome"] != "available" || availableProbe["probeStatus"] != nil || availableProbe["generalLevel"] != "4.1" || availableProbe["generalTier"] != "main" {
+		t.Fatalf("successful bounded probe was described as insufficient: %#v", availableProbe)
 	}
 }
