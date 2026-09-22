@@ -1862,7 +1862,7 @@ func buildLibraryRenamePlan(library models.Library, sourcePath string, records [
 		}
 		appendRenameConflict(&plan, seenTargets, record.Path, target)
 
-		sidecars, sidecarErr := externalSubtitlesForMedia(record.Path)
+		sidecars, sidecarErr := ownedSubtitleRenamePlans(record.Path, target)
 		if sidecarErr != nil {
 			if os.IsNotExist(sidecarErr) {
 				plan.Conflicts = append(plan.Conflicts, LibraryRenameConflict{Code: "source_missing", SourcePath: record.Path})
@@ -1871,15 +1871,12 @@ func buildLibraryRenamePlan(library models.Library, sourcePath string, records [
 			}
 			return LibraryRenamePlan{}, sidecarErr
 		}
-		sourceBase := strings.TrimSuffix(record.Path, filepath.Ext(record.Path))
-		targetBase := strings.TrimSuffix(target, filepath.Ext(target))
 		for _, sidecar := range sidecars {
-			sidecarTarget := targetBase + strings.TrimPrefix(sidecar.Path, sourceBase)
-			assetPlan.Sidecars = append(assetPlan.Sidecars, LibraryRenameSidecarPlan{SourcePath: sidecar.Path, TargetPath: sidecarTarget})
-			if filepath.Clean(sidecar.Path) != filepath.Clean(sidecarTarget) {
+			assetPlan.Sidecars = append(assetPlan.Sidecars, sidecar)
+			if filepath.Clean(sidecar.SourcePath) != filepath.Clean(sidecar.TargetPath) {
 				changed = true
 			}
-			appendRenameConflict(&plan, seenTargets, sidecar.Path, sidecarTarget)
+			appendRenameConflict(&plan, seenTargets, sidecar.SourcePath, sidecar.TargetPath)
 		}
 		plan.Assets = append(plan.Assets, assetPlan)
 	}
@@ -1899,6 +1896,38 @@ func buildLibraryRenamePlan(library models.Library, sourcePath string, records [
 	sum := sha256.Sum256(encoded)
 	plan.PlanHash = fmt.Sprintf("sha256:%x", sum)
 	return plan, nil
+}
+
+func ownedSubtitleRenamePlans(sourcePath, targetPath string) ([]LibraryRenameSidecarPlan, error) {
+	sidecars, err := externalSubtitlesForMedia(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	sourceBase := strings.TrimSuffix(sourcePath, filepath.Ext(sourcePath))
+	targetBase := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
+	plans := make([]LibraryRenameSidecarPlan, 0, len(sidecars))
+	for _, sidecar := range sidecars {
+		plans = append(plans, LibraryRenameSidecarPlan{
+			SourcePath: sidecar.Path,
+			TargetPath: targetBase + strings.TrimPrefix(sidecar.Path, sourceBase),
+		})
+	}
+	return plans, nil
+}
+
+func buildManualAssetRenamePlan(sourcePath, targetPath string, assetID uint) (LibraryRenamePlan, error) {
+	sidecars, err := ownedSubtitleRenamePlans(sourcePath, targetPath)
+	if err != nil {
+		return LibraryRenamePlan{}, err
+	}
+	return LibraryRenamePlan{
+		Assets: []LibraryRenameAssetPlan{{
+			AssetID:    assetID,
+			SourcePath: filepath.Clean(sourcePath),
+			TargetPath: filepath.Clean(targetPath),
+			Sidecars:   sidecars,
+		}},
+	}, nil
 }
 
 func appendRenameConflict(plan *LibraryRenamePlan, seenTargets map[string]string, sourcePath, targetPath string) {
@@ -3356,14 +3385,23 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
 		return
 	}
-	if _, err := os.Stat(target); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "a file with that name already exists"})
-		return
-	} else if !os.IsNotExist(err) {
+	var record models.AssetRecord
+	if err := h.db.Where("path = ?", resolvedPath).First(&record).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := os.Rename(resolvedPath, target); err != nil {
+	plan, err := buildManualAssetRenamePlan(resolvedPath, target, record.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plan asset rename: " + err.Error()})
+		return
+	}
+	manualRenameLibrary := models.Library{DestinationPath: filepath.Dir(resolvedPath)}
+	if err := validateLibraryRenamePlanForApply(plan, manualRenameLibrary); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	rollback, err := applyLibraryRenamePlan(plan, manualRenameLibrary, os.Rename)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "rename asset: " + err.Error()})
 		return
 	}
@@ -3433,7 +3471,10 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
-		_ = os.Rename(target, resolvedPath)
+		if rollbackErr := rollback(); rollbackErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("update renamed asset: %v; filesystem rollback failed: %v", err, rollbackErr)})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update renamed asset: " + err.Error()})
 		return
 	}
