@@ -81,6 +81,7 @@ import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
+import { LAB_COMPARISON_VIEWPORT_POLICY, LabComparisonViewport, labComparisonImageSx, labComparisonLayerSx } from '../components/LabComparisonViewport';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
@@ -4983,7 +4984,7 @@ function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFr
   return guidance;
 }
 
-function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspection }) {
+export function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspection }) {
   const [loadError, setLoadError] = useState('');
   const [selectedWindowIndex, setSelectedWindowIndex] = useState(0);
   const [comparisonMode, setComparisonMode] = useState<'slider' | 'side-by-side' | 'blink'>('side-by-side');
@@ -5067,28 +5068,28 @@ function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspec
             </Stack>
             {comparisonMode === 'side-by-side' ? (
               <Grid container spacing={1.5}>
-                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Canonical source" src={sourceUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} /></Grid>
-                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Profile result" src={outputUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} /></Grid>
+                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Canonical source" characteristics={selectedWindow.source} src={sourceUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} /></Grid>
+                <Grid size={{ xs: 12, md: 6 }}><FrameImage label="Profile result" characteristics={selectedWindow.output} src={outputUrl} onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} /></Grid>
               </Grid>
             ) : (
               <Stack spacing={0.75}>
                 <Stack direction="row" justifyContent="flex-end"><Button component="a" href={blinkSource && comparisonMode === 'blink' ? sourceUrl : outputUrl} target="_blank" rel="noreferrer" size="small">Open full size</Button></Stack>
-                <Box sx={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: { xs: 260, md: 480 }, overflow: 'hidden', bgcolor: 'black', borderRadius: 1 }}>
-                  <Box component="img" src={outputUrl} alt="Profile result frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} sx={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%' }} />
+                <LabComparisonViewport>
+                  <Box component="img" data-lab-comparison-layer="profile-result" data-lab-comparison-geometry="shared-viewport-contain" src={outputUrl} alt="Profile result frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: result frame could not be generated.`)} sx={labComparisonLayerSx} />
                   {comparisonMode === 'slider' ? (
                     <>
-                      <Box component="img" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ position: 'absolute', inset: 0, m: 'auto', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }} />
+                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }} />
                       <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${comparisonPosition}%`, width: 2, bgcolor: 'primary.main' }} />
                       <Chip size="small" label="Canonical source" sx={{ position: 'absolute', left: 12, top: 12 }} />
                       <Chip size="small" label="Profile result" sx={{ position: 'absolute', right: 12, top: 12 }} />
                     </>
                   ) : (
                     <>
-                      <Box component="img" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ position: 'absolute', inset: 0, m: 'auto', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', opacity: blinkSource ? 1 : 0 }} />
+                      <Box component="img" data-lab-comparison-layer="canonical-source" data-lab-comparison-geometry="shared-viewport-contain" src={sourceUrl} alt="Canonical source frame" onError={() => setLoadError(`Photo ${safeWindowIndex + 1}: source frame could not be generated.`)} sx={{ ...labComparisonLayerSx, opacity: blinkSource ? 1 : 0 }} />
                       <Chip size="small" color={blinkSource ? 'info' : 'warning'} label={blinkSource ? 'Canonical source' : 'Profile result'} sx={{ position: 'absolute', left: 12, top: 12 }} />
                     </>
                   )}
-                </Box>
+                </LabComparisonViewport>
                 {comparisonMode === 'slider' ? <Slider value={comparisonPosition} min={0} max={100} onChange={(_, value) => setComparisonPosition(Array.isArray(value) ? value[0] : value)} aria-label="Before and after position" /> : null}
               </Stack>
             )}
@@ -5120,22 +5121,26 @@ function squarePixelDimensions(characteristics: PreviewVideoCharacteristics) {
   return `${Math.round(characteristics.width * ratio)}×${characteristics.height}`;
 }
 
-function FrameImage({ label, src, onError }: { label: string; src: string; onError: () => void }) {
+function FrameImage({ label, characteristics, src, onError }: { label: string; characteristics: PreviewVideoCharacteristics; src: string; onError: () => void }) {
   return (
     <Stack spacing={0.75}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-        <Typography fontWeight={700} variant="body2">{label}</Typography>
+        <Stack spacing={0.25}>
+          <Typography fontWeight={700} variant="body2">{label}</Typography>
+          <Typography variant="caption" color="text.secondary">Native {characteristics.width}×{characteristics.height}</Typography>
+        </Stack>
         <Button component="a" href={src} target="_blank" rel="noreferrer" size="small">Open full size</Button>
       </Stack>
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: { xs: 220, md: 320 }, overflow: 'auto', bgcolor: 'black', borderRadius: 1 }}>
+      <LabComparisonViewport>
         <Box
           component="img"
+          data-lab-comparison-geometry="shared-viewport-contain"
           src={src}
           alt={`${label} frame`}
           onError={onError}
-          sx={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%' }}
+          sx={labComparisonImageSx}
         />
-      </Box>
+      </LabComparisonViewport>
     </Stack>
   );
 }
@@ -5419,7 +5424,7 @@ function VideoPreview({
   return <VideoPreviewRequest key={`${direct}:${src}`} label={label} src={src} direct={direct} onStatusChange={onStatusChange} cancelSignal={cancelSignal} />;
 }
 
-function VideoPreviewRequest({ label, src, direct = false, onStatusChange, cancelSignal }: {
+export function VideoPreviewRequest({ label, src, direct = false, onStatusChange, cancelSignal }: {
   label: string;
   src: string;
   direct?: boolean;
@@ -5477,9 +5482,11 @@ function VideoPreviewRequest({ label, src, direct = false, onStatusChange, cance
         component="video"
         controls
         src={videoSrc}
+        data-testid="lab-comparison-video"
         onCanPlay={() => onStatusChange?.('ready')}
         onError={() => onStatusChange?.('error')}
-        sx={{ width: '100%', maxHeight: 420, aspectRatio: '16 / 9', bgcolor: 'black', borderRadius: 1 }}
+        data-lab-comparison-video={LAB_COMPARISON_VIEWPORT_POLICY}
+        sx={{ width: '100%', maxHeight: 420, aspectRatio: '16 / 9', bgcolor: 'black', objectFit: 'contain', objectPosition: 'center', display: 'block', borderRadius: 1 }}
       />
     </Stack>
   );
