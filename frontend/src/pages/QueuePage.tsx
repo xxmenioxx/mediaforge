@@ -645,8 +645,7 @@ type QueueJobGroup = {
 };
 
 export function canRemoveQueueBatch(jobs: QueueJob[]) {
-  const nonCompleted = jobs.filter((job) => job.status !== 'completed');
-  return nonCompleted.length > 0 && nonCompleted.every((job) => job.status === 'failed' || job.status === 'canceled');
+  return jobs.length > 0 && jobs.every((job) => job.status === 'canceled');
 }
 
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
@@ -903,10 +902,10 @@ export function QueueGroupCard({
 
   function removeBatch() {
     if (!canRemoveQueueBatch(group.jobs)) return;
-    const removable = group.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled');
+    const removable = group.jobs.filter((job) => job.status === 'canceled');
     const count = removable.length;
     if (!count) return;
-    if (!window.confirm(`Remove ${count} failed/canceled job${count === 1 ? '' : 's'} from “${group.name}”? Completed history, logs, and reports will be preserved.`)) return;
+    if (!window.confirm(`Remove ${count} cancelled job${count === 1 ? '' : 's'} from “${group.name}”? Their database records, logs, and reports will be preserved.`)) return;
     batchAction.mutate('remove');
   }
 

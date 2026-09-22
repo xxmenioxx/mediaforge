@@ -76,34 +76,45 @@ function renderGroup(jobs: QueueJob[]) {
 }
 
 describe('Queue batch removal', () => {
-  it('allows removal only when every non-completed job is terminal', () => {
-    expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'completed')])).toBe(true);
-    expect(canRemoveQueueBatch([job(1, 'failed'), job(2, 'canceled')])).toBe(true);
+  it('allows removal only when every job is canceled', () => {
+    expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'canceled')])).toBe(true);
+    expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'completed')])).toBe(false);
+    expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'failed')])).toBe(false);
+    expect(canRemoveQueueBatch([job(1, 'failed')])).toBe(false);
     expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'queued')])).toBe(false);
     expect(canRemoveQueueBatch([job(1, 'canceled'), job(2, 'running')])).toBe(false);
     expect(canRemoveQueueBatch([job(1, 'completed')])).toBe(false);
   });
 
-  it('hides Remove Batch while a queued or running job remains', () => {
-    const view = renderGroup([job(1, 'canceled'), job(2, 'running')]);
-    expect(view).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Remove Batch' })).toBeNull();
+  it('hides Remove Batch for every mixed or non-cancelled batch', () => {
+    for (const statuses of [
+      ['canceled', 'completed'],
+      ['canceled', 'failed'],
+      ['failed'],
+      ['canceled', 'queued'],
+      ['canceled', 'running'],
+    ] as QueueJob['status'][][]) {
+      renderGroup(statuses.map((status, index) => job(index + 1, status)));
+      expect(screen.queryByRole('button', { name: 'Remove Batch' })).toBeNull();
+      cleanup();
+    }
   });
 
   it('requires confirmation and refreshes Queue after a successful removal', async () => {
     const dismiss = vi.spyOn(api, 'dismissQueueBatch').mockResolvedValue({
       batchId: 'batch-1',
       removedPlaceholders: 0,
-      dismissedJobs: 1,
-      preservedCompleted: 1,
+      dismissedJobs: 2,
+      preservedCompleted: 0,
     });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const { queryClient } = renderGroup([job(1, 'canceled'), job(2, 'completed')]);
+    const { queryClient } = renderGroup([job(1, 'canceled'), job(2, 'canceled')]);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
     const user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: 'Remove Batch' }));
     expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toContain('cancelled');
     expect(dismiss).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);

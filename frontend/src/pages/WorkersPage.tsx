@@ -213,9 +213,9 @@ export function WorkersPage() {
                       onCancelJob={cancelJob}
                       onCancelBatch={cancelBatch}
                       onRemoveBatch={(item) => {
-                        const removable = item.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
-                        const canRemove = removable > 0 && item.jobs.every((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'canceled');
-                        if (!canRemove || !window.confirm(`Remove ${removable} failed/canceled job${removable === 1 ? '' : 's'} from “${item.name}”? Completed history, logs, and reports will be preserved.`)) return;
+                        const removable = item.jobs.filter((job) => job.status === 'canceled').length;
+                        const canRemove = removable > 0 && item.jobs.every((job) => job.status === 'canceled');
+                        if (!canRemove || !window.confirm(`Remove ${removable} cancelled job${removable === 1 ? '' : 's'} from “${item.name}”? Their database records, logs, and reports will be preserved.`)) return;
                         removeBatch.mutate(item.batchId);
                       }}
                       onDetails={setDetailsJob}
@@ -378,8 +378,8 @@ function WorkerBatchCard({
 }) {
   const pending = batch.jobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const completed = batch.jobs.filter((job) => job.status === 'completed').length;
-  const removable = batch.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
-  const canRemove = removable > 0 && batch.jobs.every((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'canceled');
+  const removable = batch.jobs.filter((job) => job.status === 'canceled').length;
+  const canRemove = removable > 0 && batch.jobs.every((job) => job.status === 'canceled');
   const progress = Math.round(batch.jobs.reduce((sum, job) => sum + job.progress, 0) / Math.max(1, batch.jobs.length));
 
   return (

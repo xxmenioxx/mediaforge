@@ -404,18 +404,15 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 }
 
 func queueBatchCanBeDismissed(jobs []models.QueueJob) bool {
-	removable := false
+	if len(jobs) == 0 {
+		return false
+	}
 	for _, job := range jobs {
-		switch job.Status {
-		case JobStatusCompleted:
-			continue
-		case JobStatusFailed, JobStatusCanceled:
-			removable = true
-		default:
+		if job.Status != JobStatusCanceled {
 			return false
 		}
 	}
-	return removable
+	return true
 }
 
 func queueUsesOverrideOnlyVideo(resolution models.JSONMap) bool {
