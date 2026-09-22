@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewVideoCharacteristics } from '../api/types';
@@ -93,6 +93,23 @@ describe('LAB fidelity comparison geometry', () => {
   it('uses the stable contain video presentation policy', () => {
     render(<VideoPreviewRequest label="Preview" src="/preview.mp4" direct />);
 
-    expect(screen.getByTestId('lab-comparison-video').getAttribute('data-lab-comparison-video')).toBe(LAB_COMPARISON_VIEWPORT_POLICY);
+    const video = screen.getByTestId('lab-comparison-video');
+    expect(video.getAttribute('data-lab-comparison-video')).toBe(LAB_COMPARISON_VIEWPORT_POLICY);
+    expect(video.getAttribute('crossorigin')).toBe('anonymous');
+  });
+
+  it('uses credentialless fetches for compatible media while retaining streaming-capable media elements', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['preview']),
+      headers: new Headers(),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
+
+    render(<VideoPreviewRequest label="Preview" src="/preview.mp4" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/preview.mp4', expect.objectContaining({ credentials: 'omit' })));
+    expect(screen.getByTestId('lab-comparison-video').getAttribute('crossorigin')).toBe('anonymous');
   });
 });

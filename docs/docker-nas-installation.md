@@ -10,6 +10,38 @@ Esta es la ruta de instalación recomendada para ejecutar una versión publicada
 
 No expongas MVForge directamente a Internet. Para acceso remoto utiliza una VPN o un reverse proxy con autenticación y TLS.
 
+## Aislamiento de cookies en hosts compartidos
+
+Los navegadores aíslan las cookies por host o dominio, no por puerto TCP. Por
+eso, aplicaciones distintas en el mismo hostname o IP pueden recibir las
+mismas cookies aunque escuchen en puertos diferentes. `SameSite`, `Secure` y
+`HttpOnly` no crean namespaces separados por puerto.
+
+MVForge no usa cookies para autenticación ni depende de sesiones. Las llamadas
+API del frontend establecen explícitamente `credentials: omit` cuando pueden
+controlar el `fetch`, y el backend elimina los encabezados `Cookie` entrantes
+antes de ejecutar los handlers. CORS sigue siendo no credentialed. Las
+solicitudes de medios realizadas directamente por el navegador (`<video>`,
+`<audio>` o `<img>`) pueden seguir enviando cookies del host según la política
+del navegador; MVForge las descarta en el backend, pero el frontend no puede
+garantizar aislamiento credentialless completo para esas subsolicitudes sin
+cambiar la topología.
+
+Para aislamiento completo a nivel de navegador usa un hostname o subdominio
+dedicado por aplicación, por ejemplo:
+
+```text
+mediaforge.example.internal
+jellyfin.example.internal
+```
+
+No dependas de puertos distintos como:
+
+```text
+nas.example.internal:3000
+nas.example.internal:8096
+```
+
 ## Instalación estándar
 
 MVForge se instala de forma independiente bajo el directorio Docker habitual del NAS:
