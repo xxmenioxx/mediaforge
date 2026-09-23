@@ -72,12 +72,13 @@ func (registry *claimPreparationLockRegistry) lock(key claimPreparationLockKey) 
 }
 
 var (
-	errWorkerLimitReached        = errors.New("worker claim limit reached")
-	errWorkerDelayActive         = errors.New("worker delay between jobs is still active")
-	errWorkerBatchCooldownActive = errors.New("worker batch cooldown is still active")
-	errClaimedJobDeferred        = errors.New("claimed job was frozen and returned to scheduler review")
-	claimJobMu                   sync.Mutex
-	claimPreparationLocks        claimPreparationLockRegistry
+	errWorkerLimitReached         = errors.New("worker claim limit reached")
+	errWorkerDelayActive          = errors.New("worker delay between jobs is still active")
+	errWorkerBatchCooldownActive  = errors.New("worker batch cooldown is still active")
+	errWorkerProgressPacingActive = errors.New("worker progress pacing is still active")
+	errClaimedJobDeferred         = errors.New("claimed job was frozen and returned to scheduler review")
+	claimJobMu                    sync.Mutex
+	claimPreparationLocks         claimPreparationLockRegistry
 )
 
 type WorkerHandler struct {
@@ -116,16 +117,29 @@ type audioEnhancementProfile struct {
 }
 
 type workerLimits struct {
-	DefaultWorkerName       string
-	AutoWorkerEnabled       bool
-	MaxConcurrentJobs       int
-	MaxJobsPerBatch         int
-	DelaySecondsBetweenJobs int
-	BatchCooldownSeconds    int
+	DefaultWorkerName             string
+	AutoWorkerEnabled             bool
+	MaxConcurrentJobs             int
+	MaxJobsPerBatch               int
+	DelaySecondsBetweenJobs       int
+	BatchCooldownSeconds          int
+	JobStartPacingMode            string
+	StartNextJobAtProgressPercent int
 }
 
 func NewWorkerHandler(db *gorm.DB) WorkerHandler {
 	return WorkerHandler{db: db}
+}
+
+func canonicalWorkerName(requestedName string, defaultName string) string {
+	name := strings.TrimSpace(requestedName)
+	if name == "" {
+		name = strings.TrimSpace(defaultName)
+	}
+	if name == "" {
+		return "local-worker"
+	}
+	return name
 }
 
 func (h WorkerHandler) ListNodes(c *gin.Context) {
@@ -145,12 +159,7 @@ func (h WorkerHandler) ListNodes(c *gin.Context) {
 }
 
 func (h WorkerHandler) heartbeatWorker(name string, limits workerLimits, reportedEncoders models.JSONList, reportedRuntimeProfile string) error {
-	if strings.TrimSpace(name) == "" {
-		name = limits.DefaultWorkerName
-	}
-	if strings.TrimSpace(name) == "" {
-		name = "local-worker"
-	}
+	name = canonicalWorkerName(name, limits.DefaultWorkerName)
 	encoders := models.JSONList{}
 	runtimeProfile := ""
 	if len(reportedEncoders) > 0 {
@@ -205,13 +214,24 @@ func (h WorkerHandler) workerLimits() (workerLimits, error) {
 		return workerLimits{}, err
 	}
 
+	jobStartPacingMode := workerStringSetting(values, "jobStartPacingMode", "time")
+	if jobStartPacingMode != "time" && jobStartPacingMode != "progress" {
+		jobStartPacingMode = "time"
+	}
+	startNextJobAtProgressPercent := intSetting(values, "startNextJobAtProgressPercent", 75)
+	if startNextJobAtProgressPercent < 1 || startNextJobAtProgressPercent > 100 {
+		startNextJobAtProgressPercent = 75
+	}
+
 	return workerLimits{
-		DefaultWorkerName:       stringSetting(values, "defaultWorkerName", "local-worker"),
-		AutoWorkerEnabled:       boolSetting(values["autoWorkerEnabled"], true),
-		MaxConcurrentJobs:       intSetting(values, "maxConcurrentJobs", 1),
-		MaxJobsPerBatch:         intSetting(values, "maxJobsPerBatch", 10),
-		DelaySecondsBetweenJobs: intSetting(values, "delaySecondsBetweenJobs", 30),
-		BatchCooldownSeconds:    intSetting(values, "batchCooldownSeconds", 600),
+		DefaultWorkerName:             stringSetting(values, "defaultWorkerName", "local-worker"),
+		AutoWorkerEnabled:             boolSetting(values["autoWorkerEnabled"], true),
+		MaxConcurrentJobs:             intSetting(values, "maxConcurrentJobs", 1),
+		MaxJobsPerBatch:               intSetting(values, "maxJobsPerBatch", 10),
+		DelaySecondsBetweenJobs:       intSetting(values, "delaySecondsBetweenJobs", 30),
+		BatchCooldownSeconds:          intSetting(values, "batchCooldownSeconds", 600),
+		JobStartPacingMode:            jobStartPacingMode,
+		StartNextJobAtProgressPercent: startNextJobAtProgressPercent,
 	}, nil
 }
 
@@ -237,7 +257,7 @@ func forceFreshSnapshotBeforeExecution(db *gorm.DB) bool {
 	)
 }
 
-func canClaimJob(tx *gorm.DB, limits workerLimits) error {
+func canClaimJob(tx *gorm.DB, limits workerLimits, workerName string) error {
 	if limits.MaxConcurrentJobs > 0 {
 		var running int64
 		if err := tx.Model(&models.QueueJob{}).Where("status = ?", JobStatusRunning).Count(&running).Error; err != nil {
@@ -248,7 +268,18 @@ func canClaimJob(tx *gorm.DB, limits workerLimits) error {
 		}
 	}
 
-	if limits.DelaySecondsBetweenJobs > 0 {
+	if limits.JobStartPacingMode == "progress" {
+		var pacingReference models.QueueJob
+		err := tx.Where("worker_name = ? AND started_at IS NOT NULL", workerName).
+			Order("started_at desc, id desc").
+			First(&pacingReference).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		if err == nil && !terminalJobStatus(pacingReference.Status) && pacingReference.Progress < limits.StartNextJobAtProgressPercent {
+			return errWorkerProgressPacingActive
+		}
+	} else if limits.DelaySecondsBetweenJobs > 0 {
 		var lastStarted models.QueueJob
 		err := tx.Where("started_at IS NOT NULL").Order("started_at desc").First(&lastStarted).Error
 		if err != nil && err != gorm.ErrRecordNotFound {
@@ -379,6 +410,10 @@ func (h WorkerHandler) ClaimNext(c *gin.Context) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "worker batch cooldown is still active"})
 			return
 		}
+		if err == errWorkerProgressPacingActive {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "worker progress pacing is still active"})
+			return
+		}
 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -399,19 +434,14 @@ func (h WorkerHandler) claimNextJob(workerName string, reportedEncoders models.J
 		if err != nil {
 			return models.QueueJob{}, err
 		}
-		if workerName == "" {
-			workerName = limits.DefaultWorkerName
-		}
+		workerName = canonicalWorkerName(workerName, limits.DefaultWorkerName)
 		if err := h.heartbeatWorker(workerName, limits, reportedEncoders, reportedRuntimeProfile); err != nil {
 			return models.QueueJob{}, err
-		}
-		if workerName == "" {
-			workerName = "local-worker"
 		}
 
 		var claimed models.QueueJob
 		err = h.db.Transaction(func(tx *gorm.DB) error {
-			if err := canClaimJob(tx, limits); err != nil {
+			if err := canClaimJob(tx, limits, workerName); err != nil {
 				return err
 			}
 
@@ -696,7 +726,14 @@ func (h WorkerHandler) returnPreparedJobToQueue(jobID uint) error {
 		job.Progress = 0
 		job.WorkerName = ""
 		job.StartedAt = nil
-		if err := tx.Save(&job).Error; err != nil {
+		if err := tx.Model(&job).Updates(map[string]any{
+			"status":      job.Status,
+			"progress":    job.Progress,
+			"worker_name": job.WorkerName,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&job).UpdateColumn("started_at", gorm.Expr("NULL")).Error; err != nil {
 			return err
 		}
 		if err := transitionJobStage(tx, &job, JobStageQueued); err != nil {

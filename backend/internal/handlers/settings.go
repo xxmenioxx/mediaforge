@@ -72,6 +72,12 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	key := c.Param("key")
+	if key == "workers" {
+		if err := validateWorkerSettings(input.Value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	if key == "runtimePolicy" {
 		if err := runtimeinfo.ValidateRuntimePolicyValue(input.Value); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -182,6 +188,22 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, setting)
+}
+
+func validateWorkerSettings(value models.JSONMap) error {
+	if rawMode, ok := value["jobStartPacingMode"]; ok {
+		mode, ok := rawMode.(string)
+		if !ok || (mode != "time" && mode != "progress") {
+			return fmt.Errorf("jobStartPacingMode must be time or progress")
+		}
+	}
+	if rawThreshold, ok := value["startNextJobAtProgressPercent"]; ok {
+		threshold, valid := integerSettingValue(rawThreshold)
+		if !valid || threshold < 1 || threshold > 100 {
+			return fmt.Errorf("startNextJobAtProgressPercent must be between 1 and 100")
+		}
+	}
+	return nil
 }
 
 func validateTrackProfileDomainPolicies(value models.JSONMap) error {
