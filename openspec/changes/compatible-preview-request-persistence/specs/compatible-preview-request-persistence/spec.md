@@ -112,6 +112,14 @@ persisted.
 - **THEN** the backend may prepare current inputs and replace the request's
   prepared relationship before normal #1 acquisition begins
 
+#### Scenario: Failed recreate preserves the previous lifecycle
+
+- **WHEN** an explicit recreate of a stale, interrupted, failed, canceled, or
+  expired request cannot prepare or persist the replacement relationship
+- **THEN** the previous request entry or expired tombstone remains addressable
+  with its deterministic lifecycle response, and the failed POST does not turn
+  the request into `unknown`
+
 ### Requirement: Ready artifacts remain reusable after restart
 
 The system SHALL keep a restored request usable under its existing request ID
@@ -145,13 +153,18 @@ state transitions SHALL be conditional on both artifact identity and the
 expected generation token, or use equivalent transactional compare-and-swap
 behavior. Runtime entry-object identity protection from #1 SHALL remain in
 place; the durable generation token supplements it and does not replace it.
+Request recovery propagation SHALL occur only after the conditional artifact
+transition matches and the runtime artifact entry is still authoritative. A
+zero-row transition is a stale completion, not a database error, and SHALL
+not mark requests referencing the artifact failed or canceled.
 
 #### Scenario: Late completion cannot overwrite a replacement
 
 - **WHEN** generation N for artifact X becomes terminal, explicit retry starts
   generation N+1, and generation N later attempts to persist completion
 - **THEN** the late transition is rejected by generation identity and the
-  durable state for generation N+1 remains unchanged
+  durable state for generation N+1 remains unchanged; no request referencing
+  the artifact is marked by the stale completion
 
 #### Scenario: Restart interrupts the current attempt
 
@@ -373,7 +386,9 @@ source/encode relationship. It SHALL reject or ignore paths outside controlled
 roots, arbitrary filenames, zero-byte files, staging files, and partial files.
 Startup reconciliation SHALL use bounded metadata loading and direct
 filesystem existence/stat/identity checks and SHALL NOT probe or decode every
-cached preview.
+cached preview. Artifact metadata loading SHALL be derived from the unique
+artifact IDs referenced by the bounded active/stale request recovery set;
+unreferenced historical artifact rows SHALL NOT be loaded eagerly.
 
 #### Scenario: Persisted path escapes the preview cache root
 
@@ -385,8 +400,9 @@ cached preview.
 #### Scenario: Large cache is restored
 
 - **WHEN** many persisted preview records exist at startup
-- **THEN** reconciliation remains bounded by metadata and lightweight final
-  file checks, deferring deeper validation until consumption where safe
+- **THEN** reconciliation loads only the bounded active/stale request set and
+  its referenced artifact rows, remains bounded by lightweight final file
+  checks, and defers deeper validation until consumption where safe
 
 ### Requirement: Filesystem and metadata crash windows reconcile safely
 
@@ -412,4 +428,3 @@ conditional on the generation token.
 - **THEN** the next reconciliation detects the missing file and removes the
   ready advertisement, returning stale/recovery semantics instead of serving a
   bad path
-

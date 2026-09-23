@@ -692,13 +692,13 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 		}
 	}
 	entry.mu.Lock()
-	token, version, persistenceDB := entry.generationToken, entry.generationVersion, entry.persistenceDB
+	token, version := entry.generationToken, entry.generationVersion
 	entry.mu.Unlock()
-	if persistenceErr := persistCompatiblePreviewArtifactTransition(persistenceDB, artifactIDFromDestination(destination), token, version, state, compatiblePreviewErrorString(generationErr), time.Now()); persistenceErr != nil {
+	_, persistenceErr := persistCompatiblePreviewGenerationCompletion(entry, artifactIDFromDestination(destination), token, version, state, compatiblePreviewErrorString(generationErr), time.Now())
+	if persistenceErr != nil {
 		state = compatiblePreviewArtifactFailed
 		generationErr = fmt.Errorf("persist compatible preview generation state: %w", persistenceErr)
 	}
-	markCompatiblePreviewRequestsForArtifactRecovery(artifactIDFromDestination(destination), state, compatiblePreviewErrorString(generationErr))
 	entry.mu.Lock()
 	entry.state = state
 	entry.err = generationErr

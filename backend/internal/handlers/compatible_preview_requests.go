@@ -194,6 +194,26 @@ func storeCompatiblePreviewRequest(input compatiblePreviewRequest, now time.Time
 	return id, normalized, nil
 }
 
+func newCompatiblePreviewRequestEntry(request compatiblePreviewRequest, now time.Time, db *gorm.DB) *compatiblePreviewRequestEntry {
+	return &compatiblePreviewRequestEntry{
+		Request:           request,
+		CreatedAt:         now,
+		AccessedAt:        now,
+		ExpiresAt:         now.Add(compatiblePreviewRequestRetention),
+		DurableAccessedAt: now,
+		persistenceDB:     db,
+	}
+}
+
+func installCompatiblePreviewRequestEntry(id string, entry *compatiblePreviewRequestEntry) {
+	compatiblePreviewRequests.Lock()
+	compatiblePreviewRequests.items[id] = entry
+	delete(compatiblePreviewRequests.tombstones, id)
+	pending := trimCompatiblePreviewRequestsLocked()
+	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewPendingTombstones(pending)
+}
+
 func loadCompatiblePreviewRequest(id string, now time.Time) (compatiblePreviewRequest, bool) {
 	entry, ok := loadCompatiblePreviewRequestEntry(id, now)
 	if !ok {
@@ -352,43 +372,78 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "compatible preview request must contain valid JSON: " + err.Error()})
 		return
 	}
-	id, normalized, err := storeCompatiblePreviewRequest(input, time.Now())
+	now := time.Now()
+	normalized, err := normalizeCompatiblePreviewRequest(input)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	entry, ok := loadCompatiblePreviewRequestEntry(id, time.Now())
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request expired or was not found"})
+	id, err := compatiblePreviewRequestIdentity(normalized)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	entry.mu.Lock()
-	recreateRecovery := entry.recoveryState != ""
-	entry.persistenceDB = h.db
-	entry.recoveryState = ""
-	entry.recoveryReason = ""
-	if recreateRecovery {
-		entry.Descriptor = nil
-		entry.CreatedAt = time.Now()
-		entry.ExpiresAt = time.Now().Add(compatiblePreviewRequestRetention)
-	}
-	entry.mu.Unlock()
-	descriptor, err := h.compatiblePreviewDescriptorForEntry(entry, id)
-	if err != nil {
-		deleteCompatiblePreviewRequest(id, entry)
-		var preparationErr *compatiblePreviewPrepareError
-		if errors.As(err, &preparationErr) {
-			c.JSON(preparationErr.status, gin.H{"error": preparationErr.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+
+	entry, tombstone, known := compatiblePreviewRequestLookup(id, now)
+	var descriptor *compatiblePreviewDescriptor
+	var installEntry *compatiblePreviewRequestEntry
+	if known && entry != nil {
+		entry.mu.RLock()
+		recoveryState := entry.recoveryState
+		currentDescriptor := entry.Descriptor
+		entry.mu.RUnlock()
+		if recoveryState == "" && currentDescriptor != nil && currentDescriptor.frozen && !currentDescriptor.SourceRevision.matches(currentDescriptor.Path) {
+			entry.mu.Lock()
+			entry.recoveryState = string(compatiblePreviewArtifactStale)
+			entry.recoveryReason = "source revision changed after preview preparation"
+			db := entry.persistenceDB
+			entry.mu.Unlock()
+			persistCompatiblePreviewRequestStale(db, id, "source revision changed after preview preparation")
+			recoveryState = string(compatiblePreviewArtifactStale)
 		}
+		if recoveryState == "" {
+			entry.mu.Lock()
+			entry.persistenceDB = h.db
+			entry.mu.Unlock()
+			descriptor, err = h.compatiblePreviewDescriptorForEntry(entry, id)
+			if err == nil {
+				installEntry = entry
+			}
+		}
+	}
+	if installEntry == nil {
+		// Prepare a replacement off-registry. The previous active/recovery entry or
+		// tombstone remains addressable until preparation and persistence succeed.
+		candidate := newCompatiblePreviewRequestEntry(normalized, now, h.db)
+		descriptor, err = h.compatiblePreviewDescriptorForEntry(candidate, id)
+		if err != nil {
+			var preparationErr *compatiblePreviewPrepareError
+			if errors.As(err, &preparationErr) {
+				c.JSON(preparationErr.status, gin.H{"error": preparationErr.Error()})
+			} else if lifecycleErr, ok := err.(*compatiblePreviewLifecycleError); ok {
+				writeCompatiblePreviewError(c, lifecycleErr)
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		installEntry = candidate
+	}
+
+	if descriptor == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "compatible preview descriptor is unavailable"})
 		return
 	}
 	descriptor.frozen = h.db != nil && descriptor.RetentionPolicy != compatiblePreviewEphemeralRetention
-	if err := persistCompatiblePreviewPreparedRequest(h.db, id, normalized, descriptor, time.Now()); err != nil {
-		deleteCompatiblePreviewRequest(id, entry)
+	if err := persistCompatiblePreviewPreparedRequest(h.db, id, normalized, descriptor, now); err != nil {
+		// Do not remove the old entry/tombstone. A failed recreate remains a
+		// deterministic lifecycle response instead of becoming unknown.
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "persist compatible preview request: " + err.Error()})
 		return
+	}
+	descriptor.frozen = h.db != nil && descriptor.RetentionPolicy != compatiblePreviewEphemeralRetention
+	if installEntry != entry || tombstone != nil || !known {
+		installCompatiblePreviewRequestEntry(id, installEntry)
 	}
 	c.JSON(http.StatusCreated, gin.H{
 		"requestId":        id,

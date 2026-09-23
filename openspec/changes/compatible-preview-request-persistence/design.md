@@ -125,6 +125,10 @@ The durable generation token supplements runtime object identity. Every
 generation-owned durable transition carries the expected artifact ID and
 generation token. A transition for generation N that arrives after the row has
 been replaced by generation N+1 affects zero rows and cannot overwrite N+1.
+The conditional update reports whether it matched the current attempt. Only a
+matching durable transition from the still-current runtime artifact entry may
+propagate failed/canceled recovery state to request entries; a zero-row stale
+completion is ignored for request lifecycle purposes as well as artifact state.
 
 Request and artifact identity remain separate. A request row can point to an
 artifact row that has other request references, preserving the relationship:
@@ -152,8 +156,14 @@ An active request POST that is equivalent to its existing deterministic ID is
 idempotent/touch-only and preserves the frozen snapshot. A POST that explicitly
 recreates a stale, interrupted, failed, or canceled request is allowed to
 prepare current inputs and replace the snapshot/relationship before normal #1
-acquisition. A POST whose deterministic ID finds an expired tombstone replaces
-the tombstone with a fresh active row, clears recovery state, resets the
+acquisition. Recreate preparation is performed in a candidate entry outside
+the runtime registry; durable persistence and runtime installation commit the
+replacement only after preparation succeeds. If preparation or persistence
+fails, the prior recovery entry remains addressable and a prior tombstone
+remains `expired`, rather than becoming `unknown`.
+
+A POST whose deterministic ID finds an expired tombstone replaces the tombstone
+with a fresh active row, clears recovery state, resets the
 created/access/expiration timestamps, and prepares the current relationship.
 This is the only path that lets profile/configuration changes affect a
 request with that deterministic ID.
@@ -213,8 +223,11 @@ before normal preview routes accept traffic:
    tombstones, clearing their frozen snapshot/artifact reference; purge
    tombstones past their deadline and enforce the 500/500 active/tombstone
    bounds.
-2. Load active request rows, tombstones, and referenced artifact rows in
-   bounded pages. Do not enumerate the media library or run ffprobe.
+2. Load the bounded active request rows and tombstones, derive unique artifact
+   IDs from the active/stale request rows, and load only those referenced
+   artifact rows. Unreferenced historical artifacts remain available to normal
+   acquisition/cleanup paths but are not eagerly restored. Do not enumerate
+   the media library or run ffprobe.
 3. For each active request, deserialize and validate the frozen snapshot,
    source revision evidence, artifact identity, and canonical final path. The
    cleaned absolute path must remain under the controlled Compatible Preview

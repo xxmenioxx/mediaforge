@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -213,6 +214,42 @@ func TestCompatiblePreviewGenerationReconciliationPromotesOrInterrupts(t *testin
 	})
 }
 
+func TestCompatiblePreviewFailedAndCanceledStatesSurviveRestart(t *testing.T) {
+	for _, state := range []compatiblePreviewArtifactState{compatiblePreviewArtifactFailed, compatiblePreviewArtifactCanceled} {
+		t.Run(string(state), func(t *testing.T) {
+			db := compatiblePreviewPersistenceDB(t)
+			requestID, _, descriptor, _ := compatiblePreviewPersistentFixture(t, db, "artifact-"+string(state))
+			markCompatiblePreviewArtifact(t, db, descriptor.ArtifactID, string(state), "generation-terminal", 3, descriptor.CachePath)
+			if err := ReconcileCompatiblePreviewPersistence(db); err != nil {
+				t.Fatal(err)
+			}
+			entry, _, ok := compatiblePreviewRequestLookup(requestID, time.Now())
+			if !ok || entry == nil {
+				t.Fatal("terminal request was not restored")
+			}
+			entry.mu.RLock()
+			recoveryState := entry.recoveryState
+			entry.mu.RUnlock()
+			if recoveryState != string(state) {
+				t.Fatalf("recovery state=%q, want %q", recoveryState, state)
+			}
+			if err := ReconcileCompatiblePreviewPersistence(db); err != nil {
+				t.Fatal(err)
+			}
+			entry, _, ok = compatiblePreviewRequestLookup(requestID, time.Now())
+			if !ok || entry == nil {
+				t.Fatal("terminal request was not restored after second restart")
+			}
+			entry.mu.RLock()
+			recoveryState = entry.recoveryState
+			entry.mu.RUnlock()
+			if recoveryState != string(state) {
+				t.Fatalf("recovery state after restart=%q, want %q", recoveryState, state)
+			}
+		})
+	}
+}
+
 func TestCompatiblePreviewReadyMissingOrUnsafeArtifactBecomesStale(t *testing.T) {
 	db := compatiblePreviewPersistenceDB(t)
 	requestID, _, descriptor, _ := compatiblePreviewPersistentFixture(t, db, "artifact-missing")
@@ -351,17 +388,198 @@ func TestCompatiblePreviewExpiredTombstoneBecomesUnknownAndCanBeRecreated(t *tes
 
 func TestCompatiblePreviewLateGenerationTransitionCannotOverwriteReplacement(t *testing.T) {
 	db := compatiblePreviewPersistenceDB(t)
-	_, _, descriptor, _ := compatiblePreviewPersistentFixture(t, db, "artifact-generation-race")
+	requestID, request, descriptor, now := compatiblePreviewPersistentFixture(t, db, "artifact-generation-race")
+	resetCompatiblePreviewRuntimeForReconcile()
+	t.Cleanup(resetCompatiblePreviewRuntimeForReconcile)
+	requestEntry := newCompatiblePreviewRequestEntry(request, now, db)
+	descriptorCopy := *descriptor
+	descriptorCopy.frozen = true
+	descriptorCopy.persistenceDB = db
+	descriptorCopy.requestID = requestID
+	requestEntry.Descriptor = &descriptorCopy
+	oldGeneration := newCompatiblePreviewArtifactEntry(&descriptorCopy, now, compatiblePreviewArtifactReady)
+	oldGeneration.generationToken = "generation-17"
+	oldGeneration.generationVersion = 17
+	currentGeneration := newCompatiblePreviewArtifactEntry(&descriptorCopy, now, compatiblePreviewArtifactReady)
+	currentGeneration.generationToken = "generation-18"
+	currentGeneration.generationVersion = 18
+	compatiblePreviewRequests.Lock()
+	compatiblePreviewRequests.items[requestID] = requestEntry
+	compatiblePreviewRequests.Unlock()
+	compatiblePreviewArtifacts.Lock()
+	compatiblePreviewArtifacts.items[descriptor.ArtifactID] = currentGeneration
+	compatiblePreviewArtifacts.Unlock()
 	markCompatiblePreviewArtifact(t, db, descriptor.ArtifactID, string(compatiblePreviewArtifactGenerating), "generation-18", 18, descriptor.CachePath)
-	if err := persistCompatiblePreviewArtifactTransition(db, descriptor.ArtifactID, "generation-17", 17, compatiblePreviewArtifactReady, "late completion", time.Now()); err != nil {
+	if updated, err := persistCompatiblePreviewGenerationCompletion(oldGeneration, descriptor.ArtifactID, "generation-17", 17, compatiblePreviewArtifactCanceled, "late cancellation", time.Now()); err != nil {
 		t.Fatal(err)
+	} else if updated {
+		t.Fatal("stale generation unexpectedly owned replacement transition")
+	}
+	requestEntry.mu.RLock()
+	if requestEntry.recoveryState != "" {
+		t.Fatalf("stale generation poisoned request recovery state: %q", requestEntry.recoveryState)
+	}
+	requestEntry.mu.RUnlock()
+	updated, err := persistCompatiblePreviewGenerationCompletion(currentGeneration, descriptor.ArtifactID, "generation-18", 18, compatiblePreviewArtifactReady, "", time.Now())
+	if err != nil || !updated {
+		t.Fatalf("replacement generation did not complete: updated=%t err=%v", updated, err)
 	}
 	var artifact models.CompatiblePreviewArtifactRecord
 	if err := db.First(&artifact, "artifact_id = ?", descriptor.ArtifactID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if artifact.State != string(compatiblePreviewArtifactGenerating) || artifact.GenerationToken != "generation-18" {
+	if artifact.State != string(compatiblePreviewArtifactReady) || artifact.GenerationToken != "generation-18" {
 		t.Fatalf("late generation overwrote replacement: state=%q token=%q", artifact.State, artifact.GenerationToken)
+	}
+	requestEntry.mu.RLock()
+	if requestEntry.recoveryState != "" {
+		t.Fatalf("replacement generation left request unusable: %q", requestEntry.recoveryState)
+	}
+	requestEntry.mu.RUnlock()
+}
+
+func TestCompatiblePreviewStaleRecreateFailurePreservesLifecycle(t *testing.T) {
+	db := compatiblePreviewPersistenceDB(t)
+	requestID, request, descriptor, now := compatiblePreviewPersistentFixture(t, db, "artifact-stale-recreate")
+	resetCompatiblePreviewRuntimeForReconcile()
+	t.Cleanup(resetCompatiblePreviewRuntimeForReconcile)
+	entry := newCompatiblePreviewRequestEntry(request, now, db)
+	entry.Descriptor = descriptor
+	entry.recoveryState = string(compatiblePreviewArtifactStale)
+	entry.recoveryReason = "artifact is stale"
+	compatiblePreviewRequests.Lock()
+	compatiblePreviewRequests.items[requestID] = entry
+	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewRequestStale(db, requestID, entry.recoveryReason)
+	if err := os.Remove(descriptor.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.POST("/requests", AssetHandler{db: db}.CreateCompatiblePreviewRequest)
+	router.GET("/requests/:requestId", AssetHandler{db: db}.CompatiblePreviewRequestVideo)
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(string(body))))
+	if createResponse.Code != http.StatusNotFound {
+		t.Fatalf("stale recreate status=%d body=%s, want preparation failure", createResponse.Code, createResponse.Body.String())
+	}
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/requests/"+requestID, nil))
+	if getResponse.Code != http.StatusConflict {
+		t.Fatalf("stale request after failed recreate status=%d body=%s, want 409", getResponse.Code, getResponse.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["code"] != "stale_artifact" {
+		t.Fatalf("stale request after failed recreate code=%v", payload["code"])
+	}
+}
+
+func TestCompatiblePreviewExpiredRecreateFailurePreservesTombstone(t *testing.T) {
+	db := compatiblePreviewPersistenceDB(t)
+	request := compatiblePreviewRequest{Path: filepath.Join(t.TempDir(), "missing.mkv")}
+	normalized, err := normalizeCompatiblePreviewRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, err := compatiblePreviewRequestIdentity(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCompatiblePreviewRuntimeForReconcile()
+	t.Cleanup(resetCompatiblePreviewRuntimeForReconcile)
+	tombstone := compatiblePreviewRequestTombstone{RequestID: requestID, ExpiresAt: time.Now().Add(-time.Hour), TombstoneExpiresAt: time.Now().Add(time.Hour), Reason: "request expired"}
+	compatiblePreviewRequests.Lock()
+	compatiblePreviewRequests.tombstones[requestID] = tombstone
+	compatiblePreviewRequests.Unlock()
+
+	router := gin.New()
+	router.POST("/requests", AssetHandler{db: db}.CreateCompatiblePreviewRequest)
+	router.GET("/requests/:requestId", AssetHandler{db: db}.CompatiblePreviewRequestVideo)
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(string(body))))
+	if createResponse.Code != http.StatusForbidden {
+		t.Fatalf("expired recreate status=%d body=%s, want preparation failure", createResponse.Code, createResponse.Body.String())
+	}
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/requests/"+requestID, nil))
+	if getResponse.Code != http.StatusGone {
+		t.Fatalf("expired request after failed recreate status=%d body=%s, want 410", getResponse.Code, getResponse.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["code"] != "expired" {
+		t.Fatalf("expired request after failed recreate code=%v", payload["code"])
+	}
+}
+
+func TestCompatiblePreviewExpiredTombstoneSuccessfulCreateReactivatesID(t *testing.T) {
+	request := compatiblePreviewRequest{Path: "/media/raw/recreate.mkv"}
+	normalized, err := normalizeCompatiblePreviewRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, err := compatiblePreviewRequestIdentity(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCompatiblePreviewRuntimeForReconcile()
+	t.Cleanup(resetCompatiblePreviewRuntimeForReconcile)
+	compatiblePreviewRequests.Lock()
+	compatiblePreviewRequests.tombstones[requestID] = compatiblePreviewRequestTombstone{
+		RequestID: requestID, ExpiresAt: time.Now().Add(-time.Hour), TombstoneExpiresAt: time.Now().Add(time.Hour), Reason: "request expired",
+	}
+	compatiblePreviewRequests.Unlock()
+
+	router := gin.New()
+	router.POST("/requests", AssetHandler{}.CreateCompatiblePreviewRequest)
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(string(body))))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("successful expired recreate status=%d body=%s", response.Code, response.Body.String())
+	}
+	entry, tombstone, ok := compatiblePreviewRequestLookup(requestID, time.Now())
+	if !ok || entry == nil || tombstone != nil {
+		t.Fatalf("successful recreate did not reactivate deterministic ID: entry=%v tombstone=%v ok=%v", entry != nil, tombstone != nil, ok)
+	}
+}
+
+func TestCompatiblePreviewArtifactStartupLoadIsBoundedToReferencedRows(t *testing.T) {
+	db := compatiblePreviewPersistenceDB(t)
+	if err := db.Create(&models.CompatiblePreviewArtifactRecord{ArtifactID: "referenced-artifact", State: string(compatiblePreviewArtifactReady)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < compatiblePreviewRequestMaxItems+25; index++ {
+		record := models.CompatiblePreviewArtifactRecord{ArtifactID: fmt.Sprintf("unreferenced-artifact-%d", index), State: string(compatiblePreviewArtifactReady)}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := compatiblePreviewArtifactRecordsByID(db, []models.CompatiblePreviewRequestRecord{{ArtifactID: "referenced-artifact"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("startup artifact recovery loaded %d rows, want only referenced row", len(records))
+	}
+	if _, ok := records["referenced-artifact"]; !ok {
+		t.Fatal("referenced artifact was not loaded")
 	}
 }
 

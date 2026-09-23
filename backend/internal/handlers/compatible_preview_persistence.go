@@ -411,13 +411,37 @@ func persistCompatiblePreviewArtifactGenerationStart(db *gorm.DB, descriptor *co
 	return token, version, nil
 }
 
-func persistCompatiblePreviewArtifactTransition(db *gorm.DB, artifactID, token string, version int64, state compatiblePreviewArtifactState, reason string, now time.Time) error {
+func persistCompatiblePreviewArtifactTransition(db *gorm.DB, artifactID, token string, version int64, state compatiblePreviewArtifactState, reason string, now time.Time) (bool, error) {
 	if db == nil || artifactID == "" || token == "" {
-		return nil
+		return true, nil
 	}
 	updates := map[string]any{"state": string(state), "recovery_reason": boundCompatiblePreviewRecoveryReason(reason), "updated_at": now, "last_used_at": now}
 	result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", artifactID, token, version).Updates(updates)
-	return result.Error
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func persistCompatiblePreviewGenerationCompletion(entry *compatiblePreviewArtifact, artifactID, token string, version int64, state compatiblePreviewArtifactState, reason string, now time.Time) (bool, error) {
+	var db *gorm.DB
+	if entry != nil {
+		entry.mu.Lock()
+		db = entry.persistenceDB
+		entry.mu.Unlock()
+	}
+	updated, err := persistCompatiblePreviewArtifactTransition(db, artifactID, token, version, state, reason, now)
+	if err != nil || !updated {
+		return updated, err
+	}
+	compatiblePreviewArtifacts.Lock()
+	runtimeOwner := entry != nil && compatiblePreviewArtifacts.items[artifactID] == entry
+	compatiblePreviewArtifacts.Unlock()
+	if !runtimeOwner {
+		return updated, nil
+	}
+	markCompatiblePreviewRequestsForArtifactRecovery(artifactID, state, reason)
+	return true, nil
 }
 
 func markCompatiblePreviewRequestsForArtifactRecovery(artifactID string, state compatiblePreviewArtifactState, reason string) {
@@ -466,13 +490,29 @@ func markCompatiblePreviewArtifactStaleForPath(db *gorm.DB, path, reason string)
 	}).Error
 }
 
-func compatiblePreviewArtifactRecordsByID(db *gorm.DB) (map[string]models.CompatiblePreviewArtifactRecord, error) {
+func compatiblePreviewArtifactRecordsByID(db *gorm.DB, requestRecords []models.CompatiblePreviewRequestRecord) (map[string]models.CompatiblePreviewArtifactRecord, error) {
 	result := make(map[string]models.CompatiblePreviewArtifactRecord)
 	if db == nil {
 		return result, nil
 	}
+	artifactIDs := make([]string, 0, len(requestRecords))
+	seen := make(map[string]struct{}, len(requestRecords))
+	for _, request := range requestRecords {
+		artifactID := strings.TrimSpace(request.ArtifactID)
+		if artifactID == "" {
+			continue
+		}
+		if _, exists := seen[artifactID]; exists {
+			continue
+		}
+		seen[artifactID] = struct{}{}
+		artifactIDs = append(artifactIDs, artifactID)
+	}
+	if len(artifactIDs) == 0 {
+		return result, nil
+	}
 	var records []models.CompatiblePreviewArtifactRecord
-	if err := db.Find(&records).Error; err != nil {
+	if err := db.Where("artifact_id IN ?", artifactIDs).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	for _, record := range records {
@@ -718,7 +758,7 @@ func ReconcileCompatiblePreviewPersistence(db *gorm.DB) error {
 	if err := db.Where("state = ? AND tombstone_expires_at > ?", compatiblePreviewRequestStateExpiredTombstone, now).Order("tombstone_expires_at ASC").Limit(compatiblePreviewTombstoneMaxItems).Find(&tombstoneRecords).Error; err != nil {
 		return err
 	}
-	artifactRecords, err := compatiblePreviewArtifactRecordsByID(db)
+	artifactRecords, err := compatiblePreviewArtifactRecordsByID(db, requestRecords)
 	if err != nil {
 		return err
 	}

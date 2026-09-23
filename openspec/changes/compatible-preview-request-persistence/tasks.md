@@ -14,7 +14,7 @@
 ## 3. Durable generation-attempt protection
 
 - [x] 3.1 Assign a new durable generation token/version before each artifact generation attempt, including replacement attempts for the same artifact ID; verify failed/canceled/interrupted attempt N remains terminal while explicit retry owns a distinct attempt N+1.
-- [x] 3.2 Make every generation-owned durable transition conditional on artifact ID plus expected generation token/version; verify with deterministic barriers/channels that a late completion from N cannot overwrite N+1, without relying on arbitrary sleeps.
+- [x] 3.2 Make every generation-owned durable transition conditional on artifact ID plus expected generation token/version, expose whether the transition still owns the attempt, and propagate request recovery only for a matching durable/runtime owner; verify with deterministic barriers/channels that a late completion from N cannot overwrite N+1 or poison its requests, without relying on arbitrary sleeps.
 - [x] 3.3 Retain #1 runtime entry-object identity checks, bounded cancellation handoff, atomic same-directory final publication, and non-joinable terminal replacement; verify the durable token supplements runtime protection rather than creating a second lifecycle engine.
 
 ## 4. Startup reconciliation and safe paths
@@ -42,11 +42,13 @@
 
 - [x] 7.1 Add backend tests using a persistent SQLite fixture and controlled preview root for ready reuse/no new encode, shared artifact reuse, complete-file promotion, missing/unsafe/zero-byte/partial artifacts, and bounded startup.
 - [x] 7.2 Add expired-vs-unknown tests: request expiration returns `410 expired` during tombstone retention, purge returns `404 unknown_request`, and POST creation of the same deterministic normalized request reactivates the ID with a fresh lifecycle.
-- [x] 7.3 Add deterministic generation-race tests where generation N becomes terminal/replaced, N+1 starts, and a late durable completion from N is rejected while N+1 remains intact; use channels/barriers or injected synchronization, never arbitrary sleeps.
+- [x] 7.3 Add deterministic generation-race tests where generation N becomes terminal/replaced, N+1 starts, and a late durable completion from N is rejected while N+1 remains intact and a request referencing the artifact is not marked by N; use channels/barriers or injected synchronization, never arbitrary sleeps.
 - [x] 7.4 Add frozen-relationship tests where ProfileID 7 resolves to artifact X, profile 7 changes, registries restart with unchanged source revision, and request R still restores X; then verify expiration plus explicit recreate may resolve current profile configuration to artifact Y.
 - [x] 7.5 Add source-revision tests where R references X/S1, the source changes to S2, restart/use returns stale without serving X, and explicit recreate may establish a current relationship.
 - [x] 7.6 Add backend lifecycle tests for interrupted, failed, canceled, explicit retry, shared references, cleanup races, and crash-window mismatches; verify each test exercises real request/artifact entry points rather than only helper determinism.
 - [x] 7.7 Add frontend tests for ready ID continuity, explicit interrupted/stale retry UI, expired/unknown reset behavior, recreate after expiration, and cancellation semantics; verify existing request URL and successful media contracts remain unchanged.
+- [x] 7.8 Add commit-on-success recreate regressions proving failed stale and expired recreates preserve their prior deterministic lifecycle response while successful recreate still installs a fresh active relationship.
+- [x] 7.9 Add a bounded artifact-load regression with more durable artifact rows than the active request bound, proving startup queries only artifacts referenced by the bounded recovery set.
 
 ## 8. Validation and handoff
 
