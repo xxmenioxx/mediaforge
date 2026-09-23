@@ -3065,23 +3065,23 @@ func TestConfirmLegacyPublicationReconciliationUpdatesJob(t *testing.T) {
 	}
 }
 
-func TestPreviewCacheKeyChangesWithSourceAndOptions(t *testing.T) {
+func TestCompatiblePreviewCanonicalIdentityChangesWithSourceAndOptions(t *testing.T) {
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "episode.mkv")
 	if err := os.WriteFile(mediaPath, []byte("first"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	firstInfo, _ := os.Stat(mediaPath)
-	first := previewCacheKey(mediaPath, firstInfo, []string{"-crf", "20"})
-	changedOption := previewCacheKey(mediaPath, firstInfo, []string{"-crf", "21"})
+	firstRevision, _ := sourceRevisionForPath(mediaPath)
+	first := compatiblePreviewEncodeSignature(&compatiblePreviewDescriptor{Path: mediaPath, SourceRevision: firstRevision, Args: []string{"-crf", "20"}})
+	changedOption := compatiblePreviewEncodeSignature(&compatiblePreviewDescriptor{Path: mediaPath, SourceRevision: firstRevision, Args: []string{"-crf", "21"}})
 	if first == changedOption {
 		t.Fatal("preview options must participate in cache identity")
 	}
 	if err := os.WriteFile(mediaPath, []byte("different source"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	secondInfo, _ := os.Stat(mediaPath)
-	if first == previewCacheKey(mediaPath, secondInfo, []string{"-crf", "20"}) {
+	secondRevision, _ := sourceRevisionForPath(mediaPath)
+	if first == compatiblePreviewEncodeSignature(&compatiblePreviewDescriptor{Path: mediaPath, SourceRevision: secondRevision, Args: []string{"-crf", "20"}}) {
 		t.Fatal("source size and modification time must participate in cache identity")
 	}
 }

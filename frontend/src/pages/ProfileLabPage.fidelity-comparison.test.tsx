@@ -112,4 +112,16 @@ describe('LAB fidelity comparison geometry', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/preview.mp4', expect.objectContaining({ credentials: 'omit' })));
     expect(screen.getByTestId('lab-comparison-video').getAttribute('crossorigin')).toBe('anonymous');
   });
+
+  it('does not fetch or build a media element before a request ID is available', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<VideoPreviewRequest label="Preview" />);
+
+    expect(screen.getByText('Waiting for a valid Compatible Preview request.')).toBeTruthy();
+    expect(screen.queryByTestId('lab-comparison-video')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

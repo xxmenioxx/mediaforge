@@ -24,7 +24,7 @@ describe('compatible preview request transport', () => {
   it('posts the complete large profile and returns bounded media URLs', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       requestId: 'a'.repeat(64),
-      cacheIdentity: 'a'.repeat(64),
+      cacheIdentity: 'b'.repeat(64),
       expiresInSeconds: 7200,
       path: '/media/raw/test.mkv',
     }), { status: 201, headers: { 'content-type': 'application/json' } }));
@@ -33,6 +33,8 @@ describe('compatible preview request transport', () => {
     expect(encodeURIComponent(JSON.stringify(options)).length).toBeGreaterThan(16_384);
 
     const created = await api.createCompatiblePreviewRequest(options);
+
+    expect(created.requestId).not.toBe(created.cacheIdentity);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -81,6 +83,20 @@ describe('compatible preview request transport', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/inspect`);
     expect(fetchMock.mock.calls[1][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/metrics`);
+  });
+
+  it('rejects empty request IDs before constructing resource URLs', () => {
+    expect(() => api.compatibleAssetPreviewUrl('')).toThrow(/requestId is required/);
+    expect(() => api.compatibleAssetFrameUrl('   ', 'output')).toThrow(/requestId is required/);
+    expect(() => api.inspectCompatibleAssetPreview('')).toThrow(/requestId is required/);
+  });
+
+  it('does not expose a request handle until creation returns a non-empty ID', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ requestId: ' ', cacheIdentity: 'artifact' }), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    })));
+    await expect(api.createCompatiblePreviewRequest({ path: '/media/raw/test.mkv' })).rejects.toThrow(/empty requestId/);
   });
 
   it('propagates AbortController signals through request creation and JSON fidelity calls', async () => {
