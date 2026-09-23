@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CompatiblePreviewOptions, ProfileInput } from './types';
-import { api, request } from './client';
+import { ApiRequestError, api, request } from './client';
+import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from './compatible-preview-recovery';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -65,6 +66,33 @@ describe('compatible preview request transport', () => {
 
     expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('omit');
     expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ 'X-Test': 'available' });
+  });
+
+  it('preserves machine-readable restart lifecycle errors', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: 'The preview was interrupted by a backend restart.',
+      code: 'interrupted',
+      state: 'interrupted',
+      reason: 'backend restarted while generation was active',
+      retryable: true,
+      recreate: true,
+    }), { status: 409, headers: { 'content-type': 'application/json' } })));
+
+    await expect(request('/api/assets/preview/compatible/requests/request/inspect')).rejects.toMatchObject({
+      status: 409,
+      code: 'interrupted',
+      state: 'interrupted',
+      retryable: true,
+      recreate: true,
+    } satisfies Partial<ApiRequestError>);
+  });
+
+  it('maps recovery states to recreate actions without treating them as timeouts', () => {
+    for (const code of ['interrupted', 'stale_artifact', 'expired', 'unknown_request', 'failed', 'canceled']) {
+      const error = new ApiRequestError(code, 409, { code, state: code, recreate: true });
+      expect(isCompatiblePreviewRecoveryError(error)).toBe(true);
+      expect(compatiblePreviewRecoveryMessage(error)).toMatch(/Recreate/);
+    }
   });
 
   it('rejects structured profiles on the legacy scalar compatible URL', () => {

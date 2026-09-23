@@ -4554,7 +4554,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func cleanupPreviewCache(directory string, maxAge time.Duration) {
+func cleanupPreviewCache(directory string, maxAge time.Duration, db *gorm.DB) {
 	cleanupCompatiblePreviewEphemeralArtifacts(directory, time.Now())
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -4567,7 +4567,7 @@ func cleanupPreviewCache(directory string, maxAge time.Duration) {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
-		if compatiblePreviewArtifactPathActive(path) {
+		if compatiblePreviewArtifactPathActive(path) || compatiblePreviewArtifactPathDurablyReferenced(db, path) {
 			continue
 		}
 		info, infoErr := entry.Info()
@@ -4575,6 +4575,7 @@ func cleanupPreviewCache(directory string, maxAge time.Duration) {
 			_ = os.Remove(path)
 			if strings.HasSuffix(path, ".mp4") {
 				_ = os.Remove(path + ".encoder.log")
+				markCompatiblePreviewArtifactStaleForPath(db, path, "preview cache cleanup removed the published artifact")
 			}
 		}
 	}
@@ -4592,7 +4593,7 @@ func cleanupPreviewCache(directory string, maxAge time.Duration) {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
-		if compatiblePreviewArtifactPathActive(path) {
+		if compatiblePreviewArtifactPathActive(path) || compatiblePreviewArtifactPathDurablyReferenced(db, path) {
 			continue
 		}
 		info, infoErr := entry.Info()
@@ -4615,7 +4616,7 @@ func cleanupPreviewCache(directory string, maxAge time.Duration) {
 		}
 		item := items[0]
 		items = items[1:]
-		if compatiblePreviewArtifactPathActive(item.path) {
+		if compatiblePreviewArtifactPathActive(item.path) || compatiblePreviewArtifactPathDurablyReferenced(db, item.path) {
 			continue
 		}
 		if info, statErr := os.Stat(item.path); statErr == nil {
@@ -4626,6 +4627,7 @@ func cleanupPreviewCache(directory string, maxAge time.Duration) {
 		}
 		_ = os.Remove(item.path)
 		_ = os.Remove(item.logPath)
+		markCompatiblePreviewArtifactStaleForPath(db, item.path, "preview cache cleanup exceeded the persistent cache bound")
 	}
 }
 

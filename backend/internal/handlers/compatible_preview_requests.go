@@ -15,6 +15,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
@@ -66,18 +67,35 @@ type compatiblePreviewRequest struct {
 }
 
 type compatiblePreviewRequestEntry struct {
-	mu         sync.RWMutex
-	prepareMu  sync.Mutex
-	Request    compatiblePreviewRequest
-	Descriptor *compatiblePreviewDescriptor
-	CreatedAt  time.Time
-	AccessedAt time.Time
+	mu                sync.RWMutex
+	prepareMu         sync.Mutex
+	Request           compatiblePreviewRequest
+	Descriptor        *compatiblePreviewDescriptor
+	CreatedAt         time.Time
+	AccessedAt        time.Time
+	ExpiresAt         time.Time
+	DurableAccessedAt time.Time
+	persistenceDB     *gorm.DB
+	recoveryState     string
+	recoveryReason    string
 }
 
 var compatiblePreviewRequests = struct {
 	sync.Mutex
-	items map[string]*compatiblePreviewRequestEntry
-}{items: map[string]*compatiblePreviewRequestEntry{}}
+	items      map[string]*compatiblePreviewRequestEntry
+	tombstones map[string]compatiblePreviewRequestTombstone
+}{items: map[string]*compatiblePreviewRequestEntry{}, tombstones: map[string]compatiblePreviewRequestTombstone{}}
+
+type compatiblePreviewPendingTombstone struct {
+	db        *gorm.DB
+	tombstone compatiblePreviewRequestTombstone
+}
+
+func persistCompatiblePreviewPendingTombstones(pending []compatiblePreviewPendingTombstone) {
+	for _, item := range pending {
+		persistCompatiblePreviewRequestTombstone(item.db, item.tombstone)
+	}
+}
 
 func normalizeCompatiblePreviewRequest(input compatiblePreviewRequest) (compatiblePreviewRequest, error) {
 	input.Path = strings.TrimSpace(input.Path)
@@ -150,25 +168,29 @@ func storeCompatiblePreviewRequest(input compatiblePreviewRequest, now time.Time
 		return "", input, err
 	}
 	compatiblePreviewRequests.Lock()
-	cleanupCompatiblePreviewRequestsLocked(now)
+	pending := cleanupCompatiblePreviewRequestsLocked(now)
 	entry, exists := compatiblePreviewRequests.items[id]
 	if !exists {
-		entry = &compatiblePreviewRequestEntry{Request: normalized, CreatedAt: now}
+		delete(compatiblePreviewRequests.tombstones, id)
+		entry = &compatiblePreviewRequestEntry{Request: normalized, CreatedAt: now, ExpiresAt: now.Add(compatiblePreviewRequestRetention)}
 		compatiblePreviewRequests.items[id] = entry
 	}
 	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewPendingTombstones(pending)
 
 	entry.mu.Lock()
 	if !exists {
 		entry.Request = normalized
 		entry.CreatedAt = now
+		entry.ExpiresAt = now.Add(compatiblePreviewRequestRetention)
 	}
 	entry.AccessedAt = now
 	entry.mu.Unlock()
-
 	compatiblePreviewRequests.Lock()
-	trimCompatiblePreviewRequestsLocked()
+	trimPending := trimCompatiblePreviewRequestsLocked()
 	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewPendingTombstones(trimPending)
+
 	return id, normalized, nil
 }
 
@@ -189,32 +211,61 @@ func loadCompatiblePreviewRequestEntry(id string, now time.Time) (*compatiblePre
 		return nil, false
 	}
 	compatiblePreviewRequests.Lock()
-	cleanupCompatiblePreviewRequestsLocked(now)
+	pending := cleanupCompatiblePreviewRequestsLocked(now)
 	entry, ok := compatiblePreviewRequests.items[id]
 	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewPendingTombstones(pending)
 	if !ok {
 		return nil, false
 	}
 	entry.mu.Lock()
+	if !entry.ExpiresAt.After(now) {
+		entry.mu.Unlock()
+		return nil, false
+	}
 	entry.AccessedAt = now
+	entry.ExpiresAt = now.Add(compatiblePreviewRequestRetention)
+	shouldTouch := entry.persistenceDB != nil && (entry.DurableAccessedAt.IsZero() || now.Sub(entry.DurableAccessedAt) >= compatiblePreviewDurableTouchInterval)
+	if shouldTouch {
+		entry.DurableAccessedAt = now
+	}
+	db := entry.persistenceDB
 	entry.mu.Unlock()
+	if shouldTouch {
+		persistCompatiblePreviewRequestTouch(db, id, now, now.Add(compatiblePreviewRequestRetention))
+	}
 	return entry, true
 }
 
-func cleanupCompatiblePreviewRequestsLocked(now time.Time) {
+func cleanupCompatiblePreviewRequestsLocked(now time.Time) []compatiblePreviewPendingTombstone {
+	var pending []compatiblePreviewPendingTombstone
 	for id, entry := range compatiblePreviewRequests.items {
 		entry.mu.RLock()
-		accessedAt := entry.AccessedAt
+		expiresAt := entry.ExpiresAt
+		if expiresAt.IsZero() {
+			expiresAt = entry.AccessedAt.Add(compatiblePreviewRequestRetention)
+		}
+		db := entry.persistenceDB
 		entry.mu.RUnlock()
-		if now.Sub(accessedAt) > compatiblePreviewRequestRetention {
+		if !expiresAt.After(now) {
 			delete(compatiblePreviewRequests.items, id)
+			tombstone := compatiblePreviewRequestTombstone{RequestID: id, ExpiresAt: expiresAt, TombstoneExpiresAt: now.Add(compatiblePreviewTombstoneRetention), Reason: "request expired"}
+			compatiblePreviewRequests.tombstones[id] = tombstone
+			pending = append(pending, compatiblePreviewPendingTombstone{db: db, tombstone: tombstone})
 		}
 	}
+	for id, tombstone := range compatiblePreviewRequests.tombstones {
+		if !tombstone.TombstoneExpiresAt.After(now) {
+			delete(compatiblePreviewRequests.tombstones, id)
+		}
+	}
+	return pending
 }
 
-func trimCompatiblePreviewRequestsLocked() {
+func trimCompatiblePreviewRequestsLocked() []compatiblePreviewPendingTombstone {
+	var pending []compatiblePreviewPendingTombstone
 	if len(compatiblePreviewRequests.items) <= compatiblePreviewRequestMaxItems {
-		return
+		return pending
 	}
 	type candidate struct {
 		id       string
@@ -229,8 +280,69 @@ func trimCompatiblePreviewRequestsLocked() {
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].accessed.Before(candidates[j].accessed) })
 	for _, item := range candidates[:len(candidates)-compatiblePreviewRequestMaxItems] {
-		delete(compatiblePreviewRequests.items, item.id)
+		if entry := compatiblePreviewRequests.items[item.id]; entry != nil {
+			entry.mu.RLock()
+			expiresAt := entry.ExpiresAt
+			db := entry.persistenceDB
+			entry.mu.RUnlock()
+			delete(compatiblePreviewRequests.items, item.id)
+			tombstone := compatiblePreviewRequestTombstone{RequestID: item.id, ExpiresAt: expiresAt, TombstoneExpiresAt: time.Now().Add(compatiblePreviewTombstoneRetention), Reason: "request retention bound reached"}
+			compatiblePreviewRequests.tombstones[item.id] = tombstone
+			pending = append(pending, compatiblePreviewPendingTombstone{db: db, tombstone: tombstone})
+		}
 	}
+	trimCompatiblePreviewTombstonesLocked()
+	return pending
+}
+
+func trimCompatiblePreviewTombstonesLocked() {
+	if len(compatiblePreviewRequests.tombstones) <= compatiblePreviewTombstoneMaxItems {
+		return
+	}
+	type candidate struct {
+		id      string
+		expires time.Time
+	}
+	candidates := make([]candidate, 0, len(compatiblePreviewRequests.tombstones))
+	for id, tombstone := range compatiblePreviewRequests.tombstones {
+		candidates = append(candidates, candidate{id: id, expires: tombstone.TombstoneExpiresAt})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].expires.Before(candidates[j].expires) })
+	for _, item := range candidates[:len(candidates)-compatiblePreviewTombstoneMaxItems] {
+		delete(compatiblePreviewRequests.tombstones, item.id)
+	}
+}
+
+func compatiblePreviewRequestLookup(id string, now time.Time) (*compatiblePreviewRequestEntry, *compatiblePreviewRequestTombstone, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil, false
+	}
+	compatiblePreviewRequests.Lock()
+	pending := cleanupCompatiblePreviewRequestsLocked(now)
+	entry := compatiblePreviewRequests.items[id]
+	tombstone, tombstoneOK := compatiblePreviewRequests.tombstones[id]
+	compatiblePreviewRequests.Unlock()
+	persistCompatiblePreviewPendingTombstones(pending)
+	if entry != nil {
+		entry.mu.Lock()
+		entry.AccessedAt = now
+		entry.ExpiresAt = now.Add(compatiblePreviewRequestRetention)
+		shouldTouch := entry.persistenceDB != nil && (entry.DurableAccessedAt.IsZero() || now.Sub(entry.DurableAccessedAt) >= compatiblePreviewDurableTouchInterval)
+		if shouldTouch {
+			entry.DurableAccessedAt = now
+		}
+		db := entry.persistenceDB
+		entry.mu.Unlock()
+		if shouldTouch {
+			persistCompatiblePreviewRequestTouch(db, id, now, now.Add(compatiblePreviewRequestRetention))
+		}
+		return entry, nil, true
+	}
+	if tombstoneOK {
+		return nil, &tombstone, true
+	}
+	return nil, nil, false
 }
 
 func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
@@ -250,6 +362,17 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request expired or was not found"})
 		return
 	}
+	entry.mu.Lock()
+	recreateRecovery := entry.recoveryState != ""
+	entry.persistenceDB = h.db
+	entry.recoveryState = ""
+	entry.recoveryReason = ""
+	if recreateRecovery {
+		entry.Descriptor = nil
+		entry.CreatedAt = time.Now()
+		entry.ExpiresAt = time.Now().Add(compatiblePreviewRequestRetention)
+	}
+	entry.mu.Unlock()
 	descriptor, err := h.compatiblePreviewDescriptorForEntry(entry, id)
 	if err != nil {
 		deleteCompatiblePreviewRequest(id, entry)
@@ -259,6 +382,12 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
+		return
+	}
+	descriptor.frozen = h.db != nil && descriptor.RetentionPolicy != compatiblePreviewEphemeralRetention
+	if err := persistCompatiblePreviewPreparedRequest(h.db, id, normalized, descriptor, time.Now()); err != nil {
+		deleteCompatiblePreviewRequest(id, entry)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "persist compatible preview request: " + err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
@@ -271,9 +400,20 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 
 func (h AssetHandler) compatiblePreviewRequest(c *gin.Context, operation string) {
 	requestID := strings.TrimSpace(c.Param("requestId"))
-	entry, ok := loadCompatiblePreviewRequestEntry(requestID, time.Now())
+	entry, tombstone, ok := compatiblePreviewRequestLookup(requestID, time.Now())
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request expired or was not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request is unknown", "code": "unknown_request", "state": "unknown"})
+		return
+	}
+	if tombstone != nil {
+		writeCompatiblePreviewError(c, compatiblePreviewLifecycleFailure(compatiblePreviewRequestStateExpiredTombstone, tombstone.Reason))
+		return
+	}
+	entry.mu.RLock()
+	recoveryState, recoveryReason := entry.recoveryState, entry.recoveryReason
+	entry.mu.RUnlock()
+	if recoveryState != "" {
+		writeCompatiblePreviewError(c, compatiblePreviewLifecycleFailure(recoveryState, recoveryReason))
 		return
 	}
 	descriptor, err := h.compatiblePreviewDescriptorForEntry(entry, requestID)
