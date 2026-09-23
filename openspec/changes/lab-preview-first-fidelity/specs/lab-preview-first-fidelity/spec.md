@@ -162,6 +162,16 @@ HEVC validation, frame-structure consumers, and comparison-frame generation.
 The result SHALL avoid copying large raw probes into every operation response;
 responses MAY expose bounded summaries and evidence references instead.
 
+Before reading a ready artifact file or deriving structured probe, frame,
+metric, or HEVC evidence from it, the operation SHALL acquire the existing #1
+serving/analysis consumer protection, or the canonical equivalent exposed by
+#1. It SHALL release that protection when the bounded evidence read completes,
+fails, or is canceled. This protection SHALL only prevent cleanup from racing
+an active read: it SHALL not create a second artifact lease, a generation
+consumer for completed media, a new generating state, or indefinite retention.
+Playback serving protection and Fidelity analysis protection for the same ready
+artifact SHALL be independent.
+
 #### Scenario: Multiple consumers reuse one artifact probe
 
 - **WHEN** inspection, metrics preparation, and canonical Fidelity consume one
@@ -183,6 +193,29 @@ responses MAY expose bounded summaries and evidence references instead.
   bitstream evidence from `trace_headers`
 - **THEN** the operation SHALL retain that specialized evidence as a separate
   source and SHALL not claim that generic ffprobe stream metadata replaced it
+
+#### Scenario: Primary evidence protection prevents cleanup races
+
+- **WHEN** the primary artifact is Ready, Fidelity acquires its analysis
+  protection, and artifact cleanup runs during the bounded evidence read
+- **THEN** the artifact SHALL remain available for that read; after the
+  protection is released, later cleanup SHALL be allowed to apply its normal
+  #1/#14 retention policy
+
+#### Scenario: Cancellation releases analysis protection
+
+- **WHEN** Fidelity is canceled while a primary or additional artifact evidence
+  read holds the LAB analysis protection
+- **THEN** the operation SHALL release that protection, SHALL not force artifact
+  deletion, and SHALL leave the already-ready primary Preview usable
+
+#### Scenario: Shared playback and Fidelity protections are independent
+
+- **WHEN** playback holds a serving protection and Fidelity holds an analysis
+  protection for the same ready artifact
+- **THEN** Fidelity completion or cancellation SHALL release only its own
+  protection and playback SHALL remain valid under its independent #1
+  protection
 
 ### Requirement: LAB SHALL consume canonical #3 Frame Fidelity semantics
 
@@ -370,29 +403,50 @@ invalidate it.
 
 ### Requirement: The #15 integration SHALL be an adapter, not a duplicate lifecycle
 
-The LAB orchestration SHALL depend on a thin `ensure primary Compatible Preview
-ready` abstraction. On the current main branch it SHALL be implementable using
-the existing registered request/resource behavior. When #15 provides its
-ready/generating/status/lease contract, the adapter MAY use that contract for
-bounded polling and native ready media without changing LAB operation states.
+The LAB orchestration SHALL own only primary readiness, the Preview Ready
+boundary, and Fidelity operation orchestration. It SHALL depend on a thin
+`ensure primary Compatible Preview ready` abstraction. On the current main
+branch it SHALL be implementable using the existing registered request/resource
+behavior and, after the primary artifact is valid, SHALL leave Sample B on the
+existing Compatible Preview playback transport.
+
+#15 SHALL own Compatible Preview transport/status evolution, including the
+generating/status/lease lifecycle, native ready-media URLs, Range/seek
+behavior, browser credential and Cookie policy including #13 interaction, and
+native readiness-race recovery. When #15 provides its ready/generating/status/
+lease contract, the #19 adapter MAY consume that contract and its native
+ready-media behavior without changing LAB operation states.
 
 LAB SHALL not add a second preview lease, generic preview status engine,
-timeout policy, or x265-specific lifecycle. Preview generation failures,
-recovery, and shared ownership SHALL remain delegated to #1, #14, and #15's
-eventual contract.
+timeout policy, transport policy, `credentials: omit` policy, Cookie policy,
+Range/seek policy, readiness-race recovery, or x265-specific lifecycle. A
+`VideoPreviewRequest` transport change SHALL not be a #19 task unless it is
+already provided by merged #15. Preview generation failures, recovery, and
+shared ownership SHALL remain delegated to #1, #14, and #15's contract.
 
 #### Scenario: Current main can run before #15 lands
 
 - **WHEN** the application has #1/#14 but not #15's status helpers
-- **THEN** Process Video SHALL still reach primary Preview Ready through the
-  adapter and start backend Fidelity without requiring #15 implementation
+- **THEN** Process Video SHALL wait for the primary artifact using the existing
+  Compatible Preview behavior, mark Sample B Preview Ready, retain the current
+  playback transport, and start backend Fidelity without requiring #15
+  implementation
 
-#### Scenario: #15 can replace the adapter implementation
+#### Scenario: #15 can replace the readiness/media adapter implementation
 
 - **WHEN** #15 is available and reports generating followed by ready
-- **THEN** LAB SHALL consume those states through the thin adapter, preserve
-  the same primary artifact and Fidelity operation identity, and SHALL not
-  create another preview lifecycle
+- **THEN** LAB SHALL consume those states and the native ready-media contract
+  through the thin adapter, preserve the same primary artifact and Fidelity
+  operation identity, and SHALL not create another preview lifecycle or
+  duplicate #15's readiness-race recovery
+
+#### Scenario: #19 does not redefine Compatible Preview transport
+
+- **WHEN** #19 is implemented before #15 or alongside a main branch that does
+  not yet contain #15
+- **THEN** #19 SHALL not change `VideoPreviewRequest`, Blob/native transport,
+  `credentials: omit`, Cookie behavior, #13 isolation, Range/seek behavior,
+  or native readiness-race handling; those changes SHALL remain outside #19
 
 ### Requirement: Failure classification SHALL preserve preview usability
 

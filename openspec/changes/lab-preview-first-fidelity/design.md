@@ -56,9 +56,11 @@ shared structured evidence bundle spanning inspect and metrics.
   Level/Tier. The current evaluator is exposed internally through a Queue
   authority adapter; LAB needs a compatible-preview authority adapter, not a
   second comparison algorithm.
-- #15 is not required on this branch. Its intended registered Compatible
-  Preview status/lease contract is a future adapter input, not a second LAB
-  lifecycle.
+- #15 owns Compatible Preview transport/status evolution: generating/status/
+  lease lifecycle, native ready-media URLs, Range/seek behavior, browser
+  credential and Cookie policy including #13 interaction, and native
+  readiness-race recovery. #15 is not required on this branch; its contract
+  is a future adapter input, not a second LAB lifecycle.
 
 ## Goals / Non-Goals
 
@@ -70,7 +72,9 @@ shared structured evidence bundle spanning inspect and metrics.
   progress, cancellation, retry, and partial-result behavior.
 - Reuse #1/#14 identities and a bounded evidence view so playback, inspection,
   metrics, canonical validation, and frames do not create duplicate encodes or
-  probes where the evidence is equivalent.
+  probes where the evidence is equivalent. While evidence is being read,
+  acquire and release the existing #1 serving/analysis artifact protection;
+  #19 does not create another lease or retention mechanism.
 - Preserve visual thresholds and make canonical #3 mismatches authoritative
   and visible.
 - Protect the NAS with sequential per-operation windows and one global
@@ -82,6 +86,9 @@ shared structured evidence bundle spanning inspect and metrics.
   operation framework.
 - No replacement of #1/#14 request, artifact, lease, cache, publication, or
   persistence ownership.
+- No Compatible Preview transport/status policy. #19 does not redefine
+  `VideoPreviewRequest`, Blob/native media transport, credentials, Cookie,
+  Range/seek, #13 isolation, or readiness-race recovery; those belong to #15.
 - No live-operation persistence or process-resume behavior in v1.
 - No changes to visual thresholds, encoder policy, cadence/GOP policy, or
   specialized #3 resolvers.
@@ -96,13 +103,18 @@ the selected asset, `Start`, `Seconds`, normalization, and effective video
 plan. A thin adapter named conceptually `ensureCompatiblePreviewReady` will
 wait for the artifact to become ready.
 
-The adapter has two implementations over time:
+The adapter has two implementations over time, while keeping transport
+ownership outside #19:
 
 - On this branch's current main, it uses the existing registered video
   resource behavior, whose request context waits for #1's artifact generation.
-- After #15 lands, it can start or join the registered preview lease and poll
-  the ready/generating status contract at a practical cadence. It must not
-  copy #15's timeout, lease, or status state machine into LAB.
+  Once the primary artifact is ready, Sample B is marked Preview Ready and
+  continues using the existing Compatible Preview playback transport,
+  including the current `VideoPreviewRequest` behavior.
+- After #15 lands, the adapter can consume its ready/generating/status/lease
+  contract and native ready-media behavior at a practical cadence. It must not
+  copy #15's timeout, lease, status, credentials, Cookie, Range/seek, or
+  readiness-race policy into LAB.
 
 Only after the primary artifact is ready does the frontend mark Sample B
 Ready. It then submits the primary request ID to the LAB operation API without
@@ -110,11 +122,13 @@ awaiting that POST for playback. Primary evidence and all additional windows
 run after that boundary. Source/reference preview preparation may happen in
 parallel and is not allowed to delay Sample B readiness.
 
-The ready media element should attach the registered artifact URL only after
-readiness is known, preserving native media streaming and Range behavior. The
-existing Blob-fetch behavior in `VideoPreviewRequest` is therefore an
-implementation target for the adapter/media handoff, not a new Fidelity
-transport contract.
+Before #15 is merged, #19 does not change the playback transport: the ready
+primary request continues through the existing Compatible Preview/
+`VideoPreviewRequest` abstraction. After #15 is merged, the same adapter may
+consume its native ready-media contract. In neither case does #19 redefine
+Blob/native transport, `credentials: omit`, Cookie behavior, Range/seek
+behavior, or native readiness-race recovery. A `VideoPreviewRequest` transport
+change is outside this change unless it is already supplied by merged #15.
 
 ### 2. Use a bounded process-local LAB Fidelity operation
 
@@ -241,6 +255,17 @@ source/normalization identity. The provider is process-local and bounded in v1;
 it may use the durable #1/#14 artifact encoder evidence as an input. It is not
 a second artifact cache and does not change artifact publication or retention.
 
+Before reading any ready artifact file, structured probe, extracted frame,
+metric input, or HEVC trace evidence, the provider acquires the existing #1
+serving/analysis consumer protection, or the canonical equivalent exposed by
+#1. The bounded evidence work then runs and releases that protection in a
+`defer`-equivalent cleanup path, including cancellation and failure. This is
+artifact use protection only: it does not create another artifact lease, turn
+a ready artifact back into `generating`, create a generation consumer for
+completed media, or extend retention indefinitely. Playback and Fidelity may
+hold independent protections for the same ready artifact; releasing the LAB
+protection cannot invalidate playback or another #1 consumer.
+
 Evidence sharing boundaries are explicit:
 
 | Evidence | Reusable by | Not a replacement for |
@@ -316,11 +341,14 @@ fan-out.
 
 ### 8. Define cancellation, retry, and restart behavior
 
-The operation owns its context and any #1 consumer/lease references for
-additional resources. Cancel calls the operation cancel function and releases
-only those references. It never cancels the primary ready artifact and never
-unconditionally stops a shared #1 generation. Terminal snapshots remain
-observable until operation cleanup.
+The operation owns its context and any #1 consumer/analysis protections it
+acquired for evidence reads. Cancel calls the operation cancel function and
+releases only those LAB-owned protections and other operation-owned work. It
+never cancels the primary ready artifact, turns it back into `generating`, or
+unconditionally stops a shared #1 generation. Playback serving protection and
+Fidelity analysis protection are independent: completion or cancellation of
+one cannot invalidate the other. Terminal snapshots remain observable until
+operation cleanup.
 
 Retry creates a new process-local operation for the same material signature,
 or uses an explicit retry action if that matches repository conventions. It
@@ -363,8 +391,14 @@ Fidelity: idle | running | completed | failed | canceled
 After primary readiness it starts/polls the LAB operation at a practical
 non-aggressive cadence (for example, roughly two seconds while running),
 stopping on terminal state or not-found. If #15 supplies a shared polling
-helper, the compatible-preview part uses it; LAB does not create a generic
-preview polling engine.
+helper, the primary-ready adapter may consume it; LAB does not create a
+generic preview polling engine or duplicate #15's readiness-race recovery.
+
+On pre-#15 main, the adapter marks Sample B Ready after the primary artifact
+is valid and leaves playback on the existing Compatible Preview transport. On
+post-#15 main, it consumes #15's ready/native-media contract. This handoff does
+not change LAB operation states and does not make `VideoPreviewRequest`,
+credentials, Cookie, Range/seek, or native transport policy a #19 concern.
 
 The UI shows `Sample B: Ready` independently from `Frame Fidelity: Analyzing
 window X of Y`, exposes completed windows incrementally, and provides cancel
@@ -400,7 +434,7 @@ expected heavy calls, not measured wall-clock savings:
 | Frame structure probe | Included in each `inspect` response/window | One bounded evidence result per artifact/window, reused by consumers |
 | HEVC bitstream probe | `trace_headers` in each HEVC `inspect` | Separate cached specialized evidence per artifact generation |
 | SSIM/PSNR | One metrics call per policy window, with its own probes and comparisons | One metric result per source identity + artifact + normalization; no tab recomputation |
-| Comparison frames | On-demand frame endpoint extraction from request IDs; no encode, but no LAB evidence ownership | Read-only artifact/evidence references, with bounded frame caching where safe |
+| Comparison frames | On-demand frame endpoint extraction from request IDs; no encode, but no LAB evidence ownership | Read-only artifact/evidence references, with bounded frame caching where safe and #1 analysis protection during extraction |
 
 The table intentionally avoids savings percentages. Implementation tests must
 count generation/probe/metric provider calls and prove the invariants instead.
@@ -421,6 +455,9 @@ Required deterministic cases:
 | Primary deduplication | Selected interval equivalent to a policy interval yields one primary observation and no duplicate request generation |
 | Evidence reuse | One artifact/generation causes one shareable structured probe and one metrics result for repeated consumers |
 | Specialized evidence | HEVC trace/header provider is called separately from generic ffprobe evidence |
+| Evidence protection | Active primary/additional evidence reads hold #1 analysis/serving protection; release permits normal later cleanup |
+| Cleanup race | Cleanup cannot remove a ready artifact while the LAB evidence protection is held; later cleanup remains under #1/#14 |
+| Shared consumers | Independent playback and Fidelity protections coexist; releasing Fidelity does not invalidate playback |
 | Cancellation | Cancel after primary readiness leaves the primary playable and marks only Fidelity canceled |
 | Retry | Retry reuses primary and completed valid additional artifacts; no primary generation call occurs |
 | Signature safety | Late operation A cannot update UI state for current signature B |
@@ -451,10 +488,15 @@ Required deterministic cases:
 - [Risk] Canonical #3 authority is currently Queue-shaped. → Extract or adapt
   the evaluator input without changing Queue precedence or creating a LAB
   policy resolver; add exact field-level tests before wiring the UI.
-- [Risk] Native playback attachment and status polling could regress browser
-  compatibility. → Attach media only after ready, preserve the registered
-  request URL and Range behavior, and retain the current adapter as a fallback
-  until #15 is available.
+- [Risk] #19 could accidentally absorb Compatible Preview transport policy while
+  making Sample B ready. → Keep the pre-#15 existing playback transport
+  unchanged, and let post-#15 behavior come only through a thin adapter. #15
+  owns native URLs, Range/seek, credentials/Cookie, #13 isolation, status/
+  lease lifecycle, and readiness-race recovery.
+- [Risk] Cleanup could delete a ready artifact during evidence extraction. →
+  Acquire the existing #1 serving/analysis protection for every bounded
+  evidence read and release it on completion, failure, or cancellation; do not
+  add a second lease or indefinite retention policy.
 - [Risk] Partial metrics can be mistaken for a final verdict. → Keep explicit
   `analysis_in_progress`/uncomparable states and disable final Safe until every
   required window is terminal and canonical evidence is authoritative.
@@ -466,11 +508,17 @@ Required deterministic cases:
    unchanged.
 2. Add the primary-ready adapter and frontend independent state model. Keep the
    existing Process Video entry point but change it to start the primary path,
-   then fire the bounded Fidelity operation after readiness.
+   then fire the bounded Fidelity operation after readiness. Before #15 is
+   merged, preserve the existing Compatible Preview playback transport; if
+   #15 merges first, base/rebase the implementation branch onto that main and
+   consume #15's ready/native-media contract through the adapter without
+   duplicating its lifecycle.
 3. Switch Frame/Characteristics/Warnings consumers to operation snapshots and
    evidence references; preserve visual metric labels and thresholds.
-4. Add deterministic backend/frontend tests, run focused checks, and then run
-   `./scripts/verify.sh --auto` during the later implementation phase.
+4. Add deterministic backend/frontend tests, including artifact cleanup races,
+   cancellation release, and independent playback/Fidelity protections; run
+   focused checks, and then run `./scripts/verify.sh --auto` during the later
+   implementation phase.
 
 Rollback is a code rollback of the LAB operation/UI integration. It does not
 delete Compatible Preview artifacts or #14 records; existing artifact cleanup
