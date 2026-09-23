@@ -3094,7 +3094,7 @@ function AssetRow({
   }
 
   function saveConversionOverrides() {
-    if (!assetEditDirty || saveAssetEdit.isPending) return;
+    if (!assetEditDirty || saveAssetEdit.isPending || renameAsset.isPending) return;
     saveAssetEdit.mutate(assetEditDraft);
   }
 
@@ -4244,8 +4244,9 @@ async function generateExternalSubtitle(
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
                           <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ renameLocked || asset.missing || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
+                            || saveAssetEdit.isPending
                           }>Rename</Button>
                         </Stack>
                       </Grid>
@@ -4378,7 +4379,7 @@ async function generateExternalSubtitle(
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
-                        saving={saveAssetEdit.isPending}
+                        saving={saveAssetEdit.isPending || renameAsset.isPending}
                         readOnly={isConverted || hasOpenJob}
                       />
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}

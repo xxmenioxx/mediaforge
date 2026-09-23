@@ -37,6 +37,7 @@ func newAssetEditTestServer(t *testing.T) (*gorm.DB, *gin.Engine, string) {
 	router.POST("/api/assets/edit", handler.Edit)
 	router.POST("/api/assets/metadata", handler.UpdateMetadata)
 	router.POST("/api/assets/conversion", handler.UpdateConversion)
+	router.POST("/api/assets/rename", handler.Rename)
 	return db, router, root
 }
 
@@ -218,6 +219,100 @@ func TestAssetEditConcurrentDifferentAssetsPreservesBothEntries(t *testing.T) {
 	}
 	if len(conversion[filepath.Clean(pathA)].KeepAudioStreams) != 1 || len(conversion[filepath.Clean(pathB)].KeepAudioStreams) != 1 {
 		t.Fatalf("concurrent conversion entries lost: %#v", conversion)
+	}
+}
+
+func TestAssetEditSerializesWithRenameOverrideMigration(t *testing.T) {
+	db, router, root := newAssetEditTestServer(t)
+	oldPath := filepath.Join(root, "movie.mkv")
+	otherPath := filepath.Join(root, "other.mkv")
+	writeTestFile(t, oldPath, "media")
+	writeTestFile(t, otherPath, "other")
+	if err := db.Create(&models.AssetRecord{
+		Path: oldPath, RootPath: root, RelativePath: "movie.mkv", FileName: "movie.mkv",
+		Status: "unprocessed", LibraryID: 1, LibraryName: "Test",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetMetadataOverrides(db, map[string]AssetMetadataState{
+		filepath.Clean(oldPath):   {Categories: []string{"Before"}},
+		filepath.Clean(otherPath): {Categories: []string{"Other"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		filepath.Clean(oldPath):   {KeepAudioStreams: []int{1}},
+		filepath.Clean(otherPath): {KeepAudioStreams: []int{2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	callbackName := "asset-edit-rename-barrier"
+	if err := db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Table != "app_settings" {
+			return
+		}
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Update().Remove(callbackName)
+
+	compoundDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		compoundDone <- assetEditRequest(t, router, oldPath, AssetEditInput{
+			Metadata:   AssetMetadataUpdateInput{Categories: []string{"After"}},
+			Conversion: AssetConversionUpdateInput{KeepAudioStreams: []int{3}},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("compound save did not reach the deterministic AppSetting barrier")
+	}
+
+	renameDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", bytes.NewBufferString(`{"path":"`+oldPath+`","fileName":"renamed.mkv"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		renameDone <- response
+	}()
+	close(release)
+
+	compoundResponse := <-compoundDone
+	renameResponse := <-renameDone
+	if compoundResponse.Code != http.StatusOK {
+		t.Fatalf("compound save status=%d body=%s", compoundResponse.Code, compoundResponse.Body.String())
+	}
+	if renameResponse.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameResponse.Code, renameResponse.Body.String())
+	}
+
+	newPath := filepath.Join(root, "renamed.mkv")
+	metadata := assetMetadataOverrides(db)
+	conversion := assetConversionOverrides(db)
+	if got := metadata[filepath.Clean(newPath)]; len(got.Categories) != 1 || got.Categories[0] != "After" {
+		t.Fatalf("compound metadata was not migrated: %#v", metadata)
+	}
+	if got := conversion[filepath.Clean(newPath)]; len(got.KeepAudioStreams) != 1 || got.KeepAudioStreams[0] != 3 {
+		t.Fatalf("compound conversion was not migrated: %#v", conversion)
+	}
+	if metadata[filepath.Clean(otherPath)].Categories[0] != "Other" || conversion[filepath.Clean(otherPath)].KeepAudioStreams[0] != 2 {
+		t.Fatalf("unrelated override entry was lost: metadata=%#v conversion=%#v", metadata, conversion)
+	}
+	if _, exists := metadata[filepath.Clean(oldPath)]; exists {
+		t.Fatalf("old metadata path remained after rename: %#v", metadata)
+	}
+	if _, exists := conversion[filepath.Clean(oldPath)]; exists {
+		t.Fatalf("old conversion path remained after rename: %#v", conversion)
 	}
 }
 

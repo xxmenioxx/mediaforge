@@ -1201,8 +1201,10 @@ func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
 			_ = moveFile(completed[index].to, completed[index].from)
 		}
 	}
+	assetOverrideMutationMu.Lock()
 	for _, move := range moves {
 		if err := moveFile(move.from, move.to); err != nil {
+			assetOverrideMutationMu.Unlock()
 			rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "return to Raw failed and rollback was attempted: " + err.Error()})
 			return
@@ -1226,10 +1228,12 @@ func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
 		return returnDirectPublicationOverrides(tx, path, restorePath)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was moved but registration failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	var library models.Library
 	if err := h.db.First(&library, publication.LibraryID).Error; err == nil && pathIsInside(filepath.Dir(path), library.DestinationPath) {
 		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), library.DestinationPath); err != nil {
@@ -1612,13 +1616,16 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		}
 		fingerprints[record.Path] = fingerprint
 	}
+	assetOverrideMutationMu.Lock()
 	movedPaths, rollbackMove, err := mergeAssetDirectory(sourcePath, destinationPath)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "direct publication failed: " + err.Error()})
 		return
 	}
 	publishedPaths, rollbackNames, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, publishing, library, movedPaths)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollbackMove()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "episode naming failed and publication was rolled back: " + err.Error()})
 		return
@@ -1650,10 +1657,12 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		return resetDirectPublicationOverrides(tx, publishing, sourcePath, destinationPath, publishedPaths)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "files were moved but registration failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	if _, err := h.syncAssetInventory(); err != nil {
 		appendSystemLog(h.db, "direct_publication_inventory_sync_failed", map[string]string{"destinationPath": destinationPath}, err)
 	}
@@ -2384,14 +2393,17 @@ func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Lock()
 	rollback, err := applyLibraryRenamePlan(plan, library, os.Rename)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		return reconcileLibraryRenameState(tx, plan, library)
 	}); err != nil {
+		assetOverrideMutationMu.Unlock()
 		if rollbackErr := rollback(); rollbackErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("reconcile renamed Library state: %v; filesystem rollback failed: %v", err, rollbackErr)})
 			return
@@ -2399,6 +2411,7 @@ func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reconcile renamed Library state: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	if filepath.Clean(plan.SourcePath) != filepath.Clean(plan.TargetPath) {
 		_ = os.Remove(plan.SourcePath)
 	}
@@ -2497,7 +2510,9 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 		return
 	}
 
+	assetOverrideMutationMu.Lock()
 	if err := moveAssetDirectory(sourcePath, destinationPath); err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "path migration failed: " + err.Error()})
 		return
 	}
@@ -2550,10 +2565,12 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 		return migrateAssetPathOverrides(tx, sourcePath, destinationPath)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "path was moved but inventory update failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 
 	appendSystemLog(h.db, "asset_path_migrated", map[string]string{
 		"sourcePath": sourcePath, "destinationPath": destinationPath,
@@ -2603,6 +2620,7 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 	}
 	oldPath := filepath.Clean(job.PublishedPath)
 	staleRecordsRemoved := int64(0)
+	assetOverrideMutationMu.Lock()
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		job.PublishedPath = candidatePath
 		job.LibraryID = record.LibraryID
@@ -2627,9 +2645,11 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 		delete(reviews, candidatePath)
 		return saveAssetReviewOverrides(tx, reviews)
 	}); err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{
 		"status": "reconciled", "jobId": job.ID, "oldPath": oldPath,
 		"publishedPath": candidatePath, "staleRecordsRemoved": staleRecordsRemoved,
@@ -3327,8 +3347,10 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Lock()
 	rollback, err := applyLibraryRenamePlan(plan, manualRenameLibrary, os.Rename)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "rename asset: " + err.Error()})
 		return
 	}
@@ -3398,6 +3420,7 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
+		assetOverrideMutationMu.Unlock()
 		if rollbackErr := rollback(); rollbackErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("update renamed asset: %v; filesystem rollback failed: %v", err, rollbackErr)})
 			return
@@ -3405,6 +3428,7 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update renamed asset: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
 }
 
@@ -5551,6 +5575,8 @@ func activeTestEncodePaths(db *gorm.DB) map[string]bool {
 }
 
 func backfillInheritedAssetCategories(db *gorm.DB) error {
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	var records []models.AssetRecord
 	if err := db.Where("missing = ?", false).Find(&records).Error; err != nil {
 		return err
@@ -5688,7 +5714,8 @@ func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord)
 		if len(matches) == 1 && job.PublishedFingerprint != "" && mode == "exact" {
 			match := matches[0]
 			oldPath := filepath.Clean(job.PublishedPath)
-			if err := db.Transaction(func(tx *gorm.DB) error {
+			assetOverrideMutationMu.Lock()
+			err := db.Transaction(func(tx *gorm.DB) error {
 				job.PublishedPath = match.Path
 				job.LibraryID = match.LibraryID
 				job.Notes = appendNote(job.Notes, "Sync reconciled externally relocated converted asset: "+oldPath+" -> "+match.Path)
@@ -5696,7 +5723,9 @@ func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord)
 					return err
 				}
 				return migrateSingleAssetPathOverrides(tx, oldPath, match.Path)
-			}); err != nil {
+			})
+			assetOverrideMutationMu.Unlock()
+			if err != nil {
 				return reconciled, reviewMatches, err
 			}
 			claimed[filepath.Clean(match.Path)] = true
@@ -6585,6 +6614,8 @@ func resetRecoveredAssetOverrides(db *gorm.DB, paths ...string) error {
 		return nil
 	}
 
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	return db.Transaction(func(tx *gorm.DB) error {
 		conversion := assetConversionOverrides(tx)
 		conversionChanged := false
