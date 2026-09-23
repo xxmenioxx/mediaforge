@@ -679,6 +679,17 @@ func artifactIDFromDestination(destination string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
+func newCompatiblePreviewArtifactEntry(descriptor *compatiblePreviewDescriptor, now time.Time, state compatiblePreviewArtifactState) *compatiblePreviewArtifact {
+	entry := &compatiblePreviewArtifact{done: make(chan struct{}), state: state, destination: descriptor.CachePath, logPath: descriptor.CachePath + ".encoder.log", retentionPolicy: descriptor.RetentionPolicy, scopeExpiresAt: now.Add(compatiblePreviewRequestRetention), lastUsedAt: now}
+	if state == compatiblePreviewArtifactGenerating {
+		entry.ctx, entry.cancel = context.WithCancel(context.Background())
+		entry.waiters = 1
+	} else if state == compatiblePreviewArtifactReady {
+		close(entry.done)
+	}
+	return entry
+}
+
 func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatiblePreviewDescriptor) (bool, *compatiblePreviewArtifactLease, error) {
 	if descriptor == nil {
 		return false, nil, fmt.Errorf("compatible preview descriptor is required")
@@ -689,36 +700,65 @@ func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatibl
 		compatiblePreviewArtifacts.Lock()
 		entry := compatiblePreviewArtifacts.items[descriptor.ArtifactID]
 		if entry == nil {
-			entry = &compatiblePreviewArtifact{done: make(chan struct{}), state: compatiblePreviewArtifactReady, destination: destination, logPath: destination + ".encoder.log", retentionPolicy: descriptor.RetentionPolicy, scopeExpiresAt: now.Add(compatiblePreviewRequestRetention), lastUsedAt: now}
-			close(entry.done)
+			entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
 			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+			entry.mu.Lock()
+		} else {
+			entry.mu.Lock()
+			if entry.state == compatiblePreviewArtifactCanceled || entry.state == compatiblePreviewArtifactFailed {
+				entry.mu.Unlock()
+				entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
+				compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+				entry.mu.Lock()
+			}
 		}
-		compatiblePreviewArtifacts.Unlock()
-		entry.mu.Lock()
 		entry.waiters++
 		entry.lastUsedAt = now
 		entry.mu.Unlock()
+		compatiblePreviewArtifacts.Unlock()
 		return true, &compatiblePreviewArtifactLease{entry: entry}, nil
 	}
 
 	compatiblePreviewArtifacts.Lock()
 	entry := compatiblePreviewArtifacts.items[descriptor.ArtifactID]
+	startGeneration := false
 	if entry == nil {
-		generationCtx, cancel := context.WithCancel(context.Background())
-		entry = &compatiblePreviewArtifact{done: make(chan struct{}), ctx: generationCtx, cancel: cancel, state: compatiblePreviewArtifactGenerating, waiters: 1, destination: destination, logPath: destination + ".encoder.log", retentionPolicy: descriptor.RetentionPolicy, scopeExpiresAt: now.Add(compatiblePreviewRequestRetention), lastUsedAt: now}
+		entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactGenerating)
 		compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
-		compatiblePreviewArtifacts.Unlock()
-		go runCompatiblePreviewGeneration(entry, descriptor.Args)
+		startGeneration = true
 	} else {
-		compatiblePreviewArtifacts.Unlock()
 		entry.mu.Lock()
-		if entry.cancelTimer != nil {
-			entry.cancelTimer.Stop()
-			entry.cancelTimer = nil
+		switch entry.state {
+		case compatiblePreviewArtifactGenerating:
+			if entry.cancelTimer != nil {
+				entry.cancelTimer.Stop()
+				entry.cancelTimer = nil
+			}
+			entry.waiters++
+			entry.lastUsedAt = now
+			entry.mu.Unlock()
+		case compatiblePreviewArtifactReady:
+			// The published-file check above failed, so a ready entry is stale.
+			entry.mu.Unlock()
+			entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactGenerating)
+			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+			startGeneration = true
+		case compatiblePreviewArtifactCanceled, compatiblePreviewArtifactFailed, compatiblePreviewArtifactAbsent:
+			// Terminal non-ready entries must never accept a new consumer.
+			entry.mu.Unlock()
+			entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactGenerating)
+			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+			startGeneration = true
+		default:
+			entry.mu.Unlock()
+			entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactGenerating)
+			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+			startGeneration = true
 		}
-		entry.waiters++
-		entry.lastUsedAt = now
-		entry.mu.Unlock()
+	}
+	compatiblePreviewArtifacts.Unlock()
+	if startGeneration {
+		go runCompatiblePreviewGeneration(entry, descriptor.Args)
 	}
 
 	select {
