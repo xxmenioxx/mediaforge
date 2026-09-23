@@ -14,8 +14,18 @@ import (
 // fidelityExpectation is the frozen contract for one observable output field.
 // value is deliberately separate from the raw working/command representation:
 // hardware encoders often expose a different spelling after decode.
+type fidelityAuthorityState string
+
+const (
+	fidelityAuthorityTransform     fidelityAuthorityState = "transform"
+	fidelityAuthorityPreserve      fidelityAuthorityState = "preserve"
+	fidelityAuthorityUnresolved    fidelityAuthorityState = "unresolved"
+	fidelityAuthorityNotApplicable fidelityAuthorityState = "not_applicable"
+)
+
 type fidelityExpectation struct {
 	value       any
+	state       fidelityAuthorityState
 	authority   string
 	reason      string
 	applicable  bool
@@ -268,11 +278,15 @@ func frozenFidelityExecutionPlan(profile models.Profile) models.JSONMap {
 		"effectiveResidualCombingFallback": stringFromUnknown(worker["effectiveResidualCombingFallback"]),
 		"effectiveAutomaticMotionFilters":  stringFromUnknown(worker["effectiveAutomaticMotionFilters"]),
 		"effectiveOutputFrameRate":         stringFromUnknown(worker["effectiveOutputFrameRate"]),
-		"effectiveOutputProgressive":       profileWorkerBool(profile, "effectiveOutputProgressive", false),
 		"effectiveOutputWidth":             workerIntValue(worker["effectiveOutputWidth"], 0),
 		"effectiveOutputHeight":            workerIntValue(worker["effectiveOutputHeight"], 0),
 		"hevcLevel":                        stringFromUnknown(worker["hevcLevelEffective"]),
 		"hevcTier":                         stringFromUnknown(worker["hevcLevelTier"]),
+	}
+	if progressive, ok := fidelityWorkerBool(worker, "effectiveOutputProgressive"); ok {
+		plan["effectiveOutputProgressive"] = progressive
+	} else if _, present := worker["effectiveOutputProgressive"]; present {
+		plan["effectiveOutputProgressive"] = nil
 	}
 	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
 		plan["upscale"] = upscale
@@ -288,84 +302,124 @@ func fidelityExpectedOutput(profile models.Profile, source canonicalFidelitySour
 	expectations := map[string]fidelityExpectation{}
 	expectedOutput := models.JSONMap{}
 
-	set := func(name string, value any, authority, reason string, required bool) {
-		applicable := fidelityValuePresent(value)
-		expectations[name] = fidelityExpectation{value: value, authority: authority, reason: reason, applicable: applicable, required: required}
-		expectedOutput[name] = value
+	set := func(name string, value any, state fidelityAuthorityState, authority, reason string, required, unreliable bool) {
+		expectations[name] = fidelityExpectation{value: value, state: state, authority: authority, reason: reason, applicable: state != fidelityAuthorityNotApplicable, required: required, unreliable: unreliable}
+		if state != fidelityAuthorityNotApplicable {
+			expectedOutput[name] = value
+		}
 	}
 
-	width := workerIntValue(source.effective["width"], 0)
-	height := workerIntValue(source.effective["height"], 0)
-	sar := stringFromUnknown(source.effective["sampleAspectRatio"])
-	dar := stringFromUnknown(source.effective["displayAspectRatio"])
-	geometryAuthority, geometryReason := "preserved_source", "no frozen geometry transformation"
+	width, height := 0, 0
+	sar, dar := "", ""
+	geometryState := fidelityAuthorityNotApplicable
+	geometryAuthority, geometryReason := "resolved_geometry", "no frozen geometry authority"
 	if restoration, ok := resolvedRestorationPlanFromProfile(profile); ok && restoration.ResolvedOutput.Width > 0 && restoration.ResolvedOutput.Height > 0 {
 		width, height, sar, dar = restoration.ResolvedOutput.Width, restoration.ResolvedOutput.Height, restoration.ResolvedOutput.SAR, restoration.ResolvedOutput.DAR
-		geometryAuthority, geometryReason = "resolved_restoration", "resolved restoration output geometry"
+		geometryState, geometryAuthority, geometryReason = fidelityAuthorityTransform, "resolved_restoration", "resolved restoration output geometry"
 	} else if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok && upscale.UpscaleApplied {
 		width, height, sar, dar = upscale.TargetWidth, upscale.TargetHeight, upscale.TargetSAR, aspectRatioString(upscale.TargetWidth, upscale.TargetHeight, upscale.TargetSAR)
-		geometryAuthority, geometryReason = "resolved_upscale", "resolved Smart Upscale output geometry"
+		geometryState, geometryAuthority, geometryReason = fidelityAuthorityTransform, "resolved_upscale", "resolved Smart Upscale output geometry"
 	} else if !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) {
-		if resolvedWidth := workerIntValue(worker["effectiveOutputWidth"], 0); resolvedWidth > 0 {
-			width = resolvedWidth
-			geometryAuthority, geometryReason = "effective_video_decision", "frozen effective video geometry"
-		}
-		if resolvedHeight := workerIntValue(worker["effectiveOutputHeight"], 0); resolvedHeight > 0 {
-			height = resolvedHeight
-			geometryAuthority, geometryReason = "effective_video_decision", "frozen effective video geometry"
+		resolvedWidth := workerIntValue(worker["effectiveOutputWidth"], 0)
+		resolvedHeight := workerIntValue(worker["effectiveOutputHeight"], 0)
+		if resolvedWidth > 0 && resolvedHeight > 0 {
+			width, height = resolvedWidth, resolvedHeight
+			sar, dar = stringFromUnknown(worker["effectiveOutputSAR"]), stringFromUnknown(worker["effectiveOutputDAR"])
+			if dar == "" && sar != "" {
+				dar = aspectRatioString(width, height, sar)
+			}
+			geometryState, geometryAuthority, geometryReason = fidelityAuthorityTransform, "effective_video_decision", "frozen effective video geometry"
 		}
 	}
-	set("width", width, geometryAuthority, geometryReason, true)
-	set("height", height, geometryAuthority, geometryReason, true)
-	set("sampleAspectRatio", sar, geometryAuthority, geometryReason+" SAR", true)
-	set("displayAspectRatio", dar, geometryAuthority, geometryReason+" DAR", true)
+	if geometryState == fidelityAuthorityNotApplicable {
+		if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok && upscale.ResolvedMode == ResolvedUpscaleKeepSource {
+			width, height = workerIntValue(source.effective["width"], 0), workerIntValue(source.effective["height"], 0)
+			sar, dar = stringFromUnknown(source.effective["sampleAspectRatio"]), stringFromUnknown(source.effective["displayAspectRatio"])
+			geometryState, geometryAuthority, geometryReason = fidelityAuthorityPreserve, "resolved_upscale", "resolved Smart Upscale explicitly preserves source geometry"
+		} else if restoration, ok := resolvedRestorationPlanFromProfile(profile); ok && restoration.ResolvedOutput.Width > 0 && restoration.ResolvedOutput.Height > 0 && restoration.ResolvedOutput == restoration.EffectiveGeometry {
+			width, height, sar, dar = restoration.ResolvedOutput.Width, restoration.ResolvedOutput.Height, restoration.ResolvedOutput.SAR, restoration.ResolvedOutput.DAR
+			geometryState, geometryAuthority, geometryReason = fidelityAuthorityPreserve, "resolved_restoration", "resolved restoration explicitly preserves effective geometry"
+		}
+	}
+	set("width", widthOrNil(width), geometryState, geometryAuthority, geometryReason, true, false)
+	set("height", widthOrNil(height), geometryState, geometryAuthority, geometryReason, true, false)
+	sarState, darState := geometryState, geometryState
+	if strings.TrimSpace(sar) == "" {
+		sarState = fidelityAuthorityNotApplicable
+	}
+	if strings.TrimSpace(dar) == "" {
+		darState = fidelityAuthorityNotApplicable
+	}
+	set("sampleAspectRatio", stringOrNil(sar), sarState, geometryAuthority, geometryReason+" SAR", true, false)
+	set("displayAspectRatio", stringOrNil(dar), darState, geometryAuthority, geometryReason+" DAR", true, false)
 
-	if expectedRate := strings.TrimSpace(stringFromUnknown(worker["effectiveOutputFrameRate"])); expectedRate != "" && parseFrameRateValue(expectedRate) > 0 {
-		set("frameRate", expectedRate, "resolved_cadence", cadenceReason(worker), true)
+	expectedRate := strings.TrimSpace(stringFromUnknown(worker["effectiveOutputFrameRate"]))
+	rateState := fidelityAuthorityUnresolved
+	rateAuthority, rateReason := "resolved_cadence", "frozen cadence output rate is unresolved"
+	rateUnreliable := false
+	if expectedRate != "" && parseFrameRateValue(expectedRate) > 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) && strings.TrimSpace(stringFromUnknown(worker["cadenceResolutionWarning"])) == "" {
+		rateState, rateReason = fidelityAuthorityTransform, cadenceReason(worker)
+	} else if fidelityCadenceExplicitPreserve(worker) {
+		expectedRate = stringFromUnknown(source.effective["frameRate"])
+		rateState, rateAuthority, rateReason = fidelityAuthorityPreserve, "resolved_cadence", "frozen cadence explicitly preserves source rate"
 	} else {
-		set("frameRate", source.effective["frameRate"], "preserved_source", "no frozen cadence transformation", true)
+		rateUnreliable = true
 	}
+	set("frameRate", stringOrNil(expectedRate), rateState, rateAuthority, rateReason, true, rateUnreliable)
 
-	if cadenceOperation := strings.TrimSpace(stringFromUnknown(worker["effectiveCadenceOperation"])); cadenceOperation != "" || profileWorkerBool(profile, "effectiveOutputProgressive", false) {
-		progressive := profileWorkerBool(profile, "effectiveOutputProgressive", false)
-		value := "interlaced"
+	progressive, progressiveKnown := fidelityWorkerBool(worker, "effectiveOutputProgressive")
+	progressiveUnreliable := profileWorkerBool(profile, "effectiveOutputProgressiveUnreliable", false)
+	structureState := fidelityAuthorityUnresolved
+	structureAuthority, structureReason := "resolved_cadence", "frozen cadence field structure is unresolved"
+	structureUnreliable := !progressiveKnown || progressiveUnreliable
+	structureValue := ""
+	if progressiveKnown && !progressiveUnreliable {
+		structureState, structureReason = fidelityAuthorityTransform, cadenceReason(worker)
 		if progressive {
-			value = "progressive"
+			structureValue = "progressive"
+		} else {
+			structureValue = "interlaced"
 		}
-		set("fieldStructure", value, "resolved_cadence", cadenceReason(worker), true)
+	} else if fidelityCadenceExplicitPreserve(worker) {
+		structureValue = stringFromUnknown(source.effective["fieldStructure"])
+		structureState, structureReason, structureUnreliable = fidelityAuthorityPreserve, "frozen cadence explicitly preserves source field structure", false
+	}
+	set("fieldStructure", stringOrNil(structureValue), structureState, structureAuthority, structureReason, true, structureUnreliable)
+
+	pixelValue, bitDepthValue, pixelState, pixelAuthority, pixelReason, exactFormat := fidelityExpectedPixelSemantics(profile, source)
+	set("pixelFormat", pixelValue, pixelState, pixelAuthority, pixelReason, true, false)
+	if pixelState != fidelityAuthorityNotApplicable {
+		pixelExpectation := expectations["pixelFormat"]
+		pixelExpectation.exactFormat = exactFormat
+		expectations["pixelFormat"] = pixelExpectation
+	}
+	set("bitDepth", stringOrNil(bitDepthValue), pixelState, pixelAuthority, pixelReason, true, false)
+	if expectedChroma := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["effectiveChromaLocation"]))); expectedChroma != "" {
+		set("chromaLocation", expectedChroma, fidelityAuthorityTransform, "resolved_video_decision", "frozen chroma-location decision", true, false)
+	} else if fidelityPixelExplicitPreserve(profile) {
+		set("chromaLocation", source.effective["chromaLocation"], fidelityAuthorityPreserve, "resolved_encoder", "frozen copy/preserve plan preserves source chroma location", false, false)
 	} else {
-		set("fieldStructure", source.effective["fieldStructure"], "preserved_source", "no frozen field-structure transformation", true)
+		set("chromaLocation", nil, fidelityAuthorityNotApplicable, "resolved_video_decision", "no frozen chroma-location authority", false, false)
 	}
 
-	pixelValue, bitDepthValue, pixelAuthority, pixelReason, exactFormat := fidelityExpectedPixelSemantics(profile, source)
-	if pixelValue != nil {
-		set("pixelFormat", pixelValue, pixelAuthority, pixelReason, true)
-		expectations["pixelFormat"] = fidelityExpectation{value: pixelValue, authority: pixelAuthority, reason: pixelReason, applicable: true, required: true, exactFormat: exactFormat}
-	}
-	set("bitDepth", bitDepthValue, pixelAuthority, pixelReason, true)
-	if expectedChroma := stringFromUnknown(worker["effectiveChromaLocation"]); expectedChroma != "" {
-		set("chromaLocation", strings.ToLower(expectedChroma), "resolved_video_decision", "frozen chroma-location decision", true)
-	} else {
-		// Chroma location is optional evidence. Preserve it when both sides expose
-		// it, but do not let its absence poison an otherwise valid aggregate.
-		set("chromaLocation", source.effective["chromaLocation"], "preserved_source", "no frozen chroma-location transformation", false)
-	}
-
-	if strings.EqualFold(profile.VideoCodec, "hevc") || strings.EqualFold(stringFromUnknown(worker["codec"]), "hevc") {
-		set("hevcLevel", normalizedHEVCLevel(stringFromUnknown(worker["hevcLevelEffective"])), "resolved_hevc", "frozen HEVC Level decision", true)
+	hevc := videoCodecFamily(profile.VideoCodec) == "hevc" || videoCodecFamily(stringFromUnknown(worker["codec"])) == "hevc" || videoCodecFamily(frozenFidelityEncoder(profile)) == "hevc"
+	if hevc {
+		set("hevcLevel", normalizedHEVCLevel(stringFromUnknown(worker["hevcLevelEffective"])), fidelityAuthorityTransform, "resolved_hevc", "frozen HEVC Level decision", true, false)
 		tier := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["hevcLevelTier"])))
 		if tier == "" {
 			tier = "main"
 		}
-		set("hevcTier", tier, "resolved_hevc", "frozen HEVC Tier decision", true)
+		set("hevcTier", tier, fidelityAuthorityTransform, "resolved_hevc", "frozen HEVC Tier decision", true, false)
 	} else {
-		expectations["hevcLevel"] = fidelityExpectation{authority: "resolved_hevc", reason: "HEVC Level is not applicable to this codec"}
-		expectations["hevcTier"] = fidelityExpectation{authority: "resolved_hevc", reason: "HEVC Tier is not applicable to this codec"}
+		expectations["hevcLevel"] = fidelityExpectation{state: fidelityAuthorityNotApplicable, authority: "resolved_hevc", reason: "HEVC Level is not applicable to this codec"}
+		expectations["hevcTier"] = fidelityExpectation{state: fidelityAuthorityNotApplicable, authority: "resolved_hevc", reason: "HEVC Tier is not applicable to this codec"}
 	}
 
 	expectedOutput["workingPixelFormat"] = stringFromUnknown(worker["pixFmt"])
 	expectedOutput["encoder"] = frozenFidelityEncoder(profile)
-	expectedOutput["fieldStructure"] = expectations["fieldStructure"].value
+	if fieldStructure := expectations["fieldStructure"]; fieldStructure.state != fidelityAuthorityNotApplicable {
+		expectedOutput["fieldStructure"] = fieldStructure.value
+	}
 	expectedOutput["effectiveCadenceOperation"] = stringFromUnknown(worker["effectiveCadenceOperation"])
 	expectedOutput["effectiveCadenceFieldOrder"] = stringFromUnknown(worker["effectiveCadenceFieldOrder"])
 	expectedOutput["effectiveResidualCombingFallback"] = stringFromUnknown(worker["effectiveResidualCombingFallback"])
@@ -373,48 +427,97 @@ func fidelityExpectedOutput(profile models.Profile, source canonicalFidelitySour
 	return expectations, expectedOutput
 }
 
-func fidelityExpectedPixelSemantics(profile models.Profile, source canonicalFidelitySource) (models.JSONMap, string, string, string, string) {
+func fidelityExpectedPixelSemantics(profile models.Profile, source canonicalFidelitySource) (models.JSONMap, string, fidelityAuthorityState, string, string, string) {
 	worker := map[string]interface{}(profile.WorkerConfig)
 	working := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["pixFmt"])))
-	encoder := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["effectiveEncoder"])))
-	if encoder == "" {
-		encoder = strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["videoEncoder"])))
-	}
-	if encoder == "" {
-		encoder = strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["encoder"])))
-	}
-	if encoder == "" {
-		encoder = frozenFidelityEncoder(profile)
-	}
+	encoder := frozenFidelityEncoder(profile)
 	tenBit := profileUsesTenBit(profile)
 	semantic := fidelityPixelSemantic(models.JSONMap{"pixelFormat": working, "bitDepth": bitDepthFromPixelFormat(working)})
-	if semantic == nil && tenBit {
+	resolvedSemantic := semantic != nil
+	if semantic == nil && tenBit && (videoCodecFamily(profile.VideoCodec) == "hevc" || videoCodecFamily(encoder) == "hevc" || strings.EqualFold(stringFromUnknown(worker["profile"]), "main10")) {
 		semantic = models.JSONMap{"bitDepth": "10-bit", "chroma": "yuv420"}
+		resolvedSemantic = true
 	}
 	if semantic == nil {
-		semantic = fidelityPixelSemantic(source.effective)
+		if fidelityPixelExplicitPreserve(profile) {
+			semantic = fidelityPixelSemantic(source.effective)
+		}
 	}
 	if semantic == nil {
-		return nil, "", "", "no authoritative pixel-format semantics", ""
+		return nil, "", fidelityAuthorityNotApplicable, "resolved_encoder", "no frozen pixel-format preserve or encoder authority", ""
 	}
 	if tenBit {
 		semantic["bitDepth"] = "10-bit"
 	}
-	if (strings.EqualFold(profile.VideoCodec, "hevc") || strings.EqualFold(stringFromUnknown(worker["profile"]), "main10")) && tenBit {
+	if (videoCodecFamily(profile.VideoCodec) == "hevc" || videoCodecFamily(encoder) == "hevc" || strings.EqualFold(stringFromUnknown(worker["profile"]), "main10")) && tenBit {
 		semantic["profile"] = "main10"
-	} else if working == "" {
-		delete(semantic, "profile")
 	}
-	isHardware := strings.Contains(encoder, "qsv") || strings.Contains(encoder, "videotoolbox")
-	authority, reason := "preserved_source", "no frozen pixel-format transformation"
+	isHardware := strings.Contains(strings.ToLower(encoder), "qsv") || strings.Contains(strings.ToLower(encoder), "videotoolbox")
+	state, authority, reason := fidelityAuthorityPreserve, "resolved_encoder", "frozen copy/preserve plan preserves source pixel semantics"
 	exact := ""
-	if working != "" {
-		authority, reason = "resolved_encoder", "frozen encoder/profile pixel semantics"
-		if !isHardware {
+	if resolvedSemantic {
+		state, authority, reason = fidelityAuthorityTransform, "resolved_encoder", "frozen encoder/profile pixel semantics"
+		if working != "" && !isHardware {
 			exact = working
 		}
 	}
-	return semantic, stringFromUnknown(semantic["bitDepth"]), authority, reason, exact
+	return semantic, stringFromUnknown(semantic["bitDepth"]), state, authority, reason, exact
+}
+
+func fidelityWorkerBool(worker map[string]interface{}, key string) (bool, bool) {
+	value, ok := worker[key]
+	if !ok {
+		return false, false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "on", "enabled":
+			return true, true
+		case "false", "0", "no", "off", "disabled":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func fidelityCadenceExplicitPreserve(worker map[string]interface{}) bool {
+	for _, key := range []string{"effectiveCadenceOperation", "cadenceMode", "fieldStructureMode"} {
+		value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker[key])))
+		if value == "preserve" || value == "copy" || value == "passthrough" || value == "pass_through" {
+			return true
+		}
+	}
+	return false
+}
+
+func fidelityPixelExplicitPreserve(profile models.Profile) bool {
+	worker := map[string]interface{}(profile.WorkerConfig)
+	if videoCodecFamily(profile.VideoCodec) == "copy" {
+		return true
+	}
+	for _, key := range []string{"videoEncoder", "effectiveEncoder", "encoder", "codec"} {
+		if videoCodecFamily(stringFromUnknown(worker[key])) == "copy" {
+			return true
+		}
+	}
+	return false
+}
+
+func widthOrNil(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
+}
+
+func stringOrNil(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func fidelityPixelSemantic(characteristics models.JSONMap) models.JSONMap {
@@ -492,15 +595,27 @@ func fidelityActualValueWithHEVCEvidence(name string, evidence models.JSONMap) a
 }
 
 func canonicalFidelityField(name string, source any, expectation fidelityExpectation, actual any) models.JSONMap {
-	result := models.JSONMap{"source": source, "expected": expectation.value, "actual": actual, "output": actual, "authority": expectation.authority, "reason": expectation.reason}
-	if !expectation.applicable {
+	expected := any(nil)
+	if fidelityValuePresent(expectation.value) {
+		expected = expectation.value
+	}
+	result := models.JSONMap{"source": source, "expected": expected, "actual": actual, "output": actual, "status": "not_applicable", "authority": expectation.authority, "authorityState": string(expectation.state), "reason": expectation.reason}
+	if !expectation.applicable || expectation.state == fidelityAuthorityNotApplicable {
 		result["status"] = "not_applicable"
 		return result
 	}
-	if expectation.unreliable || !fidelityValuePresent(expectation.value) || !fidelityValuePresent(actual) {
+	if expectation.unreliable || expectation.state == fidelityAuthorityUnresolved || !fidelityValuePresent(expectation.value) || !fidelityValuePresent(actual) {
 		result["status"] = "unverified"
 		result["required"] = expectation.required
 		return result
+	}
+	if name == "pixelFormat" {
+		expectedMap, actualMap := unknownRecord(expectation.value), unknownRecord(actual)
+		if expectedMap != nil && fidelityValuePresent(expectedMap["profile"]) && (actualMap == nil || !fidelityValuePresent(actualMap["profile"])) {
+			result["status"] = "unverified"
+			result["required"] = expectation.required
+			return result
+		}
 	}
 	if name == "pixelFormat" && expectation.exactFormat != "" {
 		actualMap := unknownRecord(actual)
@@ -523,9 +638,14 @@ func canonicalFidelityField(name string, source any, expectation fidelityExpecta
 }
 
 func canonicalFidelityCompositeField(name string, source any, width, height fidelityExpectation, actual any, actualWidth, actualHeight any) models.JSONMap {
-	result := models.JSONMap{"source": source, "expected": models.JSONMap{"width": width.value, "height": height.value}, "actual": models.JSONMap{"width": actualWidth, "height": actualHeight}, "output": actual, "authority": width.authority, "reason": width.reason}
-	if !width.applicable && !height.applicable {
+	result := models.JSONMap{"source": source, "expected": models.JSONMap{"width": width.value, "height": height.value}, "actual": models.JSONMap{"width": actualWidth, "height": actualHeight}, "output": actual, "status": "not_applicable", "authority": width.authority, "authorityState": string(width.state), "reason": width.reason}
+	if (!width.applicable || width.state == fidelityAuthorityNotApplicable) && (!height.applicable || height.state == fidelityAuthorityNotApplicable) {
 		result["status"] = "not_applicable"
+		return result
+	}
+	if width.unreliable || height.unreliable || width.state == fidelityAuthorityUnresolved || height.state == fidelityAuthorityUnresolved || !fidelityValuePresent(width.value) || !fidelityValuePresent(height.value) {
+		result["status"] = "unverified"
+		result["required"] = width.required || height.required
 		return result
 	}
 	if !fidelityValuePresent(actualWidth) || !fidelityValuePresent(actualHeight) {
@@ -645,6 +765,12 @@ func normalizedFieldStructure(fieldOrder string) string {
 func fidelityValuePresent(value any) bool {
 	if value == nil {
 		return false
+	}
+	switch typed := value.(type) {
+	case models.JSONMap:
+		return typed != nil && len(typed) > 0
+	case map[string]interface{}:
+		return typed != nil && len(typed) > 0
 	}
 	if record := unknownRecord(value); record != nil {
 		return len(record) > 0
