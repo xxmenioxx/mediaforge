@@ -1150,6 +1150,37 @@ func TestResolvedValidatedIVTCArmsSelectiveResidualFallbackForBothParities(t *te
 	}
 }
 
+func TestResolvedIVTCMotionDecisionUsesExplicitOrderOverScanFilter(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"fieldStructureMode": "preserve",
+		"cadenceMode":        "inverse_telecine",
+		"cadenceFieldOrder":  "tff",
+		"videoFilters":       "",
+	}}
+	interlace := InterlaceAnalysis{
+		Status:          "telecine",
+		AutomaticFilter: "fieldmatch=order=bff:combmatch=full,decimate",
+		IVTCValidation:  &IVTCValidation{SelectedOrder: "bff", Confidence: .99},
+	}
+	recommendation := CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, interlace, CadenceAnalysis{Type: "hard_telecine", Confidence: .99}, recommendation)
+	want := "fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog"
+	if got := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"]); got != want {
+		t.Fatalf("effective LAB motion filters=%q want %q", got, want)
+	}
+	decision := effectiveVideoDecision(resolved)
+	if got := workerStringValue(decision["effectiveMotionFilters"]); got != want {
+		t.Fatalf("effective decision motion filters=%q want %q", got, want)
+	}
+	if got := workerStringValue(decision["cadenceFieldOrder"]); got != "tff" {
+		t.Fatalf("explicit field order was not authoritative: %q", got)
+	}
+	if got := workerStringValue(decision["residualCombingFallback"]); got != "selective" {
+		t.Fatalf("residual fallback=%q want selective", got)
+	}
+}
+
 func TestResolvedAutomaticValidatedIVTCUsesSelectedParity(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
 		"fieldStructureMode": "preserve",
