@@ -430,6 +430,7 @@ type AssetConversionUpdateInput struct {
 	VideoPreset                      string                         `json:"videoPreset"`
 	PixFmt                           string                         `json:"pixFmt"`
 	VideoFilters                     string                         `json:"videoFilters"`
+	CropAspectPolicy                 string                         `json:"cropAspectPolicy"`
 	UpscaleMode                      string                         `json:"upscaleMode"`
 	UpscaleSharpen                   string                         `json:"upscaleSharpen"`
 	UpscaleSharpenCustomStrength     *float64                       `json:"upscaleSharpenCustomStrength"`
@@ -446,6 +447,8 @@ type AssetConversionUpdateInput struct {
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode"`
 	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames"`
+	HEVCLevelMode                    string                         `json:"hevcLevelMode"`
+	HEVCLevel                        string                         `json:"hevcLevel"`
 	ProcessingMode                   string                         `json:"processingMode"`
 	PreserveHDR                      *bool                          `json:"preserveHdr"`
 	PreserveSubtitles                *bool                          `json:"preserveSubtitles"`
@@ -1198,8 +1201,10 @@ func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
 			_ = moveFile(completed[index].to, completed[index].from)
 		}
 	}
+	assetOverrideMutationMu.Lock()
 	for _, move := range moves {
 		if err := moveFile(move.from, move.to); err != nil {
+			assetOverrideMutationMu.Unlock()
 			rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "return to Raw failed and rollback was attempted: " + err.Error()})
 			return
@@ -1223,10 +1228,12 @@ func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
 		return returnDirectPublicationOverrides(tx, path, restorePath)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was moved but registration failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	var library models.Library
 	if err := h.db.First(&library, publication.LibraryID).Error; err == nil && pathIsInside(filepath.Dir(path), library.DestinationPath) {
 		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), library.DestinationPath); err != nil {
@@ -1609,13 +1616,16 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		}
 		fingerprints[record.Path] = fingerprint
 	}
+	assetOverrideMutationMu.Lock()
 	movedPaths, rollbackMove, err := mergeAssetDirectory(sourcePath, destinationPath)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "direct publication failed: " + err.Error()})
 		return
 	}
 	publishedPaths, rollbackNames, err := applyDirectPublicationEpisodeNames(sourcePath, destinationPath, publishing, library, movedPaths)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollbackMove()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "episode naming failed and publication was rolled back: " + err.Error()})
 		return
@@ -1647,10 +1657,12 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 		return resetDirectPublicationOverrides(tx, publishing, sourcePath, destinationPath, publishedPaths)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "files were moved but registration failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	if _, err := h.syncAssetInventory(); err != nil {
 		appendSystemLog(h.db, "direct_publication_inventory_sync_failed", map[string]string{"destinationPath": destinationPath}, err)
 	}
@@ -2381,14 +2393,17 @@ func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Lock()
 	rollback, err := applyLibraryRenamePlan(plan, library, os.Rename)
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		return reconcileLibraryRenameState(tx, plan, library)
 	}); err != nil {
+		assetOverrideMutationMu.Unlock()
 		if rollbackErr := rollback(); rollbackErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("reconcile renamed Library state: %v; filesystem rollback failed: %v", err, rollbackErr)})
 			return
@@ -2396,6 +2411,7 @@ func (h AssetHandler) ApplyLibraryPathRename(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reconcile renamed Library state: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	if filepath.Clean(plan.SourcePath) != filepath.Clean(plan.TargetPath) {
 		_ = os.Remove(plan.SourcePath)
 	}
@@ -2494,7 +2510,9 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 		return
 	}
 
+	assetOverrideMutationMu.Lock()
 	if err := moveAssetDirectory(sourcePath, destinationPath); err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "path migration failed: " + err.Error()})
 		return
 	}
@@ -2547,10 +2565,12 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 		return migrateAssetPathOverrides(tx, sourcePath, destinationPath)
 	})
 	if err != nil {
+		assetOverrideMutationMu.Unlock()
 		rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "path was moved but inventory update failed and rollback was attempted: " + err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 
 	appendSystemLog(h.db, "asset_path_migrated", map[string]string{
 		"sourcePath": sourcePath, "destinationPath": destinationPath,
@@ -2600,6 +2620,7 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 	}
 	oldPath := filepath.Clean(job.PublishedPath)
 	staleRecordsRemoved := int64(0)
+	assetOverrideMutationMu.Lock()
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		job.PublishedPath = candidatePath
 		job.LibraryID = record.LibraryID
@@ -2624,9 +2645,11 @@ func (h AssetHandler) ConfirmPublicationReconciliation(c *gin.Context) {
 		delete(reviews, candidatePath)
 		return saveAssetReviewOverrides(tx, reviews)
 	}); err != nil {
+		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{
 		"status": "reconciled", "jobId": job.ID, "oldPath": oldPath,
 		"publishedPath": candidatePath, "staleRecordsRemoved": staleRecordsRemoved,
@@ -3126,7 +3149,18 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(resolvedPath)
+
+	var input AssetConversionUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "bind_json"}, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	cleanPath := filepath.Clean(resolvedPath)
+	var persisted AssetConversionOverrideState
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
+	allowed, err := h.pathBelongsToLibrary(cleanPath)
 	if err != nil {
 		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -3138,122 +3172,37 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
-
-	var input AssetConversionUpdateInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "bind_json"}, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if mode := strings.TrimSpace(input.UpscaleMode); mode != "" && normalizedUpscaleMode(mode) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleMode must be disabled, auto, 720p, 1080p, custom, or omitted to inherit"})
-		return
-	}
-	if sharpen := strings.TrimSpace(input.UpscaleSharpen); sharpen != "" && normalizedUpscaleSharpen(sharpen) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpen must be off, light, medium, custom, or omitted to inherit"})
-		return
-	}
-	if normalizedUpscaleSharpen(input.UpscaleSharpen) == string(UpscaleSharpenCustom) && (input.UpscaleSharpenCustomStrength == nil || *input.UpscaleSharpenCustomStrength < 0 || *input.UpscaleSharpenCustomStrength > .4) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpenCustomStrength must be between 0.00 and 0.40 for custom sharpen"})
-		return
-	}
-	if fieldOrder := strings.TrimSpace(input.DeinterlaceFieldOrder); fieldOrder != "" && normalizedCadenceFieldOrder(fieldOrder) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "deinterlaceFieldOrder must be auto, tff, bff, or omitted to inherit"})
-		return
-	}
-	if normalizedUpscaleMode(input.UpscaleMode) == string(UpscaleModeCustom) && normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleCustomHeight must be a positive even height for custom upscale"})
-		return
-	}
-	entries := assetConversionOverrides(h.db)
-	cleanPath := filepath.Clean(resolvedPath)
-	existingRoleOverrides := entries[cleanPath].SubtitleRoleOverrides
-	roleOverrides := existingRoleOverrides
-	var roleScan models.ScanResult
-	if input.SubtitleRoleOverrides != nil {
-		if err := h.db.Where("path = ?", cleanPath).Order("updated_at desc, id desc").First(&roleScan).Error; err == nil {
-			roleOverrides = subtitleRoleOverridesForConversionUpdate(roleScan, existingRoleOverrides, input.SubtitleRoleOverrides, true)
-		} else {
-			roleOverrides = subtitleRoleOverridesForConversionUpdate(models.ScanResult{}, existingRoleOverrides, input.SubtitleRoleOverrides, true)
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		entries := assetConversionOverrides(tx)
+		override, err := normalizeAssetConversionUpdate(tx, cleanPath, input, entries[cleanPath])
+		if err != nil {
+			return err
 		}
-	}
-
-	override := AssetConversionOverrideState{
-		TrackProfileKey:                strings.TrimSpace(input.TrackProfileKey),
-		KeepVideoStreams:               normalizedStreamIndexes(input.KeepVideoStreams),
-		KeepAudioStreams:               normalizedStreamIndexes(input.KeepAudioStreams),
-		KeepSubtitleStreams:            normalizedStreamIndexes(input.KeepSubtitleStreams),
-		VideoMetadata:                  normalizedStreamMetadata(input.VideoMetadata),
-		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
-		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
-		SubtitleRoleOverrides:          roleOverrides,
-		SubtitleTransforms:             normalizedSubtitleTransforms(input.SubtitleTransforms),
-		SubtitleSidecarFormatsByStream: normalizedSubtitleSidecarFormatsByStream(input.SubtitleSidecarFormatsByStream),
-		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
-		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
-		QualityMode:                    strings.TrimSpace(input.QualityMode),
-		QualityValue:                   input.QualityValue,
-		OptimizationIntent:             normalizedOptimizationIntent(input.OptimizationIntent),
-		VideoPreset:                    strings.TrimSpace(input.VideoPreset),
-		PixFmt:                         strings.TrimSpace(input.PixFmt),
-		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
-		UpscaleMode:                    normalizedUpscaleMode(input.UpscaleMode),
-		UpscaleSharpen:                 normalizedUpscaleSharpen(input.UpscaleSharpen),
-		UpscaleSharpenCustomStrength:   normalizedUpscaleSharpenStrength(input.UpscaleSharpen, input.UpscaleSharpenCustomStrength),
-		UpscaleCustomHeight:            normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight),
-		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
-		DeinterlaceFieldOrder:          normalizedCadenceFieldOrder(input.DeinterlaceFieldOrder),
-		FieldStructureMode:             normalizedFieldStructureMode(input.FieldStructureMode),
-		CadenceMode:                    normalizedCadenceMode(input.CadenceMode),
-		CadenceFieldOrder:              normalizedCadenceFieldOrder(input.CadenceFieldOrder),
-		X265Params:                     strings.TrimSpace(input.X265Params),
-		FrameStructureMode:             normalizedFrameStructureMode(input.FrameStructureMode),
-		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
-		FrameStructureGOPStrategy:      normalizedFrameStructureGOPStrategy(input.FrameStructureGOPStrategy),
-		FrameStructureGOPFrames:        min(1000, max(0, input.FrameStructureGOPFrames)),
-		FrameStructureBFrameMode:       normalizedFrameStructureBFrameMode(input.FrameStructureBFrameMode),
-		FrameStructureMaxBFrames:       min(16, max(0, input.FrameStructureMaxBFrames)),
-		PreserveHDR:                    input.PreserveHDR,
-		PreserveSubtitles:              input.PreserveSubtitles,
-		PreserveChapters:               input.PreserveChapters,
-		ExternalSubtitleFormat:         strings.TrimSpace(input.ExternalSubtitleFormat),
-		FinalColorPolicy:               strings.TrimSpace(input.FinalColorPolicy),
-		AddAACStereoTrack:              input.AddAACStereoTrack,
-		AACStereoDefault:               input.AACStereoDefault,
-		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
-		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
-		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
-		PreferredEncoder:               strings.TrimSpace(input.PreferredEncoder),
-		TargetWorkerName:               strings.TrimSpace(input.TargetWorkerName),
-		GlobalQuality:                  input.GlobalQuality,
-		QSVRateControl:                 strings.TrimSpace(input.QSVRateControl),
-		QSVLookAheadDepth:              input.QSVLookAheadDepth,
-		QSVExtendedBRC:                 input.QSVExtendedBRC,
-		QSVAdaptiveI:                   input.QSVAdaptiveI,
-		QSVAdaptiveB:                   input.QSVAdaptiveB,
-		QSVMBBRCMode:                   normalizedOptionalQSVMBBRCMode(input.QSVMBBRCMode),
-		QSVRDOMode:                     normalizedOptionalQSVRDOMode(input.QSVRDOMode),
-		QSVPStrategy:                   normalizedOptionalQSVPStrategy(input.QSVPStrategy),
-		VideoToolboxBitrateMbps:        input.VideoToolboxBitrateMbps,
-		VideoToolboxMaxrateMbps:        input.VideoToolboxMaxrateMbps,
-		VideoToolboxBufferMbps:         input.VideoToolboxBufferMbps,
-	}
-	if assetConversionOverrideEmpty(override) {
-		delete(entries, cleanPath)
-	} else {
-		now := time.Now()
-		override.UpdatedAt = &now
-		entries[cleanPath] = override
-	}
-
-	if err := saveAssetConversionOverrides(h.db, entries); err != nil {
+		if assetConversionOverrideEmpty(override) {
+			delete(entries, cleanPath)
+		} else {
+			now := time.Now()
+			override.UpdatedAt = &now
+			entries[cleanPath] = override
+		}
+		if err := saveAssetConversionOverrides(tx, entries); err != nil {
+			return err
+		}
+		persisted = conversionOverrideForPath(cleanPath, entries)
+		return nil
+	})
+	if err != nil {
+		if isAssetConversionValidationError(err) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "save_setting"}, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	appendSystemLog(h.db, "asset_conversion_override_saved", map[string]string{"path": path, "resolvedPath": resolvedPath}, nil)
-	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "conversion": conversionOverrideForPath(cleanPath, entries)})
+	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "conversion": persisted})
 }
 
 func (h AssetHandler) UpdateMetadata(c *gin.Context) {
@@ -3267,7 +3216,17 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(resolvedPath)
+
+	var input AssetMetadataUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	cleanPath := filepath.Clean(resolvedPath)
+	var persisted AssetMetadataState
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
+	allowed, err := h.pathBelongsToLibrary(cleanPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3276,56 +3235,54 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
-
-	var input AssetMetadataUpdateInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	entries := assetMetadataOverrides(h.db)
-	cleanPath := filepath.Clean(resolvedPath)
-	categories := normalizedTags(input.Categories)
-	tags := normalizedTags(input.Tags)
-	now := time.Now()
 	info, statErr := os.Stat(cleanPath)
 	isPathMetadata := statErr == nil && info.IsDir()
-	if len(categories) == 0 && len(tags) == 0 {
-		delete(entries, cleanPath)
-	} else {
-		entries[cleanPath] = AssetMetadataState{Categories: categories, Tags: tags, UpdatedAt: now}
-	}
-	if isPathMetadata {
-		var records []models.AssetRecord
-		if err := h.db.Where("missing = ?", false).Find(&records).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		entries := assetMetadataOverrides(tx)
+		metadata, remove := normalizedAssetMetadata(input)
+		now := time.Now()
+		if remove {
+			delete(entries, cleanPath)
+		} else {
+			metadata.UpdatedAt = now
+			entries[cleanPath] = metadata
 		}
-		for _, record := range records {
-			assetPath := filepath.Clean(record.Path)
-			if !pathIsInside(assetPath, cleanPath) {
-				continue
+		if isPathMetadata {
+			var records []models.AssetRecord
+			if err := tx.Where("missing = ?", false).Find(&records).Error; err != nil {
+				return err
 			}
-			current := metadataForPath(assetPath, entries)
-			if len(current.Categories) > 0 && filepath.Clean(current.InheritedFrom) != cleanPath {
-				continue
-			}
-			current.Categories = append([]string{}, categories...)
-			current.InheritedFrom = cleanPath
-			current.UpdatedAt = now
-			if len(current.Categories) == 0 && len(current.Tags) == 0 {
-				delete(entries, assetPath)
-			} else {
-				entries[assetPath] = current
+			for _, record := range records {
+				assetPath := filepath.Clean(record.Path)
+				if !pathIsInside(assetPath, cleanPath) {
+					continue
+				}
+				current := metadataForPath(assetPath, entries)
+				if len(current.Categories) > 0 && filepath.Clean(current.InheritedFrom) != cleanPath {
+					continue
+				}
+				current.Categories = append([]string{}, metadata.Categories...)
+				current.InheritedFrom = cleanPath
+				current.UpdatedAt = now
+				if len(current.Categories) == 0 && len(current.Tags) == 0 {
+					delete(entries, assetPath)
+				} else {
+					entries[assetPath] = current
+				}
 			}
 		}
-	}
-
-	if err := saveAssetMetadataOverrides(h.db, entries); err != nil {
+		if err := saveAssetMetadataOverrides(tx, entries); err != nil {
+			return err
+		}
+		persisted = metadataForPath(cleanPath, entries)
+		return nil
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "metadata": metadataForPath(cleanPath, entries)})
+	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "metadata": persisted})
 }
 
 func (h AssetHandler) Rename(c *gin.Context) {
@@ -3342,8 +3299,14 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	allowed, err := h.pathBelongsToLibrary(resolvedPath)
-	if err != nil || !allowed {
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
@@ -5614,6 +5577,8 @@ func activeTestEncodePaths(db *gorm.DB) map[string]bool {
 }
 
 func backfillInheritedAssetCategories(db *gorm.DB) error {
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	var records []models.AssetRecord
 	if err := db.Where("missing = ?", false).Find(&records).Error; err != nil {
 		return err
@@ -5751,7 +5716,8 @@ func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord)
 		if len(matches) == 1 && job.PublishedFingerprint != "" && mode == "exact" {
 			match := matches[0]
 			oldPath := filepath.Clean(job.PublishedPath)
-			if err := db.Transaction(func(tx *gorm.DB) error {
+			assetOverrideMutationMu.Lock()
+			err := db.Transaction(func(tx *gorm.DB) error {
 				job.PublishedPath = match.Path
 				job.LibraryID = match.LibraryID
 				job.Notes = appendNote(job.Notes, "Sync reconciled externally relocated converted asset: "+oldPath+" -> "+match.Path)
@@ -5759,7 +5725,9 @@ func reconcileMovedPublishedAssets(db *gorm.DB, candidates []models.AssetRecord)
 					return err
 				}
 				return migrateSingleAssetPathOverrides(tx, oldPath, match.Path)
-			}); err != nil {
+			})
+			assetOverrideMutationMu.Unlock()
+			if err != nil {
 				return reconciled, reviewMatches, err
 			}
 			claimed[filepath.Clean(match.Path)] = true
@@ -6648,6 +6616,8 @@ func resetRecoveredAssetOverrides(db *gorm.DB, paths ...string) error {
 		return nil
 	}
 
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	return db.Transaction(func(tx *gorm.DB) error {
 		conversion := assetConversionOverrides(tx)
 		conversionChanged := false

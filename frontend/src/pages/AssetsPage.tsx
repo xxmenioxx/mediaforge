@@ -49,7 +49,7 @@ import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import ScienceIcon from '@mui/icons-material/Science';
-import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { api } from '../api/client';
@@ -76,6 +76,8 @@ import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgeP
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
+import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
+import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
 import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
 import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
@@ -1645,7 +1647,6 @@ function AssetGroupRow({
 	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const pendingAssetTrackSaves = useIsMutating({ mutationKey: ['assetTrackSelection', normalizePath(group.path)] });
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
 	const pathScopeConfiguration = useQuery({
 		queryKey: ['assetScopeConfigurations', 'path', normalizePath(group.path)],
@@ -2143,7 +2144,7 @@ function AssetGroupRow({
                           queueGroup.mutate();
                         }}
                         disabled={
-                          profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || pendingAssetTrackSaves > 0 ||
+                          profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending ||
                           (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) ||
                           !selectedLibraryId ||
                           groupAssets.length === 0 ||
@@ -2152,7 +2153,7 @@ function AssetGroupRow({
                         fullWidth
                         sx={{ minHeight: 40, alignSelf: 'center' }}
                       >
-                        {pendingAssetTrackSaves > 0 ? 'Saving Tracks…' : 'Queue Folder'}
+                        Queue Folder
                       </Button>
                     </Grid>
                   </Grid>
@@ -2577,17 +2578,47 @@ function AssetRow({
   const [showTestEncodeDialog, setShowTestEncodeDialog] = useState(false);
   const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
   const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
+  const [assetEditQueueMessage, setAssetEditQueueMessage] = useState('');
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const reconciliationJobId = reconciliationJobIdFromReview(assetReview);
   const assetMetadata = asset.metadata ?? { categories: [], tags: [], updatedAt: '' };
   const [reviewReason, setReviewReason] = useState(assetReview.reason || '');
   const [reviewTags, setReviewTags] = useState<string[]>(safeArray(assetReview.tags));
-  const [category, setCategory] = useState<string>(firstCategory(assetMetadata.categories) || groupCategory);
-  const [conversionDraft, setConversionDraft] = useState<AssetConversionOverrideState>(() => normalizeAssetConversionOverride(asset.conversion));
-  const persistedConversionSignature = JSON.stringify(
-    normalizeAssetConversionOverride(asset.conversion),
-  );
+  const initialAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
+  const [persistedAssetEdit, setPersistedAssetEdit] = useState<AssetInfoEditDocument>(initialAssetEdit);
+  const [assetEditDraft, setAssetEditDraft] = useState<AssetInfoEditDocument>(initialAssetEdit);
+  const assetEditDraftRef = useRef(assetEditDraft);
+  const assetEditPathRef = useRef(asset.path);
+  const assetEditDirty = !assetInfoDocumentsEqual(persistedAssetEdit, assetEditDraft);
+  const conversionDraft = assetEditDraft.conversion;
+  const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
+  const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
+  const authoritativeAssetEditSignature = JSON.stringify(authoritativeAssetEdit);
+
+  useEffect(() => {
+    assetEditDraftRef.current = assetEditDraft;
+  }, [assetEditDraft]);
+
+  function setConversionDraft(next: AssetConversionOverrideState | ((current: AssetConversionOverrideState) => AssetConversionOverrideState)) {
+    setAssetEditDraft((current) => {
+      const conversion = typeof next === 'function' ? next(current.conversion) : next;
+      return {
+        ...current,
+        conversion: normalizeAssetConversionOverride(conversion),
+      };
+    });
+  }
+
+  function setCategory(nextCategory: string) {
+    setAssetEditDraft((current) => ({
+      ...current,
+      metadata: {
+        ...current.metadata,
+        categories: nextCategory ? [nextCategory] : [],
+      },
+    }));
+  }
   const storedSnapshot = useQuery({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
@@ -2645,6 +2676,26 @@ function AssetRow({
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
     enabled: showAdvisorDialog && mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && asset.status !== 'accepted' && confidenceEnabled && effectiveProfileId > 0,
   });
+  const saveAssetEdit = useMutation({
+    mutationFn: (revision: AssetInfoEditDocument) => api.updateAssetEdit({
+      path: asset.path,
+      metadata: revision.metadata,
+      conversion: cleanConversionOverride(revision.conversion),
+    }),
+    onSuccess: (response, revision) => {
+      const reconciled = assetInfoSaveReconciliation(assetEditDraftRef.current, revision, response);
+      setPersistedAssetEdit(reconciled.baseline);
+      setAssetEditDraft(reconciled.draft);
+      queryClient.setQueryData<AssetInventory | undefined>(['assets'], (current) => current
+        ? patchAssetInventoryAsset(current, response.path, response)
+        : current);
+    },
+    onError: () => {
+      const retained = assetInfoSaveFailureReconciliation(persistedAssetEdit, assetEditDraftRef.current);
+      setPersistedAssetEdit(retained.baseline);
+      setAssetEditDraft(retained.draft);
+    },
+  });
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
       if (selectedTrackProfile) {
@@ -2659,11 +2710,6 @@ function AssetRow({
         if (!result.applies) {
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${selectedTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
-      } else if (hasTrackSelectionOverride(conversionDraft)) {
-        await api.updateAssetConversion({
-          path: asset.path,
-          ...cleanConversionOverride(conversionDraft),
-        });
       }
       return api.createQueueJob(input);
     },
@@ -2686,23 +2732,10 @@ function AssetRow({
       ]);
     },
   });
-  const updateMetadata = useMutation({
-    mutationFn: api.updateAssetMetadata,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
-    },
-  });
   const renameAsset = useMutation({
     mutationFn: api.renameAsset,
     onSuccess: async () => {
       closeSnapshotDialog();
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
-    },
-  });
-  const updateConversion = useMutation({
-    mutationKey: ['assetTrackSelection', normalizePath(groupPath)],
-    mutationFn: api.updateAssetConversion,
-    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
@@ -2936,16 +2969,19 @@ function AssetRow({
   void restoreSubtitleOperations();
   }, [showSnapshotDialog, asset.path]);
   useEffect(() => {
-    if (!firstCategory(assetMetadata.categories)) {
-      setCategory(groupCategory);
+    if (assetEditPathRef.current !== asset.path) {
+      assetEditPathRef.current = asset.path;
+      setPersistedAssetEdit(authoritativeAssetEdit);
+      setAssetEditDraft(authoritativeAssetEdit);
+      saveAssetEdit.reset();
+      return;
     }
-  }, [assetMetadata.categories, groupCategory]);
-
-  useEffect(() => {
-    setConversionDraft(
-      normalizeAssetConversionOverride(asset.conversion),
-    );
-  }, [asset.path, persistedConversionSignature]);
+    const refreshed = assetInfoRefreshReconciliation(persistedAssetEdit, assetEditDraft, authoritativeAssetEdit);
+    if (!refreshed.dirty) {
+      setPersistedAssetEdit(refreshed.baseline);
+      setAssetEditDraft(refreshed.draft);
+    }
+  }, [asset.path, authoritativeAssetEditSignature, assetEditDirty]);
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -2954,6 +2990,16 @@ function AssetRow({
   }
 
   function closeSnapshotDialog() {
+    if (assetEditDirty && !window.confirm('Discard unsaved Asset Info changes?')) {
+      return;
+    }
+    if (assetEditDirty) {
+      const discarded = assetInfoDiscardDraft(persistedAssetEdit);
+      setAssetEditDraft(discarded);
+      assetEditDraftRef.current = discarded;
+      saveAssetEdit.reset();
+      setAssetEditQueueMessage('');
+    }
     setShowSnapshotDialog(false);
     snapshot.reset();
     setSnapshotOperation(null);
@@ -2983,10 +3029,9 @@ function AssetRow({
       }
     });
     const next = cleanConversionOverride(draft);
-    await updateConversion.mutateAsync({ path: asset.path, ...next });
     setConversionDraft(next);
     setSnapshotTab(5);
-    return 'Recommendations were saved to Asset Overrides.';
+    return 'Recommendations were applied to the draft. Save Asset Info to commit them.';
   }
 
   function toggleSnapshotStream(type: MediaStreamInfo['type'], index: number, keep: boolean) {
@@ -3000,7 +3045,6 @@ function AssetRow({
     const indexes = selectedOrUndefined(next, allIndexes);
     const nextDraft = withStreamSelection(conversionDraft, type, indexes);
     setConversionDraft(nextDraft);
-    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
 
   function updateSubtitleSidecarFormats(index: number, value: string) {
@@ -3010,7 +3054,6 @@ function AssetRow({
     else delete current[String(index)];
     const nextDraft = { ...conversionDraft, subtitleSidecarFormatsByStream: Object.keys(current).length ? current : undefined };
     setConversionDraft(nextDraft);
-    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
 
   function updateSubtitleRole(index: number, value: SubtitleSemanticRole | 'auto') {
@@ -3019,7 +3062,6 @@ function AssetRow({
     else current[String(index)] = { role: value };
     const nextDraft = { ...conversionDraft, subtitleRoleOverrides: current };
     setConversionDraft(nextDraft);
-    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(nextDraft) });
   }
 
   function updateConversionDraft<K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) {
@@ -3052,7 +3094,8 @@ function AssetRow({
   }
 
   function saveConversionOverrides() {
-    updateConversion.mutate({ path: asset.path, ...cleanConversionOverride(conversionDraft) });
+    if (!assetEditDirty || saveAssetEdit.isPending || renameAsset.isPending) return;
+    saveAssetEdit.mutate(assetEditDraft);
   }
 
   function openAssetTestEncode() {
@@ -3398,13 +3441,17 @@ async function generateExternalSubtitle(
   }
 
   function resetConversionOverrides() {
-    const empty: AssetConversionOverrideState = {};
+    const empty: AssetConversionOverrideState = { subtitleRoleOverrides: {} };
     setConversionDraft(empty);
-    updateConversion.mutate({ path: asset.path, ...empty });
   }
 
   function queueAsset(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
+    if (assetEditDirty) {
+      setAssetEditQueueMessage('Save Asset Info changes before Queue. Unsaved changes are not queued.');
+      return;
+    }
+    setAssetEditQueueMessage('');
     const queueProfileId =
       effectiveProfileId > 0
         ? effectiveProfileId
@@ -3461,11 +3508,6 @@ async function generateExternalSubtitle(
 
   function saveAssetCategory(nextCategory: string) {
     setCategory(nextCategory);
-    updateMetadata.mutate({
-      path: asset.path,
-      categories: nextCategory ? [nextCategory] : [],
-      tags: safeArray(assetMetadata.tags),
-    });
   }
 
   function recoverArchivedAsset(event: MouseEvent<HTMLButtonElement>) {
@@ -3588,7 +3630,7 @@ async function generateExternalSubtitle(
               onChange={saveAssetCategory}
               label="Category"
               size="small"
-              disabled={rowLocked || asset.missing || updateMetadata.isPending}
+              disabled={rowLocked || asset.missing}
             />
           </TableCell>
         ) : null}
@@ -4080,17 +4122,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'video'),
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
                               },
                               audio: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'audio'),
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
                               },
                               subtitle: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'subtitle'),
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
                               },
                             }
@@ -4101,17 +4143,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 values: conversionDraft.videoMetadata ?? {},
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onChange: (index, patch) => updateStreamMetadata('video', index, patch),
                               },
                               audio: {
                                 values: conversionDraft.audioMetadata ?? {},
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
                               },
                               subtitle: {
                                 values: conversionDraft.subtitleMetadata ?? {},
-                                disabled: rowLocked || updateConversion.isPending,
+                                disabled: rowLocked,
                                 onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
                               },
                             }
@@ -4124,7 +4166,7 @@ async function generateExternalSubtitle(
                         const formats = conversionDraft.subtitleSidecarFormatsByStream?.[String(stream.index)];
                         const value = formats?.length ? formats.join('+') : 'inherit';
                         const textCompatible = ['ass', 'ssa'].includes(stream.codec.toLowerCase());
-                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked || updateConversion.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
+                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
                           <MenuItem value="inherit">Inherit Track Profile</MenuItem>
                           <MenuItem value="original">Original format only</MenuItem>
                           {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
@@ -4139,7 +4181,7 @@ async function generateExternalSubtitle(
                         const override = conversionDraft.subtitleRoleOverrides?.[String(stream.index)];
                         const roleValue = override?.role ?? 'auto';
                         const automatic = stream.role ?? 'unknown';
-                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked || updateConversion.isPending} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
+                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
                           <MenuItem value="auto">Automatic ({automatic})</MenuItem>
                           {(['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'] as SubtitleSemanticRole[]).map((role) => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                         </TextField>;
@@ -4202,13 +4244,14 @@ async function generateExternalSubtitle(
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
                           <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ renameLocked || asset.missing || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
+                            || saveAssetEdit.isPending
                           }>Rename</Button>
                         </Stack>
                       </Grid>
                       <Grid size={{ xs: 12, md: 6 }}>
-                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing || updateMetadata.isPending} />
+                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing} />
                       </Grid>
                     </Grid>
                     {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}
@@ -4336,7 +4379,7 @@ async function generateExternalSubtitle(
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
-                        saving={updateConversion.isPending}
+                        saving={saveAssetEdit.isPending || renameAsset.isPending}
                         readOnly={isConverted || hasOpenJob}
                       />
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
@@ -4387,9 +4430,10 @@ async function generateExternalSubtitle(
                 </Box>
               </>
             ) : null}
-            {updateConversion.isSuccess ? <Alert severity="success">Asset conversion overrides saved.</Alert> : null}
-            {updateConversion.isError ? (
-              <Alert severity="warning">Could not save conversion overrides: {updateConversion.error.message}</Alert>
+            {saveAssetEdit.isSuccess ? <Alert severity="success">Asset Info saved.</Alert> : null}
+            {assetEditQueueMessage ? <Alert severity="warning">{assetEditQueueMessage}</Alert> : null}
+            {saveAssetEdit.isError ? (
+              <Alert severity="warning">Could not save Asset Info: {saveAssetEdit.error instanceof Error ? saveAssetEdit.error.message : 'Unknown error'}</Alert>
             ) : null}
           </Stack>
         </DialogContent>
@@ -6904,6 +6948,12 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (value.qsvRateControl === 'icq' || value.qsvRateControl === 'la_icq') {
     clean.qsvRateControl = value.qsvRateControl;
   }
+  if (value.qsvMBBRCMode === 'auto' || value.qsvMBBRCMode === 'enabled' || value.qsvMBBRCMode === 'disabled') {
+    clean.qsvMBBRCMode = value.qsvMBBRCMode;
+  }
+  if (value.qsvRDOMode === 'auto' || value.qsvRDOMode === 'enabled' || value.qsvRDOMode === 'disabled') {
+    clean.qsvRDOMode = value.qsvRDOMode;
+  }
   if (value.preferredEncoder === 'software' || value.preferredEncoder === 'hardware' || value.preferredEncoder === 'auto') {
     clean.preferredEncoder = value.preferredEncoder;
   }
@@ -6944,6 +6994,16 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.videoToolboxBitrateMbps === 'number' && Number.isFinite(value.videoToolboxBitrateMbps) && value.videoToolboxBitrateMbps > 0) clean.videoToolboxBitrateMbps = Math.min(200, Math.round(value.videoToolboxBitrateMbps * 100) / 100);
   if (typeof value.videoToolboxMaxrateMbps === 'number' && Number.isFinite(value.videoToolboxMaxrateMbps) && value.videoToolboxMaxrateMbps > 0) clean.videoToolboxMaxrateMbps = Math.min(250, Math.round(value.videoToolboxMaxrateMbps * 100) / 100);
   if (typeof value.videoToolboxBufferMbps === 'number' && Number.isFinite(value.videoToolboxBufferMbps) && value.videoToolboxBufferMbps > 0) clean.videoToolboxBufferMbps = Math.min(500, Math.round(value.videoToolboxBufferMbps * 100) / 100);
+  if (typeof value.videoToolboxQualityProfile === 'number' && Number.isFinite(value.videoToolboxQualityProfile) && value.videoToolboxQualityProfile > 0) clean.videoToolboxQualityProfile = Math.round(value.videoToolboxQualityProfile);
+  if (value.videoToolboxProfile?.trim()) clean.videoToolboxProfile = value.videoToolboxProfile.trim();
+  if (typeof value.videoToolboxGop === 'number' && Number.isFinite(value.videoToolboxGop) && value.videoToolboxGop > 0) clean.videoToolboxGop = Math.round(value.videoToolboxGop);
+  if (typeof value.videoToolboxRealtime === 'boolean') clean.videoToolboxRealtime = value.videoToolboxRealtime;
+  if (value.videoToolboxBFramePolicy === 'auto' || value.videoToolboxBFramePolicy === 'enabled' || value.videoToolboxBFramePolicy === 'disabled') clean.videoToolboxBFramePolicy = value.videoToolboxBFramePolicy;
+  if (typeof value.videoToolboxBFrames === 'number' && Number.isFinite(value.videoToolboxBFrames) && value.videoToolboxBFrames >= 0) clean.videoToolboxBFrames = Math.round(value.videoToolboxBFrames);
+  if (typeof value.videoToolboxAutoAdjustBitrate === 'boolean') clean.videoToolboxAutoAdjustBitrate = value.videoToolboxAutoAdjustBitrate;
+  if (typeof value.videoToolboxAllowFrameReordering === 'boolean') clean.videoToolboxAllowFrameReordering = value.videoToolboxAllowFrameReordering;
+  if (typeof value.videoToolboxPowerEfficiency === 'boolean') clean.videoToolboxPowerEfficiency = value.videoToolboxPowerEfficiency;
+  if (value.hardwareQualityPreset?.trim()) clean.hardwareQualityPreset = value.hardwareQualityPreset.trim();
   return clean;
 }
 
