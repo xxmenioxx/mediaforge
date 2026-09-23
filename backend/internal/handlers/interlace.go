@@ -592,7 +592,7 @@ func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation
 		analysis.RecommendedAction = "ivtc"
 		analysis.DecisionReason = "inverse telecine was validated in distributed samples"
 		analysis.RecommendedFieldMetadataMode = "progressive"
-		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ",decimate"
+		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ":combmatch=full,bwdif=mode=send_frame:parity=" + selected + ":deint=interlaced,decimate,setfield=prog"
 		analysis.AutomaticFilter = analysis.RecommendedFilter
 	}
 }
