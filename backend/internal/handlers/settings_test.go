@@ -131,6 +131,49 @@ func TestSettingsRejectsInvalidAnalysisPolicy(t *testing.T) {
 	}
 }
 
+func TestSettingsValidatesWorkerProgressPacingSettings(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-worker-progress-pacing?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "invalid mode", value: `{"jobStartPacingMode":"frames"}`},
+		{name: "threshold below minimum", value: `{"startNextJobAtProgressPercent":0}`},
+		{name: "threshold above maximum", value: `{"startNextJobAtProgressPercent":101}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/settings/workers", strings.NewReader(fmt.Sprintf(`{"value":%s}`, tc.value)))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	for _, threshold := range []int{1, 100} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/settings/workers", strings.NewReader(fmt.Sprintf(`{"value":{"jobStartPacingMode":"progress","startNextJobAtProgressPercent":%d}}`, threshold)))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("threshold %d status=%d body=%s", threshold, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestSettingsPersistsNormalizedProfileSampleEstimatePolicy(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:settings-profile-sample-estimate-policy?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -59,9 +59,10 @@ func (w *AutoWorker) tick() {
 		appendSystemLog(w.handler.db, "auto_worker_settings_failed", nil, err)
 		return
 	}
-	if err := w.handler.heartbeatWorker(limits.DefaultWorkerName, limits, nil, ""); err != nil {
+	workerName := canonicalWorkerName(limits.DefaultWorkerName, "")
+	if err := w.handler.heartbeatWorker(workerName, limits, nil, ""); err != nil {
 		log.Printf("auto worker heartbeat error: %v", err)
-		appendSystemLog(w.handler.db, "worker_heartbeat_failed", map[string]string{"worker": limits.DefaultWorkerName}, err)
+		appendSystemLog(w.handler.db, "worker_heartbeat_failed", map[string]string{"worker": workerName}, err)
 		return
 	}
 	if !limits.AutoWorkerEnabled {
@@ -72,20 +73,20 @@ func (w *AutoWorker) tick() {
 	}
 
 	for {
-		job, err := w.handler.claimNextJob(limits.DefaultWorkerName, nil, "")
+		job, err := w.handler.claimNextJob(workerName, nil, "")
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, errWorkerLimitReached) || errors.Is(err, errWorkerDelayActive) {
+			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, errWorkerLimitReached) || errors.Is(err, errWorkerDelayActive) || errors.Is(err, errWorkerProgressPacingActive) {
 				return
 			}
 			log.Printf("auto worker claim error: %v", err)
-			appendSystemLog(w.handler.db, "auto_worker_claim_failed", map[string]string{"worker": limits.DefaultWorkerName}, err)
+			appendSystemLog(w.handler.db, "auto_worker_claim_failed", map[string]string{"worker": workerName}, err)
 			return
 		}
 
 		if _, _, err := w.handler.executeQueueJob(job, true); err != nil {
 			w.handler.failClaimedJobExecution(job.ID, err)
 			log.Printf("auto worker execute job %d error: %v", job.ID, err)
-			appendSystemLog(w.handler.db, "auto_worker_execution_failed", map[string]string{"worker": limits.DefaultWorkerName, "jobId": fmt.Sprint(job.ID)}, err)
+			appendSystemLog(w.handler.db, "auto_worker_execution_failed", map[string]string{"worker": workerName, "jobId": fmt.Sprint(job.ID)}, err)
 			return
 		}
 	}

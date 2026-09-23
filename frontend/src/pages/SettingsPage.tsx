@@ -12,11 +12,15 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   FormControlLabel,
+  FormLabel,
   Grid,
   IconButton,
   InputAdornment,
   MenuItem,
+  Radio,
+  RadioGroup,
   Stack,
   Switch,
   Tab,
@@ -75,7 +79,9 @@ type ProfileSampleEstimatePolicyValue = { hardwareWindows: number; softwareWindo
 type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number; testEncodeRetentionHours: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
-type SettingsForm = {
+export type WorkerJobStartPacingMode = 'time' | 'progress';
+
+export type SettingsForm = {
   paths: {
     rawRoot: string;
     libraryRoot: string;
@@ -92,6 +98,8 @@ type SettingsForm = {
     maxJobsPerBatch: number;
     delaySecondsBetweenJobs: number;
     batchCooldownSeconds: number;
+    jobStartPacingMode: WorkerJobStartPacingMode;
+    startNextJobAtProgressPercent: number;
     dryRunOnly: boolean;
   };
   pipelineAutomation: {
@@ -188,6 +196,8 @@ const initialSettings: SettingsForm = buildSettingsForm({
     maxJobsPerBatch: 10,
     delaySecondsBetweenJobs: 30,
     batchCooldownSeconds: 600,
+    jobStartPacingMode: 'time',
+    startNextJobAtProgressPercent: 75,
     dryRunOnly: true,
   },
   pipelineAutomation: {
@@ -341,7 +351,7 @@ export function SettingsPage() {
       return Promise.all([
         api.updateSetting({ key: 'paths', value: nextForm.paths }),
         api.updateSetting({ key: 'storageRoles', value: storageRoles }),
-        api.updateSetting({ key: 'workers', value: nextForm.workers }),
+        api.updateSetting({ key: 'workers', value: workerSettingsPayload(nextForm.workers) }),
         api.updateSetting({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation }),
         api.updateSetting({ key: 'assetInventory', value: nextForm.assetInventory }),
         api.updateSetting({ key: 'validation', value: nextForm.validation }),
@@ -397,6 +407,9 @@ export function SettingsPage() {
   }, [settings.data]);
 
   function saveSettings(nextForm = form) {
+    if (workerProgressPercentError(nextForm.workers.startNextJobAtProgressPercent)) {
+      return;
+    }
     saveCoreSettings.mutate(nextForm);
   }
 
@@ -436,6 +449,8 @@ export function SettingsPage() {
           initialSettings.workers.delaySecondsBetweenJobs,
         ),
         batchCooldownSeconds: numberValue(workers.batchCooldownSeconds, initialSettings.workers.batchCooldownSeconds),
+        jobStartPacingMode: workerJobStartPacingModeValue(workers.jobStartPacingMode),
+        startNextJobAtProgressPercent: workerProgressPercentValue(workers.startNextJobAtProgressPercent),
         dryRunOnly: booleanValue(workers.dryRunOnly, initialSettings.workers.dryRunOnly),
       },
       pipelineAutomation: {
@@ -1069,7 +1084,11 @@ export function SettingsPage() {
               startIcon={<SaveIcon />}
               variant="contained"
               onClick={() => saveSettings()}
-              disabled={updateSetting.isPending || saveCoreSettings.isPending}
+              disabled={
+                updateSetting.isPending ||
+                saveCoreSettings.isPending ||
+                Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))
+              }
               sx={{ alignSelf: 'flex-start' }}
             >
               Save Settings
@@ -1616,7 +1635,7 @@ function PathsCard({ form, setForm }: SettingsCardProps) {
   );
 }
 
-function WorkersCard({ form, setForm }: SettingsCardProps) {
+export function WorkersCard({ form, setForm }: SettingsCardProps) {
   return (
     <Card sx={{ height: '100%' }}>
       <CardContent>
@@ -1693,20 +1712,62 @@ function WorkersCard({ form, setForm }: SettingsCardProps) {
             inputProps={{ min: 0, max: 86400 }}
             fullWidth
           />
-          <TextField
-            label="Delay between job starts"
-            type="number"
-            value={form.workers.delaySecondsBetweenJobs}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                workers: { ...current.workers, delaySecondsBetweenJobs: Number(event.target.value) },
-              }))
-            }
-            helperText="Seconds to wait between claiming jobs."
-            inputProps={{ min: 0, max: 86400 }}
-            fullWidth
-          />
+          <FormControl>
+            <FormLabel id="worker-start-pacing-label">Start next job by</FormLabel>
+            <RadioGroup
+              row
+              aria-labelledby="worker-start-pacing-label"
+              value={form.workers.jobStartPacingMode}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  workers: {
+                    ...current.workers,
+                    jobStartPacingMode: event.target.value as WorkerJobStartPacingMode,
+                  },
+                }))
+              }
+            >
+              <FormControlLabel value="time" control={<Radio />} label="Time delay" />
+              <FormControlLabel value="progress" control={<Radio />} label="Job progress" />
+            </RadioGroup>
+          </FormControl>
+          {form.workers.jobStartPacingMode === 'progress' ? (
+            <TextField
+              label="Progress trigger"
+              type="number"
+              value={form.workers.startNextJobAtProgressPercent}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  workers: {
+                    ...current.workers,
+                    startNextJobAtProgressPercent: Number(event.target.value),
+                  },
+                }))
+              }
+              error={Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))}
+              helperText={workerProgressPercentError(form.workers.startNextJobAtProgressPercent) ?? 'Start the next job when the latest worker job reaches this percentage.'}
+              inputProps={{ min: 1, max: 100, step: 1 }}
+              InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+              fullWidth
+            />
+          ) : (
+            <TextField
+              label="Delay between job starts"
+              type="number"
+              value={form.workers.delaySecondsBetweenJobs}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  workers: { ...current.workers, delaySecondsBetweenJobs: Number(event.target.value) },
+                }))
+              }
+              helperText="Seconds to wait between claiming jobs."
+              inputProps={{ min: 0, max: 86400 }}
+              fullWidth
+            />
+          )}
           <FormControlLabel
             control={
               <Checkbox
@@ -2930,7 +2991,7 @@ function runtimeDisk(value: unknown): { path: string; type: string; totalBytes: 
   };
 }
 
-function settingsToForm(settings: Array<{ key: string; value: Record<string, unknown> }>): SettingsForm {
+export function settingsToForm(settings: Array<{ key: string; value: Record<string, unknown> }>): SettingsForm {
   const byKey = Object.fromEntries(settings.map((setting) => [setting.key, setting.value]));
   const paths = byKey.paths ?? {};
   const workers = byKey.workers ?? {};
@@ -2969,6 +3030,8 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
         initialSettings.workers.delaySecondsBetweenJobs,
       ),
       batchCooldownSeconds: numberValue(workers.batchCooldownSeconds, initialSettings.workers.batchCooldownSeconds),
+      jobStartPacingMode: workerJobStartPacingModeValue(workers.jobStartPacingMode),
+      startNextJobAtProgressPercent: workerProgressPercentValue(workers.startNextJobAtProgressPercent),
       dryRunOnly: booleanValue(workers.dryRunOnly, initialSettings.workers.dryRunOnly),
     },
     pipelineAutomation: {
@@ -3054,7 +3117,25 @@ function settingsToForm(settings: Array<{ key: string; value: Record<string, unk
   });
 }
 
-function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsForm {
+export function workerJobStartPacingModeValue(value: unknown): WorkerJobStartPacingMode {
+  return value === 'progress' ? 'progress' : 'time';
+}
+
+export function workerProgressPercentValue(value: unknown): number {
+  return typeof value === 'number' ? value : 75;
+}
+
+export function workerProgressPercentError(value: unknown): string | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 100
+    ? undefined
+    : 'Enter a whole percentage from 1 to 100.';
+}
+
+export function workerSettingsPayload(workers: SettingsForm['workers']): SettingsForm['workers'] {
+  return { ...workers };
+}
+
+export function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsForm {
   return {
     ...base,
     advancedJson: {
