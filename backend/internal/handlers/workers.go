@@ -1296,7 +1296,7 @@ func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) m
 		if !recommendationOK {
 			recommendation = recommendCadence(analysis)
 		}
-		profile = profileWithCadenceOutputDecision(profile, analysis, recommendation)
+		profile = profileWithCadenceOutputDecision(profile, analysis, recommendation, interlace)
 	}
 	return profile
 }

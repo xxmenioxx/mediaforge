@@ -1839,7 +1839,12 @@ export type EffectiveVideoDecision = {
   pixelFormat?: string;
   frameStructureMode?: string;
   cadenceOperation?: string;
+  cadenceFieldOrder?: 'tff' | 'bff' | string;
+  residualCombingFallback?: 'selective' | 'none' | string;
+  residualCombingFallbackReason?: string;
+  effectiveMotionFilters?: string;
   effectiveFrameRate?: string;
+  effectiveProgressive?: boolean;
   effectiveWidth?: number;
   effectiveHeight?: number;
   geometryUnknown?: boolean;

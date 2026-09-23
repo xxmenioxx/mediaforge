@@ -1089,18 +1089,210 @@ func TestFFmpegCommandBuilderAppliesOnlyValidatedAutomaticIVTC(t *testing.T) {
 		ProcessingMode: ProcessingModeFullEncode,
 		Profile: models.Profile{
 			VideoCodec: "x265_10bit", AudioCodec: "copy",
-			WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"},
+			WorkerConfig: models.JSONMap{"deinterlaceMode": "auto", "cadenceMode": "auto", "cadenceFieldOrder": "auto"},
 		},
 		Interlace: InterlaceAnalysis{
 			Version: interlaceAnalysisVersion, Status: "telecine", RecommendedAction: "ivtc",
+			IVTCValidation:    &IVTCValidation{SelectedOrder: "tff", Confidence: .99},
 			RecommendedFilter: "fieldmatch=order=tff,decimate", AutomaticFilter: "fieldmatch=order=tff,decimate",
 		},
+		CadenceRecommendation: CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99},
 	}
 	plan.Profile = resolveEffectiveVideoMotionProfile(plan.Profile, plan.Interlace, plan.Cadence, plan.CadenceRecommendation)
 
 	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
-	assertContains(t, command, "-vf fieldmatch=order=tff,decimate,setfield=prog")
-	assertNotContains(t, command, "bwdif=")
+	assertContains(t, command, "-vf fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog")
+}
+
+func TestResolvedValidatedIVTCArmsSelectiveResidualFallbackForBothParities(t *testing.T) {
+	for _, order := range []string{"tff", "bff"} {
+		t.Run(order, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+				"fieldStructureMode": "preserve",
+				"cadenceMode":        "inverse_telecine",
+				"cadenceFieldOrder":  "auto",
+				"videoFilters":       "scale=1280:720",
+			}}
+			interlace := InterlaceAnalysis{
+				Status:          "telecine",
+				IVTCValidation:  &IVTCValidation{SelectedOrder: order, Confidence: .99},
+				RecommendedMode: "ivtc_" + order,
+			}
+			cadence := CadenceAnalysis{Type: "hard_telecine", Confidence: .99}
+			recommendation := CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+
+			resolved := resolveEffectiveVideoMotionProfile(profile, interlace, cadence, recommendation)
+			filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
+			wantPrefix := "fieldmatch=order=" + order + ":combmatch=full,bwdif=mode=send_frame:parity=" + order + ":deint=interlaced,decimate,setfield=prog"
+			if !strings.HasPrefix(filters, wantPrefix) {
+				t.Fatalf("unexpected canonical IVTC chain: %q", filters)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceFieldOrder"]); got != order {
+				t.Fatalf("resolved parity=%q want %q", got, order)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveResidualCombingFallback"]); got != "selective" {
+				t.Fatalf("residual fallback=%q want selective", got)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" {
+				t.Fatalf("effective FPS=%q want 24000/1001", got)
+			}
+			if !profileWorkerBool(resolved, "effectiveOutputProgressive", false) {
+				t.Fatal("validated IVTC must resolve progressive output")
+			}
+			decision := effectiveVideoDecision(resolved)
+			if got := workerStringValue(decision["residualCombingFallback"]); got != "selective" {
+				t.Fatalf("decision fallback=%q want selective", got)
+			}
+			if got := workerStringValue(decision["cadenceFieldOrder"]); got != order {
+				t.Fatalf("decision parity=%q want %q", got, order)
+			}
+		})
+	}
+}
+
+func TestResolvedIVTCMotionDecisionUsesExplicitOrderOverScanFilter(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"fieldStructureMode": "preserve",
+		"cadenceMode":        "inverse_telecine",
+		"cadenceFieldOrder":  "tff",
+		"videoFilters":       "",
+	}}
+	interlace := InterlaceAnalysis{
+		Status:          "telecine",
+		AutomaticFilter: "fieldmatch=order=bff:combmatch=full,decimate",
+		IVTCValidation:  &IVTCValidation{SelectedOrder: "bff", Confidence: .99},
+	}
+	recommendation := CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, interlace, CadenceAnalysis{Type: "hard_telecine", Confidence: .99}, recommendation)
+	want := "fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog"
+	if got := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"]); got != want {
+		t.Fatalf("effective LAB motion filters=%q want %q", got, want)
+	}
+	decision := effectiveVideoDecision(resolved)
+	if got := workerStringValue(decision["effectiveMotionFilters"]); got != want {
+		t.Fatalf("effective decision motion filters=%q want %q", got, want)
+	}
+	if got := workerStringValue(decision["cadenceFieldOrder"]); got != "tff" {
+		t.Fatalf("explicit field order was not authoritative: %q", got)
+	}
+	if got := workerStringValue(decision["residualCombingFallback"]); got != "selective" {
+		t.Fatalf("residual fallback=%q want selective", got)
+	}
+}
+
+func TestAutomaticNativeInterlaceMotionDecisionExcludesRestorationFilters(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "auto",
+		"videoFilters":    "hqdn3d=2:2:6:6",
+	}}
+	analysis := InterlaceAnalysis{
+		Status:             "interlaced",
+		DetectedFieldOrder: "tff",
+		AutomaticFilter:    "bwdif=mode=send_frame:parity=tff:deint=all",
+	}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, analysis, CadenceAnalysis{}, CadenceRecommendation{})
+	filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
+	if filters != "bwdif=mode=send_frame:parity=tff:deint=all,hqdn3d=2:2:6:6,setfield=prog" {
+		t.Fatalf("native interlaced filters=%q", filters)
+	}
+	automatic := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"])
+	if automatic != "bwdif=mode=send_frame:parity=tff:deint=all,setfield=prog" {
+		t.Fatalf("automatic motion filters=%q", automatic)
+	}
+	if strings.Count(automatic, "bwdif=") != 1 || strings.Count(automatic, "setfield=prog") != 1 || strings.Contains(automatic, "hqdn3d=") {
+		t.Fatalf("automatic motion filters were contaminated or duplicated: %q", automatic)
+	}
+}
+
+func TestManualMotionFilterIsNotReportedAsAutomaticMotion(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "auto",
+		"videoFilters":    "yadif=mode=send_frame:parity=tff",
+	}}
+	analysis := InterlaceAnalysis{
+		Status:             "interlaced",
+		DetectedFieldOrder: "tff",
+		AutomaticFilter:    "bwdif=mode=send_frame:parity=tff:deint=all",
+	}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, analysis, CadenceAnalysis{}, CadenceRecommendation{})
+	if got := workerStringValue(resolved.WorkerConfig["videoFilters"]); got != "yadif=mode=send_frame:parity=tff,setfield=prog" {
+		t.Fatalf("manual motion filters were replaced: %q", got)
+	}
+	if got := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"]); got != "setfield=prog" {
+		t.Fatalf("manual motion was incorrectly exposed as automatic: %q", got)
+	}
+}
+
+func TestResolvedAutomaticValidatedIVTCUsesSelectedParity(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"fieldStructureMode": "preserve",
+		"cadenceMode":        "auto",
+		"cadenceFieldOrder":  "auto",
+	}}
+	interlace := InterlaceAnalysis{
+		Status:         "telecine",
+		IVTCValidation: &IVTCValidation{SelectedOrder: "bff", Confidence: .99},
+	}
+	resolved := resolveEffectiveVideoMotionProfile(profile, interlace, CadenceAnalysis{}, CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001"})
+	filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
+	if !strings.HasPrefix(filters, "fieldmatch=order=bff:combmatch=full,bwdif=mode=send_frame:parity=bff:deint=interlaced,decimate,setfield=prog") {
+		t.Fatalf("automatic validated IVTC did not use selected BFF parity: %q", filters)
+	}
+	if got := workerStringValue(resolved.WorkerConfig["effectiveResidualCombingFallback"]); got != "selective" {
+		t.Fatalf("automatic residual fallback=%q want selective", got)
+	}
+}
+
+func TestNonIVTCPathsDoNotArmSelectiveResidualFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		profile    models.Profile
+		interlace  InterlaceAnalysis
+		assertions func(*testing.T, models.Profile)
+	}{
+		{
+			name:      "progressive",
+			profile:   models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{"deinterlaceMode": "off"}},
+			interlace: InterlaceAnalysis{Status: "progressive"},
+			assertions: func(t *testing.T, resolved models.Profile) {
+				if filters := workerStringValue(resolved.WorkerConfig["videoFilters"]); filters != "" {
+					t.Fatalf("progressive source received motion filters: %q", filters)
+				}
+			},
+		},
+		{
+			name:      "native interlaced",
+			profile:   models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{"deinterlaceMode": "auto"}},
+			interlace: InterlaceAnalysis{Status: "interlaced", FieldOrder: "tff"},
+			assertions: func(t *testing.T, resolved models.Profile) {
+				if filters := workerStringValue(resolved.WorkerConfig["videoFilters"]); !strings.Contains(filters, "bwdif=") || !strings.Contains(filters, "deint=all") {
+					t.Fatalf("native interlaced source lost canonical full deinterlace: %q", filters)
+				}
+			},
+		},
+		{
+			name:      "unvalidated telecine",
+			profile:   models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{"deinterlaceMode": "auto", "cadenceMode": "auto"}},
+			interlace: InterlaceAnalysis{Status: "telecine_suspected", DetectedFieldOrder: "bff"},
+			assertions: func(t *testing.T, resolved models.Profile) {
+				if filters := workerStringValue(resolved.WorkerConfig["videoFilters"]); strings.Contains(filters, "fieldmatch=") || strings.Contains(filters, "bwdif=") {
+					t.Fatalf("unvalidated telecine guessed a motion chain: %q", filters)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := resolveEffectiveVideoMotionProfile(test.profile, test.interlace, CadenceAnalysis{}, CadenceRecommendation{})
+			if got := workerStringValue(resolved.WorkerConfig["effectiveResidualCombingFallback"]); got != "none" {
+				t.Fatalf("residual fallback=%q want none", got)
+			}
+			test.assertions(t, resolved)
+		})
+	}
 }
 
 func TestFFmpegCommandBuilderOmitsAbsentPreservationOptions(t *testing.T) {

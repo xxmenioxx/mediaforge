@@ -2616,6 +2616,7 @@ export function ProfileLabPage() {
     audio: audioDraft,
     tracks: trackConversionDraft,
     scan: selectedAssetSnapshot,
+    resolvedVideoDecision: validatedFidelityInspection?.effectiveVideoDecision,
     selectedAudioStreamIndex,
     embeddedSubtitleIndexes,
     chapterPolicy,
@@ -7479,6 +7480,7 @@ type CombinedLabCommandInput = {
   audio: AudioEnhancementProfile;
   tracks: AssetConversionOverrideState;
   scan?: ScanResult;
+  resolvedVideoDecision?: EffectiveVideoDecision;
   selectedAudioStreamIndex?: number;
   embeddedSubtitleIndexes: number[];
   chapterPolicy?: 'keep' | 'remove';
@@ -7549,7 +7551,7 @@ function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
     processedAudioOutputIndex = audioIndexes.length;
   }
   args.push('-c', 'copy');
-  args.push(...combinedVideoCommandArgs(input.video, input.scan));
+  args.push(...combinedVideoCommandArgs(input.video, input.scan, input.resolvedVideoDecision));
 
   if (processedAudioOutputIndex >= 0) {
     const filters = effectiveAudioFilters(input.audio);
@@ -7575,7 +7577,7 @@ function buildCombinedLabFFmpegCommand(input: CombinedLabCommandInput) {
   return args.join(' ');
 }
 
-function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
+export function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult, resolvedVideoDecision?: EffectiveVideoDecision) {
   if (profile.videoCodec === 'copy') return ['-c:v', 'copy'];
   const preference = videoWorkerValue(profile, 'preferredEncoder', 'software');
   const configuredEncoder = videoWorkerValue(profile, 'videoEncoder', 'auto');
@@ -7583,12 +7585,18 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
     ? configuredEncoder
     : softwareEncoderForLabCodec(profile.videoCodec);
   const worker = profile.workerConfig ?? {};
-  let filters = buildVideoFilterChain(worker);
+  const restorationFilters = buildVideoFilterChain(worker);
   const args = ['-c:v', encoder];
-  const automaticMotion = combinedAutomaticMotionFilters(profile, scan);
-  if (automaticMotion.length) {
-    filters = [automaticMotion.join(','), filters].filter(Boolean).join(',');
-  }
+  const automaticMotion = splitResolvedAutomaticMotionFilters(resolvedVideoDecision);
+  const restorationStages = splitFilterStages(restorationFilters);
+  const restorationFieldMetadata = restorationStages.filter(isTerminalFieldMetadataFilter);
+  const terminalFieldMetadata = automaticMotion.fieldMetadata.length
+    ? automaticMotion.fieldMetadata
+    : restorationFieldMetadata;
+  let filters = [
+    automaticMotion.motion.join(','),
+    restorationStages.filter((filter) => !isTerminalFieldMetadataFilter(filter)).join(','),
+  ].filter(Boolean).join(',');
 
   if (encoder === 'hevc_qsv') {
     args.push('-preset', videoWorkerValue(profile, 'videoPreset', 'medium'));
@@ -7853,6 +7861,7 @@ function combinedVideoCommandArgs(profile: ProfileInput, scan: ScanResult) {
       args.push('-bf', '0');
     }
   }
+  filters = [filters, terminalFieldMetadata.join(',')].filter(Boolean).join(',');
   if (filters) args.push('-vf', shellQuote(filters));
   return args;
 }
@@ -7916,14 +7925,30 @@ function adaptiveVideoToolboxPreviewRates(
   };
 }
 
-function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
-  if (videoFilterControlValue(profile, 'deinterlaceMode', 'auto') !== 'auto') return [];
-  const filters = (scan.interlaceAnalysis.automaticFilter || '').split(',').map((filter) => filter.trim()).filter(Boolean);
-  const emitsProgressiveFrames = filters.some((filter) => filter.startsWith('bwdif=') || filter.startsWith('fieldmatch=') || filter === 'decimate');
-  if ((emitsProgressiveFrames || (scan.interlaceAnalysis.status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch)) && !filters.some((filter) => filter.startsWith('setfield='))) {
-    filters.push('setfield=prog');
-  }
-  return filters;
+export function combinedAutomaticMotionFilters(resolvedVideoDecision?: EffectiveVideoDecision) {
+  return (resolvedVideoDecision?.effectiveMotionFilters || '')
+    .split(',')
+    .map((filter) => filter.trim())
+    .filter(Boolean);
+}
+
+function splitResolvedAutomaticMotionFilters(resolvedVideoDecision?: EffectiveVideoDecision) {
+  const filters = combinedAutomaticMotionFilters(resolvedVideoDecision);
+  return {
+    motion: filters.filter((filter) => !isTerminalFieldMetadataFilter(filter)),
+    fieldMetadata: filters.filter(isTerminalFieldMetadataFilter),
+  };
+}
+
+function splitFilterStages(filters: string) {
+  return filters
+    .split(',')
+    .map((filter) => filter.trim())
+    .filter(Boolean);
+}
+
+function isTerminalFieldMetadataFilter(filter: string) {
+  return /^setfield\s*=/i.test(filter.trim());
 }
 
 function combinedVideoToolboxColorConversion(scan: ScanResult): {
@@ -8209,6 +8234,8 @@ function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
     gop,
     level,
     decision.cadenceOperation,
+    decision.cadenceFieldOrder ? `Field order ${decision.cadenceFieldOrder.toUpperCase()}` : '',
+    decision.residualCombingFallback === 'selective' ? 'Residual combing selective' : '',
     decision.upscale ? `Upscale ${upscaleModeLabel(decision.upscale.resolvedMode)}${decision.upscale.upscaleApplied ? ` ${decision.upscale.targetWidth}×${decision.upscale.targetHeight}` : ''}` : '',
 	decision.restoration?.stages.length ? `Restoration ${decision.restoration.stages.map((stage) => stage.stage).join(' → ')}` : '',
   ].filter(Boolean).join(' · ');

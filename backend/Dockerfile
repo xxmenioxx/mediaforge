@@ -273,7 +273,7 @@ ENV PATH=/opt/ffmpeg/bin:/opt/intel/bin:${PATH}
 
 RUN ffmpeg -hide_banner -loglevel error \
       -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=1" \
-      -vf "fieldmatch=order=tff,decimate,bwdif=mode=send_frame:parity=auto:deint=interlaced,crop=704:460:8:10,format=yuv420p10le" \
+      -vf "fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog,crop=704:460:8:10,format=yuv420p10le" \
       -an -c:v libx265 -preset ultrafast -f null - \
     && ffmpeg -hide_banner -loglevel error \
       -f lavfi -i "testsrc2=size=320x240:rate=24:duration=0.25" \

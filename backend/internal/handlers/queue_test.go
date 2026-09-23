@@ -734,7 +734,7 @@ func TestQueueProfileSnapshotFreezesResolvedCadencePlan(t *testing.T) {
 	if got := stringFromUnknown(frozen["effectiveOutputFrameRate"]); got != "24000/1001" {
 		t.Fatalf("frozen effective FPS=%q want 24000/1001: %#v", got, frozen)
 	}
-	if filters := stringFromUnknown(frozen["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff,decimate") {
+	if filters := stringFromUnknown(frozen["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff:combmatch=full,bwdif=mode=send_frame:parity=bff:deint=interlaced,decimate,setfield=prog") {
 		t.Fatalf("frozen cadence chain=%q", filters)
 	}
 

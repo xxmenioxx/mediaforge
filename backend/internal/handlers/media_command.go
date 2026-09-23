@@ -386,39 +386,46 @@ func aacStereoChannels(profile models.Profile) int {
 }
 
 func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceAnalysis) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	delete(profile.WorkerConfig, "effectiveAutomaticMotionFilters")
 	mode := workerStringValue(profile.WorkerConfig["deinterlaceMode"])
 	if mode == "" {
 		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
 	}
-	filter := effectiveDeinterlaceFilter(mode, analysis)
+	automaticMotionFilter := effectiveDeinterlaceFilter(mode, analysis)
 	existing := strings.TrimSpace(existingVideoFilters(profile))
-	fieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(filter, existing, analysis)
-	if filter == "" && fieldMetadataFilter == "" {
+	automaticFieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(automaticMotionFilter, existing, analysis)
+	if automaticMotionFilter == "" && automaticFieldMetadataFilter == "" {
 		updated := applyDeinterlaceFieldOrderOverride(existing, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 		if updated != existing {
-			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 			profile.WorkerConfig["videoFilters"] = updated
 		}
 		return profile
 	}
-	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	automaticMotionFilter = applyDeinterlaceFieldOrderOverride(automaticMotionFilter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 	hasMotionFilter := strings.Contains(existing, "bwdif=") || strings.Contains(existing, "yadif=") || strings.Contains(existing, "fieldmatch") || strings.Contains(existing, "decimate")
-	if existing != "" && !hasMotionFilter {
-		if filter != "" {
-			filter += ","
+	videoFilters := existing
+	if !hasMotionFilter && automaticMotionFilter != "" {
+		videoFilters = automaticMotionFilter
+		if existing != "" {
+			videoFilters += "," + existing
 		}
-		filter += existing
-	} else if existing != "" {
-		filter = existing
 	}
-	if fieldMetadataFilter != "" && !strings.Contains(filter, "setfield=") {
-		if filter != "" {
-			filter += ","
+	if automaticFieldMetadataFilter != "" && !strings.Contains(videoFilters, "setfield=") {
+		if videoFilters != "" {
+			videoFilters += ","
 		}
-		filter += fieldMetadataFilter
+		videoFilters += automaticFieldMetadataFilter
 	}
-	filter = applyDeinterlaceFieldOrderOverride(filter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
-	profile.WorkerConfig["videoFilters"] = filter
+	profile.WorkerConfig["videoFilters"] = videoFilters
+	automaticContribution := []string{}
+	if !hasMotionFilter && automaticMotionFilter != "" {
+		automaticContribution = append(automaticContribution, automaticMotionFilter)
+	}
+	if automaticFieldMetadataFilter != "" && !strings.Contains(existing, "setfield=") {
+		automaticContribution = append(automaticContribution, automaticFieldMetadataFilter)
+	}
+	profile.WorkerConfig["effectiveAutomaticMotionFilters"] = strings.Join(automaticContribution, ",")
 	return profile
 }
 
@@ -720,7 +727,11 @@ func resolveMediaJobVideoProfile(profile models.Profile, streams MediaStreamInve
 func resolveEffectiveVideoMotionProfile(profile models.Profile, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) models.Profile {
 	profile = profileWithResolvedFieldAndCadenceModes(profile, interlace)
 	profile = profileWithAutomaticDeinterlace(profile, interlace)
-	profile = profileWithCadenceOutputDecision(profile, cadence, recommendation)
+	profile = profileWithCadenceOutputDecision(profile, cadence, recommendation, interlace)
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	if workerStringValue(profile.WorkerConfig["effectiveResidualCombingFallback"]) == "" {
+		profile.WorkerConfig["effectiveResidualCombingFallback"] = "none"
+	}
 	return profileWithEffectiveProgressiveOutput(profile, interlace, cadence, recommendation)
 }
 
@@ -842,34 +853,39 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 		gopSeconds = float64(gopFrames) / parsedFPS
 	}
 	decision := models.JSONMap{
-		"encoder":                    resolvedVideoEncoder(profile),
-		"codec":                      profile.VideoCodec,
-		"profile":                    map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
-		"pixelFormat":                workerStringValue(profile.WorkerConfig["pixFmt"]),
-		"frameStructureMode":         workerStringValue(profile.WorkerConfig["frameStructureMode"]),
-		"cadenceOperation":           workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]),
-		"effectiveFrameRate":         fps,
-		"effectiveWidth":             workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
-		"effectiveHeight":            workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], 0),
-		"geometryUnknown":            profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false),
-		"gopFrames":                  gopFrames,
-		"gopSeconds":                 gopSeconds,
-		"maxBFrames":                 workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 0),
-		"hevcLevel":                  workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
-		"hevcTier":                   workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
-		"hevcLevelMode":              workerStringValue(profile.WorkerConfig["hevcLevelMode"]),
-		"hevcLevelInputFingerprint":  workerStringValue(profile.WorkerConfig["hevcLevelInputFingerprint"]),
-		"hevcLevelResolutionState":   workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]),
-		"hevcLevelEnforcement":       workerStringValue(profile.WorkerConfig["hevcLevelEnforcement"]),
-		"hevcRateControlSource":      workerStringValue(profile.WorkerConfig["hevcRateControlSource"]),
-		"hevcRateControlBounded":     profileWorkerBool(profile, "hevcRateControlBounded", false),
-		"hevcRateControlTargetKbps":  workerIntValue(profile.WorkerConfig["hevcRateControlTargetKbps"], 0),
-		"hevcRateControlMaxrateKbps": workerIntValue(profile.WorkerConfig["hevcRateControlMaxrateKbps"], 0),
-		"hevcRateControlBufferKbps":  workerIntValue(profile.WorkerConfig["hevcRateControlBufferKbps"], 0),
-		"hevcLevelWarning":           workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
-		"effectiveFinalColorPolicy":  workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
-		"colorPolicyDecision":        workerStringValue(profile.WorkerConfig["colorPolicyDecision"]),
-		"colorPolicyWarning":         workerStringValue(profile.WorkerConfig["colorPolicyWarning"]),
+		"encoder":                       resolvedVideoEncoder(profile),
+		"codec":                         profile.VideoCodec,
+		"profile":                       map[bool]string{true: "main10", false: "main"}[profileUsesTenBit(profile)],
+		"pixelFormat":                   workerStringValue(profile.WorkerConfig["pixFmt"]),
+		"frameStructureMode":            workerStringValue(profile.WorkerConfig["frameStructureMode"]),
+		"cadenceOperation":              workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]),
+		"cadenceFieldOrder":             workerStringValue(profile.WorkerConfig["effectiveCadenceFieldOrder"]),
+		"residualCombingFallback":       workerStringValue(profile.WorkerConfig["effectiveResidualCombingFallback"]),
+		"residualCombingFallbackReason": workerStringValue(profile.WorkerConfig["effectiveResidualCombingFallbackReason"]),
+		"effectiveMotionFilters":        workerStringValue(profile.WorkerConfig["effectiveAutomaticMotionFilters"]),
+		"effectiveFrameRate":            fps,
+		"effectiveProgressive":          profileWorkerBool(profile, "effectiveOutputProgressive", false),
+		"effectiveWidth":                workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
+		"effectiveHeight":               workerIntValue(profile.WorkerConfig["effectiveOutputHeight"], 0),
+		"geometryUnknown":               profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false),
+		"gopFrames":                     gopFrames,
+		"gopSeconds":                    gopSeconds,
+		"maxBFrames":                    workerIntValue(profile.WorkerConfig["frameStructureMaxBFrames"], 0),
+		"hevcLevel":                     workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
+		"hevcTier":                      workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
+		"hevcLevelMode":                 workerStringValue(profile.WorkerConfig["hevcLevelMode"]),
+		"hevcLevelInputFingerprint":     workerStringValue(profile.WorkerConfig["hevcLevelInputFingerprint"]),
+		"hevcLevelResolutionState":      workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]),
+		"hevcLevelEnforcement":          workerStringValue(profile.WorkerConfig["hevcLevelEnforcement"]),
+		"hevcRateControlSource":         workerStringValue(profile.WorkerConfig["hevcRateControlSource"]),
+		"hevcRateControlBounded":        profileWorkerBool(profile, "hevcRateControlBounded", false),
+		"hevcRateControlTargetKbps":     workerIntValue(profile.WorkerConfig["hevcRateControlTargetKbps"], 0),
+		"hevcRateControlMaxrateKbps":    workerIntValue(profile.WorkerConfig["hevcRateControlMaxrateKbps"], 0),
+		"hevcRateControlBufferKbps":     workerIntValue(profile.WorkerConfig["hevcRateControlBufferKbps"], 0),
+		"hevcLevelWarning":              workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
+		"effectiveFinalColorPolicy":     workerStringValue(profile.WorkerConfig["effectiveFinalColorPolicy"]),
+		"colorPolicyDecision":           workerStringValue(profile.WorkerConfig["colorPolicyDecision"]),
+		"colorPolicyWarning":            workerStringValue(profile.WorkerConfig["colorPolicyWarning"]),
 	}
 	if upscale, ok := resolvedUpscaleDecisionFromProfile(profile); ok {
 		decision["upscale"] = upscale
