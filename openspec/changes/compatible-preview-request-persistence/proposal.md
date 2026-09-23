@@ -9,22 +9,31 @@ valid, causing avoidable re-encoding and losing useful lifecycle state.
 ## What Changes
 
 - Persist the minimum identity and recovery metadata for non-ephemeral
-  Compatible Preview requests and their shared artifacts.
+  Compatible Preview requests and their shared artifacts, including a frozen
+  prepared request-to-artifact snapshot and a durable generation-attempt token.
 - Restore persisted request/artifact relationships during backend startup and
-  reconcile metadata with expiration and the final cache file on disk.
+  reconcile metadata with expiration, bounded expired tombstones, and the final
+  cache file on disk.
 - Preserve a valid ready artifact under its existing request ID without a new
   encode; reject unsafe, missing, empty, partial, or identity-mismatched files.
 - Normalize persisted `generating` work to an interrupted/recoverable terminal
   state; never restore a dead FFmpeg owner, context, waiter, timer, or goroutine.
-- Preserve #1's failed/canceled terminal and non-joinable semantics across
-  restart until the existing request retention window expires.
+- Preserve #1's failed/canceled terminal and non-joinable semantics per
+  generation attempt while allowing an explicit retry to create a new attempt
+  for the same canonical artifact identity.
+- Keep a bounded expired tombstone so an expired deterministic request ID
+  returns explicit `410 expired` before eventually becoming unknown.
+- Restore the frozen prepared descriptor relationship without re-resolving
+  mutable ProfileID/configuration state; explicit recreate/retry is the only
+  path that can prepare a current relationship.
 - Define explicit API/frontend behavior for ready, expired, stale, interrupted,
   failed, canceled, and unknown request IDs, while keeping the frontend
   independent of the storage mechanism.
 - Coordinate startup restore, runtime cleanup, TTL expiration, and artifact
   publication so stale metadata cannot advertise an invalid path.
-- Add focused restart, deduplication, crash-window, expiration, path-safety,
-  and API recovery coverage without changing the #1 encode/cache contract.
+- Add focused restart, deduplication, tombstone, generation-race,
+  frozen-relationship, crash-window, expiration, path-safety, and API recovery
+  coverage without changing the #1 encode/cache contract.
 
 Out of scope: resuming a live FFmpeg process, changing #1's canonical encode
 identity or shared single-flight rules, implementing #15 slow-work timeout UX,

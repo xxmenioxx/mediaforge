@@ -18,20 +18,32 @@ from the canonical artifact ID under the configured Compatible Preview cache
 root. These facts permit durable recovery metadata without making the database
 the owner of live FFmpeg execution.
 
+The prepared descriptor audit found that existing video, frame, inspect, and
+metrics paths consume the resolved source path, source revision, start,
+duration, preview mode, normalization, requested/effective profile data,
+requested/effective encoders and QSV rate-control values, resolved video
+decision, artifact/cache identity, final path, and the canonical FFmpeg
+argument array. Inspection also exposes the argument array and uses the
+requested/effective profile snapshots for QSV/frame-structure reporting. The
+frozen snapshot therefore preserves these bounded, serializable values rather
+than re-running mutable policy resolution after restart.
+
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Preserve persistent request IDs and their request-to-artifact relationship
-  across a backend restart.
+- Preserve persistent request IDs, their frozen request-to-artifact
+  relationships, and bounded expired-vs-unknown semantics across restart.
 - Recover valid final artifacts without re-encoding and reconcile metadata/file
   mismatches conservatively.
+- Protect durable state transitions with a generation-attempt identity while
+  retaining #1 runtime entry-object protection.
 - Keep #1's canonical identity, shared single-flight, non-joinable terminal
   generations, bounded cancellation handoff, and atomic publication semantics.
 - Make interruption, stale artifacts, expiration, failure, cancellation, and
   unknown IDs distinguishable to API consumers.
-- Keep startup work NAS-safe: bounded database reads and direct stat checks,
-  with deeper validation deferred until a request is consumed.
+- Keep startup work NAS-safe: bounded database reads and direct stat/path/
+  identity checks, with deeper validation deferred until a request is consumed.
 
 **Non-Goals:**
 
@@ -43,40 +55,57 @@ the owner of live FFmpeg execution.
   process-scoped and may disappear at restart.
 - Running ffprobe, decoding, or scanning the media library for every restored
   preview at startup.
+- Treating expired tombstones as historical audit records.
 - Implementing #15 slow x265 timeout UX or #19 LAB orchestration.
 
 ## Decisions
 
 ### 1. Use dedicated SQLite/GORM recovery metadata tables
 
-Persist two related rows rather than an AppSetting-backed map:
+Persist two related durable records rather than an AppSetting-backed map:
 
-- `CompatiblePreviewRequestRecord`: request ID primary key, artifact ID/index,
-  normalized request payload or canonical request identity, resolved source
-  path and source-revision evidence needed to prevent stale reuse, request
-  lifecycle state, bounded failure/recovery reason, created/updated/accessed
-  timestamps, expiration timestamp, and a schema/version marker.
-- `CompatiblePreviewArtifactRecord`: canonical artifact ID primary key,
-  encode signature, controlled final cache path, source-revision evidence,
-  retention policy, last observed artifact state, bounded failure/recovery
-  reason, created/updated/last-used timestamps, and artifact expiration/cache
-  metadata. Request rows reference this identity rather than copying the
-  artifact lifecycle.
+- `CompatiblePreviewRequestRecord`: request ID primary key; normalized request
+  identity/payload needed for explicit deterministic recreate; request state
+  (`active`, `stale`, or `expired_tombstone`); prepared snapshot version and
+  bounded JSON; artifact ID; created/updated/accessed/expired timestamps;
+  tombstone expiration; and bounded recovery reason. The active row owns the
+  frozen request-to-artifact relationship. When it becomes a tombstone, retain
+  only the request ID, normalized identity, expiration/tombstone timestamps,
+  and bounded reason; clear the prepared snapshot and artifact reference so a
+  tombstone does not keep cache artifacts alive.
+- `CompatiblePreviewArtifactRecord`: canonical artifact ID primary key;
+  canonical encode signature; controlled final cache path; source-revision
+  evidence; retention policy; current generation ID/token and generation
+  version; generation state (`generating`, `ready`, `failed`, `canceled`,
+  `interrupted`, or `stale`); bounded recovery reason; and created/updated/
+  last-used/cache timestamps. Request rows reference this identity rather than
+  copying the artifact lifecycle.
 
-The exact Go field names remain an implementation detail, but the durable
-contract is the minimum set above. Staging paths, encoder process details,
-diagnostic streams, and live synchronization primitives are not durable
-fields. Failure text is bounded using the same diagnostic limit already used
-by #1.
+The generation token is an opaque per-attempt identity, such as a UUID, and
+the generation version is monotonically increased for each replacement. The
+current artifact row stores the token/version for the generation that owns
+the row now. A separate historical attempt table is not required for this
+ephemeral cache; the token is the compare-and-swap guard, not audit history.
+
+The frozen prepared snapshot is versioned and bounded. Its minimum contract is
+the values required to reconstruct the existing `compatiblePreviewDescriptor`
+for supported consumers: resolved source path and source revision; artifact ID,
+canonical encode signature, and final cache path; start, seconds, preview mode,
+and normalization decision; requested/effective preview profile snapshots
+where used; resolved video decision; requested/effective video encoder;
+requested/effective QSV rate control; and the canonical FFmpeg argument array
+needed by inspection output and any fresh generation that explicitly adopts
+that snapshot. It excludes contexts, waiters, timers, goroutines, process
+state, and unbounded encoder logs.
 
 A dedicated table is preferred over an AppSetting map because request and
 artifact rows need independent updates, indexed expiration/identity lookups,
-shared-artifact reference checks, and transactional state transitions. An
+shared-artifact reference checks, and conditional generation transitions. An
 AppSetting map would require whole-value read/modify/write operations, make
 concurrent cleanup vulnerable to lost updates, and make TTL cleanup scale with
 the entire serialized map. The asset-override mutex from #4 is unrelated and
-is not reused. Sidecars are also rejected because they create a second source
-of metadata truth and require unsafe cache scans.
+is not reused. Sidecars are rejected because they create a second source of
+metadata truth and require unsafe cache scans.
 
 The tables are added to the existing migration list. Migration is additive:
 old installations simply have no request rows, and no old cache file is
@@ -87,155 +116,213 @@ deleted or renamed solely because the tables are introduced.
 Durable rows are recovery metadata and the restart handoff boundary, not a
 second lifecycle engine. The existing in-memory request registry remains the
 runtime lookup/index; the existing artifact registry remains the owner of
-single-flight, consumer leases, generation contexts, cancellation grace, and
-terminal generation replacement. Runtime transitions persist the minimal
-corresponding observation in a transaction, but consumers still acquire
-artifacts through #1.
+single-flight, consumer leases, generation contexts, cancellation grace,
+runtime entry identity, and terminal generation replacement. Runtime
+transitions persist the minimal corresponding observation in a transaction,
+but consumers still acquire artifacts through #1.
+
+The durable generation token supplements runtime object identity. Every
+generation-owned durable transition carries the expected artifact ID and
+generation token. A transition for generation N that arrives after the row has
+been replaced by generation N+1 affects zero rows and cannot overwrite N+1.
 
 Request and artifact identity remain separate. A request row can point to an
 artifact row that has other request references, preserving the relationship:
 
 ```text
 request A ─┐
-request B ─┼─> artifact X
+request B ─┼─> artifact X / generation N
 request C ─┘
 ```
 
 The implementation reuses the existing normalized request identity,
 `compatiblePreviewEncodeSignature`, and `compatiblePreviewArtifactID`. It
-does not hash diagnostics, HTTP operation, waiter state, or restart metadata
-into a new artifact identity. Persisted source path/revision evidence is used
-to reject reuse if meaningful source inputs changed.
+does not hash diagnostics, HTTP operation, waiter state, generation token, or
+restart metadata into a new artifact identity.
 
-### 3. Persist only persistent request scopes
+### 3. Preserve the frozen relationship and distinguish explicit recreate
 
-Non-ephemeral registered requests are persisted. The existing ephemeral
-request scope remains memory-only and request-scoped, so restart naturally
-invalidates it and does not create durable garbage. Persistent request expiry
-continues to use #1's two-hour access-based retention and 500-record bound;
-`expiresAt` is stored as an absolute timestamp so a stopped backend cannot
-extend a request accidentally.
+At initial persistent request creation, the prepared descriptor is serialized
+into the request record after canonical preparation establishes the artifact
+relationship. On restart, the runtime request entry is rebuilt directly from
+that snapshot. It does not resolve ProfileID, load a mutable profile, or
+re-run policy/capability resolution merely because memory was lost.
 
-The persistent artifact row may outlive an individual request to preserve
-shared cache reuse. It remains governed by #1's persistent cache cleanup (the
-current 24-hour age limit and 500-item/2 GiB bounds), active generation/lease
-protection, and reference checks. Artifact rows with no live request and no
-valid final artifact are eligible for metadata cleanup; this is ephemeral
-cache metadata, not product history.
+An active request POST that is equivalent to its existing deterministic ID is
+idempotent/touch-only and preserves the frozen snapshot. A POST that explicitly
+recreates a stale, interrupted, failed, or canceled request is allowed to
+prepare current inputs and replace the snapshot/relationship before normal #1
+acquisition. A POST whose deterministic ID finds an expired tombstone replaces
+the tombstone with a fresh active row, clears recovery state, resets the
+created/access/expiration timestamps, and prepares the current relationship.
+This is the only path that lets profile/configuration changes affect a
+request with that deterministic ID.
 
-### 4. Reconcile before accepting normal preview traffic
+If the source revision in a restored snapshot no longer matches, the request
+is stale and the old artifact is never served. A resource GET does not
+re-resolve or regenerate. Explicit recreate may resolve current source and
+profile/configuration values and may map the same request ID to artifact Y.
 
-Startup ordering is:
+### 4. Use generation tokens for durable attempt replacement
 
-1. Run the additive database migration.
-2. Load and page through non-expired persistent request/artifact metadata in a
-   bounded batch. Do not enumerate the media library or probe every preview.
-3. For each relationship, validate expiration and the final path before
-   publishing it into the in-memory registries. Validation checks that the
-   cleaned absolute path is under the canonical preview root, its filename
-   encodes the expected artifact ID, it is a regular non-empty final file, and
-   persisted identity/provenance agrees with the record. `.partial`, staging,
-   log-only, zero-byte, and unrelated files are never ready evidence.
-4. If the durable artifact state is `ready` and the final file is valid,
-   hydrate one runtime ready entry. If it is missing, invalid, or unsafe,
-   persist `stale`/recovery metadata and do not advertise ready.
-5. If durable state is `generating`, first promote a valid final artifact to
-   ready (the safe crash window). Otherwise mark the generation interrupted;
-   discard runtime ownership and do not create a joinable generating entry.
-6. Preserve failed/canceled rows as terminal, non-joinable entries until their
-   request TTL or normal cache cleanup removes them.
-7. Expire/delete eligible request rows and orphaned artifact metadata only
-   after the state decision is recorded. Startup cache cleanup and restored
-   registry publication use one reconciliation gate so cleanup cannot delete a
-   file after it has been advertised ready without the same reconciliation
-   path marking it stale.
+Before starting a new runtime generation, persist a new generation token and
+version for the artifact row in a transaction. Marking ready, failed,
+canceled, interrupted, or stale is conditional on the token that initiated
+the transition. Final publication still uses #1's same-directory partial-file
+rename and ready-file validation; publishing a final file does not permit an
+old generation to update a newer durable row.
 
-The startup hook runs after `database.Migrate` and before routes begin serving.
-If a file is missing between stat and later use, the normal acquire/serve path
-revalidates it and converts the runtime entry to stale rather than serving an
-invalid path. Deeper source or media validation is lazy and uses #1's existing
-descriptor/source-revision checks.
+The lifecycle distinction is explicit: `artifactID` identifies the canonical
+shared encoded result, while `generationID` identifies one attempt to produce
+it. Failed/canceled/interrupted generation N is terminal and non-joinable, but
+explicit retry may replace the current attempt with generation N+1 for the
+same artifact ID. If explicit preparation changes the canonical effective
+descriptor, the request relationship changes to a different artifact ID
+instead.
 
-### 5. Define restart and API state mapping
+### 5. Use bounded expired tombstones
+
+The active request limit remains 500. When access expiration is reached, or an
+active LRU entry must be evicted to enforce that limit, the request transitions
+to `expired_tombstone` rather than being deleted immediately. The tombstone
+retention is two hours from the transition and the tombstone bound is 500
+rows. Tombstones are indexed by request ID and hydrated into a bounded lookup
+index at startup; they retain only enough metadata to return `410 expired` and
+to recognize the deterministic explicit-create replacement.
+
+Tombstone cleanup deletes rows after the deadline and evicts the oldest
+tombstones when the bound is exceeded. Either purge path makes the ID
+`unknown_request` (`404`). Tombstone cleanup does not delete an artifact merely
+because the request expired; artifact cleanup considers only active references,
+leases/generations, and the existing persistent cache policy.
+
+The request lookup paths are intentionally separate:
+
+- resource GET reads active/recovery entries, tombstones, or unknown state and
+  never reactivates anything;
+- explicit POST creation computes the deterministic ID, replaces an expired
+  tombstone when present, and invokes current preparation only for a new or
+  explicitly recreated lifecycle.
+
+### 6. Reconcile in a fixed startup order before routes serve
+
+Startup runs the following sequence after database opening and migration and
+before normal preview routes accept traffic:
+
+1. Convert active rows whose absolute `expiresAt` has elapsed into expired
+   tombstones, clearing their frozen snapshot/artifact reference; purge
+   tombstones past their deadline and enforce the 500/500 active/tombstone
+   bounds.
+2. Load active request rows, tombstones, and referenced artifact rows in
+   bounded pages. Do not enumerate the media library or run ffprobe.
+3. For each active request, deserialize and validate the frozen snapshot,
+   source revision evidence, artifact identity, and canonical final path. The
+   cleaned absolute path must remain under the controlled Compatible Preview
+   cache root, have the expected artifact filename, and be a regular non-empty
+   final file before it can support ready recovery. Partial, staging, log-only,
+   zero-byte, and unrelated files are never ready evidence.
+4. Reconcile the current artifact generation using the durable token: valid
+   final file plus `generating` promotes that same generation to `ready`; no
+   valid final file changes it to `interrupted`; `ready` without a valid file
+   becomes `stale`; failed/canceled remain terminal. Each write is conditional
+   on the current generation token.
+5. If source revision or frozen snapshot validation fails, mark the request
+   stale/recoverable and do not restore a ready runtime entry or re-resolve
+   mutable configuration. If the artifact is valid, hydrate one runtime ready
+   entry from the frozen snapshot and artifact metadata.
+6. Publish the restored runtime request/artifact registries and only then allow
+   normal cleanup/route traffic under the reconciliation gate. Missing files
+   between stat and use are revalidated by the serving path and become stale
+   rather than being served.
+
+The startup pass performs direct metadata/stat/path/identity checks only. Full
+inspection, ffprobe, decoding, and source analysis remain lazy at consumption.
+
+### 7. Define restart, retry, and API state mapping
 
 The durable state describes recovery, while #1 continues to own live artifact
-generation states. The resource endpoints retain their existing paths and
-successful media responses. Normal lifecycle responses become structured JSON
-with a stable `code`, `state`, bounded `reason` when available, and
-`retryable` flag:
+generation. Resource endpoints retain their existing paths and successful
+media responses. Lifecycle responses use stable JSON with `code`, `state`, a
+bounded `reason` where available, and `retryable`/`recreate` flags:
 
 | Condition | HTTP behavior | Recovery meaning |
 | --- | --- | --- |
-| Valid ready request/artifact | Existing `200` media/inspection response | Reuse; no encode |
-| Unknown request ID | Existing not-found class, machine-readable `unknown_request` | Never existed in this process/database |
-| Expired request | `410` with `expired` | Handle is no longer valid; recreate |
-| Missing/unsafe/identity-mismatched artifact | `409` with `stale_artifact` | Retryable; never serve path |
-| Restarted generation without valid final file | `409` with `interrupted` | Old owner is gone; retry starts fresh #1 generation |
-| Failed or canceled terminal generation | `409` with `failed` or `canceled` | Deterministic terminal result; never join old generation |
+| Valid ready request/artifact | Existing `200` media/inspection response | Reuse frozen relationship; no encode |
+| Unknown request ID | `404` with `unknown_request` | Never known or tombstone already purged |
+| Expired tombstone | `410` with `expired` and recreate true | Explicit creation can reactivate the deterministic ID |
+| Missing/unsafe/identity-mismatched artifact or source revision | `409` with `stale_artifact` | Old relationship is not served; explicit recreate is required |
+| Restarted generation without valid final file | `409` with `interrupted` | Generation owner is gone; explicit retry creates a new token |
+| Failed or canceled current generation | `409` with `failed` or `canceled` | Current attempt is terminal; explicit retry is required |
 
-The exact response envelope should be shared by video, frame, inspect, and
-metrics resource handlers. A retry repeats request creation with the current
-normalized options (which may yield the same deterministic request ID) and
-then uses the normal #1 acquisition path; it does not mutate an old terminal
-generation into a live one. The frontend retains no storage-specific logic:
-it continues to hold request IDs, treats ready responses normally, stops
-polling on explicit terminal/recovery responses, and offers retry/recreate for
-interrupted or stale states. Expired IDs are cleared and unknown IDs remain a
-distinct reset condition.
+An explicit retry/recreate repeats request creation with current normalized
+options. It may reuse the same deterministic request ID, but it creates a new
+generation token or a new artifact relationship before #1 acquisition. A
+resource GET never starts that replacement. Cancellation after restart is
+state-only: there is no dead process to cancel; a newly retried generation gets
+a new runtime cancellation owner through #1.
 
-Cancellation after restart is state-only: ready cancellation releases the
-consumer and follows existing retention; interrupted/failed/canceled requests
-have no process to cancel and remain deterministic; a newly retried generation
-gets a new runtime cancel owner through #1. No API claims to cancel a dead
-FFmpeg process.
+### 8. Make database/filesystem transitions crash-tolerant
 
-### 6. Make database/filesystem transitions crash-tolerant
+Persist request/artifact generation metadata before starting runtime work where
+possible, publish the final file atomically, then conditionally persist ready.
+These operations cannot be treated as one cross-system transaction, so
+reconciliation is idempotent:
 
-Persist generation metadata before starting a new runtime generation where
-possible, publish the final file atomically in the existing cache directory,
-then persist ready. These operations cannot be treated as one cross-system
-transaction, so reconciliation is deliberately idempotent:
-
-- final valid + durable generating => promote ready;
-- final absent/invalid + durable generating => interrupted;
+- final valid + current durable generating token => promote that token to
+  ready;
+- final absent/invalid + current durable generating token => interrupted;
 - durable ready + final absent/invalid => stale;
-- durable failed/canceled => preserve terminal state unless explicitly
-  expired;
-- cleanup state is recorded before deletion when possible, and missing files
+- durable failed/canceled => preserve the terminal current token unless
+  explicitly replaced or expired;
+- a late transition from an old token updates zero rows after replacement;
+- cleanup records a safe state before deletion when possible, and missing files
   are repaired to stale on the next pass if deletion wins the race.
 
 Only final paths are persisted. Existing partial-file cleanup remains bounded
-and must skip active runtime paths; restart cleanup may remove stale partials
-under the controlled preview root but never a path merely because it was in a
+and skips active runtime paths; restart cleanup may remove stale partials under
+the controlled preview root but never a path merely because it appeared in a
 request row.
 
-### 7. Test through real lifecycle boundaries
+### 9. Test through real lifecycle boundaries
 
 Tests should construct a persistent SQLite database and controlled temporary
-preview root, create records/artifacts through the existing request/artifact
-entry points, clear runtime registries to simulate a process restart, run the
-startup reconciler, and exercise the actual resource endpoints. The suite
-must cover ready reuse/no encode, shared artifact reuse, generating
-interruption, complete-file promotion, missing artifact, failed/canceled
-retention, expiration, unsafe paths, partial/zero-byte files, cleanup races,
-and bounded startup behavior. Frontend tests cover explicit recovery payloads,
-polling stop/retry presentation, and ID clearing without knowing the storage
-model.
+preview root, create prepared records/artifacts through the existing request/
+artifact entry points, clear runtime registries to simulate a process restart,
+run the startup reconciler, and exercise actual resource endpoints. Deterministic
+coordination primitives (channels, barriers, or injected hooks) must prove
+generation N's late transition cannot overwrite N+1; arbitrary sleeps are not
+acceptable.
+
+The suite must cover ready reuse/no encode, shared artifact reuse, tombstone
+`410` then purge to `404`, explicit recreate after expiration, frozen
+ProfileID/configuration relationship preservation, recreate using new profile
+configuration, source-revision staleness, generation interruption and token
+replacement, complete-file promotion, failed/canceled retention, expiration,
+unsafe paths, partial/zero-byte files, cleanup races, and bounded startup.
+Frontend tests cover explicit recovery payloads, polling stop/retry
+presentation, ID clearing, and cancellation without knowing the storage model.
 
 ## Risks / Trade-offs
 
 - [Risk] SQLite metadata and filesystem publication can disagree after a hard
   crash. → Make reconciliation idempotent, trust only final validated files,
-  and normalize every mismatch to a safe state.
+  and normalize every mismatch to a safe state using the current generation
+  token.
+- [Risk] A late generation callback could overwrite a retry. → Require the
+  artifact ID plus generation token in every durable update and retain #1
+  runtime object-identity checks.
+- [Risk] A frozen snapshot can become incompatible after a code/schema change.
+  → Version the snapshot, reject unsupported versions as stale/recovery, and
+  let explicit recreate prepare the current descriptor.
 - [Risk] Persisting a resolved source path can become stale after a library
-  move. → Keep source revision/path evidence tied to the canonical signature,
-  revalidate on consumption, and mark the request stale instead of serving an
-  old artifact.
-- [Risk] Startup work grows with old preview records. → Bound the request
-  retention/count, page metadata, perform only stat/path checks, and defer
+  move. → Keep source revision/path evidence tied to the frozen relationship,
+  revalidate on consumption, and mark the request stale instead of serving old
+  bytes.
+- [Risk] Startup work grows with old preview records. → Bound active requests
+  and tombstones, page metadata, perform only stat/path checks, and defer
   deeper validation.
 - [Risk] A shared artifact is removed while another request is restored. →
-  Reconcile references before cleanup and require the existing active/lease
+  Reconcile active references before cleanup and require existing active/lease
   protections for deletion.
 - [Risk] A persisted path becomes an arbitrary-file primitive if trusted
   blindly. → Derive/validate the canonical root and artifact filename and
@@ -246,20 +333,24 @@ model.
 
 ## Migration Plan
 
-1. Add the request/artifact metadata models and additive database migration.
+1. Add the request/artifact metadata models, frozen snapshot version, generation
+   token/version, and additive database migration.
 2. Add runtime persistence at the existing #1 request/artifact transitions,
-   without changing identity, single-flight, publication, or cancellation
-   ownership.
-3. Add startup reconciliation before routes serve and bounded cleanup
-   coordination.
-4. Add explicit API lifecycle envelopes and the minimal frontend handling for
-   retryable interruption/stale states and expired IDs.
-5. Run focused restart and real-path tests, then the repository's prescribed
-   `./scripts/verify.sh --auto` validation.
+   including conditional generation-token updates, without changing identity,
+   single-flight, publication, or cancellation ownership.
+3. Add tombstone transition/purge and startup reconciliation before routes
+   serve, with bounded cleanup coordination.
+4. Restore runtime entries from frozen snapshots; add explicit API lifecycle
+   envelopes and the minimal frontend handling for retryable interruption/stale
+   states, expired tombstones, and unknown IDs.
+5. Run focused restart, generation-race, frozen-relationship, and real-path
+   tests, then the repository's prescribed `./scripts/verify.sh --auto`
+   validation.
 
 Rollback is code rollback only: the additive tables and rows may remain
 unused, and old in-memory behavior will naturally ignore them. Rollback must
-not delete cache artifacts or metadata as a cleanup side effect.
+not delete cache artifacts, frozen snapshots, or tombstones as a cleanup side
+effect.
 
 ## Open Questions
 
