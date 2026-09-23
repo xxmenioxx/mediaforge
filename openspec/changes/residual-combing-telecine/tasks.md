@@ -1,20 +1,20 @@
 ## 1. Reproduction and FFmpeg capability evidence
 
-- [ ] 1.1 Capture the current validated-IVTC behavior and worker FFmpeg capability contract for `fieldmatch`, `bwdif=deint=interlaced`, `send_frame`, `combmatch`, `decimate`, and progressive metadata; verify the evidence is based on the actual supported runtime and does not modify repository or production media.
+- [ ] 1.1 Capture the current validated-IVTC behavior and worker FFmpeg 8.1.2 capability contract for `fieldmatch`, `bwdif=deint=interlaced`, `send_frame`, `combmatch`, `decimate`, and progressive metadata; verify the evidence is based on the actual supported executable/filter runtime and does not modify repository or production media.
 - [ ] 1.2 Add a deterministic disposable synthetic mixed-telecine fixture/harness that contains clean matched content and a controlled cadence-breaking/interlaced segment for both TFF and BFF; verify the current `fieldmatch,decimate` chain reproduces a residual-combing observation without committing copyrighted media.
 - [ ] 1.3 Record the fixture's expected frame flags, frame counts, duration, FPS, and field metadata at fieldmatch, selective-deinterlace, and decimate boundaries; verify the reproduction is stable enough to serve as an integration regression.
 
 ## 2. Canonical resolved motion plan
 
-- [ ] 2.1 Extend the existing effective motion decision and frozen worker snapshot with the smallest effective field-order, residual-fallback, and rationale state while keeping requested cadence settings distinct; verify old snapshots default safely and the decision is inspectable without a new plan engine or migration.
-- [ ] 2.2 Resolve the fallback only after the existing IVTC validation boundary accepts a field order, using explicit valid order before validated detected order and review/unknown otherwise; verify suspected telecine, conflicting order, progressive input, and native interlaced input do not gain the fallback.
-- [ ] 2.3 Preserve the existing cadence and FPS resolver contract while enabling the fallback; verify the effective operation, output FPS, progressive state, and warning/unknown fields remain internally consistent for 24000/1001 IVTC and non-IVTC cases.
+- [ ] 2.1 Extend the existing effective motion decision and frozen worker snapshot with the smallest effective field-order, residual-fallback, and rationale state while keeping requested cadence settings distinct; verify old snapshots default safely, new validated TFF/BFF IVTC resolves `residualFallback=selective`, and no exact repaired-frame count is required.
+- [ ] 2.2 Arm the selective fallback whenever the existing IVTC validation boundary accepts TFF or BFF, using explicit valid order before validated detected order and review/unknown otherwise; verify sampled clean ratios remain diagnostic and do not disable the fallback, while suspected telecine, conflicting order, progressive input, and native interlaced input do not gain it.
+- [ ] 2.3 Preserve the existing cadence and FPS resolver contract while arming the fallback; verify the effective operation, output FPS, progressive state, and warning/unknown fields remain internally consistent for 24000/1001 IVTC and non-IVTC cases without adding a second residual-combing analysis pass.
 
 ## 3. Selective filter rendering
 
-- [ ] 3.1 Extend canonical IVTC rendering to place selective frame-preserving deinterlacing between fieldmatch and decimate, using the resolved parity and supported comb-marking configuration; verify the exact TFF and BFF chains, ordering, and single progressive metadata stage with focused command tests.
+- [ ] 3.1 Extend canonical IVTC rendering to place selective frame-preserving deinterlacing between fieldmatch and decimate, using the resolved parity and supported comb-marking configuration; update the Dockerfile smoke graph that currently places bwdif after decimate, and verify the exact TFF and BFF chains, ordering, and single progressive metadata stage with focused command tests.
 - [ ] 3.2 Keep native interlaced deinterlacing on the existing canonical full-frame behavior and keep progressive sources free of automatic motion filters; verify existing `bwdif=deint=all` and progressive no-op regressions remain green.
-- [ ] 3.3 Verify clean fieldmatched frames are not unnecessarily deinterlaced and residual marked frames are repaired; use the synthetic runtime harness to assert frame flags, frame count before decimate, detail/checksum preservation for clean frames, and removal of residual comb markers after the fallback.
+- [ ] 3.3 Verify a clean validated IVTC still has the `selective` fallback armed while progressive fieldmatched frames pass unchanged and receive no unnecessary interpolation/detail change; separately verify residual marked frames are repaired with the same plan, using the synthetic runtime harness to assert frame flags, frame count before decimate, and removal of residual comb markers.
 - [ ] 3.4 Verify unsupported FFmpeg capability or unresolved field order fails conservatively to the existing review/unsupported state rather than selecting an all-frame fallback or hard-coded parity.
 
 ## 4. Cross-surface parity and Queue freezing
@@ -26,7 +26,7 @@
 ## 5. Validation and acceptance coverage
 
 - [ ] 5.1 Extend cadence/output validation coverage to compare measured frame count/duration and stream FPS with the frozen resolved plan, including intentional progressive field metadata and unchanged 24000/1001 cadence; verify mismatches remain bounded diagnostics rather than invented rates.
-- [ ] 5.2 Add focused regressions for clean telecine, residual combing, progressive source, native interlaced source, TFF, BFF, unresolved parity, and FPS/frame-count integrity; verify each scenario asserts resulting behavior or output evidence rather than filter-string presence alone where the runtime harness can do so.
+- [ ] 5.2 Add focused regressions for clean validated IVTC with `selective` armed and zero observed repairs, residual-combing IVTC with marked-frame repair, progressive source, native interlaced source, unvalidated telecine, TFF, BFF, unresolved parity, and FPS/frame-count integrity; verify each scenario asserts resulting behavior or output evidence rather than filter-string presence alone where the runtime harness can do so.
 - [ ] 5.3 Run separate manual validation on a user-owned affected sample through Preview, Test Encode, and Queue; verify visual combing removal, clean-IVTC detail/motion preservation, progressive output signaling, and frozen-plan parity without copying or committing the sample.
 
 ## 6. Repository verification and handoff

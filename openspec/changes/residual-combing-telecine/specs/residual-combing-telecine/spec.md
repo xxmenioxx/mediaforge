@@ -8,18 +8,22 @@ field-order decisions, progressive signaling, and cross-surface parity.
 
 ### Requirement: Residual combing is repaired selectively within validated IVTC
 
-For a source whose telecine classification and field order have been validated,
-the resolved motion plan SHALL allow a residual-combing fallback between field
+For every automatic inverse-telecine plan whose telecine classification has
+been validated and whose field order resolves to TFF or BFF, the resolved
+motion plan SHALL arm a `selective` residual-combing fallback between field
 matching and decimation. The fallback SHALL process only frames that the field
 matching stage marks as still interlaced or combed; clean progressive frames
-SHALL pass through unchanged by the fallback.
+SHALL pass through unchanged. Arming `selective` SHALL describe configured
+runtime behavior, not claim that the asset was globally found to contain
+combing or that every frame will be deinterlaced.
 
-#### Scenario: Clean fieldmatched telecine remains untouched
+#### Scenario: Clean fieldmatched telecine arms selective fallback without damage
 
 - **WHEN** field matching reconstructs a progressive telecine sequence without
-  residual interlaced frames
-- **THEN** the fallback SHALL not apply full-frame deinterlacing, and the clean
-  IVTC detail, motion, duplicate-frame removal, and cadence SHALL remain
+  residual interlaced frames in the sampled or synthetic evidence
+- **THEN** the effective plan SHALL still report the `selective` fallback as
+  armed, progressive fieldmatched frames SHALL pass through unchanged, and the
+  clean IVTC detail, motion, duplicate-frame removal, and cadence SHALL remain
   equivalent to the existing validated fieldmatch/decimate behavior
 
 #### Scenario: Residual combed frames receive selective repair
@@ -28,7 +32,8 @@ SHALL pass through unchanged by the fallback.
   interlaced or combed
 - **THEN** the resolved chain SHALL selectively deinterlace those frames before
   decimation, while preserving one output frame per input frame through the
-  fallback stage
+  fallback stage; the plan state SHALL remain `selective` whether zero or many
+  frames are repaired at runtime
 
 #### Scenario: Unvalidated telecine stays conservative
 
@@ -36,6 +41,37 @@ SHALL pass through unchanged by the fallback.
   boundary has not accepted it
 - **THEN** the system SHALL preserve the existing review/unknown behavior and
   SHALL not add an automatic residual-combing fallback or guess a field order
+
+### Requirement: Sampled IVTC validation evidence remains diagnostic
+
+The bounded IVTC validation evidence SHALL establish whether IVTC and TFF/BFF
+parity are accepted, but SHALL NOT be used to predict that the full asset is
+free of residual combing or to disable the configured selective fallback. Once
+IVTC is accepted with a resolved field order, execution SHALL rely on
+fieldmatch's per-frame marking. The system SHALL not perform a second full-asset
+residual-combing analysis solely to decide whether the selective fallback is
+present.
+
+#### Scenario: Clean sampled windows do not disable the fallback
+
+- **WHEN** sampled validation windows show progressive/classified ratios that
+  support clean IVTC and the source resolves to TFF or BFF
+- **THEN** those ratios SHALL remain diagnostic evidence and the effective plan
+  SHALL still arm `residualFallback=selective`
+
+#### Scenario: Validation ratios remain available as evidence
+
+- **WHEN** IVTC validation evaluates TFF and BFF progressive/classified ratios
+- **THEN** the accepted order and diagnostic ratios SHALL remain available to
+  explain the decision without being interpreted as a full-asset residual-frame
+  count or a guarantee of zero repaired frames
+
+#### Scenario: Execution does not add a duplicate residual scan
+
+- **WHEN** a validated IVTC plan is resolved for execution
+- **THEN** the system SHALL arm the selective fallback from the accepted plan
+  and SHALL not perform another full media analysis pass solely to decide
+  whether to insert it
 
 ### Requirement: The fallback preserves the resolved cadence and output FPS
 
@@ -95,15 +131,15 @@ with a hard-coded default.
 
 ### Requirement: Successful IVTC output is signaled as progressive
 
-After field matching, optional selective residual-combing repair, and
+After field matching, the armed selective residual-combing stage, and
 decimation complete, the resolved plan SHALL preserve progressive output
 metadata. Pixel-level progressive output SHALL not be accompanied by misleading
 interlaced field signaling.
 
 #### Scenario: Progressive metadata follows repaired IVTC output
 
-- **WHEN** a validated IVTC plan renders successfully with or without the
-  selective fallback
+- **WHEN** a validated IVTC plan renders successfully with its armed selective
+  fallback, whether it repairs zero or many frames
 - **THEN** the output SHALL carry the existing progressive field metadata and
   the effective plan SHALL report trusted progressive output
 
@@ -145,23 +181,30 @@ residual combing or append a private fallback based only on UI state.
 ### Requirement: The resolved plan explains the fallback decision
 
 The effective execution decision SHALL distinguish requested cadence intent from
-the resolved field order, residual-combing fallback state, output FPS, and
-progressive result. It SHALL retain enough canonical information for later
-Frame Fidelity work to recognize the intentional telecine transformation
-without adding Fidelity-specific behavior in this change.
+the resolved cadence operation, resolved field order, residual-combing fallback
+state, output FPS, and progressive result. For validated IVTC that state SHALL
+be `residualFallback=selective`, meaning “repair only fieldmatch output frames
+still marked interlaced”; it SHALL not mean that the source was globally
+classified as damaged or that every frame was deinterlaced. The decision SHALL
+retain enough canonical information for later Frame Fidelity work to recognize
+the intentional telecine transformation without adding Fidelity-specific
+behavior in this change.
 
-#### Scenario: Fallback selection is inspectable
+#### Scenario: Selective fallback selection is inspectable
 
-- **WHEN** a validated telecine plan enables selective residual-combing repair
+- **WHEN** a validated telecine plan resolves TFF or BFF
 - **THEN** the effective plan and diagnostic evidence SHALL identify the
-  fallback as selected, its resolved parity, its position before decimation,
-  and the reason based on fieldmatch residual-combing semantics
+  fallback as `selective`, its resolved parity, its position before decimation,
+  and the reason as fieldmatch residual-combing semantics rather than an
+  assertion that all frames require repair
 
-#### Scenario: No fallback remains distinguishable from disabled processing
+#### Scenario: Non-IVTC paths remain distinguishable from selective IVTC
 
-- **WHEN** a clean IVTC plan does not require residual repair
-- **THEN** the effective plan SHALL report the fallback as not selected rather
-  than implying that every frame was deinterlaced
+- **WHEN** the source is progressive, native interlaced, unvalidated telecine,
+  or unresolved in field order
+- **THEN** the effective plan SHALL report no IVTC selective fallback and SHALL
+  preserve the applicable existing progressive, native-interlaced, or
+  review/unknown behavior
 
 #### Scenario: Existing provenance is preserved
 

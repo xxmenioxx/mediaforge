@@ -38,11 +38,20 @@ Relevant current behavior:
 - No cadence/interlace media fixtures were found in the repository. Existing
   coverage is primarily resolver, command-plan, and probe-fixture based.
 
-The local FFmpeg runtime is 8.1.1. Its filter capabilities expose
+The MVForge worker image pins FFmpeg 8.1.2 in `backend/Dockerfile`. Its filter
+capabilities expose
 `fieldmatch` comb matching, `bwdif=deint=interlaced`, frame-preserving
 `bwdif=mode=send_frame`, and `decimate`. The current FFmpeg documentation
 explicitly describes the fieldmatch output marking remaining combed frames as
 interlaced and shows a selective deinterlacer between fieldmatch and decimate.
+Runtime tests must still inspect the actual executable and filter support rather
+than trust the pinned version string alone.
+
+The Dockerfile smoke command currently exercises a graph with
+`fieldmatch,decimate,bwdif=...:deint=interlaced`. That command is capability
+smoke coverage, not the canonical production motion plan; the implementation
+tasks must update the smoke coverage to assert the selected
+`fieldmatch,bwdif=...:deint=interlaced,decimate` ordering.
 
 ## Goals / Non-Goals
 
@@ -80,19 +89,24 @@ The existing effective fields remain authoritative and will be supplemented by
 the smallest effective motion fields needed by this issue:
 
 - resolved effective IVTC field order (`tff` or `bff` when accepted);
-- residual-combing fallback state (`none` or selective deinterlace);
-- a bounded reason/diagnostic identifying that fieldmatch residual markers are
-  the reason for the fallback.
+- residual-combing fallback state (`selective` for every validated automatic
+  IVTC plan with resolved TFF/BFF, `none` for non-IVTC or unresolved paths);
+- a bounded reason/diagnostic explaining that the plan arms selective repair
+  based on fieldmatch's per-frame residual markers, not that sampled analysis
+  found a globally damaged asset.
 
 The same values will be represented in the existing `effectiveVideoDecision`
 diagnostic surface and the frozen Queue worker snapshot. The final
 `videoFilters` value remains the executable rendering authority. No new API or
 persistence migration is required; old snapshots default the new fallback
-state to `none` until a fresh canonical resolution occurs.
+state to `none` until a fresh canonical resolution occurs, while every newly
+resolved validated automatic IVTC plan with TFF/BFF sets it to `selective`.
+An exact repaired-frame count is not required to be persisted.
 
 ### 2. Use selective deinterlacing between fieldmatch and decimate
 
-For a validated IVTC plan, the selected conceptual chain is:
+For every validated automatic IVTC plan with resolved TFF/BFF, the selected
+conceptual chain is:
 
 ```text
 fieldmatch=order=<resolved>:combmatch=full,
@@ -134,7 +148,9 @@ The fallback will not run a new cadence analysis and will not inspect pixels in
 the command renderer. FFmpeg fieldmatch supplies the frame-level interlaced
 marking for frames it could not reconstruct; `bwdif=deint=interlaced` consumes
 that marking and passes progressive frames through unchanged. `mode=send_frame`
-keeps the fallback at one output frame per input frame.
+keeps the fallback at one output frame per input frame. A clean sampled window
+can therefore demonstrate pass-through behavior but cannot disable the armed
+fallback for unsampled frames.
 
 Focused runtime evidence must use `showinfo`/equivalent frame metadata after
 fieldmatch and after bwdif to prove that:
@@ -142,6 +158,9 @@ fieldmatch and after bwdif to prove that:
 1. a clean matched frame is not marked for deinterlacing;
 2. an injected residual combed frame is marked and is repaired; and
 3. bwdif does not change the count before decimate.
+
+These observations validate runtime behavior of the armed selective stage;
+they do not become a pre-execution whole-asset cleanliness classifier.
 
 If the supported worker FFmpeg build does not preserve this metadata contract,
 the implementation must not approximate it with an all-frame deinterlacer. It
@@ -152,8 +171,14 @@ limitation.
 
 The resolver will select parity once using the existing validated IVTC
 precedence. An explicit valid `cadenceFieldOrder` wins; otherwise the accepted
-IVTC validation order is used; otherwise the plan is unresolved. The selected
-value is passed to both `fieldmatch` and selective `bwdif`.
+IVTC validation order is used; otherwise the plan is unresolved. When TFF/BFF
+is accepted, the plan arms `residualFallback=selective`; the selected value is
+passed to both `fieldmatch` and selective `bwdif`.
+
+The sampled `TFFProgressive`, `TFFClassified`, `TFFProgressiveRatio`, and
+corresponding BFF values remain diagnostic evidence for IVTC acceptance and
+parity. They do not decide whether the selective stage is present and do not
+represent a full-asset repaired-frame count.
 
 The fallback must not call the generic native-interlace parity helper for an
 IVTC plan, because that helper can fall back to generic IDET counts or `auto`
@@ -190,9 +215,9 @@ filters, but it must not independently infer residual combing, field order, or
 progressive metadata from `automaticFilter`.
 
 The parity regression compares, for identical frozen inputs, the effective
-operation, field order, fallback state, rendered motion prefix, progressive
-state, and output FPS. Transport-only preview differences are outside the
-comparison.
+operation, field order, fallback state (`selective` for validated TFF/BFF
+IVTC), rendered motion prefix, progressive state, and output FPS.
+Transport-only preview differences are outside the comparison.
 
 ### 7. Keep detection, resolution, rendering, and validation separate
 
@@ -205,11 +230,13 @@ analysis and IVTC validation
   -> output probe and cadence validation
 ```
 
-Analysis may record the evidence that a fallback-capable telecine plan is
-allowed, but filter rendering must consume that resolved decision rather than
-classifying frames or reselecting parity. Output validation must compare the
-actual output with the frozen effective FPS and progressive expectation; it
-must not infer a new cadence policy from output artifacts.
+Analysis may record the evidence that validates a fallback-capable telecine
+plan, but filter rendering must consume that resolved decision rather than
+classifying frames or reselecting parity. Once validated, fieldmatch's
+per-frame marking is the execution signal; no second residual-combing
+classifier is introduced. Output validation must compare the actual output
+with the frozen effective FPS and progressive expectation; it must not infer a
+new cadence policy from output artifacts.
 
 No issue #3 fidelity special case is added. The new effective motion fields
 only expose the intentional transformation that #3 will later consume.
@@ -256,7 +283,9 @@ Queue uses the frozen chain. The sample is not committed or copied to NAS.
   a local automatic-motion helper. → Add explicit cross-surface parity tests
   and make the backend decision the only authority.
 - **Risk:** Existing snapshots do not contain the new diagnostic fields. → Use
-  optional fields with a `none` default and do not require a database migration.
+  optional fields with a `none` default for old snapshots and set `selective`
+  during every new validated TFF/BFF IVTC resolution; do not require a
+  database migration.
 
 ## Migration Plan
 
