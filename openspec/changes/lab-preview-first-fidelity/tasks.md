@@ -10,7 +10,8 @@
 - [ ] 2.2 Refactor Compatible Preview inspect and metrics preparation behind a bounded evidence provider keyed by artifact ID plus generation token/version, with source revision/interval/normalization identity where applicable; verify a replaced generation cannot read old evidence.
 - [ ] 2.3 Share generic structured probe, measured FPS, frame-structure, frame-reference, and metrics evidence only where the evidence semantics match; verify generic ffprobe evidence does not satisfy a specialized HEVC `trace_headers` request.
 - [ ] 2.4 Make comparison-frame access a read-only artifact/evidence consumer and preserve source-backed frame generation without creating a processed artifact for Sample A; verify frame requests do not trigger a second Compatible Preview encode.
-- [ ] 2.5 Preserve and strengthen the source/reference cache signature with source revision, normalized time interval, and normalization while excluding the processed Profile; verify profile-only edits reuse the reference and source/interval/normalization changes invalidate it.
+- [ ] 2.5 Protect every bounded ready-artifact evidence read with the existing #1 serving/analysis consumer mechanism or canonical equivalent, releasing it on completion, failure, or cancellation; do not add a second lease, generation consumer, generating state, or indefinite retention; verify cleanup cannot race an active read and later cleanup remains normal.
+- [ ] 2.6 Preserve and strengthen the source/reference cache signature with source revision, normalized time interval, and normalization while excluding the processed Profile; verify profile-only edits reuse the reference and source/interval/normalization changes invalidate it.
 
 ## 3. Implement the bounded backend Fidelity operation
 
@@ -39,7 +40,7 @@
 
 - [ ] 6.1 Split `Process Video` into primary request/readiness orchestration and non-blocking Fidelity operation start, retaining request/material identity checks and aborting superseded work; verify Sample B readiness is emitted while an injected Fidelity barrier remains blocked.
 - [ ] 6.2 Replace the single frontend multi-window React promise chain with status polling over the backend operation at a practical non-sub-second cadence; verify polling stops on terminal/not-found state and does not start generation or acquire hidden ownership.
-- [ ] 6.3 Make `VideoPreviewRequest` attach the ready Compatible Preview artifact for native playback while retaining the adapter fallback needed before #15; verify the ready element remains Range-capable and playback is not disabled by Fidelity activity.
+- [ ] 6.3 Bind Sample B playback to the ready primary Compatible Preview request through the existing transport abstraction; preserve current transport on pre-#15 main and consume #15 native ready-media behavior when available; verify #19 adds no Blob/native transport, credentials/Cookie, Range/seek, or readiness-race policy.
 - [ ] 6.4 Render independent Preview and Fidelity states, incremental completed-window results, bounded current-window progress, cancel, retry, and failure messaging; verify cancel/retry controls do not discard a ready primary preview.
 - [ ] 6.5 Gate result application on operation ID, primary artifact/generation identity, and current material signature; verify a late operation A result cannot replace current signature B state after a Profile or Start/Seconds edit.
 - [ ] 6.6 Make Previews, Technical, Frames, Characteristics, and Warnings tabs read-only consumers of collected operation/evidence data; verify tab changes produce no generation, probe, or metrics-start calls.
@@ -49,12 +50,13 @@
 - [ ] 7.1 Add backend tests for preview-first readiness, primary generation count exactly one, primary request/artifact reuse, and inspect/metrics reuse; verify playback, inspect, metrics, Fidelity, and frame consumers share the primary generation counter.
 - [ ] 7.2 Add backend runner tests for sequential-window barriers, global capacity serialization, deterministic primary deduplication, partial progress, and no-final-verdict behavior; verify all concurrency assertions use channels/counters rather than arbitrary sleeps.
 - [ ] 7.3 Add evidence-provider tests for one structured probe across consumers, source/reference material-signature reuse and invalidation, generation-token invalidation, frame-reference reuse, and separate HEVC trace/header evidence.
-- [ ] 7.4 Add cancellation, retry, background-failure, and shared-consumer tests; verify cancel preserves a ready primary, retry makes no primary generation call, and additional infrastructure failure is retryable without changing Preview Ready.
-- [ ] 7.5 Add restart-boundary tests for process-local operation loss and #14 primary artifact reuse; verify a new operation can retry the primary without re-encoding it.
-- [ ] 7.6 Add canonical #3 adapter and aggregation tests for intentional transformations, unverified evidence, high-SSIM canonical mismatch, and visual-threshold compatibility.
-- [ ] 7.7 Add focused frontend tests for independent state rendering, polling lifecycle, stale-signature protection, cancel/retry controls, native ready-media attachment, and no hidden tab-triggered work.
+- [ ] 7.4 Add deterministic artifact-protection tests for primary evidence versus cleanup, cancellation releasing LAB analysis protection without forced deletion, and independent playback/Fidelity protections on one ready artifact.
+- [ ] 7.5 Add cancellation, retry, background-failure, and shared-consumer tests; verify cancel preserves a ready primary, retry makes no primary generation call, and additional infrastructure failure is retryable without changing Preview Ready.
+- [ ] 7.6 Add restart-boundary tests for process-local operation loss and #14 primary artifact reuse; verify a new operation can retry the primary without re-encoding it.
+- [ ] 7.7 Add canonical #3 adapter and aggregation tests for intentional transformations, unverified evidence, high-SSIM canonical mismatch, and visual-threshold compatibility.
+- [ ] 7.8 Add focused frontend tests for independent state rendering, polling lifecycle, stale-signature protection, cancel/retry controls, the pre-#15 existing-transport/post-#15 adapter boundary, and no hidden tab-triggered work.
 
 ## 8. Validate and hand off the implementation plan
 
 - [ ] 8.1 Run focused backend/frontend tests for the changed operation and evidence seams, then run `./scripts/verify.sh --auto`; verify the canonical verifier reports `ALL CHECKS PASSED` during implementation.
-- [ ] 8.2 Review the final implementation diff against the expensive-work accounting table and ownership boundaries; verify no second preview lease/cache, Queue job, general scheduler, raw Fidelity FFmpeg path, threshold retune, or #14 persistence engine was introduced.
+- [ ] 8.2 Review the final implementation diff against the expensive-work accounting table and ownership boundaries; verify no second preview lease/cache or artifact-use guard system, Queue job, general scheduler, raw Fidelity FFmpeg path, threshold retune, #14 persistence engine, or #19-owned Blob/native transport policy was introduced.
