@@ -35,6 +35,8 @@ type CompatiblePreviewArtifactRecord struct {
 	GenerationToken          string    `gorm:"index;size:64"`
 	GenerationVersion        int64     `gorm:"not null;default:0"`
 	State                    string    `gorm:"not null;index;size:32"`
+	GenerationStartedAt      time.Time `gorm:"index"`
+	GenerationFinishedAt     time.Time `gorm:"index"`
 	CreatedAt                time.Time `gorm:"index"`
 	UpdatedAt                time.Time `gorm:"index"`
 	LastUsedAt               time.Time `gorm:"index"`

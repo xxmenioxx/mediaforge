@@ -393,6 +393,8 @@ func persistCompatiblePreviewArtifactGenerationStart(db *gorm.DB, descriptor *co
 	fields["state"] = string(compatiblePreviewArtifactGenerating)
 	fields["generation_token"] = token
 	fields["generation_version"] = version
+	fields["generation_started_at"] = now
+	fields["generation_finished_at"] = time.Time{}
 	fields["recovery_reason"] = ""
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		if record.CreatedAt.IsZero() {
@@ -415,7 +417,7 @@ func persistCompatiblePreviewArtifactTransition(db *gorm.DB, artifactID, token s
 	if db == nil || artifactID == "" || token == "" {
 		return true, nil
 	}
-	updates := map[string]any{"state": string(state), "recovery_reason": boundCompatiblePreviewRecoveryReason(reason), "updated_at": now, "last_used_at": now}
+	updates := map[string]any{"state": string(state), "recovery_reason": boundCompatiblePreviewRecoveryReason(reason), "updated_at": now, "last_used_at": now, "generation_finished_at": now}
 	result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", artifactID, token, version).Updates(updates)
 	if result.Error != nil {
 		return false, result.Error
@@ -529,14 +531,14 @@ func reconcileCompatiblePreviewArtifactRecord(db *gorm.DB, record *models.Compat
 	switch record.State {
 	case string(compatiblePreviewArtifactGenerating):
 		if validFinal {
-			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactReady), "recovery_reason": "", "updated_at": now, "last_used_at": now})
+			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactReady), "recovery_reason": "", "updated_at": now, "last_used_at": now, "generation_finished_at": now})
 			if result.Error != nil {
 				return *record, result.Error
 			}
 			record.State = string(compatiblePreviewArtifactReady)
 			record.RecoveryReason = ""
 		} else {
-			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactInterrupted), "recovery_reason": "backend restarted while generation was active", "updated_at": now})
+			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactInterrupted), "recovery_reason": "backend restarted while generation was active", "updated_at": now, "generation_finished_at": now})
 			if result.Error != nil {
 				return *record, result.Error
 			}
@@ -545,7 +547,7 @@ func reconcileCompatiblePreviewArtifactRecord(db *gorm.DB, record *models.Compat
 		}
 	case string(compatiblePreviewArtifactReady):
 		if !validFinal {
-			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactStale), "recovery_reason": "published preview artifact is missing or invalid", "updated_at": now})
+			result := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("artifact_id = ? AND generation_token = ? AND generation_version = ?", record.ArtifactID, record.GenerationToken, record.GenerationVersion).Updates(map[string]any{"state": string(compatiblePreviewArtifactStale), "recovery_reason": "published preview artifact is missing or invalid", "updated_at": now, "generation_finished_at": now})
 			if result.Error != nil {
 				return *record, result.Error
 			}
@@ -634,6 +636,7 @@ func purgeCompatiblePreviewTombstoneRecords(db *gorm.DB, now time.Time) error {
 }
 
 func resetCompatiblePreviewRuntimeForReconcile() {
+	resetCompatiblePreviewLeases()
 	compatiblePreviewRequests.Lock()
 	compatiblePreviewRequests.items = map[string]*compatiblePreviewRequestEntry{}
 	compatiblePreviewRequests.tombstones = map[string]compatiblePreviewRequestTombstone{}

@@ -11,6 +11,7 @@ vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
     ...actual,
+    waitForCompatiblePreviewReady: vi.fn().mockResolvedValue({ state: 'ready', code: 'ready' }),
     api: {
       ...actual.api,
       assets: vi.fn(),

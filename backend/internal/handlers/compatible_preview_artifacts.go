@@ -478,22 +478,24 @@ const (
 )
 
 type compatiblePreviewArtifact struct {
-	mu                sync.Mutex
-	done              chan struct{}
-	ctx               context.Context
-	cancel            context.CancelFunc
-	state             compatiblePreviewArtifactState
-	err               error
-	waiters           int
-	cancelTimer       *time.Timer
-	destination       string
-	logPath           string
-	retentionPolicy   compatiblePreviewRetentionPolicy
-	scopeExpiresAt    time.Time
-	lastUsedAt        time.Time
-	generationToken   string
-	generationVersion int64
-	persistenceDB     *gorm.DB
+	mu                   sync.Mutex
+	done                 chan struct{}
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	state                compatiblePreviewArtifactState
+	err                  error
+	waiters              int
+	cancelTimer          *time.Timer
+	destination          string
+	logPath              string
+	retentionPolicy      compatiblePreviewRetentionPolicy
+	scopeExpiresAt       time.Time
+	lastUsedAt           time.Time
+	generationToken      string
+	generationVersion    int64
+	generationStartedAt  time.Time
+	generationFinishedAt time.Time
+	persistenceDB        *gorm.DB
 }
 
 var compatiblePreviewArtifacts = struct {
@@ -702,12 +704,14 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 	entry.mu.Lock()
 	entry.state = state
 	entry.err = generationErr
+	entry.generationFinishedAt = time.Now()
 	if entry.cancelTimer != nil {
 		entry.cancelTimer.Stop()
 		entry.cancelTimer = nil
 	}
 	close(entry.done)
 	entry.mu.Unlock()
+	releaseCompatiblePreviewLeasesForArtifact(entry, time.Now())
 	if state != compatiblePreviewArtifactReady {
 		compatiblePreviewArtifacts.Lock()
 		if compatiblePreviewArtifacts.items[artifactIDFromDestination(destination)] == entry {
@@ -734,15 +738,18 @@ func newCompatiblePreviewArtifactEntry(descriptor *compatiblePreviewDescriptor, 
 	if state == compatiblePreviewArtifactGenerating {
 		entry.ctx, entry.cancel = context.WithCancel(context.Background())
 		entry.waiters = 1
+		entry.generationStartedAt = now
 	} else if state == compatiblePreviewArtifactReady {
 		close(entry.done)
 	}
 	return entry
 }
 
-func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatiblePreviewDescriptor) (bool, *compatiblePreviewArtifactLease, error) {
+var errCompatiblePreviewWaitBudget = errors.New("compatible preview HTTP wait budget elapsed")
+
+func beginCompatiblePreviewArtifact(descriptor *compatiblePreviewDescriptor) (bool, *compatiblePreviewArtifact, *compatiblePreviewArtifactLease, error) {
 	if descriptor == nil {
-		return false, nil, fmt.Errorf("compatible preview descriptor is required")
+		return false, nil, nil, fmt.Errorf("compatible preview descriptor is required")
 	}
 	now := time.Now()
 	if compatiblePreviewPublishedArtifactValidForDescriptor(descriptor) {
@@ -765,7 +772,7 @@ func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatibl
 		entry.lastUsedAt = now
 		entry.mu.Unlock()
 		compatiblePreviewArtifacts.Unlock()
-		return true, &compatiblePreviewArtifactLease{entry: entry}, nil
+		return true, entry, &compatiblePreviewArtifactLease{entry: entry}, nil
 	}
 
 	compatiblePreviewArtifacts.Lock()
@@ -819,29 +826,61 @@ func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatibl
 				delete(compatiblePreviewArtifacts.items, descriptor.ArtifactID)
 			}
 			compatiblePreviewArtifacts.Unlock()
-			return false, nil, persistErr
+			return false, nil, nil, persistErr
 		}
 		entry.mu.Lock()
 		entry.generationToken = token
 		entry.generationVersion = version
 		entry.mu.Unlock()
+		descriptor.GenerationToken = token
+		descriptor.GenerationVersion = version
 		go runCompatiblePreviewGeneration(entry, descriptor.Args)
+	}
+	return false, entry, &compatiblePreviewArtifactLease{entry: entry}, nil
+}
+
+func waitCompatiblePreviewArtifact(ctx context.Context, entry *compatiblePreviewArtifact, lease *compatiblePreviewArtifactLease, budget time.Duration) error {
+	if entry == nil || lease == nil {
+		return fmt.Errorf("compatible preview artifact lease is required")
+	}
+	var timer <-chan time.Time
+	var stopTimer func() bool
+	if budget > 0 {
+		t := time.NewTimer(budget)
+		timer = t.C
+		stopTimer = t.Stop
+	}
+	if stopTimer != nil {
+		defer stopTimer()
 	}
 
 	select {
 	case <-ctx.Done():
-		releaseCompatiblePreviewArtifact(entry)
-		return false, nil, ctx.Err()
+		lease.release()
+		return ctx.Err()
 	case <-entry.done:
 		entry.mu.Lock()
 		state, generationErr := entry.state, entry.err
 		entry.mu.Unlock()
 		if state != compatiblePreviewArtifactReady {
-			releaseCompatiblePreviewArtifact(entry)
-			return false, nil, generationErr
+			lease.release()
+			return generationErr
 		}
-		return false, &compatiblePreviewArtifactLease{entry: entry}, nil
+		return nil
+	case <-timer:
+		return errCompatiblePreviewWaitBudget
 	}
+}
+
+func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatiblePreviewDescriptor) (bool, *compatiblePreviewArtifactLease, error) {
+	cacheHit, entry, lease, err := beginCompatiblePreviewArtifact(descriptor)
+	if err != nil {
+		return false, nil, err
+	}
+	if err := waitCompatiblePreviewArtifact(ctx, entry, lease, 0); err != nil {
+		return false, nil, err
+	}
+	return cacheHit, lease, nil
 }
 
 func releaseCompatiblePreviewArtifact(entry *compatiblePreviewArtifact) {

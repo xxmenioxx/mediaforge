@@ -98,18 +98,13 @@ describe('LAB fidelity comparison geometry', () => {
     expect(video.getAttribute('crossorigin')).toBe('anonymous');
   });
 
-  it('uses credentialless fetches for compatible media while retaining streaming-capable media elements', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      blob: async () => new Blob(['preview']),
-      headers: new Headers(),
-    });
+  it('uses native ready media delivery instead of whole-video Blob loading', async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() });
-
     render(<VideoPreviewRequest label="Preview" src="/preview.mp4" />);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/preview.mp4', expect.objectContaining({ credentials: 'omit' })));
+    await waitFor(() => expect(screen.getByTestId('lab-comparison-video').getAttribute('src')).toBe('/preview.mp4'));
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('lab-comparison-video').getAttribute('crossorigin')).toBe('anonymous');
   });
 
