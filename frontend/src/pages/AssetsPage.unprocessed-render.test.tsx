@@ -17,7 +17,7 @@ vi.mock('../api/client', async (importOriginal) => {
     suggestProfile: vi.fn(), runtimeSnapshot: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
-    updateAssetConversion: vi.fn(), testEncodes: vi.fn(),
+    updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
     },
   };
 });
@@ -123,6 +123,7 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.evaluateAdvisor).mockImplementation(async ({ mediaPath }) => ({ recommendation: 'worth_it', score: 90, summary: `Ready: ${mediaPath}`, reasons: [], warnings: [] } as never));
     vi.mocked(api.publishAssetsAsIs).mockResolvedValue({ message: 'Published as-is', published: 2 } as never);
     vi.mocked(api.updateAssetConversion).mockResolvedValue({} as never);
+    vi.mocked(api.updateAssetEdit).mockImplementation(async ({ path, metadata, conversion }) => ({ path, metadata: { ...metadata, updatedAt: '2026-08-28T00:00:00Z' }, conversion }) as never);
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
@@ -511,24 +512,28 @@ describe('Unprocessed Assets hierarchy', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
     const dialog = await screen.findByRole('dialog');
+    const user = userEvent.setup();
     const role = within(dialog).getAllByLabelText('#3 · SPA · SUBRIP').at(-1)!;
     expect(role.textContent).toContain('Automatic');
 
-    const user = userEvent.setup();
     await user.click(role);
     await user.click(await screen.findByRole('option', { name: 'commentary' }));
-    await waitFor(() => expect(api.updateAssetConversion).toHaveBeenCalledWith(expect.objectContaining({
+    expect(api.updateAssetConversion).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Quick Asset Overrides' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateAssetEdit).toHaveBeenCalledTimes(1));
+    expect(api.updateAssetEdit).toHaveBeenCalledWith(expect.objectContaining({
       path: '/media/raw/movies/Akira/Akira.mkv',
-      subtitleRoleOverrides: expect.objectContaining({ '3': expect.objectContaining({ role: 'commentary' }) }),
-    }), expect.anything()));
+      conversion: expect.objectContaining({
+        subtitleRoleOverrides: expect.objectContaining({ '3': expect.objectContaining({ role: 'commentary' }) }),
+      }),
+    }));
 
     const refreshedRole = within(dialog).getAllByLabelText('#3 · SPA · SUBRIP').at(-1)!;
     await user.click(refreshedRole);
     await user.click(await screen.findByRole('option', { name: /^Automatic/ }));
-    await waitFor(() => {
-      const lastInput = vi.mocked(api.updateAssetConversion).mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
-      expect(lastInput).not.toHaveProperty('subtitleRoleOverrides');
-    });
+    expect(api.updateAssetEdit).toHaveBeenCalledTimes(1);
   }, 10000);
 
   it('shows the inherited effective Destination in Asset Info', async () => {
