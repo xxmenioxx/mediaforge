@@ -3552,6 +3552,33 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 }
 
 func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePreviewRequest, operation string) {
+	if !input.Ephemeral {
+		requestID, normalized, storeErr := storeCompatiblePreviewRequest(input, time.Now())
+		if storeErr != nil {
+			writeCompatiblePreviewError(c, storeErr)
+			return
+		}
+		entry, ok := loadCompatiblePreviewRequestEntry(requestID, time.Now())
+		if !ok {
+			entry = newCompatiblePreviewRequestEntry(normalized, time.Now(), h.db)
+			installCompatiblePreviewRequestEntry(requestID, entry)
+		}
+		entry.mu.Lock()
+		entry.persistenceDB = h.db
+		entry.mu.Unlock()
+		descriptor, prepareErr := h.compatiblePreviewDescriptorForEntry(entry, requestID)
+		if prepareErr != nil {
+			writeCompatiblePreviewError(c, prepareErr)
+			return
+		}
+		descriptor.frozen = h.db != nil && descriptor.RetentionPolicy != compatiblePreviewEphemeralRetention
+		if persistErr := persistCompatiblePreviewPreparedRequest(h.db, requestID, normalized, descriptor, time.Now()); persistErr != nil {
+			writeCompatiblePreviewError(c, persistErr)
+			return
+		}
+		h.servePreparedCompatiblePreview(c, descriptor, operation)
+		return
+	}
 	requestScope := ""
 	if input.Ephemeral {
 		requestScope = fmt.Sprintf("legacy-%d", time.Now().UnixNano())
@@ -3600,12 +3627,26 @@ func (h AssetHandler) servePreparedCompatiblePreview(c *gin.Context, descriptor 
 	}
 
 	started := time.Now()
-	cacheHit, lease, err := acquireCompatiblePreviewArtifact(c.Request.Context(), descriptor)
+	cacheHit, artifactEntry, httpLease, err := beginCompatiblePreviewArtifact(descriptor)
 	if err != nil {
-		writeCompatiblePreviewError(c, err)
+		writeCompatiblePreviewError(c, compatiblePreviewActionError(artifactEntry, err))
 		return
 	}
-	defer lease.release()
+	if waitErr := waitCompatiblePreviewArtifact(c.Request.Context(), artifactEntry, httpLease, compatiblePreviewHTTPWaitBudget); waitErr != nil {
+		if errors.Is(waitErr, errCompatiblePreviewWaitBudget) {
+			logicalLease, handoffErr := promoteCompatiblePreviewLogicalLease(c, descriptor, artifactEntry, httpLease)
+			if handoffErr != nil {
+				writeCompatiblePreviewError(c, handoffErr)
+				return
+			}
+			c.Header("Retry-After", strconv.Itoa(compatiblePreviewRetryAfterSeconds))
+			c.JSON(http.StatusAccepted, compatiblePreviewGeneratingEnvelope(descriptor.requestID, descriptor, logicalLease, cacheHit))
+			return
+		}
+		writeCompatiblePreviewError(c, compatiblePreviewActionError(artifactEntry, waitErr))
+		return
+	}
+	defer httpLease.release()
 
 	if frameKind == "output" {
 		frame, frameErr := generatePreviewFrame(c.Request.Context(), cachePath, "0", "null")

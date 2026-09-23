@@ -1,7 +1,7 @@
 import { ApiRequestError } from './client';
 
 export function isCompatiblePreviewRecoveryError(error: unknown) {
-  return error instanceof ApiRequestError && ['interrupted', 'stale_artifact', 'expired', 'unknown_request', 'failed', 'canceled'].includes(error.code ?? error.state ?? '');
+  return error instanceof ApiRequestError && ['interrupted', 'stale_artifact', 'expired', 'unknown_request', 'failed', 'canceled', 'legacy_non_followable'].includes(error.code ?? error.state ?? '');
 }
 
 export function compatiblePreviewRecoveryMessage(error: unknown) {
@@ -20,6 +20,8 @@ export function compatiblePreviewRecoveryMessage(error: unknown) {
     case 'failed':
     case 'canceled':
       return `The preview generation is ${error.code}. Recreate it to try again.`;
+    case 'legacy_non_followable':
+      return 'This legacy preview request cannot be followed while it is generating. Recreate it as a registered preview request.';
     default:
       return `Fidelity validation failed: ${error.message}`;
   }

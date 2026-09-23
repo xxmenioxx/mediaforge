@@ -44,6 +44,7 @@ import type {
   SnapshotOperation,
   CompatiblePreviewOptions,
   CompatiblePreviewRequest,
+  CompatiblePreviewLifecycleResponse,
   ProfileSampleEstimate,
   ProfileSampleEstimateOperation,
   QualityRecommendationResponse,
@@ -180,7 +181,7 @@ function compatiblePreviewPath(options: CompatiblePreviewOptions) {
   return `/api/assets/preview/compatible?path=${encodeURIComponent(path)}&profileId=${profileId}&start=${encodeURIComponent(start)}&seconds=${seconds}&videoCodec=${encodeURIComponent(videoCodec)}&qualityValue=${qualityValue}&videoPreset=${encodeURIComponent(videoPreset)}&pixFmt=${encodeURIComponent(pixFmt)}&videoFilters=${encodeURIComponent(videoFilters)}&x265Params=${encodeURIComponent(x265Params)}&videoEncoder=${encodeURIComponent(videoEncoder)}&useHardwareIfAvailable=${useHardwareIfAvailable}&globalQuality=${globalQuality}&qsvRateControl=${encodeURIComponent(qsvRateControl)}&qsvLookAheadDepth=${qsvLookAheadDepth}&qsvExtendedBRC=${qsvExtendedBRC}&qsvAdaptiveI=${qsvAdaptiveI}&qsvAdaptiveB=${qsvAdaptiveB}&qsvPStrategy=${qsvPStrategy}&mode=${mode}&previewNormalization=${encodeURIComponent(previewNormalization)}&ephemeral=${ephemeral}${subtitleStreamIndex === undefined ? '' : `&subtitleStreamIndex=${subtitleStreamIndex}`}`;
 }
 
-function compatiblePreviewRequestPath(requestId: string, resource: 'video' | 'frame' | 'inspect' | 'metrics') {
+function compatiblePreviewRequestPath(requestId: string, resource: 'video' | 'frame' | 'inspect' | 'metrics' | 'start' | 'status' | 'cancel') {
   if (typeof requestId !== 'string' || !requestId.trim()) {
     throw new Error('Compatible Preview requestId is required before requesting a resource');
   }
@@ -665,6 +666,20 @@ export const api = {
     }
     return { ...created, requestId: created.requestId.trim() };
   },
+  startCompatiblePreview: (requestId: string, ownerId: string, leaseToken?: string, signal?: AbortSignal) =>
+    request<CompatiblePreviewLifecycleResponse>(compatiblePreviewRequestPath(requestId, 'start'), {
+      method: 'POST',
+      body: JSON.stringify({ ownerId, ...(leaseToken ? { leaseToken } : {}) }),
+      signal,
+    }),
+  compatiblePreviewStatus: (requestId: string, signal?: AbortSignal) =>
+    request<CompatiblePreviewLifecycleResponse>(compatiblePreviewRequestPath(requestId, 'status'), { signal }),
+  cancelCompatiblePreview: (requestId: string, ownerId: string, leaseToken: string, signal?: AbortSignal) =>
+    request<CompatiblePreviewLifecycleResponse>(compatiblePreviewRequestPath(requestId, 'cancel'), {
+      method: 'POST',
+      body: JSON.stringify({ ownerId, leaseToken }),
+      signal,
+    }),
   compatibleAssetPreviewUrl: (request: string | CompatiblePreviewOptions) =>
     `${API_BASE_URL}${typeof request === 'string' ? compatiblePreviewRequestPath(request, 'video') : compatiblePreviewPath(request)}`,
   compatibleAssetFrameUrl: (requestId: string, frame: 'source' | 'output') =>
@@ -702,3 +717,94 @@ export const api = {
   }) =>
     `${API_BASE_URL}/api/assets/preview/audio?path=${encodeURIComponent(path)}&profileKey=${encodeURIComponent(profileKey)}&start=${encodeURIComponent(start)}&seconds=${seconds}&filters=${encodeURIComponent(filters)}&compatibility=${compatibility}${streamIndex === undefined ? '' : `&streamIndex=${streamIndex}`}`,
 };
+
+export function createCompatiblePreviewOwnerId() {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === 'function') return randomUUID.call(globalThis.crypto);
+  return `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function abortableCompatiblePreviewDelay(milliseconds: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+  return new Promise<void>((resolve, reject) => {
+    const timer = globalThis.setTimeout(resolve, milliseconds);
+    const onAbort = () => {
+      globalThis.clearTimeout(timer);
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export async function waitForCompatiblePreviewReady(requestId: string, signal?: AbortSignal, ownerId = createCompatiblePreviewOwnerId()) {
+  let leaseToken = '';
+  let response: CompatiblePreviewLifecycleResponse;
+  try {
+    let startDelay = 1_000;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        response = await api.startCompatiblePreview(requestId, ownerId, undefined, signal);
+        break;
+      } catch (error) {
+        if (signal?.aborted || error instanceof ApiRequestError || attempt >= 3) throw error;
+        await abortableCompatiblePreviewDelay(startDelay, signal);
+        startDelay = Math.min(startDelay * 2, 15_000);
+      }
+    }
+    leaseToken = response.leaseToken ?? '';
+    if (response.state === 'ready') return response;
+    let delay = 1_000;
+    let nextRenewal = Date.now() + 15_000;
+    for (;;) {
+      const status = await api.compatiblePreviewStatus(requestId, signal).catch(async (error: unknown) => {
+        if (error instanceof ApiRequestError && ['failed', 'canceled', 'interrupted', 'stale_artifact', 'expired', 'unknown_request'].includes(error.code ?? error.state ?? '')) throw error;
+        await abortableCompatiblePreviewDelay(Math.min(delay, 15_000), signal);
+        return null;
+      });
+      if (status) {
+        response = status;
+        if (status.state === 'ready') return status;
+        if (['failed', 'canceled', 'interrupted', 'stale', 'expired', 'unknown'].includes(status.state)) {
+          throw new ApiRequestError(status.reason ?? `Compatible Preview is ${status.state}`, status.state === 'expired' ? 410 : status.state === 'unknown' ? 404 : 409, {
+            code: status.code,
+            state: status.state,
+            reason: status.reason,
+            retryable: status.retryable,
+            recreate: status.recreate,
+          });
+        }
+      }
+      if (leaseToken && Date.now() >= nextRenewal) {
+        try {
+          const renewed = await api.startCompatiblePreview(requestId, ownerId, leaseToken, signal);
+          leaseToken = renewed.leaseToken ?? leaseToken;
+          nextRenewal = Date.now() + 15_000;
+        } catch (error) {
+          if (error instanceof ApiRequestError && ['invalid_lease', 'lease_expired'].includes(error.code ?? error.state ?? '')) {
+            const afterRenewal = await api.compatiblePreviewStatus(requestId, signal).catch(() => undefined);
+            if (afterRenewal?.state === 'ready') return afterRenewal;
+            if (afterRenewal && ['failed', 'canceled', 'interrupted', 'stale', 'expired', 'unknown'].includes(afterRenewal.state)) {
+              throw new ApiRequestError(afterRenewal.reason ?? `Compatible Preview is ${afterRenewal.state}`, afterRenewal.state === 'expired' ? 410 : afterRenewal.state === 'unknown' ? 404 : 409, {
+                code: afterRenewal.code,
+                state: afterRenewal.state,
+                reason: afterRenewal.reason,
+                retryable: afterRenewal.retryable,
+                recreate: afterRenewal.recreate,
+              });
+            }
+            throw error;
+          }
+          if (error instanceof ApiRequestError && ['expired', 'unknown_request'].includes(error.code ?? error.state ?? '')) throw error;
+          nextRenewal = Date.now() + Math.min(delay, 15_000);
+        }
+      }
+      await abortableCompatiblePreviewDelay(delay, signal);
+      delay = Math.min(delay * 2, 5_000);
+    }
+  } catch (error) {
+    if (leaseToken && (signal?.aborted || error instanceof DOMException && error.name === 'AbortError')) {
+      await api.cancelCompatiblePreview(requestId, ownerId, leaseToken).catch(() => undefined);
+    }
+    throw error;
+  }
+}

@@ -1943,6 +1943,34 @@ export type CompatiblePreviewRequest = {
   path: string;
 };
 
+export type CompatiblePreviewLifecycleState = 'idle' | 'generating' | 'ready' | 'failed' | 'canceled' | 'interrupted' | 'stale' | 'expired' | 'unknown';
+
+export type CompatiblePreviewLifecycleResponse = {
+  requestId: string;
+  artifactId?: string;
+  code: string;
+  state: CompatiblePreviewLifecycleState | string;
+  retryable?: boolean;
+  recreate?: boolean;
+  reason?: string;
+  leaseToken?: string;
+  ownerId?: string;
+  leaseExpiresAt?: string;
+  statusUrl?: string;
+  renewUrl?: string;
+  cancelUrl?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  elapsedSeconds?: number;
+  encoder?: string;
+  preset?: string;
+  cacheHit?: boolean;
+  slow?: boolean;
+  retryAfterSeconds?: number;
+  renewAfterSeconds?: number;
+  leaseReleased?: boolean;
+};
+
 export type ProfileSampleEstimate = {
   assetPath: string;
   durationSeconds: number;

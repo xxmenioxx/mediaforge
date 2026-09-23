@@ -44,7 +44,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api, ApiRequestError } from '../api/client';
+import { api, ApiRequestError, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from '../api/compatible-preview-recovery';
 import type {
   AppSetting,
@@ -1238,6 +1238,12 @@ export function ProfileLabPage() {
           conversionRequestPromise,
         ]);
 
+      const conversionOwnerId = createCompatiblePreviewOwnerId();
+      if (!cachedReference) {
+        await waitForCompatiblePreviewReady(referenceRequest.requestId, signal, createCompatiblePreviewOwnerId());
+      }
+      await waitForCompatiblePreviewReady(conversionRequest.requestId, signal, conversionOwnerId);
+
       onPrepared?.(
         referenceRequest.requestId,
         conversionRequest.requestId,
@@ -1272,6 +1278,7 @@ export function ProfileLabPage() {
         const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
         const options = { ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: false };
         const previewRequest = await api.createCompatiblePreviewRequest(options, signal);
+        await waitForCompatiblePreviewReady(previewRequest.requestId, signal, createCompatiblePreviewOwnerId());
         const inspection = await api.inspectCompatibleAssetPreview(previewRequest.requestId, signal);
         const metrics = await api.compatibleAssetFrameMetrics(previewRequest.requestId, signal).catch((error: unknown) => ({
           comparable: false,
@@ -1360,6 +1367,7 @@ export function ProfileLabPage() {
       setLastFidelityInspection(inspection);
       setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
       setProcessedVideoPreviewRequestId(inspection.conversionRequestId);
+      setVideoPreviewStatus('ready');
     },
     onError: (error) => {
       if (error instanceof ApiRequestError && ['expired', 'unknown_request', 'stale_artifact', 'interrupted'].includes(error.code ?? error.state ?? '')) {
@@ -1695,6 +1703,11 @@ export function ProfileLabPage() {
       trackSnapshot.reset();
     }
   }, [assetPath]);
+
+  useEffect(() => () => {
+    fidelityAbortRef.current?.abort();
+    videoPreviewCancelRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     qualityRecommendationAbortRef.current?.abort();
@@ -2572,6 +2585,8 @@ export function ProfileLabPage() {
   }
 
   function resetProcessedVideoPreview() {
+    fidelityAbortRef.current?.abort();
+    videoPreviewCancelRef.current?.abort();
     referencePreviewCacheRef.current = null;
 
     setVideoPreviewNonce(0);
@@ -3107,6 +3122,7 @@ export function ProfileLabPage() {
                         <VideoPreview
                           key={`original-compatible-${previewNonce}`}
                           label="Source reference · browser-compatible H.264"
+                          requestId={processedReferencePreviewRequestId || undefined}
                           src={processedReferencePreviewRequestId ? api.compatibleAssetPreviewUrl(processedReferencePreviewRequestId) : api.compatibleAssetPreviewUrl({
                             path: assetPath,
                             start,
@@ -3136,6 +3152,7 @@ export function ProfileLabPage() {
                           <VideoPreview
                             key={`draft-${videoPreviewNonce}`}
                             label="Video draft"
+                            requestId={processedVideoPreviewRequestId}
                             src={api.compatibleAssetPreviewUrl(processedVideoPreviewRequestId)}
                             onStatusChange={setVideoPreviewStatus}
                             cancelSignal={videoPreviewSignal}
@@ -3202,7 +3219,11 @@ export function ProfileLabPage() {
                           {fidelityOpen ? 'Hide' : 'Show'}
                         </Button>
                       </Stack>
-                      {fidelityInspection.isPending ? <Alert severity="info">Generating both previews and validating their video characteristics…</Alert> : null}
+                      {fidelityInspection.isPending ? <Alert severity="info">
+                        {analysisElapsedSeconds >= 30
+                          ? `This preview encode is taking longer than usual, but is still running. Elapsed ${formatElapsedTime(analysisElapsedSeconds)}.`
+                          : 'Generating previews and validating their video characteristics…'}
+                      </Alert> : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                         <Button size="small" variant="outlined" disabled={startProfileSampleEstimate.isPending || sampleEstimateActive || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure samples</Button>
                         {startProfileSampleEstimate.isPending || sampleEstimateActive ? <Typography variant="body2" color="text.secondary">{sampleEstimatePhase}</Typography> : null}
@@ -5480,28 +5501,32 @@ function ImageAdjustmentSlider({
 function VideoPreview({
   label,
   src,
+  requestId,
   direct = false,
   onStatusChange,
   cancelSignal,
 }: {
   label: string;
   src?: string;
+  requestId?: string;
   direct?: boolean;
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
 }) {
-  return <VideoPreviewRequest key={`${direct}:${src}`} label={label} src={src} direct={direct} onStatusChange={onStatusChange} cancelSignal={cancelSignal} />;
+  return <VideoPreviewRequest key={`${direct}:${src}`} label={label} src={src} requestId={requestId} direct={direct} onStatusChange={onStatusChange} cancelSignal={cancelSignal} />;
 }
 
-export function VideoPreviewRequest({ label, src, direct = false, onStatusChange, cancelSignal }: {
+export function VideoPreviewRequest({ label, src, requestId, direct = false, onStatusChange, cancelSignal }: {
   label: string;
   src?: string;
+  requestId?: string;
   direct?: boolean;
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
 }) {
-  const [videoSrc, setVideoSrc] = useState(direct && src ? src : '');
-  const [metrics, setMetrics] = useState<{ cache: string; mode: string; generationMs: number; bytes: number } | null>(null);
+  const [videoSrc, setVideoSrc] = useState('');
+  const nativeRetryCount = useRef(0);
+  const nativeRetryController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!src?.trim()) {
@@ -5509,40 +5534,48 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
       setVideoSrc('');
       return;
     }
-    const controller = new AbortController();
-    let objectUrl = '';
-    const cancel = () => controller.abort();
+    const cancel = () => setVideoSrc('');
     cancelSignal?.addEventListener('abort', cancel, { once: true });
     onStatusChange?.('loading');
-    if (direct) {
-      return () => {
-        cancelSignal?.removeEventListener('abort', cancel);
-        controller.abort();
-      };
-    }
-    fetch(src, { credentials: 'omit', signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Preview failed with ${response.status}`);
-        const blob = await response.blob();
-        objectUrl = URL.createObjectURL(blob);
-        setMetrics({
-          cache: response.headers.get('X-MVForge-Preview-Cache') ?? 'unknown',
-          mode: response.headers.get('X-MVForge-Preview-Mode') ?? 'unknown',
-          generationMs: Number(response.headers.get('X-MVForge-Preview-Generation-Ms') ?? 0),
-          bytes: blob.size,
-        });
-        setVideoSrc(objectUrl);
-      })
-      .catch((error) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        onStatusChange?.('error');
-      });
+    nativeRetryCount.current = 0;
+    nativeRetryController.current?.abort();
+    setVideoSrc(src);
     return () => {
       cancelSignal?.removeEventListener('abort', cancel);
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      nativeRetryController.current?.abort();
     };
-  }, [cancelSignal, direct, onStatusChange, src]);
+  }, [cancelSignal, onStatusChange, src]);
+
+  async function handleNativeMediaError() {
+    if (!src?.trim() || direct || !requestId || cancelSignal?.aborted) {
+      onStatusChange?.('error');
+      return;
+    }
+    if (nativeRetryCount.current >= 2) {
+      onStatusChange?.('error');
+      return;
+    }
+    nativeRetryCount.current += 1;
+    nativeRetryController.current?.abort();
+    const controller = new AbortController();
+    nativeRetryController.current = controller;
+    onStatusChange?.('loading');
+    try {
+      const status = await api.compatiblePreviewStatus(requestId, controller.signal);
+      if (status.state === 'generating') {
+        await waitForCompatiblePreviewReady(requestId, controller.signal, createCompatiblePreviewOwnerId());
+      } else if (status.state !== 'ready') {
+        onStatusChange?.('error');
+        return;
+      }
+      if (controller.signal.aborted) return;
+      const mediaURL = src;
+      setVideoSrc(`${mediaURL}${mediaURL.includes('?') ? '&' : '?'}mediaRetry=${nativeRetryCount.current}`);
+    } catch (error) {
+      if (controller.signal.aborted || error instanceof DOMException && error.name === 'AbortError') return;
+      onStatusChange?.('error');
+    }
+  }
 
   if (!src?.trim()) {
     return (
@@ -5558,8 +5591,7 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         <Typography fontWeight={700}>{label}</Typography>
         {direct ? <Chip size="small" label="Original stream · no conversion" color="success" /> : null}
-        {metrics ? <Chip size="small" label={`${metrics.mode} · ${metrics.cache}`} /> : null}
-        {metrics ? <Chip size="small" label={`${(metrics.generationMs / 1000).toFixed(2)}s · ${formatPreviewBytes(metrics.bytes)}`} /> : null}
+        {!direct ? <Chip size="small" label="Native streaming preview" /> : null}
       </Stack>
       <Box
         component="video"
@@ -5568,17 +5600,12 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
         src={videoSrc}
         data-testid="lab-comparison-video"
         onCanPlay={() => onStatusChange?.('ready')}
-        onError={() => onStatusChange?.('error')}
+        onError={() => void handleNativeMediaError()}
         data-lab-comparison-video={LAB_COMPARISON_VIEWPORT_POLICY}
         sx={{ width: '100%', maxHeight: 420, aspectRatio: '16 / 9', bgcolor: 'black', objectFit: 'contain', objectPosition: 'center', display: 'block', borderRadius: 1 }}
       />
     </Stack>
   );
-}
-
-function formatPreviewBytes(bytes: number) {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function AudioPreview({

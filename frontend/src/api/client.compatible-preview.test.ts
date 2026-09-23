@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CompatiblePreviewOptions, ProfileInput } from './types';
-import { ApiRequestError, api, request } from './client';
+import { ApiRequestError, api, request, waitForCompatiblePreviewReady } from './client';
 import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from './compatible-preview-recovery';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 function largeProfile(): ProfileInput {
   return {
@@ -111,6 +114,51 @@ describe('compatible preview request transport', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/inspect`);
     expect(fetchMock.mock.calls[1][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/metrics`);
+  });
+
+  it('uses credentialless lifecycle calls and accepts 202 generating responses', async () => {
+    const requestId = 'd'.repeat(64);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating', leaseToken: 'lease-a', ownerId: 'owner-a' }), { status: 202, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'ready', state: 'ready', cacheHit: false }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'ready', state: 'ready', leaseReleased: false }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const started = await api.startCompatiblePreview(requestId, 'owner-a');
+    const status = await api.compatiblePreviewStatus(requestId);
+    const canceled = await api.cancelCompatiblePreview(requestId, 'owner-a', 'lease-a');
+
+    expect(started.state).toBe('generating');
+    expect(status.state).toBe('ready');
+    expect(canceled.leaseReleased).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init as RequestInit).credentials).toBe('omit');
+    }
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/start`);
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ ownerId: 'owner-a' });
+  });
+
+  it('re-reads canonical status when renewal loses a terminal transition race', async () => {
+    vi.useFakeTimers();
+    const requestId = 'e'.repeat(64);
+    const generating = JSON.stringify({ requestId, code: 'generating', state: 'generating', leaseToken: 'lease-a', ownerId: 'owner-a' });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(generating, { status: 202, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'generating', state: 'generating' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'invalid_lease', state: 'generating' }), { status: 409, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ requestId, code: 'ready', state: 'ready' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = waitForCompatiblePreviewReady(requestId, undefined, 'owner-a');
+    await vi.advanceTimersByTimeAsync(18_000);
+    await expect(pending).resolves.toMatchObject({ state: 'ready' });
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit).method === 'POST' && String((init as RequestInit).body).includes('lease-a'))).toBe(true);
   });
 
   it('rejects empty request IDs before constructing resource URLs', () => {
