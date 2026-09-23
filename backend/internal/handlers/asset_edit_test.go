@@ -316,6 +316,121 @@ func TestAssetEditSerializesWithRenameOverrideMigration(t *testing.T) {
 	}
 }
 
+func TestAssetEditRejectsStaleSaveAfterRenameWins(t *testing.T) {
+	db, router, root := newAssetEditTestServer(t)
+	oldPath := filepath.Join(root, "movie.mkv")
+	otherPath := filepath.Join(root, "other.mkv")
+	writeTestFile(t, oldPath, "media")
+	writeTestFile(t, otherPath, "other")
+	if err := db.Create(&models.AssetRecord{
+		Path: oldPath, RootPath: root, RelativePath: "movie.mkv", FileName: "movie.mkv",
+		Status: "unprocessed", LibraryID: 1, LibraryName: "Test",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetMetadataOverrides(db, map[string]AssetMetadataState{
+		filepath.Clean(oldPath):   {Categories: []string{"Before"}},
+		filepath.Clean(otherPath): {Categories: []string{"Other"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		filepath.Clean(oldPath):   {KeepAudioStreams: []int{1}},
+		filepath.Clean(otherPath): {KeepAudioStreams: []int{2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	callbackName := "asset-edit-rename-wins-barrier"
+	if err := db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Table != "app_settings" {
+			return
+		}
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Update().Remove(callbackName)
+
+	renameDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", bytes.NewBufferString(`{"path":"`+oldPath+`","fileName":"renamed.mkv"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		renameDone <- response
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rename did not reach the deterministic AppSetting barrier")
+	}
+
+	staleSaveDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		staleSaveDone <- assetEditRequest(t, router, oldPath, AssetEditInput{
+			Metadata:   AssetMetadataUpdateInput{Categories: []string{"Stale"}},
+			Conversion: AssetConversionUpdateInput{KeepAudioStreams: []int{3}},
+		})
+	}()
+	close(release)
+
+	renameResponse := <-renameDone
+	staleSaveResponse := <-staleSaveDone
+	if renameResponse.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameResponse.Code, renameResponse.Body.String())
+	}
+	if staleSaveResponse.Code != http.StatusConflict {
+		t.Fatalf("stale save status=%d body=%s", staleSaveResponse.Code, staleSaveResponse.Body.String())
+	}
+
+	newPath := filepath.Join(root, "renamed.mkv")
+	metadata := assetMetadataOverrides(db)
+	conversion := assetConversionOverrides(db)
+	if got := metadata[filepath.Clean(newPath)]; len(got.Categories) != 1 || got.Categories[0] != "Before" {
+		t.Fatalf("rename metadata was not preserved: %#v", metadata)
+	}
+	if got := conversion[filepath.Clean(newPath)]; len(got.KeepAudioStreams) != 1 || got.KeepAudioStreams[0] != 1 {
+		t.Fatalf("rename conversion was not preserved: %#v", conversion)
+	}
+	if metadata[filepath.Clean(otherPath)].Categories[0] != "Other" || conversion[filepath.Clean(otherPath)].KeepAudioStreams[0] != 2 {
+		t.Fatalf("unrelated override entry was lost: metadata=%#v conversion=%#v", metadata, conversion)
+	}
+	if _, exists := metadata[filepath.Clean(oldPath)]; exists {
+		t.Fatalf("stale metadata override was recreated: %#v", metadata)
+	}
+	if _, exists := conversion[filepath.Clean(oldPath)]; exists {
+		t.Fatalf("stale conversion override was recreated: %#v", conversion)
+	}
+}
+
+func TestRenameMapsAuthorizationReadFailureToInternalServerError(t *testing.T) {
+	db, router, root := newAssetEditTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	writeTestFile(t, path, "media")
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/assets/rename", bytes.NewBufferString(`{"path":"`+path+`","fileName":"renamed.mkv"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("authorization read failure status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestAssetEditCompatibilityEndpointsRetainContractsAndEmptySemantics(t *testing.T) {
 	db, router, root := newAssetEditTestServer(t)
 	path := filepath.Join(root, "movie.mkv")

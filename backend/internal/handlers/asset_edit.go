@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -40,16 +41,6 @@ func (h AssetHandler) Edit(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(resolvedPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
-		return
-	}
-
 	var input AssetEditInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -60,6 +51,23 @@ func (h AssetHandler) Edit(c *gin.Context) {
 	var response AssetEditResponse
 	assetOverrideMutationMu.Lock()
 	defer assetOverrideMutationMu.Unlock()
+	allowed, err := h.pathBelongsToLibrary(cleanPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
+		return
+	}
+	if _, err := os.Stat(cleanPath); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset path changed; reload Asset Info before saving"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		metadataEntries := assetMetadataOverrides(tx)
 		conversionEntries := assetConversionOverrides(tx)

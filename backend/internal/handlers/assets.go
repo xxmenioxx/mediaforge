@@ -3149,18 +3149,6 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(resolvedPath)
-	if err != nil {
-		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !allowed {
-		err := fmt.Errorf("media path is outside configured libraries")
-		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
-		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-		return
-	}
 
 	var input AssetConversionUpdateInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -3172,6 +3160,18 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 	var persisted AssetConversionOverrideState
 	assetOverrideMutationMu.Lock()
 	defer assetOverrideMutationMu.Unlock()
+	allowed, err := h.pathBelongsToLibrary(cleanPath)
+	if err != nil {
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		err := fmt.Errorf("media path is outside configured libraries")
+		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "check_library"}, err)
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		entries := assetConversionOverrides(tx)
 		override, err := normalizeAssetConversionUpdate(tx, cleanPath, input, entries[cleanPath])
@@ -3216,7 +3216,17 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, err := h.pathBelongsToLibrary(resolvedPath)
+
+	var input AssetMetadataUpdateInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	cleanPath := filepath.Clean(resolvedPath)
+	var persisted AssetMetadataState
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
+	allowed, err := h.pathBelongsToLibrary(cleanPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3225,18 +3235,8 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
-
-	var input AssetMetadataUpdateInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	cleanPath := filepath.Clean(resolvedPath)
 	info, statErr := os.Stat(cleanPath)
 	isPathMetadata := statErr == nil && info.IsDir()
-	var persisted AssetMetadataState
-	assetOverrideMutationMu.Lock()
-	defer assetOverrideMutationMu.Unlock()
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		entries := assetMetadataOverrides(tx)
 		metadata, remove := normalizedAssetMetadata(input)
@@ -3299,8 +3299,14 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
 	allowed, err := h.pathBelongsToLibrary(resolvedPath)
-	if err != nil || !allowed {
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !allowed {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
@@ -3347,10 +3353,8 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
-	assetOverrideMutationMu.Lock()
 	rollback, err := applyLibraryRenamePlan(plan, manualRenameLibrary, os.Rename)
 	if err != nil {
-		assetOverrideMutationMu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "rename asset: " + err.Error()})
 		return
 	}
@@ -3420,7 +3424,6 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
-		assetOverrideMutationMu.Unlock()
 		if rollbackErr := rollback(); rollbackErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("update renamed asset: %v; filesystem rollback failed: %v", err, rollbackErr)})
 			return
@@ -3428,7 +3431,6 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update renamed asset: " + err.Error()})
 		return
 	}
-	assetOverrideMutationMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
 }
 
