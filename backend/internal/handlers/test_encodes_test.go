@@ -548,7 +548,7 @@ func TestResolvedCadencePlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 	}}
 	requested := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
 		"fieldStructureMode": "preserve",
-		"cadenceMode":        "inverse_telecine",
+		"cadenceMode":        "auto",
 		"cadenceFieldOrder":  "auto",
 		"videoFilters":       "scale=1280:720",
 	}}
@@ -573,7 +573,7 @@ func TestResolvedCadencePlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 
 	want := queue.WorkerConfig
 	for name, profile := range map[string]models.Profile{"preview": preview, "test_encode": testEncode} {
-		for _, key := range []string{"videoFilters", "effectiveCadenceOperation", "effectiveOutputFrameRate", "deinterlaceMode"} {
+		for _, key := range []string{"videoFilters", "effectiveCadenceOperation", "effectiveCadenceFieldOrder", "effectiveResidualCombingFallback", "effectiveResidualCombingFallbackReason", "effectiveOutputFrameRate", "deinterlaceMode"} {
 			if got := workerStringValue(profile.WorkerConfig[key]); got != workerStringValue(want[key]) {
 				t.Fatalf("%s cadence %s diverged: got=%q queue=%q", name, key, got, workerStringValue(want[key]))
 			}
@@ -585,7 +585,7 @@ func TestResolvedCadencePlanMatchesPreviewTestEncodeAndQueue(t *testing.T) {
 	if got := workerStringValue(queue.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" {
 		t.Fatalf("queue effective cadence rate=%q", got)
 	}
-	if filters := workerStringValue(queue.WorkerConfig["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff,decimate") {
+	if filters := workerStringValue(queue.WorkerConfig["videoFilters"]); !strings.Contains(filters, "fieldmatch=order=bff:combmatch=full,bwdif=mode=send_frame:parity=bff:deint=interlaced,decimate,setfield=prog") {
 		t.Fatalf("queue did not render the validated IVTC chain: %q", filters)
 	}
 }

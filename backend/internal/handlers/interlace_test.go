@@ -94,7 +94,7 @@ func TestApplyIVTCValidationSelectsTFFForTerramarLikeEvidence(t *testing.T) {
 	if analysis.Status != "telecine" || analysis.RecommendedMode != "ivtc_tff" {
 		t.Fatalf("expected IVTC TFF recommendation, got %#v", analysis)
 	}
-	if analysis.RecommendedFilter != "fieldmatch=order=tff,decimate" {
+	if analysis.RecommendedFilter != "fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog" {
 		t.Fatalf("unexpected filter %q", analysis.RecommendedFilter)
 	}
 	if !analysis.FieldOrderMismatch {

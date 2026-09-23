@@ -7916,12 +7916,13 @@ function adaptiveVideoToolboxPreviewRates(
   };
 }
 
-function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
-  if (videoFilterControlValue(profile, 'deinterlaceMode', 'auto') !== 'auto') return [];
+export function combinedAutomaticMotionFilters(profile: ProfileInput, scan: ScanResult) {
+  const cadenceMode = videoWorkerValue(profile, 'cadenceMode', 'auto');
+  const deinterlaceMode = videoFilterControlValue(profile, 'deinterlaceMode', 'auto');
+  if (cadenceMode !== 'auto' && cadenceMode !== 'inverse_telecine' && deinterlaceMode !== 'auto') return [];
   const filters = (scan.interlaceAnalysis.automaticFilter || '').split(',').map((filter) => filter.trim()).filter(Boolean);
-  const emitsProgressiveFrames = filters.some((filter) => filter.startsWith('bwdif=') || filter.startsWith('fieldmatch=') || filter === 'decimate');
-  if ((emitsProgressiveFrames || (scan.interlaceAnalysis.status === 'progressive' && scan.interlaceAnalysis.fieldOrderMismatch)) && !filters.some((filter) => filter.startsWith('setfield='))) {
-    filters.push('setfield=prog');
+  if (!filters.length && scan.interlaceAnalysis.recommendedFieldMetadataMode === 'progressive') {
+    return ['setfield=prog'];
   }
   return filters;
 }
@@ -8209,6 +8210,8 @@ function formatEffectiveVideoDecision(decision: EffectiveVideoDecision) {
     gop,
     level,
     decision.cadenceOperation,
+    decision.cadenceFieldOrder ? `Field order ${decision.cadenceFieldOrder.toUpperCase()}` : '',
+    decision.residualCombingFallback === 'selective' ? 'Residual combing selective' : '',
     decision.upscale ? `Upscale ${upscaleModeLabel(decision.upscale.resolvedMode)}${decision.upscale.upscaleApplied ? ` ${decision.upscale.targetWidth}×${decision.upscale.targetHeight}` : ''}` : '',
 	decision.restoration?.stages.length ? `Restoration ${decision.restoration.stages.map((stage) => stage.stage).join(' → ')}` : '',
   ].filter(Boolean).join(' · ');

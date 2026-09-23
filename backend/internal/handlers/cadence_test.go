@@ -16,6 +16,20 @@ func cadenceSignals(fps float64, repeats int, pattern string, progressive bool) 
 		RepeatPictFrames: repeats, Cadence: pattern, ActualTimespan: 239 / fps, EffectiveFPS: fps}
 }
 
+func TestEnsureCanonicalIVTCFilterReplacesLegacyMotionPieces(t *testing.T) {
+	filters := ensureCanonicalIVTCFilter(
+		"fieldmatch=order=tff,decimate,setfield=prog,scale=1280:720",
+		"bff",
+	)
+	want := "fieldmatch=order=bff:combmatch=full,bwdif=mode=send_frame:parity=bff:deint=interlaced,decimate,setfield=prog,scale=1280:720"
+	if filters != want {
+		t.Fatalf("canonical IVTC filter=%q want %q", filters, want)
+	}
+	if strings.Count(filters, "fieldmatch=") != 1 || strings.Count(filters, "bwdif=") != 1 || strings.Count(filters, "decimate") != 1 || strings.Count(filters, "setfield=prog") != 1 {
+		t.Fatalf("canonical IVTC filter duplicated motion pieces: %q", filters)
+	}
+}
+
 func TestSummarizeTimestampDeltasKeepsCompactCadenceEvidence(t *testing.T) {
 	summary := summarizeTimestampDeltas([]float64{.0334, .0500, .0333, .0501, .0334, .0500})
 	if summary.Count != 6 || len(summary.Dominant) != 2 || summary.Dominant[0] != .033 || summary.Dominant[1] != .05 {
@@ -266,6 +280,13 @@ func TestExplicitInverseTelecineRequiresValidatedFieldOrderAndRenderedChain(t *t
 			filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
 			if strings.Contains(filters, "fieldmatch=") != test.wantFilter || strings.Contains(filters, "decimate") != test.wantFilter {
 				t.Fatalf("filters=%q want canonical chain=%v", filters, test.wantFilter)
+			}
+			wantFallback := "none"
+			if test.wantFilter {
+				wantFallback = "selective"
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveResidualCombingFallback"]); got != wantFallback {
+				t.Fatalf("residual fallback=%q want %q", got, wantFallback)
 			}
 			if test.wantOrder == "" && workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) == "" {
 				t.Fatalf("missing review warning: %#v", resolved.WorkerConfig)
