@@ -1,3 +1,12 @@
+## 0. Implementation branch prerequisite
+
+- [ ] 0.1 Before any production implementation, merge current
+  `origin/main` at `d05a86b5af8e9c74365e4f36c96e5500fbeeb1c4` into the
+  implementation branch or create a fresh v2 implementation branch from that
+  main and carry this approved OpenSpec forward; verify the implementation
+  branch is zero commits behind main, preserve merged #3 Frame Fidelity/Profile
+  LAB changes, and do not rewrite or force-push the published #15 branch.
+
 ## 1. Backend lifecycle and HTTP contract
 
 - [ ] 1.1 Add typed status/action envelopes and route contracts for `idle`,
@@ -19,8 +28,10 @@
   interval occurs between waiter release and logical ownership.
 - [ ] 1.5 Add the registered start/renew and cancel actions, including stable
   frontend `ownerId` retry behavior, 15-second renewal target, `Retry-After: 2`,
-  shared-artifact references, idempotent repeated cancel, and zero-consumer
-  cancellation after the lease expires.
+  shared-artifact references, active cancel returning `leaseReleased=true`,
+  repeated cancel returning HTTP 200 with `leaseReleased=false`, distinct
+  `invalid_lease`/`lease_expired` conflicts, and zero-consumer cancellation
+  after the lease expires.
 - [ ] 1.6 Update registered video, output-frame, inspection, and metrics
   resources to use the same handoff and envelope while preserving source-frame
   behavior; verify ready/cache-hit behavior is immediate and healthy slow work
@@ -84,17 +95,25 @@
   idempotent acquire/renew/cancel/expiry, terminal lease cleanup, shared
   artifact ownership, restart/interrupted recovery, explicit retry/new token,
   cache hits, operational metadata exclusion from identity, and legacy
-  followable/non-followable behavior.
-- [ ] 3.4 Add frontend/API tests for 202 transport, lease renewal/cancel,
+  followable/non-followable behavior. Explicitly assert cancel A releases once,
+  cancel A again returns HTTP 200 with `leaseReleased=false`, random or
+  wrong-bound token returns HTTP 409 `invalid_lease`, known expired lease
+  returns HTTP 409 `lease_expired`, and expired request tombstone returns HTTP
+  410 `expired`.
+- [ ] 3.4 Add a shared-owner regression asserting A and B reference one
+  artifact, A cancels twice, B still owns exactly one reference, and generation
+  remains active. Verify no repeated cancel decrements B or triggers
+  zero-consumer cancellation.
+- [ ] 3.5 Add frontend/API tests for 202 transport, lease renewal/cancel,
   polling/backoff stop conditions, slow wording, no Blob download,
   ready-gated native media, native readiness-race recovery, and terminal UI;
   verify controllable fetch credentials, native cookie limitation wording,
   `crossOrigin`, and no false credentialless claim.
-- [ ] 3.5 Add focused middleware/media tests that preserve Cookie stripping,
+- [ ] 3.6 Add focused middleware/media tests that preserve Cookie stripping,
   Range forwarding, unrelated-header behavior, and Cookie/Authorization log
   redaction; retain explicit x265/NAS metadata coverage without promising fake
   progress.
-- [ ] 3.6 Run focused changed-area tests, then
+- [ ] 3.7 Run focused changed-area tests, then
   `openspec validate slow-compatible-preview --type change --strict` and
   `./scripts/verify.sh --auto`; verify `ALL CHECKS PASSED` before any future
   implementation task is presented as complete.

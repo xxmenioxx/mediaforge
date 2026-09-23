@@ -112,6 +112,13 @@ implementation exposes one; it is not an effect of observation.
 `cancel` releases only the caller's logical lease. It is idempotent for the
 same lease and never unconditionally kills an FFmpeg process. If another
 logical owner or artifact consumer remains, the shared generation continues.
+An active lease returns HTTP 200 with `leaseReleased: true`; a lease that was
+previously valid and successfully released returns HTTP 200 with
+`leaseReleased: false` and the current observable state. A malformed,
+never-valid, or incorrectly bound token returns HTTP 409 with
+`code: "invalid_lease"`. A known lease that expired before cancellation
+returns HTTP 409 with `code: "lease_expired"`. Request tombstone expiration is
+checked first and remains HTTP 410 with `code: "expired"` under #14.
 
 These routes are a projection and ownership adapter over the existing request
 and artifact registries. They do not add a job scheduler, persistent lease
@@ -148,11 +155,17 @@ Resource and start actions have a separate matrix:
 | `expired` | 410 | Preserve the #14 expired tombstone semantics. |
 | `unknown_request` | 404 | No registered lifecycle record is addressable. |
 
-The `cancel` action returns a successful idempotent release result for a valid
-lease, including the current state. It returns 404/410 for unknown/expired
-request identity and a lifecycle conflict for an invalid, expired, or
-already-released token without affecting another owner. This does not change
-the resource/start matrix above.
+The `cancel` action returns a successful idempotent release result for an
+active or previously released lease, including the current state. Its first
+release is `leaseReleased: true`; a repeat is `leaseReleased: false` and does
+not decrement any reference. It returns HTTP 409 with `code: "invalid_lease"`
+for a malformed, never-valid, or wrong request/owner binding, and HTTP 409
+with `code: "lease_expired"` for a known lease that expired before cancel.
+It returns 404 for an unknown request and 410 with `code: "expired"` for an
+expired request tombstone. A released lease record remains addressable as a
+released runtime result until its associated request/artifact runtime entry is
+cleaned up, so successful repeats never become ownership conflicts. This does
+not change the resource/start matrix above.
 
 A generating response uses an envelope like:
 
@@ -255,8 +268,11 @@ The lifecycle invariants are:
 | --- | --- |
 | Acquire | Same `(requestId, ownerId)` has one active lease and one artifact consumer reference. A fresh owner gets one new reference. |
 | Renew | Extends expiry to the bounded lease lifetime, with a 15-second frontend target; it adds no waiter or consumer reference. |
-| Cancel | Releases exactly that owner's reference once. Repeated cancel is an idempotent no-op/result and cannot release another owner. |
-| Expire | Releases exactly once when the lease expires; cleanup is safe if cancel raced with expiry. |
+| Cancel active | Releases exactly that owner's reference once and returns `leaseReleased: true`. |
+| Cancel released | Returns HTTP 200 with `leaseReleased: false` and the current state; it never decrements another reference. |
+| Cancel invalid | Returns HTTP 409 `invalid_lease` for malformed, never-valid, or wrong request/owner binding. |
+| Cancel expired lease | Returns HTTP 409 `lease_expired` when known lease expiry happened before cancel. |
+| Expire | Releases exactly once and marks the lease expired; cleanup is safe if cancel raced with expiry. |
 | Terminal generation | On `ready`, `failed`, or `canceled`, remove/release logical lease bookkeeping without changing the already-owned #1/#14 terminal artifact lifecycle. |
 | Shared artifact | Owners A and B each reference the same artifact entry. Releasing A leaves B and the generation alive. |
 
@@ -431,6 +447,14 @@ backend Cookie stripping preserves Range, and retain logging redaction.
   abandoned leases, and preserve #1/#14 cleanup bounds.
 
 ## Migration Plan
+
+Before any production implementation task begins, synchronize the
+implementation branch with current `origin/main` at
+`d05a86b5af8e9c74365e4f36c96e5500fbeeb1c4`. Use either a non-destructive merge
+of `origin/main` into the implementation branch or a fresh v2 implementation
+branch based on current main that carries this approved OpenSpec. Require
+`behind main = 0`, preserve the merged #3 Frame Fidelity/Profile LAB changes,
+and do not rewrite or force-push the published #15 planning branch.
 
 1. Add the status/start/cancel response types and routes as an adapter over the
    existing #1/#14 request/artifact registries. Keep request IDs, artifact IDs,

@@ -61,10 +61,15 @@ matrix:
 | `expired` | 410 | Preserve the #14 expired tombstone. |
 | `unknown_request` | 404 | Preserve unknown registered identity behavior. |
 
-The `cancel` action SHALL return an idempotent release result for a valid lease,
-and SHALL use 404/410 for unknown/expired request identity plus a lifecycle
-conflict for an invalid or already expired lease token. It SHALL not cancel
-another owner. This action matrix SHALL not be conflated with the successful
+The `cancel` action SHALL return HTTP 200 with `leaseReleased: true` for a
+valid active lease and HTTP 200 with `leaseReleased: false` when the same
+previously valid lease is canceled again. Both responses SHALL include the
+current observable state, and neither response SHALL release another owner's
+reference. A malformed, never-valid, or wrong request/owner binding SHALL
+return HTTP 409 with `code: "invalid_lease"`. A known lease that expired before
+cancel SHALL return HTTP 409 with `code: "lease_expired"`. An expired request
+tombstone SHALL return HTTP 410 with `code: "expired"`, regardless of lease
+token state. This action matrix SHALL not be conflated with the successful
 known-state `/status` projection.
 
 #### Scenario: Status and resource observe the same failure differently
@@ -133,7 +138,9 @@ operations over runtime-only logical leases. The frontend SHALL send a stable
 opaque `ownerId` for one preview surface/request. Runtime state SHALL map
 `(requestId, ownerId)` to at most one active lease. Repeated initial start with
 the same owner identity SHALL renew/return that lease and SHALL NOT increment
-artifact consumers twice, including after a lost start response.
+artifact consumers twice, including after a lost start response. A released
+lease SHALL remain addressable as a released runtime result for idempotent
+cancel until its associated request/artifact runtime entry is cleaned up.
 
 The default lease lifetime SHALL be 45 seconds and the renewal target SHALL be
 15 seconds. `ownerId` and `leaseToken` SHALL not be authentication, request ID,
@@ -153,11 +160,31 @@ state. No lease table or browser-owner restoration SHALL be added.
 - **THEN** expiry is extended without adding an HTTP waiter or artifact
   consumer reference
 
-#### Scenario: Repeated cancel releases once
+#### Scenario: Repeated cancel is idempotent
 
 - **WHEN** owner A cancels its lease and repeats the same cancel request
-- **THEN** the first request releases A's reference and the second is an
-  idempotent result that cannot release another owner
+- **THEN** the first request returns HTTP 200 with `leaseReleased: true`, the
+  second returns HTTP 200 with `leaseReleased: false`, and the reference is
+  decremented exactly once
+
+#### Scenario: Invalid ownership is distinct from repeated cancel
+
+- **WHEN** a cancel request uses a malformed token, a never-valid token, or a
+  token bound to another request or owner
+- **THEN** it returns HTTP 409 with `code: "invalid_lease"` and does not release
+  any reference
+
+#### Scenario: Expired lease is distinct from invalid ownership
+
+- **WHEN** a known logical lease expires before its cancel request arrives
+- **THEN** cancel returns HTTP 409 with `code: "lease_expired"` and does not
+  release a second time
+
+#### Scenario: Expired request remains a #14 tombstone result
+
+- **WHEN** the registered request itself is an expired #14 tombstone
+- **THEN** cancel returns HTTP 410 with `code: "expired"`, not an invalid-lease
+  or lease-expired classification
 
 #### Scenario: Expiry releases once
 
@@ -165,11 +192,13 @@ state. No lease table or browser-owner restoration SHALL be added.
 - **THEN** A's reference is released exactly once and #1's existing
   zero-consumer grace decides whether generation cancels
 
-#### Scenario: Shared owners remain independent
+#### Scenario: Shared owners remain independent across repeated cancel
 
-- **WHEN** owners A and B reference the same artifact and A cancels or expires
-- **THEN** B's reference remains, the shared generation continues, and one
-  requester cannot unconditionally kill FFmpeg
+- **WHEN** owners A and B reference the same artifact, A cancels, and A
+  repeats the cancel request
+- **THEN** A's first cancel releases exactly one reference, the repeat returns
+  HTTP 200 with `leaseReleased: false`, B still owns exactly one reference,
+  and the shared generation remains active
 
 #### Scenario: Terminal generation removes runtime lease bookkeeping
 
