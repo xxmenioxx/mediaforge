@@ -21,12 +21,17 @@ const (
 	compatiblePreviewLogicalLeaseRenewal    = 15 * time.Second
 	compatiblePreviewSlowUXThreshold        = 30 * time.Second
 	compatiblePreviewRetryAfterSeconds      = 2
-	compatiblePreviewLeaseMaxItems          = 1000
+	compatiblePreviewLeaseMaxItemsDefault   = 1000
 	compatiblePreviewLeaseMetadataRetention = 2 * time.Minute
 	compatiblePreviewOwnerMaxLength         = 128
 )
 
 var compatiblePreviewHTTPWaitBudget = compatiblePreviewHTTPWaitBudgetDefault
+
+// This is a variable so deterministic registry tests can exercise capacity
+// without constructing one thousand long-lived preview requests. Production
+// uses the documented default and never evicts active owners.
+var compatiblePreviewLeaseMaxItems = compatiblePreviewLeaseMaxItemsDefault
 
 type compatiblePreviewLeaseState string
 
@@ -106,16 +111,6 @@ func cleanupCompatiblePreviewLeases(now time.Time) {
 			delete(compatiblePreviewLeases.byToken, token)
 		}
 	}
-	if len(compatiblePreviewLeases.byToken) > compatiblePreviewLeaseMaxItems {
-		for token, lease := range compatiblePreviewLeases.byToken {
-			if lease.state != compatiblePreviewLeaseActive {
-				delete(compatiblePreviewLeases.byToken, token)
-				if len(compatiblePreviewLeases.byToken) <= compatiblePreviewLeaseMaxItems {
-					break
-				}
-			}
-		}
-	}
 	compatiblePreviewLeases.Unlock()
 	for _, artifactLease := range release {
 		artifactLease.release()
@@ -152,6 +147,22 @@ func createCompatiblePreviewLogicalLease(requestID, ownerID string, entry *compa
 		compatiblePreviewLeases.Unlock()
 		artifactLease.release()
 		return existing, true, nil
+	}
+	if len(compatiblePreviewLeases.byToken) >= compatiblePreviewLeaseMaxItems {
+		// Retained terminal records support deterministic repeated cancel, but
+		// must not prevent capacity recovery. Under pressure, discard only one
+		// non-active record; active ownership is never evicted.
+		for token, retained := range compatiblePreviewLeases.byToken {
+			if retained.state == compatiblePreviewLeaseActive {
+				continue
+			}
+			delete(compatiblePreviewLeases.byToken, token)
+			break
+		}
+		if len(compatiblePreviewLeases.byToken) >= compatiblePreviewLeaseMaxItems {
+			compatiblePreviewLeases.Unlock()
+			return nil, false, &compatiblePreviewLifecycleError{Status: http.StatusTooManyRequests, Code: "lease_capacity", State: "generating", Retryable: true, Reason: "compatible preview logical lease capacity is exhausted"}
+		}
 	}
 	lease := &compatiblePreviewLogicalLease{requestID: requestID, ownerID: ownerID, token: newCompatiblePreviewLeaseToken(), entry: entry, artifactLease: artifactLease, expiresAt: now.Add(compatiblePreviewLogicalLeaseLifetime), state: compatiblePreviewLeaseActive}
 	compatiblePreviewLeases.byToken[lease.token] = lease
@@ -275,7 +286,7 @@ func compatiblePreviewArtifactForDescriptor(descriptor *compatiblePreviewDescrip
 }
 
 func compatiblePreviewStatusProjection(requestID string, entry *compatiblePreviewRequestEntry, descriptor *compatiblePreviewDescriptor) map[string]any {
-	response := map[string]any{"requestId": requestID, "code": "idle", "state": "idle", "retryable": false, "recreate": false, "cacheHit": false}
+	response := map[string]any{"requestId": requestID, "code": "idle", "state": "idle", "retryable": false, "recreate": false}
 	if descriptor != nil {
 		response["artifactId"] = descriptor.ArtifactID
 		response["encoder"] = descriptor.EffectiveVideoEncoder
@@ -290,7 +301,7 @@ func compatiblePreviewStatusProjection(requestID string, entry *compatiblePrevie
 			response["preset"] = preset
 		}
 		if compatiblePreviewPublishedArtifactValidForDescriptor(descriptor) {
-			response["code"], response["state"], response["cacheHit"] = "ready", "ready", true
+			response["code"], response["state"] = "ready", "ready"
 		}
 	}
 	if entry == nil {
@@ -318,7 +329,7 @@ func compatiblePreviewStatusProjection(requestID string, entry *compatiblePrevie
 		return response
 	}
 	runtime.mu.Lock()
-	state, reason, startedAt, finishedAt := runtime.state, runtime.err, runtime.generationStartedAt, runtime.generationFinishedAt
+	state, reason, startedAt, finishedAt, cacheHit := runtime.state, runtime.err, runtime.generationStartedAt, runtime.generationFinishedAt, runtime.cacheHit
 	runtime.mu.Unlock()
 	if state == compatiblePreviewArtifactGenerating {
 		response["code"], response["state"], response["retryable"] = "generating", "generating", true
@@ -331,7 +342,9 @@ func compatiblePreviewStatusProjection(requestID string, entry *compatiblePrevie
 		}
 	} else if state == compatiblePreviewArtifactReady {
 		response["code"], response["state"] = "ready", "ready"
-		response["cacheHit"] = true
+		if cacheHit {
+			response["cacheHit"] = true
+		}
 	} else {
 		failure := compatiblePreviewLifecycleFailure(string(state), compatiblePreviewErrorString(reason))
 		if lifecycleErr, ok := failure.(*compatiblePreviewLifecycleError); ok {
@@ -427,7 +440,17 @@ func (h AssetHandler) CompatiblePreviewRequestStart(c *gin.Context) {
 			return
 		}
 		if lease.state == compatiblePreviewLeaseReleased {
-			c.JSON(http.StatusConflict, gin.H{"error": "compatible preview lease was released", "code": "invalid_lease", "state": "generating"})
+			lease.entry.mu.Lock()
+			leaseState, leaseReason := lease.entry.state, compatiblePreviewErrorString(lease.entry.err)
+			lease.entry.mu.Unlock()
+			switch leaseState {
+			case compatiblePreviewArtifactReady:
+				c.JSON(http.StatusOK, compatiblePreviewStatusProjection(requestID, entry, descriptor))
+			case compatiblePreviewArtifactFailed, compatiblePreviewArtifactCanceled, compatiblePreviewArtifactInterrupted, compatiblePreviewArtifactStale:
+				writeCompatiblePreviewError(c, compatiblePreviewLifecycleFailure(string(leaseState), leaseReason))
+			default:
+				c.JSON(http.StatusConflict, gin.H{"error": "compatible preview lease was released", "code": "invalid_lease", "state": "generating"})
+			}
 			return
 		}
 		lease.entry.mu.Lock()
@@ -488,7 +511,7 @@ func (h AssetHandler) CompatiblePreviewRequestCancel(c *gin.Context) {
 		return
 	}
 	lifecycleRequest, err := decodeCompatiblePreviewLifecycleRequest(c)
-	if err != nil || lifecycleRequest.LeaseToken == "" {
+	if err != nil || !validCompatiblePreviewOwnerID(lifecycleRequest.OwnerID) || lifecycleRequest.LeaseToken == "" {
 		c.JSON(http.StatusConflict, gin.H{"error": "compatible preview lease is invalid", "code": "invalid_lease", "state": "generating"})
 		return
 	}

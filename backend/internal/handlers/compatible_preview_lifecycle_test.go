@@ -181,6 +181,16 @@ func TestCompatiblePreviewCancelEndpointIsIdempotent(t *testing.T) {
 	router := gin.New()
 	router.POST("/requests/:requestId/cancel", AssetHandler{}.CompatiblePreviewRequestCancel)
 	body := `{"ownerId":"owner-a","leaseToken":"` + lease.token + `"}`
+	missingOwner := httptest.NewRecorder()
+	router.ServeHTTP(missingOwner, httptest.NewRequest(http.MethodPost, "/requests/cancel-request/cancel", bytes.NewBufferString(`{"leaseToken":"`+lease.token+`"}`)))
+	if missingOwner.Code != http.StatusConflict || !strings.Contains(missingOwner.Body.String(), `"code":"invalid_lease"`) {
+		t.Fatalf("missing owner response=%d %s", missingOwner.Code, missingOwner.Body.String())
+	}
+	wrongOwner := httptest.NewRecorder()
+	router.ServeHTTP(wrongOwner, httptest.NewRequest(http.MethodPost, "/requests/cancel-request/cancel", bytes.NewBufferString(`{"ownerId":"owner-b","leaseToken":"`+lease.token+`"}`)))
+	if wrongOwner.Code != http.StatusConflict || !strings.Contains(wrongOwner.Body.String(), `"code":"invalid_lease"`) {
+		t.Fatalf("wrong owner response=%d %s", wrongOwner.Code, wrongOwner.Body.String())
+	}
 	first := httptest.NewRecorder()
 	router.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/requests/cancel-request/cancel", bytes.NewBufferString(body)))
 	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"leaseReleased":true`) {
@@ -191,6 +201,136 @@ func TestCompatiblePreviewCancelEndpointIsIdempotent(t *testing.T) {
 	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"leaseReleased":false`) {
 		t.Fatalf("repeated cancel response=%d %s", second.Code, second.Body.String())
 	}
+}
+
+func TestCompatiblePreviewRenewAfterTerminalReleaseUsesCanonicalState(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		state      compatiblePreviewArtifactState
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "ready", state: compatiblePreviewArtifactReady, wantStatus: http.StatusOK, wantCode: "ready"},
+		{name: "failed", state: compatiblePreviewArtifactFailed, wantStatus: http.StatusConflict, wantCode: "failed"},
+		{name: "canceled", state: compatiblePreviewArtifactCanceled, wantStatus: http.StatusConflict, wantCode: "canceled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetCompatiblePreviewLeases()
+			resetCompatiblePreviewArtifactsForTest()
+			t.Cleanup(resetCompatiblePreviewLeases)
+			t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+
+			descriptor := testCompatiblePreviewDescriptor(t, "renew-terminal-"+test.name)
+			descriptor.requestID = "renew-terminal-" + test.name
+			requestEntry := &compatiblePreviewRequestEntry{Descriptor: descriptor, CreatedAt: time.Now(), AccessedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
+			artifact := newCompatiblePreviewArtifactEntry(descriptor, time.Now(), test.state)
+			compatiblePreviewRequests.Lock()
+			compatiblePreviewRequests.items = map[string]*compatiblePreviewRequestEntry{descriptor.requestID: requestEntry}
+			compatiblePreviewRequests.tombstones = map[string]compatiblePreviewRequestTombstone{}
+			compatiblePreviewRequests.Unlock()
+			compatiblePreviewArtifacts.Lock()
+			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = artifact
+			compatiblePreviewArtifacts.Unlock()
+
+			lease, _, err := createCompatiblePreviewLogicalLease(descriptor.requestID, "owner-a", artifact, &compatiblePreviewArtifactLease{entry: artifact}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Terminal transition wins the renewal race: the lease is released
+			// only after the artifact has reached its canonical terminal state.
+			releaseCompatiblePreviewLeasesForArtifact(artifact, time.Now())
+
+			router := gin.New()
+			router.POST("/requests/:requestId/start", AssetHandler{}.CompatiblePreviewRequestStart)
+			body := `{"ownerId":"owner-a","leaseToken":"` + lease.token + `"}`
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/requests/"+descriptor.requestID+"/start", bytes.NewBufferString(body)))
+			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("renew-after-terminal status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestCompatiblePreviewLeaseRegistryCapacityNeverEvictsActiveOwners(t *testing.T) {
+	oldMax := compatiblePreviewLeaseMaxItems
+	compatiblePreviewLeaseMaxItems = 2
+	t.Cleanup(func() { compatiblePreviewLeaseMaxItems = oldMax })
+	resetCompatiblePreviewLeases()
+	t.Cleanup(resetCompatiblePreviewLeases)
+
+	firstEntry := lifecycleTestArtifact(t, "capacity-first")
+	first, _, err := createCompatiblePreviewLogicalLease("capacity-first", "owner-a", firstEntry, &compatiblePreviewArtifactLease{entry: firstEntry}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEntry := lifecycleTestArtifact(t, "capacity-second")
+	second, _, err := createCompatiblePreviewLogicalLease("capacity-second", "owner-b", secondEntry, &compatiblePreviewArtifactLease{entry: secondEntry}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thirdEntry := lifecycleTestArtifact(t, "capacity-third")
+	if renewed, duplicate, err := createCompatiblePreviewLogicalLease("capacity-first", "owner-a", thirdEntry, &compatiblePreviewArtifactLease{entry: thirdEntry}, time.Now()); err != nil || !duplicate || renewed != first {
+		t.Fatalf("existing owner could not renew at capacity: lease=%p duplicate=%t err=%v", renewed, duplicate, err)
+	}
+	newEntry := lifecycleTestArtifact(t, "capacity-new")
+	if _, _, err := createCompatiblePreviewLogicalLease("capacity-new", "owner-c", newEntry, &compatiblePreviewArtifactLease{entry: newEntry}, time.Now()); err == nil {
+		t.Fatal("new owner unexpectedly bypassed lease capacity")
+	} else if lifecycleErr, ok := err.(*compatiblePreviewLifecycleError); !ok || lifecycleErr.Status != http.StatusTooManyRequests || lifecycleErr.Code != "lease_capacity" {
+		t.Fatalf("capacity error=%#v", err)
+	}
+
+	if !releaseCompatiblePreviewLogicalLease(first, time.Now()) {
+		t.Fatal("first active lease did not release")
+	}
+	availableEntry := lifecycleTestArtifact(t, "capacity-available")
+	if available, duplicate, err := createCompatiblePreviewLogicalLease("capacity-available", "owner-d", availableEntry, &compatiblePreviewArtifactLease{entry: availableEntry}, time.Now()); err != nil || duplicate || available == nil {
+		t.Fatalf("capacity did not recover after release: lease=%p duplicate=%t err=%v", available, duplicate, err)
+	}
+	_ = second
+}
+
+func TestCompatiblePreviewStatusCacheHitTracksArtifactProvenance(t *testing.T) {
+	t.Run("preexisting artifact", func(t *testing.T) {
+		resetCompatiblePreviewArtifactsForTest()
+		t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+		descriptor := testCompatiblePreviewDescriptor(t, "cache-preexisting")
+		descriptor.requestID = "cache-preexisting"
+		entry := newCompatiblePreviewArtifactEntry(descriptor, time.Now(), compatiblePreviewArtifactReady)
+		entry.cacheHit = true
+		compatiblePreviewArtifacts.Lock()
+		compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+		compatiblePreviewArtifacts.Unlock()
+		response := compatiblePreviewStatusProjection(descriptor.requestID, &compatiblePreviewRequestEntry{Descriptor: descriptor}, descriptor)
+		if response["cacheHit"] != true {
+			t.Fatalf("preexisting ready artifact cacheHit=%#v", response["cacheHit"])
+		}
+	})
+
+	t.Run("fresh generation", func(t *testing.T) {
+		resetCompatiblePreviewArtifactsForTest()
+		t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+		descriptor := testCompatiblePreviewDescriptor(t, "cache-fresh")
+		descriptor.requestID = "cache-fresh"
+		entry := newCompatiblePreviewArtifactEntry(descriptor, time.Now(), compatiblePreviewArtifactGenerating)
+		compatiblePreviewArtifacts.Lock()
+		compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
+		compatiblePreviewArtifacts.Unlock()
+		requestEntry := &compatiblePreviewRequestEntry{Descriptor: descriptor}
+		generating := compatiblePreviewStatusProjection(descriptor.requestID, requestEntry, descriptor)
+		if _, exists := generating["cacheHit"]; exists {
+			t.Fatalf("fresh generating status invented cacheHit: %#v", generating["cacheHit"])
+		}
+		entry.mu.Lock()
+		entry.state = compatiblePreviewArtifactReady
+		entry.generationFinishedAt = time.Now()
+		entry.mu.Unlock()
+		ready := compatiblePreviewStatusProjection(descriptor.requestID, requestEntry, descriptor)
+		if _, exists := ready["cacheHit"]; exists {
+			t.Fatalf("fresh ready status invented cacheHit: %#v", ready["cacheHit"])
+		}
+	})
 }
 
 func TestCompatiblePreviewStatusProjectionMatrix(t *testing.T) {

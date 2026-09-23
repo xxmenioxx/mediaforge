@@ -720,7 +720,9 @@ func restoreCompatiblePreviewRequestRecord(db *gorm.DB, record models.Compatible
 				case string(compatiblePreviewArtifactReady):
 					compatiblePreviewArtifacts.Lock()
 					if _, exists := compatiblePreviewArtifacts.items[descriptor.ArtifactID]; !exists {
-						compatiblePreviewArtifacts.items[descriptor.ArtifactID] = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
+						artifactEntry := newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
+						artifactEntry.cacheHit = true
+						compatiblePreviewArtifacts.items[descriptor.ArtifactID] = artifactEntry
 					}
 					compatiblePreviewArtifacts.Unlock()
 				case string(compatiblePreviewArtifactInterrupted), string(compatiblePreviewArtifactFailed), string(compatiblePreviewArtifactCanceled), string(compatiblePreviewArtifactStale):

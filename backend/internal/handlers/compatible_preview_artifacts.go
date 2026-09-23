@@ -491,6 +491,7 @@ type compatiblePreviewArtifact struct {
 	retentionPolicy      compatiblePreviewRetentionPolicy
 	scopeExpiresAt       time.Time
 	lastUsedAt           time.Time
+	cacheHit             bool
 	generationToken      string
 	generationVersion    int64
 	generationStartedAt  time.Time
@@ -757,6 +758,7 @@ func beginCompatiblePreviewArtifact(descriptor *compatiblePreviewDescriptor) (bo
 		entry := compatiblePreviewArtifacts.items[descriptor.ArtifactID]
 		if entry == nil {
 			entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
+			entry.cacheHit = true
 			compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
 			entry.mu.Lock()
 		} else {
@@ -764,6 +766,7 @@ func beginCompatiblePreviewArtifact(descriptor *compatiblePreviewDescriptor) (bo
 			if entry.state == compatiblePreviewArtifactCanceled || entry.state == compatiblePreviewArtifactFailed {
 				entry.mu.Unlock()
 				entry = newCompatiblePreviewArtifactEntry(descriptor, now, compatiblePreviewArtifactReady)
+				entry.cacheHit = true
 				compatiblePreviewArtifacts.items[descriptor.ArtifactID] = entry
 				entry.mu.Lock()
 			}

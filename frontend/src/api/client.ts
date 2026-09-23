@@ -780,7 +780,21 @@ export async function waitForCompatiblePreviewReady(requestId: string, signal?: 
           leaseToken = renewed.leaseToken ?? leaseToken;
           nextRenewal = Date.now() + 15_000;
         } catch (error) {
-          if (error instanceof ApiRequestError && ['invalid_lease', 'lease_expired', 'expired', 'unknown_request'].includes(error.code ?? error.state ?? '')) throw error;
+          if (error instanceof ApiRequestError && ['invalid_lease', 'lease_expired'].includes(error.code ?? error.state ?? '')) {
+            const afterRenewal = await api.compatiblePreviewStatus(requestId, signal).catch(() => undefined);
+            if (afterRenewal?.state === 'ready') return afterRenewal;
+            if (afterRenewal && ['failed', 'canceled', 'interrupted', 'stale', 'expired', 'unknown'].includes(afterRenewal.state)) {
+              throw new ApiRequestError(afterRenewal.reason ?? `Compatible Preview is ${afterRenewal.state}`, afterRenewal.state === 'expired' ? 410 : afterRenewal.state === 'unknown' ? 404 : 409, {
+                code: afterRenewal.code,
+                state: afterRenewal.state,
+                reason: afterRenewal.reason,
+                retryable: afterRenewal.retryable,
+                recreate: afterRenewal.recreate,
+              });
+            }
+            throw error;
+          }
+          if (error instanceof ApiRequestError && ['expired', 'unknown_request'].includes(error.code ?? error.state ?? '')) throw error;
           nextRenewal = Date.now() + Math.min(delay, 15_000);
         }
       }
