@@ -149,7 +149,10 @@ function compatiblePreviewPath(options: CompatiblePreviewOptions) {
 }
 
 function compatiblePreviewRequestPath(requestId: string, resource: 'video' | 'frame' | 'inspect' | 'metrics') {
-  return `/api/assets/preview/compatible/requests/${encodeURIComponent(requestId)}/${resource}`;
+  if (typeof requestId !== 'string' || !requestId.trim()) {
+    throw new Error('Compatible Preview requestId is required before requesting a resource');
+  }
+  return `/api/assets/preview/compatible/requests/${encodeURIComponent(requestId.trim())}/${resource}`;
 }
 
 export const api = {
@@ -614,8 +617,17 @@ export const api = {
   snapshotOperations: (path: string) =>
     request<{ operations: SnapshotOperation[] }>(`/api/scan/operations?path=${encodeURIComponent(path)}`),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
-  createCompatiblePreviewRequest: (options: CompatiblePreviewOptions, signal?: AbortSignal) =>
-    request<CompatiblePreviewRequest>('/api/assets/preview/compatible/requests', { method: 'POST', body: JSON.stringify(options), signal }),
+  createCompatiblePreviewRequest: async (options: CompatiblePreviewOptions, signal?: AbortSignal) => {
+    const created = await request<CompatiblePreviewRequest>('/api/assets/preview/compatible/requests', {
+      method: 'POST',
+      body: JSON.stringify(options),
+      signal,
+    });
+    if (typeof created.requestId !== 'string' || !created.requestId.trim()) {
+      throw new Error('Compatible Preview request creation returned an empty requestId');
+    }
+    return { ...created, requestId: created.requestId.trim() };
+  },
   compatibleAssetPreviewUrl: (request: string | CompatiblePreviewOptions) =>
     `${API_BASE_URL}${typeof request === 'string' ? compatiblePreviewRequestPath(request, 'video') : compatiblePreviewPath(request)}`,
   compatibleAssetFrameUrl: (requestId: string, frame: 'source' | 'output') =>

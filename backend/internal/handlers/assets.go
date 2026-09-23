@@ -85,11 +85,6 @@ type PublicationReconciliationInput struct {
 	Path  string `json:"path" binding:"required"`
 }
 
-type previewGeneration struct {
-	done chan struct{}
-	err  error
-}
-
 type subtitleExtractionOperation struct {
 	ID                     string                            `json:"id"`
 	Status                 string                            `json:"status"`
@@ -113,11 +108,6 @@ type subtitleExtractionOperation struct {
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}
 }
-
-var previewCacheState = struct {
-	sync.Mutex
-	inFlight map[string]*previewGeneration
-}{inFlight: map[string]*previewGeneration{}}
 
 var subtitleExtractionOperations = struct {
 	sync.RWMutex
@@ -3599,259 +3589,43 @@ func (h AssetHandler) CompatiblePreview(c *gin.Context) {
 }
 
 func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePreviewRequest, operation string) {
-	path := input.Path
-	profileID := strconv.FormatUint(uint64(input.ProfileID), 10)
-	previewProfile := input.Profile
-	videoCodecOverride := strings.TrimSpace(input.VideoCodec)
-	qualityValueOverride := strconv.FormatFloat(input.QualityValue, 'f', -1, 64)
-	videoPresetOverride := strings.TrimSpace(input.VideoPreset)
-	pixFmtOverride := strings.TrimSpace(input.PixelFormat)
-	videoFiltersOverride := strings.TrimSpace(input.VideoFilters)
-	x265ParamsOverride := strings.TrimSpace(input.X265Params)
-	videoEncoderOverride := strings.TrimSpace(input.VideoEncoder)
-	useHardwareOverride := input.UseHardware
-	globalQualityOverride := input.GlobalQuality
-	qsvRateControlOverride := strings.TrimSpace(input.QSVRateControl)
-	qsvLookAheadDepthOverride := input.QSVLookAheadDepth
-	qsvExtendedBRCOverride := input.QSVExtendedBRC
-	qsvAdaptiveIOverride := input.QSVAdaptiveI
-	qsvAdaptiveBOverride := input.QSVAdaptiveB
-	qsvMBBRCModeOverride := normalizedQSVMBBRCMode(input.QSVMBBRCMode)
-	qsvRDOModeOverride := normalizedQSVRDOMode(input.QSVRDOMode)
-	qsvPStrategyOverride := input.QSVPStrategy
-	previewNormalizationMode := input.PreviewNormalization
-	subtitleStreamIndex := -1
-	if input.SubtitleStreamIndex != nil {
-		subtitleStreamIndex = *input.SubtitleStreamIndex
+	requestScope := ""
+	if input.Ephemeral {
+		requestScope = fmt.Sprintf("legacy-%d", time.Now().UnixNano())
 	}
-	previewMode := input.Mode
-	start, ok := boundedPreviewStart(input.Start)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "start must be HH:MM:SS or seconds"})
-		return
-	}
-	seconds := input.Seconds
-	if previewMode == "quick" && seconds > 8 {
-		seconds = 8
-	}
-	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
-		return
-	}
-	resolvedPath, err := h.resolveMediaPath(path)
+	descriptor, err := h.prepareCompatiblePreviewDescriptor(input, requestScope)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeCompatiblePreviewError(c, err)
 		return
 	}
-	path = resolvedPath
+	h.servePreparedCompatiblePreview(c, descriptor, operation)
+}
 
-	if !isMediaExtension(strings.ToLower(filepath.Ext(path))) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "path is not a supported media file"})
+func (h AssetHandler) servePreparedCompatiblePreview(c *gin.Context, descriptor *compatiblePreviewDescriptor, operation string) {
+	if descriptor == nil {
+		writeCompatiblePreviewError(c, fmt.Errorf("compatible preview descriptor is required"))
 		return
 	}
-
-	allowed, err := h.pathBelongsToReadableMediaRoot(path)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
-		return
-	}
-
-	if info, err := os.Stat(path); err != nil || info.IsDir() {
-		c.JSON(http.StatusNotFound, gin.H{"error": "media path is not readable from the backend container"})
-		return
-	}
-
-	analyzeSize := "100M"
-	if previewMode == "quick" {
-		analyzeSize = "10M"
-		videoPresetOverride = "veryfast"
-		x265ParamsOverride = ""
-	}
-	inputStart := start
-	subtitlePrerollSeconds := 0
-	if subtitleStreamIndex >= 0 {
-		startSeconds := previewTimestampSeconds(start)
-		subtitlePrerollSeconds = min(10, startSeconds)
-		inputStart = secondsToTimestamp(startSeconds - subtitlePrerollSeconds)
-	}
-	args := []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-analyzeduration", analyzeSize,
-		"-probesize", analyzeSize,
-		"-ss", inputStart,
-		"-i", path,
-	}
-	if subtitlePrerollSeconds > 0 {
-		args = append(args, "-ss", strconv.Itoa(subtitlePrerollSeconds))
-	}
-	args = append(args, "-t", strconv.Itoa(seconds))
-	normalization := buildPreviewNormalization(path, previewNormalizationMode)
-	videoFilter := joinPreviewFilters(normalization.Filter, previewVideoFilterChain(videoFiltersOverride, previewMode))
-
-	requestedVideoEncoder := strings.ToLower(strings.TrimSpace(videoEncoderOverride))
-
-	if requestedVideoEncoder == "" && previewProfile != nil {
-		requestedVideoEncoder = strings.ToLower(
-			strings.TrimSpace(resolvedVideoEncoder(*previewProfile)),
-		)
-	}
-
-	var effectivePreviewProfile *models.Profile
-	var resolvedVideoDecision models.JSONMap
-
-	var videoCodecArguments []string
-
-	if previewProfile != nil {
-		profile := normalizeHardwareQualityPreset(*previewProfile)
-
-		if streams, probeErr := probeMediaStreams(path); probeErr == nil && len(streams.Video) > 0 {
-			if streams.Video[0].Bitrate <= 0 {
-				streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
-			}
-
-			interlace := h.previewInterlaceAnalysis(path, streams)
-			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
-			profile, probeErr = resolvePreviewVideoProfile(h.db, path, profile, streams, interlace, cadence, cadenceRecommendation)
-			if probeErr != nil {
-				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": probeErr.Error()})
-				return
-			}
-			resolvedVideoDecision = effectiveVideoDecision(profile)
-			profile = profileWithPreviewDisplayNormalization(profile, normalization.Filter)
-
-			effectivePreviewProfile = &profile
-
-			videoCodecArguments = append(
-				videoCodecArgsForSource(profile, &streams.Video[0]),
-				videoWorkerArgsForSource(profile, &streams.Video[0])...,
-			)
-			videoCodecArguments = append(videoCodecArguments, cadenceOutputArgs(profile)...)
-		} else {
-			profile = resolveHEVCLevel(profile, MediaStreamInventory{})
-			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
-			profile.WorkerConfig["videoFilters"] = joinPreviewFilters(normalization.Filter, existingVideoFilters(profile))
-			effectivePreviewProfile = &profile
-
-			videoCodecArguments = append(
-				videoCodecArgs(profile),
-				videoWorkerArgs(profile)...,
-			)
-		}
-	} else {
-		videoCodecArguments = previewVideoCodecArgs(
-			h.db,
-			profileID,
-			videoCodecOverride,
-			qualityValueOverride,
-			videoPresetOverride,
-			pixFmtOverride,
-			x265ParamsOverride,
-			videoEncoderOverride,
-			useHardwareOverride,
-			globalQualityOverride,
-			qsvRateControlOverride,
-			qsvLookAheadDepthOverride,
-			qsvExtendedBRCOverride,
-			qsvAdaptiveIOverride,
-			qsvAdaptiveBOverride,
-			qsvMBBRCModeOverride,
-			qsvRDOModeOverride,
-			min(2, max(0, qsvPStrategyOverride)),
-		)
-	}
-
-	// A profile owns its complete effective filter chain (including automatic
-	// deinterlace and preview normalization). Add mapping only after resolving
-	// that profile so FFmpeg receives exactly one -vf/-filter_complex path.
-	if effectivePreviewProfile != nil {
-		videoFilter = argumentValue(videoCodecArguments, "-vf")
-		if strings.TrimSpace(videoFilter) == "" {
-			videoFilter = existingVideoFilters(*effectivePreviewProfile)
-		}
-	}
-	if subtitleStreamIndex >= 0 {
-		filter, filterErr := previewSubtitleFilter(path, subtitleStreamIndex, videoFilter)
-		if filterErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": filterErr.Error()})
-			return
-		}
-		args = append(args, "-filter_complex", filter, "-map", "[preview_video]")
-		if effectivePreviewProfile != nil {
-			effectivePreviewProfile.WorkerConfig["videoFilters"] = ""
-			videoCodecArguments = removeFFmpegOption(videoCodecArguments, "-vf")
-		}
-	} else {
-		args = append(args, "-map", "0:v:0?")
-		if effectivePreviewProfile == nil {
-			args = append(args, "-vf", videoFilter)
-		}
-	}
-
-	effectiveVideoEncoder := argumentValue(videoCodecArguments, "-c:v")
-	inspectPreview := operation == "inspect"
-	if inspectPreview && effectiveVideoEncoder == "hevc_qsv" {
-		for index := 0; index+1 < len(args); index++ {
-			if args[index] == "-loglevel" {
-				args[index+1] = "verbose"
-				break
-			}
-		}
-	}
-	args = append(args, videoCodecArguments...)
-	if normalization.Applied && normalization.Mode == "normalize_bt709" {
-		args = append(args,
-			"-color_primaries", "bt709",
-			"-color_trc", "bt709",
-			"-colorspace", "bt709",
-			"-color_range", "tv",
-		)
-	}
-	args = append(args,
-		"-an",
-		"-sn",
-		"-dn",
-		"-map_metadata", "-1",
-		"-avoid_negative_ts", "make_zero",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
-		"-f", "mp4",
-		"pipe:1",
-	)
-
-	info, _ := os.Stat(path)
-	cacheKey := previewCacheKey(path, info, args)
-	ephemeralPreview := input.Ephemeral
-	if ephemeralPreview {
-		cacheKey = fmt.Sprintf("%s-ephemeral-%d", cacheKey, time.Now().UnixNano())
-	}
-	cachePath := filepath.Join(os.TempDir(), "mvforge-preview-cache", cacheKey+".mp4")
-	started := time.Now()
-	cacheHit, err := generateCachedPreview(c.Request.Context(), cacheKey, cachePath, args)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if ephemeralPreview {
-		defer os.Remove(cachePath)
-		defer os.Remove(cachePath + ".encoder.log")
-	}
+	path := descriptor.Path
+	previewProfile := descriptor.PreviewProfile
+	effectivePreviewProfile := descriptor.EffectivePreviewProfile
+	normalization := descriptor.Normalization
+	previewMode := descriptor.PreviewMode
+	start := descriptor.Start
+	seconds := descriptor.Seconds
+	args := append([]string(nil), descriptor.Args...)
+	videoCodecArguments := args
+	requestedVideoEncoder := descriptor.RequestedVideoEncoder
+	effectiveVideoEncoder := descriptor.EffectiveVideoEncoder
+	resolvedVideoDecision := descriptor.ResolvedVideoDecision
+	cacheKey := descriptor.ArtifactID
+	cachePath := descriptor.CachePath
 	frameKind := strings.TrimSuffix(operation, "_frame")
-	if frameKind == "source" || frameKind == "output" {
-		framePath := cachePath
-		frameStart := "0"
-		frameFilter := "null"
-		if frameKind == "source" {
-			framePath = path
-			frameStart = start
-			frameFilter = normalization.Filter
-		}
-		frame, frameErr := generatePreviewFrame(c.Request.Context(), framePath, frameStart, frameFilter)
+
+	if frameKind == "source" {
+		frame, frameErr := generatePreviewFrame(c.Request.Context(), path, start, normalization.Filter)
 		if frameErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity generation failed: " + frameErr.Error()})
+			writeCompatiblePreviewError(c, fmt.Errorf("frame fidelity generation failed: %w", frameErr))
 			return
 		}
 		c.Header("Content-Type", "image/png")
@@ -3861,6 +3635,30 @@ func (h AssetHandler) serveCompatiblePreview(c *gin.Context, input compatiblePre
 		c.Data(http.StatusOK, "image/png", frame)
 		return
 	}
+
+	started := time.Now()
+	cacheHit, lease, err := acquireCompatiblePreviewArtifact(c.Request.Context(), descriptor)
+	if err != nil {
+		writeCompatiblePreviewError(c, err)
+		return
+	}
+	defer lease.release()
+
+	if frameKind == "output" {
+		frame, frameErr := generatePreviewFrame(c.Request.Context(), cachePath, "0", "null")
+		if frameErr != nil {
+			writeCompatiblePreviewError(c, fmt.Errorf("frame fidelity generation failed: %w", frameErr))
+			return
+		}
+		c.Header("Content-Type", "image/png")
+		c.Header("Cache-Control", "private, max-age=0, must-revalidate")
+		c.Header("X-MVForge-Frame-Kind", frameKind)
+		c.Header("X-MVForge-Preview-Normalization", normalization.Mode)
+		c.Data(http.StatusOK, "image/png", frame)
+		return
+	}
+
+	inspectPreview := operation == "inspect"
 	if operation == "metrics" {
 		metrics, metricsErr := generatePreviewFrameMetrics(c.Request.Context(), path, start, normalization.Filter, cachePath)
 		if metricsErr != nil {
@@ -4662,76 +4460,6 @@ func normalizedPreviewMode(value string) string {
 	return "quick"
 }
 
-func previewCacheKey(path string, info os.FileInfo, args []string) string {
-	identity := path + "\x00" + strings.Join(args, "\x00")
-	if info != nil {
-		identity += fmt.Sprintf("\x00%d\x00%d", info.Size(), info.ModTime().UnixNano())
-	}
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
-}
-
-func generateCachedPreview(ctx context.Context, key string, destination string, args []string) (bool, error) {
-	if info, err := os.Stat(destination); err == nil && info.Size() > 0 {
-		return true, nil
-	}
-
-	previewCacheState.Lock()
-	if active := previewCacheState.inFlight[key]; active != nil {
-		previewCacheState.Unlock()
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-active.done:
-			return true, active.err
-		}
-	}
-	active := &previewGeneration{done: make(chan struct{})}
-	previewCacheState.inFlight[key] = active
-	previewCacheState.Unlock()
-
-	defer func() {
-		previewCacheState.Lock()
-		delete(previewCacheState.inFlight, key)
-		close(active.done)
-		previewCacheState.Unlock()
-	}()
-
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		active.err = err
-		return false, err
-	}
-	cleanupPreviewCache(filepath.Dir(destination), 24*time.Hour)
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	stderr := bytes.Buffer{}
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
-	if err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
-		}
-		active.err = fmt.Errorf("%s", message)
-		return false, active.err
-	}
-	temporary := destination + ".partial"
-	if err := os.WriteFile(temporary, output, 0o644); err != nil {
-		active.err = err
-		return false, err
-	}
-	if err := os.Rename(temporary, destination); err != nil {
-		_ = os.Remove(temporary)
-		active.err = err
-		return false, err
-	}
-	logTemporary := destination + ".encoder.log.partial"
-	if err := os.WriteFile(logTemporary, stderr.Bytes(), 0o600); err == nil {
-		if renameErr := os.Rename(logTemporary, destination+".encoder.log"); renameErr != nil {
-			_ = os.Remove(logTemporary)
-		}
-	}
-	return false, nil
-}
-
 type qsvEffectiveFrameContext struct {
 	AdaptiveIKnown    bool
 	AdaptiveI         bool
@@ -4864,16 +4592,77 @@ func firstNonEmpty(values ...string) string {
 }
 
 func cleanupPreviewCache(directory string, maxAge time.Duration) {
+	cleanupCompatiblePreviewEphemeralArtifacts(directory, time.Now())
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-maxAge)
+	now := time.Now()
+	cutoff := now.Add(-maxAge)
 	for _, entry := range entries {
-		info, infoErr := entry.Info()
-		if infoErr == nil && !entry.IsDir() && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(directory, entry.Name()))
+		if entry.IsDir() {
+			continue
 		}
+		path := filepath.Join(directory, entry.Name())
+		if compatiblePreviewArtifactPathActive(path) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(path)
+			if strings.HasSuffix(path, ".mp4") {
+				_ = os.Remove(path + ".encoder.log")
+			}
+		}
+	}
+
+	type cacheItem struct {
+		path    string
+		logPath string
+		modTime time.Time
+		bytes   int64
+	}
+	items := make([]cacheItem, 0)
+	var totalBytes int64
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".mp4" {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		if compatiblePreviewArtifactPathActive(path) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		item := cacheItem{path: path, logPath: path + ".encoder.log", modTime: info.ModTime(), bytes: info.Size()}
+		if logInfo, logErr := os.Stat(item.logPath); logErr == nil {
+			item.bytes += logInfo.Size()
+		}
+		items = append(items, item)
+		totalBytes += item.bytes
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].modTime.Before(items[j].modTime)
+	})
+	for len(items) > compatiblePreviewCacheMaxItems || totalBytes > compatiblePreviewCacheMaxBytes {
+		if len(items) == 0 {
+			break
+		}
+		item := items[0]
+		items = items[1:]
+		if compatiblePreviewArtifactPathActive(item.path) {
+			continue
+		}
+		if info, statErr := os.Stat(item.path); statErr == nil {
+			totalBytes -= info.Size()
+		}
+		if logInfo, statErr := os.Stat(item.logPath); statErr == nil {
+			totalBytes -= logInfo.Size()
+		}
+		_ = os.Remove(item.path)
+		_ = os.Remove(item.logPath)
 	}
 }
 

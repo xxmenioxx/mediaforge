@@ -42,13 +42,17 @@ func TestCompatiblePreviewRequestPreservesLargeProfileOutsideURI(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var created struct {
-		RequestID string `json:"requestId"`
+		RequestID     string `json:"requestId"`
+		CacheIdentity string `json:"cacheIdentity"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
 	if len(created.RequestID) != 64 || strings.Contains(request.RequestURI, "profile") || len(request.RequestURI) > 256 {
 		t.Fatalf("large profile leaked into URI: id=%q uri=%q", created.RequestID, request.RequestURI)
+	}
+	if created.CacheIdentity == "" || created.CacheIdentity == created.RequestID {
+		t.Fatalf("requestId and cacheIdentity must be distinct non-empty identities: %#v", created)
 	}
 	stored, ok := loadCompatiblePreviewRequest(created.RequestID, time.Now())
 	if !ok || stored.Profile == nil {
@@ -153,7 +157,7 @@ func TestCompatiblePreviewRequestNormalizesAndParsesQSVFeatureModes(t *testing.T
 
 func TestCompatiblePreviewRequestExpiresWithoutPersistentState(t *testing.T) {
 	compatiblePreviewRequests.Lock()
-	compatiblePreviewRequests.items = map[string]compatiblePreviewRequestEntry{}
+	compatiblePreviewRequests.items = map[string]*compatiblePreviewRequestEntry{}
 	compatiblePreviewRequests.Unlock()
 	now := time.Now()
 	id, _, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: "/media/raw/test.mkv"}, now)

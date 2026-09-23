@@ -909,6 +909,25 @@ export function ProfileLabPage() {
   );
 
   useEffect(() => {
+    if (referencePreviewCacheRef.current?.signature !== currentReferenceRequestSignature) {
+      setProcessedReferencePreviewRequestId('');
+    }
+    if (processedVideoRequestSignature && processedVideoRequestSignature !== currentVideoRequestSignature) {
+      fidelityAbortRef.current?.abort();
+      videoPreviewCancelRef.current?.abort();
+      setProcessedVideoPreviewRequestId('');
+      setVideoPreviewNonce(0);
+      setVideoPreviewStatus('idle');
+    }
+    if (
+      lastFidelityInspection &&
+      (lastFidelityInspection.assetPath !== assetPath || lastFidelityInspection.requestSignature !== currentVideoRequestSignature)
+    ) {
+      setLastFidelityInspection(null);
+    }
+  }, [assetPath, currentReferenceRequestSignature, currentVideoRequestSignature, lastFidelityInspection, processedVideoRequestSignature]);
+
+  useEffect(() => {
     if (
       videoWorkerValue(videoDraft, 'preferredEncoder', 'software') === 'hardware' &&
       (!isHardwareEncoderOption(selectedHardwareEncoder) || !selectedWorkerEncoders.has(selectedHardwareEncoder)) &&
@@ -3105,7 +3124,7 @@ export function ProfileLabPage() {
                   <Grid size={{ xs: 12, lg: 6 }}>
                     <SampleCard title="Profile result" subtitle="Current video and audio profile drafts">
                       <Stack spacing={2}>
-                        {videoPreviewNonce > 0 ? (
+                        {videoPreviewNonce > 0 && processedVideoPreviewRequestId ? (
                           <VideoPreview
                             key={`draft-${videoPreviewNonce}`}
                             label="Video draft"
@@ -5031,8 +5050,12 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
   const overallVerdict = comparable.length === windows.length ? metricVerdict : metricVerdict === 'Reject' ? 'Reject' : 'Review';
   const safeWindowIndex = Math.min(selectedWindowIndex, windows.length - 1);
   const selectedWindow = windows[safeWindowIndex];
-  const sourceUrl = `${api.compatibleAssetFrameUrl(selectedWindow.requestId, 'source')}&run=${inspection.completedAt}`;
-  const outputUrl = `${api.compatibleAssetFrameUrl(selectedWindow.requestId, 'output')}&run=${inspection.completedAt}`;
+  const selectedRequestId = typeof selectedWindow.requestId === 'string' ? selectedWindow.requestId.trim() : '';
+  if (!selectedRequestId) {
+    return <Alert severity="warning">This fidelity window has no valid Compatible Preview request ID yet.</Alert>;
+  }
+  const sourceUrl = `${api.compatibleAssetFrameUrl(selectedRequestId, 'source')}&run=${inspection.completedAt}`;
+  const outputUrl = `${api.compatibleAssetFrameUrl(selectedRequestId, 'output')}&run=${inspection.completedAt}`;
   const selectedVerdict = fidelityMetricVerdict(selectedWindow.metrics.ssim);
   const dimensionsMatch = squarePixelDimensions(selectedWindow.source) === squarePixelDimensions(selectedWindow.output);
 
@@ -5438,7 +5461,7 @@ function VideoPreview({
   cancelSignal,
 }: {
   label: string;
-  src: string;
+  src?: string;
   direct?: boolean;
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
@@ -5448,15 +5471,20 @@ function VideoPreview({
 
 export function VideoPreviewRequest({ label, src, direct = false, onStatusChange, cancelSignal }: {
   label: string;
-  src: string;
+  src?: string;
   direct?: boolean;
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
 }) {
-  const [videoSrc, setVideoSrc] = useState(direct ? src : '');
+  const [videoSrc, setVideoSrc] = useState(direct && src ? src : '');
   const [metrics, setMetrics] = useState<{ cache: string; mode: string; generationMs: number; bytes: number } | null>(null);
 
   useEffect(() => {
+    if (!src?.trim()) {
+      onStatusChange?.('idle');
+      setVideoSrc('');
+      return;
+    }
     const controller = new AbortController();
     let objectUrl = '';
     const cancel = () => controller.abort();
@@ -5491,6 +5519,15 @@ export function VideoPreviewRequest({ label, src, direct = false, onStatusChange
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [cancelSignal, direct, onStatusChange, src]);
+
+  if (!src?.trim()) {
+    return (
+      <Stack spacing={1}>
+        <Typography fontWeight={700}>{label}</Typography>
+        <Alert severity="info">Waiting for a valid Compatible Preview request.</Alert>
+      </Stack>
+    );
+  }
 
   return (
     <Stack spacing={1}>

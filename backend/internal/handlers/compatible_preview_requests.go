@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -64,15 +66,18 @@ type compatiblePreviewRequest struct {
 }
 
 type compatiblePreviewRequestEntry struct {
+	mu         sync.RWMutex
+	prepareMu  sync.Mutex
 	Request    compatiblePreviewRequest
+	Descriptor *compatiblePreviewDescriptor
 	CreatedAt  time.Time
 	AccessedAt time.Time
 }
 
 var compatiblePreviewRequests = struct {
 	sync.Mutex
-	items map[string]compatiblePreviewRequestEntry
-}{items: map[string]compatiblePreviewRequestEntry{}}
+	items map[string]*compatiblePreviewRequestEntry
+}{items: map[string]*compatiblePreviewRequestEntry{}}
 
 func normalizeCompatiblePreviewRequest(input compatiblePreviewRequest) (compatiblePreviewRequest, error) {
 	input.Path = strings.TrimSpace(input.Path)
@@ -124,6 +129,14 @@ func compatiblePreviewRequestIdentity(input compatiblePreviewRequest) (string, e
 	if err != nil {
 		return "", fmt.Errorf("encode compatible preview request: %w", err)
 	}
+	if normalized.Ephemeral {
+		scope := make([]byte, 16)
+		if _, err := rand.Read(scope); err != nil {
+			return "", fmt.Errorf("create ephemeral compatible preview request scope: %w", err)
+		}
+		encoded = append(encoded, 0)
+		encoded = append(encoded, scope...)
+	}
 	return fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
 }
 
@@ -137,34 +150,63 @@ func storeCompatiblePreviewRequest(input compatiblePreviewRequest, now time.Time
 		return "", input, err
 	}
 	compatiblePreviewRequests.Lock()
-	defer compatiblePreviewRequests.Unlock()
 	cleanupCompatiblePreviewRequestsLocked(now)
 	entry, exists := compatiblePreviewRequests.items[id]
 	if !exists {
-		entry = compatiblePreviewRequestEntry{Request: normalized, CreatedAt: now}
+		entry = &compatiblePreviewRequestEntry{Request: normalized, CreatedAt: now}
+		compatiblePreviewRequests.items[id] = entry
+	}
+	compatiblePreviewRequests.Unlock()
+
+	entry.mu.Lock()
+	if !exists {
+		entry.Request = normalized
+		entry.CreatedAt = now
 	}
 	entry.AccessedAt = now
-	compatiblePreviewRequests.items[id] = entry
+	entry.mu.Unlock()
+
+	compatiblePreviewRequests.Lock()
 	trimCompatiblePreviewRequestsLocked()
+	compatiblePreviewRequests.Unlock()
 	return id, normalized, nil
 }
 
 func loadCompatiblePreviewRequest(id string, now time.Time) (compatiblePreviewRequest, bool) {
-	compatiblePreviewRequests.Lock()
-	defer compatiblePreviewRequests.Unlock()
-	cleanupCompatiblePreviewRequestsLocked(now)
-	entry, ok := compatiblePreviewRequests.items[strings.TrimSpace(id)]
+	entry, ok := loadCompatiblePreviewRequestEntry(id, now)
 	if !ok {
 		return compatiblePreviewRequest{}, false
 	}
+	entry.mu.RLock()
+	request := entry.Request
+	entry.mu.RUnlock()
+	return request, true
+}
+
+func loadCompatiblePreviewRequestEntry(id string, now time.Time) (*compatiblePreviewRequestEntry, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	compatiblePreviewRequests.Lock()
+	cleanupCompatiblePreviewRequestsLocked(now)
+	entry, ok := compatiblePreviewRequests.items[id]
+	compatiblePreviewRequests.Unlock()
+	if !ok {
+		return nil, false
+	}
+	entry.mu.Lock()
 	entry.AccessedAt = now
-	compatiblePreviewRequests.items[id] = entry
-	return entry.Request, true
+	entry.mu.Unlock()
+	return entry, true
 }
 
 func cleanupCompatiblePreviewRequestsLocked(now time.Time) {
 	for id, entry := range compatiblePreviewRequests.items {
-		if now.Sub(entry.AccessedAt) > compatiblePreviewRequestRetention {
+		entry.mu.RLock()
+		accessedAt := entry.AccessedAt
+		entry.mu.RUnlock()
+		if now.Sub(accessedAt) > compatiblePreviewRequestRetention {
 			delete(compatiblePreviewRequests.items, id)
 		}
 	}
@@ -180,7 +222,10 @@ func trimCompatiblePreviewRequestsLocked() {
 	}
 	candidates := make([]candidate, 0, len(compatiblePreviewRequests.items))
 	for id, entry := range compatiblePreviewRequests.items {
-		candidates = append(candidates, candidate{id: id, accessed: entry.AccessedAt})
+		entry.mu.RLock()
+		accessedAt := entry.AccessedAt
+		entry.mu.RUnlock()
+		candidates = append(candidates, candidate{id: id, accessed: accessedAt})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].accessed.Before(candidates[j].accessed) })
 	for _, item := range candidates[:len(candidates)-compatiblePreviewRequestMaxItems] {
@@ -200,21 +245,51 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	entry, ok := loadCompatiblePreviewRequestEntry(id, time.Now())
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request expired or was not found"})
+		return
+	}
+	descriptor, err := h.compatiblePreviewDescriptorForEntry(entry, id)
+	if err != nil {
+		deleteCompatiblePreviewRequest(id, entry)
+		var preparationErr *compatiblePreviewPrepareError
+		if errors.As(err, &preparationErr) {
+			c.JSON(preparationErr.status, gin.H{"error": preparationErr.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"requestId":        id,
-		"cacheIdentity":    id,
+		"cacheIdentity":    descriptor.ArtifactID,
 		"expiresInSeconds": int(compatiblePreviewRequestRetention.Seconds()),
 		"path":             normalized.Path,
 	})
 }
 
 func (h AssetHandler) compatiblePreviewRequest(c *gin.Context, operation string) {
-	input, ok := loadCompatiblePreviewRequest(c.Param("requestId"), time.Now())
+	requestID := strings.TrimSpace(c.Param("requestId"))
+	entry, ok := loadCompatiblePreviewRequestEntry(requestID, time.Now())
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "compatible preview request expired or was not found"})
 		return
 	}
-	h.serveCompatiblePreview(c, input, operation)
+	descriptor, err := h.compatiblePreviewDescriptorForEntry(entry, requestID)
+	if err != nil {
+		writeCompatiblePreviewError(c, err)
+		return
+	}
+	h.servePreparedCompatiblePreview(c, descriptor, operation)
+}
+
+func deleteCompatiblePreviewRequest(id string, expected *compatiblePreviewRequestEntry) {
+	compatiblePreviewRequests.Lock()
+	if current, ok := compatiblePreviewRequests.items[strings.TrimSpace(id)]; ok && current == expected {
+		delete(compatiblePreviewRequests.items, strings.TrimSpace(id))
+	}
+	compatiblePreviewRequests.Unlock()
 }
 
 func (h AssetHandler) CompatiblePreviewRequestVideo(c *gin.Context) {
