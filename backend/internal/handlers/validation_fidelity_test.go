@@ -168,7 +168,7 @@ func TestCanonicalFrameFidelityFilterTextCannotOverrideFrozenGeometry(t *testing
 
 func TestCanonicalFrameFidelityExplicitGeometryPreserveUsesSource(t *testing.T) {
 	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
-		"pixFmt": "yuv420p", "cadenceMode": "preserve",
+		"pixFmt": "yuv420p", "cadenceMode": "preserve", "fieldStructureMode": "preserve",
 		"resolvedUpscaleDecision": ResolvedUpscaleDecision{
 			RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscaleKeepSource,
 			SourceWidth: 720, SourceHeight: 480, SourceSAR: "32:27", SourceDAR: "16:9",
@@ -198,6 +198,66 @@ func TestCanonicalFrameFidelityCadencePreserveUsesSourceFPS(t *testing.T) {
 	field := report["fields"].(models.JSONMap)["frameRate"].(models.JSONMap)
 	if field["status"] != "passed" || field["expected"] != "30000/1001" || field["authorityState"] != "preserve" {
 		t.Fatalf("explicit cadence preserve did not authorize source FPS: %#v", field)
+	}
+}
+
+func TestCanonicalFrameFidelityFieldPreserveDoesNotPreserveFPS(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "fieldStructureMode": "preserve", "cadenceMode": "auto",
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "24000/1001", "tt"), nil)
+	fields := report["fields"].(models.JSONMap)
+	fps := fields["frameRate"].(models.JSONMap)
+	structure := fields["fieldStructure"].(models.JSONMap)
+	if fps["status"] != "unverified" || fps["expected"] != nil || structure["status"] != "passed" || structure["authorityState"] != "preserve" {
+		t.Fatalf("field-structure preserve leaked into cadence or failed to preserve fields: %#v", fields)
+	}
+}
+
+func TestCanonicalFrameFidelityIVTCOverridesFieldPreserve(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "fieldStructureMode": "preserve", "cadenceMode": "inverse_telecine",
+		"effectiveCadenceOperation": "inverse_telecine", "effectiveOutputFrameRate": "24000/1001",
+		"effectiveOutputProgressive": true,
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "24000/1001", "progressive"), nil)
+	fields := report["fields"].(models.JSONMap)
+	if fields["frameRate"].(models.JSONMap)["expected"] != "24000/1001" || fields["fieldStructure"].(models.JSONMap)["expected"] != "progressive" || report["status"] != "passed" {
+		t.Fatalf("resolved IVTC output was overridden by field preserve: %#v", report)
+	}
+}
+
+func TestCanonicalFrameFidelityCadencePreserveDoesNotPreserveFieldStructure(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "cadenceMode": "preserve", "fieldStructureMode": "deinterlace",
+		"effectiveOutputProgressive": true,
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), nil)
+	fields := report["fields"].(models.JSONMap)
+	if fields["frameRate"].(models.JSONMap)["status"] != "passed" || fields["fieldStructure"].(models.JSONMap)["expected"] != "progressive" || fields["fieldStructure"].(models.JSONMap)["authorityState"] != "transform" {
+		t.Fatalf("cadence preserve leaked into field structure: %#v", fields)
+	}
+}
+
+func TestCanonicalFrameFidelityCadencePreserveWithUnknownFieldAuthority(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "cadenceMode": "preserve", "fieldStructureMode": "auto",
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "30000/1001", "tt"), nil)
+	fields := report["fields"].(models.JSONMap)
+	if fields["frameRate"].(models.JSONMap)["status"] != "passed" || fields["fieldStructure"].(models.JSONMap)["status"] != "unverified" || fields["fieldStructure"].(models.JSONMap)["expected"] != nil {
+		t.Fatalf("cadence preserve borrowed authority for unknown field structure: %#v", fields)
+	}
+}
+
+func TestCanonicalFrameFidelityExplicitFieldPreserveUsesSourceStructure(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "fieldStructureMode": "preserve", "cadenceMode": "auto",
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "30000/1001", "tt"), nil)
+	field := report["fields"].(models.JSONMap)["fieldStructure"].(models.JSONMap)
+	if field["status"] != "passed" || field["expected"] != "interlaced" || field["authorityState"] != "preserve" {
+		t.Fatalf("explicit field-structure preserve did not use source structure: %#v", field)
 	}
 }
 

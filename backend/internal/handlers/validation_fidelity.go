@@ -380,9 +380,9 @@ func fidelityExpectedOutput(profile models.Profile, source canonicalFidelitySour
 		} else {
 			structureValue = "interlaced"
 		}
-	} else if fidelityCadenceExplicitPreserve(worker) {
+	} else if fidelityFieldStructureExplicitPreserve(worker) {
 		structureValue = stringFromUnknown(source.effective["fieldStructure"])
-		structureState, structureReason, structureUnreliable = fidelityAuthorityPreserve, "frozen cadence explicitly preserves source field structure", false
+		structureState, structureReason, structureUnreliable = fidelityAuthorityPreserve, "frozen field-structure decision explicitly preserves source structure", false
 	}
 	set("fieldStructure", stringOrNil(structureValue), structureState, structureAuthority, structureReason, true, structureUnreliable)
 
@@ -484,13 +484,18 @@ func fidelityWorkerBool(worker map[string]interface{}, key string) (bool, bool) 
 }
 
 func fidelityCadenceExplicitPreserve(worker map[string]interface{}) bool {
-	for _, key := range []string{"effectiveCadenceOperation", "cadenceMode", "fieldStructureMode"} {
+	for _, key := range []string{"effectiveCadenceOperation", "cadenceMode"} {
 		value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker[key])))
 		if value == "preserve" || value == "copy" || value == "passthrough" || value == "pass_through" {
 			return true
 		}
 	}
 	return false
+}
+
+func fidelityFieldStructureExplicitPreserve(worker map[string]interface{}) bool {
+	value := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["fieldStructureMode"])))
+	return value == "preserve" || value == "copy" || value == "passthrough" || value == "pass_through"
 }
 
 func fidelityPixelExplicitPreserve(profile models.Profile) bool {
