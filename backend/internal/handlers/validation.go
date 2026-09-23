@@ -244,11 +244,11 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 	if outputExists {
 		var colorWarning string
-		colorReport, colorWarning = validateJobColorPolicy(db, job)
+		colorReport, colorWarning = validateJobColorPolicy(db, job, sourceProbe, outputProbe)
 		if colorWarning != "" {
 			warnings = append(warnings, colorWarning)
 		}
-		if fidelity := validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence); len(fidelity) > 0 {
+		if fidelity := validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence, colorReport, smartUpscaleReport, restorationReport); len(fidelity) > 0 {
 			colorReport["frameFidelity"] = fidelity
 		}
 	}
@@ -630,7 +630,7 @@ func checksToJSON(checks []CheckResult) []models.JSONMap {
 	return values
 }
 
-func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, string) {
+func validateJobColorPolicy(db *gorm.DB, job models.QueueJob, probes ...map[string]any) (models.JSONMap, string) {
 	policy := "preserve"
 	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
 	effectivePolicy := ""
@@ -643,12 +643,32 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob) (models.JSONMap, s
 			effectivePolicy = value
 		}
 	}
-	override := conversionOverrideForJob(job, assetConversionOverrides(db))
+	overrideEntries := map[string]AssetConversionOverrideState(nil)
+	if _, frozen := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; !frozen {
+		// Legacy jobs may predate the Queue snapshot. Prepared jobs always use
+		// the frozen override above; mutable Asset Overrides must not alter an
+		// already-frozen validation expectation.
+		overrideEntries = assetConversionOverrides(db)
+	}
+	override := conversionOverrideForJob(job, overrideEntries)
 	if value := strings.ToLower(strings.TrimSpace(override.FinalColorPolicy)); value != "" {
 		policy = value
 	}
-	source := firstVideoColorCharacteristics(ffprobeJSON(job.MediaPath))
-	output := firstVideoColorCharacteristics(ffprobeJSON(job.OutputPath))
+	var sourceProbe, outputProbe map[string]any
+	if len(probes) > 0 {
+		sourceProbe = probes[0]
+	}
+	if len(probes) > 1 {
+		outputProbe = probes[1]
+	}
+	if sourceProbe == nil {
+		sourceProbe = ffprobeJSON(job.MediaPath)
+	}
+	if outputProbe == nil {
+		outputProbe = ffprobeJSON(job.OutputPath)
+	}
+	source := firstVideoColorCharacteristics(sourceProbe)
+	output := firstVideoColorCharacteristics(outputProbe)
 	report := models.JSONMap{"requestedPolicy": policy, "source": source, "output": output}
 	if len(source) == 0 || len(output) == 0 {
 		report["status"] = "unverified"
@@ -720,73 +740,6 @@ func hevcBitstreamEvidenceFromStructure(structure HEVCBitstreamStructure, err er
 		evidence["probeStatus"] = "unavailable"
 	}
 	return evidence
-}
-
-func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob, sourceProbe, outputProbe map[string]any, hevcEvidence models.JSONMap) models.JSONMap {
-	source := firstVideoFrameCharacteristics(sourceProbe)
-	output := firstVideoFrameCharacteristics(outputProbe)
-	if len(source) == 0 || len(output) == 0 {
-		return models.JSONMap{"status": "unverified", "source": source, "output": output}
-	}
-	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
-	if worker == nil {
-		worker = map[string]interface{}{}
-	}
-	if artifact, _, err := readLatestJobArtifact(db, job, "as-is"); err == nil {
-		if effectiveProfile := unknownRecord(artifact["profile"]); effectiveProfile != nil {
-			if effectiveWorker := unknownRecord(effectiveProfile["workerConfig"]); effectiveWorker != nil {
-				worker = effectiveWorker
-			}
-		}
-	}
-	if override := conversionOverrideForJob(job, nil); normalizedHEVCLevelMode(override.HEVCLevelMode) != "" {
-		workerCopy := make(map[string]interface{}, len(worker)+2)
-		for key, value := range worker {
-			workerCopy[key] = value
-		}
-		worker = workerCopy
-		worker["hevcLevelMode"] = normalizedHEVCLevelMode(override.HEVCLevelMode)
-		if level := normalizedHEVCLevel(override.HEVCLevel); level != "" {
-			worker["hevcLevel"] = level
-		}
-	}
-	filters := ""
-	if worker != nil {
-		filters = strings.ToLower(stringFromUnknown(worker["videoFilters"]))
-		if strings.TrimSpace(stringFromUnknown(worker["effectiveOutputFrameRate"])) == "" {
-			if explicitFPS, ok := simpleFPSFilterRate(filters); ok {
-				workerCopy := make(map[string]interface{}, len(worker)+2)
-				for key, value := range worker {
-					workerCopy[key] = value
-				}
-				workerCopy["effectiveOutputFrameRate"] = explicitFPS
-				workerCopy["effectiveCadenceOperation"] = "explicit_fps_filter"
-				worker = workerCopy
-			}
-		}
-	}
-	effectiveCommand := strings.ToLower(job.Notes)
-	filters += "," + effectiveCommand
-	fields := models.JSONMap{}
-	fields["sampleAspectRatio"] = frameFidelityValue(source, output, "sampleAspectRatio", strings.Contains(filters, "crop=") || strings.Contains(filters, "setsar="))
-	fields["displayAspectRatio"] = frameFidelityValue(source, output, "displayAspectRatio", strings.Contains(filters, "setdar="))
-	fields["frameRate"] = frameFidelityValue(source, output, "frameRate", strings.Contains(filters, "decimate") || strings.Contains(filters, "fps="))
-	fields["cadenceOutputFrameRate"] = validateCadenceOutputFrameRate(worker, output)
-	fields["chromaLocation"] = frameFidelityValue(source, output, "chromaLocation", false)
-	fields["fieldOrder"] = frameFidelityValue(source, output, "fieldOrder", strings.Contains(filters, "bwdif") || strings.Contains(filters, "yadif") || strings.Contains(filters, "deinterlace") || strings.Contains(filters, "fieldmatch") || strings.Contains(filters, "decimate"))
-	fields["pixelFormat"] = frameFidelityValue(source, output, "pixelFormat", true)
-	fields["bitDepth"] = frameFidelityValue(source, output, "bitDepth", true)
-	fields["frameSize"] = frameFidelityValue(source, output, "frameSize", strings.Contains(filters, "crop=") || strings.Contains(filters, "scale="))
-	fields["hevcLevel"] = validateHEVCLevelField(worker, source, output, hevcEvidence)
-
-	status := "passed"
-	for _, raw := range fields {
-		if value, ok := raw.(models.JSONMap); ok && (value["status"] == "changed_unexpectedly" || value["status"] == "mismatch" || value["status"] == "unverified" || value["status"] == "unavailable") {
-			status = "warning"
-			break
-		}
-	}
-	return models.JSONMap{"status": status, "source": source, "output": output, "fields": fields}
 }
 
 func validateCadenceOutputFrameRate(worker map[string]interface{}, output models.JSONMap) models.JSONMap {
@@ -936,10 +889,13 @@ func validateHEVCLevelField(worker map[string]interface{}, source, output models
 	}
 }
 
+// frameFidelityValue is retained only for legacy report/test compatibility.
+// validateJobFrameFidelity no longer calls it: canonical field verdicts are
+// produced from a frozen expectation and compare expected against actual.
 func frameFidelityValue(source, output models.JSONMap, key string, allowedChange bool) models.JSONMap {
 	from, to := stringFromUnknown(source[key]), stringFromUnknown(output[key])
 	if from == "" || to == "" {
-		return models.JSONMap{"source": from, "output": to, "status": "unverified"}
+		return models.JSONMap{"source": from, "expected": to, "actual": to, "output": to, "authority": "legacy_compatibility", "status": "unverified"}
 	}
 	status := "preserved"
 	if !strings.EqualFold(from, to) {
@@ -949,7 +905,7 @@ func frameFidelityValue(source, output models.JSONMap, key string, allowedChange
 			status = "changed_unexpectedly"
 		}
 	}
-	return models.JSONMap{"source": from, "output": to, "status": status}
+	return models.JSONMap{"source": from, "expected": to, "actual": to, "output": to, "authority": "legacy_compatibility", "status": status}
 }
 
 func unknownRecord(value interface{}) map[string]interface{} {
