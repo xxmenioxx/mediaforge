@@ -1040,16 +1040,34 @@ func jobReportPath(db *gorm.DB, kind string) (string, error) {
 }
 
 func readLatestJobArtifact(db *gorm.DB, job models.QueueJob, kind string) (map[string]any, string, error) {
-	dir, err := jobReportPath(db, kind)
+	candidates, err := readJobArtifactCandidates(db, job, kind)
 	if err != nil {
 		return nil, "", err
+	}
+	for _, candidate := range candidates {
+		if jobArtifactMatchesJob(candidate.artifact, job) {
+			return candidate.artifact, candidate.path, nil
+		}
+	}
+	return nil, "", os.ErrNotExist
+}
+
+type jobArtifactCandidate struct {
+	artifact map[string]any
+	path     string
+}
+
+func readJobArtifactCandidates(db *gorm.DB, job models.QueueJob, kind string) ([]jobArtifactCandidate, error) {
+	dir, err := jobReportPath(db, kind)
+	if err != nil {
+		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, "", os.ErrNotExist
+			return nil, os.ErrNotExist
 		}
-		return nil, "", err
+		return nil, err
 	}
 
 	prefix := strconv.FormatUint(uint64(job.ID), 10) + "-job-" + strconv.FormatUint(uint64(job.ID), 10) + "-"
@@ -1061,7 +1079,7 @@ func readLatestJobArtifact(db *gorm.DB, job models.QueueJob, kind string) (map[s
 		matches = append(matches, entry)
 	}
 	if len(matches) == 0 {
-		return nil, "", os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 
 	sort.SliceStable(matches, func(i, j int) bool {
@@ -1073,21 +1091,20 @@ func readLatestJobArtifact(db *gorm.DB, job models.QueueJob, kind string) (map[s
 		return left.ModTime().After(right.ModTime())
 	})
 
+	candidates := make([]jobArtifactCandidate, 0, len(matches))
 	for _, match := range matches {
 		path := filepath.Join(dir, match.Name())
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		var artifact map[string]any
 		if err := json.Unmarshal(content, &artifact); err != nil {
-			return nil, "", err
+			return nil, err
 		}
-		if jobArtifactMatchesJob(artifact, job) {
-			return artifact, path, nil
-		}
+		candidates = append(candidates, jobArtifactCandidate{artifact: artifact, path: path})
 	}
-	return nil, "", os.ErrNotExist
+	return candidates, nil
 }
 
 func jobArtifactMatchesJob(artifact map[string]any, job models.QueueJob) bool {

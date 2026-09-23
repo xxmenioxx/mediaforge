@@ -5991,8 +5991,18 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
                       return (
                         <Grid key={key} size={{ xs: 12, sm: 6, md: 4 }}>
                           <Typography variant="caption" color="text.secondary">{frameFidelityLabel(key)}</Typography>
-                          <Typography variant="body2">{stringFromRecord(field, 'source') || 'Unknown'} → {stringFromRecord(field, 'output') || 'Unknown'}</Typography>
-                          <Chip size="small" label={status.replaceAll('_', ' ')} color={status === 'changed_unexpectedly' ? 'warning' : 'default'} />
+                          <Typography variant="body2">Source: {fidelityValueLabel(field.source)}</Typography>
+                          <Typography variant="body2">Expected: {fidelityValueLabel(field.expected)}</Typography>
+                          <Typography variant="body2">Actual: {fidelityValueLabel(field.actual ?? field.output)}</Typography>
+                          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                            <Chip
+                              size="small"
+                              label={status.replaceAll('_', ' ')}
+                              color={status === 'mismatch' ? 'error' : status === 'passed' ? 'success' : status === 'unverified' ? 'warning' : 'default'}
+                            />
+                            {stringFromRecord(field, 'authority') ? <Chip size="small" variant="outlined" label={stringFromRecord(field, 'authority')} /> : null}
+                          </Stack>
+                          {stringFromRecord(field, 'reason') ? <Typography variant="caption" color="text.secondary">{stringFromRecord(field, 'reason')}</Typography> : null}
                         </Grid>
                       );
                     })}
@@ -6793,7 +6803,21 @@ function colorCharacteristicsLabel(value: Record<string, unknown>) {
 }
 
 function frameFidelityLabel(key: string) {
-  return ({ sampleAspectRatio: 'SAR', displayAspectRatio: 'DAR', frameRate: 'Frame rate', chromaLocation: 'Chroma location', fieldOrder: 'Field order', pixelFormat: 'Pixel format', bitDepth: 'Bit depth', frameSize: 'Frame size' } as Record<string, string>)[key] || key;
+  return ({ width: 'Width', height: 'Height', sampleAspectRatio: 'SAR', displayAspectRatio: 'DAR', frameRate: 'Frame rate', fieldStructure: 'Field structure', fieldOrder: 'Field order', pixelFormat: 'Pixel format', bitDepth: 'Bit depth', chromaLocation: 'Chroma location', hevcLevel: 'HEVC Level', hevcTier: 'HEVC Tier', frameSize: 'Frame size', colorPolicy: 'Color policy' } as Record<string, string>)[key] || key;
+}
+
+function fidelityValueLabel(value: unknown): string {
+  if (value === null || value === undefined || value === '') return 'Unknown';
+  if (typeof value !== 'object') return String(value);
+  const record = value as Record<string, unknown>;
+  if (record.raw || record.bitDepth || record.chroma || record.profile) {
+    return [record.raw, record.bitDepth, record.chroma, record.profile].filter(Boolean).join(' / ');
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return 'Unknown';
+  }
 }
 
 function modeFromNotes(notes: string) {
