@@ -11,9 +11,10 @@ bounded fallback that repairs only those frames without changing clean IVTC.
 
 - Extend the canonical resolved telecine motion decision with an explicit,
   explainable residual-combing fallback state.
-- Render the fallback only for validated inverse telecine plans, between
-  `fieldmatch` and `decimate`, using the resolved field order and selective
-  deinterlacing semantics.
+- Arm the configured `selective` fallback for every validated automatic
+  inverse-telecine plan with resolved TFF/BFF, between `fieldmatch` and
+  `decimate`, using the resolved field order; clean fieldmatched frames pass
+  through it unchanged.
 - Preserve the existing cadence decision, output FPS, frame-count behavior,
   progressive metadata, review-only behavior, and source provenance.
 - Verify the behavior with deterministic synthetic mixed-telecine evidence and
