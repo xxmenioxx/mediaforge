@@ -437,6 +437,18 @@ export type AssetMetadataUpdateInput = {
   tags: string[];
 };
 
+export type AssetEditInput = {
+  path: string;
+  metadata: Omit<AssetMetadataState, 'inheritedFrom' | 'updatedAt'>;
+  conversion: AssetConversionOverrideState;
+};
+
+export type AssetEditResponse = {
+  path: string;
+  metadata: AssetMetadataState;
+  conversion: AssetConversionOverrideState;
+};
+
 export type AssetConversionUpdateInput = AssetConversionOverrideState & {
   path: string;
 };

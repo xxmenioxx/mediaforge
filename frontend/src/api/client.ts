@@ -13,6 +13,8 @@ import type {
   AssetMetadataUpdateInput,
   AssetConversionUpdateInput,
   AssetInventory,
+  AssetEditInput,
+  AssetEditResponse,
   AssetSyncResult,
   AdvisorRequest,
   AdvisorResponse,
@@ -415,6 +417,11 @@ export const api = {
     request<{ path: string; metadata: unknown }>(`/api/assets/metadata?path=${encodeURIComponent(path)}`, {
       method: 'POST',
       body: JSON.stringify(metadata),
+    }),
+  updateAssetEdit: ({ path, ...edit }: AssetEditInput) =>
+    request<AssetEditResponse>(`/api/assets/edit?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: JSON.stringify(edit),
     }),
   renameAsset: (input: { path: string; fileName: string }) =>
     request<{ oldPath: string; path: string; fileName: string }>('/api/assets/rename', {

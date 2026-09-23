@@ -440,6 +440,7 @@ type AssetConversionUpdateInput struct {
 	VideoPreset                      string                         `json:"videoPreset"`
 	PixFmt                           string                         `json:"pixFmt"`
 	VideoFilters                     string                         `json:"videoFilters"`
+	CropAspectPolicy                 string                         `json:"cropAspectPolicy"`
 	UpscaleMode                      string                         `json:"upscaleMode"`
 	UpscaleSharpen                   string                         `json:"upscaleSharpen"`
 	UpscaleSharpenCustomStrength     *float64                       `json:"upscaleSharpenCustomStrength"`
@@ -456,6 +457,8 @@ type AssetConversionUpdateInput struct {
 	FrameStructureGOPFrames          int                            `json:"frameStructureGopFrames"`
 	FrameStructureBFrameMode         string                         `json:"frameStructureBFrameMode"`
 	FrameStructureMaxBFrames         int                            `json:"frameStructureMaxBFrames"`
+	HEVCLevelMode                    string                         `json:"hevcLevelMode"`
+	HEVCLevel                        string                         `json:"hevcLevel"`
 	ProcessingMode                   string                         `json:"processingMode"`
 	PreserveHDR                      *bool                          `json:"preserveHdr"`
 	PreserveSubtitles                *bool                          `json:"preserveSubtitles"`
@@ -3155,115 +3158,41 @@ func (h AssetHandler) UpdateConversion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if mode := strings.TrimSpace(input.UpscaleMode); mode != "" && normalizedUpscaleMode(mode) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleMode must be disabled, auto, 720p, 1080p, custom, or omitted to inherit"})
-		return
-	}
-	if sharpen := strings.TrimSpace(input.UpscaleSharpen); sharpen != "" && normalizedUpscaleSharpen(sharpen) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpen must be off, light, medium, custom, or omitted to inherit"})
-		return
-	}
-	if normalizedUpscaleSharpen(input.UpscaleSharpen) == string(UpscaleSharpenCustom) && (input.UpscaleSharpenCustomStrength == nil || *input.UpscaleSharpenCustomStrength < 0 || *input.UpscaleSharpenCustomStrength > .4) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleSharpenCustomStrength must be between 0.00 and 0.40 for custom sharpen"})
-		return
-	}
-	if fieldOrder := strings.TrimSpace(input.DeinterlaceFieldOrder); fieldOrder != "" && normalizedCadenceFieldOrder(fieldOrder) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "deinterlaceFieldOrder must be auto, tff, bff, or omitted to inherit"})
-		return
-	}
-	if normalizedUpscaleMode(input.UpscaleMode) == string(UpscaleModeCustom) && normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upscaleCustomHeight must be a positive even height for custom upscale"})
-		return
-	}
-	entries := assetConversionOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
-	existingRoleOverrides := entries[cleanPath].SubtitleRoleOverrides
-	roleOverrides := existingRoleOverrides
-	var roleScan models.ScanResult
-	if input.SubtitleRoleOverrides != nil {
-		if err := h.db.Where("path = ?", cleanPath).Order("updated_at desc, id desc").First(&roleScan).Error; err == nil {
-			roleOverrides = subtitleRoleOverridesForConversionUpdate(roleScan, existingRoleOverrides, input.SubtitleRoleOverrides, true)
-		} else {
-			roleOverrides = subtitleRoleOverridesForConversionUpdate(models.ScanResult{}, existingRoleOverrides, input.SubtitleRoleOverrides, true)
+	var persisted AssetConversionOverrideState
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		entries := assetConversionOverrides(tx)
+		override, err := normalizeAssetConversionUpdate(tx, cleanPath, input, entries[cleanPath])
+		if err != nil {
+			return err
 		}
-	}
-
-	override := AssetConversionOverrideState{
-		TrackProfileKey:                strings.TrimSpace(input.TrackProfileKey),
-		KeepVideoStreams:               normalizedStreamIndexes(input.KeepVideoStreams),
-		KeepAudioStreams:               normalizedStreamIndexes(input.KeepAudioStreams),
-		KeepSubtitleStreams:            normalizedStreamIndexes(input.KeepSubtitleStreams),
-		VideoMetadata:                  normalizedStreamMetadata(input.VideoMetadata),
-		AudioMetadata:                  normalizedStreamMetadata(input.AudioMetadata),
-		SubtitleMetadata:               normalizedStreamMetadata(input.SubtitleMetadata),
-		SubtitleRoleOverrides:          roleOverrides,
-		SubtitleTransforms:             normalizedSubtitleTransforms(input.SubtitleTransforms),
-		SubtitleSidecarFormatsByStream: normalizedSubtitleSidecarFormatsByStream(input.SubtitleSidecarFormatsByStream),
-		VideoCodec:                     strings.TrimSpace(input.VideoCodec),
-		AudioCodec:                     strings.TrimSpace(input.AudioCodec),
-		QualityMode:                    strings.TrimSpace(input.QualityMode),
-		QualityValue:                   input.QualityValue,
-		OptimizationIntent:             normalizedOptimizationIntent(input.OptimizationIntent),
-		VideoPreset:                    strings.TrimSpace(input.VideoPreset),
-		PixFmt:                         strings.TrimSpace(input.PixFmt),
-		VideoFilters:                   strings.TrimSpace(input.VideoFilters),
-		UpscaleMode:                    normalizedUpscaleMode(input.UpscaleMode),
-		UpscaleSharpen:                 normalizedUpscaleSharpen(input.UpscaleSharpen),
-		UpscaleSharpenCustomStrength:   normalizedUpscaleSharpenStrength(input.UpscaleSharpen, input.UpscaleSharpenCustomStrength),
-		UpscaleCustomHeight:            normalizedUpscaleCustomHeight(input.UpscaleMode, input.UpscaleCustomHeight),
-		DeinterlaceMode:                strings.TrimSpace(input.DeinterlaceMode),
-		DeinterlaceFieldOrder:          normalizedCadenceFieldOrder(input.DeinterlaceFieldOrder),
-		FieldStructureMode:             normalizedFieldStructureMode(input.FieldStructureMode),
-		CadenceMode:                    normalizedCadenceMode(input.CadenceMode),
-		CadenceFieldOrder:              normalizedCadenceFieldOrder(input.CadenceFieldOrder),
-		X265Params:                     strings.TrimSpace(input.X265Params),
-		FrameStructureMode:             normalizedFrameStructureMode(input.FrameStructureMode),
-		FrameStructureGOPMode:          normalizedFrameStructureGOPMode(input.FrameStructureGOPMode),
-		FrameStructureGOPStrategy:      normalizedFrameStructureGOPStrategy(input.FrameStructureGOPStrategy),
-		FrameStructureGOPFrames:        min(1000, max(0, input.FrameStructureGOPFrames)),
-		FrameStructureBFrameMode:       normalizedFrameStructureBFrameMode(input.FrameStructureBFrameMode),
-		FrameStructureMaxBFrames:       min(16, max(0, input.FrameStructureMaxBFrames)),
-		PreserveHDR:                    input.PreserveHDR,
-		PreserveSubtitles:              input.PreserveSubtitles,
-		PreserveChapters:               input.PreserveChapters,
-		ExternalSubtitleFormat:         strings.TrimSpace(input.ExternalSubtitleFormat),
-		FinalColorPolicy:               strings.TrimSpace(input.FinalColorPolicy),
-		AddAACStereoTrack:              input.AddAACStereoTrack,
-		AACStereoDefault:               input.AACStereoDefault,
-		EnhancedAudioSourceStreamIndex: normalizedOptionalStreamIndex(input.EnhancedAudioSourceStreamIndex),
-		UseHardwareIfAvailable:         input.UseHardwareIfAvailable,
-		VideoEncoder:                   strings.TrimSpace(input.VideoEncoder),
-		PreferredEncoder:               strings.TrimSpace(input.PreferredEncoder),
-		TargetWorkerName:               strings.TrimSpace(input.TargetWorkerName),
-		GlobalQuality:                  input.GlobalQuality,
-		QSVRateControl:                 strings.TrimSpace(input.QSVRateControl),
-		QSVLookAheadDepth:              input.QSVLookAheadDepth,
-		QSVExtendedBRC:                 input.QSVExtendedBRC,
-		QSVAdaptiveI:                   input.QSVAdaptiveI,
-		QSVAdaptiveB:                   input.QSVAdaptiveB,
-		QSVMBBRCMode:                   normalizedOptionalQSVMBBRCMode(input.QSVMBBRCMode),
-		QSVRDOMode:                     normalizedOptionalQSVRDOMode(input.QSVRDOMode),
-		QSVPStrategy:                   normalizedOptionalQSVPStrategy(input.QSVPStrategy),
-		VideoToolboxBitrateMbps:        input.VideoToolboxBitrateMbps,
-		VideoToolboxMaxrateMbps:        input.VideoToolboxMaxrateMbps,
-		VideoToolboxBufferMbps:         input.VideoToolboxBufferMbps,
-	}
-	if assetConversionOverrideEmpty(override) {
-		delete(entries, cleanPath)
-	} else {
-		now := time.Now()
-		override.UpdatedAt = &now
-		entries[cleanPath] = override
-	}
-
-	if err := saveAssetConversionOverrides(h.db, entries); err != nil {
+		if assetConversionOverrideEmpty(override) {
+			delete(entries, cleanPath)
+		} else {
+			now := time.Now()
+			override.UpdatedAt = &now
+			entries[cleanPath] = override
+		}
+		if err := saveAssetConversionOverrides(tx, entries); err != nil {
+			return err
+		}
+		persisted = conversionOverrideForPath(cleanPath, entries)
+		return nil
+	})
+	if err != nil {
+		if isAssetConversionValidationError(err) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		appendSystemLog(h.db, "asset_conversion_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath, "stage": "save_setting"}, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	appendSystemLog(h.db, "asset_conversion_override_saved", map[string]string{"path": path, "resolvedPath": resolvedPath}, nil)
-	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "conversion": conversionOverrideForPath(cleanPath, entries)})
+	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "conversion": persisted})
 }
 
 func (h AssetHandler) UpdateMetadata(c *gin.Context) {
@@ -3292,50 +3221,58 @@ func (h AssetHandler) UpdateMetadata(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	entries := assetMetadataOverrides(h.db)
 	cleanPath := filepath.Clean(resolvedPath)
-	categories := normalizedTags(input.Categories)
-	tags := normalizedTags(input.Tags)
-	now := time.Now()
 	info, statErr := os.Stat(cleanPath)
 	isPathMetadata := statErr == nil && info.IsDir()
-	if len(categories) == 0 && len(tags) == 0 {
-		delete(entries, cleanPath)
-	} else {
-		entries[cleanPath] = AssetMetadataState{Categories: categories, Tags: tags, UpdatedAt: now}
-	}
-	if isPathMetadata {
-		var records []models.AssetRecord
-		if err := h.db.Where("missing = ?", false).Find(&records).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+	var persisted AssetMetadataState
+	assetOverrideMutationMu.Lock()
+	defer assetOverrideMutationMu.Unlock()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		entries := assetMetadataOverrides(tx)
+		metadata, remove := normalizedAssetMetadata(input)
+		now := time.Now()
+		if remove {
+			delete(entries, cleanPath)
+		} else {
+			metadata.UpdatedAt = now
+			entries[cleanPath] = metadata
 		}
-		for _, record := range records {
-			assetPath := filepath.Clean(record.Path)
-			if !pathIsInside(assetPath, cleanPath) {
-				continue
+		if isPathMetadata {
+			var records []models.AssetRecord
+			if err := tx.Where("missing = ?", false).Find(&records).Error; err != nil {
+				return err
 			}
-			current := metadataForPath(assetPath, entries)
-			if len(current.Categories) > 0 && filepath.Clean(current.InheritedFrom) != cleanPath {
-				continue
-			}
-			current.Categories = append([]string{}, categories...)
-			current.InheritedFrom = cleanPath
-			current.UpdatedAt = now
-			if len(current.Categories) == 0 && len(current.Tags) == 0 {
-				delete(entries, assetPath)
-			} else {
-				entries[assetPath] = current
+			for _, record := range records {
+				assetPath := filepath.Clean(record.Path)
+				if !pathIsInside(assetPath, cleanPath) {
+					continue
+				}
+				current := metadataForPath(assetPath, entries)
+				if len(current.Categories) > 0 && filepath.Clean(current.InheritedFrom) != cleanPath {
+					continue
+				}
+				current.Categories = append([]string{}, metadata.Categories...)
+				current.InheritedFrom = cleanPath
+				current.UpdatedAt = now
+				if len(current.Categories) == 0 && len(current.Tags) == 0 {
+					delete(entries, assetPath)
+				} else {
+					entries[assetPath] = current
+				}
 			}
 		}
-	}
-
-	if err := saveAssetMetadataOverrides(h.db, entries); err != nil {
+		if err := saveAssetMetadataOverrides(tx, entries); err != nil {
+			return err
+		}
+		persisted = metadataForPath(cleanPath, entries)
+		return nil
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "metadata": metadataForPath(cleanPath, entries)})
+	c.JSON(http.StatusOK, gin.H{"path": cleanPath, "metadata": persisted})
 }
 
 func (h AssetHandler) Rename(c *gin.Context) {
