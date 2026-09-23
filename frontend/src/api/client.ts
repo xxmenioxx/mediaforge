@@ -75,9 +75,26 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export class ApiRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  readonly code?: string;
+  readonly state?: string;
+  readonly reason?: string;
+  readonly retryable?: boolean;
+  readonly recreate?: boolean;
+
+  constructor(message: string, readonly status: number, details?: {
+    code?: string;
+    state?: string;
+    reason?: string;
+    retryable?: boolean;
+    recreate?: boolean;
+  }) {
     super(message);
     this.name = 'ApiRequestError';
+    this.code = details?.code;
+    this.state = details?.state;
+    this.reason = details?.reason;
+    this.retryable = details?.retryable;
+    this.recreate = details?.recreate;
   }
 }
 
@@ -106,7 +123,20 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
         message = text.trim();
       }
     }
-    throw new ApiRequestError(message, response.status);
+    const payload = await response.clone().json().catch(() => null) as {
+      code?: unknown;
+      state?: unknown;
+      reason?: unknown;
+      retryable?: unknown;
+      recreate?: unknown;
+    } | null;
+    throw new ApiRequestError(message, response.status, {
+      code: typeof payload?.code === 'string' ? payload.code : undefined,
+      state: typeof payload?.state === 'string' ? payload.state : undefined,
+      reason: typeof payload?.reason === 'string' ? payload.reason : undefined,
+      retryable: typeof payload?.retryable === 'boolean' ? payload.retryable : undefined,
+      recreate: typeof payload?.recreate === 'boolean' ? payload.recreate : undefined,
+    });
   }
 
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
