@@ -64,6 +64,7 @@ describe('Profile Lab video filter chain', () => {
       qualityValue: 20,
       workerConfig: {
         denoise: 'custom',
+        correctProgressiveFieldMetadata: true,
         hqdn3dLumaSpatial: 2,
         hqdn3dChromaSpatial: 2,
         hqdn3dLumaTemporal: 6,
@@ -77,8 +78,38 @@ describe('Profile Lab video filter chain', () => {
 
     const args = combinedVideoCommandArgs(profile, scan, resolvedDecision);
     const filter = args[args.indexOf('-vf') + 1];
-    expect(filter).toContain('bwdif=mode=send_frame:parity=tff:deint=all,setfield=prog,hqdn3d=2:2:6:6');
+    expect(filter?.replace(/^'|'$/g, '')).toBe('bwdif=mode=send_frame:parity=tff:deint=all,hqdn3d=2:2:6:6,setfield=prog');
     expect(filter?.match(/bwdif=/g)).toHaveLength(1);
+    expect(filter?.match(/hqdn3d=/g)).toHaveLength(1);
+    expect(filter?.match(/setfield=prog/g)).toHaveLength(1);
+  });
+
+  it('keeps IVTC metadata terminal after restoration', () => {
+    const profile = {
+      videoCodec: 'x265_10bit',
+      qualityValue: 20,
+      workerConfig: {
+        denoise: 'custom',
+        hqdn3dLumaSpatial: 2,
+        hqdn3dChromaSpatial: 2,
+        hqdn3dLumaTemporal: 6,
+        hqdn3dChromaTemporal: 6,
+      },
+    } as unknown as ProfileInput;
+    const scan = { interlaceAnalysis: { automaticFilter: '' } } as ScanResult;
+    const resolvedDecision: EffectiveVideoDecision = {
+      cadenceOperation: 'inverse_telecine',
+      cadenceFieldOrder: 'tff',
+      residualCombingFallback: 'selective',
+      effectiveMotionFilters: 'fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog',
+    };
+
+    const args = combinedVideoCommandArgs(profile, scan, resolvedDecision);
+    const filter = args[args.indexOf('-vf') + 1];
+    expect(filter?.replace(/^'|'$/g, '')).toBe('fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,hqdn3d=2:2:6:6,setfield=prog');
+    expect(filter?.match(/fieldmatch=/g)).toHaveLength(1);
+    expect(filter?.match(/bwdif=/g)).toHaveLength(1);
+    expect(filter?.match(/decimate/g)).toHaveLength(1);
     expect(filter?.match(/hqdn3d=/g)).toHaveLength(1);
     expect(filter?.match(/setfield=prog/g)).toHaveLength(1);
   });
