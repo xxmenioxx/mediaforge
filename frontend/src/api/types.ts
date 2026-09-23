@@ -1842,6 +1842,7 @@ export type EffectiveVideoDecision = {
   cadenceFieldOrder?: 'tff' | 'bff' | string;
   residualCombingFallback?: 'selective' | 'none' | string;
   residualCombingFallbackReason?: string;
+  effectiveMotionFilters?: string;
   effectiveFrameRate?: string;
   effectiveProgressive?: boolean;
   effectiveWidth?: number;

@@ -367,6 +367,7 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 			profile.WorkerConfig["effectiveCadenceFieldOrder"] = order
 			profile.WorkerConfig["effectiveResidualCombingFallback"] = "selective"
 			profile.WorkerConfig["effectiveResidualCombingFallbackReason"] = "fieldmatch-marked residual frames are repaired selectively"
+			profile.WorkerConfig["effectiveAutomaticMotionFilters"] = canonicalIVTCFilter(order)
 			delete(profile.WorkerConfig, "effectiveOutputFrameRateUnknown")
 			delete(profile.WorkerConfig, "cadenceResolutionWarning")
 		} else {
@@ -377,6 +378,7 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 			profile.WorkerConfig["effectiveResidualCombingFallback"] = "none"
 			delete(profile.WorkerConfig, "effectiveCadenceFieldOrder")
 			delete(profile.WorkerConfig, "effectiveResidualCombingFallbackReason")
+			delete(profile.WorkerConfig, "effectiveAutomaticMotionFilters")
 		}
 	}
 	return profile
@@ -480,12 +482,16 @@ func canonicalIVTCFieldOrder(filters string) string {
 }
 
 func ensureCanonicalIVTCFilter(filters, order string) string {
-	canonical := "fieldmatch=order=" + order + ":combmatch=full,bwdif=mode=send_frame:parity=" + order + ":deint=interlaced,decimate,setfield=prog"
+	canonical := canonicalIVTCFilter(order)
 	parts := stripCanonicalIVTCFilterParts(filters)
 	if len(parts) == 0 {
 		return canonical
 	}
 	return canonical + "," + strings.Join(parts, ",")
+}
+
+func canonicalIVTCFilter(order string) string {
+	return "fieldmatch=order=" + order + ":combmatch=full,bwdif=mode=send_frame:parity=" + order + ":deint=interlaced,decimate,setfield=prog"
 }
 
 func stripCanonicalIVTCFilters(filters string) string {

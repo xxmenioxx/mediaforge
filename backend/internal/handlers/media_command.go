@@ -386,6 +386,8 @@ func aacStereoChannels(profile models.Profile) int {
 }
 
 func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceAnalysis) models.Profile {
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	delete(profile.WorkerConfig, "effectiveAutomaticMotionFilters")
 	mode := workerStringValue(profile.WorkerConfig["deinterlaceMode"])
 	if mode == "" {
 		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
@@ -396,12 +398,10 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 	if filter == "" && fieldMetadataFilter == "" {
 		updated := applyDeinterlaceFieldOrderOverride(existing, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 		if updated != existing {
-			profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 			profile.WorkerConfig["videoFilters"] = updated
 		}
 		return profile
 	}
-	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
 	hasMotionFilter := strings.Contains(existing, "bwdif=") || strings.Contains(existing, "yadif=") || strings.Contains(existing, "fieldmatch") || strings.Contains(existing, "decimate")
 	if existing != "" && !hasMotionFilter {
 		if filter != "" {
@@ -419,6 +419,7 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 	}
 	filter = applyDeinterlaceFieldOrderOverride(filter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 	profile.WorkerConfig["videoFilters"] = filter
+	profile.WorkerConfig["effectiveAutomaticMotionFilters"] = strings.Trim(strings.Join([]string{strings.TrimSpace(filter), strings.TrimSpace(fieldMetadataFilter)}, ","), ",")
 	return profile
 }
 
@@ -855,6 +856,7 @@ func effectiveVideoDecision(profile models.Profile) models.JSONMap {
 		"cadenceFieldOrder":             workerStringValue(profile.WorkerConfig["effectiveCadenceFieldOrder"]),
 		"residualCombingFallback":       workerStringValue(profile.WorkerConfig["effectiveResidualCombingFallback"]),
 		"residualCombingFallbackReason": workerStringValue(profile.WorkerConfig["effectiveResidualCombingFallbackReason"]),
+		"effectiveMotionFilters":        workerStringValue(profile.WorkerConfig["effectiveAutomaticMotionFilters"]),
 		"effectiveFrameRate":            fps,
 		"effectiveProgressive":          profileWorkerBool(profile, "effectiveOutputProgressive", false),
 		"effectiveWidth":                workerIntValue(profile.WorkerConfig["effectiveOutputWidth"], 0),
