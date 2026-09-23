@@ -392,34 +392,40 @@ func profileWithAutomaticDeinterlace(profile models.Profile, analysis InterlaceA
 	if mode == "" {
 		mode = workerStringValue(profile.WorkerConfig["deinterlace"])
 	}
-	filter := effectiveDeinterlaceFilter(mode, analysis)
+	automaticMotionFilter := effectiveDeinterlaceFilter(mode, analysis)
 	existing := strings.TrimSpace(existingVideoFilters(profile))
-	fieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(filter, existing, analysis)
-	if filter == "" && fieldMetadataFilter == "" {
+	automaticFieldMetadataFilter := effectiveAutomaticFieldMetadataFilter(automaticMotionFilter, existing, analysis)
+	if automaticMotionFilter == "" && automaticFieldMetadataFilter == "" {
 		updated := applyDeinterlaceFieldOrderOverride(existing, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 		if updated != existing {
 			profile.WorkerConfig["videoFilters"] = updated
 		}
 		return profile
 	}
+	automaticMotionFilter = applyDeinterlaceFieldOrderOverride(automaticMotionFilter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
 	hasMotionFilter := strings.Contains(existing, "bwdif=") || strings.Contains(existing, "yadif=") || strings.Contains(existing, "fieldmatch") || strings.Contains(existing, "decimate")
-	if existing != "" && !hasMotionFilter {
-		if filter != "" {
-			filter += ","
+	videoFilters := existing
+	if !hasMotionFilter && automaticMotionFilter != "" {
+		videoFilters = automaticMotionFilter
+		if existing != "" {
+			videoFilters += "," + existing
 		}
-		filter += existing
-	} else if existing != "" {
-		filter = existing
 	}
-	if fieldMetadataFilter != "" && !strings.Contains(filter, "setfield=") {
-		if filter != "" {
-			filter += ","
+	if automaticFieldMetadataFilter != "" && !strings.Contains(videoFilters, "setfield=") {
+		if videoFilters != "" {
+			videoFilters += ","
 		}
-		filter += fieldMetadataFilter
+		videoFilters += automaticFieldMetadataFilter
 	}
-	filter = applyDeinterlaceFieldOrderOverride(filter, workerStringValue(profile.WorkerConfig["deinterlaceFieldOrder"]))
-	profile.WorkerConfig["videoFilters"] = filter
-	profile.WorkerConfig["effectiveAutomaticMotionFilters"] = strings.Trim(strings.Join([]string{strings.TrimSpace(filter), strings.TrimSpace(fieldMetadataFilter)}, ","), ",")
+	profile.WorkerConfig["videoFilters"] = videoFilters
+	automaticContribution := []string{}
+	if !hasMotionFilter && automaticMotionFilter != "" {
+		automaticContribution = append(automaticContribution, automaticMotionFilter)
+	}
+	if automaticFieldMetadataFilter != "" && !strings.Contains(existing, "setfield=") {
+		automaticContribution = append(automaticContribution, automaticFieldMetadataFilter)
+	}
+	profile.WorkerConfig["effectiveAutomaticMotionFilters"] = strings.Join(automaticContribution, ",")
 	return profile
 }
 

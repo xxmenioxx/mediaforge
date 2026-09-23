@@ -1181,6 +1181,51 @@ func TestResolvedIVTCMotionDecisionUsesExplicitOrderOverScanFilter(t *testing.T)
 	}
 }
 
+func TestAutomaticNativeInterlaceMotionDecisionExcludesRestorationFilters(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "auto",
+		"videoFilters":    "hqdn3d=2:2:6:6",
+	}}
+	analysis := InterlaceAnalysis{
+		Status:             "interlaced",
+		DetectedFieldOrder: "tff",
+		AutomaticFilter:    "bwdif=mode=send_frame:parity=tff:deint=all",
+	}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, analysis, CadenceAnalysis{}, CadenceRecommendation{})
+	filters := workerStringValue(resolved.WorkerConfig["videoFilters"])
+	if filters != "bwdif=mode=send_frame:parity=tff:deint=all,hqdn3d=2:2:6:6,setfield=prog" {
+		t.Fatalf("native interlaced filters=%q", filters)
+	}
+	automatic := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"])
+	if automatic != "bwdif=mode=send_frame:parity=tff:deint=all,setfield=prog" {
+		t.Fatalf("automatic motion filters=%q", automatic)
+	}
+	if strings.Count(automatic, "bwdif=") != 1 || strings.Count(automatic, "setfield=prog") != 1 || strings.Contains(automatic, "hqdn3d=") {
+		t.Fatalf("automatic motion filters were contaminated or duplicated: %q", automatic)
+	}
+}
+
+func TestManualMotionFilterIsNotReportedAsAutomaticMotion(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"deinterlaceMode": "auto",
+		"videoFilters":    "yadif=mode=send_frame:parity=tff",
+	}}
+	analysis := InterlaceAnalysis{
+		Status:             "interlaced",
+		DetectedFieldOrder: "tff",
+		AutomaticFilter:    "bwdif=mode=send_frame:parity=tff:deint=all",
+	}
+
+	resolved := resolveEffectiveVideoMotionProfile(profile, analysis, CadenceAnalysis{}, CadenceRecommendation{})
+	if got := workerStringValue(resolved.WorkerConfig["videoFilters"]); got != "yadif=mode=send_frame:parity=tff,setfield=prog" {
+		t.Fatalf("manual motion filters were replaced: %q", got)
+	}
+	if got := workerStringValue(resolved.WorkerConfig["effectiveAutomaticMotionFilters"]); got != "setfield=prog" {
+		t.Fatalf("manual motion was incorrectly exposed as automatic: %q", got)
+	}
+}
+
 func TestResolvedAutomaticValidatedIVTCUsesSelectedParity(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
 		"fieldStructureMode": "preserve",

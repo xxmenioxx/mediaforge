@@ -58,6 +58,31 @@ describe('Profile Lab video filter chain', () => {
     expect(args[args.indexOf('-vf') + 1]).toContain('fieldmatch=order=tff:combmatch=full');
   });
 
+  it('composes resolved native motion before restoration without duplication', () => {
+    const profile = {
+      videoCodec: 'x265_10bit',
+      qualityValue: 20,
+      workerConfig: {
+        denoise: 'custom',
+        hqdn3dLumaSpatial: 2,
+        hqdn3dChromaSpatial: 2,
+        hqdn3dLumaTemporal: 6,
+        hqdn3dChromaTemporal: 6,
+      },
+    } as unknown as ProfileInput;
+    const scan = { interlaceAnalysis: { automaticFilter: '' } } as ScanResult;
+    const resolvedDecision: EffectiveVideoDecision = {
+      effectiveMotionFilters: 'bwdif=mode=send_frame:parity=tff:deint=all,setfield=prog',
+    };
+
+    const args = combinedVideoCommandArgs(profile, scan, resolvedDecision);
+    const filter = args[args.indexOf('-vf') + 1];
+    expect(filter).toContain('bwdif=mode=send_frame:parity=tff:deint=all,setfield=prog,hqdn3d=2:2:6:6');
+    expect(filter?.match(/bwdif=/g)).toHaveLength(1);
+    expect(filter?.match(/hqdn3d=/g)).toHaveLength(1);
+    expect(filter?.match(/setfield=prog/g)).toHaveLength(1);
+  });
+
   it('does not add automatic motion filters without a backend-resolved decision', () => {
     expect(combinedAutomaticMotionFilters()).toEqual([]);
   });
