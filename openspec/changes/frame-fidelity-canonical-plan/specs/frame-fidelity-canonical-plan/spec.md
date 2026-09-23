@@ -13,7 +13,9 @@ For every covered field, Frame Fidelity SHALL represent the raw storage evidence
 the bounded canonical/effective source value when available, the expected output
 from the frozen resolved plan, and the actual output evidence. Source metadata
 MUST NOT be mutated or fabricated to make it resemble the expected output.
-Missing or insufficient evidence SHALL remain explicitly unverified.
+Missing or insufficient evidence for an applicable expected field SHALL remain
+explicitly unverified; a field with no authoritative expectation is
+`not_applicable`.
 
 The minimum covered fields are frame width/height, sample aspect ratio (SAR),
 display aspect ratio (DAR), output FPS, progressive/interlaced field structure,
@@ -34,24 +36,69 @@ codec/profile policy resolver.
 - **WHEN** canonical source chroma location is `left`, the resolved plan has no authoritative chroma-location transformation, and output evidence is `left`
 - **THEN** the chroma-location field SHALL pass; if known output evidence differs, the field SHALL be `mismatch`, and if either required value is unavailable it SHALL be `unverified`
 
+### Requirement: Pixel-format validation SHALL distinguish working and observable domains
+
+Frame Fidelity SHALL retain raw `source.pixelFormat`, `workingPixelFormat`, and
+`actual.pixelFormat` values for diagnostics, but SHALL build expected output in
+the observable domain when the frozen encoder decision describes a working
+surface rather than a literal encoded-stream representation. At minimum,
+semantic comparison SHALL distinguish bit depth and reliably known
+chroma/subsampling family, and SHALL include Main/Main10 profile semantics when
+an existing frozen encoder/profile authority provides them. The evaluator SHALL
+reuse existing pixel-format bit-depth and effective encoder/profile evidence and
+SHALL NOT create a broad arbitrary alias table or a second codec/profile
+resolver.
+
+For hardware encoders, supported working-to-output semantics SHALL recognize
+that QSV `p010le` can produce observable HEVC Main10 10-bit 4:2:0 evidence such
+as `yuv420p10le`; the evaluator SHALL NOT require `p010le == yuv420p10le` or
+require `nv12` to appear literally in the final ffprobe stream. Exact
+comparison SHALL remain available when the frozen plan genuinely owns the
+observable representation, including explicit software output formats and
+preserve/copy paths in the same semantic domain.
+
+#### Scenario: QSV Main10 working format matches decoded output semantics
+- **WHEN** the frozen plan has encoder `hevc_qsv`, working pixel format `p010le`, authoritative Main10/10-bit intent, and actual ffprobe evidence is HEVC with `yuv420p10le` and bit depth 10
+- **THEN** pixel-format semantics and bit depth SHALL report `status: passed`, raw working/output spellings SHALL remain diagnostic, and the aggregate SHALL pass
+
+#### Scenario: QSV Main10 output is actually 8-bit
+- **WHEN** the frozen plan expects Main10/10-bit output from QSV but actual ffprobe evidence is `yuv420p` with bit depth 8
+- **THEN** the observable pixel-format and/or bit-depth result SHALL report `mismatch` with the effective encoder/profile authority
+
+#### Scenario: Software x265 owns an exact observable format
+- **WHEN** the frozen software encoding plan authoritatively expects observable `yuv420p10le` and actual output is `yuv420p10le`
+- **THEN** exact observable pixel-format comparison and bit-depth comparison SHALL both pass
+
+#### Scenario: Working-format spelling is not an observable requirement
+- **WHEN** a hardware plan records `nv12` or `p010le` only as encoder input/working format and the encoded stream reports an equivalent supported observable semantic format
+- **THEN** the raw spelling difference SHALL not be a mismatch, and the report SHALL show both domains without requiring the working spelling in ffprobe output
+
 ### Requirement: Expected output SHALL come from frozen resolved authorities
 
 Frame Fidelity SHALL evaluate expected output from the strongest immutable
 resolved execution authority available for the operation. For Queue validation,
 the precedence SHALL be: a complete immutable prepared/execution plan artifact
-for the same job, then the Queue `ProfileSnapshot` captured at PREPARING together
-with its preserved resolved analysis evidence, then a legacy frozen snapshot
-adapter. Mutable current Profile, Asset Override, recommendation, cadence, or
+whose identity is proven to belong to the execution being validated, then the
+Queue `ProfileSnapshot` captured at PREPARING together with its preserved
+resolved analysis evidence, then a legacy frozen snapshot adapter. A job ID,
+media path, or latest artifact modification time alone SHALL NOT prove
+same-execution identity. Existing stable evidence SHALL be used where available,
+including matching job/source identity plus `ActiveExecutionPlanID`, an embedded
+frozen snapshot/prepared-profile identity, or an existing attempt/revision
+identity. Mutable current Profile, Asset Override, recommendation, cadence, or
 restoration state SHALL NOT determine expectations for an already prepared job.
 
 Within that frozen plan, specialized resolved authorities SHALL be adapted into
 one expected-output model: resolved restoration/upscale geometry owns geometry
 and aspect decisions; `effectiveOutputFrameRate` owns expected FPS; the resolved
 progressive decision owns field structure; the effective encoder/profile
-decision owns pixel format and bit-depth expectations; and the existing frozen
+decision owns observable pixel-format semantics and bit-depth expectations while
+retaining the encoder working format diagnostically; and the existing frozen
 HEVC decision owns Level/Tier expectations. A preserve decision may use the
-canonical effective source value as expected output. If no authority owns a
-field, the field SHALL be unverified rather than inferred from command text.
+canonical effective source semantic value as expected output. If no authority
+owns a field, the field SHALL be `not_applicable`, not inferred from command
+text; if an authoritative applicable field lacks required evidence, it SHALL be
+`unverified`.
 
 #### Scenario: Smart Upscale geometry is expected output
 - **WHEN** source is 720x480 anamorphic and the frozen Smart Upscale/restoration plan resolves 1280x720, SAR 1:1, and DAR 16:9
@@ -122,6 +169,32 @@ the same validation.
 - **WHEN** expected FPS is known but measured FPS and `avg_frame_rate` are unavailable while only `r_frame_rate` is present
 - **THEN** the FPS field SHALL be `unverified` and SHALL identify `r_frame_rate` as diagnostic-only evidence
 
+### Requirement: Aggregate verdict SHALL honor field applicability
+
+Each canonical field SHALL be classified deliberately as applicable or
+`not_applicable` based on whether the frozen plan owns an expectation for that
+field. An applicable field with missing or unreliable expected/actual evidence
+SHALL be `unverified`; an applicable field with contradictory actual evidence
+SHALL be `mismatch`. A field with no authoritative expectation, including an
+optional characteristic absent from both the plan and evidence, SHALL be
+`not_applicable` and SHALL NOT downgrade an otherwise valid aggregate.
+Aggregate status SHALL be `mismatch` if any applicable field mismatches,
+`unverified` if none mismatch but an applicable field is unresolved, `passed`
+if all applicable fields pass, and `not_applicable` if no canonical field is
+applicable.
+
+#### Scenario: Optional chroma evidence does not poison a valid job
+- **WHEN** geometry, FPS, field structure, and pixel-depth expectations all pass, but the frozen plan does not own chroma location and no chroma evidence is available
+- **THEN** the chroma field SHALL be `not_applicable` and the aggregate SHALL remain `passed`
+
+#### Scenario: Authoritative missing evidence is unverified
+- **WHEN** the frozen plan explicitly expects a preserved chroma location or observable semantic format but the required source or output evidence is missing
+- **THEN** that applicable field SHALL be `unverified` and the aggregate SHALL be `unverified` unless another applicable field is already `mismatch`
+
+#### Scenario: Real mismatch is not weakened by optional evidence
+- **WHEN** an applicable expected FPS or geometry value differs from actual output and unrelated optional fields are absent
+- **THEN** the affected field and aggregate SHALL remain `mismatch`
+
 ### Requirement: Specialized validators SHALL remain owners of their policies
 
 Frame Fidelity SHALL aggregate or reference the existing Smart Upscale,
@@ -134,8 +207,8 @@ NOT duplicate color-policy resolution. HEVC Level/Tier SHALL use the frozen
 resolved decision and existing bounded bitstream validation.
 
 #### Scenario: Main10 expectation is enforced
-- **WHEN** the frozen effective encoder decision expects Main10/p010le and 10-bit output
-- **THEN** actual Main10/p010le evidence SHALL pass, while actual 8-bit yuv420p SHALL report a pixel-format and/or bit-depth `mismatch` with the effective encoder authority
+- **WHEN** the frozen effective encoder decision expects Main10/10-bit output and records QSV working format `p010le`
+- **THEN** actual HEVC `yuv420p10le` with bit depth 10 SHALL pass, while actual 8-bit `yuv420p` SHALL report a pixel-format and/or bit-depth `mismatch` with the effective encoder authority; raw spellings SHALL remain visible diagnostically
 
 #### Scenario: HEVC Level/Tier uses frozen decision
 - **WHEN** a Queue job has a frozen HEVC Level/Tier decision and bounded output evidence is available
@@ -144,6 +217,32 @@ resolved decision and existing bounded bitstream validation.
 #### Scenario: Color policy remains specialized
 - **WHEN** the frozen color-policy validator expects preserved source color or an explicit BT.709 normalization
 - **THEN** the Fidelity report MAY reference that validator's result, but a Frame Fidelity fallback SHALL NOT infer a competing color expectation from filters, notes, or codec labels
+
+### Requirement: Execution artifacts SHALL prove same-execution identity before outranking snapshots
+
+An AS-IS execution artifact SHALL outrank the Queue `ProfileSnapshot` only when
+it is complete and demonstrably tied to the validated frozen execution through
+existing stable evidence: matching job/source identity plus an execution-plan,
+embedded frozen-profile/snapshot, or attempt/revision identity that matches the
+job's frozen execution. A merely latest artifact selected by job ID, media path,
+or modification time SHALL be treated as ambiguous. When a verified artifact
+and snapshot disagree, the artifact MAY provide the execution authority but the
+disagreement SHALL be retained diagnostically; values SHALL NOT be silently
+combined across executions. If identity cannot be proven, Fidelity SHALL fall
+back to the frozen snapshot and SHALL NOT consult mutable Profile or Asset
+Override state.
+
+#### Scenario: Verified same-execution artifact outranks snapshot
+- **WHEN** an AS-IS artifact matches the Queue job/source identity and its existing execution-plan or embedded frozen-profile identity matches the execution being validated
+- **THEN** the artifact MAY supply the expected-output authority, any disagreement with `ProfileSnapshot` SHALL be reported diagnostically, and no mutable state SHALL be consulted
+
+#### Scenario: Ambiguous latest artifact falls back to snapshot
+- **WHEN** multiple AS-IS artifacts exist and the selected latest artifact matches only job ID/media path but has no matching execution-plan, frozen-profile, or attempt identity
+- **THEN** the artifact SHALL NOT outrank `ProfileSnapshot`, the snapshot SHALL supply expectations, and the artifact ambiguity SHALL remain diagnostic
+
+#### Scenario: Disagreeing executions are not merged
+- **WHEN** an artifact is proven to belong to a different retry/execution than the validated job snapshot and its resolved geometry or Main10 decision differs
+- **THEN** the evaluator SHALL ignore that artifact for expected-output authority, SHALL use the validated frozen snapshot, and SHALL NOT combine fields from both executions
 
 ### Requirement: Reports SHALL explain each verdict and preserve compatibility
 
@@ -168,11 +267,13 @@ an intentional source-to-expected transformation.
 
 Queue validation SHALL consume the frozen prepared plan/snapshot and SHALL be
 immune to later mutable Profile, Asset Override, cadence analysis,
-restoration-setting, or Level/Tier recommendation edits. Preview and Test Encode
-effective-profile handling SHALL expose the same resolved expected-output inputs
-at their operation's execution boundary, so the future evaluator can be reused
-without entry-point-specific policy. This change SHALL NOT add LAB
-preview-first/background Fidelity orchestration owned by #19.
+restoration-setting, or Level/Tier recommendation edits. A same-execution
+artifact may outrank the snapshot only under the identity rule above; an
+ambiguous/stale artifact SHALL fall back to the snapshot. Preview and Test
+Encode effective-profile handling SHALL expose the same resolved
+expected-output inputs at their operation's execution boundary, so the future
+evaluator can be reused without entry-point-specific policy. This change SHALL
+NOT add LAB preview-first/background Fidelity orchestration owned by #19.
 
 #### Scenario: Later Profile edit cannot change Queue expectations
 - **WHEN** a Queue job is prepared with an IVTC, restoration, or Main10 plan and the Profile is edited before validation
