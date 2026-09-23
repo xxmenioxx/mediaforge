@@ -139,10 +139,16 @@ func createCompatiblePreviewLogicalLease(requestID, ownerID string, entry *compa
 	if strings.TrimSpace(requestID) == "" || !validCompatiblePreviewOwnerID(ownerID) || entry == nil || artifactLease == nil {
 		return nil, false, &compatiblePreviewLifecycleError{Status: http.StatusConflict, Code: "invalid_lease", State: "generating", Reason: "compatible preview owner or lease is invalid"}
 	}
+	cleanupCompatiblePreviewLeases(now)
 	startCompatiblePreviewLeaseCleanup()
 	key := compatiblePreviewLeaseOwnerKey(requestID, ownerID)
 	compatiblePreviewLeases.Lock()
 	if existing := compatiblePreviewLeases.byOwner[key]; existing != nil && existing.state == compatiblePreviewLeaseActive && existing.expiresAt.After(now) {
+		if existing.entry != entry {
+			compatiblePreviewLeases.Unlock()
+			artifactLease.release()
+			return nil, false, &compatiblePreviewLifecycleError{Status: http.StatusConflict, Code: "invalid_lease", State: "generating", Reason: "compatible preview owner is bound to a different artifact generation"}
+		}
 		existing.expiresAt = now.Add(compatiblePreviewLogicalLeaseLifetime)
 		compatiblePreviewLeases.Unlock()
 		artifactLease.release()
@@ -577,12 +583,17 @@ func promoteCompatiblePreviewLogicalLease(c *gin.Context, descriptor *compatible
 			return nil, &compatiblePreviewLifecycleError{Status: http.StatusConflict, Code: "invalid_lease", State: "generating", Reason: "compatible preview lease is not active for this artifact"}
 		}
 		httpLease.release()
-		_ = renewCompatiblePreviewLease(lease, time.Now())
+		if err := renewCompatiblePreviewLease(lease, time.Now()); err != nil {
+			return nil, err
+		}
 		return lease, nil
 	}
 	if lifecycleRequest.OwnerID == "" {
 		lifecycleRequest.OwnerID = "resource-" + newCompatiblePreviewLeaseToken()[:24]
 	}
 	lease, _, err := createCompatiblePreviewLogicalLease(descriptor.requestID, lifecycleRequest.OwnerID, entry, httpLease, time.Now())
+	if err != nil {
+		httpLease.release()
+	}
 	return lease, err
 }

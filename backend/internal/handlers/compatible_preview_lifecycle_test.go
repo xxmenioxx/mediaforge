@@ -270,10 +270,17 @@ func TestCompatiblePreviewLeaseRegistryCapacityNeverEvictsActiveOwners(t *testin
 		t.Fatal(err)
 	}
 
-	thirdEntry := lifecycleTestArtifact(t, "capacity-third")
-	if renewed, duplicate, err := createCompatiblePreviewLogicalLease("capacity-first", "owner-a", thirdEntry, &compatiblePreviewArtifactLease{entry: thirdEntry}, time.Now()); err != nil || !duplicate || renewed != first {
+	firstEntry.mu.Lock()
+	firstEntry.waiters++
+	firstEntry.mu.Unlock()
+	if renewed, duplicate, err := createCompatiblePreviewLogicalLease("capacity-first", "owner-a", firstEntry, &compatiblePreviewArtifactLease{entry: firstEntry}, time.Now()); err != nil || !duplicate || renewed != first {
 		t.Fatalf("existing owner could not renew at capacity: lease=%p duplicate=%t err=%v", renewed, duplicate, err)
 	}
+	firstEntry.mu.Lock()
+	if firstEntry.waiters != 1 {
+		t.Fatalf("same-owner renewal changed artifact consumers: got %d, want 1", firstEntry.waiters)
+	}
+	firstEntry.mu.Unlock()
 	newEntry := lifecycleTestArtifact(t, "capacity-new")
 	if _, _, err := createCompatiblePreviewLogicalLease("capacity-new", "owner-c", newEntry, &compatiblePreviewArtifactLease{entry: newEntry}, time.Now()); err == nil {
 		t.Fatal("new owner unexpectedly bypassed lease capacity")
@@ -289,6 +296,125 @@ func TestCompatiblePreviewLeaseRegistryCapacityNeverEvictsActiveOwners(t *testin
 		t.Fatalf("capacity did not recover after release: lease=%p duplicate=%t err=%v", available, duplicate, err)
 	}
 	_ = second
+}
+
+func TestCompatiblePreviewLeaseCapacityReclaimsExpiredOwnerSynchronously(t *testing.T) {
+	oldMax := compatiblePreviewLeaseMaxItems
+	compatiblePreviewLeaseMaxItems = 2
+	t.Cleanup(func() { compatiblePreviewLeaseMaxItems = oldMax })
+	resetCompatiblePreviewLeases()
+	t.Cleanup(resetCompatiblePreviewLeases)
+
+	base := time.Now()
+	firstEntry := lifecycleTestArtifact(t, "capacity-expired-first")
+	first, _, err := createCompatiblePreviewLogicalLease("capacity-expired-first", "owner-a", firstEntry, &compatiblePreviewArtifactLease{entry: firstEntry}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEntry := lifecycleTestArtifact(t, "capacity-expired-second")
+	second, _, err := createCompatiblePreviewLogicalLease("capacity-expired-second", "owner-b", secondEntry, &compatiblePreviewArtifactLease{entry: secondEntry}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatiblePreviewLeases.Lock()
+	second.expiresAt = base.Add(-time.Second)
+	compatiblePreviewLeases.Unlock()
+
+	thirdEntry := lifecycleTestArtifact(t, "capacity-expired-third")
+	third, duplicate, err := createCompatiblePreviewLogicalLease("capacity-expired-third", "owner-c", thirdEntry, &compatiblePreviewArtifactLease{entry: thirdEntry}, base)
+	if err != nil || duplicate || third == nil {
+		t.Fatalf("synchronous expiry cleanup did not free capacity: lease=%p duplicate=%t err=%v", third, duplicate, err)
+	}
+	firstEntry.mu.Lock()
+	firstWaiters := firstEntry.waiters
+	firstEntry.mu.Unlock()
+	secondEntry.mu.Lock()
+	secondWaiters := secondEntry.waiters
+	secondState := secondEntry.state
+	secondEntry.mu.Unlock()
+	if firstWaiters != 1 {
+		t.Fatalf("valid owner A was disturbed by B expiry: waiters=%d", firstWaiters)
+	}
+	if secondWaiters != 0 || secondState != compatiblePreviewArtifactGenerating {
+		t.Fatalf("expired owner B was not released exactly once: waiters=%d state=%s", secondWaiters, secondState)
+	}
+	_ = first
+}
+
+func TestCompatiblePreviewSameOwnerCannotTransferArtifactGeneration(t *testing.T) {
+	resetCompatiblePreviewLeases()
+	t.Cleanup(resetCompatiblePreviewLeases)
+	firstEntry := lifecycleTestArtifact(t, "owner-generation-first")
+	first, _, err := createCompatiblePreviewLogicalLease("owner-generation", "owner-a", firstEntry, &compatiblePreviewArtifactLease{entry: firstEntry}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEntry := lifecycleTestArtifact(t, "owner-generation-second")
+	if _, duplicate, err := createCompatiblePreviewLogicalLease("owner-generation", "owner-a", secondEntry, &compatiblePreviewArtifactLease{entry: secondEntry}, time.Now()); err == nil || duplicate {
+		t.Fatalf("same owner transferred or duplicated across artifacts: duplicate=%t err=%v", duplicate, err)
+	} else if lifecycleErr, ok := err.(*compatiblePreviewLifecycleError); !ok || lifecycleErr.Status != http.StatusConflict || lifecycleErr.Code != "invalid_lease" {
+		t.Fatalf("different-generation error=%#v", err)
+	}
+	firstEntry.mu.Lock()
+	firstWaiters := firstEntry.waiters
+	firstEntry.mu.Unlock()
+	secondEntry.mu.Lock()
+	secondWaiters := secondEntry.waiters
+	secondEntry.mu.Unlock()
+	if firstWaiters != 1 || secondWaiters != 0 {
+		t.Fatalf("artifact ownership transferred: first=%d second=%d", firstWaiters, secondWaiters)
+	}
+	_ = first
+}
+
+func TestCompatiblePreviewPromotionReleasesTemporaryHTTPLeaseOnCapacityFailure(t *testing.T) {
+	oldMax := compatiblePreviewLeaseMaxItems
+	compatiblePreviewLeaseMaxItems = 1
+	t.Cleanup(func() { compatiblePreviewLeaseMaxItems = oldMax })
+	oldBudget := compatiblePreviewHTTPWaitBudget
+	compatiblePreviewHTTPWaitBudget = time.Nanosecond
+	t.Cleanup(func() { compatiblePreviewHTTPWaitBudget = oldBudget })
+	resetCompatiblePreviewLeases()
+	resetCompatiblePreviewArtifactsForTest()
+	t.Cleanup(resetCompatiblePreviewLeases)
+	t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+
+	ownerEntry := lifecycleTestArtifact(t, "promotion-owner")
+	owner, _, err := createCompatiblePreviewLogicalLease("promotion-owner", "owner-a", ownerEntry, &compatiblePreviewArtifactLease{entry: ownerEntry}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceDescriptor := testCompatiblePreviewDescriptor(t, "promotion-resource")
+	resourceDescriptor.requestID = "promotion-resource"
+	resourceEntry := lifecycleTestArtifact(t, "promotion-resource")
+	resourceEntry.mu.Lock()
+	resourceEntry.waiters = 0
+	resourceEntry.mu.Unlock()
+	compatiblePreviewArtifacts.Lock()
+	compatiblePreviewArtifacts.items[resourceDescriptor.ArtifactID] = resourceEntry
+	compatiblePreviewArtifacts.Unlock()
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/preview", nil)
+	AssetHandler{}.servePreparedCompatiblePreview(context, resourceDescriptor, "video")
+	if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), `"code":"lease_capacity"`) {
+		t.Fatalf("capacity-limited resource handoff status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	resourceEntry.mu.Lock()
+	resourceWaiters := resourceEntry.waiters
+	resourceState := resourceEntry.state
+	resourceEntry.mu.Unlock()
+	ownerEntry.mu.Lock()
+	ownerWaiters := ownerEntry.waiters
+	ownerState := ownerEntry.state
+	ownerEntry.mu.Unlock()
+	if resourceWaiters != 0 || resourceState != compatiblePreviewArtifactGenerating {
+		t.Fatalf("failed promotion leaked HTTP ownership: waiters=%d state=%s", resourceWaiters, resourceState)
+	}
+	if ownerWaiters != 1 || ownerState != compatiblePreviewArtifactGenerating {
+		t.Fatalf("failed promotion disturbed existing owner: waiters=%d state=%s", ownerWaiters, ownerState)
+	}
+	_ = owner
 }
 
 func TestCompatiblePreviewStatusCacheHitTracksArtifactProvenance(t *testing.T) {
