@@ -19,6 +19,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
@@ -81,6 +82,11 @@ type compatiblePreviewDescriptor struct {
 	ArtifactID               string
 	RetentionPolicy          compatiblePreviewRetentionPolicy
 	CachePath                string
+	persistenceDB            *gorm.DB
+	requestID                string
+	frozen                   bool
+	GenerationToken          string
+	GenerationVersion        int64
 }
 
 type compatiblePreviewPrepareError struct {
@@ -155,7 +161,7 @@ func compatiblePreviewDescriptorFallback(input compatiblePreviewRequest, request
 	}
 	descriptor.CanonicalEncodeSignature = compatiblePreviewEncodeSignature(descriptor)
 	descriptor.ArtifactID = compatiblePreviewArtifactID(descriptor.CanonicalEncodeSignature, descriptor.RetentionPolicy, requestScope)
-	descriptor.CachePath = filepath.Join(os.TempDir(), "mvforge-preview-cache", descriptor.ArtifactID+".mp4")
+	descriptor.CachePath = filepath.Join(compatiblePreviewCacheRoot(), descriptor.ArtifactID+".mp4")
 	return descriptor, nil
 }
 
@@ -349,7 +355,7 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 	}
 	descriptor.CanonicalEncodeSignature = compatiblePreviewEncodeSignature(descriptor)
 	descriptor.ArtifactID = compatiblePreviewArtifactID(descriptor.CanonicalEncodeSignature, descriptor.RetentionPolicy, requestScope)
-	descriptor.CachePath = filepath.Join(os.TempDir(), "mvforge-preview-cache", descriptor.ArtifactID+".mp4")
+	descriptor.CachePath = filepath.Join(compatiblePreviewCacheRoot(), descriptor.ArtifactID+".mp4")
 	return descriptor, nil
 }
 
@@ -363,8 +369,22 @@ func (h AssetHandler) compatiblePreviewDescriptorForEntry(entry *compatiblePrevi
 	entry.mu.RLock()
 	input := entry.Request
 	descriptor := entry.Descriptor
+	recoveryState := entry.recoveryState
+	recoveryReason := entry.recoveryReason
+	db := entry.persistenceDB
 	entry.mu.RUnlock()
-	if descriptor != nil && descriptor.SourceRevision.matches(descriptor.Path) {
+	if recoveryState != "" {
+		return nil, compatiblePreviewLifecycleFailure(recoveryState, recoveryReason)
+	}
+	if descriptor != nil && descriptor.frozen {
+		if !descriptor.SourceRevision.matches(descriptor.Path) {
+			entry.mu.Lock()
+			entry.recoveryState = string(compatiblePreviewArtifactStale)
+			entry.recoveryReason = "source revision changed after preview preparation"
+			entry.mu.Unlock()
+			persistCompatiblePreviewRequestStale(db, requestScope, "source revision changed after preview preparation")
+			return nil, compatiblePreviewLifecycleFailure(string(compatiblePreviewArtifactStale), "source revision changed after preview preparation")
+		}
 		touchCompatiblePreviewArtifactScope(descriptor.ArtifactID, time.Now())
 		return descriptor, nil
 	}
@@ -373,6 +393,8 @@ func (h AssetHandler) compatiblePreviewDescriptorForEntry(entry *compatiblePrevi
 	if err != nil {
 		return nil, err
 	}
+	prepared.persistenceDB = db
+	prepared.requestID = requestScope
 	entry.mu.Lock()
 	entry.Descriptor = prepared
 	entry.mu.Unlock()
@@ -388,6 +410,14 @@ func writeCompatiblePreviewError(c *gin.Context, err error) {
 		c.JSON(http.StatusRequestTimeout, gin.H{
 			"error": "compatible preview generation canceled",
 			"code":  "canceled",
+		})
+		return
+	}
+	var lifecycleErr *compatiblePreviewLifecycleError
+	if errors.As(err, &lifecycleErr) {
+		c.JSON(lifecycleErr.Status, gin.H{
+			"error": lifecycleErr.Error(), "code": lifecycleErr.Code, "state": lifecycleErr.State,
+			"reason": lifecycleErr.Reason, "retryable": lifecycleErr.Retryable, "recreate": lifecycleErr.Recreate,
 		})
 		return
 	}
@@ -438,27 +468,32 @@ func compatiblePreviewArtifactID(signature string, policy compatiblePreviewReten
 type compatiblePreviewArtifactState string
 
 const (
-	compatiblePreviewArtifactAbsent     compatiblePreviewArtifactState = "absent"
-	compatiblePreviewArtifactGenerating compatiblePreviewArtifactState = "generating"
-	compatiblePreviewArtifactReady      compatiblePreviewArtifactState = "ready"
-	compatiblePreviewArtifactCanceled   compatiblePreviewArtifactState = "canceled"
-	compatiblePreviewArtifactFailed     compatiblePreviewArtifactState = "failed"
+	compatiblePreviewArtifactAbsent      compatiblePreviewArtifactState = "absent"
+	compatiblePreviewArtifactGenerating  compatiblePreviewArtifactState = "generating"
+	compatiblePreviewArtifactReady       compatiblePreviewArtifactState = "ready"
+	compatiblePreviewArtifactCanceled    compatiblePreviewArtifactState = "canceled"
+	compatiblePreviewArtifactFailed      compatiblePreviewArtifactState = "failed"
+	compatiblePreviewArtifactInterrupted compatiblePreviewArtifactState = "interrupted"
+	compatiblePreviewArtifactStale       compatiblePreviewArtifactState = "stale"
 )
 
 type compatiblePreviewArtifact struct {
-	mu              sync.Mutex
-	done            chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	state           compatiblePreviewArtifactState
-	err             error
-	waiters         int
-	cancelTimer     *time.Timer
-	destination     string
-	logPath         string
-	retentionPolicy compatiblePreviewRetentionPolicy
-	scopeExpiresAt  time.Time
-	lastUsedAt      time.Time
+	mu                sync.Mutex
+	done              chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
+	state             compatiblePreviewArtifactState
+	err               error
+	waiters           int
+	cancelTimer       *time.Timer
+	destination       string
+	logPath           string
+	retentionPolicy   compatiblePreviewRetentionPolicy
+	scopeExpiresAt    time.Time
+	lastUsedAt        time.Time
+	generationToken   string
+	generationVersion int64
+	persistenceDB     *gorm.DB
 }
 
 var compatiblePreviewArtifacts = struct {
@@ -599,7 +634,7 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 		generationErr = err
 		state = compatiblePreviewArtifactFailed
 	} else {
-		cleanupPreviewCache(directory, 24*time.Hour)
+		cleanupPreviewCache(directory, 24*time.Hour, entry.persistenceDB)
 		staging, err := os.CreateTemp(directory, ".mvforge-preview-*.partial")
 		if err != nil {
 			generationErr = err
@@ -651,11 +686,19 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 		}
 	}
 	if state == compatiblePreviewArtifactReady {
-		if info, err := os.Stat(destination); err != nil || info.Size() <= 0 {
+		if !compatiblePreviewPublishedArtifactValidForDescriptor(&compatiblePreviewDescriptor{ArtifactID: artifactIDFromDestination(destination), CachePath: destination, RetentionPolicy: entry.retentionPolicy, persistenceDB: entry.persistenceDB}) {
 			state = compatiblePreviewArtifactFailed
 			generationErr = boundedCompatiblePreviewError("", fmt.Errorf("published preview artifact is not usable"))
 		}
 	}
+	entry.mu.Lock()
+	token, version, persistenceDB := entry.generationToken, entry.generationVersion, entry.persistenceDB
+	entry.mu.Unlock()
+	if persistenceErr := persistCompatiblePreviewArtifactTransition(persistenceDB, artifactIDFromDestination(destination), token, version, state, compatiblePreviewErrorString(generationErr), time.Now()); persistenceErr != nil {
+		state = compatiblePreviewArtifactFailed
+		generationErr = fmt.Errorf("persist compatible preview generation state: %w", persistenceErr)
+	}
+	markCompatiblePreviewRequestsForArtifactRecovery(artifactIDFromDestination(destination), state, compatiblePreviewErrorString(generationErr))
 	entry.mu.Lock()
 	entry.state = state
 	entry.err = generationErr
@@ -674,13 +717,20 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 	}
 }
 
+func compatiblePreviewErrorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func artifactIDFromDestination(destination string) string {
 	base := filepath.Base(destination)
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 func newCompatiblePreviewArtifactEntry(descriptor *compatiblePreviewDescriptor, now time.Time, state compatiblePreviewArtifactState) *compatiblePreviewArtifact {
-	entry := &compatiblePreviewArtifact{done: make(chan struct{}), state: state, destination: descriptor.CachePath, logPath: descriptor.CachePath + ".encoder.log", retentionPolicy: descriptor.RetentionPolicy, scopeExpiresAt: now.Add(compatiblePreviewRequestRetention), lastUsedAt: now}
+	entry := &compatiblePreviewArtifact{done: make(chan struct{}), state: state, destination: descriptor.CachePath, logPath: descriptor.CachePath + ".encoder.log", retentionPolicy: descriptor.RetentionPolicy, scopeExpiresAt: now.Add(compatiblePreviewRequestRetention), lastUsedAt: now, generationToken: descriptor.GenerationToken, generationVersion: descriptor.GenerationVersion, persistenceDB: descriptor.persistenceDB}
 	if state == compatiblePreviewArtifactGenerating {
 		entry.ctx, entry.cancel = context.WithCancel(context.Background())
 		entry.waiters = 1
@@ -694,9 +744,8 @@ func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatibl
 	if descriptor == nil {
 		return false, nil, fmt.Errorf("compatible preview descriptor is required")
 	}
-	destination := descriptor.CachePath
 	now := time.Now()
-	if info, err := os.Stat(destination); err == nil && info.Size() > 0 {
+	if compatiblePreviewPublishedArtifactValidForDescriptor(descriptor) {
 		compatiblePreviewArtifacts.Lock()
 		entry := compatiblePreviewArtifacts.items[descriptor.ArtifactID]
 		if entry == nil {
@@ -758,6 +807,24 @@ func acquireCompatiblePreviewArtifact(ctx context.Context, descriptor *compatibl
 	}
 	compatiblePreviewArtifacts.Unlock()
 	if startGeneration {
+		token, version, persistErr := persistCompatiblePreviewArtifactGenerationStart(descriptor.persistenceDB, descriptor, now)
+		if persistErr != nil {
+			entry.mu.Lock()
+			entry.state = compatiblePreviewArtifactFailed
+			entry.err = persistErr
+			close(entry.done)
+			entry.mu.Unlock()
+			compatiblePreviewArtifacts.Lock()
+			if compatiblePreviewArtifacts.items[descriptor.ArtifactID] == entry {
+				delete(compatiblePreviewArtifacts.items, descriptor.ArtifactID)
+			}
+			compatiblePreviewArtifacts.Unlock()
+			return false, nil, persistErr
+		}
+		entry.mu.Lock()
+		entry.generationToken = token
+		entry.generationVersion = version
+		entry.mu.Unlock()
 		go runCompatiblePreviewGeneration(entry, descriptor.Args)
 	}
 

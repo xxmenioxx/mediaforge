@@ -22,6 +22,9 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatalf("migrate database: %v", err)
 	}
+	if err := handlers.ReconcileCompatiblePreviewPersistence(db); err != nil {
+		log.Fatalf("reconcile compatible preview persistence: %v", err)
+	}
 
 	if err := database.Seed(db); err != nil {
 		log.Fatalf("seed database: %v", err)

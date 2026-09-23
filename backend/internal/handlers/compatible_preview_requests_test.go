@@ -158,6 +158,7 @@ func TestCompatiblePreviewRequestNormalizesAndParsesQSVFeatureModes(t *testing.T
 func TestCompatiblePreviewRequestExpiresWithoutPersistentState(t *testing.T) {
 	compatiblePreviewRequests.Lock()
 	compatiblePreviewRequests.items = map[string]*compatiblePreviewRequestEntry{}
+	compatiblePreviewRequests.tombstones = map[string]compatiblePreviewRequestTombstone{}
 	compatiblePreviewRequests.Unlock()
 	now := time.Now()
 	id, _, err := storeCompatiblePreviewRequest(compatiblePreviewRequest{Path: "/media/raw/test.mkv"}, now)

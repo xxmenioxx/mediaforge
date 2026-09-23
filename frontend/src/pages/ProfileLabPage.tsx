@@ -45,6 +45,7 @@ import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiRequestError } from '../api/client';
+import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from '../api/compatible-preview-recovery';
 import type {
   AppSetting,
   Asset,
@@ -1360,7 +1361,13 @@ export function ProfileLabPage() {
       setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
       setProcessedVideoPreviewRequestId(inspection.conversionRequestId);
     },
-    onError: () => setVideoPreviewStatus('error'),
+    onError: (error) => {
+      if (error instanceof ApiRequestError && ['expired', 'unknown_request', 'stale_artifact', 'interrupted'].includes(error.code ?? error.state ?? '')) {
+        setProcessedReferencePreviewRequestId('');
+        setProcessedVideoPreviewRequestId('');
+      }
+      setVideoPreviewStatus('error');
+    },
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
   });
@@ -3205,8 +3212,24 @@ export function ProfileLabPage() {
                       {sampleEstimateOperation?.status === 'canceled' && sampleEstimateOperationMatchesCurrent ? <Alert severity="info">Sample estimate canceled.</Alert> : null}
                       {profileSampleEstimateOperation.isError && !(profileSampleEstimateOperation.error instanceof ApiRequestError && profileSampleEstimateOperation.error.status === 404) ? <Alert severity="warning">Sample estimate status is temporarily unavailable: {profileSampleEstimateOperation.error instanceof Error ? profileSampleEstimateOperation.error.message : 'network error'}</Alert> : null}
                       {fidelityInspection.isError && !isCanceledFidelityRequest(fidelityInspection.error) ? (
-                        <Alert severity="warning">
-                          Fidelity validation failed: {fidelityInspection.error instanceof Error ? fidelityInspection.error.message : 'unknown backend error'}
+                        <Alert
+                          severity="warning"
+                          action={isCompatiblePreviewRecoveryError(fidelityInspection.error) ? (
+                            <Button
+                              color="inherit"
+                              size="small"
+                              onClick={() => {
+                                if (fidelityInspection.error instanceof ApiRequestError && ['expired', 'unknown_request'].includes(fidelityInspection.error.code ?? '')) {
+                                  resetProcessedVideoPreview();
+                                }
+                                processVideoPreview();
+                              }}
+                            >
+                              Recreate preview
+                            </Button>
+                          ) : undefined}
+                        >
+                          {compatiblePreviewRecoveryMessage(fidelityInspection.error)}
                         </Alert>
                       ) : null}
                       <Collapse in={fidelityOpen}>
