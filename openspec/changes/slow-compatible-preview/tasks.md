@@ -1,26 +1,100 @@
-## 1. Backend lifecycle contract
+## 1. Backend lifecycle and HTTP contract
 
-- [ ] 1.1 Add typed Compatible Preview lifecycle/status, generating envelope, logical lease, and operational generation-timestamp contracts without changing request or artifact identity; verify the new API shapes cover idle, generating, ready, failed, canceled, interrupted, stale_artifact, expired, and unknown_request.
-- [ ] 1.2 Extend the existing durable/runtime artifact metadata with current-attempt start/finish observation fields, excluding those fields from canonical request and artifact identity; verify a progress/timestamp update leaves request IDs, artifact IDs, frozen snapshots, and cache paths unchanged.
-- [ ] 1.3 Split the existing artifact acquisition behavior into non-blocking begin/join plus bounded HTTP waiting, using a default 5-second resource wait budget while preserving #1's background generation context, waiter accounting, zero-consumer grace, atomic publication, and bounded diagnostics; verify a controlled encoder that does not complete within the budget returns generating without canceling validly owned work.
-- [ ] 1.4 Add the explicit start/renew and cancel lease operations with a 45-second lease, renewal-safe token handling, 15-second client renewal target, terminal release, expiry cleanup, and shared-artifact reference semantics; verify status-only observation does not add consumers or prevent zero-consumer cancellation and that canceling one shared owner does not kill another owner's generation.
-- [ ] 1.5 Add the status route as a read-only projection over #14 request/artifact recovery state and preserve #14's 200/202/409/410/404 meanings, bounded diagnostics, retry/recreate flags, and stale-versus-expired-versus-unknown distinctions; verify restart reconciliation reports interrupted and explicit recreate starts a new generation token/version.
-- [ ] 1.6 Update registered video, output-frame, inspection, and metrics resources to return the canonical 202 generating envelope with `Retry-After: 2` when the bounded wait ends, while ready/cache-hit behavior remains unchanged; verify no healthy generating response is serialized as 500, timeout, failed, or canceled.
-- [ ] 1.7 Adapt the legacy scalar Compatible Preview route to reuse the same canonical identity/artifact lifecycle and expose a followable generating response when applicable, without adding a parallel generation path; verify ready legacy media/JSON responses and slow legacy responses both share one encode.
-- [ ] 1.8 Keep FFmpeg invocation and bounded stderr capture free of a new arbitrary encode timeout and live `-progress` pipe in v1; verify the selected effective x265 encoder/preset remains unchanged and generating status omits untrusted percentage/speed/ETA fields.
+- [ ] 1.1 Add typed status/action envelopes and route contracts for `idle`,
+  `generating`, `ready`, `failed`, `canceled`, `interrupted`, `stale_artifact`,
+  `expired`, and `unknown_request`; verify `/status` uses the exact 200/410/404
+  projection while resource/start actions use 202/200/409/410/404.
+- [ ] 1.2 Add runtime-only `ownerId`/lease bookkeeping keyed by
+  `(requestId, ownerId)` with one active reference, 45-second expiry,
+  idempotent renewal, exactly-once cancel/expiry release, terminal cleanup, and
+  no persistence or restart restoration; verify the mapping does not affect
+  request IDs, artifact IDs, encode signatures, or frozen request data.
+- [ ] 1.3 Split artifact begin/join from bounded HTTP waiting while preserving
+  #1 single-flight, waiter accounting, zero-consumer grace, atomic publication,
+  and bounded diagnostics; use the 5-second resource wait only as a response
+  budget and never as an FFmpeg context deadline.
+- [ ] 1.4 Implement the atomic generating handoff: reuse a valid logical lease
+  or create one before releasing the final HTTP waiter, include lease/status/
+  renew/cancel identity in every followable `202`, and verify no zero-consumer
+  interval occurs between waiter release and logical ownership.
+- [ ] 1.5 Add the registered start/renew and cancel actions, including stable
+  frontend `ownerId` retry behavior, 15-second renewal target, `Retry-After: 2`,
+  shared-artifact references, idempotent repeated cancel, and zero-consumer
+  cancellation after the lease expires.
+- [ ] 1.6 Update registered video, output-frame, inspection, and metrics
+  resources to use the same handoff and envelope while preserving source-frame
+  behavior; verify ready/cache-hit behavior is immediate and healthy slow work
+  is never serialized as 500, timeout, failed, or canceled.
+- [ ] 1.7 Adapt the legacy scalar route to reuse registered identity, frozen
+  descriptor, single-flight artifact, and logical lease when non-ephemeral;
+  verify slow followable calls return the canonical 202 and unsupported
+  ephemeral calls return the explicit `legacy_non_followable` limitation rather
+  than a doomed 202.
+- [ ] 1.8 Project #14 restart, retry, stale, expired, unknown, and terminal
+  states without a second lifecycle engine; verify persisted generating work
+  without a final artifact becomes interrupted, explicit retry creates a new
+  token/version, and `/status` does not silently retry actions.
+- [ ] 1.9 Add generation start/finish observation fields and bounded status
+  metadata without changing identity or cache semantics; retain effective
+  x265 `slow`/`veryslow` selection, avoid a short encode timeout, and omit a
+  `-progress` pipe and fake progress fields in v1.
 
 ## 2. Frontend transport and Compatible Preview UX
 
-- [ ] 2.1 Add frontend types and API methods for start/renew, status, cancel, 202 JSON envelopes, lease expiry, and the existing #14 recovery errors; verify credentialless requests preserve machine-readable code/state/retryable/recreate fields.
-- [ ] 2.2 Update Profile Lab Compatible Preview orchestration to create requests without encoding, explicitly start/renew each owned request, poll status at 1 second then 2 seconds capped at 5 seconds, and stop on ready or every terminal/recovery/cancel/unmount condition; verify a multi-poll generating-to-ready flow performs one encode and releases its lease.
-- [ ] 2.3 Add bounded transport backoff up to 15 seconds for temporary status/renewal failures and preserve a reconnecting/generating state; verify transient network failures do not show Preview failed, issue sub-second polling, or implicitly cancel backend generation.
-- [ ] 2.4 Replace whole-video Compatible Preview Blob fetching with ready-gated native video URLs and retain native image URLs for frames; verify no media fetch occurs before readiness, no complete video Blob is created, credentialless/cross-origin behavior remains, and the native resource remains Range/seek capable.
-- [ ] 2.5 Wire existing Profile Lab cancel/unmount/reset paths to release backend logical leases as well as abort local polling, and display backend-provided encoder, preset, elapsed time, and a presentation-only slow message after 30 seconds; verify explicit cancel stops that UI's ownership without converting a shared artifact into a process-level kill.
-- [ ] 2.6 Handle a resource/status race that returns 202 after the UI observed generating by re-reading status and retrying within the bounded policy; verify JSON generating envelopes are never installed as video/image media or converted into generic decode failures.
+- [ ] 2.1 Add API types and methods for stable `ownerId`, start/renew, status,
+  cancel, 202 envelopes, lease expiry, and #14 recovery errors; verify every
+  controllable API/status/start/cancel/polling fetch explicitly uses
+  `credentials: omit`.
+- [ ] 2.2 Update Profile Lab and other Compatible Preview surfaces to create
+  without encoding, start/renew one logical owner, poll at about 1s then 2s
+  capped at 5s, stop on all terminal/recovery conditions, and release on
+  ready/cancel/unmount/expiry; verify a generating-to-ready flow performs one
+  encode and does not let status polling own it.
+- [ ] 2.3 Add bounded transport backoff capped at 15 seconds and presentation
+  of generic generating/slow status after 30 seconds; verify temporary network
+  failures do not show Preview failed, issue aggressive polling, or cancel
+  backend generation.
+- [ ] 2.4 Replace whole-video Compatible Preview Blob fetching with ready-gated
+  native video URLs and native frame URLs; preserve Range/seek behavior and
+  `crossOrigin="anonymous"` where applicable, while explicitly documenting
+  that native browser media is not guaranteed `credentials: omit`.
+- [ ] 2.5 Preserve #13 defenses and documentation: verify backend
+  `stripInboundCookies()` remains in the media path, removes Cookie while
+  preserving Range/unrelated headers, and logging does not expose Cookie or
+  Authorization; do not change media authorization or CORS policy.
+- [ ] 2.6 Handle native media readiness races by rereading canonical status,
+  retrying a ready attachment only within a small fixed bound, resuming polling
+  for generating, and using normal recovery for terminal states; verify media
+  element errors are not all reported as encoder failure and cannot create an
+  infinite retry loop.
 
 ## 3. Deterministic verification coverage
 
-- [ ] 3.1 Add backend controlled-encoder/barrier tests for slow libx265-like generation, eventual ready, genuine FFmpeg failure, explicit cancel, shared consumers, zero consumers, status observers, disconnected waiters, and no arbitrary encode timeout; verify all tests use channels/barriers or injected completion signals rather than multi-second lifecycle sleeps.
-- [ ] 3.2 Add backend route/persistence tests for video, frame, inspect, metrics, status, start/renew, cancel, cache hit, legacy adapter, interrupted restart, stale/expired/unknown recovery, explicit retry/new token, bounded diagnostics, and operational metadata exclusion from identity; verify the complete HTTP/lifecycle matrix from the spec.
-- [ ] 3.3 Add frontend API and Profile Lab tests for 202 transport, polling/backoff stop conditions, lease renewal/cancel, slow wording, network recovery, no Blob download, ready-gated native media, and terminal recovery messaging; verify existing request-ID and credentialless transport behavior remains covered.
-- [ ] 3.4 Run focused changed-area tests, then `openspec validate slow-compatible-preview --type change --strict` and `./scripts/verify.sh --auto`; verify the repository reports `ALL CHECKS PASSED` and no production behavior is claimed until implementation validation is complete.
+- [ ] 3.1 Add controlled-encoder/barrier tests for slow x265-like generation,
+  resource 202 ownership handoff, existing-lease reuse, unrenewed expiry,
+  eventual ready, genuine failure, explicit cancel, repeated cancel, shared
+  consumers, zero consumers, status observers, disconnected waiters, and no
+  arbitrary encode timeout; use channels/barriers or injected signals rather
+  than multi-second lifecycle sleeps.
+- [ ] 3.2 Add route tests for the exact `/status` matrix and separate resource/
+  start/cancel matrix, including idle, generating, ready, failed, canceled,
+  interrupted, stale, expired, and unknown; verify bounded diagnostic and
+  retry/recreate fields remain distinct.
+- [ ] 3.3 Add backend tests for lost initial `start(ownerId)` response,
+  idempotent acquire/renew/cancel/expiry, terminal lease cleanup, shared
+  artifact ownership, restart/interrupted recovery, explicit retry/new token,
+  cache hits, operational metadata exclusion from identity, and legacy
+  followable/non-followable behavior.
+- [ ] 3.4 Add frontend/API tests for 202 transport, lease renewal/cancel,
+  polling/backoff stop conditions, slow wording, no Blob download,
+  ready-gated native media, native readiness-race recovery, and terminal UI;
+  verify controllable fetch credentials, native cookie limitation wording,
+  `crossOrigin`, and no false credentialless claim.
+- [ ] 3.5 Add focused middleware/media tests that preserve Cookie stripping,
+  Range forwarding, unrelated-header behavior, and Cookie/Authorization log
+  redaction; retain explicit x265/NAS metadata coverage without promising fake
+  progress.
+- [ ] 3.6 Run focused changed-area tests, then
+  `openspec validate slow-compatible-preview --type change --strict` and
+  `./scripts/verify.sh --auto`; verify `ALL CHECKS PASSED` before any future
+  implementation task is presented as complete.
