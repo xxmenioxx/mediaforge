@@ -25,6 +25,11 @@ ownership established by #1 and merged #14.
   idempotent initial ownership, explicit release/cancel behavior, renewal, and
   expiry. Status observation does not itself add an artifact consumer or keep
   abandoned work alive.
+- Make cancellation idempotent for a previously valid lease: the first cancel
+  returns `leaseReleased=true`, repeats return HTTP 200 with
+  `leaseReleased=false`, and neither can release another owner. Never-valid or
+  incorrectly bound tokens use `invalid_lease`; known lease expiry uses
+  `lease_expired`; request tombstone expiry remains #14's HTTP 410 `expired`.
 - Route non-ephemeral legacy scalar preview calls through the same registered
   request and lease contract. A legacy call that cannot expose a followable
   identity must return an explicit compatibility limitation, never a doomed
@@ -90,3 +95,8 @@ existing subprocess path can expose it safely.
   required for the non-blocking path.
 - Focused backend/frontend tests and OpenSpec validation only. No production
   implementation is part of this design-only change.
+- Before production implementation, synchronize the implementation branch with
+  current `origin/main` at `d05a86b5af8e9c74365e4f36c96e5500fbeeb1c4` using a
+  safe merge or a fresh v2 branch from main. The implementation branch must be
+  zero commits behind main and retain merged #3 Frame Fidelity/Profile LAB
+  changes; this published planning branch is not rewritten.
