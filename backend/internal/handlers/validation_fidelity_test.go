@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,7 +103,7 @@ func TestCanonicalFrameFidelitySoftwareTenBitKeepsExactObservableFormat(t *testi
 }
 
 func TestCanonicalFrameFidelityOptionalChromaEvidenceDoesNotPoisonAggregate(t *testing.T) {
-	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p"}}
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p", "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true}}
 	source := fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive")
 	output := fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive")
 	delete(source["streams"].([]interface{})[0].(map[string]any), "chroma_location")
@@ -140,19 +141,164 @@ func TestCanonicalFrameFidelityRFrameRateAloneIsUnverified(t *testing.T) {
 }
 
 func TestCanonicalFrameFidelityFilterTextCannotOverrideFrozenGeometry(t *testing.T) {
-	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"videoFilters": "scale=1280:720,fps=24000/1001"}}
-	output := fidelityFrameProbe("h264", "yuv420p", "24000/1001", "progressive")
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p", "videoFilters": "scale=1280:720,fps=24000/1001", "effectiveOutputFrameRate": "30000/1001", "effectiveOutputProgressive": true}}
+	output := fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive")
 	output["streams"].([]interface{})[0].(map[string]any)["width"] = 1280
 	output["streams"].([]interface{})[0].(map[string]any)["height"] = 720
 	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "30000/1001", "progressive"), output, nil)
-	if report["fields"].(models.JSONMap)["width"].(models.JSONMap)["status"] != "mismatch" {
-		t.Fatalf("filter text incorrectly became geometry authority: %#v", report)
+	fields := report["fields"].(models.JSONMap)
+	for _, name := range []string{"width", "height", "sampleAspectRatio", "displayAspectRatio", "frameSize"} {
+		field := fields[name].(models.JSONMap)
+		if field["status"] != "not_applicable" {
+			t.Fatalf("filter text or source invented geometry authority for %s: %#v", name, field)
+		}
+		if name == "frameSize" {
+			expected := field["expected"].(models.JSONMap)
+			if expected["width"] != nil || expected["height"] != nil {
+				t.Fatalf("filter text or source invented composite geometry authority: %#v", field)
+			}
+		} else if field["expected"] != nil {
+			t.Fatalf("filter text or source invented geometry authority for %s: %#v", name, field)
+		}
+	}
+	if report["status"] != "passed" {
+		t.Fatalf("unresolved filter-only geometry poisoned otherwise valid fields: %#v", report)
+	}
+}
+
+func TestCanonicalFrameFidelityExplicitGeometryPreserveUsesSource(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "cadenceMode": "preserve",
+		"resolvedUpscaleDecision": ResolvedUpscaleDecision{
+			RequestedMode: UpscaleModeAuto, ResolvedMode: ResolvedUpscaleKeepSource,
+			SourceWidth: 720, SourceHeight: 480, SourceSAR: "32:27", SourceDAR: "16:9",
+			TargetWidth: 720, TargetHeight: 480, TargetSAR: "32:27", UpscaleApplied: false,
+		},
+	}}
+	source := fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive")
+	report := runCanonicalFidelity(t, profile, source, fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), nil)
+	fields := report["fields"].(models.JSONMap)
+	if report["status"] != "passed" || fields["width"].(models.JSONMap)["status"] != "passed" || fields["width"].(models.JSONMap)["authorityState"] != "preserve" {
+		t.Fatalf("explicit geometry preserve was not honored: %#v", report)
+	}
+}
+
+func TestCanonicalFrameFidelityMissingFPSAuthorityDoesNotPreserveSource(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p", "effectiveOutputProgressive": true}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "30000/1001", "tt"), fidelityFrameProbe("h264", "yuv420p", "24000/1001", "progressive"), nil)
+	field := report["fields"].(models.JSONMap)["frameRate"].(models.JSONMap)
+	if report["status"] != "unverified" || field["status"] != "unverified" || field["expected"] != nil {
+		t.Fatalf("missing FPS authority silently preserved source FPS: %#v", field)
+	}
+}
+
+func TestCanonicalFrameFidelityCadencePreserveUsesSourceFPS(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p", "cadenceMode": "preserve"}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), nil)
+	field := report["fields"].(models.JSONMap)["frameRate"].(models.JSONMap)
+	if field["status"] != "passed" || field["expected"] != "30000/1001" || field["authorityState"] != "preserve" {
+		t.Fatalf("explicit cadence preserve did not authorize source FPS: %#v", field)
+	}
+}
+
+func TestCanonicalFrameFidelityUnknownCadenceIsUnverified(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
+		"pixFmt": "yuv420p", "effectiveOutputFrameRateUnknown": true, "effectiveOutputProgressive": true,
+	}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), fidelityFrameProbe("h264", "yuv420p", "30000/1001", "progressive"), nil)
+	field := report["fields"].(models.JSONMap)["frameRate"].(models.JSONMap)
+	if report["status"] != "unverified" || field["status"] != "unverified" || field["expected"] != nil {
+		t.Fatalf("unknown cadence became an implicit preserve: %#v", field)
+	}
+}
+
+func TestCanonicalFrameFidelityProgressiveKnownnessIsNotDefaulted(t *testing.T) {
+	tests := []struct {
+		name       string
+		worker     models.JSONMap
+		fieldOrder string
+		want       string
+	}{
+		{name: "explicit true", worker: models.JSONMap{"effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true, "pixFmt": "yuv420p"}, fieldOrder: "progressive", want: "passed"},
+		{name: "explicit false", worker: models.JSONMap{"effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": false, "pixFmt": "yuv420p"}, fieldOrder: "tt", want: "passed"},
+		{name: "absent", worker: models.JSONMap{"effectiveOutputFrameRate": "24/1", "pixFmt": "yuv420p"}, fieldOrder: "progressive", want: "unverified"},
+		{name: "unreliable", worker: models.JSONMap{"effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true, "effectiveOutputProgressiveUnreliable": true, "pixFmt": "yuv420p"}, fieldOrder: "progressive", want: "unverified"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{VideoCodec: "h264", WorkerConfig: test.worker}
+			source := fidelityFrameProbe("h264", "yuv420p", "24/1", test.fieldOrder)
+			report := runCanonicalFidelity(t, profile, source, fidelityFrameProbe("h264", "yuv420p", "24/1", test.fieldOrder), nil)
+			field := report["fields"].(models.JSONMap)["fieldStructure"].(models.JSONMap)
+			if field["status"] != test.want {
+				t.Fatalf("progressive knownness was collapsed: %#v", field)
+			}
+		})
+	}
+}
+
+func TestCanonicalFrameFidelityPixelAuthorityAbsenceDoesNotPreserveSource(t *testing.T) {
+	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive"), fidelityFrameProbe("h264", "yuv420p10le", "24/1", "progressive"), nil)
+	fields := report["fields"].(models.JSONMap)
+	for _, name := range []string{"pixelFormat", "bitDepth"} {
+		field := fields[name].(models.JSONMap)
+		if field["status"] != "not_applicable" || field["expected"] != nil {
+			t.Fatalf("source pixel semantics became an implicit expectation for %s: %#v", name, field)
+		}
+	}
+}
+
+func TestCanonicalFrameFidelityExplicitPixelPreserveUsesSourceSemantics(t *testing.T) {
+	profile := models.Profile{VideoCodec: "copy", WorkerConfig: models.JSONMap{"cadenceMode": "preserve"}}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive"), fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive"), nil)
+	fields := report["fields"].(models.JSONMap)
+	if fields["pixelFormat"].(models.JSONMap)["status"] != "passed" || fields["bitDepth"].(models.JSONMap)["status"] != "passed" {
+		t.Fatalf("explicit pixel preserve did not compare source semantics: %#v", fields)
+	}
+}
+
+func TestCanonicalFrameFidelityHEVCCodecAliasesUseFrozenLevelTier(t *testing.T) {
+	for _, codec := range []string{"x265", "x265_10bit", "hevc", "hevc_10bit"} {
+		t.Run(codec, func(t *testing.T) {
+			tenBit := strings.Contains(codec, "10bit")
+			pixel := "yuv420p"
+			profileName := "Main"
+			if tenBit {
+				pixel, profileName = "yuv420p10le", "Main 10"
+			}
+			profile := models.Profile{VideoCodec: codec, WorkerConfig: models.JSONMap{
+				"videoEncoder": "libx265", "pixFmt": pixel, "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true,
+				"hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+			}}
+			output := fidelityFrameProbe("hevc", pixel, "24/1", "progressive")
+			output["streams"].([]interface{})[0].(map[string]any)["profile"] = profileName
+			report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "24/1", "progressive"), output, testHEVCBitstreamEvidence("4.0", "main"))
+			fields := report["fields"].(models.JSONMap)
+			if fields["hevcLevel"].(models.JSONMap)["status"] == "not_applicable" || fields["hevcTier"].(models.JSONMap)["status"] == "not_applicable" {
+				t.Fatalf("%s was not recognized as HEVC: %#v", codec, fields)
+			}
+		})
+	}
+}
+
+func TestCanonicalFrameFidelityX265TenBitQSVUsesMain10Semantics(t *testing.T) {
+	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true,
+		"hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+	}}
+	output := fidelityFrameProbe("hevc", "yuv420p10le", "24/1", "progressive")
+	output["streams"].([]interface{})[0].(map[string]any)["profile"] = "Main 10"
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "24/1", "progressive"), output, testHEVCBitstreamEvidence("4.0", "main"))
+	fields := report["fields"].(models.JSONMap)
+	if report["status"] != "passed" || fields["pixelFormat"].(models.JSONMap)["status"] != "passed" || fields["bitDepth"].(models.JSONMap)["status"] != "passed" {
+		t.Fatalf("x265_10bit QSV Main10 semantics were not accepted: %#v", report)
 	}
 }
 
 func TestCanonicalFrameFidelitySmartUpscaleUsesResolvedGeometry(t *testing.T) {
 	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
-		"pixFmt": "yuv420p", "effectiveOutputProgressive": true,
+		"pixFmt": "yuv420p", "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true,
 		"resolvedUpscaleDecision": ResolvedUpscaleDecision{
 			RequestedMode: UpscaleMode720p, ResolvedMode: ResolvedUpscale720p,
 			SourceWidth: 720, SourceHeight: 480, SourceSAR: "32:27", SourceDAR: "16:9",
@@ -172,7 +318,7 @@ func TestCanonicalFrameFidelitySmartUpscaleUsesResolvedGeometry(t *testing.T) {
 
 func TestCanonicalFrameFidelityRestorationUsesResolvedOutputGeometry(t *testing.T) {
 	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{
-		"pixFmt": "yuv420p", "effectiveOutputProgressive": true,
+		"pixFmt": "yuv420p", "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true,
 		"resolvedRestorationPlan": ResolvedRestorationPlan{
 			Version:             1,
 			SourceStorage:       RestorationGeometry{Width: 720, Height: 480, SAR: "32:27", DAR: "16:9"},
@@ -241,7 +387,7 @@ func TestCanonicalFrameFidelityQueueSnapshotIgnoresLaterProfileMutation(t *testi
 }
 
 func TestCanonicalFrameFidelityPreservesChromaLocation(t *testing.T) {
-	profile := models.Profile{VideoCodec: "h264", WorkerConfig: models.JSONMap{"pixFmt": "yuv420p"}}
+	profile := models.Profile{VideoCodec: "copy", WorkerConfig: models.JSONMap{"cadenceMode": "preserve"}}
 	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive"), fidelityFrameProbe("h264", "yuv420p", "24/1", "progressive"), nil)
 	field := report["fields"].(models.JSONMap)["chromaLocation"].(models.JSONMap)
 	if field["status"] != "passed" || field["source"] != "left" || field["actual"] != "left" {
