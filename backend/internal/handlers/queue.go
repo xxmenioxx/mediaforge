@@ -2124,6 +2124,7 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 		return nil
 	}
 	var scan models.ScanResult
+	currentRevision, currentRevisionErr := sourceRevisionForPath(path)
 	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
 		h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error == nil
 	if haveScan {
@@ -2139,6 +2140,37 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 		if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
+		var plan SamplingPlan
+		if currentRevisionErr == nil {
+			plan, _ = samplingPlanFromPersistedScan(scan, path, currentRevision, scan.Duration, frameStructureSamplingPolicy(h.db), nil, samplingPlanPolicyVersion)
+		} else {
+			plan = resolveCanonicalSamplingPlan(SamplingPlanInput{
+				BasePlan:             canonicalSamplingPlan(0, frameStructureSamplingPolicy(h.db)),
+				SourceFingerprint:    filepath.Clean(path),
+				SourceRevision:       filepath.Clean(path),
+				SourceStreamIdentity: "0:v:0",
+				PolicyVersion:        samplingPlanPolicyVersion,
+				Evidence:             samplingStaleScanEvidence(scan),
+				FallbackKind:         samplingFallbackDistributed,
+				FallbackReason:       "source_identity_unavailable",
+			})
+		}
+		snapshot["samplingPlan"] = samplingPlanMap(plan)
+		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
+	} else if strings.TrimSpace(path) != "" {
+		fingerprint := filepath.Clean(path)
+		if currentRevisionErr == nil {
+			fingerprint = samplingSourceIdentity(path, currentRevision)
+		}
+		plan := resolveCanonicalSamplingPlan(SamplingPlanInput{
+			BasePlan:             canonicalSamplingPlan(0, frameStructureSamplingPolicy(h.db)),
+			SourceFingerprint:    fingerprint,
+			SourceRevision:       fingerprint,
+			SourceStreamIdentity: "0:v:0",
+			PolicyVersion:        samplingPlanPolicyVersion,
+		})
+		snapshot["samplingPlan"] = samplingPlanMap(plan)
+		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
 	}
 	return h.freezeResolvedRestorationSnapshot(snapshot, scan, path)
 }

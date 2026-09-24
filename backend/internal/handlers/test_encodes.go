@@ -144,6 +144,14 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		return
 	}
 	start, duration := resolveTestEncodeWindow(h.db, resolved.job.MediaPath, input.StartMode, input.StartSeconds, input.DurationSeconds)
+	plan := h.samplingPlanForFrozenWindow(
+		resolved.job.MediaPath, fingerprint, fingerprint, float64(duration), float64(start), float64(duration), samplingPlanPolicyVersion,
+	)
+	if resolved.requested == nil {
+		resolved.requested = models.JSONMap{}
+	}
+	resolved.requested["samplingPlan"] = samplingPlanMap(plan)
+	resolved.requested["samplingPlanIdentity"] = plan.PlanIdentity
 	now := time.Now()
 	modified := info.ModTime()
 	expires := now.Add(time.Duration(testEncodeRetentionHours(h.db)) * time.Hour)
@@ -692,6 +700,16 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		outputTiming = measured
 	}
 	report := testEncodeValidationReportWithTiming(plan, streams, test.DurationSeconds, sourceTiming, outputTiming)
+	if frozen, ok := samplingMap(test.RequestedConfiguration["samplingPlan"]); ok {
+		if samplingPlan, planOK := samplingPlanFromMap(frozen); planOK {
+			// Selection provenance is frozen with the Test Encode request and is
+			// reported separately from the output validation verdict.
+			report["samplingPlanIdentity"] = samplingPlan.PlanIdentity
+			report["samplingPolicyVersion"] = samplingPlan.PolicyVersion
+			report["samplingWindows"] = samplingPlan.SelectedWindows
+			report["samplingFallback"] = samplingPlan.Fallback
+		}
+	}
 	completed := time.Now()
 	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Updates(map[string]any{
 		"status": testEncodeReady, "phase": "ready", "progress": 100, "completed_at": &completed,

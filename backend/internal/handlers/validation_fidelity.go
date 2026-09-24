@@ -50,7 +50,16 @@ type canonicalFidelitySource struct {
 // immutable Queue authority. Preview and Test Encode can call
 // evaluateCanonicalFidelity directly with their final effective profile.
 func validateJobFrameFidelity(db *gorm.DB, job models.QueueJob, sourceProbe, outputProbe map[string]any, hevcEvidence models.JSONMap, specialized ...models.JSONMap) models.JSONMap {
-	return evaluateCanonicalFidelity(resolveFidelityAuthority(db, job), sourceProbe, outputProbe, hevcEvidence, specialized...)
+	report := evaluateCanonicalFidelity(resolveFidelityAuthority(db, job), sourceProbe, outputProbe, hevcEvidence, specialized...)
+	if plan, ok := samplingPlanFromQueueJob(job); ok {
+		// Sampling provenance is descriptive selection evidence. It must not alter
+		// the canonical Frame Fidelity authority or its verdict.
+		report["samplingPlanIdentity"] = plan.PlanIdentity
+		report["samplingPolicyVersion"] = plan.PolicyVersion
+		report["samplingWindows"] = plan.SelectedWindows
+		report["samplingFallback"] = plan.Fallback
+	}
+	return report
 }
 
 // evaluateCanonicalFidelity is the shared surface-neutral evaluator. Its

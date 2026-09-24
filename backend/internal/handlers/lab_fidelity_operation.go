@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ type LabFidelityOperation struct {
 	MaterialSignature          string         `json:"materialSignature,omitempty"`
 	ClientCorrelationSignature string         `json:"clientCorrelationSignature,omitempty"`
 	SamplingPolicyVersion      string         `json:"samplingPolicyVersion,omitempty"`
+	SamplingPlanIdentity       string         `json:"samplingPlanIdentity,omitempty"`
 	SamplingPolicy             models.JSONMap `json:"samplingPolicy,omitempty"`
 	samplingPlan               SamplingPlan
 	CompletedWindows           int              `json:"completedWindows"`
@@ -119,13 +121,32 @@ func labFidelityMaterialSignature(descriptor *compatiblePreviewDescriptor, plan 
 }
 
 func labFidelitySamplingPolicyMap(plan SamplingPlan) models.JSONMap {
-	return models.JSONMap{
-		"version": labFidelitySamplingPolicyVersion, "assetDurationSeconds": plan.AssetDurationSeconds,
-		"windowSeconds": plan.WindowSeconds, "positions": plan.Positions, "adaptive": plan.Adaptive,
-		"initialWindows": plan.InitialWindows, "earlyConfidenceEnabled": plan.EarlyConfidenceEnabled,
-		"earlyConfidenceThreshold": plan.EarlyConfidenceThreshold, "interlaceValidation": plan.InterlaceValidation,
-		"cropDepth": plan.CropDepth,
+	result := models.JSONMap(samplingPlanMap(plan))
+	result["version"] = labFidelitySamplingPolicyVersion
+	result["planVersion"] = plan.PolicyVersion
+	result["planIdentity"] = plan.PlanIdentity
+	return result
+}
+
+func (h AssetHandler) labSamplingPlan(path string, duration float64, revision compatiblePreviewSourceRevision, primary SamplingWindow) SamplingPlan {
+	policy := frameStructureSamplingPolicy(h.db)
+	if h.db != nil && h.db.Migrator().HasTable(&models.ScanResult{}) {
+		var scan models.ScanResult
+		if h.db.Where("path = ?", filepath.Clean(path)).Order("updated_at desc, id desc").First(&scan).Error == nil {
+			plan, _ := samplingPlanFromPersistedScan(scan, path, revision, duration, policy, &primary, labFidelitySamplingPolicyVersion)
+			return plan
+		}
 	}
+	base := canonicalSamplingPlan(duration, policy)
+	sourceIdentity := samplingSourceIdentity(path, revision)
+	return resolveCanonicalSamplingPlan(SamplingPlanInput{
+		BasePlan:             base,
+		SourceFingerprint:    sourceIdentity,
+		SourceRevision:       sourceIdentity,
+		SourceStreamIdentity: "0:v:0",
+		PolicyVersion:        labFidelitySamplingPolicyVersion,
+		Primary:              &primary,
+	})
 }
 
 type labFidelityOperationStore struct {
@@ -143,10 +164,14 @@ var labFidelitySequence atomic.Uint64
 var labFidelityHeavySlot = make(chan struct{}, 1)
 
 type labFidelityWindowPlan struct {
-	Position float64
-	Start    float64
-	Duration float64
-	Primary  bool
+	Position     float64
+	Start        float64
+	Duration     float64
+	Primary      bool
+	Identity     string
+	Roles        []string
+	Reasons      []string
+	EvidenceRefs []string
 }
 
 type labPreviewArtifactEvidence struct {
@@ -388,7 +413,13 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 	if duration <= 0 {
 		duration = float64(previewTimestampSeconds(descriptor.Start) + max(1, descriptor.Seconds))
 	}
-	plan := canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
+	primaryWindow := SamplingWindow{
+		Position:        primaryPosition(float64(previewTimestampSeconds(descriptor.Start)), float64(max(1, descriptor.Seconds)), duration),
+		StartSeconds:    float64(previewTimestampSeconds(descriptor.Start)),
+		DurationSeconds: float64(max(1, descriptor.Seconds)),
+		Primary:         true,
+	}
+	plan := h.labSamplingPlan(descriptor.Path, duration, descriptor.SourceRevision, primaryWindow)
 	clientCorrelation := strings.TrimSpace(input.ClientCorrelationSignature)
 	if clientCorrelation == "" {
 		// Accept the pre-hardening field for wire compatibility, but never use
@@ -415,7 +446,8 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 		Normalization: labNormalizationMap(descriptor.Normalization), FrozenPlan: descriptor.ResolvedVideoDecision,
 		PlanSignature: descriptor.CanonicalEncodeSignature, MaterialSignature: materialSignature,
 		ClientCorrelationSignature: clientCorrelation, SamplingPolicyVersion: labFidelitySamplingPolicyVersion,
-		SamplingPolicy: labFidelitySamplingPolicyMap(plan), samplingPlan: plan,
+		SamplingPlanIdentity: plan.PlanIdentity,
+		SamplingPolicy:       labFidelitySamplingPolicyMap(plan), samplingPlan: plan,
 		TotalWindows: len(labFidelityWindowPlans(float64(previewTimestampSeconds(descriptor.Start)), float64(max(1, descriptor.Seconds)), duration, plan)),
 		CreatedAt:    now, UpdatedAt: now,
 	}
@@ -522,6 +554,7 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 		operation.TotalWindows = len(windows)
 		operation.SamplingPolicy = labFidelitySamplingPolicyMap(plan)
 		operation.SamplingPolicyVersion = labFidelitySamplingPolicyVersion
+		operation.SamplingPlanIdentity = plan.PlanIdentity
 	})
 
 	completed := make([]models.JSONMap, 0, len(windows))
@@ -611,6 +644,8 @@ func (h AssetHandler) collectLabFidelityWindow(ctx context.Context, descriptor *
 	canonical := labEvaluateCanonicalFidelity(descriptor, evidence)
 	return models.JSONMap{
 		"position": window.Position, "startSeconds": window.Start, "durationSeconds": window.Duration,
+		"windowIdentity": window.Identity, "primary": window.Primary,
+		"roles": window.Roles, "reasons": window.Reasons, "evidenceRefs": window.EvidenceRefs,
 		"source": evidence.Source, "output": evidence.Output, "metrics": metrics,
 		"sourceFrameStructure": evidence.SourceFrames, "outputFrameStructure": evidence.OutputFrames,
 		"hevcBitstreamEvidence": evidence.HEVC,
@@ -639,7 +674,47 @@ func labFidelityAdditionalWindowRequest(descriptor *compatiblePreviewDescriptor,
 
 func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, plan SamplingPlan) []labFidelityWindowPlan {
 	primaryEnd := primaryStart + primaryDuration
-	result := []labFidelityWindowPlan{{Position: primaryPosition(primaryStart, primaryDuration, duration), Start: primaryStart, Duration: primaryDuration, Primary: true}}
+	primaryPlan := labFidelityWindowPlan{Position: primaryPosition(primaryStart, primaryDuration, duration), Start: primaryStart, Duration: primaryDuration, Primary: true}
+	result := []labFidelityWindowPlan{primaryPlan}
+	if len(plan.SelectedWindows) > 0 {
+		for _, selected := range plan.SelectedWindows {
+			if !selected.Primary && samplingWindowsEquivalent(SamplingWindow{StartSeconds: primaryStart, DurationSeconds: primaryDuration}, selected, 1.0/30.0) {
+				continue
+			}
+			if selected.Primary {
+				result[0].Identity = selected.Identity
+				result[0].Roles = append([]string(nil), selected.Roles...)
+				result[0].Reasons = append([]string(nil), selected.Reasons...)
+				result[0].EvidenceRefs = append([]string(nil), selected.EvidenceRefs...)
+				continue
+			}
+			windowDuration := float64(boundedPreviewSeconds(strconv.Itoa(int(math.Round(selected.DurationSeconds)))))
+			start := math.Floor(selected.StartSeconds)
+			end := start + windowDuration
+			if math.Abs(start-primaryStart) <= 1.0/30.0 && math.Abs(end-primaryEnd) <= 1.0/30.0 {
+				continue
+			}
+			duplicate := false
+			for _, existing := range result {
+				if math.Abs(existing.Start-start) <= 1.0/30.0 && math.Abs(existing.Start+existing.Duration-end) <= 1.0/30.0 {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			result = append(result, labFidelityWindowPlan{
+				Position: selected.Position, Start: start, Duration: windowDuration,
+				Identity: selected.Identity, Roles: append([]string(nil), selected.Roles...),
+				Reasons: append([]string(nil), selected.Reasons...), EvidenceRefs: append([]string(nil), selected.EvidenceRefs...),
+			})
+			if plan.Limits.MaximumWindows > 0 && len(result) >= plan.Limits.MaximumWindows {
+				break
+			}
+		}
+		return result
+	}
 	tolerance := 1.0 / 30.0
 	for _, position := range plan.Positions {
 		windowDuration := math.Min(plan.WindowSeconds, duration)
@@ -661,6 +736,9 @@ func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, pla
 		}
 		if !duplicate {
 			result = append(result, labFidelityWindowPlan{Position: position, Start: start, Duration: windowDuration})
+			if plan.Limits.MaximumWindows > 0 && len(result) >= plan.Limits.MaximumWindows {
+				break
+			}
 		}
 	}
 	return result
@@ -757,9 +835,10 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 		"metrics": first["metrics"], "referenceRequestId": input.ReferenceRequestID, "conversionRequestId": descriptor.requestID,
 		"canonicalFidelity": canonicalSummary, "hevcBitstreamEvidence": first["hevcBitstreamEvidence"],
 		"fidelityWindows": windows, "canonicalStatus": canonicalStatus, "aggregateStatus": status,
-		"visualAggregate": visualAggregate,
-		"samplingPolicy":  models.JSONMap{"windowSeconds": plan.WindowSeconds, "positions": plan.Positions},
-		"completedAt":     map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
+		"visualAggregate":      visualAggregate,
+		"samplingPolicy":       labFidelitySamplingPolicyMap(plan),
+		"samplingPlanIdentity": plan.PlanIdentity,
+		"completedAt":          map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
 	}
 	if complete {
 		result["overallVerdict"] = labFidelityOverallVerdict(canonicalStatus, visualAggregate)
@@ -777,6 +856,7 @@ func labFidelityOperationResultWithIdentity(input labFidelityOperationInput, ope
 	result["primaryArtifactId"] = operation.PrimaryArtifactID
 	result["primaryGeneration"] = operation.PrimaryGeneration
 	result["samplingPolicyVersion"] = operation.SamplingPolicyVersion
+	result["samplingPlanIdentity"] = operation.SamplingPlanIdentity
 	return result
 }
 
