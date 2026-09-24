@@ -2,8 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
@@ -118,6 +123,45 @@ func TestResolveCanonicalSamplingPlanUsesDeterministicTieBreak(t *testing.T) {
 	plan := resolveCanonicalSamplingPlan(input)
 	if len(plan.SelectedWindows) < 2 || plan.SelectedWindows[1].StartSeconds != 20 {
 		t.Fatalf("equal scores were not ordered by start: %#v", plan.SelectedWindows)
+	}
+}
+
+func TestResolveCanonicalSamplingPlanProtectsExplicitPrimaryFromCandidateBounding(t *testing.T) {
+	base := testQualitySamplingBasePlan()
+	base.Limits = SamplingLimits{MaximumWindows: 3, MaximumCandidates: 2, MaximumCandidatesPerRole: 2, MaximumEvidence: 8, MaximumSummaries: 8}
+	input := SamplingPlanInput{
+		BasePlan:             base,
+		SourceFingerprint:    "source",
+		SourceRevision:       "revision",
+		SourceStreamIdentity: "0:v:0",
+		PolicyVersion:        samplingPlanPolicyVersion,
+		FrameDurationSeconds: 1.0 / 24.0,
+		Primary:              &SamplingWindow{StartSeconds: 500, DurationSeconds: 20, Position: 0.5},
+		Evidence: []SamplingEvidence{{
+			Identity:     "primary-hard",
+			Source:       "frame-signals",
+			Scope:        "interval",
+			Availability: "available",
+			Signals:      map[string]float64{"motion": 0.95},
+		}},
+		Candidates: []SamplingCandidate{
+			{Window: SamplingWindow{StartSeconds: 10, DurationSeconds: 20}},
+			{Window: SamplingWindow{StartSeconds: 20, DurationSeconds: 20}},
+			{Window: SamplingWindow{StartSeconds: 30, DurationSeconds: 20}},
+			{Window: SamplingWindow{StartSeconds: 500, DurationSeconds: 20}, EvidenceRefs: []string{"primary-hard"}},
+		},
+	}
+
+	plan := resolveCanonicalSamplingPlan(input)
+	if len(plan.SelectedWindows) == 0 || !plan.SelectedWindows[0].Primary || plan.SelectedWindows[0].StartSeconds != 500 {
+		t.Fatalf("explicit primary was displaced by bounded candidates: %#v", plan.SelectedWindows)
+	}
+	if len(plan.SelectedWindows) > plan.Limits.MaximumWindows {
+		t.Fatalf("selected windows exceeded bound: %d > %d", len(plan.SelectedWindows), plan.Limits.MaximumWindows)
+	}
+	primary := plan.SelectedWindows[0]
+	if primary.Identity == "" || !containsSamplingString(primary.Roles, SamplingRoleHighMotion) || !containsSamplingString(primary.EvidenceRefs, "primary-hard") {
+		t.Fatalf("equivalent hard candidate did not consolidate into primary: %#v", primary)
 	}
 }
 
@@ -261,6 +305,101 @@ func TestSamplingEvidenceAdaptersReusePersistedIntervalAndGlobalComponents(t *te
 	}
 	if plan.PlanIdentity == "" || plan.SourceFingerprint == "" {
 		t.Fatalf("persisted evidence did not freeze plan identity: %#v", plan)
+	}
+}
+
+func testSamplingScanForSource(path string, info os.FileInfo) models.ScanResult {
+	return models.ScanResult{
+		Path:     path,
+		Duration: 600,
+		RawProbe: models.JSONMap{"snapshotCache": models.JSONMap{"fingerprint": models.JSONMap{
+			"path":      filepath.Clean(path),
+			"sizeBytes": strconv.FormatInt(info.Size(), 10),
+			"mtimeNs":   strconv.FormatInt(info.ModTime().UnixNano(), 10),
+		}}},
+		FrameStructureAnalysis: models.JSONMap{
+			"version": "frame-v1",
+			"windows": []any{models.JSONMap{
+				"startSeconds":    120.0,
+				"durationSeconds": 20.0,
+				"analysis": models.JSONMap{
+					"framesAnalyzed":  120,
+					"complexityScore": 0.95,
+				},
+			}},
+		},
+	}
+}
+
+func testSamplingSourceFile(t *testing.T, path string, content []byte, mtime time.Time) os.FileInfo {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func TestSamplingPersistedScanMatchingPhysicalRevisionReusesIntervalEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	info := testSamplingSourceFile(t, path, []byte("original-source"), time.Unix(1700000000, 123456789))
+	revision, err := sourceRevisionForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan := testSamplingScanForSource(path, info)
+	plan, reused := samplingPlanFromPersistedScan(scan, path, revision, 600, testQualitySamplingBasePlanPolicy(), nil, samplingPlanPolicyVersion)
+	if !reused {
+		t.Fatal("matching physical revision was not reused")
+	}
+	if plan.SourceFingerprint != samplingSourceIdentity(path, revision) || plan.SourceRevision != samplingSourceIdentity(path, revision) {
+		t.Fatalf("plan was not bound to the current source identity: %#v", plan)
+	}
+	if plan.Fallback.Used {
+		t.Fatalf("matching interval evidence unexpectedly fell back: %#v", plan.Fallback)
+	}
+	if len(plan.SelectedWindows) == 0 || !containsSamplingString(plan.SelectedWindows[0].Roles, SamplingRoleHighComplexity) {
+		t.Fatalf("matching scan interval evidence was not selected: %#v", plan.SelectedWindows)
+	}
+}
+
+func TestSamplingPersistedScanRejectsChangedPhysicalRevisionAndRoles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	oldInfo := testSamplingSourceFile(t, path, []byte("original-source"), time.Unix(1700000000, 123456789))
+	oldScan := testSamplingScanForSource(path, oldInfo)
+	testSamplingSourceFile(t, path, []byte("replacement-source-with-new-size"), time.Unix(1700000001, 123456789))
+	newRevision, err := sourceRevisionForPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, reused := samplingPlanFromPersistedScan(oldScan, path, newRevision, 600, testQualitySamplingBasePlanPolicy(), nil, samplingPlanPolicyVersion)
+	if reused {
+		t.Fatal("changed physical source incorrectly reused the old scan")
+	}
+	if plan.SourceFingerprint != samplingSourceIdentity(path, newRevision) || plan.SourceRevision != samplingSourceIdentity(path, newRevision) {
+		t.Fatalf("replacement plan was not bound to the current source: %#v", plan)
+	}
+	if !plan.Fallback.Used || plan.Fallback.Reason != "stale_persisted_scan" {
+		t.Fatalf("stale scan did not produce the bounded fallback: %#v", plan.Fallback)
+	}
+	if len(plan.Fallback.UnavailableEvidence) == 0 || !strings.HasPrefix(plan.Fallback.UnavailableEvidence[0], "stale-scan:") {
+		t.Fatalf("stale evidence provenance was not recorded: %#v", plan.Fallback)
+	}
+	for _, evidence := range plan.Evidence {
+		if evidence.Scope == "interval" || evidence.Source == "frame-structure" {
+			t.Fatalf("stale interval evidence survived as authoritative: %#v", plan.Evidence)
+		}
+	}
+	for _, window := range plan.SelectedWindows {
+		if containsSamplingString(window.Roles, SamplingRoleHighComplexity) {
+			t.Fatalf("stale scan produced a hard-scene role: %#v", window)
+		}
 	}
 }
 

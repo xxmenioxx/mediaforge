@@ -133,20 +133,16 @@ func (h AssetHandler) labSamplingPlan(path string, duration float64, revision co
 	if h.db != nil && h.db.Migrator().HasTable(&models.ScanResult{}) {
 		var scan models.ScanResult
 		if h.db.Where("path = ?", filepath.Clean(path)).Order("updated_at desc, id desc").First(&scan).Error == nil {
-			if scan.Duration <= 0 {
-				scan.Duration = duration
-			}
-			plan := canonicalSamplingPlanFromScan(scan, policy, &primary, labFidelitySamplingPolicyVersion)
-			plan.SourceRevision = fmt.Sprintf("%s|%d|%d|%d", filepath.Clean(path), revision.Size, revision.ModifiedAtNS, revision.Mode)
-			plan.PlanIdentity = samplingPlanIdentity(plan)
+			plan, _ := samplingPlanFromPersistedScan(scan, path, revision, duration, policy, &primary, labFidelitySamplingPolicyVersion)
 			return plan
 		}
 	}
 	base := canonicalSamplingPlan(duration, policy)
+	sourceIdentity := samplingSourceIdentity(path, revision)
 	return resolveCanonicalSamplingPlan(SamplingPlanInput{
 		BasePlan:             base,
-		SourceFingerprint:    fmt.Sprintf("%s|%d|%d|%d", filepath.Clean(path), revision.Size, revision.ModifiedAtNS, revision.Mode),
-		SourceRevision:       fmt.Sprintf("%s|%d|%d|%d", filepath.Clean(path), revision.Size, revision.ModifiedAtNS, revision.Mode),
+		SourceFingerprint:    sourceIdentity,
+		SourceRevision:       sourceIdentity,
 		SourceStreamIdentity: "0:v:0",
 		PolicyVersion:        labFidelitySamplingPolicyVersion,
 		Primary:              &primary,

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -64,7 +65,59 @@ func samplingCandidatesFromScan(scan models.ScanResult) []SamplingCandidate {
 	return samplingFrameStructureCandidates(scan.FrameStructureAnalysis)
 }
 
-func canonicalSamplingPlanFromScan(scan models.ScanResult, policy FrameStructureSamplingPolicy, primary *SamplingWindow, policyVersion string) SamplingPlan {
+type samplingPersistedPhysicalFingerprint struct {
+	Path         string
+	SizeBytes    int64
+	ModifiedAtNS int64
+}
+
+// samplingSourceIdentity is the physical source identity bound into plan and
+// window identities. Scan snapshots predate Mode, so compatibility checks use
+// the persisted path/size/mtime tuple and the plan identity additionally binds
+// the current mode when it is available.
+func samplingSourceIdentity(path string, revision compatiblePreviewSourceRevision) string {
+	return fmt.Sprintf("%s|%d|%d|%d", filepath.Clean(path), revision.Size, revision.ModifiedAtNS, revision.Mode)
+}
+
+func samplingScanPhysicalFingerprint(scan models.ScanResult) (samplingPersistedPhysicalFingerprint, bool) {
+	cache, ok := samplingMap(scan.RawProbe["snapshotCache"])
+	if !ok {
+		return samplingPersistedPhysicalFingerprint{}, false
+	}
+	fingerprint, ok := samplingMap(cache["fingerprint"])
+	if !ok {
+		return samplingPersistedPhysicalFingerprint{}, false
+	}
+	path := filepath.Clean(stringFromSamplingValue(fingerprint["path"]))
+	size, sizeErr := strconv.ParseInt(strings.TrimSpace(stringFromSamplingValue(fingerprint["sizeBytes"])), 10, 64)
+	mtime, mtimeErr := strconv.ParseInt(strings.TrimSpace(stringFromSamplingValue(fingerprint["mtimeNs"])), 10, 64)
+	if path == "." || sizeErr != nil || mtimeErr != nil {
+		return samplingPersistedPhysicalFingerprint{}, false
+	}
+	return samplingPersistedPhysicalFingerprint{Path: path, SizeBytes: size, ModifiedAtNS: mtime}, true
+}
+
+func samplingScanMatchesSource(scan models.ScanResult, path string, revision compatiblePreviewSourceRevision) bool {
+	persisted, ok := samplingScanPhysicalFingerprint(scan)
+	return ok && persisted.Path == filepath.Clean(path) && persisted.SizeBytes == revision.Size && persisted.ModifiedAtNS == revision.ModifiedAtNS
+}
+
+func samplingStaleScanEvidence(scan models.ScanResult) []SamplingEvidence {
+	oldIdentity := "unavailable"
+	if persisted, ok := samplingScanPhysicalFingerprint(scan); ok {
+		oldIdentity = fmt.Sprintf("%s|%d|%d", persisted.Path, persisted.SizeBytes, persisted.ModifiedAtNS)
+	}
+	return []SamplingEvidence{{
+		Identity:     "stale-scan:" + oldIdentity,
+		Source:       "persisted-scan",
+		Version:      "snapshot-cache",
+		Scope:        "global",
+		Availability: "stale",
+		Weak:         true,
+	}}
+}
+
+func canonicalSamplingPlanFromScanForSource(scan models.ScanResult, policy FrameStructureSamplingPolicy, primary *SamplingWindow, policyVersion, sourceFingerprint, sourceRevision string) SamplingPlan {
 	evidence := samplingEvidenceFromScan(scan)
 	if policyVersion == "" {
 		policyVersion = samplingPlanPolicyVersion
@@ -72,14 +125,39 @@ func canonicalSamplingPlanFromScan(scan models.ScanResult, policy FrameStructure
 	base := canonicalSamplingPlan(scan.Duration, policy)
 	return resolveCanonicalSamplingPlan(SamplingPlanInput{
 		BasePlan:             base,
-		SourceFingerprint:    samplingScanFingerprint(scan),
-		SourceRevision:       samplingScanRevision(scan),
+		SourceFingerprint:    sourceFingerprint,
+		SourceRevision:       sourceRevision,
 		SourceStreamIdentity: "0:v:0",
 		PolicyVersion:        policyVersion,
 		Primary:              primary,
 		Evidence:             evidence,
 		Candidates:           samplingCandidatesFromScan(scan),
 	})
+}
+
+func canonicalSamplingPlanFromScan(scan models.ScanResult, policy FrameStructureSamplingPolicy, primary *SamplingWindow, policyVersion string) SamplingPlan {
+	return canonicalSamplingPlanFromScanForSource(scan, policy, primary, policyVersion, samplingScanFingerprint(scan), samplingScanRevision(scan))
+}
+
+func samplingPlanFromPersistedScan(scan models.ScanResult, path string, revision compatiblePreviewSourceRevision, duration float64, policy FrameStructureSamplingPolicy, primary *SamplingWindow, policyVersion string) (SamplingPlan, bool) {
+	currentIdentity := samplingSourceIdentity(path, revision)
+	if samplingScanMatchesSource(scan, path, revision) {
+		if scan.Duration <= 0 {
+			scan.Duration = duration
+		}
+		return canonicalSamplingPlanFromScanForSource(scan, policy, primary, policyVersion, currentIdentity, currentIdentity), true
+	}
+	return resolveCanonicalSamplingPlan(SamplingPlanInput{
+		BasePlan:             canonicalSamplingPlan(duration, policy),
+		SourceFingerprint:    currentIdentity,
+		SourceRevision:       currentIdentity,
+		SourceStreamIdentity: "0:v:0",
+		PolicyVersion:        policyVersion,
+		Primary:              primary,
+		Evidence:             samplingStaleScanEvidence(scan),
+		FallbackKind:         samplingFallbackDistributed,
+		FallbackReason:       "stale_persisted_scan",
+	}), false
 }
 
 func (h AssetHandler) samplingPlanForFrozenWindow(path, sourceFingerprint, sourceRevision string, duration, start, windowDuration float64, policyVersion string) SamplingPlan {
@@ -89,23 +167,46 @@ func (h AssetHandler) samplingPlanForFrozenWindow(path, sourceFingerprint, sourc
 		Position:        0,
 		Primary:         true,
 	}
-	if h.db != nil && h.db.Migrator().HasTable(&models.ScanResult{}) {
-		var scan models.ScanResult
-		if h.db.Where("path = ?", filepath.Clean(path)).Order("updated_at desc, id desc").First(&scan).Error == nil {
-			if scan.Duration <= 0 {
-				scan.Duration = duration
-			}
-			primary.Position = primaryPosition(start, windowDuration, scan.Duration)
-			plan := canonicalSamplingPlanFromScan(scan, frameStructureSamplingPolicy(h.db), &primary, policyVersion)
-			plan.SourceFingerprint = sourceFingerprint
-			plan.SourceRevision = sourceRevision
-			plan.PlanIdentity = samplingPlanIdentity(plan)
+	policy := frameStructureSamplingPolicy(h.db)
+	revision, revisionErr := sourceRevisionForPath(path)
+	var scan models.ScanResult
+	haveScan := h.db != nil && h.db.Migrator().HasTable(&models.ScanResult{}) &&
+		h.db.Where("path = ?", filepath.Clean(path)).Order("updated_at desc, id desc").First(&scan).Error == nil
+	if revisionErr == nil {
+		currentIdentity := samplingSourceIdentity(path, revision)
+		primary.Position = primaryPosition(start, windowDuration, duration)
+		if haveScan {
+			plan, _ := samplingPlanFromPersistedScan(scan, path, revision, duration, policy, &primary, policyVersion)
 			return plan
+		}
+		return resolveCanonicalSamplingPlan(SamplingPlanInput{
+			BasePlan:             canonicalSamplingPlan(duration, policy),
+			SourceFingerprint:    currentIdentity,
+			SourceRevision:       currentIdentity,
+			SourceStreamIdentity: "0:v:0",
+			PolicyVersion:        policyVersion,
+			Primary:              &primary,
+		})
+	}
+	if h.db != nil && h.db.Migrator().HasTable(&models.ScanResult{}) {
+		if haveScan {
+			primary.Position = primaryPosition(start, windowDuration, duration)
+			return resolveCanonicalSamplingPlan(SamplingPlanInput{
+				BasePlan:             canonicalSamplingPlan(duration, policy),
+				SourceFingerprint:    sourceFingerprint,
+				SourceRevision:       sourceRevision,
+				SourceStreamIdentity: "0:v:0",
+				PolicyVersion:        policyVersion,
+				Primary:              &primary,
+				Evidence:             samplingStaleScanEvidence(scan),
+				FallbackKind:         samplingFallbackDistributed,
+				FallbackReason:       "source_identity_unavailable",
+			})
 		}
 	}
 	primary.Position = primaryPosition(start, windowDuration, duration)
 	return resolveCanonicalSamplingPlan(SamplingPlanInput{
-		BasePlan:             canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db)),
+		BasePlan:             canonicalSamplingPlan(duration, policy),
 		SourceFingerprint:    sourceFingerprint,
 		SourceRevision:       sourceRevision,
 		SourceStreamIdentity: "0:v:0",
@@ -115,15 +216,8 @@ func (h AssetHandler) samplingPlanForFrozenWindow(path, sourceFingerprint, sourc
 }
 
 func samplingScanFingerprint(scan models.ScanResult) string {
-	if cache, ok := samplingMap(scan.RawProbe["snapshotCache"]); ok {
-		if fingerprint, ok := samplingMap(cache["fingerprint"]); ok {
-			path := filepath.Clean(stringFromSamplingValue(fingerprint["path"]))
-			size := stringFromSamplingValue(fingerprint["sizeBytes"])
-			mtime := stringFromSamplingValue(fingerprint["mtimeNs"])
-			if path != "." && (size != "" || mtime != "") {
-				return strings.Join([]string{path, size, mtime}, "|")
-			}
-		}
+	if fingerprint, ok := samplingScanPhysicalFingerprint(scan); ok {
+		return strings.Join([]string{fingerprint.Path, strconv.FormatInt(fingerprint.SizeBytes, 10), strconv.FormatInt(fingerprint.ModifiedAtNS, 10)}, "|")
 	}
 	return fmt.Sprintf("%s|%d|%d", filepath.Clean(scan.Path), scan.SizeBytes, scan.UpdatedAt.UnixNano())
 }

@@ -138,6 +138,8 @@ type SamplingPlanInput struct {
 	Primary              *SamplingWindow
 	Evidence             []SamplingEvidence
 	Candidates           []SamplingCandidate
+	FallbackKind         string
+	FallbackReason       string
 }
 
 type SamplingPlanRoleSelection struct {
@@ -248,34 +250,58 @@ func resolveCanonicalSamplingPlan(input SamplingPlanInput) SamplingPlan {
 		candidate SamplingCandidate
 		order     int
 	}
-	records := make([]candidateRecord, 0, len(base.Positions)+len(input.Candidates)+1)
+	primaryRecords := make([]candidateRecord, 0, 1)
+	nonPrimaryRecords := make([]candidateRecord, 0, len(base.Positions)+len(input.Candidates))
 	if input.Primary != nil {
 		primary := *input.Primary
 		primary.Primary = true
-		records = append(records, candidateRecord{candidate: SamplingCandidate{
+		primaryRecords = append(primaryRecords, candidateRecord{candidate: SamplingCandidate{
 			Window:  primary,
 			Roles:   []string{SamplingRoleTypical},
 			Reasons: []string{"explicit_primary"},
 		}, order: -1})
 	}
 	for index, window := range base.windows(base.WindowSeconds) {
-		records = append(records, candidateRecord{candidate: SamplingCandidate{
+		nonPrimaryRecords = append(nonPrimaryRecords, candidateRecord{candidate: SamplingCandidate{
 			Window:  window,
 			Roles:   []string{SamplingRoleTypical},
 			Reasons: []string{"distributed_baseline"},
 		}, order: index})
 	}
 	for index, candidate := range input.Candidates {
-		records = append(records, candidateRecord{candidate: candidate, order: index + 1})
+		// Only input.Primary is structural authority. A candidate cannot claim
+		// primary status and displace the explicit LAB/operation window.
+		candidate.Window.Primary = false
+		nonPrimaryRecords = append(nonPrimaryRecords, candidateRecord{candidate: candidate, order: index + 1})
 	}
 
-	inputCount := len(records)
-	if len(records) > base.Limits.MaximumCandidates {
-		sort.SliceStable(records, func(i, j int) bool {
-			return samplingCandidateSortKey(records[i].candidate) < samplingCandidateSortKey(records[j].candidate)
-		})
-		records = records[:base.Limits.MaximumCandidates]
+	inputCount := len(primaryRecords) + len(nonPrimaryRecords)
+	protectedEquivalent := make([]candidateRecord, 0, len(nonPrimaryRecords))
+	discoveryRecords := make([]candidateRecord, 0, len(nonPrimaryRecords))
+	if len(primaryRecords) == 1 && samplingCandidateWindowIsValid(primaryRecords[0].candidate.Window) {
+		primaryWindow := primaryRecords[0].candidate.Window
+		for _, record := range nonPrimaryRecords {
+			if samplingWindowsEquivalent(primaryWindow, record.candidate.Window, input.FrameDurationSeconds) {
+				protectedEquivalent = append(protectedEquivalent, record)
+				continue
+			}
+			discoveryRecords = append(discoveryRecords, record)
+		}
+	} else {
+		discoveryRecords = nonPrimaryRecords
 	}
+	if len(discoveryRecords) > base.Limits.MaximumCandidates {
+		sort.SliceStable(discoveryRecords, func(i, j int) bool {
+			return samplingCandidateSortKey(discoveryRecords[i].candidate) < samplingCandidateSortKey(discoveryRecords[j].candidate)
+		})
+		discoveryRecords = discoveryRecords[:base.Limits.MaximumCandidates]
+	}
+	records := make([]candidateRecord, 0, len(primaryRecords)+len(protectedEquivalent)+len(discoveryRecords))
+	// The explicit primary and candidates equivalent to it are structural
+	// records. All other discovery candidates are subject to the candidate cap.
+	records = append(records, primaryRecords...)
+	records = append(records, protectedEquivalent...)
+	records = append(records, discoveryRecords...)
 
 	consolidated := make([]SamplingWindowSummary, 0, base.Limits.MaximumSummaries)
 	normalizedCount := 0
@@ -387,10 +413,18 @@ func resolveCanonicalSamplingPlan(input SamplingPlanInput) SamplingPlan {
 		}
 	}
 	if !hardEvidenceAvailable {
+		fallbackKind := input.FallbackKind
+		if fallbackKind == "" {
+			fallbackKind = samplingFallbackDistributed
+		}
+		fallbackReason := input.FallbackReason
+		if fallbackReason == "" {
+			fallbackReason = "insufficient_interval_evidence"
+		}
 		base.Fallback = SamplingFallback{
 			Used:   true,
-			Kind:   samplingFallbackDistributed,
-			Reason: "insufficient_interval_evidence",
+			Kind:   fallbackKind,
+			Reason: fallbackReason,
 		}
 		for _, role := range []string{SamplingRoleHighMotion, SamplingRoleHighTextureOrGrain, SamplingRoleDarkOrGradient, SamplingRoleHighComplexity, SamplingRoleWorstPredicted} {
 			base.Fallback.UnavailableRoles = append(base.Fallback.UnavailableRoles, role)
@@ -519,6 +553,10 @@ func normalizeSamplingWindow(window SamplingWindow, assetDuration, frameDuration
 
 func isFiniteSamplingNumber(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func samplingCandidateWindowIsValid(window SamplingWindow) bool {
+	return isFiniteSamplingNumber(window.StartSeconds) && isFiniteSamplingNumber(window.DurationSeconds) && window.DurationSeconds > 0
 }
 
 func samplingRoundTimeline(value float64) float64 {
