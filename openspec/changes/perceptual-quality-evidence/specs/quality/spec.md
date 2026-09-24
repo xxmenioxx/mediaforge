@@ -101,14 +101,23 @@ provenance. Each covered window entry SHALL independently expose or resolve
 its `windowIdentity`, `referenceIdentity`, `candidateIdentity`,
 `coverageIdentity`, and `pairIdentity`, plus its metric results and state.
 
-The `pairIdentity` SHALL bind exactly the material comparison inputs:
-`SamplingPlan.PlanIdentity`, `SamplingWindow.Identity`, complete
-`ReferenceIdentity`, complete `CandidateIdentity`,
-`CandidateCoverage`/segment-mapping identity, runtime capability identity, and
-the logical metric/provider/model contract. It SHALL exclude operation ID, UI
-order, map iteration order, filesystem enumeration order, and a path used as a
-substitute for artifact/output identity. A candidate-covered window SHALL
-prove membership in its referenced `CandidateCoverage.coveredWindowIdentities`.
+The `ComparisonPairIdentity` exposed as `pairIdentity` SHALL bind exactly the
+material comparison inputs: `SamplingPlan.PlanIdentity`,
+`SamplingWindow.Identity`, complete `ReferenceIdentity`, complete
+`CandidateIdentity`, `CandidateCoverage`/segment-mapping identity,
+alignment/comparison-domain identity, and the relevant source and candidate
+revisions. It SHALL NOT include a logical metric/provider/model contract. It
+SHALL exclude operation ID, UI order, map iteration order, filesystem
+enumeration order, and a path used as a substitute for artifact/output
+identity. A candidate-covered window SHALL prove membership in its referenced
+`CandidateCoverage.coveredWindowIdentities`.
+
+Each requested metric result SHALL have its own deterministic
+`MetricResultIdentity`, derived from the material `pairIdentity` plus metric
+descriptor identity, logical metric, provider/provider version, invocation
+contract, model identity when applicable, and runtime capability identity.
+Changing a provider or model therefore changes the affected metric-result
+identity without changing the underlying material pair identity.
 
 A `not_covered` window SHALL remain in the ordered window ledger with its
 frozen interval, roles/reasons, and bounded reason, but SHALL have no candidate
@@ -116,10 +125,11 @@ manifest reference, coverage identity, or pair identity. A candidate identity
 MAY be referenced by multiple windows, while each window retains its own
 reference, alignment, and pair identity. The set identity SHALL be derived
 from schema/policy versions, `SamplingPlan` identity, source revision, runtime
-and capability contract, metric contracts, and the canonical ordered window
-ledger containing pair identities for covered windows and explicit
-`not_covered` markers for uncovered slots. It SHALL not depend on map,
-goroutine, UI, filesystem, or operation ordering.
+and capability contract, requested metric contracts including provider/model
+identities, and the canonical ordered window ledger containing material pair
+identities for covered windows and explicit `not_covered` markers for
+uncovered slots. It SHALL not depend on map, goroutine, UI, filesystem, or
+operation ordering.
 
 #### Scenario: LAB has distinct Compatible Preview generations per window
 
@@ -128,6 +138,33 @@ goroutine, UI, filesystem, or operation ordering.
 - **THEN** the evidence SHALL contain three candidate manifest entries and
   three per-window comparison pairs, each bound to its corresponding artifact
   and window, with no singular candidate identity standing for all three
+
+#### Scenario: One material pair produces several metric results
+
+- **WHEN** one covered window is measured with VMAF, SSIM, and PSNR
+- **THEN** the window SHALL contain exactly one material `pairIdentity` and
+  three distinct `MetricResultIdentity` values, each retaining its own logical
+  metric/provider/model contract
+
+#### Scenario: A VMAF provider changes without changing the material pair
+
+- **WHEN** VMAF resolves to a different provider, provider version, model, or
+  invocation contract while source/reference/candidate material is unchanged
+- **THEN** the VMAF metric-result identity and containing evidence-set identity
+  SHALL change, while the window's `pairIdentity` SHALL remain unchanged
+
+#### Scenario: Candidate generation changes all metric results for that pair
+
+- **WHEN** a covered candidate artifact generation or candidate revision changes
+- **THEN** the affected window's material `pairIdentity` SHALL change and every
+  metric result referencing the old pair SHALL become stale
+
+#### Scenario: Requested metric membership changes only the set contract
+
+- **WHEN** a request adds or removes a metric contract while material windows,
+  references, candidates, and coverage remain unchanged
+- **THEN** the evidence-set identity SHALL change, while existing material pair
+  identities SHALL remain unchanged and reusable
 
 #### Scenario: Replacing only LAB window B invalidates only B and the set
 
@@ -166,7 +203,15 @@ goroutine, UI, filesystem, or operation ordering.
 - **WHEN** the same material per-window pairs are collected through different
   map iteration, filesystem enumeration, or goroutine completion orders
 - **THEN** the frozen plan window order SHALL produce the same manifest order,
-  ordered pair ledger, set identity, aggregates, and worst-window identity
+  ordered pair ledger, pair identities, metric-result identities, set identity,
+  aggregates, and worst-window identity
+
+#### Scenario: Metric cache separates providers for one pair
+
+- **WHEN** two metric executions use the same material pair but different
+  providers, models, or invocation contracts
+- **THEN** metric-result cache entries SHALL remain distinct and SHALL not
+  return one provider's result for the other
 
 #### Scenario: Retrying an operation preserves material evidence identity
 
@@ -251,19 +296,27 @@ or artifact identity, source/job/test identity where available, output revision
 or artifact generation token/version, and frozen effective execution identity.
 It SHALL also include the segment/coverage mapping identity and the covered
 frozen window identities.
-The comparable-pair/evidence identity SHALL include candidate identity,
-reference identity, `SamplingPlan` identity, window identity, metric contract
-version, metric/model versions, and runtime capability identity. Evidence SHALL
-become stale when any relevant source, plan, window, transform/reference,
-candidate generation/output, metric/model, or capability identity changes.
+The `ComparisonPairIdentity` SHALL include candidate identity, reference
+identity, `SamplingPlan` identity, window identity, coverage/segment mapping,
+alignment/comparison-domain identity, and relevant source/candidate revisions.
+It SHALL not include a specific metric/provider/model. Each metric result SHALL
+have a separate `MetricResultIdentity` containing that pair identity, metric
+descriptor identity, logical metric, provider/provider version, invocation
+contract, model identity when applicable, and runtime capability identity.
+Evidence SHALL become stale at the smallest relevant level: source, plan,
+window, transform/reference, or candidate generation/output changes invalidate
+the affected pair and its metric results; metric/provider/model or capability
+changes invalidate the affected metric results and containing set without
+changing the material pair identity.
 
 Cache and reuse SHALL respect identity granularity: candidate/global probes MAY
 reuse a complete candidate identity; reference materialization SHALL be keyed
-by the exact window-bearing reference identity; metric results SHALL be keyed
-by exact `pairIdentity` plus metric/provider/model identity; and a complete
-evidence set SHALL be keyed by its set contract plus canonical ordered pair
-and coverage ledger. No level SHALL use a path, operation ID, or UI request as
-its sole key.
+by the exact reference identity; comparison-pair/alignment work SHALL be keyed
+by exact `pairIdentity`; metric results SHALL be keyed by pair identity plus
+metric descriptor/provider/model/capability identity; and a complete evidence
+set SHALL be keyed by its set contract plus canonical ordered pair/not-covered
+ledger and requested metric/runtime contracts. No level SHALL use a path,
+operation ID, or UI request as its sole key.
 
 #### Scenario: The same path is replaced
 
@@ -299,9 +352,13 @@ treated as its provider name. Runtime availability SHALL be discovered from the
 actual MVForge FFmpeg runtime and any required model, not inferred from a
 Docker image or a hardcoded build assumption. Capability provenance SHALL
 include a stable capability identity/version and the resolved provider/model
-contract. The metric identity used for evidence hashing SHALL include the
-logical metric contract, actual provider, provider/filter/library contract
-version, model identity when applicable, and runtime capability identity.
+contract. The `MetricResultIdentity` used for metric-result caching and
+evidence hashing SHALL include the logical metric contract, actual provider,
+provider/filter/library contract version, invocation contract, model identity
+when applicable, its material `pairIdentity`, and runtime capability identity.
+The evidence-set identity SHALL include the requested metric contracts and
+runtime/provider/model contract identities in addition to its ordered
+pair/not-covered ledger.
 
 Each metric result SHALL distinguish at least `available`, `unsupported`,
 `unavailable`, `failed_measurement`, and `non_comparable`; absent values SHALL
@@ -348,20 +405,23 @@ execution is permitted.
 
 - **WHEN** a logical metric resolves to a different provider, provider
   invocation contract, provider version, or model identity
-- **THEN** its metric identity and the containing evidence identity SHALL
-  change, and a previous result SHALL not be reused as current evidence
+- **THEN** its `MetricResultIdentity` and the containing evidence-set identity
+  SHALL change, the material `pairIdentity` SHALL remain stable, and a previous
+  result SHALL not be reused as current evidence
 
 ### Requirement: Per-window evidence SHALL preserve metric semantics and provenance
 
 Every window record SHALL include the frozen `SamplingWindow.Identity`,
 start/duration, primary flag, inherited roles/reasons, coverage state,
-reference identity, candidate identity, alignment identity, and a bounded
-result for each requested metric. A metric result SHALL retain its
-direction/semantics (for example, higher-is-better), logical metric contract,
-resolved provider/invocation contract, model/version when applicable,
-units/range when defined, status, canonical value when available, and a
-bounded reason or warning. VMAF, XPSNR, SSIM, MS-SSIM, and PSNR SHALL remain
-distinct metrics and SHALL not be treated as interchangeable.
+reference identity, candidate identity, coverage/alignment/comparison-domain
+identity, exactly one material `pairIdentity` when covered, and a bounded
+result for each requested metric. A metric result SHALL retain its distinct
+`MetricResultIdentity` plus direction/semantics (for example,
+higher-is-better), logical metric contract, resolved provider/invocation
+contract, model/version when applicable, units/range when defined, status,
+canonical value when available, and a bounded reason or warning. VMAF, XPSNR,
+SSIM, MS-SSIM, and PSNR SHALL remain distinct metrics and SHALL not be treated
+as interchangeable.
 
 The canonical serialized metric value SHALL be a tagged value, for example:
 
@@ -588,7 +648,10 @@ operation history. A `not_covered` entry SHALL expose its frozen window
 identity, coverage state, and bounded reason while omitting a fake
 candidate/pair identity. Frontend consumers SHALL render these explicit
 relationships and SHALL NOT reconstruct them heuristically from paths, names,
-array position, or metric availability.
+array position, or metric availability. Each returned metric result SHALL
+expose its `MetricResultIdentity` or a resolvable bounded equivalent, so the
+provider/model used for a value is inspectable without changing the material
+pair relationship.
 
 #### Scenario: API explains distinct LAB window artifacts
 

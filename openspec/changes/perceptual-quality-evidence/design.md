@@ -195,9 +195,32 @@ PerceptualWindowEvidence {
     referenceManifestIdentity?
     candidateManifestIdentity?
     coverageIdentity?
-    pairIdentity?
+    pairIdentity?: ComparisonPairIdentity
     state: comparable | not_covered | non_comparable | unavailable
     metrics: MetricResult[]
+}
+
+ComparisonPairIdentity {
+    samplingPlanIdentity
+    windowIdentity
+    referenceIdentity
+    candidateIdentity
+    coverageIdentity
+    alignmentIdentity
+    comparisonDomainIdentity
+    sourceRevision
+    candidateRevision
+}
+
+MetricResultIdentity {
+    pairIdentity: ComparisonPairIdentity
+    metricDescriptorIdentity
+    logicalMetric
+    provider
+    providerVersion
+    invocationContract
+    modelIdentity?
+    runtimeCapabilityIdentity
 }
 ```
 
@@ -228,27 +251,36 @@ comparison pair. A covered window may retain a pair identity even when an
 individual metric is unavailable or the aligned measurement is
 non-comparable; the metric status remains explicit.
 
-The canonical `pairIdentity` binds exactly the material comparison inputs:
-`SamplingPlan.PlanIdentity`, `SamplingWindow.Identity`, complete
+The canonical `ComparisonPairIdentity` binds exactly the material comparison
+inputs: `SamplingPlan.PlanIdentity`, `SamplingWindow.Identity`, complete
 `ReferenceIdentity`, complete `CandidateIdentity`, `CandidateCoverage`/
-segment-mapping identity, runtime capability identity, and the logical
-metric/provider/model contract. It excludes operation ID, UI order, map
-iteration order, filesystem enumeration order, and display paths used alone.
+segment-mapping identity, alignment/comparison-domain identity, and the
+relevant source and candidate revisions. It deliberately excludes any
+logical metric/provider/model contract. It also excludes operation ID, UI
+order, map iteration order, filesystem enumeration order, and display paths
+used alone. A `MetricResultIdentity` is derived separately from that pair plus
+the metric descriptor identity, logical metric, actual provider and version,
+invocation contract, model identity when applicable, and runtime capability
+identity.
 The set identity is derived from schema/policy versions, plan identity, source
-revision, runtime/capability contract, metric contracts, and a canonical
-ordered window ledger. The ledger follows the frozen `SamplingPlan` order
-(primary first); each covered slot contains its `pairIdentity`, while an
-uncovered slot contains a canonical `not_covered` marker bound to the window
-and coverage reason. Thus the covered portion is an ordered list of exact
-pair identities, and a coverage change also changes the set identity without
-creating a pair for an uncovered window. Manifest entries are ordered by first
-appearance in that same frozen window order, never by map or goroutine order.
+revision, runtime/capability contract, requested metric contracts including
+provider/model identities, and a canonical ordered window ledger. The ledger
+follows the frozen `SamplingPlan` order (primary first); each covered slot
+contains its material `pairIdentity`, while an uncovered slot contains a
+canonical `not_covered` marker bound to the window and coverage reason. Thus
+the covered portion is an ordered list of exact material pair identities, and
+a metric/provider change changes the set identity without changing those
+material pair identities. Manifest entries are ordered by first appearance in
+that same frozen window order, never by map or goroutine order.
 
 The model distinguishes these invalidation causes: source replacement, plan or
-window replacement, frozen transform/reference replacement, candidate artifact
-generation/output replacement, metric/model contract change, and capability
-contract change. A stale result remains diagnosable but is not served as
-current evidence.
+window replacement, frozen transform/reference replacement, and candidate
+artifact generation/output replacement invalidate the affected material pair
+and every metric result that references it. A metric/provider/model or
+capability contract change invalidates the affected metric results and the
+containing evidence set, but does not pretend that the underlying
+source/reference/candidate pair changed. A stale result remains diagnosable
+but is not served as current evidence.
 
 Identity is deliberately separate from a display or operation ID. A retry may
 have a new operation ID while reusing the same evidence identity; a new
@@ -310,23 +342,27 @@ The current process-local LAB evidence cache is extended, not replaced:
 candidate/global probe  -> candidate identity + output revision/generation
 source probe cache       -> source path + source revision + stream identity
 reference cache          -> exact reference identity + alignment identity
-metric result cache      -> exact pair identity + metric/provider/model identity
-evidence-set cache       -> set identity + ordered window ledger/set contract
+comparison pair cache    -> exact pair identity + alignment/comparison domain
+metric result cache      -> pair identity + metric/provider/model/capability identity
+evidence-set cache       -> ordered pair/not-covered ledger + requested metric/runtime contract
 ```
 
 The old `labPreviewEvidenceCacheKey` is therefore expanded or wrapped so a
 source path, artifact path, or request ID alone can never hit a perceptual
 result. Candidate/global probes may be reused by the complete candidate
 identity; reference materialization is keyed by the exact window-bearing
-reference identity; metric results are keyed by the exact pair plus logical
-metric/provider/model contract; and a complete evidence set is keyed by its
-ordered pair/coverage ledger and set contract. Replacing only LAB window B's
-generation invalidates B's reference/metric pair and the containing set, but
-does not invalidate unrelated valid A reference evidence. Replacing a final
-output revision invalidates every pair that references that candidate. Adding
-or removing a covered Test Encode window changes coverage, pair, and set
-identity. These are bounded entries under the existing LAB retention/max-item
-discipline, not a second general media cache.
+reference identity; comparison-pair/alignment results are keyed by the
+material pair identity; metric results are keyed by that pair plus the logical
+metric/provider/model/capability contract; and a complete evidence set is
+keyed by its ordered pair/coverage ledger plus requested metric/runtime
+contracts. Replacing only LAB window B's generation invalidates B's candidate,
+pair, and metric results and the containing set, but does not invalidate
+unrelated valid A reference or pair evidence. Replacing a final output
+revision invalidates every pair and metric result that references that
+candidate. Adding or removing a covered Test Encode window changes coverage,
+the affected pair collection, and set identity. These are bounded entries
+under the existing LAB retention/max-item discipline, not a second general
+media cache.
 
 The ready primary preview is joined by artifact/generation identity. A primary
 request or playback tab cannot cause a second generation merely because
@@ -470,11 +506,23 @@ MetricDescriptor {
 }
 
 MetricResult {
+    resultIdentity: MetricResultIdentity
     status: available | unsupported | unavailable |
             failed_measurement | non_comparable
     value: MetricValue
     reason
     metric descriptor identity
+}
+
+MetricResultIdentity {
+    pairIdentity
+    metricDescriptorIdentity
+    logicalMetric
+    provider
+    providerVersion
+    invocationContract
+    modelIdentity?
+    runtimeCapabilityIdentity
 }
 
 MetricValue {
