@@ -56,6 +56,9 @@ type SubtitleCompositionSource struct {
 	Language                     string               `json:"language"`
 	Role                         SubtitleSemanticRole `json:"role"`
 	RoleProvenance               string               `json:"roleProvenance,omitempty"`
+	RoleConfidence               string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion        string               `json:"roleClassifierVersion,omitempty"`
+	RoleOverrideState            string               `json:"roleOverrideState,omitempty"`
 	CueClass                     CompositionCueClass  `json:"cueClass"`
 	TrackLabel                   string               `json:"trackLabel,omitempty"`
 	StreamIndex                  int                  `json:"streamIndex,omitempty"`
@@ -257,7 +260,7 @@ func resolveSubtitleCompositionPlan(scan models.ScanResult, profile map[string]a
 			Identity:       fmt.Sprintf("embedded:%s#stream=%d", scan.Path, index),
 			Revision:       compositionScanRevision(scan.Path, scan.SizeBytes, scan.UpdatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), raw),
 			Representation: subtitleRepresentationForCodec(resolved.Codec), Language: language,
-			Role: resolved.Role, RoleProvenance: resolved.RoleProvenance, CueClass: compositionClassForTrack(raw, resolved.Role),
+			Role: resolved.Role, RoleProvenance: resolved.RoleProvenance, RoleConfidence: resolved.RoleConfidence, RoleClassifierVersion: resolved.RoleClassifierVersion, RoleOverrideState: resolved.RoleOverrideState, CueClass: compositionClassForTrack(raw, resolved.Role),
 			TrackLabel: workerStringValue(raw["title"]), StreamIndex: index, Primary: primary, ExplicitLanguage: policy.AllowCrossLanguage,
 		}, nil
 	}
@@ -558,7 +561,7 @@ func sourceDescriptorValid(source SubtitleCompositionSource) error {
 	if !validCompositionCueClass(source.CueClass) {
 		return fmt.Errorf("composition source %q has invalid cue class", source.Identity)
 	}
-	if (source.Role == "" || source.Role == SubtitleRoleUnknown) && source.CueClass == CompositionCueUnknown {
+	if source.Role == "" || source.Role == SubtitleRoleUnknown {
 		return fmt.Errorf("composition source %q has ambiguous role/classification", source.Identity)
 	}
 	if strings.TrimSpace(source.CanonicalOCRArtifactPath) != "" {

@@ -28,6 +28,9 @@ type SubtitleSourceEligibility struct {
 	Language                     string                  `json:"language"`
 	Role                         SubtitleSemanticRole    `json:"role"`
 	RoleProvenance               string                  `json:"roleProvenance"`
+	RoleConfidence               string                  `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion        string                  `json:"roleClassifierVersion,omitempty"`
+	RoleOverrideState            string                  `json:"roleOverrideState,omitempty"`
 	StreamIndex                  *int                    `json:"streamIndex,omitempty"`
 	PolicyVersion                string                  `json:"policyVersion"`
 	CompositionClass             CompositionCueClass     `json:"compositionClass,omitempty"`
@@ -44,6 +47,10 @@ type SubtitleCompositionCandidate struct {
 	Language                     string               `json:"language"`
 	Role                         SubtitleSemanticRole `json:"role"`
 	CompositionClass             CompositionCueClass  `json:"compositionClass"`
+	RoleProvenance               string               `json:"roleProvenance,omitempty"`
+	RoleConfidence               string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion        string               `json:"roleClassifierVersion,omitempty"`
+	RoleOverrideState            string               `json:"roleOverrideState,omitempty"`
 	StreamIndex                  *int                 `json:"streamIndex,omitempty"`
 	SourceType                   string               `json:"sourceType"`
 	SourcePath                   string               `json:"sourcePath,omitempty"`
@@ -123,22 +130,17 @@ func eligibilityReason(eligible bool, reason string) string {
 
 func subtitleEmbeddedEligibility(path string, stream FFProbeStream, revision string, policy SubtitleStylePolicy) SubtitleSourceEligibility {
 	representation := subtitleRepresentationForCodec(stream.CodecName)
+	role := classifyEmbeddedSubtitleRole(path, stream)
 	result := SubtitleSourceEligibility{
 		SourceIdentity: fmt.Sprintf("embedded:%s#stream=%d", path, stream.Index),
 		SourceRevision: revision, Representation: representation,
 		Language: normalizedTrackLanguage(stream.Tags["language"]),
-		Role:     SubtitleRoleUnknown, RoleProvenance: "embedded-stream; semantic role resolved at execution", PolicyVersion: policy.Version,
+		Role:     role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
+		RoleClassifierVersion: role.ClassifierVersion, RoleOverrideState: role.OverrideState, PolicyVersion: policy.Version,
 	}
 	result.CompositionClass = compositionClassForTrack(stream.Tags, result.Role)
 	streamIndex := stream.Index
 	result.StreamIndex = &streamIndex
-	for _, key := range []string{"role", "semanticRole", "subtitleRole"} {
-		if role := normalizeSubtitleSemanticRole(stream.Tags[key]); role != "" {
-			result.Role = role
-			result.RoleProvenance = "metadata"
-			break
-		}
-	}
 	if representation == "" {
 		result.Regenerate = SubtitleModeEligibility{Reason: "embedded subtitle codec is unsupported"}
 		return result
@@ -251,7 +253,7 @@ func subtitleCompositionEligibility(external []ExternalSubtitle, embedded []Subt
 		add(candidate)
 	}
 	for _, eligibility := range embedded {
-		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(eligibility.Language), Role: eligibility.Role, CompositionClass: eligibility.CompositionClass, StreamIndex: eligibility.StreamIndex, SourceType: "embedded", CanonicalOCRArtifactIdentity: eligibility.CanonicalOCRArtifactIdentity, CanonicalOCRArtifactRevision: eligibility.CanonicalOCRArtifactRevision, CanonicalOCRArtifactPath: eligibility.CanonicalOCRArtifactPath, CanonicalOCRLogicalTransform: eligibility.CanonicalOCRLogicalTransform}
+		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(eligibility.Language), Role: eligibility.Role, RoleProvenance: eligibility.RoleProvenance, RoleConfidence: eligibility.RoleConfidence, RoleClassifierVersion: eligibility.RoleClassifierVersion, RoleOverrideState: eligibility.RoleOverrideState, CompositionClass: eligibility.CompositionClass, StreamIndex: eligibility.StreamIndex, SourceType: "embedded", CanonicalOCRArtifactIdentity: eligibility.CanonicalOCRArtifactIdentity, CanonicalOCRArtifactRevision: eligibility.CanonicalOCRArtifactRevision, CanonicalOCRArtifactPath: eligibility.CanonicalOCRArtifactPath, CanonicalOCRLogicalTransform: eligibility.CanonicalOCRLogicalTransform}
 		candidate.Eligible = eligibility.Regenerate.Eligible && candidate.Representation != "bitmap" && candidate.Language != "" && candidate.Language != "und" && candidate.Role != SubtitleRoleUnknown
 		if !candidate.Eligible {
 			candidate.Reason = eligibility.Regenerate.Reason

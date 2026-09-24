@@ -396,6 +396,41 @@ func TestSubtitleCompositionBitmapRequestNeverUsesDirectASSExtraction(t *testing
 	}
 }
 
+func TestSubtitleEmbeddedEligibilityUsesCanonicalRoleClassifier(t *testing.T) {
+	policy := defaultSubtitleStylePolicy()
+	tests := []struct {
+		name       string
+		stream     FFProbeStream
+		role       SubtitleSemanticRole
+		provenance string
+	}{
+		{name: "ordinary full dialogue", stream: FFProbeStream{Index: 1, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng", "title": "Full Dialogue"}}, role: SubtitleRoleFull, provenance: "heuristic"},
+		{name: "signs and songs title", stream: FFProbeStream{Index: 2, CodecType: "subtitle", CodecName: "ass", Tags: map[string]string{"language": "eng", "title": "Signs & Songs"}}, role: SubtitleRoleSigns, provenance: "heuristic"},
+		{name: "forced disposition", stream: FFProbeStream{Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}, Disposition: map[string]int{"forced": 1}}, role: SubtitleRoleForced, provenance: "disposition"},
+		{name: "commentary disposition", stream: FFProbeStream{Index: 4, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}, Disposition: map[string]int{"comment": 1}}, role: SubtitleRoleCommentary, provenance: "disposition"},
+		{name: "sdh disposition", stream: FFProbeStream{Index: 5, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}, Disposition: map[string]int{"hearing_impaired": 1}}, role: SubtitleRoleSDH, provenance: "disposition"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			eligibility := subtitleEmbeddedEligibility("/media/episode.mkv", test.stream, "revision", policy)
+			if eligibility.Role != test.role || eligibility.RoleProvenance != test.provenance || eligibility.RoleClassifierVersion != subtitleSemanticRoleClassifierVersion || eligibility.RoleConfidence == "" {
+				t.Fatalf("eligibility=%#v", eligibility)
+			}
+		})
+	}
+	ambiguous := subtitleEmbeddedEligibility("/media/episode.mkv", FFProbeStream{Index: 6, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng", "title": "Signs commentary"}}, "revision", policy)
+	if ambiguous.Role != SubtitleRoleUnknown || ambiguous.Regenerate.Eligible == false {
+		t.Fatalf("canonical ambiguous role=%#v", ambiguous)
+	}
+	composition := subtitleCompositionEligibility(nil, []SubtitleSourceEligibility{ambiguous}, policy)
+	if composition.Eligible || len(composition.PrimaryCandidates) != 0 || len(composition.SupplementalCandidates) != 1 || composition.SupplementalCandidates[0].Eligible {
+		t.Fatalf("ambiguous embedded role became composable: %#v", composition)
+	}
+	if inferred := subtitleEmbeddedEligibility("/media/episode.mkv", FFProbeStream{Index: 7, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}}, "revision", policy); inferred.Role != SubtitleRoleUnknown {
+		t.Fatalf("unknown embedded role defaulted to full: %#v", inferred)
+	}
+}
+
 func TestSubtitleCompositionPolicyBoundsFailClosed(t *testing.T) {
 	policy := compositionTestPolicy()
 	policy.MaxSupplementalSources = compositionMaxSupplementals + 1

@@ -336,6 +336,9 @@ export type SubtitleSourceEligibility = {
   language?: string;
   role: SubtitleSemanticRole;
   roleProvenance: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
   streamIndex?: number;
   policyVersion: string;
   compositionClass?: 'dialogue' | 'sign' | 'lyrics' | 'commentary' | 'unknown' | string;
@@ -348,6 +351,10 @@ export type SubtitleCompositionCandidate = {
   language: string;
   role: SubtitleSemanticRole;
   compositionClass: string;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
   streamIndex?: number;
   sourceType: 'embedded' | 'external' | string;
   sourcePath?: string;
@@ -382,6 +389,10 @@ export type SubtitleCompositionSourceRequest = {
   language: string;
   role: SubtitleSemanticRole;
   cueClass: string;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
   sourcePath: string;
   canonicalOcrArtifactIdentity?: string;
   canonicalOcrArtifactRevision?: string;

@@ -274,6 +274,39 @@ func classifySubtitleRole(scan models.ScanResult, stream map[string]any, profile
 	return decision
 }
 
+// canonicalEmbeddedSubtitleRoleSummary is the bounded stream evidence shared
+// by Track resolution and subtitle operations. Composition must feed this
+// same evidence into classifySubtitleRole rather than interpreting embedded
+// metadata with a second role authority.
+func canonicalEmbeddedSubtitleRoleSummary(stream FFProbeStream) map[string]any {
+	if strings.TrimSpace(stream.CodecType) == "" {
+		stream.CodecType = "subtitle"
+	}
+	summaries := streamSummaries([]FFProbeStream{stream}, "subtitle")
+	if len(summaries) == 0 {
+		return map[string]any{"index": stream.Index, "codec": stream.CodecName}
+	}
+	summary := settingProfileObject(summaries[0])
+	if summary == nil {
+		summary = map[string]any{}
+	}
+	for _, key := range []string{"role", "semanticRole", "subtitleRole", "roleProvenance", "roleConfidence", "roleClassifierVersion", "roleSourceSnapshotFingerprint", "roleStreamSignature", "compositionCueClass", "cueClass", "compositionClass"} {
+		if value, ok := stream.Tags[key]; ok {
+			summary[key] = value
+		}
+	}
+	if _, ok := summary["commentary"]; !ok {
+		summary["commentary"] = summary["comment"]
+	}
+	return summary
+}
+
+func classifyEmbeddedSubtitleRole(path string, stream FFProbeStream) subtitleRoleDecision {
+	summary := canonicalEmbeddedSubtitleRoleSummary(stream)
+	scan := models.ScanResult{Path: path, SubtitleStreams: models.JSONList{summary}}
+	return classifySubtitleRole(scan, summary, nil)
+}
+
 func annotateSubtitleRoleSummaries(scan *models.ScanResult) {
 	if scan == nil {
 		return

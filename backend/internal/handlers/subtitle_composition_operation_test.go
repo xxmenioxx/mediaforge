@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -58,6 +60,67 @@ func compositionOperationRequestFixture(t *testing.T, directory string) subtitle
 	return subtitleCompositionOperationRequest{AssetPath: filepath.Join(directory, "episode.mkv"), OutputPath: filepath.Join(directory, "episode-"+identity[len(identity)-12:]+".ass"), Primary: primary, Supplementals: []SubtitleCompositionDocument{supplemental}, Policy: policy, OutputIdentity: identity, PublicationMode: "standard"}
 }
 
+func TestEmbeddedSubtitleCompositionUsesCanonicalRepresentationPreservingExtraction(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalRunner := subtitleCompositionRunCommand
+	defer func() { subtitleCompositionRunCommand = originalRunner }()
+	var commands [][]string
+	subtitleCompositionRunCommand = func(_ context.Context, _ string, args []string, _ io.Writer, _ io.Writer) error {
+		commands = append(commands, append([]string(nil), args...))
+		output := args[len(args)-1]
+		content := ""
+		if strings.Contains(strings.Join(args, " "), "-f srt") {
+			content = "1\n00:00:01,000 --> 00:00:02,000\nEmbedded SRT\n"
+		} else {
+			content = "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,Embedded ASS\n"
+		}
+		return os.WriteFile(output, []byte(content), 0o644)
+	}
+	srtStream := FFProbeStream{Index: 2, CodecType: "subtitle", CodecName: "subrip"}
+	assStream := FFProbeStream{Index: 3, CodecType: "subtitle", CodecName: "ass"}
+	srtDocument, err := extractEmbeddedSubtitleCompositionDocument(context.Background(), mediaPath, srtStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assDocument, err := extractEmbeddedSubtitleCompositionDocument(context.Background(), mediaPath, assStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srtDocument.Events) != 1 || srtDocument.Events[0].Fields[len(srtDocument.Events[0].Fields)-1] != "Embedded SRT" {
+		t.Fatalf("embedded SRT was not normalized through parseCompositionSRT: %#v", srtDocument)
+	}
+	if len(assDocument.Events) != 1 || assDocument.Events[0].Style != "Default" {
+		t.Fatalf("embedded ASS did not preserve shared ASS structure: %#v", assDocument)
+	}
+	for _, args := range commands {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "-c:s copy -f ass") && strings.HasSuffix(args[len(args)-1], ".srt") {
+			t.Fatalf("embedded SRT used an ASS muxer: %v", args)
+		}
+	}
+	if !strings.Contains(strings.Join(commands[0], " "), "-f srt") {
+		t.Fatalf("embedded SRT did not use the existing SRT extraction boundary: %v", commands[0])
+	}
+	if _, err := extractEmbeddedSubtitleCompositionDocument(context.Background(), mediaPath, FFProbeStream{Index: 4, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle"}); err == nil {
+		t.Fatal("bitmap extraction bypassed the canonical OCR boundary")
+	}
+
+	primarySource := compositionTestSource("embedded-srt", true, SubtitleRoleFull, CompositionCueDialogue)
+	primarySource.Representation = "srt"
+	supplementalSource := compositionTestSource("embedded-ass", false, SubtitleRoleSigns, CompositionCueSign)
+	if _, _, _, err := ComposeSubtitleDocuments(compositionTestPolicy(), SubtitleCompositionDocument{Source: primarySource, Document: srtDocument}, SubtitleCompositionDocument{Source: supplementalSource, Document: assDocument}); err != nil {
+		t.Fatalf("embedded SRT primary plus ASS supplemental composition failed: %v", err)
+	}
+	assPrimarySource := compositionTestSource("embedded-ass-primary", true, SubtitleRoleFull, CompositionCueDialogue)
+	srtSupplementalSource := compositionTestSource("embedded-srt-supplemental", false, SubtitleRoleFull, CompositionCueDialogue)
+	if _, _, _, err := ComposeSubtitleDocuments(compositionTestPolicy(), SubtitleCompositionDocument{Source: assPrimarySource, Document: assDocument}, SubtitleCompositionDocument{Source: srtSupplementalSource, Document: srtDocument}); err != nil {
+		t.Fatalf("ASS primary plus embedded SRT supplemental composition failed: %v", err)
+	}
+}
+
 func TestSubtitleCompositionOperationPublishesAtomicallyAndExactRetryReusesIdentity(t *testing.T) {
 	directory := t.TempDir()
 	request := compositionOperationRequestFixture(t, directory)
@@ -82,6 +145,127 @@ func TestSubtitleCompositionOperationPublishesAtomicallyAndExactRetryReusesIdent
 	second := waitForSubtitleCompositionOperation(t, secondID)
 	if second.Status != "completed" || second.Composition.OutputIdentity != first.Composition.OutputIdentity {
 		t.Fatalf("exact retry did not reuse identity: first=%#v second=%#v", first.Composition, second.Composition)
+	}
+}
+
+func TestSubtitleCompositionRetryRequiresRetryableTerminalState(t *testing.T) {
+	directory := t.TempDir()
+	request := compositionOperationRequestFixture(t, directory)
+	for _, test := range []struct {
+		name   string
+		status string
+	}{
+		{name: "running", status: "running"},
+		{name: "completed", status: "completed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := "subtitle-compose-retry-" + test.name
+			subtitleExtractionOperations.Lock()
+			subtitleExtractionOperations.items[id] = &subtitleExtractionOperation{ID: id, Kind: "compose", Status: test.status, Retryable: true, compositionRequest: &request}
+			subtitleExtractionOperations.Unlock()
+			defer func() {
+				subtitleExtractionOperations.Lock()
+				delete(subtitleExtractionOperations.items, id)
+				subtitleExtractionOperations.Unlock()
+			}()
+			if _, err := subtitleCompositionRetryRequest(id); err == nil {
+				t.Fatalf("%s composition was accepted for retry", test.status)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name   string
+		status string
+	}{
+		{name: "failed", status: "error"},
+		{name: "cancelled", status: "cancelled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := "subtitle-compose-retry-" + test.name
+			subtitleExtractionOperations.Lock()
+			subtitleExtractionOperations.items[id] = &subtitleExtractionOperation{ID: id, Kind: "compose", Status: test.status, Retryable: true, compositionRequest: &request}
+			subtitleExtractionOperations.Unlock()
+			defer func() {
+				subtitleExtractionOperations.Lock()
+				delete(subtitleExtractionOperations.items, id)
+				subtitleExtractionOperations.Unlock()
+			}()
+			if _, err := subtitleCompositionRetryRequest(id); err != nil {
+				t.Fatalf("%s composition was not accepted for retry: %v", test.status, err)
+			}
+		})
+	}
+}
+
+func TestSubtitleCompositionRetryPreservesTerminalOperationAndRejectsStaleSnapshot(t *testing.T) {
+	directory := t.TempDir()
+	request := compositionOperationRequestFixture(t, directory)
+	oldID := "subtitle-compose-retry-old"
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[oldID] = &subtitleExtractionOperation{ID: oldID, Kind: "compose", Status: "error", Retryable: true, compositionRequest: &request}
+	subtitleExtractionOperations.Unlock()
+	newRequest, err := subtitleCompositionRetryRequest(oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID, err := startSubtitleCompositionOperation(newRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := waitForSubtitleCompositionOperation(t, newID)
+	if newID == oldID || completed.Status != "completed" || completed.Retryable {
+		t.Fatalf("retry did not create an independent successful operation: old=%s new=%s result=%#v", oldID, newID, completed)
+	}
+	subtitleExtractionOperations.RLock()
+	old := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[oldID])
+	subtitleExtractionOperations.RUnlock()
+	if old.Status != "error" {
+		t.Fatalf("old composition operation was mutated by retry: %#v", old)
+	}
+
+	staleID := "subtitle-compose-retry-stale"
+	if err := os.WriteFile(strings.TrimPrefix(request.Supplementals[0].Source.Identity, "external:"), []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[staleID] = &subtitleExtractionOperation{ID: staleID, Kind: "compose", Status: "error", Retryable: true, compositionRequest: &request}
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, oldID)
+		delete(subtitleExtractionOperations.items, newID)
+		delete(subtitleExtractionOperations.items, staleID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	if _, err := subtitleCompositionRetryRequest(staleID); !errors.Is(err, errSubtitleCompositionRetryStaleSource) {
+		t.Fatalf("stale composition retry error=%v", err)
+	}
+}
+
+func TestSubtitleCompositionTerminalRetryabilityDistinguishesStaleAndCancelled(t *testing.T) {
+	staleID := "subtitle-compose-terminal-stale"
+	cancelledID := "subtitle-compose-terminal-cancelled"
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[staleID] = &subtitleExtractionOperation{ID: staleID, Kind: "compose", Status: "running", publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.items[cancelledID] = &subtitleExtractionOperation{ID: cancelledID, Kind: "compose", Status: "running", publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, staleID)
+		delete(subtitleExtractionOperations.items, cancelledID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	finishSubtitleCompositionOperation(staleID, context.Background(), errors.New("stale_source: frozen source changed"), false)
+	stale := snapshotSubtitleOperation(staleID)
+	if stale.Status != "error" || stale.Retryable {
+		t.Fatalf("stale terminal retryability=%#v", stale)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	finishSubtitleCompositionOperation(cancelledID, ctx, context.Canceled, false)
+	cancelled := snapshotSubtitleOperation(cancelledID)
+	if cancelled.Status != "cancelled" || !cancelled.Retryable {
+		t.Fatalf("cancelled terminal retryability=%#v", cancelled)
 	}
 }
 

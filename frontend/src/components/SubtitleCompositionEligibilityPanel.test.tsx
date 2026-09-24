@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SubtitleCompositionEligibility } from '../api/types';
 import { SubtitleCompositionEligibilityPanel } from './SubtitleCompositionEligibilityPanel';
@@ -52,6 +52,15 @@ describe('SubtitleCompositionEligibilityPanel', () => {
     rerender(<SubtitleCompositionEligibilityPanel eligibility={eligible} operation={{ id: 'compose-1', assetPath: '/asset.mkv', status: 'error', phase: 'error', progress: 42, processed: 0, total: 0, streamIndex: -1, format: 'ass', kind: 'compose', error: 'conflict', retryable: true, createdAt: '', updatedAt: '' }} onRetry={onRetry} />);
     expect(screen.getByText('conflict')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses backend retryable state without inferring retryability from terminal status', () => {
+    const onRetry = vi.fn();
+    const { container, rerender } = render(<SubtitleCompositionEligibilityPanel eligibility={eligible} operation={{ id: 'compose-completed', assetPath: '/asset.mkv', status: 'completed', phase: 'completed', progress: 100, processed: 1, total: 1, streamIndex: -1, format: 'ass', kind: 'compose', retryable: false, createdAt: '', updatedAt: '' }} onRetry={onRetry} />);
+    expect(within(container).queryByRole('button', { name: 'Retry' })).toBeNull();
+    rerender(<SubtitleCompositionEligibilityPanel eligibility={eligible} operation={{ id: 'compose-cancelled', assetPath: '/asset.mkv', status: 'cancelled', phase: 'cleanup', progress: 42, processed: 0, total: 0, streamIndex: -1, format: 'ass', kind: 'compose', retryable: true, createdAt: '', updatedAt: '' }} onRetry={onRetry} />);
+    fireEvent.click(within(container).getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });

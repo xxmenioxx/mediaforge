@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -68,6 +69,40 @@ type subtitleCompositionStagedAttachment struct {
 }
 
 var subtitleCompositionBeforePublicationHook func()
+
+var subtitleCompositionRunCommand = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	return runSubtitleCommand(ctx, name, args, stdout, stderr)
+}
+
+func extractEmbeddedSubtitleCompositionDocument(ctx context.Context, mediaPath string, stream FFProbeStream) (assDocument, error) {
+	format, muxer, supported := originalSubtitleExtractionFormat(stream.CodecName)
+	if !supported || isBitmapSubtitleCodecName(stream.CodecName) || (format != "ass" && format != "ssa" && format != "srt") {
+		return assDocument{}, fmt.Errorf("embedded subtitle codec %q is not supported by the canonical text extraction boundary", stream.CodecName)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(mediaPath), ".mvforge-subtitle-compose-source-*")
+	if err != nil {
+		return assDocument{}, err
+	}
+	temporaryPath := temporary.Name()
+	if closeErr := temporary.Close(); closeErr != nil {
+		_ = os.Remove(temporaryPath)
+		return assDocument{}, closeErr
+	}
+	defer os.Remove(temporaryPath)
+	args := originalSubtitleExtractionArgs(MediaJobPlan{InputPath: mediaPath}, stream.Index, muxer, temporaryPath)
+	var stderr bytes.Buffer
+	if err := subtitleCompositionRunCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
+		return assDocument{}, fmt.Errorf("embedded subtitle extraction failed: %s", fallback(strings.TrimSpace(stderr.String()), err.Error()))
+	}
+	content, err := os.ReadFile(temporaryPath)
+	if err != nil {
+		return assDocument{}, err
+	}
+	if format == "srt" {
+		return parseCompositionSRT(string(content))
+	}
+	return parseASSDocument(format, string(content))
+}
 
 func currentSubtitleCompositionSourceRevision(source SubtitleCompositionSource) (string, error) {
 	identity := strings.TrimSpace(source.Identity)
@@ -282,6 +317,8 @@ func (h AssetHandler) prepareSubtitleCompositionRequest(mediaPath string, input 
 		if representation == "" {
 			representation = strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 		}
+		var embeddedStream FFProbeStream
+		hasEmbeddedStream := false
 		if isEmbedded && !isCanonicalOCR {
 			if representation == "bitmap" || representation == "pgs" || representation == "vobsub" {
 				return SubtitleCompositionDocument{}, fmt.Errorf("bitmap composition requires the existing canonical OCR result")
@@ -294,7 +331,38 @@ func (h AssetHandler) prepareSubtitleCompositionRequest(mediaPath string, input 
 				if stream.Index == requested.StreamIndex && isBitmapSubtitleCodecName(stream.CodecName) {
 					return SubtitleCompositionDocument{}, fmt.Errorf("bitmap composition requires the existing canonical OCR result")
 				}
+				if stream.Index == requested.StreamIndex && strings.EqualFold(strings.TrimSpace(stream.CodecType), "subtitle") {
+					embeddedStream, hasEmbeddedStream = stream, true
+				}
 			}
+			if !hasEmbeddedStream {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle stream %d is unavailable", requested.StreamIndex)
+			}
+			resolvedRepresentation := subtitleRepresentationForCodec(embeddedStream.CodecName)
+			if resolvedRepresentation == "" {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle codec %q is unsupported", embeddedStream.CodecName)
+			}
+			if representation != "" && representation != resolvedRepresentation {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle representation %q does not match codec %q", representation, embeddedStream.CodecName)
+			}
+			representation = resolvedRepresentation
+			role := classifyEmbeddedSubtitleRole(mediaPath, embeddedStream)
+			if role.Role == SubtitleRoleUnknown {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle stream %d has ambiguous semantic role", requested.StreamIndex)
+			}
+			if requested.Role != "" && requested.Role != role.Role {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle stream %d role does not match canonical classifier", requested.StreamIndex)
+			}
+			resolvedLanguage := normalizedTrackLanguage(embeddedStream.Tags["language"])
+			if requested.Language != "" && normalizedTrackLanguage(requested.Language) != resolvedLanguage {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle stream %d language does not match canonical source", requested.StreamIndex)
+			}
+			requested.Language = resolvedLanguage
+			requested.Role = role.Role
+			requested.RoleProvenance = role.Provenance
+			requested.RoleConfidence = role.Confidence
+			requested.RoleClassifierVersion = role.ClassifierVersion
+			requested.RoleOverrideState = role.OverrideState
 		}
 		if isCanonicalOCR {
 			snapshot, valid := loadPublishedCanonicalOCRSnapshot(path, representation, requested.CanonicalOCRLogicalTransform)
@@ -324,23 +392,10 @@ func (h AssetHandler) prepareSubtitleCompositionRequest(mediaPath string, input 
 			if requested.StreamIndex < 0 {
 				return SubtitleCompositionDocument{}, fmt.Errorf("bitmap composition requires the existing canonical OCR result")
 			}
-			temporary, tempErr := os.CreateTemp(filepath.Dir(mediaPath), ".mvforge-subtitle-compose-source-*.ass")
-			if tempErr != nil {
-				return SubtitleCompositionDocument{}, tempErr
+			if !hasEmbeddedStream {
+				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle stream %d is unavailable", requested.StreamIndex)
 			}
-			temporaryPath := temporary.Name()
-			_ = temporary.Close()
-			defer os.Remove(temporaryPath)
-			args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", mediaPath, "-map", fmt.Sprintf("0:%d", requested.StreamIndex), "-vn", "-an", "-c:s", "copy", "-f", "ass", temporaryPath}
-			var stderr bytes.Buffer
-			if commandErr := runSubtitleCommand(context.Background(), "ffmpeg", args, nil, &stderr); commandErr != nil {
-				return SubtitleCompositionDocument{}, fmt.Errorf("embedded subtitle extraction failed: %s", fallback(strings.TrimSpace(stderr.String()), commandErr.Error()))
-			}
-			content, readErr := os.ReadFile(temporaryPath)
-			if readErr != nil {
-				return SubtitleCompositionDocument{}, readErr
-			}
-			document, err = parseASSDocument("ass", string(content))
+			document, err = extractEmbeddedSubtitleCompositionDocument(context.Background(), mediaPath, embeddedStream)
 		} else {
 			content, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -617,6 +672,7 @@ func finishSubtitleCompositionOperation(operationID string, ctx context.Context,
 			operation.Status = "cancelled"
 			operation.Phase = "cleanup"
 			operation.Message = "Subtitle composition cancelled"
+			operation.Retryable = true
 		})
 		return
 	}
@@ -730,21 +786,14 @@ func publishSubtitleCompositionUnit(operationID string, ctx context.Context, req
 }
 
 func (h AssetHandler) retrySubtitleComposition(c *gin.Context, operationID string) {
-	subtitleExtractionOperations.RLock()
-	original, exists := subtitleExtractionOperations.items[operationID]
-	if !exists || original.compositionRequest == nil {
-		subtitleExtractionOperations.RUnlock()
-		c.JSON(http.StatusConflict, gin.H{"error": "subtitle composition operation is not retryable"})
+	request, err := subtitleCompositionRetryRequest(operationID)
+	if errors.Is(err, errSubtitleCompositionRetryStaleSource) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "stale_source", "retryable": false})
 		return
 	}
-	request := cloneSubtitleCompositionOperationRequest(*original.compositionRequest)
-	subtitleExtractionOperations.RUnlock()
-	for _, document := range append([]SubtitleCompositionDocument{request.Primary}, request.Supplementals...) {
-		current, err := currentSubtitleCompositionSourceRevision(document.Source)
-		if err != nil || current != document.Source.Revision {
-			c.JSON(http.StatusConflict, gin.H{"error": "one or more frozen composition sources are stale", "code": "stale_source", "retryable": false})
-			return
-		}
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "retryable": false})
+		return
 	}
 	newOperationID, err := startSubtitleCompositionOperation(request)
 	if err != nil {
@@ -755,4 +804,37 @@ func (h AssetHandler) retrySubtitleComposition(c *gin.Context, operationID strin
 	operation := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[newOperationID])
 	subtitleExtractionOperations.RUnlock()
 	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
+}
+
+var errSubtitleCompositionRetryStaleSource = errors.New("one or more frozen composition sources are stale")
+
+func subtitleCompositionRetryRequest(operationID string) (subtitleCompositionOperationRequest, error) {
+	subtitleExtractionOperations.RLock()
+	original, exists := subtitleExtractionOperations.items[operationID]
+	if !exists {
+		subtitleExtractionOperations.RUnlock()
+		return subtitleCompositionOperationRequest{}, errors.New("subtitle composition operation is not found")
+	}
+	if original.Kind != "compose" || original.compositionRequest == nil {
+		subtitleExtractionOperations.RUnlock()
+		return subtitleCompositionOperationRequest{}, errors.New("subtitle composition operation is not retryable")
+	}
+	if original.Status == "running" {
+		subtitleExtractionOperations.RUnlock()
+		return subtitleCompositionOperationRequest{}, errors.New("running subtitle composition cannot be retried")
+	}
+	if original.Status != "error" && original.Status != "cancelled" {
+		subtitleExtractionOperations.RUnlock()
+		return subtitleCompositionOperationRequest{}, errors.New("only failed or cancelled subtitle composition can be retried")
+	}
+	if !original.Retryable {
+		subtitleExtractionOperations.RUnlock()
+		return subtitleCompositionOperationRequest{}, errors.New("subtitle composition operation is not retryable")
+	}
+	request := cloneSubtitleCompositionOperationRequest(*original.compositionRequest)
+	subtitleExtractionOperations.RUnlock()
+	if err := validateFrozenSubtitleCompositionSources(request); err != nil {
+		return subtitleCompositionOperationRequest{}, fmt.Errorf("%w: %v", errSubtitleCompositionRetryStaleSource, err)
+	}
+	return request, nil
 }

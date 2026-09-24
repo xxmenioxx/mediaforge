@@ -3207,7 +3207,7 @@ async function restoreSubtitleOperations() {
 			(operationUpdate) => setSubtitleCompositionOperation(operationUpdate),
           api.subtitleOperation,
         ).catch((error) => {
-          setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: error instanceof Error ? error.message : 'Subtitle composition failed.', retryable: true } : current);
+          setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: error instanceof Error ? error.message : 'Subtitle composition failed.' } : current);
         });
         continue;
       }
@@ -3282,7 +3282,7 @@ async function composeSubtitles(input: SubtitleCompositionInput) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Subtitle composition failed.';
     setSubtitleCompositionError(message);
-    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message, retryable: true } : current);
+    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message } : current);
   }
 }
 
@@ -3316,7 +3316,7 @@ async function retrySubtitleComposition() {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Subtitle composition retry failed.';
     setSubtitleCompositionError(message);
-    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message, retryable: true } : current);
+    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message } : current);
   }
 }
 
