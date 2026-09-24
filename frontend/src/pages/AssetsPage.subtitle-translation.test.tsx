@@ -137,4 +137,47 @@ describe('Asset Info translation source controls', () => {
     expect(onTranslate).not.toHaveBeenCalledWith(expect.objectContaining({ path: '/media/episode.eng.ass' }));
     expect(onTranslate).not.toHaveBeenCalledWith(expect.objectContaining({ path: '/media/episode.jpn.ass' }));
   });
+
+  it('shows exact identity and explicit publication/override controls before restyle', async () => {
+    const user = userEvent.setup();
+    const onRestyle = vi.fn();
+    const exact = {
+      path: '/media/episode.eng.forced.ass',
+      fileName: 'episode.eng.forced.ass',
+      format: 'ass',
+      language: 'eng',
+      default: false,
+      forced: true,
+      sizeBytes: 100,
+      modifiedAt: '',
+      sourceRevision: 'sidecar-revision-1',
+    } as never;
+    render(
+      <ExternalSubtitleList
+        values={[exact]}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRestyle={onRestyle}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Restyle' }));
+    expect(screen.getByText('Revision: sidecar-revision-1')).toBeTruthy();
+    await user.click(screen.getByRole('switch', { name: 'Replace the selected sidecar (explicit opt-in)' }));
+    await user.click(screen.getByRole('switch', { name: 'Override eligible native ASS styles for this operation' }));
+    await user.click(screen.getByRole('button', { name: 'Start restyle' }));
+    expect(onRestyle).toHaveBeenCalledWith(exact, 'restyle', { replace: true, overrideExistingASSStyles: true });
+  });
+
+  it('exposes embedded regeneration through the existing subtitle action lifecycle', async () => {
+    const user = userEvent.setup();
+    const onRegenerate = vi.fn();
+    render(<EmbeddedSubtitleActions streams={[stream]} generations={{}} onGenerate={vi.fn()} onCancel={vi.fn()} onRegenerate={onRegenerate} />);
+    await user.click(screen.getByRole('button', { name: 'Regenerate styled ASS' }));
+    expect(onRegenerate).toHaveBeenCalledWith(4);
+  });
 });

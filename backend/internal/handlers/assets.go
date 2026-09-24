@@ -43,11 +43,13 @@ type SubtitleExtractionResult struct {
 }
 
 type SubtitleExtractionInput struct {
-	StreamIndex               *int   `json:"streamIndex"`
-	Format                    string `json:"format"`
-	OCRLanguage               string `json:"ocrLanguage,omitempty"`
-	OCRMode                   string `json:"ocrMode,omitempty"`
-	GenerateSRTFallbackForASS bool   `json:"-"`
+	StreamIndex               *int                `json:"streamIndex"`
+	Format                    string              `json:"format"`
+	OCRLanguage               string              `json:"ocrLanguage,omitempty"`
+	OCRMode                   string              `json:"ocrMode,omitempty"`
+	GenerateSRTFallbackForASS bool                `json:"-"`
+	SubtitleStyling           SubtitleStylePolicy `json:"-"`
+	SourceRevision            string              `json:"-"`
 }
 
 type ExternalSubtitle struct {
@@ -62,6 +64,7 @@ type ExternalSubtitle struct {
 	OCRManaged           bool      `json:"ocrManaged,omitempty"`
 	OCRAnalysisAvailable bool      `json:"ocrAnalysisAvailable,omitempty"`
 	LogicalTransformKey  string    `json:"logicalTransformKey,omitempty"`
+	SourceRevision       string    `json:"sourceRevision,omitempty"`
 }
 
 type ExternalSubtitleUpdateInput struct {
@@ -103,6 +106,7 @@ type subtitleExtractionOperation struct {
 	Error                  string                            `json:"error,omitempty"`
 	CreatedAt              time.Time                         `json:"createdAt"`
 	UpdatedAt              time.Time                         `json:"updatedAt"`
+	StylePolicyVersion     string                            `json:"stylePolicyVersion,omitempty"`
 	translationRequest     *subtitleTranslationOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
@@ -1308,6 +1312,14 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 	input.GenerateSRTFallbackForASS = generateSRTFallbackForASSSetting(h.db)
+	input.SubtitleStyling = subtitleStylingPolicyFromDB(h.db)
+	if strings.TrimSpace(input.SourceRevision) == "" {
+		input.SourceRevision, err = mediaFileFingerprint(path)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "the exact subtitle source revision is unavailable"})
+			return
+		}
+	}
 	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
 	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
 	if len(plans) == 0 && len(bitmapStreams) == 0 {
@@ -3073,11 +3085,12 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 			}
 		}
 		sidecarPath := filepath.Join(directory, entry.Name())
+		sourceRevision, _ := mediaFileFingerprint(sidecarPath)
 		ocrManaged, ocrAnalysisAvailable, logicalTransformKey := publishedOCRExternalOwnershipFromIndex(ocrOwnershipIndex, sidecarPath, ext)
 		values = append(values, ExternalSubtitle{
 			Path: sidecarPath, FileName: entry.Name(), Format: ext,
 			Language: language, Default: isDefault, Forced: forced, SizeBytes: info.Size(), ModifiedAt: info.ModTime(),
-			OCRManaged: ocrManaged, OCRAnalysisAvailable: ocrAnalysisAvailable, LogicalTransformKey: logicalTransformKey,
+			OCRManaged: ocrManaged, OCRAnalysisAvailable: ocrAnalysisAvailable, LogicalTransformKey: logicalTransformKey, SourceRevision: sourceRevision,
 		})
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].FileName < values[j].FileName })
@@ -3086,7 +3099,7 @@ func externalSubtitlesForMedia(mediaPath string) ([]ExternalSubtitle, error) {
 
 func externalSubtitleNameForStem(name, stem string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
-	if ext != ".srt" && ext != ".ass" {
+	if ext != ".srt" && ext != ".ass" && ext != ".ssa" {
 		return false
 	}
 	base := strings.TrimSuffix(name, filepath.Ext(name))

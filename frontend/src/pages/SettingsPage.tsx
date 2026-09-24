@@ -836,7 +836,16 @@ export function SettingsPage() {
                 key={JSON.stringify(subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
                 value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
                 saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value })}
+                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value: { ...(settings.data?.find((item) => item.key === 'subtitleSettings')?.value ?? {}), ...value } })}
+              />
+            ) : null}
+
+            {section === 'pipeline' ? (
+              <SubtitleStylingCard
+                key={JSON.stringify(subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
+                value={subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value: { ...(settings.data?.find((item) => item.key === 'subtitleSettings')?.value ?? {}), subtitleStyling: value as unknown as Record<string, unknown> } })}
               />
             ) : null}
 
@@ -1947,6 +1956,152 @@ function PipelineAutomationCard({ form, setForm }: SettingsCardProps) {
 export type SubtitleSRTFallbackSettings = {
   generateSRTFallbackForASS: boolean;
 };
+
+export type SubtitleStylePresetSettings = {
+  id: string;
+  displayName: string;
+  primaryColor: string;
+  outlineColor: string;
+  shadowBackColor: string;
+  opacity: number;
+  fontFamily: string;
+  fontSize: number;
+  autoFontSize: boolean;
+  bold: boolean;
+  outlineWidth: number;
+  shadowDepth: number;
+  alignmentBehavior: 'bottom' | 'top' | 'center' | 'auto';
+  provenance: 'builtIn' | 'custom';
+};
+
+export type SubtitleStylingSettings = {
+  version: number;
+  enabled: boolean;
+  applyToGeneratedASS: boolean;
+  preserveSourceStyles: boolean;
+  overrideExistingASSStyles: boolean;
+  builtInOverrides: Record<string, Partial<SubtitleStylePresetSettings>>;
+  customPresets: SubtitleStylePresetSettings[];
+  savedColors: string[];
+  recentColors: string[];
+};
+
+const subtitleStyleDefaults: SubtitleStylePresetSettings[] = [
+  { id: 'MVF_Default', displayName: 'Default', primaryColor: '#FFFFFF', outlineColor: '#000000', shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 20, autoFontSize: false, bold: false, outlineWidth: 2, shadowDepth: 0, alignmentBehavior: 'bottom', provenance: 'builtIn' },
+  { id: 'MVF_Top', displayName: 'Top', primaryColor: '#FFFF00', outlineColor: '#000000', shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 20, autoFontSize: false, bold: false, outlineWidth: 2, shadowDepth: 0, alignmentBehavior: 'top', provenance: 'builtIn' },
+  { id: 'MVF_Lyrics', displayName: 'Lyrics', primaryColor: '#00FFFF', outlineColor: '#000000', shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 20, autoFontSize: false, bold: false, outlineWidth: 2, shadowDepth: 0, alignmentBehavior: 'bottom', provenance: 'builtIn' },
+  { id: 'MVF_Sign', displayName: 'Sign', primaryColor: '#90EE90', outlineColor: '#000000', shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 20, autoFontSize: false, bold: false, outlineWidth: 2, shadowDepth: 0, alignmentBehavior: 'center', provenance: 'builtIn' },
+];
+
+const subtitleStylePalette = ['#FFFFFF', '#FFF4D6', '#FFFF00', '#FFD700', '#00FFFF', '#7FDBFF', '#90EE90', '#FF9ED2', '#FFA500', '#C4A7E7'];
+
+export function subtitleStylingValue(value: Record<string, unknown> | undefined): SubtitleStylingSettings {
+  const raw = value?.subtitleStyling as Record<string, unknown> | undefined;
+  const builtInOverrides = raw?.builtInOverrides && typeof raw.builtInOverrides === 'object'
+    ? raw.builtInOverrides as Record<string, Partial<SubtitleStylePresetSettings>>
+    : {};
+  const customPresets = Array.isArray(raw?.customPresets) ? raw.customPresets.filter((preset): preset is SubtitleStylePresetSettings => Boolean(preset) && typeof preset === 'object' && typeof (preset as { id?: unknown }).id === 'string') : [];
+  const colors = (key: 'savedColors' | 'recentColors', limit: number) => Array.isArray(raw?.[key])
+    ? [...new Set(raw[key].filter((item): item is string => typeof item === 'string' && /^#[0-9a-f]{6}$/i.test(item)).map((item) => item.toUpperCase()))].slice(0, limit)
+    : [];
+  return {
+    version: 1,
+    enabled: raw?.enabled === true,
+    applyToGeneratedASS: raw?.applyToGeneratedASS !== false,
+    preserveSourceStyles: raw?.preserveSourceStyles !== false,
+    overrideExistingASSStyles: raw?.overrideExistingASSStyles === true,
+    builtInOverrides,
+    customPresets,
+    savedColors: colors('savedColors', 32),
+    recentColors: colors('recentColors', 12),
+  };
+}
+
+function subtitlePresetValue(settings: SubtitleStylingSettings, id: string): SubtitleStylePresetSettings {
+  const base = subtitleStyleDefaults.find((preset) => preset.id === id) ?? settings.customPresets.find((preset) => preset.id === id) ?? subtitleStyleDefaults[0];
+  const override = settings.builtInOverrides[id] ?? {};
+  return { ...base, ...override, id: base.id, provenance: base.provenance };
+}
+
+export function SubtitleStylingCard({ value, saving, onSave }: { value: SubtitleStylingSettings; saving: boolean; onSave: (value: SubtitleStylingSettings) => void }) {
+  const [draft, setDraft] = useState(value);
+  const [selectedID, setSelectedID] = useState('MVF_Default');
+  useEffect(() => setDraft(value), [value]);
+  const preset = subtitlePresetValue(draft, selectedID);
+  const updatePreset = (key: keyof SubtitleStylePresetSettings, next: string | number | boolean) => {
+    setDraft((current) => {
+      const recentColors = typeof next === 'string' && /^#[0-9a-f]{6}$/i.test(next)
+        ? [next.toUpperCase(), ...current.recentColors.filter((color) => color.toUpperCase() !== next.toUpperCase())].slice(0, 12)
+        : current.recentColors;
+      if (selectedID.startsWith('custom_')) {
+        return {
+          ...current,
+          customPresets: current.customPresets.map((custom) => custom.id === selectedID ? { ...custom, [key]: next } : custom),
+          recentColors,
+        };
+      }
+      return {
+        ...current,
+        builtInOverrides: {
+          ...current.builtInOverrides,
+          [selectedID]: { ...current.builtInOverrides[selectedID], [key]: next },
+        },
+        recentColors,
+      };
+    });
+  };
+  const addCustomPreset = () => {
+    const id = `custom_${Date.now().toString(36)}`;
+    const custom: SubtitleStylePresetSettings = { ...subtitleStyleDefaults[0], id, displayName: 'Custom style', provenance: 'custom' };
+    setDraft((current) => ({ ...current, customPresets: [...current.customPresets, custom] }));
+    setSelectedID(id);
+  };
+  const selectPaletteColor = (color: string) => updatePreset('primaryColor', color);
+  const previewStyle = preset as SubtitleStylePresetSettings;
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack>
+            <Typography variant="h3">Position-aware subtitle styling</Typography>
+            <Typography color="text.secondary" variant="body2">Configure reusable MVForge styles. The backend resolves roles and emits authoritative ASS; this browser preview is intentionally approximate.</Typography>
+          </Stack>
+          <FormControlLabel control={<Switch checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} />} label="Enable position-aware styling" />
+          <FormControlLabel control={<Switch checked={draft.applyToGeneratedASS} disabled={!draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, applyToGeneratedASS: event.target.checked }))} />} label="Style generated subtitles" />
+          <FormControlLabel control={<Switch checked={draft.preserveSourceStyles} disabled={!draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, preserveSourceStyles: event.target.checked }))} />} label="Preserve source styles" />
+          <FormControlLabel control={<Switch checked={draft.overrideExistingASSStyles} disabled={!draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, overrideExistingASSStyles: event.target.checked }))} />} label="Override existing ASS styles" />
+          {draft.enabled && draft.overrideExistingASSStyles ? <Alert severity="warning">Native ASS/SSA appearance and eligible event style assignments may change. Text, timing, positioning, karaoke, and source definitions remain protected.</Alert> : null}
+          <TextField select label="Style preset" value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
+            {subtitleStyleDefaults.map((option) => <MenuItem key={option.id} value={option.id}>{option.displayName} · {option.id}</MenuItem>)}
+            {draft.customPresets.map((option) => <MenuItem key={option.id} value={option.id}>{option.displayName} · custom</MenuItem>)}
+          </TextField>
+          <Button variant="outlined" onClick={addCustomPreset}>Add custom style</Button>
+          <Grid container spacing={1.5}>
+            {selectedID.startsWith('custom_') ? <Grid size={{ xs: 12, md: 4 }}><TextField label="Display name" value={preset.displayName} onChange={(event) => updatePreset('displayName', event.target.value)} fullWidth /></Grid> : null}
+            {(['primaryColor', 'outlineColor', 'shadowBackColor'] as const).map((key) => (
+              <Grid key={key} size={{ xs: 12, md: 4 }}>
+                <TextField type="color" label={key === 'primaryColor' ? 'Primary color' : key === 'outlineColor' ? 'Outline color' : 'Shadow/back color'} value={preset[key]} onChange={(event) => updatePreset(key, event.target.value)} fullWidth InputLabelProps={{ shrink: true }} helperText="HEX #RRGGBB; backend normalizes and validates" />
+              </Grid>
+            ))}
+            <Grid size={{ xs: 12, md: 4 }}><TextField label="Opacity" type="number" inputProps={{ min: 0, max: 100 }} value={preset.opacity} onChange={(event) => updatePreset('opacity', Math.max(0, Math.min(100, Number(event.target.value))))} fullWidth /></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><TextField label="Font family" value={preset.fontFamily} onChange={(event) => updatePreset('fontFamily', event.target.value)} fullWidth /></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><TextField select label="Alignment fallback" value={preset.alignmentBehavior} onChange={(event) => updatePreset('alignmentBehavior', event.target.value)} fullWidth><MenuItem value="bottom">Bottom</MenuItem><MenuItem value="top">Top</MenuItem><MenuItem value="center">Center</MenuItem><MenuItem value="auto">Automatic geometry</MenuItem></TextField></Grid>
+          </Grid>
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {subtitleStylePalette.map((color) => <Button key={color} size="small" variant="outlined" onClick={() => selectPaletteColor(color)} sx={{ minWidth: 42, bgcolor: color, color: '#111' }} aria-label={`Use ${color}`}>{color.slice(1)}</Button>)}
+          </Stack>
+          <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: '#16181d', color: '#fff' }}>
+            <Typography variant="caption" color="inherit">Preview · browser approximation (font availability, libass metrics, outline scaling may differ)</Typography>
+            <Stack spacing={1} sx={{ mt: 1 }}>
+              {['Top note', 'Dialogue', 'Lyrics / sign'].map((label, index) => <Box key={label} sx={{ p: 1, bgcolor: index === 1 ? '#f0f0f0' : index === 2 ? '#8b806c' : '#16181d', color: previewStyle.primaryColor, textShadow: `1px 1px 0 ${previewStyle.outlineColor}, 2px 2px 0 ${previewStyle.shadowBackColor}`, textAlign: index === 0 ? 'center' : 'left' }}>{label}</Box>)}
+            </Stack>
+          </Box>
+          <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function subtitleSRTFallbackValue(value: Record<string, unknown> | undefined): SubtitleSRTFallbackSettings {
   return {

@@ -306,7 +306,7 @@ export type TestEncodeInput = {
 export type ExternalSubtitle = {
   path: string;
   fileName: string;
-  format: 'srt' | 'ass';
+  format: 'srt' | 'ass' | 'ssa';
   language?: string;
   default: boolean;
   forced: boolean;
@@ -315,6 +315,7 @@ export type ExternalSubtitle = {
   ocrManaged?: boolean;
   ocrAnalysisAvailable?: boolean;
   logicalTransformKey?: string;
+  sourceRevision?: string;
 };
 
 export type SubtitleTranslationSourceSelector =
@@ -2181,6 +2182,21 @@ export type SubtitleOCRQualityReport = {
 
 export type SubtitleExtractionOperationList = {
   operations: SubtitleExtractionOperation[];
+};
+
+export type SubtitleRestyleInput = {
+  path: string;
+  sourcePath: string;
+  sourceRevision?: string;
+  representation: 'srt' | 'ass' | 'ssa';
+  language?: string;
+  role?: SubtitleSemanticRole;
+  mode: 'restyle' | 'srt_to_ass' | 'regenerate';
+  replace?: boolean;
+  overrideExistingASSStyles?: boolean;
+  streamIndex?: number;
+  ocrLanguage?: string;
+  ocrMode?: string;
 };
 
 export type RemoteStorageMapping = {

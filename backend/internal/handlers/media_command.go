@@ -40,6 +40,7 @@ type MediaJobPlan struct {
 	OutputMetadata               map[string]string
 	IndependentSubtitleArtifacts bool
 	AllowEmptySubtitleArtifacts  bool
+	SubtitleStyling              SubtitleStylePolicy
 }
 
 type MediaStreamInventory struct {

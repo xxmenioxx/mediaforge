@@ -12,37 +12,51 @@ const (
 	maxTranslationProtectedAnchors   = 256
 )
 
-type translationASSDocument struct {
+// assDocument is the shared source-preserving ASS/SSA structural boundary.
+// Translation-specific adapters use the aliases below; Styling and future
+// composition must consume this generic document instead of Translation
+// provider models.
+type assDocument struct {
 	Representation string
 	Source         string
-	Events         []translationASSEvent
+	Events         []assEvent
 }
 
-type translationASSEvent struct {
+type assEvent struct {
 	SourceOrdinal int
 	Start         float64
 	End           float64
 	TextStart     int
 	TextEnd       int
-	Dialogue      translationProtectedDialogue
+	StyleStart    int
+	StyleEnd      int
+	Style         string
+	Format        []string
+	Dialogue      assProtectedDialogue
 }
 
-type translationProtectedDialogue struct {
-	Parts []translationDialoguePart
+type assProtectedDialogue struct {
+	Parts []assDialoguePart
 }
 
-type translationDialoguePart struct {
+type assDialoguePart struct {
 	Protected bool
 	Text      string
 	Anchor    string
 }
 
-func parseTranslationASSDocument(representation, source string) (translationASSDocument, error) {
+// Translation keeps a narrow compatibility adapter over the generic document.
+type translationASSDocument = assDocument
+type translationASSEvent = assEvent
+type translationProtectedDialogue = assProtectedDialogue
+type translationDialoguePart = assDialoguePart
+
+func parseASSDocument(representation, source string) (assDocument, error) {
 	representation = strings.ToLower(strings.TrimSpace(representation))
 	if representation != "ass" && representation != "ssa" {
-		return translationASSDocument{}, fmt.Errorf("unsupported ASS/SSA representation %q", representation)
+		return assDocument{}, fmt.Errorf("unsupported ASS/SSA representation %q", representation)
 	}
-	document := translationASSDocument{Representation: representation, Source: source}
+	document := assDocument{Representation: representation, Source: source}
 	inEvents := false
 	var eventFormat []string
 	lineStart := 0
@@ -60,16 +74,16 @@ func parseTranslationASSDocument(representation, source string) (translationASSD
 			if strings.HasPrefix(strings.ToLower(trimmed), "format:") {
 				parsed, err := parseTranslationEventFormat(trimmed)
 				if err != nil {
-					return translationASSDocument{}, err
+					return assDocument{}, err
 				}
 				eventFormat = parsed
 			} else if strings.HasPrefix(strings.ToLower(trimmed), "dialogue:") {
 				if len(eventFormat) == 0 {
-					return translationASSDocument{}, fmt.Errorf("dialogue event has no active Events Format")
+					return assDocument{}, fmt.Errorf("dialogue event has no active Events Format")
 				}
 				event, err := parseTranslationASSEvent(line, lineStart, eventFormat, dialogueOrdinal)
 				if err != nil {
-					return translationASSDocument{}, err
+					return assDocument{}, err
 				}
 				document.Events = append(document.Events, event)
 				dialogueOrdinal++
@@ -81,9 +95,13 @@ func parseTranslationASSDocument(representation, source string) (translationASSD
 		lineStart = lineEnd
 	}
 	if len(eventFormat) == 0 {
-		return translationASSDocument{}, fmt.Errorf("ASS/SSA document has no Events Format")
+		return assDocument{}, fmt.Errorf("ASS/SSA document has no Events Format")
 	}
 	return document, nil
+}
+
+func parseTranslationASSDocument(representation, source string) (translationASSDocument, error) {
+	return parseASSDocument(representation, source)
 }
 
 func parseTranslationEventFormat(line string) ([]string, error) {
@@ -150,14 +168,50 @@ func parseTranslationASSEvent(line string, lineStart int, format []string, sourc
 	if err != nil {
 		return translationASSEvent{}, err
 	}
+	styleStart, styleEnd := -1, -1
+	styleValue := ""
+	if styleIndex, exists := fieldIndex["style"]; exists {
+		styleStart, styleEnd = assEventFieldRange(line[valueStart:], valueStart, styleIndex, len(format))
+		styleValue = fields[styleIndex]
+	}
 	return translationASSEvent{
 		SourceOrdinal: sourceOrdinal,
 		Start:         start,
 		End:           end,
 		TextStart:     lineStart + textStart,
 		TextEnd:       lineStart + len(line),
+		StyleStart:    lineStart + styleStart,
+		StyleEnd:      lineStart + styleEnd,
+		Style:         styleValue,
+		Format:        append([]string(nil), format...),
 		Dialogue:      dialogue,
 	}, nil
+}
+
+func assEventFieldRange(value string, valueOffset, fieldIndex, fieldCount int) (int, int) {
+	if fieldIndex < 0 || fieldIndex >= fieldCount {
+		return -1, -1
+	}
+	start := 0
+	current := 0
+	for index := 0; index <= len(value); index++ {
+		if index < len(value) && value[index] != ',' && index != len(value) {
+			continue
+		}
+		if current == fieldIndex {
+			end := index
+			for start < end && (value[start] == ' ' || value[start] == '\t') {
+				start++
+			}
+			for end > start && (value[end-1] == ' ' || value[end-1] == '\t') {
+				end--
+			}
+			return valueOffset + start, valueOffset + end
+		}
+		current++
+		start = index + 1
+	}
+	return -1, -1
 }
 
 func splitTranslationEventFields(value string, valueOffset, fieldCount int) (int, []string, error) {
@@ -304,7 +358,7 @@ func updateTranslationDrawingMode(block string, drawingMode *bool) {
 	}
 }
 
-func (dialogue translationProtectedDialogue) TranslatableText() string {
+func (dialogue assProtectedDialogue) TranslatableText() string {
 	parts := make([]string, 0, len(dialogue.Parts))
 	for _, part := range dialogue.Parts {
 		if part.Protected {
@@ -316,7 +370,7 @@ func (dialogue translationProtectedDialogue) TranslatableText() string {
 	return strings.Join(parts, "")
 }
 
-func (dialogue translationProtectedDialogue) HasTranslatableText() bool {
+func (dialogue assProtectedDialogue) HasTranslatableText() bool {
 	for _, part := range dialogue.Parts {
 		if !part.Protected && strings.TrimSpace(part.Text) != "" {
 			return true
@@ -325,7 +379,7 @@ func (dialogue translationProtectedDialogue) HasTranslatableText() bool {
 	return false
 }
 
-func (dialogue translationProtectedDialogue) ReconstructProviderText(providerText string) (string, error) {
+func (dialogue assProtectedDialogue) ReconstructProviderText(providerText string) (string, error) {
 	expected := make([]string, 0, len(dialogue.Parts))
 	for _, part := range dialogue.Parts {
 		if part.Protected {
@@ -376,7 +430,7 @@ func (dialogue translationProtectedDialogue) ReconstructProviderText(providerTex
 	return result, nil
 }
 
-func (dialogue translationProtectedDialogue) OriginalTextSegments() []string {
+func (dialogue assProtectedDialogue) OriginalTextSegments() []string {
 	segments := make([]string, 0, len(dialogue.Parts))
 	for _, part := range dialogue.Parts {
 		if !part.Protected {
@@ -386,7 +440,7 @@ func (dialogue translationProtectedDialogue) OriginalTextSegments() []string {
 	return segments
 }
 
-func (dialogue translationProtectedDialogue) ReconstructText(segments []string) (string, error) {
+func (dialogue assProtectedDialogue) ReconstructText(segments []string) (string, error) {
 	textIndex := 0
 	var builder strings.Builder
 	for _, part := range dialogue.Parts {
@@ -406,7 +460,7 @@ func (dialogue translationProtectedDialogue) ReconstructText(segments []string) 
 	return builder.String(), nil
 }
 
-func (document translationASSDocument) ReconstructDialogueSegments(replacements map[int][]string) (string, error) {
+func (document assDocument) ReconstructDialogueSegments(replacements map[int][]string) (string, error) {
 	result := document.Source
 	for index := len(document.Events) - 1; index >= 0; index-- {
 		event := document.Events[index]
@@ -423,7 +477,7 @@ func (document translationASSDocument) ReconstructDialogueSegments(replacements 
 	return result, nil
 }
 
-func (document translationASSDocument) ReconstructDialogueProviderTexts(replacements map[int]string) (string, error) {
+func (document assDocument) ReconstructDialogueProviderTexts(replacements map[int]string) (string, error) {
 	result := document.Source
 	for index := len(document.Events) - 1; index >= 0; index-- {
 		event := document.Events[index]
@@ -440,7 +494,7 @@ func (document translationASSDocument) ReconstructDialogueProviderTexts(replacem
 	return result, nil
 }
 
-func (document translationASSDocument) TranslationSourceCues(sourceIdentity, logicalTransformKey string) []translationSourceCue {
+func (document assDocument) TranslationSourceCues(sourceIdentity, logicalTransformKey string) []translationSourceCue {
 	result := make([]translationSourceCue, 0, len(document.Events))
 	for _, event := range document.Events {
 		if !event.Dialogue.HasTranslatableText() {
