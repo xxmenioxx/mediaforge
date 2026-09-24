@@ -192,9 +192,10 @@ type labPreviewArtifactEvidence struct {
 }
 
 type labPreviewEvidenceCacheEntry struct {
-	Evidence  labPreviewArtifactEvidence
-	Metrics   *previewFrameMetrics
-	UpdatedAt time.Time
+	Evidence      labPreviewArtifactEvidence
+	Metrics       *previewFrameMetrics
+	MetricResults map[string]MetricResult
+	UpdatedAt     time.Time
 }
 
 var labPreviewEvidence = struct {
@@ -261,6 +262,43 @@ func labPreviewEvidenceCachePutMetrics(key string, metrics previewFrameMetrics) 
 		cached.Metrics = &metricsCopy
 		cached.UpdatedAt = time.Now()
 		labPreviewEvidence.items[key] = cached
+	}
+}
+
+// Canonical metric results share the existing bounded LAB evidence cache. The
+// result identity is the lookup key; operation IDs and UI consumers are not.
+// Only complete successful results are published by callers.
+func labPreviewEvidenceCacheGetMetricResult(identity string) (MetricResult, bool) {
+	key := "metric-result:" + identity
+	entry, ok := labPreviewEvidenceCacheGet(key)
+	if !ok || entry.MetricResults == nil {
+		return MetricResult{}, false
+	}
+	result, ok := entry.MetricResults[identity]
+	return result, ok
+}
+
+func labPreviewEvidenceCachePutMetricResult(result MetricResult) {
+	if result.Status != PerceptualMetricAvailable || result.Value == nil {
+		return
+	}
+	key := "metric-result:" + result.Identity.Identity
+	labPreviewEvidence.Lock()
+	defer labPreviewEvidence.Unlock()
+	if len(labPreviewEvidence.items) >= labPreviewEvidenceMaxItems {
+		var oldestKey string
+		var oldestAt time.Time
+		for candidate, existing := range labPreviewEvidence.items {
+			if oldestKey == "" || existing.UpdatedAt.Before(oldestAt) {
+				oldestKey, oldestAt = candidate, existing.UpdatedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(labPreviewEvidence.items, oldestKey)
+		}
+	}
+	labPreviewEvidence.items[key] = labPreviewEvidenceCacheEntry{
+		MetricResults: map[string]MetricResult{result.Identity.Identity: result}, UpdatedAt: time.Now(),
 	}
 }
 
@@ -767,9 +805,17 @@ func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePrev
 		return PerceptualWindowEvidence{}, err
 	}
 
+	referenceProfile := models.Profile{}
+	if descriptor.EffectivePreviewProfile != nil {
+		referenceProfile = *descriptor.EffectivePreviewProfile
+	} else if descriptor.PreviewProfile != nil {
+		referenceProfile = *descriptor.PreviewProfile
+	}
+	referenceFilter, candidateFilter := canonicalComparisonDomainFilters(evidence.Source, evidence.Output, perceptualReferenceFilter(referenceProfile), descriptor.Normalization.Filter)
 	runtimeSnapshot := capabilities.CachedMetricCapabilities(ctx)
 	capabilityValues := make([]MetricCapability, 0, len(runtimeSnapshot.Metrics))
 	results := make([]MetricResult, 0, len(runtimeSnapshot.Metrics))
+	cacheableResults := make([]MetricResult, 0, len(runtimeSnapshot.Metrics))
 	for _, rawCapability := range runtimeSnapshot.Metrics {
 		capability := MetricCapability{
 			Metric: PerceptualMetric(rawCapability.Metric), Provider: rawCapability.Provider,
@@ -785,59 +831,53 @@ func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePrev
 			if capability.Provider == "" {
 				status = PerceptualMetricUnsupported
 			}
-		} else if capability.Metric == PerceptualMetricSSIM || capability.Metric == PerceptualMetricPSNR {
-			metricAvailable := metrics.SSIMAvailable
-			metricReason := metrics.SSIMReason
-			candidateValue := metrics.SSIM
-			metricValue := metrics.SSIMValue
-			if capability.Metric == PerceptualMetricPSNR {
-				metricAvailable, metricReason, candidateValue, metricValue = metrics.PSNRAvailable, metrics.PSNRReason, metrics.PSNR, metrics.PSNRValue
-			}
-			if !metrics.DomainComparable {
-				status = PerceptualMetricNonComparable
-				reason = metrics.Reason
-			} else if !metricAvailable {
-				status = PerceptualMetricFailedMeasurement
-				if metricReason != "" {
-					reason = metricReason
-				}
-			} else {
-				parsed, parseErr := NewFiniteMetricValue(candidateValue)
-				if metricValue != nil {
-					parsed, parseErr = *metricValue, nil
-				}
-				if parseErr != nil {
-					status, reason = PerceptualMetricFailedMeasurement, parseErr.Error()
-				} else {
-					status, value, reason = PerceptualMetricAvailable, &parsed, ""
-				}
-			}
 		} else {
-			status = PerceptualMetricFailedMeasurement
-			reason = "verified provider has no compatible bounded frame-metric invocation in this operation"
+			descriptorMetric := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
+			resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptorMetric)
+			if identityErr != nil {
+				return PerceptualWindowEvidence{}, identityErr
+			}
+			if cached, cacheHit := labPreviewEvidenceCacheGetMetricResult(resultIdentity.Identity); cacheHit {
+				results = append(results, cached)
+				continue
+			}
+			var parsed MetricValue
+			var runErr error
+			if capability.Metric == PerceptualMetricSSIM || capability.Metric == PerceptualMetricPSNR {
+				parsed, runErr = runCanonicalWindowMetricValueWithRunner(ctx, descriptor.Path, descriptor.Start, referenceFilter, descriptor.CachePath, "0", candidateFilter, window.Duration, strings.ToLower(string(capability.Metric)), defaultPreviewMetricProcessRunner)
+			} else {
+				parsed, runErr = runCanonicalWindowLogicalMetricValueWithRunner(ctx, descriptor.Path, descriptor.Start, referenceFilter, descriptor.CachePath, "0", candidateFilter, window.Duration, capability, defaultPreviewMetricProcessRunner)
+			}
+			if runErr != nil {
+				status, reason = PerceptualMetricFailedMeasurement, runErr.Error()
+			} else {
+				status, value, reason = PerceptualMetricAvailable, &parsed, ""
+			}
+			result := MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason}
+			if status == PerceptualMetricAvailable {
+				cacheableResults = append(cacheableResults, result)
+			}
+			results = append(results, result)
+			continue
 		}
 		descriptorMetric := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
-		if status == PerceptualMetricFailedMeasurement && capability.Availability == "available" && capability.Metric != PerceptualMetricSSIM && capability.Metric != PerceptualMetricPSNR {
-			sourceFilter := joinPreviewFilters(descriptor.Normalization.Filter, squarePixelFrameFilter(evidence.Source), "format=yuv420p")
-			outputFilter := joinPreviewFilters(squarePixelFrameFilter(evidence.Output), "format=yuv420p")
-			parsed, runErr := runPreviewLogicalMetricValueAtWithRunner(ctx, descriptor.Path, descriptor.Start, sourceFilter, descriptor.CachePath, "0", outputFilter, capability, defaultPreviewMetricProcessRunner)
-			if runErr == nil {
-				status, value, reason = PerceptualMetricAvailable, &parsed, ""
-			} else {
-				reason = runErr.Error()
-			}
-		}
 		resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptorMetric)
 		if identityErr != nil {
 			return PerceptualWindowEvidence{}, identityErr
 		}
 		results = append(results, MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason})
 	}
+	if err := ctx.Err(); err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	for _, result := range cacheableResults {
+		labPreviewEvidenceCachePutMetricResult(result)
+	}
 	return PerceptualWindowEvidence{
 		WindowIdentity: window.Identity, StartSeconds: window.Start, DurationSeconds: window.Duration,
 		Primary: window.Primary, Roles: window.Roles, Reasons: window.Reasons, EvidenceRefs: window.EvidenceRefs,
 		Status: "covered", Reference: &reference, Candidate: &candidate, Coverage: &coverage, PairIdentity: &pair,
-		Metrics: results, ComparableReason: metrics.Reason,
+		Metrics: results, ComparableReason: "canonical bounded comparison window",
 	}, nil
 }
 

@@ -63,6 +63,30 @@ func TestResolveTestEncodeWindowModesAndBounds(t *testing.T) {
 	}
 }
 
+func TestTestEncodeFreezesFullSourceSamplingPlanForBoundedSegment(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-full-source-plan")
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: path, Duration: 1800}).Error; err != nil {
+		t.Fatal(err)
+	}
+	start, duration := 600.0, 20
+	sourceDuration := testEncodeCanonicalSourceDuration(db, path, start, duration)
+	plan := (AssetHandler{db: db}).samplingPlanForFrozenWindow(path, "source", "source", sourceDuration, start, float64(duration), samplingPlanPolicyVersion)
+	if plan.AssetDurationSeconds != 1800 {
+		t.Fatalf("SamplingPlan asset duration=%v, want full source duration 1800", plan.AssetDurationSeconds)
+	}
+	selection := SamplingPlanForPerceptualQuality(plan)
+	if len(selection.Windows) == 0 || selection.Windows[0].StartSeconds != start || selection.Windows[0].DurationSeconds != float64(duration) {
+		t.Fatalf("primary segment was not frozen source-relative: %#v", selection.Windows)
+	}
+	if selection.Windows[0].Position <= 0.3 || selection.Windows[0].Position >= 0.4 {
+		t.Fatalf("primary position=%v was not derived from the 1800 second source", selection.Windows[0].Position)
+	}
+}
+
 func TestConfigurationHashIsStableAndSensitive(t *testing.T) {
 	a := configurationHash(models.JSONMap{"profile": models.JSONMap{"codec": "hevc", "quality": 20}, "tracks": models.JSONList{1.0, 2.0}})
 	b := configurationHash(models.JSONMap{"tracks": models.JSONList{1.0, 2.0}, "profile": models.JSONMap{"quality": 20, "codec": "hevc"}})

@@ -282,6 +282,8 @@ type ArtifactEvidence struct {
 }
 
 type PerceptualEvidenceSet struct {
+	Status                    string                     `json:"status,omitempty"`
+	UnavailableReason         string                     `json:"unavailableReason,omitempty"`
 	SchemaVersion             string                     `json:"schemaVersion"`
 	PolicyVersion             string                     `json:"policyVersion"`
 	Identity                  string                     `json:"identity"`
@@ -499,6 +501,7 @@ func perceptualWindowLedger(windows []PerceptualWindowEvidence) []struct {
 func BuildPerceptualEvidenceSet(plan SamplingPlan, sourceRevision, runtimeCapabilityIdentity string, requested []MetricDescriptor, windows []PerceptualWindowEvidence, capabilities []MetricCapability, warnings []string, provenance models.JSONMap) (PerceptualEvidenceSet, error) {
 	ordered := orderedPerceptualWindows(plan, windows)
 	set := PerceptualEvidenceSet{
+		Status:        "ready",
 		SchemaVersion: perceptualEvidenceSchemaVersion, PolicyVersion: perceptualEvidencePolicyVersion,
 		SamplingPlanIdentity: plan.PlanIdentity, SourceRevision: sourceRevision,
 		RuntimeCapabilityIdentity: runtimeCapabilityIdentity, RequestedMetrics: canonicalMetricDescriptors(requested),

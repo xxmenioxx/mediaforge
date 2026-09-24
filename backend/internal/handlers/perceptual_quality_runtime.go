@@ -27,6 +27,28 @@ type perceptualArtifactInput struct {
 	FullOutput            bool
 }
 
+func frozenSamplingPlanSourceMatches(path string, plan SamplingPlan) (bool, error) {
+	if strings.TrimSpace(plan.SourceRevision) == "" || strings.TrimSpace(plan.SourceFingerprint) == "" {
+		return false, nil
+	}
+	revision, err := sourceRevisionForPath(path)
+	if err != nil {
+		return false, err
+	}
+	current := samplingSourceIdentity(path, revision)
+	return current == plan.SourceRevision && current == plan.SourceFingerprint, nil
+}
+
+func unavailablePerceptualEvidenceSet(plan SamplingPlan, sourceRevision, status, reason string) (PerceptualEvidenceSet, error) {
+	set, err := BuildPerceptualEvidenceSet(plan, sourceRevision, "", nil, nil, nil, []string{reason}, models.JSONMap{"status": status})
+	if err != nil {
+		return PerceptualEvidenceSet{}, err
+	}
+	set.Status = status
+	set.UnavailableReason = reason
+	return set, nil
+}
+
 // collectPerceptualEvidenceForArtifact is the shared Test Encode/Validation
 // provider. It receives an already-ready candidate and never calls an encode
 // path. The caller supplies the frozen effective authority and plan.
@@ -112,10 +134,6 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 	if sourceRevision == "" {
 		sourceRevision = "unknown-source-revision"
 	}
-	comparisonDomain, err := canonicalEvidenceHash("comparison-domain", models.JSONMap{"pixelFormat": "yuv420p", "squarePixels": true, "transform": transformIdentity})
-	if err != nil {
-		return PerceptualWindowEvidence{}, err
-	}
 	candidateStart := 0.0
 	if input.FullOutput {
 		candidateStart = window.StartSeconds
@@ -131,11 +149,33 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
+	sourceFilter, candidateFilter := "null", "null"
+	if comparable {
+		sourceCharacteristics, sourceErr := probePreviewCharacteristics(input.SourcePath)
+		candidateCharacteristics, candidateErr := probePreviewCharacteristics(input.CandidatePath)
+		if sourceErr != nil || candidateErr != nil {
+			comparable = false
+			if sourceErr != nil {
+				transformReason = "canonical comparison source probe failed: " + sourceErr.Error()
+			} else {
+				transformReason = "canonical comparison candidate probe failed: " + candidateErr.Error()
+			}
+		} else {
+			sourceFilter, candidateFilter = canonicalComparisonDomainFilters(sourceCharacteristics, candidateCharacteristics, perceptualReferenceFilter(profile), "")
+		}
+	}
+	comparisonDomain, err := canonicalEvidenceHash("comparison-domain", models.JSONMap{
+		"pixelFormat": "yuv420p", "squarePixels": true, "transform": transformIdentity,
+		"referenceFilter": sourceFilter, "candidateFilter": candidateFilter,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
 	reference, err := ComputeReferenceIdentity(ReferenceIdentity{
 		SamplingPlanIdentity: plan.PlanIdentity, SamplingWindowIdentity: window.Identity,
 		SourceRevision: sourceRevision, SourceStreamIdentity: "0:v:0",
 		TransformIdentity: transformIdentity, TransformVersion: perceptualEvidenceSchemaVersion,
-		NormalizationProvenance: models.JSONMap{"mode": "preview-normalized", "filter": perceptualReferenceFilter(profile) + ",format=yuv420p,setsar=1"},
+		NormalizationProvenance: models.JSONMap{"mode": "preview-normalized", "filter": sourceFilter},
 		AlignmentIdentity:       alignment, Alignment: perceptualAlignmentEvidence(window.StartSeconds, window.DurationSeconds, candidateStart, input.SegmentDuration), ComparisonDomainIdentity: comparisonDomain,
 	})
 	if err != nil {
@@ -178,71 +218,50 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 		return PerceptualWindowEvidence{}, err
 	}
 
-	metrics := previewFrameMetrics{}
-	metricAttemptError := ""
-	if comparable {
-		outputStart := "0"
-		if input.FullOutput {
-			outputStart = strconv.FormatFloat(candidateStart, 'f', 3, 64)
-		}
-		metrics, err = generatePreviewFrameMetricsAt(ctx, input.SourcePath, strconv.FormatFloat(window.StartSeconds, 'f', 3, 64), perceptualReferenceFilter(profile), input.CandidatePath, outputStart)
-		if err != nil {
-			metrics.Reason = err.Error()
-			metricAttemptError = err.Error()
-		}
-	}
 	results := make([]MetricResult, 0, len(capabilityValues))
+	cacheableResults := make([]MetricResult, 0, len(capabilityValues))
 	for _, capability := range capabilityValues {
 		status := PerceptualMetricUnavailable
 		reason := capability.Reason
 		var value *MetricValue
 		if !comparable {
 			status, reason = PerceptualMetricNonComparable, transformReason
-			if strings.TrimSpace(reason) == "" {
-				reason = metrics.Reason
-			}
 		} else if capability.Availability != "available" {
 			if capability.Provider == "" {
 				status = PerceptualMetricUnsupported
-			}
-		} else if capability.Metric == PerceptualMetricSSIM || capability.Metric == PerceptualMetricPSNR {
-			metricAvailable := metrics.SSIMAvailable
-			metricReason := metrics.SSIMReason
-			candidateValue := metrics.SSIM
-			metricValue := metrics.SSIMValue
-			if capability.Metric == PerceptualMetricPSNR {
-				metricAvailable, metricReason, candidateValue, metricValue = metrics.PSNRAvailable, metrics.PSNRReason, metrics.PSNR, metrics.PSNRValue
-			}
-			if !metrics.DomainComparable {
-				status, reason = PerceptualMetricNonComparable, metrics.Reason
-			} else if !metricAvailable {
-				if metricAttemptError != "" {
-					status, reason = PerceptualMetricFailedMeasurement, metricAttemptError
-				} else {
-					status, reason = PerceptualMetricFailedMeasurement, metricReason
-				}
-			} else {
-				parsed, parseErr := NewFiniteMetricValue(candidateValue)
-				if metricValue != nil {
-					parsed, parseErr = *metricValue, nil
-				}
-				if parseErr != nil {
-					status, reason = PerceptualMetricFailedMeasurement, parseErr.Error()
-				} else {
-					status, value, reason = PerceptualMetricAvailable, &parsed, ""
-				}
 			}
 		} else {
 			outputStart := "0"
 			if input.FullOutput {
 				outputStart = strconv.FormatFloat(candidateStart, 'f', 3, 64)
 			}
-			parsed, runErr := runPreviewLogicalMetricValueAtWithRunner(ctx, input.SourcePath, strconv.FormatFloat(window.StartSeconds, 'f', 3, 64), perceptualReferenceFilter(profile), input.CandidatePath, outputStart, "", capability, defaultPreviewMetricProcessRunner)
+			descriptor := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
+			resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptor)
+			if identityErr != nil {
+				return PerceptualWindowEvidence{}, identityErr
+			}
+			if cached, cacheHit := labPreviewEvidenceCacheGetMetricResult(resultIdentity.Identity); cacheHit {
+				results = append(results, cached)
+				continue
+			}
+			var parsed MetricValue
+			var runErr error
+			if capability.Metric == PerceptualMetricSSIM || capability.Metric == PerceptualMetricPSNR {
+				parsed, runErr = runCanonicalWindowMetricValueWithRunner(ctx, input.SourcePath, strconv.FormatFloat(window.StartSeconds, 'f', 3, 64), sourceFilter, input.CandidatePath, outputStart, candidateFilter, window.DurationSeconds, strings.ToLower(string(capability.Metric)), defaultPreviewMetricProcessRunner)
+			} else {
+				parsed, runErr = runCanonicalWindowLogicalMetricValueWithRunner(ctx, input.SourcePath, strconv.FormatFloat(window.StartSeconds, 'f', 3, 64), sourceFilter, input.CandidatePath, outputStart, candidateFilter, window.DurationSeconds, capability, defaultPreviewMetricProcessRunner)
+			}
 			if runErr != nil {
 				status, reason = PerceptualMetricFailedMeasurement, runErr.Error()
 			} else {
 				status, value, reason = PerceptualMetricAvailable, &parsed, ""
 			}
+			result := MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason}
+			if status == PerceptualMetricAvailable {
+				cacheableResults = append(cacheableResults, result)
+			}
+			results = append(results, result)
+			continue
 		}
 		descriptor := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
 		resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptor)
@@ -251,19 +270,26 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 		}
 		results = append(results, MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason})
 	}
+	if err := ctx.Err(); err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	for _, result := range cacheableResults {
+		labPreviewEvidenceCachePutMetricResult(result)
+	}
 	return PerceptualWindowEvidence{
 		WindowIdentity: window.Identity, StartSeconds: window.StartSeconds, DurationSeconds: window.DurationSeconds,
 		Primary: window.Primary, Roles: window.Roles, Reasons: window.Reasons, EvidenceRefs: window.EvidenceRefs,
 		Status: "covered", Reference: &reference, Candidate: &candidateBase, Coverage: &coverage, PairIdentity: &pair,
-		Metrics: results, ComparableReason: metrics.Reason,
+		Metrics: results, ComparableReason: transformReason,
 	}, nil
 }
 
 func perceptualReferenceTransform(profile models.Profile) (string, bool, string, error) {
 	executionPlan := frozenFidelityExecutionPlan(profile)
 	worker := map[string]interface{}(profile.WorkerConfig)
+	frozenFilterChain := perceptualReferenceFilter(profile)
 	identity, err := canonicalEvidenceHash("fidelity-transform", models.JSONMap{
-		"executionPlan": executionPlan, "frozenVideoFilterChain": workerStringValue(worker["videoFilters"]),
+		"executionPlan": executionPlan, "frozenVideoFilterChain": frozenFilterChain,
 	})
 	if err != nil {
 		return "", false, "", err
@@ -273,12 +299,17 @@ func perceptualReferenceTransform(profile models.Profile) (string, bool, string,
 	// canonical reference adapter and must never silently fall back to raw.
 	cadenceOperation := stringFromUnknown(executionPlan["effectiveCadenceOperation"])
 	fieldMode := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["fieldStructureMode"])))
-	frozenFilterChain := strings.TrimSpace(workerStringValue(worker["videoFilters"]))
 	if (fieldMode == "deinterlace" || fieldMode == "auto" && strings.Contains(strings.ToLower(stringFromUnknown(worker["effectiveAutomaticMotionFilters"])), "deinterlace")) && frozenFilterChain == "" {
 		return identity, false, "canonical reference requires the frozen Frame Fidelity field-structure transform; raw source comparison was not used", nil
 	}
 	if (cadenceOperation != "" && !strings.EqualFold(cadenceOperation, "preserve") || executionPlan["upscale"] != nil || executionPlan["restoration"] != nil) && frozenFilterChain == "" {
 		return identity, false, "canonical reference requires the frozen Frame Fidelity video transform; raw source comparison was not used", nil
+	}
+	// A non-empty chain is the already resolved physical representation owned
+	// by Frame Fidelity. It may contain cadence, field, crop, scale, restoration
+	// and color stages; do not reinterpret those stages here.
+	if frozenFilterChain != "" {
+		return identity, true, "", nil
 	}
 	for _, key := range []string{"effectiveCadenceOperation", "effectiveOutputFrameRate", "effectiveOutputProgressive", "upscale", "restoration"} {
 		value := executionPlan[key]
@@ -313,8 +344,14 @@ func canonicalPerceptualReference(profile models.Profile) (string, bool, string,
 func perceptualReferenceFilter(profile models.Profile) string {
 	// This is the already resolved/frozen command filter chain. The provider
 	// consumes it as a physical reference transform; it does not infer policy
-	// by parsing current FFmpeg output or mutable UI settings.
-	return strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoFilters"]))
+	// by parsing current FFmpeg output or mutable UI settings. Some frozen
+	// Frame Fidelity snapshots persist automatic motion filters separately, so
+	// they are the fallback only when the complete videoFilters chain is absent.
+	worker := map[string]interface{}(profile.WorkerConfig)
+	if chain := strings.TrimSpace(workerStringValue(worker["videoFilters"])); chain != "" {
+		return chain
+	}
+	return strings.TrimSpace(workerStringValue(worker["effectiveAutomaticMotionFilters"]))
 }
 
 func validationProbeDuration(probe map[string]any) float64 {

@@ -255,7 +255,16 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 			colorReport["frameFidelity"] = fidelity
 		}
 		if frozenPlan, planOK := samplingPlanFromQueueJob(job); planOK {
-			if sourceRevision, sourceErr := sourceRevisionForPath(job.MediaPath); sourceErr == nil {
+			if sourceMatches, sourceErr := frozenSamplingPlanSourceMatches(job.MediaPath, frozenPlan); sourceErr != nil {
+				perceptualEvidenceWarning = "perceptual evidence unavailable: current source revision could not be verified: " + sourceErr.Error()
+			} else if !sourceMatches {
+				staleEvidence, staleErr := unavailablePerceptualEvidenceSet(frozenPlan, frozenPlan.SourceRevision, "stale", "current source revision does not match the frozen Queue SamplingPlan")
+				if staleErr == nil {
+					perceptualEvidence = staleEvidence
+					perceptualEvidenceAvailable = true
+				}
+				perceptualEvidenceWarning = "perceptual evidence stale: current source revision does not match the frozen Queue SamplingPlan"
+			} else if sourceRevision, sourceErr := sourceRevisionForPath(job.MediaPath); sourceErr == nil {
 				sourceRevisionID, revisionHashErr := canonicalEvidenceHash("source-revision", sourceRevision)
 				candidateRevision, candidateErr := mediaFileFingerprint(job.OutputPath)
 				candidateDuration := validationProbeDuration(outputProbe)

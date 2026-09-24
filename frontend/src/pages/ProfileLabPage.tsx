@@ -3804,11 +3804,14 @@ export function ProfileLabPage() {
                       ) : null}
                       <Collapse in={fidelityOpen}>
                         {currentFidelityInspection ? (
-                          fidelityTab === 'frames' ? (
-                            <FrameFidelityComparison inspection={currentFidelityInspection} />
-                          ) : (
-                            <FidelityCharacteristicsTable inspection={currentFidelityInspection} />
-                          )
+                          <Stack spacing={1.5}>
+                            {fidelityTab === 'frames' ? (
+                              <FrameFidelityComparison inspection={currentFidelityInspection} />
+                            ) : (
+                              <FidelityCharacteristicsTable inspection={currentFidelityInspection} />
+                            )}
+                            <PerceptualEvidencePanel evidence={currentFidelityInspection.perceptualEvidence} />
+                          </Stack>
                         ) : (
                           !fidelityInspection.isPending && !labFidelityRunning
                             ? <Alert severity="info">Process Video to generate and validate the current profile result.</Alert>
@@ -5559,6 +5562,102 @@ function frameStructureGuidance(source: QSVFrameStructureAnalysis, output: QSVFr
     });
   }
   return guidance;
+}
+
+function perceptualMetricValueLabel(metric: string, value?: { kind?: string; value?: number }) {
+  if (!value) return '—';
+  if (value.kind === 'positive_infinity') return '+∞';
+  if (typeof value.value !== 'number' || !Number.isFinite(value.value)) return 'invalid';
+  return metric === 'PSNR' ? `${value.value.toFixed(2)} dB` : value.value.toFixed(4);
+}
+
+export function PerceptualEvidencePanel({ evidence }: { evidence?: PerceptualEvidenceSet }) {
+  if (!evidence) return null;
+  const status = evidence.status ?? 'ready';
+  const aggregates = evidence.aggregates ?? [];
+  return (
+    <Card variant="outlined" data-testid="perceptual-evidence-panel">
+      <CardContent>
+        <Stack spacing={1.25}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
+            <Box>
+              <Typography variant="h4">Canonical perceptual evidence</Typography>
+              <Typography variant="body2" color="text.secondary">Evidence only; no universal quality threshold is applied.</Typography>
+            </Box>
+            <Chip size="small" color={status === 'ready' ? 'default' : 'warning'} label={`Evidence · ${status}`} />
+          </Stack>
+          <Typography variant="caption" sx={{ overflowWrap: 'anywhere' }}>
+            SamplingPlan · {evidence.samplingPlanIdentity || 'unavailable'} · set {evidence.identity || 'unavailable'}
+          </Typography>
+          {evidence.unavailableReason ? <Alert severity="warning">{evidence.unavailableReason}</Alert> : null}
+          {evidence.warnings?.map((warning) => <Alert key={warning} severity="info">{warning}</Alert>)}
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {evidence.capabilities?.map((capability, index) => {
+              const metric = String(capability.metric ?? 'metric');
+              const availability = String(capability.availability ?? 'unknown');
+              const reason = capability.reason ? ` · ${String(capability.reason)}` : '';
+              return <Chip key={`${metric}-${index}`} size="small" color={availability === 'available' ? 'default' : 'warning'} label={`${metric} · ${availability}${reason}`} />;
+            })}
+          </Stack>
+          {aggregates.length ? (
+            <Box>
+              <Typography variant="subtitle2">Aggregates</Typography>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {aggregates.map((aggregate, index) => {
+                  const metric = String(aggregate.logicalMetric ?? 'metric');
+                  const median = aggregate.median as { kind?: string; value?: number } | undefined;
+                  const p10 = aggregate.lowerPercentileP10 as { kind?: string; value?: number } | undefined;
+                  const worst = aggregate.worstValue as { kind?: string; value?: number } | undefined;
+                  return (
+                    <Chip
+                      key={`${metric}-${index}`}
+                      size="small"
+                      label={`${metric} · median ${perceptualMetricValueLabel(metric, median)} · p10 ${perceptualMetricValueLabel(metric, p10)} · worst ${perceptualMetricValueLabel(metric, worst)}`}
+                    />
+                  );
+                })}
+              </Stack>
+            </Box>
+          ) : null}
+          <Box>
+            <Typography variant="subtitle2">Frozen windows</Typography>
+            <Stack spacing={0.75}>
+              {evidence.windows.map((window) => {
+                const covered = window.status !== 'not_covered';
+                const candidate = window.candidate as { identity?: string } | undefined;
+                const pair = window.pairIdentity as { identity?: string } | undefined;
+                return (
+                  <Box key={window.windowIdentity} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}>
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.75} alignItems={{ md: 'center' }}>
+                      <Chip size="small" color={covered ? 'default' : 'warning'} label={covered ? 'covered' : 'not covered'} />
+                      <Typography variant="body2">{window.primary ? 'Primary' : 'Sample'} · {formatElapsedTime(window.startSeconds)} + {formatElapsedTime(window.durationSeconds)}</Typography>
+                      {window.roles?.length ? <Typography variant="caption" color="text.secondary">roles: {window.roles.join(', ')}</Typography> : null}
+                      {window.reasons?.length ? <Typography variant="caption" color="text.secondary">reasons: {window.reasons.join(', ')}</Typography> : null}
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                      {covered ? `candidate ${candidate?.identity ?? 'unavailable'} · pair ${pair?.identity ?? 'unavailable'}` : (window.comparableReason ?? 'Candidate does not represent this frozen window.')}
+                    </Typography>
+                    {window.metrics?.length ? (
+                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                        {window.metrics.map((metric, index) => (
+                          <Chip
+                            key={`${metric.identity.identity}-${index}`}
+                            size="small"
+                            color={metric.status === 'available' ? 'default' : 'warning'}
+                            label={`${String(metric.identity.metric.logicalMetric ?? 'metric')} · ${metric.status}${metric.status === 'available' ? ` · ${perceptualMetricValueLabel(String(metric.identity.metric.logicalMetric ?? ''), metric.value)}` : metric.reason ? ` · ${metric.reason}` : ''}`}
+                          />
+                        ))}
+                      </Stack>
+                    ) : null}
+                  </Box>
+                );
+              })}
+            </Stack>
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function FrameFidelityComparison({ inspection }: { inspection: LabFidelityInspection }) {

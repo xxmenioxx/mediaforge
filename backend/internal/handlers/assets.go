@@ -4246,6 +4246,89 @@ func runPreviewLogicalMetricValueAtWithRunner(ctx context.Context, sourcePath, s
 	return NewFiniteMetricValue(value)
 }
 
+// canonicalComparisonDomainFilters is the one comparison-domain constructor
+// used by canonical perceptual evidence. The legacy frame projection may
+// supply its own filters, but a window metric must always have both explicit
+// branches and the same square-pixel/pixel-format normalization.
+func canonicalComparisonDomainFilters(source, candidate previewVideoCharacteristics, referenceTransform, normalization string) (string, string) {
+	reference := joinPreviewFilters(referenceTransform, normalization, squarePixelFrameFilter(source), "format=yuv420p", "setsar=1")
+	output := joinPreviewFilters(squarePixelFrameFilter(candidate), "format=yuv420p", "setsar=1")
+	return reference, output
+}
+
+func canonicalWindowMetricArgs(sourcePath, sourceStart string, sourceFilter string, outputPath, outputStart string, outputFilter string, duration float64, metricFilter string) []string {
+	boundedDuration := strconv.FormatFloat(maxFloat(duration, 0.001), 'f', 3, 64)
+	args := []string{"-hide_banner", "-loglevel", "info"}
+	if sourceStart != "" && sourceStart != "0" && sourceStart != "00:00:00" {
+		args = append(args, "-ss", sourceStart)
+	}
+	args = append(args, "-t", boundedDuration, "-i", sourcePath)
+	if outputStart != "" && outputStart != "0" && outputStart != "00:00:00" {
+		args = append(args, "-ss", outputStart)
+	}
+	args = append(args, "-t", boundedDuration, "-i", outputPath)
+	return append(args,
+		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[candidate];[reference][candidate]%s", joinPreviewFilters(sourceFilter), joinPreviewFilters(outputFilter), metricFilter),
+		"-an", "-sn", "-dn", "-f", "null", "-",
+	)
+}
+
+func runCanonicalWindowMetricValueWithRunner(ctx context.Context, sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter string, duration float64, metric string, runner previewMetricProcessRunner) (MetricValue, error) {
+	args := canonicalWindowMetricArgs(sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, duration, metric)
+	output, err := runner(ctx, args)
+	if err != nil {
+		return MetricValue{}, err
+	}
+	pattern := `(?i)All:([0-9]+(?:\.[0-9]+)?|inf|nan)`
+	if metric == "psnr" {
+		pattern = `(?i)average:([0-9]+(?:\.[0-9]+)?|inf|nan)`
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return MetricValue{}, fmt.Errorf("FFmpeg did not report bounded-window %s", strings.ToUpper(metric))
+	}
+	if strings.EqualFold(match[1], "inf") {
+		if metric != "psnr" {
+			return MetricValue{}, fmt.Errorf("FFmpeg reported positive infinity for unsupported %s", strings.ToUpper(metric))
+		}
+		return NewPositiveInfinityMetricValue(), nil
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return MetricValue{}, fmt.Errorf("FFmpeg reported invalid bounded-window %s", strings.ToUpper(metric))
+	}
+	return NewFiniteMetricValue(value)
+}
+
+func runCanonicalWindowLogicalMetricValueWithRunner(ctx context.Context, sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter string, duration float64, capability MetricCapability, runner previewMetricProcessRunner) (MetricValue, error) {
+	filter, err := previewMetricProviderFilter(capability)
+	if err != nil {
+		return MetricValue{}, err
+	}
+	output, runErr := runner(ctx, canonicalWindowMetricArgs(sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, duration, filter))
+	if runErr != nil {
+		return MetricValue{}, runErr
+	}
+	patterns := map[PerceptualMetric]string{
+		PerceptualMetricVMAF:   `(?i)VMAF(?:\s+score)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?|nan)`,
+		PerceptualMetricXPSNR:  `(?i)XPSNR(?:_avg|\s+average)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?|nan)`,
+		PerceptualMetricMSSSIM: `(?i)(?:MS-SSIM|ms_ssim|msssim)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?|nan)`,
+	}
+	pattern, ok := patterns[capability.Metric]
+	if !ok {
+		return MetricValue{}, fmt.Errorf("no verified bounded invocation parser for %s", capability.Metric)
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return MetricValue{}, fmt.Errorf("FFmpeg provider %s did not report bounded-window %s", capability.Provider, capability.Metric)
+	}
+	value, parseErr := strconv.ParseFloat(match[1], 64)
+	if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return MetricValue{}, fmt.Errorf("FFmpeg provider %s reported invalid bounded-window %s", capability.Provider, capability.Metric)
+	}
+	return NewFiniteMetricValue(value)
+}
+
 func previewMetricProviderFilter(capability MetricCapability) (string, error) {
 	switch capability.Metric {
 	case PerceptualMetricXPSNR:

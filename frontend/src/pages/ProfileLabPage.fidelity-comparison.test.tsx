@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewVideoCharacteristics } from '../api/types';
 import { api } from '../api/client';
 import { LAB_COMPARISON_VIEWPORT_POLICY, labComparisonImageSx, labComparisonLayerSx } from '../components/LabComparisonViewport';
-import { FrameFidelityComparison, VideoPreviewRequest } from './ProfileLabPage';
+import { FrameFidelityComparison, PerceptualEvidencePanel, VideoPreviewRequest } from './ProfileLabPage';
 
 afterEach(() => {
   cleanup();
@@ -170,6 +170,31 @@ describe('LAB fidelity comparison geometry', () => {
 
     expect(screen.getByText('Overall · Review')).toBeTruthy();
     expect(screen.getByText(/cannot be marked Safe/i)).toBeTruthy();
+  });
+
+  it('renders explicit partial perceptual evidence without deriving a verdict', () => {
+    render(<PerceptualEvidencePanel evidence={{
+      schemaVersion: 'perceptual-evidence-v1',
+      policyVersion: 'perceptual-quality-policy-v1',
+      identity: 'set-1',
+      samplingPlanIdentity: 'plan-1',
+      sourceRevision: 'source-1',
+      runtimeCapabilityIdentity: 'runtime-1',
+      requestedMetrics: [],
+      capabilities: [{ metric: 'VMAF', availability: 'unavailable', reason: 'libvmaf absent' }],
+      aggregates: [{ logicalMetric: 'PSNR', median: { kind: 'positive_infinity' }, lowerPercentileP10: { kind: 'positive_infinity' }, worstValue: { kind: 'positive_infinity' } }],
+      windows: [
+        { windowIdentity: 'primary', startSeconds: 0, durationSeconds: 20, primary: true, status: 'covered', candidate: { identity: 'candidate-1' }, pairIdentity: { identity: 'pair-1' }, metrics: [] },
+        { windowIdentity: 'hard', startSeconds: 100, durationSeconds: 20, primary: false, status: 'not_covered', comparableReason: 'Test Encode segment does not represent this window.' },
+      ],
+    }} />);
+
+    expect(screen.getByTestId('perceptual-evidence-panel')).toBeTruthy();
+    expect(screen.getByText(/SamplingPlan · plan-1/)).toBeTruthy();
+    expect(screen.getByText('not covered')).toBeTruthy();
+    expect(screen.getByText(/libvmaf absent/)).toBeTruthy();
+    expect(screen.getByText(/PSNR · median \+∞/)).toBeTruthy();
+    expect(screen.queryByText(/Safe|Review|Reject/)).toBeNull();
   });
 
   it('does not fetch or build a media element before a request ID is available', async () => {

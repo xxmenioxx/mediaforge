@@ -2019,6 +2019,8 @@ export type PerceptualWindowEvidence = {
 };
 
 export type PerceptualEvidenceSet = {
+  status?: string;
+  unavailableReason?: string;
   schemaVersion: string;
   policyVersion: string;
   identity: string;

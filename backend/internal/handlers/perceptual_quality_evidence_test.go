@@ -67,6 +67,90 @@ func TestLogicalMetricProviderParserUsesExplicitProviderContract(t *testing.T) {
 	}
 }
 
+func TestCanonicalWindowMetricUsesBoundedComparisonAndValidBranches(t *testing.T) {
+	var captured []string
+	runner := func(_ context.Context, args []string) (string, error) {
+		captured = append([]string(nil), args...)
+		return "VMAF score: 92.5", nil
+	}
+	value, err := runCanonicalWindowLogicalMetricValueWithRunner(context.Background(), "source", "600", "setsar=1,format=yuv420p", "candidate", "0", "setsar=1,format=yuv420p", 20, MetricCapability{Metric: PerceptualMetricVMAF, Provider: "libvmaf", Availability: "available"}, runner)
+	if err != nil || !value.Valid() {
+		t.Fatalf("bounded VMAF failed: %#v %v", value, err)
+	}
+	joined := strings.Join(captured, " ")
+	if !strings.Contains(joined, "-t 20.000") || strings.Contains(joined, "-frames:v 1") {
+		t.Fatalf("canonical metric args were not bounded independently of legacy frame mode: %s", joined)
+	}
+	if !strings.Contains(joined, "[0:v:0]setsar=1,format=yuv420p[reference];[1:v:0]setsar=1,format=yuv420p[candidate]") {
+		t.Fatalf("canonical comparison graph did not contain explicit reference/candidate branches: %s", joined)
+	}
+	for _, tc := range []struct {
+		metric PerceptualMetric
+		output string
+	}{
+		{PerceptualMetricXPSNR, "XPSNR_avg:40.25"},
+		{PerceptualMetricMSSSIM, "ms_ssim:0.95"},
+	} {
+		var providerArgs []string
+		providerValue, providerErr := runCanonicalWindowLogicalMetricValueWithRunner(context.Background(), "source", "600", "null", "candidate", "0", "null", 20, MetricCapability{Metric: tc.metric, Provider: "verified-provider", Availability: "available"}, func(_ context.Context, args []string) (string, error) {
+			providerArgs = args
+			return tc.output, nil
+		})
+		if providerErr != nil || !providerValue.Valid() {
+			t.Fatalf("bounded %s provider failed: %#v %v", tc.metric, providerValue, providerErr)
+		}
+		providerCommand := strings.Join(providerArgs, " ")
+		if !strings.Contains(providerCommand, "-t 20.000") || strings.Contains(providerCommand, "-frames:v 1") {
+			t.Fatalf("bounded %s provider escaped the canonical window: %s", tc.metric, providerCommand)
+		}
+	}
+}
+
+func TestCanonicalComparisonDomainAddsFiltersForPreserveProfileWithoutUserFilters(t *testing.T) {
+	source, candidate := previewVideoCharacteristics{Width: 1920, Height: 1080, SampleAspectRatio: "1:1"}, previewVideoCharacteristics{Width: 1920, Height: 1080, SampleAspectRatio: "1:1"}
+	reference, output := canonicalComparisonDomainFilters(source, candidate, "", "")
+	if reference == "null" || output == "null" || !strings.Contains(reference, "format=yuv420p") || !strings.Contains(output, "format=yuv420p") {
+		t.Fatalf("preserve comparison domain did not create canonical no-op branches: %q / %q", reference, output)
+	}
+	args := canonicalWindowMetricArgs("source", "0", reference, "candidate", "0", output, 5, "ssim")
+	if strings.Contains(strings.Join(args, " "), "[0:v:0]null[reference]") {
+		t.Fatal("canonical graph emitted an invalid null-only reference branch")
+	}
+}
+
+func TestCanonicalMetricResultCacheSeparatesProviderIdentity(t *testing.T) {
+	resetLabFidelityEvidenceForTest()
+	t.Cleanup(resetLabFidelityEvidenceForTest)
+	pair := testPair(t, "generation-cache")
+	descriptor := newMetricDescriptor(PerceptualMetricVMAF, "libvmaf", "1", "bounded-v1", "model-a", "runtime-a", "higher_is_better")
+	identity, err := ComputeMetricResultIdentity(pair, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ := NewFiniteMetricValue(92.5)
+	result := MetricResult{Identity: identity, Status: PerceptualMetricAvailable, Value: &value}
+	processes := 0
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, ok := labPreviewEvidenceCacheGetMetricResult(identity.Identity); ok {
+			continue
+		}
+		processes++
+		labPreviewEvidenceCachePutMetricResult(result)
+	}
+	if processes != 1 {
+		t.Fatalf("exact metric-result retry reran the provider %d times", processes)
+	}
+	changed := descriptor
+	changed.Provider = "libvmaf-alt"
+	changedIdentity, err := ComputeMetricResultIdentity(pair, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := labPreviewEvidenceCacheGetMetricResult(changedIdentity.Identity); ok {
+		t.Fatal("provider change reused a result from another provider")
+	}
+}
+
 func testPair(t *testing.T, candidateRevision string) ComparisonPairIdentity {
 	t.Helper()
 	reference, err := ComputeReferenceIdentity(ReferenceIdentity{
