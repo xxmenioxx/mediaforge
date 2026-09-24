@@ -17,8 +17,9 @@ subtitle pipeline.
   roles, bounded composition policy, style policy/version, output identity, and
   publication mode before work starts.
 - Normalize all supported inputs into the existing shared ASS event model and
-  reconcile them deterministically without concatenating overlapping events.
-  Exact matches may be deduplicated, meaningful primary layout may be
+  reconcile them deterministically as an evolving canonical event set in
+  primary-first, stable supplemental order, without concatenating overlapping
+  events. Exact matches may be deduplicated, meaningful primary layout may be
   enriched, absent supplemental cues may be added, and ambiguous matches must
   become reviewable conflicts.
 - Preserve native ASS/SSA styles, override tags, timing, positioning, and
@@ -29,6 +30,9 @@ subtitle pipeline.
   freeze its resolved result into Queue snapshots, including primary and
   supplemental selection, language/role rules, preferred/default behavior,
   styling, and explicit overrides.
+- Enforce that preferred/default promotion requires both the configured
+  primary/full-dialogue source and an explicit promotion request in the frozen
+  profile/manual policy; no manual exception can waive the source requirement.
 - Add backend-authoritative Asset Info `Compose subtitles` eligibility and
   manual-request contracts using the existing subtitle operation registry,
   cancellation/retry lifecycle, staging, `subtitlePublicationMu`, and atomic

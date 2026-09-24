@@ -132,60 +132,114 @@ treated as compound semantic roles.
 
 ### Requirement: Deterministic event reconciliation
 
-The backend SHALL reconcile normalized events in stable source order using at
-minimum normalized protected/text content, start and end times within a bounded
-tolerance, resolved language, semantic role, bounded composition
-classification/style intent, and source provenance. Text equality alone MUST
-NOT establish event identity. The tolerance and normalization version SHALL
-be part of the frozen composition policy.
+The backend SHALL initialize an evolving canonical event set from primary
+events and process supplemental sources in frozen precedence order:
+`primary → supplemental 1 → supplemental 2 → ... → canonical event set`.
+For each supplemental event, reconciliation SHALL compare against eligible
+canonical events already accepted, not only against original primary events.
+Primary-owned evidence has highest preservation precedence; among supplemental
+owners, the earlier frozen supplemental source has precedence. A later source
+MAY repair missing/default evidence but MUST NOT silently replace meaningful
+higher-precedence evidence.
 
-For each candidate relationship, reconciliation SHALL apply these outcomes in
-order: keep the primary event when the cue is equivalent and its layout is
-meaningful; enrich/repair the primary event when the cue is equivalent but its
-layout or style is missing/default; add a supplemental event when no primary
-event is present; and surface an ambiguous/conflicting match for review when
-more than one plausible identity remains. Ambiguous events MUST NOT be
-silently merged or discarded.
+Candidate comparison SHALL use at minimum normalized protected/text content,
+start and end times within a bounded tolerance, resolved language, semantic
+role, bounded composition classification/style intent, layout evidence, and
+source provenance evidence. Text equality alone MUST NOT establish event
+identity. The tolerance and normalization version SHALL be part of the frozen
+composition policy. Every supplemental event SHALL have at most one canonical
+owner, and each source event ordinal SHALL be consumed at most once.
+
+Source provenance is evidence and deterministic tie/conflict input, not an
+identity-equality requirement. Primary and supplemental source identities are
+expected to differ, and a different source identity alone MUST NOT make
+otherwise equivalent events different. Frozen source identity/revision remains
+auditable; source identity plus same-source ordinal prevents accidental
+self-matching; and unresolved cross-source relationships MUST remain
+ambiguous/conflicting.
+
+For each supplemental event, reconciliation SHALL apply these outcomes in
+order: keep a primary-owned equivalent event when its layout is meaningful;
+enrich/repair an equivalent canonical event when its layout or style is
+missing/default; deduplicate an equivalent event already owned by a primary or
+earlier supplemental source; add a supplemental event when no eligible
+canonical event is equivalent; and surface an ambiguous/conflicting match
+when more than one plausible identity or incompatible meaningful evidence
+remains. Ambiguous events MUST NOT be silently merged or discarded.
 
 #### Scenario: Equivalent meaningful primary cue is kept once
 
-- **WHEN** a supplemental event matches one primary event on protected/text
-  content, bounded timing, language, role/classification, and provenance, and
-  the primary has meaningful layout evidence
+- **WHEN** a supplemental event matches one primary-owned canonical event on
+  protected/text content, bounded timing, language, role/classification, and
+  layout evidence, while source provenance identifies the frozen contributing
+  sources but does not require equal source identity
 - **THEN** the output keeps the primary event, emits no duplicate, and records
   a `kept-primary` decision
 
 #### Scenario: Equivalent default cue is enriched
 
-- **WHEN** a supplemental event matches a primary event but the primary lacks
-  meaningful position/style evidence or only has default layout
-- **THEN** the output keeps one event, enriches the primary with the approved
+- **WHEN** a supplemental event matches an eligible canonical event but that
+  event lacks meaningful position/style evidence or only has default layout
+- **THEN** the output keeps one event, enriches the canonical event with the approved
   supplemental evidence, and records an `enriched/repaired` decision
 
 #### Scenario: Supplemental-only cue is added
 
-- **WHEN** a supplemental event has no eligible primary identity match
+- **WHEN** a supplemental event has no eligible identity match in the evolving
+  canonical event set
 - **THEN** the output adds it as an independent event and records an `added`
   decision
 
 #### Scenario: Ambiguous timing/text match is surfaced
 
 - **WHEN** an event has multiple plausible candidates after protected/text,
-  bounded timing, language, role/classification, and provenance checks
+  bounded timing, language, role/classification, layout, and provenance
+  evidence are considered
 - **THEN** the operation records a bounded conflict/review result, does not
   silently merge either candidate, and publishes only according to the
   explicit conflict policy
 
+#### Scenario: Equivalent cue across two supplemental sources is deduplicated
+
+- **WHEN** the primary lacks cue X, supplemental source A adds X, and
+  supplemental source B later contains an equivalent X
+- **THEN** the evolving canonical set contains one X, B records a
+  `deduplicated` reconciliation against A's accepted event, and no duplicate X
+  is added
+
+#### Scenario: Primary cue dominates duplicate supplementals
+
+- **WHEN** the primary contains cue X and supplemental sources A and B both
+  contain equivalent X
+- **THEN** A and B reconcile to the primary-owned X, primary evidence remains
+  authoritative, and neither supplemental creates a second X
+
+#### Scenario: Conflicting supplemental copies are surfaced
+
+- **WHEN** supplemental sources A and B agree on the identity evidence for one
+  cue but contain incompatible meaningful style/layout evidence that cannot be
+  treated as a repair
+- **THEN** the earlier frozen supplemental source is the deterministic owner,
+  the conflict is recorded for review, and the later source does not silently
+  overwrite or disappear
+
+#### Scenario: Supplemental precedence is stable
+
+- **WHEN** the same equivalent cue is supplied by multiple supplementals and
+  the request is repeated with the same frozen policy
+- **THEN** source order and ownership are identical, regardless of map or
+  filesystem enumeration order
+
 #### Scenario: Repeated identical text at different times stays separate
 
 - **WHEN** two events have identical normalized text but distinct non-matching
-  timestamps or other source identity evidence
+  timestamps or role/class/layout evidence
 - **THEN** they remain separate canonical ASS events and are not deduplicated
 
 #### Scenario: Overlap is not a merge instruction
 
 - **WHEN** two events overlap in time but have distinct position, role,
-  classification, or provenance evidence
+  classification, or conflicting provenance/tie evidence
 - **THEN** both remain independent events even if their normalized text is
   equal or partially equal
 
@@ -207,8 +261,13 @@ none exists.
 
 Style and layout resolution SHALL use the frozen #123 style policy and
 `MVF_Default`, `MVF_Top`, `MVF_Lyrics`, and `MVF_Sign` identities only through
-the existing style resolver contract. A native source event SHALL remain
-source-owned unless the frozen policy explicitly authorizes a style mutation.
+the existing style resolver contract. When `CompositionCueClass=lyrics`, the
+frozen composition/style mapping SHALL pass `ExplicitStyleID=MVF_Lyrics`
+through that existing resolver boundary; it MUST NOT create a
+Composition-specific style resolver. Geometry SHALL remain layout evidence and
+MUST NOT change the semantic role or imply a lyrics role. A native source event
+SHALL remain source-owned unless the frozen policy explicitly authorizes a
+style mutation.
 
 #### Scenario: Native ASS styles and overrides survive composition
 
@@ -239,6 +298,14 @@ source-owned unless the frozen policy explicitly authorizes a style mutation.
   nor #26 geometry provides meaningful layout evidence
 - **THEN** the output records layout as unresolved/default according to policy
   and does not infer a precise position from text alone
+
+#### Scenario: Lyrics class selects the existing lyrics preset
+
+- **WHEN** a cue has `CompositionCueClass=lyrics` and the frozen composition
+  style mapping authorizes the lyrics appearance
+- **THEN** composition passes `MVF_Lyrics` as the existing explicit style
+  selection and `resolveSubtitleStyle` resolves the style, without a second
+  style authority or semantic-role mutation
 
 ### Requirement: Collision-safe styles and bounded font attachment reconciliation
 
@@ -303,9 +370,11 @@ do not contain composition state SHALL retain their existing authority and
 behavior.
 
 Only a composite containing the configured primary/full-dialogue source MAY
-become preferred/default, and only when an explicit profile or manual policy
-authorizes that publication. A supplemental-only or signs/lyrics-only
-composite MUST NOT become preferred/default implicitly.
+become preferred/default, and only when the frozen profile/manual policy
+explicitly requests promotion. Both conditions are structural invariants;
+manual policy MUST NOT waive the primary/full-dialogue requirement. A
+supplemental-only, signs-only, or lyrics-only composite MUST NOT become
+preferred/default under any policy.
 
 #### Scenario: Profile snapshot is deterministic
 
@@ -326,8 +395,14 @@ composite MUST NOT become preferred/default implicitly.
 
 - **WHEN** a composition contains only supplemental signs/lyrics or omits the
   configured primary/full-dialogue source
-- **THEN** it cannot become preferred/default unless an explicit manual policy
-  authorizes the exception and the result records that override
+- **THEN** it MUST NOT become preferred/default, even when a manual/profile
+  policy requests promotion, and the result records the structural denial
+
+#### Scenario: Promotion requires an explicit frozen request
+
+- **WHEN** a composition contains the configured primary/full-dialogue source
+  but the frozen profile/manual policy does not explicitly request promotion
+- **THEN** it MUST NOT become preferred/default
 
 #### Scenario: Explicit cross-language policy is retained
 

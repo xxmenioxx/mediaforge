@@ -114,9 +114,14 @@ This preserves the current `full`, `forced`, `signs`, `commentary`, `sdh`, and
 classifier. A source track may have a bounded track classification such as
 “signs plus songs,” but each event gets its own class. Compound labels are
 never serialized as semantic cue roles. The #123 resolver receives the
-existing semantic role plus the frozen explicit composition/style intent; it
-may select `MVF_Lyrics` only when that frozen intent or an authorized explicit
-style selection requests it.
+existing semantic role plus the frozen explicit composition/style intent
+through its existing explicit-style input boundary. The mapping is
+`CompositionCueClass=lyrics` → frozen composition/style mapping →
+`ExplicitStyleID=MVF_Lyrics` → existing `resolveSubtitleStyle`. Composition
+does not resolve styles independently, alter geometry into a semantic role, or
+make `MVF_Lyrics` imply a global subtitle semantic role. An explicit style
+mapping remains frozen with the operation and is ignored for native source
+events unless the existing native-style override policy authorizes it.
 
 Alternative considered: add `lyrics` to `SubtitleSemanticRole`. Rejected for
 V1 because it would change role override validation, Track Profile matching,
@@ -151,40 +156,75 @@ state remain authoritative and continue their current execution path.
 The default policy is conservative: one configured primary/full-dialogue
 source, same-language supplemental sources only, native source style/layout
 preservation, no implicit cross-language selection, and no preferred/default
-promotion unless explicitly allowed. The supplemental order is canonicalized
-by stable source identity when policy marks selection order as unordered;
-otherwise the explicit profile/manual precedence order is preserved.
+promotion unless the structural primary/full-dialogue gate is satisfied and
+the frozen profile/manual policy explicitly requests promotion. That gate is
+not overridable by a manual exception. The supplemental order is
+canonicalized by stable source identity when policy marks selection order as
+unordered; otherwise the explicit profile/manual precedence order is
+preserved.
 
-### 5. Use a deterministic one-to-one reconciliation pass
+### 5. Use an evolving canonical event set with deterministic ownership
 
-After normalization, events are processed in primary order and then stable
-supplemental source order. The policy supplies a bounded timing tolerance (the
-V1 default is 250 ms, with a maximum of 2 seconds) and a normalization
-version. Candidate equivalence requires normalized protected/text content,
-start/end within tolerance, compatible resolved language, compatible existing
-semantic role, compatible composition class/style intent, and compatible
-frozen source provenance. Explicit layout evidence is also a discriminator:
-events with distinct meaningful top/bottom/exact-position evidence are not
-equivalent merely because their text and timestamps match.
+After normalization, the canonical event set is initialized from the primary
+events in stable source order. Supplemental sources are then processed in the
+frozen order `primary → supplemental 1 → supplemental 2 → ...`. For each
+supplemental event, candidate comparison is against eligible canonical events
+already accepted, not only against the original primary. An accepted event can
+therefore be owned by the primary or by the earliest supplemental source that
+added it, and later supplemental sources can reconcile against it.
+
+Primary ownership always has the highest preservation precedence. For equal
+supplemental ownership, the earlier frozen supplemental source wins. A later
+source may fill missing/default layout or style evidence on the accepted
+event, but may not replace meaningful evidence owned by a higher-precedence
+source without recording a conflict. Every supplemental event is assigned to
+at most one canonical event, and each source event ordinal is consumed at most
+once per reconciliation pass. Candidate edges and ownership are sorted by
+the frozen source precedence, evidence strength, timing delta, and canonical
+event ordinal; an unresolved tie is a conflict rather than map/order
+iteration.
+
+The policy supplies a bounded timing tolerance (the V1 default is 250 ms,
+with a maximum of 2 seconds) and a normalization version. Candidate
+equivalence uses normalized protected/text content, start/end within
+tolerance, compatible resolved language, compatible existing semantic role,
+compatible composition class/style intent, and layout evidence. Source
+provenance participates as evidence and a deterministic tie/conflict input,
+not as an equality requirement: primary and supplemental source identities are
+expected to differ. Frozen source identity/revision and source ordinal prevent
+accidental same-source self-matching, while cross-source ambiguity remains a
+reviewable conflict.
 
 The pass produces a stable decision record per supplemental event:
 
-1. `kept-primary` when exactly one equivalent candidate exists and the primary
-   has meaningful layout/style evidence;
-2. `enriched/repaired` when exactly one equivalent candidate exists and the
-   primary has only a default/missing layout or style, so approved
-   supplemental evidence fills that gap;
-3. `added` when no primary event is equivalent; or
-4. `ambiguous/conflicting` when more than one candidate remains or policy
+1. `kept-primary` when exactly one equivalent canonical event is primary-owned
+   and has meaningful layout/style evidence;
+2. `enriched/repaired` when exactly one equivalent canonical event has only a
+   default/missing layout or style and approved supplemental evidence fills
+   that gap;
+3. `deduplicated` when an equivalent canonical event is already owned by a
+   primary or earlier supplemental source and no repair is needed;
+4. `added` when no eligible canonical event is equivalent; or
+5. `ambiguous/conflicting` when more than one candidate remains, conflicting
+   supplemental copies carry incompatible meaningful evidence, or policy
    compatibility cannot be established.
 
-Exact duplicates are deduplicated as a bounded sub-decision of
-`kept-primary`; they never collapse independent simultaneous events. An
-ambiguous event is retained in a reviewable conflict result or fails the
-operation according to the frozen conflict policy; it is never silently
-merged or discarded. Repeated identical text at different timestamps remains
-separate because timing and provenance are identity evidence, not text-only
-labels.
+For example, if primary lacks cue X, supplemental A adds X, and supplemental
+B contains equivalent X, B reconciles against the evolving canonical X and is
+deduplicated; it does not add a second X. If primary contains X and both A and
+B contain equivalent X, both reconcile to the primary-owned X and primary
+evidence remains authoritative. If A and B contain equivalent text/timing but
+different meaningful role/class/layout evidence, they remain independent
+events when that evidence proves distinct cues; if they claim one cue with
+incompatible meaningful evidence, the earlier source remains the deterministic
+owner and the conflict is surfaced under the frozen conflict policy.
+
+Exact duplicates never collapse legitimate simultaneous events. An ambiguous
+event is retained in a reviewable conflict result or fails the operation
+according to the frozen conflict policy; it is never silently merged or
+discarded. Repeated identical text at different timestamps remains separate
+because timing, role/class/layout, and same-source ordinal evidence are not
+text-only labels.
 
 Alternative considered: concatenate all same-time text into one cue. Rejected
 because it destroys simultaneous signs/songs/dialogue layout and makes native
@@ -310,7 +350,9 @@ conflict summaries and no full ASS document, OCR response, or per-cue body.
 
 Only a composite containing the configured primary/full-dialogue source can be
 marked preferred/default, and only when the frozen Track Profile or manual
-request explicitly authorizes it. Same-language output records that language;
+request explicitly requests promotion. Both conditions are structural
+invariants and a manual policy cannot waive the primary/full-dialogue gate.
+Same-language output records that language;
 an explicitly authorized cross-language output records a bounded `mixed`
 resolved language plus all contributing languages.
 
@@ -328,7 +370,9 @@ applicable.
 If an ambiguous conflict is not explicitly permitted by the frozen policy,
 validation fails closed. If the policy permits a reviewable composite,
 provenance and operation status include the bounded conflict result, and the
-output is not promoted to preferred/default unless explicitly authorized.
+output is not promoted to preferred/default unless it contains the configured
+primary/full-dialogue source and the frozen profile/manual policy explicitly
+requests promotion. A review/conflict policy cannot waive either condition.
 
 ## Risks / Trade-offs
 
