@@ -48,6 +48,7 @@ import type {
   ProfileSampleEstimate,
   ProfileSampleEstimateOperation,
   LabFidelityOperation,
+  QSVTemporalExperimentRequest,
   QualityRecommendationResponse,
   PreviewInspection,
   PreviewFrameMetrics,
@@ -723,7 +724,7 @@ export const api = {
     request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}`),
   cancelProfileSampleEstimateOperation: (operationId: string) =>
     request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
-  startLabFidelityOperation: (input: { primaryRequestId: string; referenceRequestId?: string; durationSeconds?: number; clientCorrelationSignature?: string; materialSignature?: string; draftSignature?: string }, signal?: AbortSignal) =>
+  startLabFidelityOperation: (input: { primaryRequestId: string; referenceRequestId?: string; durationSeconds?: number; clientCorrelationSignature?: string; materialSignature?: string; draftSignature?: string; qsvTemporalExperiment?: QSVTemporalExperimentRequest }, signal?: AbortSignal) =>
     request<LabFidelityOperation>('/api/lab/fidelity/operations', { method: 'POST', body: JSON.stringify(input), signal }),
   labFidelityOperation: (operationId: string, signal?: AbortSignal) =>
     request<LabFidelityOperation>(`/api/lab/fidelity/operations/${encodeURIComponent(operationId)}`, { signal }),

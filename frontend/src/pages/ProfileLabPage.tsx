@@ -57,6 +57,7 @@ import type {
   ProfileInput,
   ProfileSampleEstimateOperation,
   LabFidelityOperation,
+  QSVTemporalExperimentSummary,
   CompatiblePreviewLifecycleResponse,
   ProfileSuggestion,
   AdvisorFinding,
@@ -72,6 +73,7 @@ import type {
   StreamMetadataOverride,
   SubtitleSemanticRole,
   QSVFrameStructureAnalysis,
+  QSVTemporalExperimentRequest,
   TrackProfileResolutionPreview as TrackProfileResolutionPreviewResponse,
   FrameStructureRecommendationSet,
   QSVFeatureStatus,
@@ -267,6 +269,7 @@ type LabFidelityInspection = {
     metricVerdict?: 'Safe' | 'Review' | 'Reject' | string;
   };
   overallVerdict?: 'Safe' | 'Review' | 'Reject' | string;
+  temporalExperiment?: QSVTemporalExperimentSummary;
 };
 
 type CachedLabReferencePreview = {
@@ -399,6 +402,7 @@ function labInspectionFromOperation(
     aggregateStatus: typeof result.aggregateStatus === 'string' ? result.aggregateStatus : undefined,
     visualAggregate: (result.visualAggregate ?? undefined) as LabFidelityInspection['visualAggregate'],
     overallVerdict: typeof result.overallVerdict === 'string' ? result.overallVerdict : undefined,
+    temporalExperiment: (result.qsvTemporalExperiment ?? undefined) as QSVTemporalExperimentSummary | undefined,
   };
 }
 
@@ -1383,6 +1387,7 @@ export function ProfileLabPage() {
       referenceSignature,
       conversion,
       primaryRequestId,
+      qsvTemporalExperiment,
       signal,
       onPrepared,
       onProgress,
@@ -1391,6 +1396,7 @@ export function ProfileLabPage() {
       referenceSignature: string;
       conversion: CompatiblePreviewOptions;
       primaryRequestId?: string;
+      qsvTemporalExperiment?: QSVTemporalExperimentRequest;
       signal?: AbortSignal;
       onPrepared?: (referenceRequestId: string, conversionRequestId: string) => void;
       onProgress?: (operation: LabFidelityOperation) => void;
@@ -1449,6 +1455,7 @@ export function ProfileLabPage() {
           conversion.profile ?? videoDraft,
         )),
         draftSignature: labOperationSignature(JSON.stringify(conversion.profile ?? videoDraft)),
+        qsvTemporalExperiment,
       }, signal);
       onProgress?.(started);
       let operation = started;
@@ -2886,6 +2893,51 @@ export function ProfileLabPage() {
     });
   }
 
+  function startQSVTemporalExperiment() {
+    if (!assetPath || !processedVideoPreviewRequestId || !labFidelityOperation?.windows?.length) return;
+    const windows = labFidelityOperation.windows
+      .filter((window) => typeof window.windowIdentity === 'string' && window.windowIdentity)
+      .slice(0, 3);
+    if (!windows.length) return;
+    const currentQuality = Number((videoDraft as unknown as Record<string, unknown>).globalQuality ?? (videoDraft as unknown as Record<string, unknown>).qualityValue ?? 25);
+    const qsvTemporalExperiment: QSVTemporalExperimentRequest = {
+      variantsByWindow: windows.map((window) => ({
+        windowIdentity: window.windowIdentity as string,
+        variants: [{
+          changedVariable: 'quality_rate_control',
+          requestedDelta: { globalQuality: Math.max(1, currentQuality - 2) },
+        }],
+      })),
+    };
+    const controller = new AbortController();
+    fidelityAbortRef.current?.abort();
+    fidelityAbortRef.current = controller;
+    setFidelityTab('previews');
+    fidelityInspection.reset();
+    fidelityInspection.mutate({
+      primaryRequestId: processedVideoPreviewRequestId,
+      qsvTemporalExperiment,
+      reference: {
+        path: assetPath,
+        start,
+        seconds,
+        mode: 'quality',
+        videoCodec: 'x264',
+        qualityValue: 16,
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p',
+        videoEncoder: 'libx264',
+        useHardwareIfAvailable: false,
+        globalQuality: 21,
+        previewNormalization,
+      },
+      referenceSignature: currentReferenceRequestSignature,
+      conversion: { path: assetPath, start, seconds, mode: 'quality', previewNormalization, profile: videoDraft },
+      signal: controller.signal,
+      onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
+    });
+  }
+
   function resetProcessedPreviews() {
     resetProcessedAudioPreview();
     resetProcessedVideoPreview();
@@ -3531,6 +3583,15 @@ export function ProfileLabPage() {
                       ) : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                         <Button size="small" variant="outlined" disabled={startProfileSampleEstimate.isPending || sampleEstimateActive || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure samples</Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="secondary"
+                          disabled={fidelityInspection.isPending || videoPreviewStatus !== 'ready' || String((videoDraft as unknown as Record<string, unknown>).videoEncoder ?? '') !== 'hevc_qsv' || !processedVideoPreviewRequestId || !labFidelityOperation?.windows?.some((window) => Boolean(window.windowIdentity))}
+                          onClick={startQSVTemporalExperiment}
+                        >
+                          Run QSV temporal experiment
+                        </Button>
                         {startProfileSampleEstimate.isPending || sampleEstimateActive ? <Typography variant="body2" color="text.secondary">{sampleEstimatePhase}</Typography> : null}
                         {currentProfileSampleEstimate ? <Chip size="small" color={currentProfileSampleEstimate.persisted ? 'success' : 'warning'} label={`Video estimate ${formatBytes(currentProfileSampleEstimate.estimatedVideoBytes)} · ${currentProfileSampleEstimate.effectiveEncoder}${currentProfileSampleEstimate.persisted ? ' · saved for Queue' : ' · profile changed or is not saved'}`} /> : null}
                       </Stack>
@@ -3558,6 +3619,30 @@ export function ProfileLabPage() {
                         >
                           {compatiblePreviewRecoveryMessage(fidelityInspection.error)}
                         </Alert>
+                      ) : null}
+                      {currentFidelityInspection?.temporalExperiment ? (
+                        <Stack spacing={1}>
+                          <Alert severity="info">
+                            QSV temporal experiment {currentFidelityInspection.temporalExperiment.experimentId} · {currentFidelityInspection.temporalExperiment.targets.length} frozen target(s)
+                            {currentFidelityInspection.temporalExperiment.unavailableRoles?.length ? ` · unavailable roles: ${currentFidelityInspection.temporalExperiment.unavailableRoles.join(', ')}` : ''}
+                            {currentFidelityInspection.temporalExperiment.warnings?.length ? ` · ${currentFidelityInspection.temporalExperiment.warnings.join(' ')}` : ''}
+                          </Alert>
+                          <Stack direction="row" spacing={1} flexWrap="wrap">
+                            {currentFidelityInspection.temporalExperiment.targets.map((target, index) => {
+                              const evidence = Array.isArray(target.temporalEvidence) && target.temporalEvidence.length > 0 ? target.temporalEvidence[0] as Record<string, unknown> : undefined;
+                              const variant = Array.isArray(target.variants) && target.variants.length > 0 ? target.variants[0] as Record<string, unknown> : undefined;
+                              const isolation = variant && typeof variant.isolation === 'object' && variant.isolation ? String((variant.isolation as Record<string, unknown>).result ?? 'unverified') : 'unverified';
+                              return (
+                                <Chip
+                                  key={`${String(target.windowIdentity ?? index)}-${index}`}
+                                  size="small"
+                                  variant="outlined"
+                                  label={`${String(target.windowIdentity ?? `target-${index + 1}`)} · ${String(target.classification ?? 'inconclusive')} · temporal:${String(evidence?.interpretation ?? 'unavailable')} · isolation:${isolation}`}
+                                />
+                              );
+                            })}
+                          </Stack>
+                        </Stack>
                       ) : null}
                       <Collapse in={fidelityOpen}>
                         {currentFidelityInspection ? (

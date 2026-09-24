@@ -2115,6 +2115,9 @@ export type LabFidelityOperationWindow = {
   position: number;
   startSeconds: number;
   durationSeconds: number;
+  windowIdentity?: string;
+  primary?: boolean;
+  roles?: string[];
   source?: PreviewVideoCharacteristics;
   output?: PreviewVideoCharacteristics;
   metrics?: PreviewFrameMetrics;
@@ -2124,6 +2127,48 @@ export type LabFidelityOperationWindow = {
   generationVersion?: number;
   status: string;
   canonicalFidelity?: Record<string, unknown>;
+};
+
+export type QSVTemporalVariantRequest = {
+  variantIdentity?: string;
+  changedVariable: 'quality_rate_control' | 'gop' | 'b_frame_strategy' | 'qsv_feature' | string;
+  requestedDelta: Record<string, unknown>;
+};
+
+export type QSVTemporalTargetRequest = {
+  windowIdentity: string;
+  variants?: QSVTemporalVariantRequest[];
+};
+
+export type QSVTemporalControlRequest = {
+  windowIdentity: string;
+  requestId?: string;
+};
+
+export type QSVTemporalExperimentRequest = {
+  variantsByWindow?: QSVTemporalTargetRequest[];
+  controls?: QSVTemporalControlRequest[];
+};
+
+export type QSVTemporalEvidence = {
+  targetWindowIdentity: string;
+  variantIdentity: string;
+  availability: string;
+  interpretation: 'likely_pumping' | 'inconclusive' | 'not_observed' | string;
+  interpretationPolicyVersion: string;
+  frameCount?: number;
+  lossRecoveryEvents?: Array<Record<string, unknown>>;
+  temporalVariationSummary?: Record<string, unknown>;
+  warnings?: string[];
+};
+
+export type QSVTemporalExperimentSummary = {
+  experimentId: string;
+  sourceRevision: string;
+  samplingPlanIdentity: string;
+  unavailableRoles?: string[];
+  targets: Array<Record<string, unknown>>;
+  warnings?: string[];
 };
 
 export type LabFidelityOperation = {
@@ -2143,6 +2188,7 @@ export type LabFidelityOperation = {
   clientCorrelationSignature?: string;
   samplingPolicyVersion?: string;
   samplingPolicy?: Record<string, unknown>;
+  temporalExperiment?: QSVTemporalExperimentSummary;
   completedWindows: number;
   totalWindows: number;
   currentStart?: number;

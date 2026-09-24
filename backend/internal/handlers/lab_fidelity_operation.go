@@ -37,23 +37,24 @@ const (
 // behind the process-local evidence provider and are represented by the
 // completed window summaries returned in Result.
 type LabFidelityOperation struct {
-	ID                         string         `json:"id"`
-	Status                     string         `json:"status"`
-	Phase                      string         `json:"phase"`
-	PrimaryRequestID           string         `json:"primaryRequestId"`
-	PrimaryArtifactID          string         `json:"primaryArtifactId,omitempty"`
-	PrimaryGeneration          string         `json:"primaryGeneration,omitempty"`
-	SourceRevision             models.JSONMap `json:"sourceRevision,omitempty"`
-	PrimaryStart               float64        `json:"primaryStart,omitempty"`
-	PrimaryDuration            float64        `json:"primaryDuration,omitempty"`
-	Normalization              models.JSONMap `json:"normalization,omitempty"`
-	FrozenPlan                 models.JSONMap `json:"frozenPlan,omitempty"`
-	PlanSignature              string         `json:"planSignature,omitempty"`
-	MaterialSignature          string         `json:"materialSignature,omitempty"`
-	ClientCorrelationSignature string         `json:"clientCorrelationSignature,omitempty"`
-	SamplingPolicyVersion      string         `json:"samplingPolicyVersion,omitempty"`
-	SamplingPlanIdentity       string         `json:"samplingPlanIdentity,omitempty"`
-	SamplingPolicy             models.JSONMap `json:"samplingPolicy,omitempty"`
+	ID                         string                 `json:"id"`
+	Status                     string                 `json:"status"`
+	Phase                      string                 `json:"phase"`
+	PrimaryRequestID           string                 `json:"primaryRequestId"`
+	PrimaryArtifactID          string                 `json:"primaryArtifactId,omitempty"`
+	PrimaryGeneration          string                 `json:"primaryGeneration,omitempty"`
+	SourceRevision             models.JSONMap         `json:"sourceRevision,omitempty"`
+	PrimaryStart               float64                `json:"primaryStart,omitempty"`
+	PrimaryDuration            float64                `json:"primaryDuration,omitempty"`
+	Normalization              models.JSONMap         `json:"normalization,omitempty"`
+	FrozenPlan                 models.JSONMap         `json:"frozenPlan,omitempty"`
+	PlanSignature              string                 `json:"planSignature,omitempty"`
+	MaterialSignature          string                 `json:"materialSignature,omitempty"`
+	ClientCorrelationSignature string                 `json:"clientCorrelationSignature,omitempty"`
+	SamplingPolicyVersion      string                 `json:"samplingPolicyVersion,omitempty"`
+	SamplingPlanIdentity       string                 `json:"samplingPlanIdentity,omitempty"`
+	SamplingPolicy             models.JSONMap         `json:"samplingPolicy,omitempty"`
+	TemporalExperiment         *QSVTemporalExperiment `json:"temporalExperiment,omitempty"`
 	samplingPlan               SamplingPlan
 	CompletedWindows           int              `json:"completedWindows"`
 	TotalWindows               int              `json:"totalWindows"`
@@ -74,9 +75,10 @@ type labFidelityOperationInput struct {
 	// MaterialSignature is retained as a legacy wire-compatible input. It is
 	// never used as the operation's material authority; the backend computes
 	// MaterialSignature from the resolved descriptor below.
-	MaterialSignature          string `json:"materialSignature,omitempty"`
-	ClientCorrelationSignature string `json:"clientCorrelationSignature,omitempty"`
-	DraftSignature             string `json:"draftSignature,omitempty"`
+	MaterialSignature          string                        `json:"materialSignature,omitempty"`
+	ClientCorrelationSignature string                        `json:"clientCorrelationSignature,omitempty"`
+	DraftSignature             string                        `json:"draftSignature,omitempty"`
+	QSVTemporalExperiment      *QSVTemporalExperimentRequest `json:"qsvTemporalExperiment,omitempty"`
 }
 
 type labFidelityMaterialIdentity struct {
@@ -420,6 +422,25 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 		Primary:         true,
 	}
 	plan := h.labSamplingPlan(descriptor.Path, duration, descriptor.SourceRevision, primaryWindow)
+	var temporalExperiment *QSVTemporalExperiment
+	if input.QSVTemporalExperiment != nil {
+		experiment, experimentErr := QSVTemporalTargetsForFrozenPlan(primaryWindow, plan)
+		if experimentErr != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": experimentErr.Error(), "code": "invalid_qsv_temporal_experiment"})
+			return
+		}
+		if experimentErr = experiment.ApplyRequestedVariants(*input.QSVTemporalExperiment); experimentErr != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": experimentErr.Error(), "code": "invalid_qsv_temporal_experiment"})
+			return
+		}
+		if len(experiment.Targets) == 0 || !experiment.Targets[0].Primary {
+			c.JSON(http.StatusConflict, gin.H{"error": "qsv temporal experiment lost its explicit LAB primary target", "code": "invalid_qsv_temporal_experiment"})
+			return
+		}
+		experiment.Targets[0].Baseline = qsvExperimentCandidateFromDescriptor(descriptor, input.PrimaryRequestID, experiment.Targets[0].WindowIdentity, plan.SourceRevision)
+		experiment.ExperimentID = ComputeQSVTemporalExperimentID(experiment)
+		temporalExperiment = &experiment
+	}
 	clientCorrelation := strings.TrimSpace(input.ClientCorrelationSignature)
 	if clientCorrelation == "" {
 		// Accept the pre-hardening field for wire compatibility, but never use
@@ -448,8 +469,9 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 		ClientCorrelationSignature: clientCorrelation, SamplingPolicyVersion: labFidelitySamplingPolicyVersion,
 		SamplingPlanIdentity: plan.PlanIdentity,
 		SamplingPolicy:       labFidelitySamplingPolicyMap(plan), samplingPlan: plan,
-		TotalWindows: len(labFidelityWindowPlans(float64(previewTimestampSeconds(descriptor.Start)), float64(max(1, descriptor.Seconds)), duration, plan)),
-		CreatedAt:    now, UpdatedAt: now,
+		TotalWindows:       len(labFidelityWindowPlans(float64(previewTimestampSeconds(descriptor.Start)), float64(max(1, descriptor.Seconds)), duration, plan)),
+		TemporalExperiment: temporalExperiment,
+		CreatedAt:          now, UpdatedAt: now,
 	}
 	store.Lock()
 	store.items[id] = operation
@@ -539,6 +561,10 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 		labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 			operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, "stale_primary", "primary Compatible Preview generation changed before LAB Fidelity evidence began", true
 		})
+		return
+	}
+	if operation.TemporalExperiment != nil {
+		h.executeQSVTemporalExperiment(ctx, input, id, descriptor, operation.TemporalExperiment)
 		return
 	}
 	primaryStart := float64(previewTimestampSeconds(descriptor.Start))
