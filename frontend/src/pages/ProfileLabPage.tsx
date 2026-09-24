@@ -74,6 +74,13 @@ import type {
   SubtitleSemanticRole,
   QSVFrameStructureAnalysis,
   QSVTemporalExperimentRequest,
+  QSVTemporalControlRequest,
+  QSVTemporalEvidence,
+  QSVTemporalTargetRequest,
+  QSVTemporalTargetSummary,
+  QSVTemporalVariant,
+  QSVTemporalVariantRequest,
+  EncoderControlCandidate,
   TrackProfileResolutionPreview as TrackProfileResolutionPreviewResponse,
   FrameStructureRecommendationSet,
   QSVFeatureStatus,
@@ -294,12 +301,102 @@ type LabFidelityRunIdentity = {
   localRequestSignature: string;
 };
 
-function labFidelityOperationMatchesRun(operation: LabFidelityOperation, run: LabFidelityRunIdentity) {
+export function labFidelityOperationMatchesRun(operation: LabFidelityOperation, run: LabFidelityRunIdentity) {
   return operation.id === run.operationId &&
     operation.primaryRequestId === run.primaryRequestId &&
     operation.primaryArtifactId === run.primaryArtifactId &&
     operation.primaryGeneration === run.primaryGeneration &&
     operation.materialSignature === run.materialSignature;
+}
+
+export type QSVTemporalChangedVariable = 'quality_rate_control' | 'gop' | 'b_frame_strategy' | 'qsv_feature';
+
+export const QSV_TEMPORAL_LAB_BOUNDS = {
+  maxTargets: 3,
+  maxVariantsPerTarget: 3,
+  maxTotalVariants: 6,
+  maxOptionalControls: 3,
+} as const;
+
+export function buildQSVTemporalRequestedDelta(
+  changedVariable: QSVTemporalChangedVariable,
+  value: string,
+  feature = 'adaptiveB',
+): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (changedVariable === 'quality_rate_control') {
+    const globalQuality = Number(trimmed);
+    return Number.isFinite(globalQuality) ? { globalQuality } : null;
+  }
+  if (changedVariable === 'gop') {
+    const gopFrames = Number(trimmed);
+    return Number.isInteger(gopFrames) && gopFrames > 0 ? { gopFrames } : null;
+  }
+  if (changedVariable === 'b_frame_strategy') {
+    const maxBFrames = Number(trimmed);
+    return Number.isInteger(maxBFrames) && maxBFrames >= 0 ? { maxBFrames } : null;
+  }
+  if (feature === 'adaptiveB' || feature === 'adaptiveI' || feature === 'extendedBRC') {
+    if (!['true', 'false'].includes(trimmed.toLowerCase())) return null;
+    return { [feature]: trimmed.toLowerCase() === 'true' };
+  }
+  if (feature === 'MBBRC') return { mbbrcMode: trimmed };
+  if (feature === 'rdo') return { rdoMode: trimmed };
+  const numericValue = Number(trimmed);
+  return Number.isFinite(numericValue) ? { [feature]: numericValue } : { [feature]: trimmed };
+}
+
+export function buildQSVTemporalExperimentRequest(
+  windows: Array<{ windowIdentity?: string | null }>,
+  changedVariable: QSVTemporalChangedVariable,
+  requestedDelta: Record<string, unknown>,
+): QSVTemporalExperimentRequest {
+  return {
+    variantsByWindow: windows
+      .filter((window): window is { windowIdentity: string } => typeof window.windowIdentity === 'string' && Boolean(window.windowIdentity))
+      .slice(0, QSV_TEMPORAL_LAB_BOUNDS.maxTargets)
+      .map((window): QSVTemporalTargetRequest => ({
+        windowIdentity: window.windowIdentity,
+        variants: [{ changedVariable, requestedDelta } satisfies QSVTemporalVariantRequest],
+      })),
+  };
+}
+
+export function qsvTemporalRequestFromSummary(summary: QSVTemporalExperimentSummary): QSVTemporalExperimentRequest {
+  let totalVariants = 0;
+  const variantsByWindow = summary.targets.slice(0, QSV_TEMPORAL_LAB_BOUNDS.maxTargets).map((target): QSVTemporalTargetRequest => {
+    const variants = (target.variants ?? []).slice(0, QSV_TEMPORAL_LAB_BOUNDS.maxVariantsPerTarget).flatMap((variant): QSVTemporalVariantRequest[] => {
+      if (totalVariants >= QSV_TEMPORAL_LAB_BOUNDS.maxTotalVariants) return [];
+      totalVariants += 1;
+      return [{
+        variantIdentity: variant.variantIdentity,
+        changedVariable: variant.changedVariable,
+        requestedDelta: variant.requestedDelta ?? {},
+      }];
+    });
+    return { windowIdentity: target.windowIdentity, variants };
+  });
+  const controls = summary.targets.flatMap((target) => (target.controlCandidates ?? []).map((control): QSVTemporalControlRequest => ({
+    windowIdentity: target.windowIdentity,
+    requestId: control.requestId,
+    generationIdentity: control.generationIdentity,
+    evidenceIdentity: control.evidenceIdentity,
+  })).filter((control) => Boolean(control.requestId)));
+  return { variantsByWindow, controls: controls.length ? controls.slice(0, QSV_TEMPORAL_LAB_BOUNDS.maxOptionalControls) : undefined };
+}
+
+export function qsvTemporalEvidenceProjection(target: QSVTemporalTargetSummary): {
+  variant?: QSVTemporalVariant;
+  evidence?: QSVTemporalEvidence;
+  control?: EncoderControlCandidate;
+} {
+  const variant = (target.variants ?? []).find((candidate) => (candidate.temporalEvidence ?? []).length > 0) ?? target.variants?.[0];
+  return {
+    variant,
+    evidence: variant?.temporalEvidence?.[0],
+    control: target.controlCandidates?.[0],
+  };
 }
 
 function labReferenceStatusMatchesCache(cache: CachedLabReferencePreview, status: CompatiblePreviewLifecycleResponse) {
@@ -947,6 +1044,9 @@ export function ProfileLabPage() {
   const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
   const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
   const [labFidelityOperation, setLabFidelityOperation] = useState<LabFidelityOperation | null>(null);
+  const [qsvTemporalChangedVariable, setQsvTemporalChangedVariable] = useState<QSVTemporalChangedVariable>('quality_rate_control');
+  const [qsvTemporalFeature, setQsvTemporalFeature] = useState('adaptiveB');
+  const [qsvTemporalVariantValue, setQsvTemporalVariantValue] = useState('');
   const labFidelityOperationRef = useRef<LabFidelityOperation | null>(null);
   const labFidelityRunIdentityRef = useRef<LabFidelityRunIdentity | null>(null);
   const currentVideoRequestSignatureRef = useRef('');
@@ -2851,6 +2951,9 @@ export function ProfileLabPage() {
 
   function retryLabFidelity() {
     if (!assetPath || !processedVideoPreviewRequestId || videoPreviewStatus !== 'ready') return;
+    const qsvTemporalExperiment = labFidelityOperation?.temporalExperiment
+      ? qsvTemporalRequestFromSummary(labFidelityOperation.temporalExperiment)
+      : undefined;
     fidelityAbortRef.current?.abort();
     const controller = new AbortController();
     fidelityAbortRef.current = controller;
@@ -2885,6 +2988,7 @@ export function ProfileLabPage() {
         profile: videoDraft,
       },
       signal: controller.signal,
+      qsvTemporalExperiment,
       onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
       onPrepared: () => {
         primaryPreviewReadyRef.current = true;
@@ -2899,16 +3003,20 @@ export function ProfileLabPage() {
       .filter((window) => typeof window.windowIdentity === 'string' && window.windowIdentity)
       .slice(0, 3);
     if (!windows.length) return;
-    const currentQuality = Number((videoDraft as unknown as Record<string, unknown>).globalQuality ?? (videoDraft as unknown as Record<string, unknown>).qualityValue ?? 25);
-    const qsvTemporalExperiment: QSVTemporalExperimentRequest = {
-      variantsByWindow: windows.map((window) => ({
-        windowIdentity: window.windowIdentity as string,
-        variants: [{
-          changedVariable: 'quality_rate_control',
-          requestedDelta: { globalQuality: Math.max(1, currentQuality - 2) },
-        }],
-      })),
-    };
+    const draftValues = videoDraft as unknown as Record<string, unknown>;
+    const currentQuality = Number(draftValues.globalQuality ?? draftValues.qualityValue ?? 25);
+    const currentGop = Number(draftValues.gopFrames ?? draftValues.frameStructureGopFrames ?? 48);
+    const currentBFrames = Number(draftValues.maxBFrames ?? draftValues.frameStructureMaxBFrames ?? 1);
+    const defaultValue = qsvTemporalChangedVariable === 'quality_rate_control'
+      ? String(Math.max(1, currentQuality - 2))
+      : qsvTemporalChangedVariable === 'gop'
+        ? String(Math.max(1, currentGop - 1))
+        : qsvTemporalChangedVariable === 'b_frame_strategy'
+          ? String(Math.max(0, currentBFrames - 1))
+          : qsvTemporalFeature === 'adaptiveB' ? String(draftValues.qsvAdaptiveB !== true) : 'false';
+    const requestedDelta = buildQSVTemporalRequestedDelta(qsvTemporalChangedVariable, qsvTemporalVariantValue || defaultValue, qsvTemporalFeature);
+    if (!requestedDelta) return;
+    const qsvTemporalExperiment = buildQSVTemporalExperimentRequest(windows, qsvTemporalChangedVariable, requestedDelta);
     const controller = new AbortController();
     fidelityAbortRef.current?.abort();
     fidelityAbortRef.current = controller;
@@ -3583,6 +3691,46 @@ export function ProfileLabPage() {
                       ) : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                         <Button size="small" variant="outlined" disabled={startProfileSampleEstimate.isPending || sampleEstimateActive || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure samples</Button>
+                        <TextField
+                          select
+                          size="small"
+                          label="QSV variable"
+                          value={qsvTemporalChangedVariable}
+                          onChange={(event) => setQsvTemporalChangedVariable(event.target.value as QSVTemporalChangedVariable)}
+                          sx={{ minWidth: 180 }}
+                        >
+                          <MenuItem value="quality_rate_control">Quality / rate control</MenuItem>
+                          <MenuItem value="gop">GOP frames</MenuItem>
+                          <MenuItem value="b_frame_strategy">B-frame depth</MenuItem>
+                          <MenuItem value="qsv_feature">QSV feature</MenuItem>
+                        </TextField>
+                        {qsvTemporalChangedVariable === 'qsv_feature' ? (
+                          <TextField
+                            select
+                            size="small"
+                            label="QSV feature"
+                            value={qsvTemporalFeature}
+                            onChange={(event) => setQsvTemporalFeature(event.target.value)}
+                            sx={{ minWidth: 145 }}
+                          >
+                            <MenuItem value="adaptiveB">Adaptive B</MenuItem>
+                            <MenuItem value="adaptiveI">Adaptive I</MenuItem>
+                            <MenuItem value="extendedBRC">ExtBRC</MenuItem>
+                            <MenuItem value="MBBRC">MBBRC</MenuItem>
+                            <MenuItem value="lookAheadDepth">Look-ahead</MenuItem>
+                            <MenuItem value="rdo">RDO</MenuItem>
+                            <MenuItem value="pStrategy">P-strategy</MenuItem>
+                          </TextField>
+                        ) : null}
+                        <TextField
+                          size="small"
+                          label={qsvTemporalChangedVariable === 'qsv_feature' ? 'Requested value' : 'Variant value'}
+                          value={qsvTemporalVariantValue}
+                          onChange={(event) => setQsvTemporalVariantValue(event.target.value)}
+                          placeholder={qsvTemporalChangedVariable === 'qsv_feature' ? 'true / false' : undefined}
+                          type={qsvTemporalChangedVariable === 'qsv_feature' ? 'text' : 'number'}
+                          sx={{ width: 140 }}
+                        />
                         <Button
                           size="small"
                           variant="outlined"
@@ -3629,16 +3777,23 @@ export function ProfileLabPage() {
                           </Alert>
                           <Stack direction="row" spacing={1} flexWrap="wrap">
                             {currentFidelityInspection.temporalExperiment.targets.map((target, index) => {
-                              const evidence = Array.isArray(target.temporalEvidence) && target.temporalEvidence.length > 0 ? target.temporalEvidence[0] as Record<string, unknown> : undefined;
-                              const variant = Array.isArray(target.variants) && target.variants.length > 0 ? target.variants[0] as Record<string, unknown> : undefined;
-                              const isolation = variant && typeof variant.isolation === 'object' && variant.isolation ? String((variant.isolation as Record<string, unknown>).result ?? 'unverified') : 'unverified';
+                              const projection = qsvTemporalEvidenceProjection(target);
+                              const evidence = projection.evidence;
+                              const variant = projection.variant;
+                              const isolation = variant?.isolation?.result ?? 'unverified';
+                              const requestedValue = variant?.requestedDelta ? JSON.stringify(variant.requestedDelta) : 'unavailable';
+                              const control = projection.control;
                               return (
-                                <Chip
-                                  key={`${String(target.windowIdentity ?? index)}-${index}`}
-                                  size="small"
-                                  variant="outlined"
-                                  label={`${String(target.windowIdentity ?? `target-${index + 1}`)} · ${String(target.classification ?? 'inconclusive')} · temporal:${String(evidence?.interpretation ?? 'unavailable')} · isolation:${isolation}`}
-                                />
+                                <Stack key={`${String(target.windowIdentity ?? index)}-${index}`} spacing={0.35} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1, minWidth: 285 }}>
+                                  <Typography variant="caption" fontWeight={700}>{target.primary ? 'Primary' : 'Frozen target'} · {target.windowIdentity}</Typography>
+                                  <Typography variant="caption" color="text.secondary">Baseline: {target.baseline?.candidateIdentity ?? 'unavailable'} · {target.baseline?.generationToken ?? 'generation unavailable'}</Typography>
+                                  <Typography variant="caption">Variant: {variant?.changedVariable ?? 'unavailable'} = {requestedValue}</Typography>
+                                  <Typography variant="caption">Isolation: {isolation}</Typography>
+                                  <Typography variant="caption">Baseline temporal: {evidence?.baselineInterpretation ?? 'unavailable'}</Typography>
+                                  <Typography variant="caption">Variant temporal: {evidence?.variantInterpretation ?? evidence?.interpretation ?? 'unavailable'} · direction: {evidence?.mitigationDirection ?? 'unavailable'}</Typography>
+                                  <Typography variant="caption">Classification: {target.classification ?? 'inconclusive'} · control: {control?.comparable ?? 'not requested'}</Typography>
+                                  {target.recommendation ? <Typography variant="caption" color="success.main">Recommendation available: {String((target.recommendation as Record<string, unknown>).changedVariable ?? 'variant')}</Typography> : null}
+                                </Stack>
                               );
                             })}
                           </Stack>

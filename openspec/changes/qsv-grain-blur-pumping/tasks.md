@@ -38,7 +38,7 @@
 
 - [x] 5.1 Extend API/client types and the existing LAB action flow for explicit QSV experiment start/status/cancel and bounded variant summaries; verify tab changes, rerenders, and polling alone do not start heavy work.
 - [x] 5.2 Preserve the existing primary Preview Ready boundary, Sample A/reference identity, per-target baseline/variant labels, and target-relative progress; verify the UI can distinguish measured temporal evidence, interpretation, unavailable roles, invalid isolation, non-comparable controls, and manual visual-review state.
-- [ ] 5.3 Add focused frontend coverage for explicit start/cancel/retry, primary and non-primary baseline reuse, per-target variant identity preservation, stale-result fencing, no hidden tab work, and no replacement of the ready primary artifact.
+- [x] 5.3 Add focused frontend coverage for explicit start/cancel/retry, primary and non-primary baseline reuse, per-target variant identity preservation, stale-result fencing, no hidden tab work, and no replacement of the ready primary artifact.
 
 ## 6. Classify outcomes and produce safe recommendations
 
@@ -46,6 +46,8 @@
 - [x] 6.2 Verify a control with a different window, filter/normalization semantics, or stale generation is rejected, while an existing matching x265/Test Encode/LAB artifact can be reused without a new encode; verify manual “looks better” commentary is not canonical control evidence.
 - [x] 6.3 Emit target-owned versioned mitigation recommendations with evidence basis, encoder/runtime, media characteristics, confidence, and size/speed/compression trade-offs; verify recommendations may be emitted from isolated QSV A/B without a control but never mutate existing Profiles automatically.
 - [ ] 6.4 Add an explicit draft/new-Profile application path only if the user or policy selects a recommendation; verify unrelated assets and existing Profiles remain unchanged.
+
+> 6.4 remains conditional/deferred: this implementation exposes recommendations but does not add an Apply recommendation action or mutate Profiles.
 
 ## 7. Validate without NAS media, network, or hardware
 

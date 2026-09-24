@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -24,6 +25,8 @@ const (
 	qsvTemporalInterpretationPolicyVersion = "qsv-temporal-interpretation-v1"
 	qsvTemporalEvidenceSchemaVersion       = "qsv-temporal-evidence-v1"
 	qsvTemporalControlSchemaVersion        = "qsv-temporal-control-v1"
+	qsvTemporalSamplingPolicyVersion       = "qsv-temporal-sampling-v1"
+	qsvTemporalSamplingRateHz              = 8.0
 	qsvTemporalMaxFrames                   = 32
 	qsvTemporalMaxEvents                   = 8
 )
@@ -37,6 +40,10 @@ const (
 	QSVTemporalInterpretationLikelyPumping = "likely_pumping"
 	QSVTemporalInterpretationInconclusive  = "inconclusive"
 	QSVTemporalInterpretationNotObserved   = "not_observed"
+	QSVTemporalMitigationImproved          = "improved"
+	QSVTemporalMitigationWorsened          = "worsened"
+	QSVTemporalMitigationUnchanged         = "unchanged"
+	QSVTemporalMitigationInconclusive      = "inconclusive"
 
 	QSVIsolationValid            = "valid"
 	QSVIsolationInvalid          = "invalid/non-isolated"
@@ -69,6 +76,17 @@ type QSVTemporalCapabilityResult struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+type QSVTemporalSamplingPolicy struct {
+	Version   string  `json:"version"`
+	RateHz    float64 `json:"rateHz"`
+	MaxFrames int     `json:"maxFrames"`
+	Filter    string  `json:"filter"`
+}
+
+func DefaultQSVTemporalSamplingPolicyV1() QSVTemporalSamplingPolicy {
+	return QSVTemporalSamplingPolicy{Version: qsvTemporalSamplingPolicyVersion, RateHz: qsvTemporalSamplingRateHz, MaxFrames: qsvTemporalFrameLimit, Filter: "fps=8,scale=64:36:flags=bilinear"}
+}
+
 func QSVTemporalFeatureCapability(capability capabilities.EncoderCapability, feature string) QSVTemporalCapabilityResult {
 	feature = strings.ToLower(strings.TrimSpace(feature))
 	result := QSVTemporalCapabilityResult{Feature: feature, Reason: "feature is not reported by the existing QSV capability probe"}
@@ -89,6 +107,22 @@ func QSVTemporalFeatureCapability(capability capabilities.EncoderCapability, fea
 			}
 		}
 		result.Reason = "existing tested QSV MBBRC modes"
+	case "rdo":
+		for mode, supported := range capability.TestedModes {
+			if supported && strings.Contains(strings.ToLower(mode), "rdo") {
+				result.Supported = true
+				break
+			}
+		}
+		result.Reason = "existing tested QSV RDO modes"
+	case "p_strategy", "pstrategy":
+		for mode, supported := range capability.TestedModes {
+			if supported && strings.Contains(strings.ToLower(mode), "pstrategy") {
+				result.Supported = true
+				break
+			}
+		}
+		result.Reason = "existing tested QSV P-strategy modes"
 	case "quality_rate_control":
 		result.Supported, result.Reason = capability.ICQ || capability.QSVFullCombination, "existing QSV quality/rate-control capability"
 	case "gop", "b_frame_strategy":
@@ -168,12 +202,14 @@ type QSVExperimentCandidate struct {
 	EffectiveQSVSettings      models.JSONMap `json:"effectiveQSVSettings,omitempty"`
 	FallbackReason            string         `json:"fallbackReason,omitempty"`
 	RuntimeCapabilityIdentity string         `json:"runtimeCapabilityIdentity,omitempty"`
+	EffectiveEncoder          string         `json:"effectiveEncoder,omitempty"`
 	GOP                       models.JSONMap `json:"gop,omitempty"`
 	BFrameBehavior            models.JSONMap `json:"bFrameBehavior,omitempty"`
 	FilterPlanIdentity        string         `json:"filterPlanIdentity,omitempty"`
 	NormalizationIdentity     string         `json:"normalizationIdentity,omitempty"`
 	ReferenceDomain           string         `json:"referenceDomain,omitempty"`
 	EffectiveVideoPlan        models.JSONMap `json:"effectiveVideoPlan,omitempty"`
+	CanonicalFidelity         models.JSONMap `json:"canonicalFidelity,omitempty"`
 	FrameBitstreamEvidence    models.JSONMap `json:"frameBitstreamEvidence,omitempty"`
 	SizeBytes                 int64          `json:"sizeBytes,omitempty"`
 	Bitrate                   float64        `json:"bitrate,omitempty"`
@@ -181,22 +217,26 @@ type QSVExperimentCandidate struct {
 }
 
 type EncoderControlCandidate struct {
-	SchemaVersion          string              `json:"schemaVersion"`
-	WindowIdentity         string              `json:"windowIdentity"`
-	Interval               QSVTemporalInterval `json:"interval"`
-	SourceRevision         string              `json:"sourceRevision"`
-	EncoderFamily          string              `json:"encoderFamily"`
-	ArtifactIdentity       string              `json:"artifactIdentity"`
-	GenerationIdentity     string              `json:"generationIdentity"`
-	EffectivePlan          models.JSONMap      `json:"effectivePlan,omitempty"`
-	FilterPlanIdentity     string              `json:"filterPlanIdentity"`
-	NormalizationIdentity  string              `json:"normalizationIdentity"`
-	ReferenceDomain        string              `json:"referenceDomain"`
-	EvidenceIdentity       string              `json:"evidenceIdentity"`
-	TemporalInterpretation string              `json:"temporalInterpretation,omitempty"`
-	ArtifactGeneration     string              `json:"artifactGeneration,omitempty"`
-	Comparable             string              `json:"comparable"`
-	Warnings               []string            `json:"warnings,omitempty"`
+	SchemaVersion              string              `json:"schemaVersion"`
+	WindowIdentity             string              `json:"windowIdentity"`
+	Interval                   QSVTemporalInterval `json:"interval"`
+	SourceRevision             string              `json:"sourceRevision"`
+	EncoderFamily              string              `json:"encoderFamily"`
+	RequestID                  string              `json:"requestId,omitempty"`
+	ArtifactIdentity           string              `json:"artifactIdentity"`
+	GenerationIdentity         string              `json:"generationIdentity"`
+	EffectivePlan              models.JSONMap      `json:"effectivePlan,omitempty"`
+	CanonicalFidelity          models.JSONMap      `json:"canonicalFidelity,omitempty"`
+	FilterPlanIdentity         string              `json:"filterPlanIdentity"`
+	NormalizationIdentity      string              `json:"normalizationIdentity"`
+	ReferenceDomain            string              `json:"referenceDomain"`
+	EvidenceIdentity           string              `json:"evidenceIdentity"`
+	TemporalInterpretation     string              `json:"temporalInterpretation,omitempty"`
+	ArtifactGeneration         string              `json:"artifactGeneration,omitempty"`
+	ExpectedGenerationIdentity string              `json:"expectedGenerationIdentity,omitempty"`
+	ExpectedEvidenceIdentity   string              `json:"expectedEvidenceIdentity,omitempty"`
+	Comparable                 string              `json:"comparable"`
+	Warnings                   []string            `json:"warnings,omitempty"`
 }
 
 type QSVIsolationResult struct {
@@ -209,14 +249,16 @@ type QSVIsolationResult struct {
 }
 
 type QSVTemporalFrameSample struct {
-	FrameIndex          int     `json:"frameIndex"`
-	TimestampSeconds    float64 `json:"timestampSeconds"`
-	Comparable          bool    `json:"comparable"`
-	RegionIdentity      string  `json:"regionIdentity,omitempty"`
-	DetailEnergy        float64 `json:"detailEnergy"`
-	GrainEnergy         float64 `json:"grainEnergy"`
-	HighFrequencyEnergy float64 `json:"highFrequencyEnergy"`
-	LocalVariance       float64 `json:"localVariance"`
+	FrameIndex            int     `json:"frameIndex"`
+	TimestampSeconds      float64 `json:"timestampSeconds"`
+	Comparable            bool    `json:"comparable"`
+	RegionIdentity        string  `json:"regionIdentity,omitempty"`
+	DetailEnergy          float64 `json:"detailEnergy"`
+	GrainEnergy           float64 `json:"grainEnergy"`
+	HighFrequencyEnergy   float64 `json:"highFrequencyEnergy"`
+	LocalVariance         float64 `json:"localVariance"`
+	SamplingPolicyVersion string  `json:"samplingPolicyVersion,omitempty"`
+	SamplingRateHz        float64 `json:"samplingRateHz,omitempty"`
 }
 
 type QSVTemporalEvidenceRequest struct {
@@ -227,6 +269,11 @@ type QSVTemporalEvidenceRequest struct {
 	VariantArtifactID     string                   `json:"variantArtifactId"`
 	NormalizationIdentity string                   `json:"normalizationIdentity"`
 	RegionIdentity        string                   `json:"regionIdentity"`
+	SampleStartSeconds    float64                  `json:"sampleStartSeconds"`
+	SampleDurationSeconds float64                  `json:"sampleDurationSeconds"`
+	SamplingPolicyVersion string                   `json:"samplingPolicyVersion"`
+	SamplingRateHz        float64                  `json:"samplingRateHz"`
+	ReferenceFrames       []QSVTemporalFrameSample `json:"referenceFrames,omitempty"`
 	BaselineFrames        []QSVTemporalFrameSample `json:"baselineFrames"`
 	VariantFrames         []QSVTemporalFrameSample `json:"variantFrames"`
 }
@@ -238,6 +285,8 @@ type QSVTemporalEvidence struct {
 	SourceRevision              string                         `json:"sourceRevision"`
 	BaselineArtifactID          string                         `json:"baselineArtifactId"`
 	VariantArtifactID           string                         `json:"variantArtifactId"`
+	SamplingPolicyVersion       string                         `json:"samplingPolicyVersion"`
+	SamplingRateHz              float64                        `json:"samplingRateHz"`
 	SampleStartSeconds          float64                        `json:"sampleStartSeconds"`
 	SampleDurationSeconds       float64                        `json:"sampleDurationSeconds"`
 	FrameCount                  int                            `json:"frameCount"`
@@ -249,6 +298,17 @@ type QSVTemporalEvidence struct {
 	VariationByFrame            []float64                      `json:"variationByFrame,omitempty"`
 	LossRecoveryEvents          []QSVTemporalLossRecoveryEvent `json:"lossRecoveryEvents,omitempty"`
 	TemporalVariationSummary    QSVTemporalVariationSummary    `json:"temporalVariationSummary"`
+	BaselineDetailEnergyByFrame []float64                      `json:"baselineDetailEnergyByFrame,omitempty"`
+	BaselineGrainEnergyByFrame  []float64                      `json:"baselineGrainEnergyByFrame,omitempty"`
+	BaselineBlurProxyByFrame    []float64                      `json:"baselineBlurProxyByFrame,omitempty"`
+	BaselineVariationByFrame    []float64                      `json:"baselineVariationByFrame,omitempty"`
+	BaselineLossRecoveryEvents  []QSVTemporalLossRecoveryEvent `json:"baselineLossRecoveryEvents,omitempty"`
+	BaselineVariationSummary    QSVTemporalVariationSummary    `json:"baselineVariationSummary"`
+	BaselineInterpretation      string                         `json:"baselineInterpretation"`
+	VariantInterpretation       string                         `json:"variantInterpretation"`
+	MitigationDirection         string                         `json:"mitigationDirection"`
+	BaselineEvidenceIdentity    string                         `json:"baselineEvidenceIdentity,omitempty"`
+	VariantEvidenceIdentity     string                         `json:"variantEvidenceIdentity,omitempty"`
 	Availability                string                         `json:"availability"`
 	EvidenceIdentity            string                         `json:"evidenceIdentity,omitempty"`
 	Interpretation              string                         `json:"interpretation"`
@@ -372,8 +432,10 @@ type QSVTemporalVariantRequest struct {
 }
 
 type QSVTemporalControlRequest struct {
-	WindowIdentity string `json:"windowIdentity"`
-	RequestID      string `json:"requestId,omitempty"`
+	WindowIdentity     string `json:"windowIdentity"`
+	RequestID          string `json:"requestId,omitempty"`
+	GenerationIdentity string `json:"generationIdentity,omitempty"`
+	EvidenceIdentity   string `json:"evidenceIdentity,omitempty"`
 }
 
 func QSVTemporalTargetsForFrozenPlan(primary SamplingWindow, plan SamplingPlan) (QSVTemporalExperiment, error) {
@@ -456,7 +518,17 @@ func (experiment *QSVTemporalExperiment) ApplyRequestedVariants(request QSVTempo
 			return fmt.Errorf("qsv temporal control target window %q is unavailable", controlRequest.WindowIdentity)
 		}
 		controlID := strings.TrimSpace(controlRequest.RequestID)
-		experiment.Targets[index].ControlCandidates = append(experiment.Targets[index].ControlCandidates, EncoderControlCandidate{SchemaVersion: qsvTemporalControlSchemaVersion, WindowIdentity: controlRequest.WindowIdentity, Interval: experiment.Targets[index].Interval, ArtifactIdentity: controlID, Comparable: QSVControlNotComparable, Warnings: []string{"control comparability is pending artifact identity validation"}})
+		experiment.Targets[index].ControlCandidates = append(experiment.Targets[index].ControlCandidates, EncoderControlCandidate{
+			SchemaVersion:              qsvTemporalControlSchemaVersion,
+			WindowIdentity:             controlRequest.WindowIdentity,
+			Interval:                   experiment.Targets[index].Interval,
+			RequestID:                  controlID,
+			ArtifactIdentity:           controlID,
+			ExpectedGenerationIdentity: strings.TrimSpace(controlRequest.GenerationIdentity),
+			ExpectedEvidenceIdentity:   strings.TrimSpace(controlRequest.EvidenceIdentity),
+			Comparable:                 QSVControlNotComparable,
+			Warnings:                   []string{"control comparability is pending artifact identity validation"},
+		})
 	}
 	if err := ValidateQSVTemporalExperimentBounds(*experiment); err != nil {
 		return err
@@ -472,6 +544,63 @@ func qsvTemporalVariableSupported(variable string) bool {
 	default:
 		return false
 	}
+}
+
+func QSVTemporalVariantCapability(descriptor *compatiblePreviewDescriptor, variant QSVTemporalVariant, capability capabilities.EncoderCapability) QSVTemporalCapabilityResult {
+	variable := strings.ToLower(strings.TrimSpace(variant.ChangedVariable))
+	if descriptor == nil || !strings.EqualFold(strings.TrimSpace(descriptor.EffectiveVideoEncoder), "hevc_qsv") {
+		return QSVTemporalCapabilityResult{Feature: variable, Reason: "the frozen baseline does not resolve to hevc_qsv"}
+	}
+	if !capability.Usable {
+		reason := capability.Reason
+		if strings.TrimSpace(reason) == "" {
+			reason = "existing QSV capability probe reports the encoder is not usable"
+		}
+		return QSVTemporalCapabilityResult{Feature: variable, Reason: reason}
+	}
+	if variable == QSVTemporalChangedQuality {
+		return QSVTemporalFeatureCapability(capability, "quality_rate_control")
+	}
+	if variable == QSVTemporalChangedGOP {
+		return QSVTemporalFeatureCapability(capability, "gop")
+	}
+	if variable == QSVTemporalChangedBFrames {
+		return QSVTemporalFeatureCapability(capability, "b_frame_strategy")
+	}
+	if variable != QSVTemporalChangedQSVFeature {
+		return QSVTemporalCapabilityResult{Feature: variable, Reason: "unsupported QSV temporal variable"}
+	}
+	if len(variant.RequestedDelta) == 0 {
+		return QSVTemporalCapabilityResult{Feature: variable, Reason: "QSV feature variant does not declare a control"}
+	}
+	for field := range variant.RequestedDelta {
+		feature := ""
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "lookaheaddepth", "qsvlookaheaddepth":
+			feature = "lookahead"
+		case "extendedbrc", "qsvextendedbrc":
+			feature = "extbrc"
+		case "adaptivei", "qsvadaptivei":
+			feature = "adaptive_i"
+		case "adaptiveb", "qsvadaptiveb":
+			feature = "adaptive_b"
+		case "mbbrcmode", "qsvmbbrcmode":
+			feature = "mbbrc"
+		case "rdomode", "qsvrdomode":
+			feature = "rdo"
+		case "pstrategy", "qsvpstrategy":
+			feature = "p_strategy"
+		case "qsvratecontrol", "ratecontrol":
+			feature = "quality_rate_control"
+		default:
+			return QSVTemporalCapabilityResult{Feature: field, Reason: "feature is not reported by the existing QSV capability probe"}
+		}
+		result := QSVTemporalFeatureCapability(capability, feature)
+		if !result.Supported {
+			return result
+		}
+	}
+	return QSVTemporalCapabilityResult{Feature: variable, Supported: true, Reason: "existing QSV capability/effective-plan authority"}
 }
 
 func normalizeQSVTemporalWindow(window SamplingWindow, plan SamplingPlan) SamplingWindow {
@@ -602,6 +731,7 @@ func qsvExperimentCandidateFromDescriptor(descriptor *compatiblePreviewDescripto
 	if candidate.RuntimeCapabilityIdentity == "" {
 		candidate.RuntimeCapabilityIdentity = "runtime:unavailable"
 	}
+	candidate.EffectiveEncoder = descriptor.EffectiveVideoEncoder
 	candidate.FallbackReason = qsvDescriptorWorkerValue(descriptor, "qsvRateControlFallbackReason")
 	candidate.RequestedQSVSettings = qsvDescriptorQSVSettings(descriptor, false)
 	candidate.EffectiveQSVSettings = qsvDescriptorQSVSettings(descriptor, true)
@@ -622,6 +752,18 @@ func qsvExperimentCandidateFromDescriptor(descriptor *compatiblePreviewDescripto
 	digest := sha256.Sum256(identityPayload)
 	candidate.CandidateIdentity = "qsv-candidate:" + hex.EncodeToString(digest[:12])
 	return candidate
+}
+
+func populateQSVCandidateTradeoffs(candidate *QSVExperimentCandidate, descriptor *compatiblePreviewDescriptor) {
+	if candidate == nil || descriptor == nil || strings.TrimSpace(descriptor.CachePath) == "" {
+		return
+	}
+	if info, err := os.Stat(descriptor.CachePath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		candidate.SizeBytes = info.Size()
+	}
+	if streams, err := probeMediaStreams(descriptor.CachePath); err == nil && len(streams.Video) > 0 && streams.Video[0].Bitrate > 0 {
+		candidate.Bitrate = float64(streams.Video[0].Bitrate)
+	}
 }
 
 func qsvDescriptorWorkerValue(descriptor *compatiblePreviewDescriptor, key string) string {
@@ -994,72 +1136,174 @@ func (p DeterministicQSVTemporalEvidenceProvider) Measure(ctx context.Context, r
 	if policy.Version == "" {
 		policy = DefaultQSVTemporalInterpretationPolicyV1()
 	}
-	baseline, variant := boundedTemporalFrames(request.BaselineFrames), boundedTemporalFrames(request.VariantFrames)
-	evidence := QSVTemporalEvidence{SchemaVersion: qsvTemporalEvidenceSchemaVersion, TargetWindowIdentity: request.TargetWindowIdentity, VariantIdentity: request.VariantIdentity, SourceRevision: request.SourceRevision, BaselineArtifactID: request.BaselineArtifactID, VariantArtifactID: request.VariantArtifactID, NormalizationIdentity: request.NormalizationIdentity, RegionIdentity: request.RegionIdentity, InterpretationPolicyVersion: policy.Version}
-	if len(baseline) != len(variant) || len(baseline) < policy.MinimumComparableFrames {
-		evidence.Availability, evidence.Interpretation = "insufficient", QSVTemporalInterpretationInconclusive
-		evidence.Warnings = []string{"bounded comparable frame coverage is insufficient"}
+	sampling := DefaultQSVTemporalSamplingPolicyV1()
+	if strings.TrimSpace(request.SamplingPolicyVersion) != "" {
+		sampling.Version = request.SamplingPolicyVersion
+	}
+	if request.SamplingRateHz > 0 {
+		sampling.RateHz = request.SamplingRateHz
+	}
+	baseline := boundedTemporalFrames(request.BaselineFrames)
+	variant := boundedTemporalFrames(request.VariantFrames)
+	reference := boundedTemporalFrames(request.ReferenceFrames)
+	if len(reference) == 0 {
+		// Injectable unit-test fixtures may omit a source sequence. In that
+		// case the baseline remains the comparison reference for the variant,
+		// while the baseline signal is conservatively treated as stable.
+		reference = append([]QSVTemporalFrameSample(nil), baseline...)
+	}
+	evidence := QSVTemporalEvidence{
+		SchemaVersion: qsvTemporalEvidenceSchemaVersion, TargetWindowIdentity: request.TargetWindowIdentity,
+		VariantIdentity: request.VariantIdentity, SourceRevision: request.SourceRevision,
+		BaselineArtifactID: request.BaselineArtifactID, VariantArtifactID: request.VariantArtifactID,
+		SampleStartSeconds: request.SampleStartSeconds, SampleDurationSeconds: request.SampleDurationSeconds,
+		NormalizationIdentity: request.NormalizationIdentity, RegionIdentity: request.RegionIdentity,
+		SamplingPolicyVersion: sampling.Version, SamplingRateHz: sampling.RateHz,
+		InterpretationPolicyVersion: policy.Version,
+	}
+	if !temporalSamplingContractMatches(append(append(append([]QSVTemporalFrameSample{}, baseline...), variant...), reference...), sampling) {
+		evidence.Availability, evidence.Interpretation = "incompatible", QSVTemporalInterpretationInconclusive
+		evidence.BaselineInterpretation, evidence.VariantInterpretation = QSVTemporalInterpretationInconclusive, QSVTemporalInterpretationInconclusive
+		evidence.MitigationDirection = QSVTemporalMitigationInconclusive
+		evidence.Warnings = []string{"baseline, variant, and reference frames do not share the frozen sampling contract"}
 		return evidence, nil
 	}
-	prev := make([]float64, 0, len(variant))
-	for i := range variant {
-		if !baseline[i].Comparable || !variant[i].Comparable {
-			continue
-		}
-		b := temporalDetailEnergy(baseline[i])
-		v := temporalDetailEnergy(variant[i])
-		loss := 0.0
-		if b > 0 {
-			loss = (v - b) / b
-		}
-		variation := math.Abs(loss)
-		evidence.DetailEnergyByFrame = append(evidence.DetailEnergyByFrame, v)
-		evidence.GrainEnergyByFrame = append(evidence.GrainEnergyByFrame, variant[i].GrainEnergy)
-		evidence.BlurProxyByFrame = append(evidence.BlurProxyByFrame, 1-math.Min(1, v/math.Max(b, 1e-9)))
-		evidence.VariationByFrame = append(evidence.VariationByFrame, variation)
-		prev = append(prev, loss)
-	}
-	evidence.FrameCount = len(prev)
-	if len(prev) < policy.MinimumComparableFrames {
+	baselineMeasurement, baselineSufficient := measureQSVTemporalSequence(baseline, reference, policy)
+	variantMeasurement, variantSufficient := measureQSVTemporalSequence(variant, reference, policy)
+	if !baselineSufficient || !variantSufficient {
 		evidence.Availability, evidence.Interpretation = "insufficient", QSVTemporalInterpretationInconclusive
-		evidence.Warnings = []string{"comparable frame observations are insufficient"}
+		evidence.BaselineInterpretation, evidence.VariantInterpretation = baselineMeasurement.Interpretation, variantMeasurement.Interpretation
+		evidence.MitigationDirection = QSVTemporalMitigationInconclusive
+		evidence.Warnings = []string{"baseline and variant require sufficient comparable temporal observations"}
 		return evidence, nil
 	}
-	for i := 0; i < len(prev); i++ {
-		if prev[i] > -policy.LossThreshold {
-			continue
-		}
-		for j := i + 1; j < len(prev); j++ {
-			if prev[j] >= policy.RecoveryThreshold {
-				evidence.LossRecoveryEvents = append(evidence.LossRecoveryEvents, QSVTemporalLossRecoveryEvent{LossFrameIndex: i, RecoveryFrameIndex: j, LossMagnitude: -prev[i], RecoveryMagnitude: prev[j]})
-				break
-			}
-		}
-		if len(evidence.LossRecoveryEvents) >= qsvTemporalMaxEvents {
-			break
-		}
-	}
-	mean, maximum := 0.0, 0.0
-	for _, value := range evidence.VariationByFrame {
-		mean += value
-		if value > maximum {
-			maximum = value
-		}
-	}
-	if len(evidence.VariationByFrame) > 0 {
-		mean /= float64(len(evidence.VariationByFrame))
-	}
-	evidence.TemporalVariationSummary = QSVTemporalVariationSummary{ComparableFrames: len(prev), MeanAbsVariation: mean, MaximumVariation: maximum, LossEventCount: len(evidence.LossRecoveryEvents), RecoveryEventCount: len(evidence.LossRecoveryEvents)}
+	evidence.FrameCount = variantMeasurement.Summary.ComparableFrames
+	evidence.DetailEnergyByFrame = variantMeasurement.DetailEnergy
+	evidence.GrainEnergyByFrame = variantMeasurement.GrainEnergy
+	evidence.BlurProxyByFrame = variantMeasurement.BlurProxy
+	evidence.VariationByFrame = variantMeasurement.Variation
+	evidence.LossRecoveryEvents = variantMeasurement.Events
+	evidence.TemporalVariationSummary = variantMeasurement.Summary
+	evidence.BaselineDetailEnergyByFrame = baselineMeasurement.DetailEnergy
+	evidence.BaselineGrainEnergyByFrame = baselineMeasurement.GrainEnergy
+	evidence.BaselineBlurProxyByFrame = baselineMeasurement.BlurProxy
+	evidence.BaselineVariationByFrame = baselineMeasurement.Variation
+	evidence.BaselineLossRecoveryEvents = baselineMeasurement.Events
+	evidence.BaselineVariationSummary = baselineMeasurement.Summary
+	evidence.BaselineInterpretation = baselineMeasurement.Interpretation
+	evidence.VariantInterpretation = variantMeasurement.Interpretation
+	evidence.Interpretation = variantMeasurement.Interpretation
+	evidence.MitigationDirection = qsvTemporalMitigationDirection(baselineMeasurement.Interpretation, variantMeasurement.Interpretation)
 	evidence.Availability = "measured"
-	if len(evidence.LossRecoveryEvents) >= policy.MinimumLossRecoveryEvents {
-		evidence.Interpretation = QSVTemporalInterpretationLikelyPumping
-	} else {
-		evidence.Interpretation = QSVTemporalInterpretationNotObserved
-	}
+	baselinePayload, _ := json.Marshal(struct {
+		Frames         []QSVTemporalFrameSample
+		Events         []QSVTemporalLossRecoveryEvent
+		Interpretation string
+	}{baseline, baselineMeasurement.Events, baselineMeasurement.Interpretation})
+	baselineDigest := sha256.Sum256(baselinePayload)
+	evidence.BaselineEvidenceIdentity = "temporal:baseline:" + hex.EncodeToString(baselineDigest[:12])
+	variantPayload, _ := json.Marshal(struct {
+		Frames         []QSVTemporalFrameSample
+		Events         []QSVTemporalLossRecoveryEvent
+		Interpretation string
+	}{variant, variantMeasurement.Events, variantMeasurement.Interpretation})
+	variantDigest := sha256.Sum256(variantPayload)
+	evidence.VariantEvidenceIdentity = "temporal:variant:" + hex.EncodeToString(variantDigest[:12])
 	payload, _ := json.Marshal(evidence)
 	digest := sha256.Sum256(payload)
 	evidence.EvidenceIdentity = "temporal:" + hex.EncodeToString(digest[:12])
 	return evidence, nil
+}
+
+type qsvTemporalSequenceMeasurement struct {
+	DetailEnergy   []float64
+	GrainEnergy    []float64
+	BlurProxy      []float64
+	Variation      []float64
+	Events         []QSVTemporalLossRecoveryEvent
+	Summary        QSVTemporalVariationSummary
+	Interpretation string
+}
+
+func measureQSVTemporalSequence(frames, reference []QSVTemporalFrameSample, policy QSVTemporalInterpretationPolicy) (qsvTemporalSequenceMeasurement, bool) {
+	measurement := qsvTemporalSequenceMeasurement{Interpretation: QSVTemporalInterpretationInconclusive}
+	if len(frames) != len(reference) || len(frames) < policy.MinimumComparableFrames {
+		return measurement, false
+	}
+	losses := make([]float64, 0, len(frames))
+	for index := range frames {
+		if !frames[index].Comparable || !reference[index].Comparable {
+			continue
+		}
+		referenceEnergy := temporalDetailEnergy(reference[index])
+		outputEnergy := temporalDetailEnergy(frames[index])
+		loss := 0.0
+		if referenceEnergy > 0 {
+			loss = (outputEnergy - referenceEnergy) / referenceEnergy
+		}
+		measurement.DetailEnergy = append(measurement.DetailEnergy, outputEnergy)
+		measurement.GrainEnergy = append(measurement.GrainEnergy, frames[index].GrainEnergy)
+		measurement.BlurProxy = append(measurement.BlurProxy, 1-math.Min(1, outputEnergy/math.Max(referenceEnergy, 1e-9)))
+		measurement.Variation = append(measurement.Variation, math.Abs(loss))
+		losses = append(losses, loss)
+	}
+	if len(losses) < policy.MinimumComparableFrames {
+		return measurement, false
+	}
+	for index, loss := range losses {
+		if loss > -policy.LossThreshold {
+			continue
+		}
+		for recovery := index + 1; recovery < len(losses); recovery++ {
+			if losses[recovery] >= policy.RecoveryThreshold {
+				measurement.Events = append(measurement.Events, QSVTemporalLossRecoveryEvent{LossFrameIndex: index, RecoveryFrameIndex: recovery, LossMagnitude: -loss, RecoveryMagnitude: losses[recovery]})
+				break
+			}
+		}
+		if len(measurement.Events) >= qsvTemporalMaxEvents {
+			break
+		}
+	}
+	mean, maximum := 0.0, 0.0
+	for _, value := range measurement.Variation {
+		mean += value
+		maximum = math.Max(maximum, value)
+	}
+	mean /= float64(len(measurement.Variation))
+	measurement.Summary = QSVTemporalVariationSummary{ComparableFrames: len(losses), MeanAbsVariation: mean, MaximumVariation: maximum, LossEventCount: len(measurement.Events), RecoveryEventCount: len(measurement.Events)}
+	if len(measurement.Events) >= policy.MinimumLossRecoveryEvents {
+		measurement.Interpretation = QSVTemporalInterpretationLikelyPumping
+	} else {
+		measurement.Interpretation = QSVTemporalInterpretationNotObserved
+	}
+	return measurement, true
+}
+
+func qsvTemporalMitigationDirection(baseline, variant string) string {
+	switch {
+	case baseline == QSVTemporalInterpretationLikelyPumping && variant == QSVTemporalInterpretationNotObserved:
+		return QSVTemporalMitigationImproved
+	case baseline == QSVTemporalInterpretationNotObserved && variant == QSVTemporalInterpretationLikelyPumping:
+		return QSVTemporalMitigationWorsened
+	case baseline == QSVTemporalInterpretationLikelyPumping && variant == QSVTemporalInterpretationLikelyPumping:
+		return QSVTemporalMitigationUnchanged
+	case baseline == QSVTemporalInterpretationNotObserved && variant == QSVTemporalInterpretationNotObserved:
+		return QSVTemporalMitigationUnchanged
+	default:
+		return QSVTemporalMitigationInconclusive
+	}
+}
+
+func temporalSamplingContractMatches(frames []QSVTemporalFrameSample, policy QSVTemporalSamplingPolicy) bool {
+	for _, frame := range frames {
+		if frame.SamplingPolicyVersion != "" && frame.SamplingPolicyVersion != policy.Version {
+			return false
+		}
+		if frame.SamplingRateHz > 0 && math.Abs(frame.SamplingRateHz-policy.RateHz) > 1e-9 {
+			return false
+		}
+	}
+	return true
 }
 
 func boundedTemporalFrames(frames []QSVTemporalFrameSample) []QSVTemporalFrameSample {
@@ -1080,6 +1324,12 @@ type QSVControlComparison struct {
 
 func CompareQSVControl(target QSVTemporalTarget, control EncoderControlCandidate, candidate QSVExperimentCandidate) QSVControlComparison {
 	reasons := []string{}
+	encoderFamily := strings.ToLower(strings.TrimSpace(control.EncoderFamily))
+	if encoderFamily == "" {
+		reasons = append(reasons, "control encoder family is missing")
+	} else if strings.Contains(encoderFamily, "qsv") {
+		reasons = append(reasons, "control encoder is QSV and cannot provide a non-QSV control")
+	}
 	if control.WindowIdentity != target.WindowIdentity || !sameInterval(control.Interval, target.Interval) {
 		reasons = append(reasons, "control window does not match target")
 	}
@@ -1095,14 +1345,40 @@ func CompareQSVControl(target QSVTemporalTarget, control EncoderControlCandidate
 	if control.ReferenceDomain == "" || control.ReferenceDomain != candidate.ReferenceDomain {
 		reasons = append(reasons, "control reference domain is missing or does not match")
 	}
-	if control.ArtifactIdentity == "" || control.GenerationIdentity == "" || control.EvidenceIdentity == "" {
+	if control.ArtifactIdentity == "" || control.GenerationIdentity == "" || control.EvidenceIdentity == "" || control.ArtifactGeneration == "" || control.ArtifactGeneration != control.GenerationIdentity {
 		reasons = append(reasons, "control artifact, generation, or evidence identity is missing")
+	}
+	if control.ExpectedGenerationIdentity != "" && control.ExpectedGenerationIdentity != control.GenerationIdentity {
+		reasons = append(reasons, "control generation identity is stale")
+	}
+	if control.ExpectedEvidenceIdentity != "" && control.ExpectedEvidenceIdentity != control.EvidenceIdentity {
+		reasons = append(reasons, "control evidence identity is stale")
+	}
+	if len(control.EffectivePlan) == 0 {
+		reasons = append(reasons, "control effective plan is missing")
+	}
+	if status := canonicalFidelityStatus(candidate.CanonicalFidelity); status != "passed" {
+		reasons = append(reasons, fmt.Sprintf("QSV candidate Frame Fidelity is %s", status))
+	}
+	if status := canonicalFidelityStatus(control.CanonicalFidelity); status != "passed" {
+		reasons = append(reasons, fmt.Sprintf("control Frame Fidelity is %s", status))
 	}
 	result := QSVControlComparable
 	if len(reasons) > 0 {
 		result = QSVControlNotComparable
 	}
 	return QSVControlComparison{Result: result, Reasons: reasons}
+}
+
+func canonicalFidelityStatus(fidelity models.JSONMap) string {
+	if fidelity == nil {
+		return "unverified"
+	}
+	status := strings.ToLower(strings.TrimSpace(stringFromUnknown(fidelity["status"])))
+	if status == "" {
+		return "unverified"
+	}
+	return status
 }
 
 func sameInterval(left, right QSVTemporalInterval) bool {
@@ -1116,11 +1392,15 @@ func ClassifyQSVTemporalTarget(target QSVTemporalTarget, controlResult QSVContro
 			valid = false
 			continue
 		}
+		if canonicalFidelityStatus(target.Baseline.CanonicalFidelity) != "passed" || canonicalFidelityStatus(variant.Candidate.CanonicalFidelity) != "passed" {
+			valid = false
+			continue
+		}
 		for _, evidence := range variant.TemporalEvidence {
-			if evidence.Availability == "measured" {
+			if evidence.Availability == "measured" && evidence.BaselineInterpretation != QSVTemporalInterpretationInconclusive && evidence.VariantInterpretation != QSVTemporalInterpretationInconclusive {
 				sufficient = true
 			}
-			if evidence.Interpretation == QSVTemporalInterpretationLikelyPumping {
+			if evidence.BaselineInterpretation == QSVTemporalInterpretationLikelyPumping || evidence.VariantInterpretation == QSVTemporalInterpretationLikelyPumping || evidence.Interpretation == QSVTemporalInterpretationLikelyPumping {
 				qsvEvidence = true
 			}
 			if evidence.Availability != "measured" {
@@ -1213,12 +1493,21 @@ func (h AssetHandler) executeQSVTemporalExperiment(ctx context.Context, input la
 			return
 		}
 		completed = append(completed, baselineEvidence)
+		target.Baseline.CanonicalFidelity = unknownRecord(baselineEvidence["canonicalFidelity"])
+		populateQSVCandidateTradeoffs(&target.Baseline, baselineDescriptor)
 
 		for variantIndex := range target.Variants {
 			if err := ctx.Err(); err != nil {
 				return
 			}
 			variant := &target.Variants[variantIndex]
+			capability := QSVTemporalVariantCapability(baselineDescriptor, *variant, capabilities.CheckEncoder("hevc_qsv"))
+			if !capability.Supported {
+				variant.Isolation = QSVIsolationResult{Result: QSVIsolationNotComparable, DeclaredVariable: variant.ChangedVariable, Reason: capability.Reason}
+				target.Warnings = append(target.Warnings, fmt.Sprintf("QSV variant %s unavailable before generation: %s", variant.ChangedVariable, capability.Reason))
+				updateQSVTemporalOperation(id, &experiment, completed)
+				continue
+			}
 			request, requestErr := qsvTemporalVariantPreviewRequest(baselineDescriptor, *target, *variant)
 			if requestErr != nil {
 				qsvTemporalOperationFailure(id, requestErr, "qsv_temporal_variant")
@@ -1246,6 +1535,8 @@ func (h AssetHandler) executeQSVTemporalExperiment(ctx context.Context, input la
 				return
 			}
 			completed = append(completed, variantEvidence)
+			variant.Candidate.CanonicalFidelity = unknownRecord(variantEvidence["canonicalFidelity"])
+			populateQSVCandidateTradeoffs(&variant.Candidate, variantDescriptor)
 			evidence, temporalErr := qsvMeasureTemporalEvidence(ctx, target, *variant, baselineDescriptor, variantDescriptor)
 			if temporalErr != nil {
 				if ctx.Err() != nil {
@@ -1263,8 +1554,8 @@ func (h AssetHandler) executeQSVTemporalExperiment(ctx context.Context, input la
 			} else {
 				target.Warnings = append(target.Warnings, "#69 canonical perceptual evidence is unavailable; deterministic evidence remains authoritative")
 			}
-			if variant.Isolation.Result == QSVIsolationValid && len(variant.TemporalEvidence) > 0 && variant.TemporalEvidence[len(variant.TemporalEvidence)-1].Interpretation == QSVTemporalInterpretationLikelyPumping {
-				target.Recommendation = qsvRecommendationForVariant(*target, *variant, variantCandidate)
+			if recommendation := qsvRecommendationForVariant(*target, *variant, variantCandidate); recommendation != nil {
+				target.Recommendation = recommendation
 			}
 			updateQSVTemporalOperation(id, &experiment, completed)
 		}
@@ -1285,10 +1576,18 @@ func (h AssetHandler) executeQSVTemporalExperiment(ctx context.Context, input la
 				control.Warnings = append(control.Warnings, "control artifact is not ready")
 				continue
 			}
+			if controlDescriptor.SourceRevision != baselineDescriptor.SourceRevision {
+				control.Comparable = QSVControlNotComparable
+				control.Warnings = append(control.Warnings, "control source revision is stale or does not match the frozen baseline")
+				continue
+			}
 			control.EncoderFamily = controlDescriptor.EffectiveVideoEncoder
 			control.SourceRevision = basePlan.SourceRevision
 			control.Interval = QSVTemporalInterval{StartSeconds: float64(previewTimestampSeconds(controlDescriptor.Start)), DurationSeconds: float64(max(1, controlDescriptor.Seconds))}
 			control.ArtifactIdentity = controlDescriptor.ArtifactID
+			if control.RequestID == "" {
+				control.RequestID = control.ArtifactIdentity
+			}
 			control.ArtifactGeneration = fmt.Sprintf("%s:%d", controlDescriptor.GenerationToken, controlDescriptor.GenerationVersion)
 			control.GenerationIdentity = control.ArtifactGeneration
 			control.EffectivePlan = controlDescriptor.ResolvedVideoDecision
@@ -1296,16 +1595,24 @@ func (h AssetHandler) executeQSVTemporalExperiment(ctx context.Context, input la
 			control.NormalizationIdentity = fmt.Sprintf("%v", controlDescriptor.Normalization)
 			control.ReferenceDomain = "same-source-window"
 			control.EvidenceIdentity = controlDescriptor.CanonicalEncodeSignature
+			controlEvidenceSummary, controlEvidenceErr := h.collectLabFidelityWindow(ctx, controlDescriptor, window)
+			if controlEvidenceErr != nil {
+				control.Comparable = QSVControlNotComparable
+				control.Warnings = append(control.Warnings, fmt.Sprintf("control Frame Fidelity evidence unavailable: %v", controlEvidenceErr))
+				continue
+			}
+			control.CanonicalFidelity = unknownRecord(controlEvidenceSummary["canonicalFidelity"])
 			comparison := CompareQSVControl(*target, *control, baselineCandidate)
 			control.Comparable = comparison.Result
 			control.Warnings = append(control.Warnings, comparison.Reasons...)
 			if control.Comparable == QSVControlComparable {
 				controlVariant := QSVTemporalVariant{VariantIdentity: "control:" + control.ArtifactIdentity, Candidate: qsvExperimentCandidateFromDescriptor(controlDescriptor, control.ArtifactIdentity, target.WindowIdentity, basePlan.SourceRevision)}
+				controlVariant.Candidate.CanonicalFidelity = control.CanonicalFidelity
 				controlEvidence, controlEvidenceErr := qsvMeasureTemporalEvidence(ctx, target, controlVariant, baselineDescriptor, controlDescriptor)
 				if controlEvidenceErr != nil {
 					control.Warnings = append(control.Warnings, controlEvidenceErr.Error())
 				} else {
-					control.TemporalInterpretation = controlEvidence.Interpretation
+					control.TemporalInterpretation = controlEvidence.VariantInterpretation
 				}
 			}
 		}
@@ -1382,18 +1689,33 @@ func qsvMeasureTemporalEvidence(ctx context.Context, target *QSVTemporalTarget, 
 	if provider == nil {
 		return QSVTemporalEvidence{}, errors.New("temporal evidence provider is unavailable")
 	}
-	request := QSVTemporalEvidenceRequest{TargetWindowIdentity: target.WindowIdentity, VariantIdentity: variant.VariantIdentity, SourceRevision: variant.Candidate.SourceRevision, BaselineArtifactID: baseline.ArtifactID, VariantArtifactID: candidate.ArtifactID, NormalizationIdentity: fmt.Sprintf("%v", candidate.Normalization), RegionIdentity: "bounded-textured-region"}
+	sampling := DefaultQSVTemporalSamplingPolicyV1()
+	request := QSVTemporalEvidenceRequest{
+		TargetWindowIdentity: target.WindowIdentity, VariantIdentity: variant.VariantIdentity,
+		SourceRevision: variant.Candidate.SourceRevision, BaselineArtifactID: baseline.ArtifactID,
+		VariantArtifactID: candidate.ArtifactID, SampleStartSeconds: target.Interval.StartSeconds,
+		SampleDurationSeconds: target.Interval.DurationSeconds, NormalizationIdentity: fmt.Sprintf("%v", candidate.Normalization),
+		RegionIdentity: "bounded-textured-region", SamplingPolicyVersion: sampling.Version, SamplingRateHz: sampling.RateHz,
+	}
 	_, deterministic := provider.(DeterministicQSVTemporalEvidenceProvider)
 	if _, pointerDeterministic := provider.(*DeterministicQSVTemporalEvidenceProvider); pointerDeterministic {
 		deterministic = true
 	}
 	if deterministic {
 		var err error
-		request.BaselineFrames, err = qsvTemporalFrameSamples(ctx, baseline.CachePath)
+		// Compatible Preview artifacts already represent the exact frozen window;
+		// sample them from their local zero rather than applying the source offset a
+		// second time. The source reference below is the only input that uses the
+		// absolute SamplingWindow offset.
+		request.BaselineFrames, err = qsvTemporalFrameSamplesForWindow(ctx, baseline.CachePath, 0, target.Interval.DurationSeconds)
 		if err != nil {
 			return QSVTemporalEvidence{}, err
 		}
-		request.VariantFrames, err = qsvTemporalFrameSamples(ctx, candidate.CachePath)
+		request.VariantFrames, err = qsvTemporalFrameSamplesForWindow(ctx, candidate.CachePath, 0, target.Interval.DurationSeconds)
+		if err != nil {
+			return QSVTemporalEvidence{}, err
+		}
+		request.ReferenceFrames, err = qsvTemporalFrameSamplesForWindow(ctx, baseline.Path, target.Interval.StartSeconds, target.Interval.DurationSeconds)
 		if err != nil {
 			return QSVTemporalEvidence{}, err
 		}
@@ -1408,11 +1730,25 @@ const (
 )
 
 func qsvTemporalFrameSamples(ctx context.Context, path string) ([]QSVTemporalFrameSample, error) {
+	return qsvTemporalFrameSamplesForWindow(ctx, path, 0, 0)
+}
+
+func qsvTemporalFrameSamplesForWindow(ctx context.Context, path string, startSeconds, durationSeconds float64) ([]QSVTemporalFrameSample, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("temporal artifact path is unavailable")
 	}
+	sampling := DefaultQSVTemporalSamplingPolicyV1()
 	frameBytes := qsvTemporalFrameWidth * qsvTemporalFrameHeight
-	command := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", fmt.Sprintf("scale=%d:%d:flags=bilinear", qsvTemporalFrameWidth, qsvTemporalFrameHeight), "-frames:v", fmt.Sprint(qsvTemporalFrameLimit), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")
+	args := []string{"-hide_banner", "-loglevel", "error"}
+	if startSeconds > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.6f", startSeconds))
+	}
+	args = append(args, "-i", path)
+	if durationSeconds > 0 {
+		args = append(args, "-t", fmt.Sprintf("%.6f", durationSeconds))
+	}
+	args = append(args, "-vf", sampling.Filter, "-frames:v", fmt.Sprint(qsvTemporalFrameLimit), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")
+	command := exec.CommandContext(ctx, "ffmpeg", args...)
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("bounded temporal frame extraction: %w", err)
@@ -1440,20 +1776,52 @@ func qsvTemporalFrameSamples(ctx context.Context, path string) ([]QSVTemporalFra
 			}
 		}
 		pixelCount := float64(len(pixels))
-		frames = append(frames, QSVTemporalFrameSample{FrameIndex: index, TimestampSeconds: float64(index) / 8, Comparable: true, RegionIdentity: "bounded-textured-region", DetailEnergy: detail / pixelCount, GrainEnergy: variance / pixelCount, HighFrequencyEnergy: detail / pixelCount, LocalVariance: variance / pixelCount})
+		frames = append(frames, QSVTemporalFrameSample{FrameIndex: index, TimestampSeconds: float64(index) / sampling.RateHz, Comparable: true, RegionIdentity: "bounded-textured-region", DetailEnergy: detail / pixelCount, GrainEnergy: variance / pixelCount, HighFrequencyEnergy: detail / pixelCount, LocalVariance: variance / pixelCount, SamplingPolicyVersion: sampling.Version, SamplingRateHz: sampling.RateHz})
 	}
 	return frames, nil
 }
 
 func qsvRecommendationForVariant(target QSVTemporalTarget, variant QSVTemporalVariant, candidate QSVExperimentCandidate) *QSVPumpingMitigationRecommendation {
-	return &QSVPumpingMitigationRecommendation{Version: qsvTemporalExperimentPolicyVersion, ChangedVariable: variant.ChangedVariable, EffectiveSetting: candidate.EffectiveQSVSettings, EvidenceReferences: temporalEvidenceReferences(variant.TemporalEvidence), Encoder: "hevc_qsv", Runtime: candidate.RuntimeCapabilityIdentity, MediaRoles: append([]string(nil), target.Roles...), Confidence: "bounded_temporal_evidence", Tradeoffs: models.JSONMap{"size": candidate.SizeBytes, "bitrate": candidate.Bitrate, "speed": candidate.Speed}, ControlAttribution: QSVTemporalClassificationMeasurableNotSpecific}
+	if variant.Isolation.Result != QSVIsolationValid || canonicalFidelityStatus(target.Baseline.CanonicalFidelity) != "passed" || canonicalFidelityStatus(candidate.CanonicalFidelity) != "passed" {
+		return nil
+	}
+	if len(variant.TemporalEvidence) == 0 {
+		return nil
+	}
+	evidence := variant.TemporalEvidence[len(variant.TemporalEvidence)-1]
+	if evidence.Availability != "measured" || evidence.BaselineInterpretation != QSVTemporalInterpretationLikelyPumping || evidence.VariantInterpretation != QSVTemporalInterpretationNotObserved || evidence.MitigationDirection != QSVTemporalMitigationImproved {
+		return nil
+	}
+	return &QSVPumpingMitigationRecommendation{
+		Version: qsvTemporalExperimentPolicyVersion, ChangedVariable: variant.ChangedVariable,
+		EffectiveSetting: candidate.EffectiveQSVSettings, EvidenceReferences: temporalEvidenceReferences(variant.TemporalEvidence),
+		Encoder: "hevc_qsv", Runtime: candidate.RuntimeCapabilityIdentity, MediaRoles: append([]string(nil), target.Roles...),
+		Confidence: "bounded_temporal_evidence_baseline_to_variant", Tradeoffs: qsvRecommendationTradeoffs(target.Baseline, candidate),
+		ControlAttribution: QSVTemporalClassificationMeasurableNotSpecific,
+	}
+}
+
+func qsvRecommendationTradeoffs(baseline, variant QSVExperimentCandidate) models.JSONMap {
+	tradeoffs := models.JSONMap{}
+	if baseline.SizeBytes > 0 && variant.SizeBytes > 0 {
+		tradeoffs["size"] = models.JSONMap{"baseline": baseline.SizeBytes, "variant": variant.SizeBytes, "delta": variant.SizeBytes - baseline.SizeBytes}
+	}
+	if baseline.Bitrate > 0 && variant.Bitrate > 0 {
+		tradeoffs["bitrate"] = models.JSONMap{"baseline": baseline.Bitrate, "variant": variant.Bitrate, "delta": variant.Bitrate - baseline.Bitrate}
+	}
+	if baseline.Speed > 0 && variant.Speed > 0 {
+		tradeoffs["speed"] = models.JSONMap{"baseline": baseline.Speed, "variant": variant.Speed, "delta": variant.Speed - baseline.Speed}
+	}
+	return tradeoffs
 }
 
 func temporalEvidenceReferences(evidence []QSVTemporalEvidence) []string {
 	result := make([]string, 0, len(evidence))
 	for _, item := range evidence {
-		if item.EvidenceIdentity != "" {
-			result = append(result, item.EvidenceIdentity)
+		for _, identity := range []string{item.EvidenceIdentity, item.BaselineEvidenceIdentity, item.VariantEvidenceIdentity} {
+			if identity != "" && !containsSamplingString(result, identity) {
+				result = append(result, identity)
+			}
 		}
 	}
 	return result
