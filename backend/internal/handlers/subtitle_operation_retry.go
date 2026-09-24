@@ -38,6 +38,8 @@ func (h AssetHandler) RetrySubtitleOperation(c *gin.Context) {
 		h.retrySubtitleTranslation(c)
 	case "restyle":
 		h.retrySubtitleRestyle(c, id)
+	case "compose":
+		h.retrySubtitleComposition(c, id)
 	default:
 		c.JSON(http.StatusConflict, gin.H{"error": "subtitle operation is not retryable"})
 	}

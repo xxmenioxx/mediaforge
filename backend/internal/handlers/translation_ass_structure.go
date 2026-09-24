@@ -19,20 +19,39 @@ const (
 type assDocument struct {
 	Representation string
 	Source         string
+	EventFormat    []string
+	Styles         []assStyleDefinition
 	Events         []assEvent
 }
 
 type assEvent struct {
-	SourceOrdinal int
-	Start         float64
-	End           float64
-	TextStart     int
-	TextEnd       int
-	StyleStart    int
-	StyleEnd      int
-	Style         string
-	Format        []string
-	Dialogue      assProtectedDialogue
+	SourceOrdinal        int
+	Start                float64
+	End                  float64
+	TextStart            int
+	TextEnd              int
+	StyleStart           int
+	StyleEnd             int
+	Style                string
+	Format               []string
+	Fields               []string
+	Dialogue             assProtectedDialogue
+	SourceIdentity       string
+	SourceRevision       string
+	SourceRepresentation string
+	SemanticRole         SubtitleSemanticRole
+	CompositionClass     CompositionCueClass
+	Layout               compositionLayoutEvidence
+}
+
+// assStyleDefinition is deliberately part of the shared ASS document boundary.
+// Composition may namespace these definitions, but it must not parse or
+// serialize a second representation of the source document.
+type assStyleDefinition struct {
+	Section string
+	Format  []string
+	Name    string
+	Fields  []string
 }
 
 type assProtectedDialogue struct {
@@ -59,6 +78,8 @@ func parseASSDocument(representation, source string) (assDocument, error) {
 	document := assDocument{Representation: representation, Source: source}
 	inEvents := false
 	var eventFormat []string
+	styleSection := ""
+	var styleFormat []string
 	lineStart := 0
 	dialogueOrdinal := 0
 	for lineStart < len(source) {
@@ -69,7 +90,26 @@ func parseASSDocument(representation, source string) (assDocument, error) {
 		line := strings.TrimSuffix(source[lineStart:lineEnd], "\r")
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			inEvents = strings.EqualFold(strings.TrimSpace(trimmed[1:len(trimmed)-1]), "events")
+			section := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			inEvents = strings.EqualFold(section, "events")
+			styleSection = ""
+			if strings.EqualFold(section, "v4 styles") || strings.EqualFold(section, "v4+ styles") {
+				styleSection = section
+			}
+		} else if styleSection != "" {
+			lower := strings.ToLower(trimmed)
+			if strings.HasPrefix(lower, "format:") {
+				parsed, err := parseASSFieldFormat(trimmed)
+				if err != nil {
+					return assDocument{}, err
+				}
+				styleFormat = parsed
+			} else if strings.HasPrefix(lower, "style:") && len(styleFormat) > 0 {
+				fields := strings.Split(strings.TrimSpace(trimmed[strings.IndexByte(trimmed, ':')+1:]), ",")
+				if len(fields) > 0 {
+					document.Styles = append(document.Styles, assStyleDefinition{Section: styleSection, Format: append([]string(nil), styleFormat...), Name: strings.TrimSpace(fields[0]), Fields: fields})
+				}
+			}
 		} else if inEvents {
 			if strings.HasPrefix(strings.ToLower(trimmed), "format:") {
 				parsed, err := parseTranslationEventFormat(trimmed)
@@ -97,7 +137,25 @@ func parseASSDocument(representation, source string) (assDocument, error) {
 	if len(eventFormat) == 0 {
 		return assDocument{}, fmt.Errorf("ASS/SSA document has no Events Format")
 	}
+	document.EventFormat = append([]string(nil), eventFormat...)
 	return document, nil
+}
+
+func parseASSFieldFormat(line string) ([]string, error) {
+	colon := strings.IndexByte(line, ':')
+	if colon < 0 {
+		return nil, fmt.Errorf("invalid ASS section Format")
+	}
+	fields := strings.Split(line[colon+1:], ",")
+	seen := make(map[string]bool, len(fields))
+	for index := range fields {
+		fields[index] = strings.ToLower(strings.TrimSpace(fields[index]))
+		if fields[index] == "" || seen[fields[index]] {
+			return nil, fmt.Errorf("invalid ASS section Format field")
+		}
+		seen[fields[index]] = true
+	}
+	return fields, nil
 }
 
 func parseTranslationASSDocument(representation, source string) (translationASSDocument, error) {
@@ -184,6 +242,7 @@ func parseTranslationASSEvent(line string, lineStart int, format []string, sourc
 		StyleEnd:      lineStart + styleEnd,
 		Style:         styleValue,
 		Format:        append([]string(nil), format...),
+		Fields:        append([]string(nil), fields...),
 		Dialogue:      dialogue,
 	}, nil
 }

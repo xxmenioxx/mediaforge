@@ -103,6 +103,7 @@ type subtitleExtractionOperation struct {
 	Result                 *SubtitleExtractionResult         `json:"result,omitempty"`
 	Kind                   string                            `json:"kind,omitempty"`
 	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
+	Composition            *subtitleCompositionOperationView `json:"composition,omitempty"`
 	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
 	Error                  string                            `json:"error,omitempty"`
 	Retryable              bool                              `json:"retryable,omitempty"`
@@ -111,6 +112,7 @@ type subtitleExtractionOperation struct {
 	StylePolicyVersion     string                            `json:"stylePolicyVersion,omitempty"`
 	translationRequest     *subtitleTranslationOperationRequest
 	restyleRequest         *subtitleRestyleRequest
+	compositionRequest     *subtitleCompositionOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}

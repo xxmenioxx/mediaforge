@@ -65,6 +65,7 @@ import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
+import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -4319,7 +4320,8 @@ async function generateExternalSubtitle(
                       onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     {!isArchive ? (
-                      <ExternalSubtitleList
+                    <>
+                    <ExternalSubtitleList
                         values={subtitleEligibility.data?.external ?? externalSubtitles.data ?? []}
                         loading={externalSubtitles.isLoading}
                         deleting={deleteExternalSubtitle.isPending}
@@ -4352,6 +4354,8 @@ async function generateExternalSubtitle(
                           }
                         }}
                       />
+                    <SubtitleCompositionEligibilityPanel eligibility={subtitleEligibility.data?.composition} loading={subtitleEligibility.isLoading} />
+                    </>
                     ) : null}
                     {externalSubtitles.isError ? (
                       <Alert severity="warning">{externalSubtitles.error instanceof Error ? externalSubtitles.error.message : 'Could not list external subtitles.'}</Alert>

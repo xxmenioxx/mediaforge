@@ -63,6 +63,7 @@ import type {
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
   SubtitleRestyleInput,
+  SubtitleCompositionInput,
   SubtitleEligibilityResponse,
   SubtitleExtractionResult,
   SubtitleTranslationCapability,
@@ -323,6 +324,12 @@ export const api = {
   restyleSubtitle: (input: SubtitleRestyleInput) =>
     request<{ operationId: string; status: 'running'; phase: string; progress: number; format: string }>(
       '/api/assets/subtitle-restyle',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
+  composeSubtitles: (input: SubtitleCompositionInput) =>
+    request<{ operationId: string; status: 'running'; kind: 'compose'; phase: string; progress: number; outputIdentity: string }>(
+      '/api/assets/subtitle-compose',
       { method: 'POST', body: JSON.stringify(input) },
     ),
 

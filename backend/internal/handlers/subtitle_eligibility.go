@@ -24,15 +24,41 @@ type SubtitleSourceEligibility struct {
 	SourceIdentity         string                  `json:"sourceIdentity"`
 	SourceRevision         string                  `json:"sourceRevision"`
 	Representation         string                  `json:"representation"`
+	Language               string                  `json:"language"`
 	Role                   SubtitleSemanticRole    `json:"role"`
 	RoleProvenance         string                  `json:"roleProvenance"`
 	StreamIndex            *int                    `json:"streamIndex,omitempty"`
 	PolicyVersion          string                  `json:"policyVersion"`
+	CompositionClass       CompositionCueClass     `json:"compositionClass,omitempty"`
+}
+
+type SubtitleCompositionCandidate struct {
+	SourceIdentity   string               `json:"sourceIdentity"`
+	SourceRevision   string               `json:"sourceRevision"`
+	Representation   string               `json:"representation"`
+	Language         string               `json:"language"`
+	Role             SubtitleSemanticRole `json:"role"`
+	CompositionClass CompositionCueClass  `json:"compositionClass"`
+	StreamIndex      *int                 `json:"streamIndex,omitempty"`
+	SourceType       string               `json:"sourceType"`
+	Eligible         bool                 `json:"eligible"`
+	Reason           string               `json:"reason,omitempty"`
+}
+
+type SubtitleCompositionEligibility struct {
+	Eligible               bool                           `json:"eligible"`
+	Reason                 string                         `json:"reason,omitempty"`
+	PolicyVersion          string                         `json:"policyVersion"`
+	MaxSupplementals       int                            `json:"maxSupplementals"`
+	PrimaryCandidates      []SubtitleCompositionCandidate `json:"primaryCandidates"`
+	SupplementalCandidates []SubtitleCompositionCandidate `json:"supplementalCandidates"`
+	CrossLanguageExplicit  bool                           `json:"crossLanguageExplicit"`
 }
 
 type SubtitleEligibilityResponse struct {
-	External []ExternalSubtitle          `json:"external"`
-	Embedded []SubtitleSourceEligibility `json:"embedded"`
+	External    []ExternalSubtitle              `json:"external"`
+	Embedded    []SubtitleSourceEligibility     `json:"embedded"`
+	Composition *SubtitleCompositionEligibility `json:"composition,omitempty"`
 }
 
 func subtitleExternalEligibility(sidecar ExternalSubtitle, policy SubtitleStylePolicy) SubtitleSourceEligibility {
@@ -41,9 +67,10 @@ func subtitleExternalEligibility(sidecar ExternalSubtitle, policy SubtitleStyleP
 	eligibleRevision := strings.TrimSpace(sidecar.SourceRevision) != ""
 	result := SubtitleSourceEligibility{
 		SourceIdentity: identity, SourceRevision: sidecar.SourceRevision,
-		Representation: representation, Role: SubtitleRoleUnknown,
+		Representation: representation, Language: normalizedTrackLanguage(sidecar.Language), Role: SubtitleRoleUnknown,
 		RoleProvenance: "external-sidecar", PolicyVersion: policy.Version,
 	}
+	result.CompositionClass = CompositionCueUnknown
 	switch representation {
 	case "ass", "ssa":
 		result.Restyle = SubtitleModeEligibility{Eligible: eligibleRevision, Reason: eligibilityReason(eligibleRevision, "exact source revision is unavailable")}
@@ -75,8 +102,10 @@ func subtitleEmbeddedEligibility(path string, stream FFProbeStream, revision str
 	result := SubtitleSourceEligibility{
 		SourceIdentity: fmt.Sprintf("embedded:%s#stream=%d", path, stream.Index),
 		SourceRevision: revision, Representation: representation,
-		Role: SubtitleRoleUnknown, RoleProvenance: "embedded-stream; semantic role resolved at execution", PolicyVersion: policy.Version,
+		Language: normalizedTrackLanguage(stream.Tags["language"]),
+		Role:     SubtitleRoleUnknown, RoleProvenance: "embedded-stream; semantic role resolved at execution", PolicyVersion: policy.Version,
 	}
+	result.CompositionClass = compositionClassForTrack(stream.Tags, result.Role)
 	streamIndex := stream.Index
 	result.StreamIndex = &streamIndex
 	for _, key := range []string{"role", "semanticRole", "subtitleRole"} {
@@ -147,5 +176,54 @@ func (h AssetHandler) SubtitleEligibility(c *gin.Context) {
 		}
 		embedded = append(embedded, subtitleEmbeddedEligibility(mediaPath, stream, revision, policy))
 	}
-	c.JSON(http.StatusOK, SubtitleEligibilityResponse{External: external, Embedded: embedded})
+	c.JSON(http.StatusOK, SubtitleEligibilityResponse{External: external, Embedded: embedded, Composition: subtitleCompositionEligibility(external, embedded, policy)})
+}
+
+func subtitleCompositionEligibility(external []ExternalSubtitle, embedded []SubtitleSourceEligibility, style SubtitleStylePolicy) *SubtitleCompositionEligibility {
+	result := &SubtitleCompositionEligibility{PolicyVersion: compositionPolicyVersion, MaxSupplementals: compositionMaxSupplementals, PrimaryCandidates: []SubtitleCompositionCandidate{}, SupplementalCandidates: []SubtitleCompositionCandidate{}}
+	add := func(candidate SubtitleCompositionCandidate) {
+		if candidate.Eligible && candidate.Role == SubtitleRoleFull {
+			result.PrimaryCandidates = appendBoundedCompositionCandidate(result.PrimaryCandidates, candidate)
+		}
+		if candidate.Eligible {
+			result.SupplementalCandidates = appendBoundedCompositionCandidate(result.SupplementalCandidates, candidate)
+		}
+	}
+	for _, sidecar := range external {
+		eligibility := sidecar.Eligibility
+		if eligibility == nil {
+			continue
+		}
+		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(sidecar.Language), Role: eligibility.Role, CompositionClass: eligibility.CompositionClass, SourceType: "external"}
+		candidate.Eligible = candidate.SourceRevision != "" && candidate.Language != "" && candidate.Language != "und" && (candidate.Representation == "ass" || candidate.Representation == "ssa" || candidate.Representation == "srt")
+		if !candidate.Eligible {
+			candidate.Reason = "exact language, revision, and supported representation are required"
+		}
+		add(candidate)
+	}
+	for _, eligibility := range embedded {
+		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(eligibility.Language), Role: eligibility.Role, CompositionClass: eligibility.CompositionClass, StreamIndex: eligibility.StreamIndex, SourceType: "embedded"}
+		candidate.Eligible = eligibility.Regenerate.Eligible && candidate.Language != "" && candidate.Language != "und" && candidate.Role != SubtitleRoleUnknown
+		if !candidate.Eligible {
+			candidate.Reason = "backend role/language resolution or canonical source revision is unavailable"
+		}
+		add(candidate)
+	}
+	if len(result.PrimaryCandidates) == 0 {
+		result.Reason = "a resolved full-dialogue primary source is required"
+		return result
+	}
+	result.Eligible = len(result.SupplementalCandidates) > 0
+	if !result.Eligible {
+		result.Reason = "no compatible supplemental source is currently eligible"
+	}
+	_ = style // style version is carried by the existing eligibility response.
+	return result
+}
+
+func appendBoundedCompositionCandidate(values []SubtitleCompositionCandidate, candidate SubtitleCompositionCandidate) []SubtitleCompositionCandidate {
+	if len(values) >= compositionMaxSupplementals+1 {
+		return values
+	}
+	return append(values, candidate)
 }
