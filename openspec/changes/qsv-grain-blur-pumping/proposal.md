@@ -9,15 +9,16 @@ source, preview, and encoder-plan authority.
 
 ## What Changes
 
-- Add a `QSVTemporalExperiment` contract for deterministic baseline-versus-
-  variant comparisons over a frozen source revision, SamplingPlan, and
-  SamplingWindow.
+- Add a `QSVTemporalExperiment` contract whose bounded `targets[]` each own one
+  frozen SamplingWindow, one matching baseline candidate/artifact, its own
+  variants, temporal evidence, classification, and recommendation.
 - Consume only the #70 canonical `SamplingPlanForQSVPumping()` selection for
   `high_motion`, `high_texture_or_grain`, and `worst_predicted`; report missing
   roles instead of selecting replacement scenes or scanning the whole file.
 - Preserve a user-selected LAB primary/repro window and reuse its ready
-  Compatible Preview artifact as the experiment baseline without encoding it
-  again.
+  Compatible Preview artifact as that target's baseline without encoding it
+  again; other frozen role windows obtain their own matching baseline through
+  the existing LAB/Compatible Preview lifecycle.
 - Define one-variable-at-a-time QSV comparisons for supported quality/rate
   control, GOP, B-frame, and already-supported capability-gated QSV controls.
   Capture requested and effective settings, runtime identity, filters, and
@@ -31,9 +32,15 @@ source, preview, and encoder-plan authority.
 - Attach optional canonical #69 `PerceptualEvidence` through an adapter when it
   exists, while continuing with deterministic existing evidence when it does
   not. #9 will not implement a second VMAF/SSIM pipeline.
+- Define a separate optional non-QSV `EncoderControlCandidate` contract for
+  encoder-specific attribution. It is not a QSV mitigation variant and is not
+  passed through the QSV one-variable isolation validator.
 - Reuse the existing LAB/Compatible Preview operation and artifact lifecycle:
-  variants are explicit, sequential, cancellable, bounded, and never replace
-  the baseline or Sample A/reference identity.
+  per-window baselines and variants are explicit, sequential, cancellable,
+  bounded, and never replace the baseline or Sample A/reference identity.
+- Define a versioned complete-experiment bound for target windows, per-target
+  variants, total variant encodes, and optional control work before requests
+  are created.
 - Represent evidence-backed, versioned mitigation recommendations without
   silently changing existing Profiles.
 

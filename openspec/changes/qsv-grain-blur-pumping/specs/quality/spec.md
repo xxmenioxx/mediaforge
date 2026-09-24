@@ -39,15 +39,22 @@ the available role windows.
   SHALL NOT be replaced or encoded again because role selection chose other
   windows
 
-### Requirement: Each experiment SHALL have deterministic identity and prove isolation
+### Requirement: Each experiment SHALL have deterministic per-window identity and prove isolation
 
 The system SHALL record a versioned `QSVTemporalExperiment` identity containing
-at least: source revision; `SamplingPlan` and `SamplingWindow` identities;
-baseline and variant candidate identities; the one changed variable; requested
-and effective baseline/variant values; encoder/runtime identity; filter and
-effective-plan identity; evidence references; result classification; and
-warnings/provenance. Candidate identity SHALL include the frozen interval and
-canonical source/effective-plan facts, not only a display label.
+the source revision, SamplingPlan identity, bounded `targets[]`, unavailable
+roles, experiment policy/cap identities, and warnings/provenance. Each target
+SHALL own exactly one frozen SamplingWindow identity and interval, roles and
+reasons, primary status, one matching baseline candidate/artifact generation,
+bounded variants, per-variant changed variables and requested/effective deltas,
+isolation results, temporal evidence, optional #69 evidence, and a target-level
+classification and recommendation. Candidate identity SHALL include the frozen
+interval and canonical source/effective-plan facts, not only a display label.
+
+The experiment SHALL NOT use singular experiment-global fields for changed
+variable, requested/effective variant values, or candidate identities when
+several targets or variants exist. Experiment-level fields SHALL summarize
+selection and bounds; target/variant fields SHALL own comparison facts.
 
 Before causal comparison, the system SHALL compare canonical effective settings
 and prove that the allowed effective delta is exactly the declared variable
@@ -55,6 +62,27 @@ and prove that the allowed effective delta is exactly the declared variable
 effective setting differs unexpectedly, the result SHALL be
 `invalid/non-isolated` and SHALL NOT claim that the declared variable caused the
 observed change.
+
+#### Scenario: Each frozen target owns its baseline
+
+- **WHEN** the explicit LAB primary and two distinct #70 role windows are
+  admitted to one experiment
+- **THEN** the experiment SHALL contain three targets with three distinct
+  frozen SamplingWindow identities and three target-owned baseline identities
+
+#### Scenario: A variant belongs to one target
+
+- **WHEN** a variant is requested for one frozen role window
+- **THEN** its candidate identity, changed variable, requested/effective delta,
+  isolation result, and evidence SHALL be nested under exactly that target and
+  SHALL not be comparable as a variant of another target
+
+#### Scenario: A target baseline generation changes
+
+- **WHEN** any target baseline artifact, generation token/version, or canonical
+  encode identity changes
+- **THEN** the experiment identity SHALL change and prior target evidence SHALL
+  not be silently attributed to the replacement baseline
 
 #### Scenario: A GOP-only comparison is isolated
 
@@ -108,14 +136,20 @@ unavailable or warning state, not emitted as invented flags.
 ### Requirement: LAB SHALL reuse the ready baseline and preserve reference identity
 
 Variant execution SHALL extend the existing LAB/Compatible Preview operation
-and artifact lifecycle. The ready primary Compatible Preview artifact SHALL be
-the baseline when it matches the frozen source revision, window, filters,
-encoder, and effective plan. Baseline reuse SHALL be proven by its request ID,
-artifact ID, generation token/version, canonical encode signature, and a
-generation-boundary reuse count; a request-registration count alone is not
-sufficient. A variant SHALL receive a distinct candidate/artifact identity and
-SHALL never replace the baseline identity or the source-backed Sample A/
-reference identity.
+and artifact lifecycle. Every target SHALL first have a baseline artifact whose
+source revision, exact frozen window/interval, filters, encoder, and effective
+plan match that target. The explicit LAB primary target SHALL reuse the ready
+primary Compatible Preview artifact with zero new baseline encodes. A
+non-primary #70 role target SHALL reuse an existing ready artifact only when
+its identity proves the exact role window is comparable; otherwise baseline
+materialization remains owned by the existing LAB/Compatible Preview lifecycle.
+The #9 temporal-evidence provider SHALL never raw-encode or invent an artifact
+lifecycle. Baseline reuse SHALL be proven by request ID, artifact ID, generation
+token/version, canonical encode signature, and generation-boundary accounting;
+a request-registration count alone is not sufficient. A variant SHALL receive
+a distinct candidate/artifact identity and SHALL never replace its target
+baseline, another target's baseline, or the source-backed Sample A/reference
+identity.
 
 #### Scenario: A ready primary is reused
 
@@ -124,10 +158,24 @@ reference identity.
 - **THEN** the operation SHALL inspect the ready baseline without starting a
   second baseline generation and SHALL retain the same baseline identity
 
+#### Scenario: A role target needs its own baseline
+
+- **WHEN** a frozen #70 role window differs from the explicit LAB primary
+- **THEN** the role target SHALL reuse only a ready artifact for that exact
+  window or materialize its own baseline through Compatible Preview before any
+  variant comparison
+
+#### Scenario: A role target cannot reuse the primary artifact
+
+- **WHEN** a role window has a different canonical interval from the primary
+- **THEN** the primary artifact SHALL not be used as that target's baseline and
+  the operation SHALL not compare a primary baseline with a variant from the
+  role window
+
 #### Scenario: The primary becomes stale
 
 - **WHEN** the source revision, artifact generation, interval, filter plan, or
-  effective encode signature no longer matches the frozen operation
+  effective encode signature no longer matches the frozen target
 - **THEN** the experiment SHALL fail or become retryable as stale, SHALL NOT
   compare mixed generations, and SHALL leave the prior ready baseline and
   Sample A/reference lifecycle intact
@@ -141,21 +189,31 @@ reference identity.
 ### Requirement: Variant execution SHALL be explicit, sequential, bounded, and cancellable
 
 The workflow SHALL use the existing LAB operation states and cancellation
-semantics. It SHALL perform a baseline evidence step followed by explicitly
-requested single-variable variants in deterministic order, with at most one
-heavy QSV encode/evidence phase active for the operation and no hidden work
-caused by changing tabs. The default experiment policy SHALL cap the number of
-variants at three, cap retained candidate/temporal summaries, and reject or
-bound additional requests before encoding. It SHALL never automatically
-generate a Cartesian product of variable families. A later experiment MAY use a
-chosen variant as its baseline only through explicit user or policy action.
+semantics. It SHALL complete or reuse one baseline per target, then perform
+explicitly requested single-variable variants relative to that target baseline
+in deterministic target/variant order. At most one heavy encode/evidence phase
+SHALL be active for the operation and changing tabs SHALL cause no hidden work.
+A versioned experiment policy SHALL cap target windows, variants per target,
+total variant encodes, optional control candidates, retained evidence, and the
+complete heavy-work budget before requests are created. It SHALL never
+automatically generate a Cartesian product of variable families. A later
+experiment MAY use a chosen variant as its baseline only through explicit user
+or policy action.
 
 #### Scenario: Multiple variants are requested
 
 - **WHEN** a user requests quality-only, GOP-only, and BF-only comparisons
-- **THEN** the system SHALL run no more than the bounded variant count,
-  process them sequentially, and compare each directly with the same baseline
-  rather than generating combinations
+- **THEN** the system SHALL run no more than the deterministic per-target and
+  total variant caps, process targets and variants sequentially, and compare
+  each variant directly with its own target baseline rather than generating
+  combinations
+
+#### Scenario: Total experiment cap is reached
+
+- **WHEN** the admitted target windows and requested variants would exceed the
+  versioned total variant or heavy-work cap
+- **THEN** the system SHALL reject or deterministically truncate requests before
+  creating additional artifacts and SHALL report the bound and omitted work
 
 #### Scenario: Cancellation occurs during a variant
 
@@ -163,7 +221,15 @@ chosen variant as its baseline only through explicit user or policy action.
   evidence
 - **THEN** cancellation SHALL stop the current operation through its existing
   context, release artifact/heavy-work protection, retain bounded terminal
-  provenance, and leave the ready baseline playable
+  provenance for completed targets, and leave the primary and any completed
+  target baselines playable
+
+#### Scenario: Target B is canceled after target A completes
+
+- **WHEN** target A has bounded baseline/variant evidence and cancellation
+  occurs while target B is preparing or encoding
+- **THEN** target A evidence SHALL remain bounded and addressable, target B
+  SHALL not leave active protection, and the primary SHALL remain playable
 
 #### Scenario: A tab changes without an explicit action
 
@@ -226,15 +292,77 @@ bitrate, and speed evidence, with a bounded warning.
 - **THEN** the experiment SHALL remain runnable and SHALL not fail solely
   because #69 is absent
 
+### Requirement: Encoder controls SHALL be explicit and separate from QSV mitigation variants
+
+The system MAY attach an `EncoderControlCandidate` to a target for
+encoder-specific attribution. A control candidate SHALL record the target's
+window identity, source revision, encoder family, artifact and generation
+identity, effective plan, filter-plan identity, normalization identity, and
+evidence identity. It SHALL be a separate control comparison, not a QSV
+one-variable tuning variant, and SHALL NOT be passed through the QSV isolation
+validator.
+
+A valid control comparison SHALL preserve, as far as semantically possible, the
+exact source revision, frozen SamplingWindow, cadence/reference normalization,
+crop/scale/restoration/filter intent, and comparable quality/reference domain.
+Different encoder or rate-control mechanics MAY remain, but those differences
+SHALL be recorded as control context rather than treated as an unexpected QSV
+effective delta. An existing compatible Test Encode/LAB artifact MAY be reused
+when its identities prove comparability.
+
+The initial workflow SHALL NOT automatically create a non-QSV encode merely to
+earn a QSV-specific classification unless the existing LAB workflow explicitly
+requests that bounded heavy work. Without a valid control, the result SHALL not
+be classified as reproducible QSV-specific pumping.
+
+#### Scenario: QSV and non-QSV questions remain separate
+
+- **WHEN** a QSV baseline is compared with a QSV variant and a non-QSV control
+  is also available
+- **THEN** QSV baseline-to-variant evidence SHALL determine mitigation causality,
+  while QSV-to-control evidence SHALL determine encoder-specific attribution
+
+#### Scenario: A control uses a different frozen window
+
+- **WHEN** a candidate control's window identity or canonical interval differs
+  from the target window
+- **THEN** the control SHALL be rejected as non-comparable and SHALL not support
+  QSV-specific classification
+
+#### Scenario: A control changes filter or normalization semantics
+
+- **WHEN** a control has different restoration/filter intent, crop/scale, or
+  cadence/reference normalization without a declared comparable mapping
+- **THEN** the control SHALL be marked non-comparable and SHALL not be fed into
+  QSV one-variable isolation or encoder-specific attribution
+
+#### Scenario: A control generation becomes stale
+
+- **WHEN** the control artifact's source revision or generation identity no
+  longer matches the frozen target
+- **THEN** QSV-specific classification SHALL be invalidated or downgraded until
+  a matching control is reused or explicitly acquired
+
+#### Scenario: Manual visual preference is not canonical control evidence
+
+- **WHEN** a user reports that an x265 preview looks better but no matching
+  control identity and evidence bundle exists
+- **THEN** the report MAY remain manual visual context but SHALL not support
+  QSV-specific classification
+
 ### Requirement: Results and mitigations SHALL be conservative and versioned
 
-The experiment SHALL support the classifications `reproducible QSV-specific
+Each target SHALL support the classifications `reproducible QSV-specific
 pumping`, `measurable but not clearly QSV-specific`, `inconclusive`, and `no
-pumping in tested windows`. A QSV-specific classification SHALL require a
-matching non-QSV/control basis or equivalent versioned evidence; QSV-only
-measurements SHALL not be promoted to that claim. Any mitigation suggestion
-SHALL be versioned and include its evidence basis, applicable encoder/runtime,
-media characteristics, confidence, and size/speed/compression trade-offs.
+pumping in tested windows`. `reproducible QSV-specific pumping` SHALL require
+sufficient QSV temporal pumping evidence, an isolated/reproducible QSV result,
+matching target/window/reference/control identity, a non-QSV/control result in
+which the same temporal pattern is absent or materially reduced according to a
+versioned interpretation contract, and no structural Frame Fidelity mismatch
+that invalidates comparability. QSV-only measurements SHALL not be promoted to
+that claim. Any mitigation suggestion SHALL be versioned and include its
+evidence basis, applicable encoder/runtime, media characteristics, confidence,
+and size/speed/compression trade-offs.
 Results SHALL never mutate every QSV Profile automatically.
 
 #### Scenario: A mitigation is supported by isolated evidence
@@ -243,6 +371,23 @@ Results SHALL never mutate every QSV Profile automatically.
   BF strategy, quality/rate-control change, or supported QSV feature change
 - **THEN** the system SHALL expose a versioned recommendation tied to the
   evidence and applicability metadata, without changing the existing Profile
+
+#### Scenario: QSV pumping has no valid non-QSV control
+
+- **WHEN** a target has sufficient isolated QSV temporal evidence but no
+  matching non-QSV/control candidate
+- **THEN** its classification SHALL be at most `measurable but not clearly
+  QSV-specific`, while an isolated QSV mitigation recommendation MAY still be
+  emitted
+
+#### Scenario: A matching control supports QSV-specific attribution
+
+- **WHEN** the target has reproducible isolated QSV evidence, a matching
+  non-QSV/control identity, no invalidating Frame Fidelity mismatch, and the
+  control lacks or materially reduces the same temporal pattern under the
+  versioned interpretation policy
+- **THEN** the target SHALL be eligible for `reproducible QSV-specific
+  pumping`
 
 #### Scenario: A recommendation is applied explicitly
 

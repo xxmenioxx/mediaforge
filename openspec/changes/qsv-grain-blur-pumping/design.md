@@ -93,11 +93,25 @@ metadata is joined. Otherwise it remains first and the role windows follow in
 canonical plan order. A primary outside the role subset is therefore still
 testable without becoming evidence that it is a hard scene.
 
-The experiment freezes the selected window list before any variant generation.
+The operation converts this ordered, deduplicated list into `targets[]`, with
+one target per canonical SamplingWindow identity. Each target has one baseline
+slot before it can have variants. The primary target points at the already-ready
+primary Compatible Preview artifact. A non-primary target first looks up a
+ready artifact for its exact interval/window identity; if none exists, the
+existing LAB/Compatible Preview lifecycle materializes that target's baseline.
+The temporal-evidence provider consumes those artifacts but never raw-encodes
+or creates a second artifact lifecycle. A target for role window B can never
+use the primary artifact as its baseline merely because both belong to one
+experiment.
+
+The experiment freezes the selected target list before any baseline or variant
+request is created. Later scan results, policy changes, profile edits, or role
+availability cannot change an in-flight experiment; they create a new material
+identity instead.
 Later scan results, policy changes, profile edits, or role availability cannot
 change an in-flight experiment; they create a new material identity instead.
 
-### 3. Use a deterministic `QSVTemporalExperiment` identity
+### 3. Use deterministic per-window target identities
 
 The persisted/API experiment summary is conceptually:
 
@@ -108,23 +122,41 @@ QSVTemporalExperiment {
     sourceRevision
     samplingPlanIdentity
     samplingPolicyVersion
-    samplingWindows[]              // window identity, role, interval, primary
+    targets[]                       // bounded, deterministic order
     unavailableRoles[]
-    baseline: QSVExperimentCandidate
-    variants[]                     // bounded, ordered, baseline-relative
-    changedVariable
-    requestedBaseline
-    requestedVariant
-    effectiveBaseline
-    effectiveVariant
-    encoderRuntimeIdentity
-    filterPlanIdentity
-    effectivePlanIdentity
-    evidenceReferences[]
-    resultClassification
+    experimentPolicyVersion
+    bounds: { maxTargets, maxVariantsPerTarget,
+              maxTotalVariantEncodes, maxControlCandidates,
+              maxHeavyEncodes }
     interpretationPolicyVersion
     warnings[]
     provenance
+}
+
+QSVTemporalTarget {
+    windowIdentity
+    interval: { start, duration }
+    roles[]
+    reasons[]
+    primary
+    baseline: QSVExperimentCandidate
+    variants: QSVTemporalVariant[]
+    temporalEvidence[]
+    perceptualEvidence[]            // optional #69 references
+    controlCandidates[]             // optional, separately bounded
+    classification
+    recommendation?
+}
+
+QSVTemporalVariant {
+    variantIdentity
+    changedVariable
+    requestedDelta
+    effectiveDelta
+    isolationResult
+    candidate: QSVExperimentCandidate
+    temporalEvidence[]
+    perceptualEvidence[]            // optional #69 references
 }
 
 QSVExperimentCandidate {
@@ -144,18 +176,42 @@ QSVExperimentCandidate {
     frameStructure/HEVC evidence reference
     size, bitrate, speed summaries
 }
+
+EncoderControlCandidate {
+    windowIdentity
+    sourceRevision
+    encoderFamily
+    artifactIdentity
+    generationIdentity
+    effectivePlan
+    filterPlanIdentity
+    normalizationIdentity
+    evidenceIdentity
+}
 ```
+
+Each target owns exactly one frozen SamplingWindow and exactly one matching
+baseline candidate/artifact generation. The explicit primary target's baseline
+is the already-ready primary artifact; a different role window has its own
+baseline identity even when the same experiment contains both targets. Each
+variant is nested under one target and compares only with that target's
+baseline. Target-level temporal/#69 evidence and classification cannot be
+mistaken for experiment-global evidence.
 
 `candidateIdentity` is a versioned digest of source revision, window identity,
 normalized interval, requested candidate, effective plan, filter identity,
 encoder/runtime identity, and generation identity. `experimentId` is a digest
-of the schema/policy, frozen selection, baseline candidate, ordered variants,
-and declared variable. Display labels, result scores, and role names do not
+of the schema/policy, frozen selection, ordered target identities, every target
+baseline/generation, bounded variant identities/deltas, and attached control
+identities. Any target baseline or generation change therefore changes the
+experiment identity. Display labels, result scores, and role names do not
 substitute for these identities.
 
 ### 4. Define one-variable isolation over effective settings
 
-Each variant declares exactly one `changedVariable`. Initial families are:
+Each variant under a target declares exactly one `changedVariable` and a
+requested/effective delta relative to that target's baseline. Initial families
+are:
 
 | Family | One allowed comparison variable | Frozen context |
 | --- | --- | --- |
@@ -170,7 +226,10 @@ settings map after capability resolution. The validator computes an effective
 delta and allows only the declared variable plus a versioned, named derived
 field (for example a resolved GOP frame count derived from the GOP choice).
 Any additional delta, including an implicit rate-control or B-frame change,
-marks the experiment `invalid/non-isolated` and prevents causal attribution.
+marks that target/variant comparison `invalid/non-isolated` and prevents causal
+attribution. An `EncoderControlCandidate` is deliberately not passed through
+this validator because it answers encoder-specific attribution rather than
+QSV mitigation causality.
 
 The snapshot stores requested and effective values side by side, including
 fallback/downgrade reasons. Actual QSV output evidence is separate from
@@ -185,10 +244,12 @@ runtime is reported unavailable before heavy work begins.
 
 ### 5. Keep restoration and effective media plans frozen
 
-The baseline and every variant use the same source revision, media interval,
-normalization, restoration filter chain, scaling, audio/subtitle handling,
-effective video plan, and reference identity. The filter/effective-plan
-identity is included in both candidates and compared during isolation.
+Within each target, the baseline and every variant use the same source
+revision, exact media interval, normalization, restoration filter chain,
+scaling, audio/subtitle handling, effective video plan, and reference identity.
+The filter/effective-plan identity is included in all candidates and compared
+during isolation. Different targets intentionally have different intervals and
+baseline artifact identities; they are not cross-window A/B pairs.
 
 The initial experiment does not vary restoration filters. If a future explicit
 filter experiment is added, its declared filter delta must use the same
@@ -198,41 +259,66 @@ quality, or frame structure at the same time.
 
 ### 6. Prove baseline reuse through artifact and generation identity
 
-The existing ready primary request is recorded as the baseline candidate. The
-operation verifies, before evidence collection and after heavy-work capacity is
-acquired, the same source revision, normalized primary interval, effective
-plan/filter identity, artifact ID, and generation token/version. It uses the
-existing generation boundary/call-accounting seam to prove that the baseline
-had zero new generation attempts for this experiment; cache/request POST counts
+For the primary target, the operation records the existing ready primary
+request as its baseline candidate and verifies, before evidence collection and
+after heavy-work capacity is acquired, the same source revision, normalized
+primary interval, effective plan/filter identity, artifact ID, and generation
+token/version. The existing generation boundary/call-accounting seam must prove
+zero new baseline generation attempts for this target; cache/request POST counts
 alone are insufficient.
 
-If the primary is stale, the operation returns a bounded retryable stale result
-and never compares a new generation with the frozen baseline. A variant always
-uses a distinct request/artifact/candidate identity, even when it happens to
-resolve to an equivalent command; the baseline is not overwritten and its
-artifact remains usable.
+For every non-primary target, the operation performs the same identity check
+against an exact-interval ready artifact. A matching artifact is reused; a
+cache miss requests baseline materialization through the existing Compatible
+Preview lifecycle, subject to the complete experiment cap. That baseline is
+owned by the role target and cannot be substituted with the primary artifact.
+
+If any target baseline is stale, the target returns a bounded retryable stale
+result and never compares a new generation with its frozen baseline. A variant
+always uses a distinct request/artifact/candidate identity nested under its
+target, even when it happens to resolve to an equivalent command; no variant
+overwrites any target baseline.
 
 ### 7. Run a bounded sequential variant workflow
 
 The existing LAB operation follows this sequence:
 
 ```text
-frozen #70 selection + explicit primary
-    -> verify ready baseline and preserve Sample A/reference
-    -> collect baseline effective/technical/temporal evidence
-    -> variant 1: resolve -> prepare/join -> encode -> evidence
-    -> variant 2: resolve -> prepare/join -> encode -> evidence
-    -> variant 3: resolve -> prepare/join -> encode -> evidence
-    -> validate isolation -> compare -> classify/recommend
+frozen #70 selection -> bounded targets[]
+    -> target A: reuse/materialize baseline -> evidence
+    -> target A: variant 1 -> evidence -> isolation
+    -> target A: variant 2 -> evidence -> isolation
+    -> target B: reuse/materialize baseline -> evidence
+    -> target B: variant 1 -> evidence -> isolation
+    -> ... -> target classifications/recommendations
 ```
 
-Only explicitly requested variants are materialized. The default policy caps an
-experiment at three variants plus its baseline. The existing process-local LAB
-heavy-work slot permits at most one heavy QSV operation at a time; variants are
-not parallelized. The runner checks the cap before creating requests and
-retains at most the baseline plus three candidate summaries, bounded temporal
-observations, setting snapshots, and evidence references. Raw frames, complete
-FFmpeg logs, and unlimited metric histories are not copied into the experiment.
+`QSVTemporalExperimentPolicyV1` makes the complete bound deterministic before
+any request is created:
+
+| Bound | Initial maximum | Meaning |
+| --- | ---: | --- |
+| Target windows | 3 | Explicit primary plus at most two role windows, in canonical order |
+| Variants per target | 3 | Direct baseline-relative QSV variants under one target |
+| Total QSV variant encodes | 6 | Hard experiment-wide cap, selected in target/variant order |
+| Optional control candidates | 3 | At most one explicitly requested non-QSV control per target |
+| Baseline materializations | 3 | At most one baseline request per target; ready artifacts reuse |
+| Total heavy encodes | 12 | 3 baseline + 6 QSV variants + 3 controls; ready reuse lowers actual work |
+
+The policy version and all bounds are part of the experiment identity. A request
+for three variants on every target is therefore truncated/rejected after the
+first six QSV variants according to deterministic target/variant order; it is
+not an implicit unbounded matrix. A control candidate is counted separately
+and is created only when the existing LAB workflow explicitly requests that
+bounded control work. The control is never a QSV mitigation variant.
+
+The existing process-local LAB heavy-work slot permits at most one heavy
+operation at a time. Baselines, QSV variants, and explicit controls run
+sequentially; the QSV evidence provider itself performs no encode. The runner
+checks all caps before creating requests and retains only bounded per-target
+candidate summaries, temporal observations, setting snapshots, control
+references, and evidence references. Raw frames, complete FFmpeg logs, and
+unlimited metric histories are not copied into the experiment.
 
 The chosen variant is never silently promoted. A later operation can use it as
 baseline only after an explicit user/policy action that creates a new frozen
@@ -241,13 +327,17 @@ experiment identity.
 ### 8. Define temporal evidence as a bounded measurement contract
 
 The temporal provider is an injectable adapter over the existing artifact/evidence
-boundary. For each frozen window and candidate pair it consumes the same source
-timeline and deterministic short segment, then returns conceptually:
+boundary. For each target/variant pair it consumes that target's baseline
+artifact, variant artifact, same source timeline, and deterministic short
+segment, then returns evidence nested under the target/variant relationship. It
+never compares artifacts from different target windows. The contract is
+conceptually:
 
 ```text
 TemporalEvidence {
     schemaVersion
-    windowIdentity
+    targetWindowIdentity
+    variantIdentity
     sourceRevision
     baselineArtifactIdentity
     variantArtifactIdentity
@@ -283,10 +373,12 @@ context. The UI/API shall show measured evidence and interpretation separately.
 ### 9. Attach optional #69 evidence through an adapter
 
 The experiment accepts an optional canonical perceptual-evidence provider keyed
-by source revision, SamplingPlan identity, window identity, candidate artifact
-generation, and evidence version. If matching #69 evidence exists, the
-experiment stores a bounded reference/summary and records its provenance. It
+by source revision, SamplingPlan identity, target window identity, candidate
+artifact generation, and evidence version. If matching #69 evidence exists,
+the target stores a bounded reference/summary and records its provenance. It
 does not select windows, run its own VMAF/SSIM, or make #69 a prerequisite.
+Evidence for one target cannot be attached to another target merely because
+the source and plan match.
 
 If #69 is absent, stale, incompatible, or unavailable, the operation continues
 with temporal evidence plus existing Frame Fidelity, effective-setting,
@@ -294,31 +386,65 @@ bitstream/frame-structure, size, bitrate, and speed evidence. Adapter failure
 is a warning unless the user explicitly asked for a required external evidence
 source, which is outside this initial scope.
 
-### 10. Classify QSV specificity and recommendations conservatively
+### 10. Keep the non-QSV control contract separate from mitigation variants
 
-The result classifier first rejects non-isolated experiments, then considers
-temporal evidence and technical evidence. The four public outcomes are:
+`EncoderControlCandidate` answers whether a measured temporal pattern is
+encoder-specific; it is not another QSV quality/GOP/BF variant. A control may
+reuse an existing compatible x265/Test Encode/LAB artifact, but only after
+proving the same source revision, exact target window identity/interval,
+cadence/reference normalization, crop/scale/restoration/filter intent, and
+comparable quality/reference domain. The control records its encoder family,
+effective plan, artifact/generation identity, filter/normalization identity, and
+evidence identity. Encoder-specific and rate-control mechanics may differ and
+are recorded as control context; they are not passed through the QSV effective
+delta validator.
 
-1. `reproducible_qsv_specific_pumping`: repeated isolated QSV evidence with a
-   matching non-QSV/control basis or equivalent versioned evidence supporting
-   encoder-specific attribution.
+The initial workflow does not create an x265/control encode merely to earn a
+label. A control encode is allowed only when the existing LAB workflow
+explicitly requests it within the `maxControlCandidates` and `maxHeavyEncodes`
+bounds. Without a valid control, the target can still emit a mitigation
+recommendation from isolated QSV baseline-to-variant evidence, but its
+classification cannot exceed `measurable_not_clearly_qsv_specific`.
+
+This separation is intentional: QSV baseline-to-variant evidence answers
+mitigation causality, while QSV candidate-to-control evidence answers
+encoder-specific attribution. A visual statement that x265 looks better is
+manual context, not canonical control evidence.
+
+### 11. Classify QSV specificity and recommendations conservatively
+
+The result classifier runs per target. It first rejects a non-isolated QSV
+baseline-to-variant comparison, then considers target temporal evidence and
+technical evidence. The four public outcomes are:
+
+1. `reproducible_qsv_specific_pumping`: sufficient QSV temporal evidence,
+   isolated/reproducible QSV evidence, matching target/window/reference/control
+   identities, and a non-QSV/control result where the same temporal pattern is
+   absent or materially reduced under the versioned interpretation policy, with
+   no structural Frame Fidelity mismatch invalidating comparability.
 2. `measurable_not_clearly_qsv_specific`: temporal change is measured, but no
-   valid control proves QSV-specific causality.
+   valid matching control proves QSV-specific causality. This is the required
+   ceiling when no control exists; manual visual preference is not a control.
 3. `inconclusive`: evidence is unavailable, non-comparable, or non-isolated.
 4. `no_pumping_in_tested_windows`: bounded windows had sufficient evidence and
    did not show the policy pattern.
 
-QSV-only measurements cannot be upgraded to the first outcome. Decoder/device
+The QSV baseline-to-variant comparison answers mitigation causality. The QSV
+candidate-to-control comparison answers encoder-specific attribution. The
+control is not a tuning variant and its different encoder/rate-control
+mechanics are not sent through the QSV isolation validator. Decoder/device
 compatibility findings are reported as a separate technical concern.
 
-An optional `QSVPumpingMitigationRecommendation` is a versioned summary of a
-chosen effective delta, evidence references, applicable encoder/runtime,
-media characteristics (for example texture/grain and motion roles), confidence,
-and size/speed/compression trade-offs. The recommendation is exposed as an
-advisor/draft input. It does not call profile mutation or change existing
-profiles; explicit application creates a new/draft profile or an explicit edit.
+An optional `QSVPumpingMitigationRecommendation` is owned by a target and is a
+versioned summary of a chosen effective QSV delta, evidence references,
+applicable encoder/runtime, media characteristics (for example texture/grain
+and motion roles), confidence, and size/speed/compression trade-offs. An
+isolated QSV mitigation recommendation MAY be emitted even when encoder-specific
+attribution is unavailable. The recommendation is exposed as an advisor/draft
+input. It does not call profile mutation or change existing profiles; explicit
+application creates a new/draft profile or an explicit edit.
 
-### 11. Use explicit LAB actions and preserve existing UI/reference behavior
+### 12. Use explicit LAB actions and preserve existing UI/reference behavior
 
 The existing `Process Video` action continues to own primary preview readiness.
 The QSV experiment starts only from an explicit user action after the primary
@@ -328,12 +454,13 @@ adds only the bounded experiment request, status, evidence summary, and
 recommendation fields needed by this mode.
 
 Sample A remains source-backed and the existing reference preview remains the
-canonical reference. Sample B/baseline remains the ready primary artifact;
-variants are separately labeled and compared against it. No giant fetch-to-Blob
-transport, new media transport, or duplicate baseline registration is part of
-this design.
+canonical reference. Sample B remains the ready primary artifact for the
+primary target; each additional target displays its own baseline and variants,
+all separately labeled and compared only within that target. No giant
+fetch-to-Blob transport, new media transport, or duplicate primary baseline
+registration is part of this design.
 
-### 12. Make all causal and temporal behavior fixture-testable
+### 13. Make all causal and temporal behavior fixture-testable
 
 The implementation will inject seams for frozen-plan input, effective-plan/
 capability resolution, Compatible Preview generation/accounting, artifact
@@ -353,9 +480,16 @@ and artifact protections without encoding media.
   Keep measurements separate from versioned interpretation, require adjacent
   sequence evidence, retain confidence/warnings, and require visual inspection
   for final confirmation.
-- [Risk] Three variants are insufficient for a difficult investigation. → Keep
-  the cap explicit and allow a chosen result to seed a new explicit experiment;
-  never expand one run into a product search.
+- [Risk] Per-target variants could multiply across hard-scene windows and
+  overload the NAS. → Use the versioned three-target/six-total-variant/twelve-
+  heavy-encode cap, check it before request creation, and serialize all heavy
+  work.
+- [Risk] A primary artifact is accidentally compared with a different role
+  window. → Require one baseline identity per target and reject cross-window
+  temporal/evidence joins.
+- [Risk] No matching non-QSV control exists on the same target. → Keep the
+  target measurable for QSV mitigation while capping attribution at
+  `measurable_not_clearly_qsv_specific`.
 - [Risk] Additional QSV previews compete with Jellyfin/Immich on the NAS. →
   serialize heavy work, reuse the ready baseline, cap retained evidence, and
   make cancellation release existing artifact protection.
