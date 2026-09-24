@@ -249,6 +249,18 @@ type LabFidelityInspection = {
   completedAt: number;
   canonicalStatus?: string;
   aggregateStatus?: string;
+  visualAggregate?: {
+    comparableCount: number;
+    totalCount: number;
+    averageSSIM?: number;
+    minimumSSIM?: number;
+    averagePSNR?: number;
+    minimumPSNR?: number;
+    worstWindowIndex?: number;
+    worstPosition?: number;
+    metricVerdict?: 'Safe' | 'Review' | 'Reject' | string;
+  };
+  overallVerdict?: 'Safe' | 'Review' | 'Reject' | string;
 };
 
 type CachedLabReferencePreview = {
@@ -308,6 +320,8 @@ function labInspectionFromOperation(
     completedAt: Number(result.completedAt ?? 0),
     canonicalStatus: typeof result.canonicalStatus === 'string' ? result.canonicalStatus : undefined,
     aggregateStatus: typeof result.aggregateStatus === 'string' ? result.aggregateStatus : undefined,
+    visualAggregate: (result.visualAggregate ?? undefined) as LabFidelityInspection['visualAggregate'],
+    overallVerdict: typeof result.overallVerdict === 'string' ? result.overallVerdict : undefined,
   };
 }
 
@@ -852,6 +866,8 @@ export function ProfileLabPage() {
   const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
   const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
   const [labFidelityOperation, setLabFidelityOperation] = useState<LabFidelityOperation | null>(null);
+  const labFidelityOperationRef = useRef<LabFidelityOperation | null>(null);
+  const primaryPreviewReadyRef = useRef(false);
   const processedVideoStatusChange = useCallback((status: 'idle' | 'loading' | 'ready' | 'error') => {
     setVideoPreviewStatus((current) => current === 'ready' && status === 'loading' ? current : status);
   }, []);
@@ -997,6 +1013,7 @@ export function ProfileLabPage() {
       }
       fidelityAbortRef.current?.abort();
       videoPreviewCancelRef.current?.abort();
+      labFidelityOperationRef.current = null;
       setLabFidelityOperation(null);
       setProcessedVideoPreviewRequestId('');
       setVideoPreviewNonce(0);
@@ -1341,8 +1358,21 @@ export function ProfileLabPage() {
       }
       while (!['completed', 'failed', 'canceled'].includes(operation.status)) {
         await abortableLabFidelityDelay(2_000, signal);
-        operation = await api.labFidelityOperation(operation.id, signal);
-        onProgress?.(operation);
+        try {
+          operation = await api.labFidelityOperation(operation.id, signal);
+          onProgress?.(operation);
+        } catch (error) {
+          if (error instanceof ApiRequestError && error.code === 'unknown_operation') {
+            onProgress?.({
+              ...operation,
+              status: 'failed',
+              phase: 'failed',
+              error: 'LAB Fidelity operation is no longer available after the backend restart.',
+              retryable: true,
+            });
+          }
+          throw error;
+        }
       }
       if (operation.status !== 'completed') {
         throw new ApiRequestError(operation.error ?? `LAB Fidelity is ${operation.status}`, 409, { state: operation.status, retryable: operation.retryable });
@@ -1363,21 +1393,50 @@ export function ProfileLabPage() {
       return inspection;
 
     },
-    onSuccess: (inspection) => {
+    onSuccess: (inspection, variables) => {
+      const operationSignature = labVideoRequestSignature(
+        variables.conversion.path,
+        String(variables.conversion.start ?? '00:00:00'),
+        Number(variables.conversion.seconds ?? 20),
+        variables.conversion.previewNormalization ?? 'normalize_bt709',
+        variables.conversion.profile ?? videoDraft,
+      );
+      if (
+        variables.signal?.aborted ||
+        variables.conversion.path !== assetPath ||
+        operationSignature !== currentVideoRequestSignature
+      ) return;
       setLastFidelityInspection(inspection);
       setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
       setProcessedVideoPreviewRequestId(inspection.conversionRequestId);
+      primaryPreviewReadyRef.current = true;
       setVideoPreviewStatus('ready');
     },
     onError: (error, variables) => {
-      if (!isCanceledFidelityRequest(error) && labFidelityOperation && (error instanceof ApiRequestError && error.code === 'unknown_operation')) {
-        setLabFidelityOperation((current) => current ? { ...current, status: 'failed', phase: 'failed', error: 'LAB Fidelity operation is no longer available after the backend restart.', retryable: true } : current);
+      const operationSignature = labVideoRequestSignature(
+        variables.conversion.path,
+        String(variables.conversion.start ?? '00:00:00'),
+        Number(variables.conversion.seconds ?? 20),
+        variables.conversion.previewNormalization ?? 'normalize_bt709',
+        variables.conversion.profile ?? videoDraft,
+      );
+      if (
+        variables.signal?.aborted ||
+        variables.conversion.path !== assetPath ||
+        operationSignature !== currentVideoRequestSignature
+      ) return;
+      if (!isCanceledFidelityRequest(error) && (error instanceof ApiRequestError && error.code === 'unknown_operation')) {
+        const activeOperation = labFidelityOperationRef.current;
+        setLabFidelityOperation((current) => {
+          const operation = current ?? activeOperation;
+          return operation ? { ...operation, status: 'failed', phase: 'failed', error: 'LAB Fidelity operation is no longer available after the backend restart.', retryable: true } : current;
+        });
       }
       if (error instanceof ApiRequestError && ['expired', 'unknown_request', 'stale_artifact', 'interrupted'].includes(error.code ?? error.state ?? '')) {
         setProcessedReferencePreviewRequestId('');
         setProcessedVideoPreviewRequestId('');
       }
-      if (!variables.primaryRequestId && videoPreviewStatus !== 'ready') {
+      if (!variables.primaryRequestId && !primaryPreviewReadyRef.current) {
         setVideoPreviewStatus('error');
       }
     },
@@ -1703,6 +1762,7 @@ export function ProfileLabPage() {
     if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
       void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
     }
+    labFidelityOperationRef.current = null;
     setLabFidelityOperation(null);
     fidelityInspection.reset();
     setLastFidelityInspection(null);
@@ -2504,6 +2564,7 @@ export function ProfileLabPage() {
     if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
       void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
     }
+    labFidelityOperationRef.current = null;
     setLabFidelityOperation(null);
     const controller = new AbortController();
     fidelityAbortRef.current = controller;
@@ -2523,6 +2584,7 @@ export function ProfileLabPage() {
     }
 
     setProcessedVideoPreviewRequestId('');
+    primaryPreviewReadyRef.current = false;
     setVideoPreviewStatus('loading');
     if (assetPath) {
       fidelityInspection.mutate({
@@ -2552,6 +2614,7 @@ export function ProfileLabPage() {
         },
         onProgress: (operation) => {
           if (controller.signal.aborted) return;
+          labFidelityOperationRef.current = operation;
           setLabFidelityOperation(operation);
           const inspection = labInspectionFromOperation(operation, {
             assetPath,
@@ -2567,6 +2630,7 @@ export function ProfileLabPage() {
           setProcessedReferencePreviewRequestId(referenceRequestId);
           setProcessedVideoPreviewRequestId(conversionRequestId);
           setVideoPreviewNonce((current) => current + 1);
+          primaryPreviewReadyRef.current = true;
           setVideoPreviewStatus('ready');
         },
       });
@@ -2595,7 +2659,9 @@ export function ProfileLabPage() {
     }
     if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
       try {
-        setLabFidelityOperation(await api.cancelLabFidelityOperation(labFidelityOperation.id));
+        const canceledOperation = await api.cancelLabFidelityOperation(labFidelityOperation.id);
+        labFidelityOperationRef.current = canceledOperation;
+        setLabFidelityOperation(canceledOperation);
       } catch {
         // The local abort still releases the client-side operation owner when
         // the backend has already completed or expired the process-local op.
@@ -2627,12 +2693,14 @@ export function ProfileLabPage() {
     referencePreviewCacheRef.current = null;
 
     setVideoPreviewNonce(0);
+    primaryPreviewReadyRef.current = false;
     setVideoPreviewStatus('idle');
     setProcessedReferencePreviewRequestId('');
     setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
     fidelityInspection.reset();
+    labFidelityOperationRef.current = null;
     setLabFidelityOperation(null);
   }
 
@@ -2642,6 +2710,7 @@ export function ProfileLabPage() {
     const controller = new AbortController();
     fidelityAbortRef.current = controller;
     setVideoPreviewSignal(controller.signal);
+    labFidelityOperationRef.current = null;
     setLabFidelityOperation(null);
     fidelityInspection.reset();
     fidelityInspection.mutate({
@@ -2672,6 +2741,7 @@ export function ProfileLabPage() {
       signal: controller.signal,
       onProgress: (operation) => {
         if (controller.signal.aborted) return;
+        labFidelityOperationRef.current = operation;
         setLabFidelityOperation(operation);
         const inspection = labInspectionFromOperation(operation, {
           assetPath,
@@ -2681,7 +2751,10 @@ export function ProfileLabPage() {
         });
         if (inspection) setLastFidelityInspection(inspection);
       },
-      onPrepared: () => setVideoPreviewStatus('ready'),
+      onPrepared: () => {
+        primaryPreviewReadyRef.current = true;
+        setVideoPreviewStatus('ready');
+      },
     });
   }
 
@@ -2824,7 +2897,7 @@ export function ProfileLabPage() {
                 <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                <Typography variant="caption">The backend owns the active operation; this page can reconnect after a reload.</Typography>
+                <Typography variant="caption">The backend owns the active Fidelity operation.</Typography>
                 {(trackSnapshot.isPending && labSnapshotOperation?.status === 'running') || fidelityInspection.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading' ? (
                   <Button
                     size="small"
@@ -3325,7 +3398,7 @@ export function ProfileLabPage() {
                           severity={labFidelityOperation.status === 'failed' ? 'warning' : 'info'}
                           action={<Button color="inherit" size="small" onClick={retryLabFidelity} disabled={videoPreviewStatus !== 'ready'}>Retry Fidelity</Button>}
                         >
-                          Fidelity {labFidelityOperation.status}. Sample B remains ready and playable.
+                          Fidelity {labFidelityOperation.status}. {labFidelityOperation.error ? `${labFidelityOperation.error} ` : ''}Sample B remains ready and playable.
                         </Alert>
                       ) : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
@@ -5132,25 +5205,10 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
   if (!windows.length) {
     return <Alert severity="info">Process Video to create the canonical source and decoded output frames.</Alert>;
   }
-  const comparable = windows.filter((window) => window.metrics.comparable && Number.isFinite(window.metrics.ssim));
-  const averageSSIM = comparable.length ? comparable.reduce((sum, window) => sum + (window.metrics.ssim ?? 0), 0) / comparable.length : undefined;
-  const averagePSNRWindows = comparable.filter((window) => Number.isFinite(window.metrics.psnr));
-  const averagePSNR = averagePSNRWindows.length ? averagePSNRWindows.reduce((sum, window) => sum + (window.metrics.psnr ?? 0), 0) / averagePSNRWindows.length : undefined;
-  const worst = comparable.reduce<(typeof comparable)[number] | undefined>((current, window) => !current || (window.metrics.ssim ?? 1) < (current.metrics.ssim ?? 1) ? window : current, undefined);
-  const minimumSSIM = worst?.metrics.ssim;
-  const minimumPSNR = averagePSNRWindows.length ? Math.min(...averagePSNRWindows.map((window) => window.metrics.psnr ?? Infinity)) : undefined;
-  const metricVerdict = fidelityMetricVerdict(minimumSSIM);
+  const visualAggregate = inspection.visualAggregate;
   const analysisComplete = inspection.aggregateStatus === 'completed';
   const canonicalStatus = inspection.canonicalStatus ?? 'unverified';
-  const overallVerdict = !analysisComplete
-    ? 'Review'
-    : canonicalStatus === 'mismatch'
-      ? 'Reject'
-      : canonicalStatus === 'unverified'
-        ? 'Review'
-        : comparable.length === windows.length
-          ? metricVerdict
-          : metricVerdict === 'Reject' ? 'Reject' : 'Review';
+  const overallVerdict = inspection.overallVerdict;
   const safeWindowIndex = Math.min(selectedWindowIndex, windows.length - 1);
   const selectedWindow = windows[safeWindowIndex];
   const selectedRequestId = typeof selectedWindow.requestId === 'string' ? selectedWindow.requestId.trim() : '';
@@ -5165,15 +5223,15 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
   return (
     <Stack spacing={1.5}>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip size="small" color={analysisComplete ? fidelityVerdictColor(overallVerdict) : 'default'} label={analysisComplete ? `Overall · ${overallVerdict}` : 'Overall · Analyzing'} />
+        <Chip size="small" color={analysisComplete && overallVerdict ? fidelityVerdictColor(overallVerdict as 'Safe' | 'Review' | 'Reject') : 'default'} label={analysisComplete && overallVerdict ? `Overall · ${overallVerdict}` : 'Overall · Analyzing'} />
         <Chip size="small" color={canonicalStatus === 'mismatch' ? 'error' : canonicalStatus === 'passed' ? 'success' : 'warning'} label={`Canonical Fidelity · ${canonicalStatus}`} />
         <Chip size="small" label={`${windows.length} regions`} />
-        <Chip size="small" color={comparable.length === windows.length ? 'default' : 'warning'} label={`${comparable.length}/${windows.length} comparable`} />
-        {averageSSIM !== undefined ? <Chip size="small" label={`Average SSIM · ${averageSSIM.toFixed(4)}`} /> : null}
-        {minimumSSIM !== undefined ? <Chip size="small" label={`Minimum SSIM · ${minimumSSIM.toFixed(4)}`} /> : null}
-        {averagePSNR !== undefined ? <Chip size="small" label={`Average PSNR · ${averagePSNR.toFixed(2)} dB`} /> : null}
-        {minimumPSNR !== undefined ? <Chip size="small" label={`Minimum PSNR · ${minimumPSNR.toFixed(2)} dB`} /> : null}
-        {worst ? <Chip size="small" color="warning" label={`Worst region · ${Math.round(worst.position * 100)}%`} /> : null}
+        {visualAggregate ? <Chip size="small" color={visualAggregate.comparableCount === visualAggregate.totalCount ? 'default' : 'warning'} label={`${visualAggregate.comparableCount}/${visualAggregate.totalCount} comparable`} /> : null}
+        {visualAggregate?.averageSSIM !== undefined ? <Chip size="small" label={`Average SSIM · ${visualAggregate.averageSSIM.toFixed(4)}`} /> : null}
+        {visualAggregate?.minimumSSIM !== undefined ? <Chip size="small" label={`Minimum SSIM · ${visualAggregate.minimumSSIM.toFixed(4)}`} /> : null}
+        {visualAggregate?.averagePSNR !== undefined ? <Chip size="small" label={`Average PSNR · ${visualAggregate.averagePSNR.toFixed(2)} dB`} /> : null}
+        {visualAggregate?.minimumPSNR !== undefined ? <Chip size="small" label={`Minimum PSNR · ${visualAggregate.minimumPSNR.toFixed(2)} dB`} /> : null}
+        {visualAggregate?.worstPosition !== undefined ? <Chip size="small" color="warning" label={`Worst region · ${Math.round(visualAggregate.worstPosition * 100)}%`} /> : null}
       </Stack>
       {!analysisComplete ? (
         <Alert severity="info">Completed windows are shown below. The aggregate remains in progress until every planned window has valid evidence.</Alert>
@@ -5183,9 +5241,9 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
       ) : canonicalStatus === 'unverified' ? (
         <Alert severity="warning">Canonical Frame Fidelity is unverified, so this result cannot be marked Safe.</Alert>
       ) : null}
-      {comparable.length !== windows.length ? (
+      {visualAggregate && visualAggregate.comparableCount !== visualAggregate.totalCount ? (
         <Alert severity="warning">
-          {windows.length - comparable.length} region(s) did not produce comparable fidelity metrics. The overall result cannot be marked Safe until every region is measured.
+          {visualAggregate.totalCount - visualAggregate.comparableCount} region(s) did not produce comparable fidelity metrics. The overall result cannot be marked Safe until every region is measured.
         </Alert>
       ) : null}
       {loadError ? <Alert severity="warning">{loadError}</Alert> : null}

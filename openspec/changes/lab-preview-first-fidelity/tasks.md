@@ -33,7 +33,7 @@
 
 - [x] 5.1 Factor or adapt the #3 canonical evaluator to accept a frozen Compatible Preview authority without changing Queue authority precedence or introducing a LAB resolver; verify source/expected/actual/authority/reason field semantics for geometry, FPS, field structure, pixel semantics, color, preserve, and HEVC cases.
 - [x] 5.2 Pass shared structured and specialized evidence into the canonical evaluator for every completed window; verify high SSIM plus an actual FPS mismatch remains a canonical mismatch and is not an infrastructure error.
-- [x] 5.3 Preserve `fidelityMetricVerdict`, average/minimum SSIM, average/minimum PSNR, comparable count, worst region, and existing thresholds while separating visual aggregate from canonical status; verify all-comparable metric fixtures retain existing Safe/Review/Reject behavior.
+- [x] 5.3 Preserve `fidelityMetricVerdict`, average/minimum SSIM, average/minimum PSNR, comparable count, worst region, and existing thresholds while making the backend operation the sole visual aggregate authority separate from canonical status; verify all-comparable metric fixtures retain existing Safe/Review/Reject behavior and frontend rendering consumes the bounded aggregate DTO.
 - [x] 5.4 Define the combined presentation so canonical mismatch forces the authoritative failure presentation, canonical unverified prevents Safe, and incomplete/failed operation state is not converted into a final verdict; verify each combination in focused aggregation tests.
 
 ## 6. Rebuild Process Video around Preview Ready
@@ -51,10 +51,10 @@
 - [x] 7.2 Add backend runner tests for sequential-window barriers, global capacity serialization, deterministic primary deduplication, partial progress, and no-final-verdict behavior; verify all concurrency assertions use channels/counters rather than arbitrary sleeps.
 - [x] 7.3 Add evidence-provider tests for one structured probe across consumers, source/reference material-signature reuse and invalidation, generation-token invalidation, frame-reference reuse, and separate HEVC trace/header evidence.
 - [x] 7.4 Add deterministic artifact-protection tests for primary evidence versus cleanup, cancellation releasing LAB analysis protection without forced deletion, and independent playback/Fidelity protections on one ready artifact.
-- [ ] 7.5 Add cancellation, retry, background-failure, and shared-consumer tests; verify cancel preserves a ready primary, retry makes no primary generation call, and additional infrastructure failure is retryable without changing Preview Ready.
-- [ ] 7.6 Add restart-boundary tests for process-local operation loss and #14 primary artifact reuse; verify a new operation can retry the primary without re-encoding it.
+- [x] 7.5 Add cancellation, retry, background-failure, and shared-consumer tests; verify cancel preserves a ready primary, retry makes no primary generation call, and additional infrastructure failure is retryable without changing Preview Ready.
+- [x] 7.6 Add restart-boundary tests for process-local operation loss and #14 primary artifact reuse; verify a new operation can retry the primary without re-encoding it.
 - [x] 7.7 Add canonical #3 adapter and aggregation tests for intentional transformations, unverified evidence, high-SSIM canonical mismatch, and visual-threshold compatibility.
-- [ ] 7.8 Add focused frontend tests for independent state rendering, polling lifecycle, stale-signature protection, cancel/retry controls, the pre-#15 existing-transport/post-#15 adapter boundary, and no hidden tab-triggered work.
+- [x] 7.8 Add focused frontend tests for independent state rendering, polling lifecycle, stale-signature protection, cancel/retry controls, the pre-#15 existing-transport/post-#15 adapter boundary, and no hidden tab-triggered work.
 
 ## 8. Validate and hand off the implementation plan
 

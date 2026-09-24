@@ -26,6 +26,18 @@ function characteristics(width: number, height: number, displayAspectRatio: stri
 function inspection(source: PreviewVideoCharacteristics, output: PreviewVideoCharacteristics) {
   return {
     completedAt: 1,
+    visualAggregate: {
+      comparableCount: 1,
+      totalCount: 1,
+      averageSSIM: 0.99,
+      minimumSSIM: 0.99,
+      averagePSNR: 40,
+      minimumPSNR: 40,
+      worstWindowIndex: 0,
+      worstPosition: 0.5,
+      metricVerdict: 'Safe',
+    },
+    overallVerdict: 'Safe',
     fidelityWindows: [{
       position: 0.5,
       startSeconds: 0,
@@ -44,6 +56,7 @@ function canonicalInspection(status: 'passed' | 'mismatch' | 'unverified', aggre
     ...inspection(characteristics(1920, 1080, '16:9'), characteristics(1920, 1080, '16:9')),
     canonicalStatus: status,
     aggregateStatus,
+    overallVerdict: aggregateStatus === 'completed' ? status === 'mismatch' ? 'Reject' : status === 'unverified' ? 'Review' : 'Safe' : undefined,
     canonicalFidelity: {
       fields: {
         frameRate: { status },
@@ -126,6 +139,23 @@ describe('LAB fidelity comparison geometry', () => {
 
     expect(screen.getByText('Overall · Reject')).toBeTruthy();
     expect(screen.getByText(/authoritative output mismatch/i)).toBeTruthy();
+  });
+
+  it('renders the backend aggregate verdict without deriving a second policy from windows', () => {
+    render(<FrameFidelityComparison inspection={{
+      ...canonicalInspection('passed'),
+      visualAggregate: {
+        comparableCount: 1,
+        totalCount: 1,
+        averageSSIM: 0.99,
+        minimumSSIM: 0.99,
+        metricVerdict: 'Safe',
+      },
+      overallVerdict: 'Reject',
+    }} />);
+
+    expect(screen.getByText('Overall · Reject')).toBeTruthy();
+    expect(screen.queryByText('Overall · Safe')).toBeNull();
   });
 
   it('does not expose a final aggregate while windows are still partial', () => {

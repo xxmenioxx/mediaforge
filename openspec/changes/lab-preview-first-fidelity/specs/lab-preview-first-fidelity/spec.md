@@ -282,6 +282,28 @@ operation/window failure, not mislabeled as a canonical mismatch.
 - **THEN** the operation SHALL preserve the window as uncomparable, continue
   according to its failure policy, and SHALL not report a final Safe aggregate
 
+### Requirement: Backend SHALL own the Fidelity aggregate verdict
+
+The backend LAB Fidelity operation SHALL calculate and publish the bounded
+visual aggregate, canonical status, aggregate status, and terminal overall
+verdict. The visual aggregate SHALL expose comparable count, total count,
+average/minimum SSIM and PSNR, worst measured window/position, and the existing
+metric verdict thresholds. The frontend SHALL render those fields without
+recomputing aggregate comparability or canonical-versus-visual precedence.
+
+#### Scenario: Backend Reject remains authoritative in the frontend
+
+- **WHEN** the operation result reports `overallVerdict=Reject` while completed
+  windows have high visual metrics
+- **THEN** the Frame Fidelity UI SHALL display Reject and SHALL not derive Safe
+  from the per-window metrics
+
+#### Scenario: Partial aggregate has no final verdict
+
+- **WHEN** the operation result has `aggregateStatus=analysis_in_progress`
+- **THEN** the UI SHALL display analysis in progress and SHALL not display a
+  final Safe or Reject aggregate
+
 ### Requirement: Cancellation SHALL be independent from a ready primary preview
 
 Canceling a LAB Fidelity operation SHALL cancel only work owned by that

@@ -169,9 +169,16 @@ func TestLabFidelityPartialAggregateKeepsCanonicalMismatchVisible(t *testing.T) 
 		"metrics":           models.JSONMap{"comparable": true, "ssim": 0.99},
 		"canonicalFidelity": models.JSONMap{"status": "mismatch"},
 	}}
-	result := labFidelityOperationResult(labFidelityOperationInput{MaterialSignature: "signature"}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, false)
+	result := labFidelityOperationResult(labFidelityOperationInput{MaterialSignature: "signature"}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, 2, false)
 	if result["aggregateStatus"] != "analysis_in_progress" || result["canonicalStatus"] != "mismatch" {
 		t.Fatalf("partial result masked canonical mismatch: %#v", result)
+	}
+	if result["overallVerdict"] != nil {
+		t.Fatalf("partial result exposed a final overall verdict: %#v", result["overallVerdict"])
+	}
+	aggregate, ok := result["visualAggregate"].(models.JSONMap)
+	if !ok || aggregate["comparableCount"] != 1 || aggregate["totalCount"] != 2 || aggregate["metricVerdict"] != "Safe" {
+		t.Fatalf("partial visual aggregate was not backend-calculated: %#v", result["visualAggregate"])
 	}
 }
 
@@ -211,8 +218,174 @@ func TestLabFidelityAggregateKeepsCanonicalUnverifiedAboveLaterPass(t *testing.T
 		{"canonicalFidelity": models.JSONMap{"status": "unverified"}},
 		{"canonicalFidelity": models.JSONMap{"status": "passed"}},
 	}
-	result := labFidelityOperationResult(labFidelityOperationInput{}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, true)
+	result := labFidelityOperationResult(labFidelityOperationInput{}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, 2, true)
 	if result["canonicalStatus"] != "unverified" {
 		t.Fatalf("later passing window downgraded canonical unverified result: %#v", result)
 	}
+	if result["overallVerdict"] != "Review" {
+		t.Fatalf("canonical unverified result became Safe or Reject: %#v", result["overallVerdict"])
+	}
+}
+
+func TestLabFidelityAggregatePreservesVisualThresholdsAndCanonicalPrecedence(t *testing.T) {
+	descriptor := testCompatiblePreviewDescriptor(t, "aggregate-thresholds")
+	windows := []models.JSONMap{
+		{"position": 0.2, "metrics": models.JSONMap{"comparable": true, "ssim": 0.96, "psnr": 42}, "canonicalFidelity": models.JSONMap{"status": "passed"}},
+		{"position": 0.8, "metrics": models.JSONMap{"comparable": true, "ssim": 0.94, "psnr": 38}, "canonicalFidelity": models.JSONMap{"status": "passed"}},
+	}
+	result := labFidelityOperationResult(labFidelityOperationInput{}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, 2, true)
+	aggregate := result["visualAggregate"].(models.JSONMap)
+	if aggregate["comparableCount"] != 2 || aggregate["totalCount"] != 2 || aggregate["metricVerdict"] != "Review" || result["overallVerdict"] != "Review" {
+		t.Fatalf("visual threshold aggregate changed unexpectedly: %#v overall=%v", aggregate, result["overallVerdict"])
+	}
+
+	windows[1]["canonicalFidelity"] = models.JSONMap{"status": "mismatch"}
+	result = labFidelityOperationResult(labFidelityOperationInput{}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, 2, true)
+	if result["overallVerdict"] != "Reject" {
+		t.Fatalf("canonical mismatch did not force Reject: %#v", result["overallVerdict"])
+	}
+}
+
+func TestLabFidelityAggregateMissingVisualEvidenceCannotBecomeSafe(t *testing.T) {
+	descriptor := testCompatiblePreviewDescriptor(t, "aggregate-missing")
+	windows := []models.JSONMap{
+		{"metrics": models.JSONMap{"comparable": true, "ssim": 0.99}, "canonicalFidelity": models.JSONMap{"status": "passed"}},
+		{"metrics": models.JSONMap{"comparable": false}, "canonicalFidelity": models.JSONMap{"status": "passed"}},
+	}
+	result := labFidelityOperationResult(labFidelityOperationInput{}, descriptor, windows, SamplingPlan{WindowSeconds: 20}, 2, true)
+	if result["overallVerdict"] != "Review" {
+		t.Fatalf("missing visual evidence became Safe or Reject unexpectedly: %#v", result["overallVerdict"])
+	}
+}
+
+func TestLabFidelityCancellationReleasesProtectionAndRetryReusesPrimary(t *testing.T) {
+	resetCompatiblePreviewArtifactsForTest()
+	t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+	installFakeFFmpeg(t, `printf primary-artifact`)
+	descriptor := testCompatiblePreviewDescriptor(t, "cancel-retry-primary")
+	descriptor.RetentionPolicy = compatiblePreviewEphemeralRetention
+	directory := filepath.Dir(descriptor.CachePath)
+	var generations atomic.Int32
+	previous := compatiblePreviewGenerationStarted
+	compatiblePreviewGenerationStarted = func(*compatiblePreviewArtifact) { generations.Add(1) }
+	t.Cleanup(func() { compatiblePreviewGenerationStarted = previous })
+
+	_, primaryLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || primaryLease == nil {
+		t.Fatalf("primary preview was not generated: lease=%v err=%v", primaryLease, err)
+	}
+	primaryLease.release()
+
+	_, fidelityLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || fidelityLease == nil {
+		t.Fatalf("Fidelity could not protect primary artifact: lease=%v err=%v", fidelityLease, err)
+	}
+	_, playbackLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || playbackLease == nil {
+		t.Fatalf("playback could not share primary artifact: lease=%v err=%v", playbackLease, err)
+	}
+
+	// Cancellation owns only the Fidelity consumer. The playback consumer keeps
+	// the same ready artifact protected while the retry reuses it.
+	fidelityLease.release()
+	cleanupCompatiblePreviewEphemeralArtifacts(directory, time.Now())
+	if _, err := os.Stat(descriptor.CachePath); err != nil {
+		t.Fatalf("canceling Fidelity removed the ready primary artifact: %v", err)
+	}
+	hit, retryLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || !hit || retryLease == nil {
+		t.Fatalf("Fidelity retry did not reuse the ready primary artifact: hit=%t lease=%v err=%v", hit, retryLease, err)
+	}
+	retryLease.release()
+	if got := generations.Load(); got != 1 {
+		t.Fatalf("Fidelity retry re-encoded the primary artifact: generation count=%d", got)
+	}
+
+	playbackLease.release()
+	entry := compatiblePreviewArtifactEntryForTest(t, descriptor.ArtifactID)
+	entry.mu.Lock()
+	entry.scopeExpiresAt = time.Now().Add(-time.Second)
+	entry.mu.Unlock()
+	cleanupCompatiblePreviewEphemeralArtifacts(directory, time.Now())
+	if _, err := os.Stat(descriptor.CachePath); !os.IsNotExist(err) {
+		t.Fatalf("released artifact did not become eligible for normal cleanup: %v", err)
+	}
+}
+
+func TestLabFidelityAdditionalInfrastructureFailureIsRetryableWithoutChangingPrimary(t *testing.T) {
+	now := time.Now()
+	store := labFidelityOperationStore{items: map[string]*LabFidelityOperation{}, cancels: map[string]context.CancelFunc{}}
+	store.items["fidelity-failure"] = &LabFidelityOperation{
+		ID: "fidelity-failure", Status: labFidelityRunning, Phase: "additional_window_metrics",
+		PrimaryRequestID: "primary-request", PrimaryArtifactID: "primary-artifact", PrimaryGeneration: "generation:1",
+		Result: models.JSONMap{"canonicalStatus": "passed", "aggregateStatus": "analysis_in_progress"}, CreatedAt: now, UpdatedAt: now,
+	}
+	store.update("fidelity-failure", func(operation *LabFidelityOperation) {
+		operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, "additional_window_metrics", "metrics runner failed", true
+	})
+	operation, ok := store.copy("fidelity-failure")
+	if !ok || operation.Status != labFidelityFailed || !operation.Retryable || operation.PrimaryArtifactID != "primary-artifact" {
+		t.Fatalf("additional infrastructure failure did not remain retryable with the ready primary identity: %#v", operation)
+	}
+	if operation.Result["canonicalStatus"] != "passed" || operation.Result["aggregateStatus"] != "analysis_in_progress" {
+		t.Fatalf("infrastructure failure was reported as a canonical mismatch/final aggregate: %#v", operation.Result)
+	}
+}
+
+func TestLabFidelityProcessLocalRestartLosesOperationButReusesPrimaryArtifact(t *testing.T) {
+	resetCompatiblePreviewArtifactsForTest()
+	t.Cleanup(resetCompatiblePreviewArtifactsForTest)
+	installFakeFFmpeg(t, `printf restart-primary`)
+	descriptor := testCompatiblePreviewDescriptor(t, "restart-primary")
+	var generations atomic.Int32
+	previous := compatiblePreviewGenerationStarted
+	compatiblePreviewGenerationStarted = func(*compatiblePreviewArtifact) { generations.Add(1) }
+	t.Cleanup(func() { compatiblePreviewGenerationStarted = previous })
+	_, primaryLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || primaryLease == nil {
+		t.Fatalf("primary preview was not generated before restart simulation: lease=%v err=%v", primaryLease, err)
+	}
+	primaryLease.release()
+
+	previousItems, previousCancels := labFidelityOperations.items, labFidelityOperations.cancels
+	labFidelityOperations.Lock()
+	labFidelityOperations.items = map[string]*LabFidelityOperation{
+		"lost-operation": {ID: "lost-operation", Status: labFidelityRunning, PrimaryRequestID: "primary-request", PrimaryArtifactID: descriptor.ArtifactID},
+	}
+	labFidelityOperations.cancels = map[string]context.CancelFunc{"lost-operation": func() {}}
+	labFidelityOperations.Unlock()
+	t.Cleanup(func() {
+		labFidelityOperations.Lock()
+		labFidelityOperations.items, labFidelityOperations.cancels = previousItems, previousCancels
+		labFidelityOperations.Unlock()
+	})
+	if _, ok := labFidelityOperations.copy("lost-operation"); !ok {
+		t.Fatal("process-local Fidelity operation was not present before restart simulation")
+	}
+	labFidelityOperations.Lock()
+	labFidelityOperations.items = map[string]*LabFidelityOperation{}
+	labFidelityOperations.cancels = map[string]context.CancelFunc{}
+	labFidelityOperations.Unlock()
+	if _, ok := labFidelityOperations.copy("lost-operation"); ok {
+		t.Fatal("process-local Fidelity operation survived the restart simulation")
+	}
+	hit, retryLease, err := acquireCompatiblePreviewArtifact(context.Background(), descriptor)
+	if err != nil || !hit || retryLease == nil {
+		t.Fatalf("restart retry did not reuse the recovered Compatible Preview artifact: hit=%t lease=%v err=%v", hit, retryLease, err)
+	}
+	retryLease.release()
+	if got := generations.Load(); got != 1 {
+		t.Fatalf("restart retry re-encoded the primary artifact: generation count=%d", got)
+	}
+}
+
+func compatiblePreviewArtifactEntryForTest(t *testing.T, artifactID string) *compatiblePreviewArtifact {
+	t.Helper()
+	compatiblePreviewArtifacts.Lock()
+	entry := compatiblePreviewArtifacts.items[artifactID]
+	compatiblePreviewArtifacts.Unlock()
+	if entry == nil {
+		t.Fatalf("artifact %q was not registered", artifactID)
+	}
+	return entry
 }

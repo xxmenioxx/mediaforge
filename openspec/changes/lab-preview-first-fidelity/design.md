@@ -312,6 +312,14 @@ The combined presentation is deliberately deterministic:
    never a final Safe or Reject. Infrastructure failure is shown as failed or
    retryable and is not converted into a canonical mismatch.
 
+The backend Fidelity operation is the sole authority that calculates and
+publishes the bounded aggregate DTO. It includes `comparableCount`,
+`totalCount`, average/minimum SSIM and PSNR, the worst measured window,
+`metricVerdict`, `canonicalStatus`, `aggregateStatus`, and a terminal
+`overallVerdict` when complete. `FrameFidelityComparison` renders these fields
+and may format a selected window's own metrics, but it does not recompute
+comparability, canonical precedence, or Safe/Review/Reject policy.
+
 ### 7. Run additional work sequentially with scoped capacity
 
 The operation runner processes the ordered list as follows:
@@ -409,13 +417,13 @@ references only; they do not start hidden media work.
 
 ### 11. Use a bounded failure policy
 
-Primary failure is a Preview failure and follows #1/#14 recovery. A metrics
-failure that does not produce comparable values is retained as an
-uncomparable window and the runner continues; the final aggregate cannot be
-Safe. A Compatible Preview generation, inspect, canonical-evidence, or
-operation-capacity failure is an operation failure with bounded diagnostics,
-partial results, and retry. A canonical mismatch is a valid completed result,
-not an operation failure.
+Primary failure is a Preview failure and follows #1/#14 recovery. A bounded
+metrics result that explicitly reports non-comparable evidence is retained as
+an uncomparable window and the runner continues; the final aggregate cannot be
+Safe. A metrics/probe runner error, Compatible Preview generation failure,
+inspect failure, canonical-evidence failure, or operation-capacity failure is
+an operation failure with bounded diagnostics, partial results, and retry. A
+canonical mismatch is a valid completed result, not an operation failure.
 
 No failure response exposes full command logs or unbounded probe data. Existing
 bounded diagnostic limits remain authoritative.

@@ -34,7 +34,7 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
-import { api } from '../api/client';
+import { ApiRequestError, api } from '../api/client';
 import { ProfileLabPage } from './ProfileLabPage';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 
@@ -245,7 +245,7 @@ describe('Profile Lab Process Asset suggestions', () => {
         outputFrameStructure: previewInspection.outputFrameStructure,
         qsvFrameWarnings: [],
         qsvFeatureStatus: {},
-        frameRecommendation: frameStructureRecommendation,
+        frameRecommendation: { targetGopFrames: 19, targetGopSeconds: 19 / (24000 / 1001), maxBFrames: 2, confidence: 'high', reasons: [] },
         frameValidation: { verdict: 'safe', confidence: 'high', reasons: [] },
         hevcLevelValidation: { verdict: 'safe', status: 'validated', reason: '' },
         requestedEncoder: previewInspection.requestedEncoder,
@@ -271,6 +271,18 @@ describe('Profile Lab Process Asset suggestions', () => {
         canonicalFidelity: { status: 'passed', fields: {} },
         canonicalStatus: 'passed',
         aggregateStatus: 'completed',
+        visualAggregate: {
+          comparableCount: 1,
+          totalCount: 1,
+          averageSSIM: 0.99,
+          minimumSSIM: 0.99,
+          averagePSNR: 42,
+          minimumPSNR: 42,
+          worstWindowIndex: 0,
+          worstPosition: 0.5,
+          metricVerdict: 'Safe',
+        },
+        overallVerdict: 'Safe',
         completedAt: Date.now(),
       },
     } as never));
@@ -380,6 +392,218 @@ describe('Profile Lab Process Asset suggestions', () => {
     },
     20_000,
   );
+
+  it('publishes a playable primary preview before Fidelity completes and cancels only Fidelity', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-running',
+      status: 'running',
+      phase: 'additional_window_encode',
+      primaryRequestId,
+      completedWindows: 1,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockImplementation(() => new Promise(() => undefined) as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
+    expect(await screen.findByText('Video draft')).toBeTruthy();
+    expect(await screen.findByText(/Analyzing Fidelity window 2 of 5/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Process Video' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Fidelity' }));
+    await waitFor(() => expect(api.cancelLabFidelityOperation).toHaveBeenCalledWith('lab-fidelity-running'));
+    expect(screen.getByText(/Fidelity canceled\. Sample B remains ready and playable/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'A/B Previews' }));
+    expect(screen.getByText('Video draft')).toBeTruthy();
+  }, 20_000);
+
+  it('retries Fidelity with the existing primary request and stops polling for terminal results', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockResolvedValueOnce({
+      id: 'lab-fidelity-failed',
+      status: 'failed',
+      phase: 'additional_window_metrics',
+      primaryRequestId: 'will-be-replaced-by-mock',
+      completedWindows: 1,
+      totalWindows: 5,
+      error: 'additional evidence failed',
+      retryable: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await screen.findByText('Video draft');
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Frame Fidelity' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(screen.getByText(/additional evidence failed/i)).toBeTruthy(), { timeout: 12_000 });
+    expect(api.labFidelityOperation).not.toHaveBeenCalled();
+
+    const primaryRequestId = vi.mocked(api.startLabFidelityOperation).mock.calls[0]?.[0].primaryRequestId;
+    const previewGenerationRequests = vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry Fidelity' }));
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalledTimes(2), { timeout: 12_000 });
+    expect(vi.mocked(api.startLabFidelityOperation).mock.calls[1]?.[0].primaryRequestId).toBe(primaryRequestId);
+    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(previewGenerationRequests);
+  }, 20_000);
+
+  it('maps a lost process-local operation to retryable Fidelity without changing Preview Ready', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-restarted',
+      status: 'running',
+      phase: 'primary_evidence',
+      primaryRequestId,
+      completedWindows: 0,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockRejectedValueOnce(new ApiRequestError('unknown operation', 404, { code: 'unknown_operation' }));
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    expect(await screen.findByText(/after the backend restart/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'A/B Previews' }));
+    expect(screen.getByText('Video draft')).toBeTruthy();
+  }, 20_000);
+
+  it('ignores a late Fidelity result after the material signature changes', async () => {
+    let resolvePoll: ((operation: unknown) => void) | undefined;
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-signature-a',
+      status: 'running',
+      phase: 'additional_window_encode',
+      primaryRequestId,
+      completedWindows: 1,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePoll = resolve;
+    }) as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    const startInput = screen.getByLabelText('Start');
+    await userEvent.clear(startInput);
+    await userEvent.type(startInput, '00:00:05');
+    expect((startInput as HTMLInputElement).value).toBe('00:00:05');
+    await waitFor(() => expect(api.cancelLabFidelityOperation).toHaveBeenCalledWith('lab-fidelity-signature-a'));
+
+    resolvePoll?.({
+      id: 'lab-fidelity-signature-a',
+      status: 'completed',
+      phase: 'aggregate',
+      primaryRequestId: 'primary-a',
+      completedWindows: 1,
+      totalWindows: 1,
+      result: {
+        fidelityWindows: [{
+          position: 0.5,
+          startSeconds: 0,
+          durationSeconds: 20,
+          source: previewInspection.source,
+          output: previewInspection.output,
+          metrics: { comparable: true, ssim: 0.99, psnr: 42 },
+          requestId: 'primary-a',
+          canonicalFidelity: { status: 'passed' },
+        }],
+        source: previewInspection.source,
+        reference: previewInspection.source,
+        conversion: previewInspection.output,
+        normalization: previewInspection.normalization,
+        referenceRequestId: 'reference-a',
+        conversionRequestId: 'primary-a',
+        canonicalStatus: 'passed',
+        aggregateStatus: 'completed',
+        visualAggregate: { comparableCount: 1, totalCount: 1, averageSSIM: 0.99, minimumSSIM: 0.99, metricVerdict: 'Safe' },
+        overallVerdict: 'Safe',
+      },
+    });
+    await waitFor(() => expect(screen.queryByText('Overall · Safe')).toBeNull());
+    expect(api.startLabFidelityOperation).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it('keeps Fidelity results and media evidence read-only when switching tabs', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
+    const counts = {
+      previews: vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length,
+      probes: vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.length,
+      metrics: vi.mocked(api.compatibleAssetFrameMetrics).mock.calls.length,
+      fidelity: vi.mocked(api.startLabFidelityOperation).mock.calls.length,
+    };
+
+    for (const tab of ['Technical Snapshot', 'Frame Fidelity', 'Characteristics', 'Warnings & Guidance', 'A/B Previews']) {
+      await userEvent.click(screen.getByRole('tab', { name: tab }));
+    }
+
+    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(counts.previews);
+    expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.length).toBe(counts.probes);
+    expect(vi.mocked(api.compatibleAssetFrameMetrics).mock.calls.length).toBe(counts.metrics);
+    expect(vi.mocked(api.startLabFidelityOperation).mock.calls.length).toBe(counts.fidelity);
+  }, 20_000);
 
   it('keeps Lab mounted and opens Suggestions when legacy collection fields are null', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

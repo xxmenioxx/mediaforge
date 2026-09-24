@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -446,71 +447,66 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 			_ = requestID
 			windowDescriptor = additionalDescriptor
 		}
-		_, windowLease, acquireErr := acquireCompatiblePreviewArtifact(ctx, windowDescriptor)
-		if acquireErr != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
-				operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, labFidelityFailed, acquireErr.Error(), true
-			})
-			return
-		}
-
 		if !window.Primary {
 			labFidelityOperations.update(id, func(operation *LabFidelityOperation) { operation.Phase = "additional_window_inspect" })
 		}
-		evidence, evidenceErr := labCollectPreviewEvidence(ctx, windowDescriptor)
-		if evidenceErr != nil {
-			if windowLease != nil {
-				windowLease.release()
-			}
+		result, windowErr := h.collectLabFidelityWindow(ctx, windowDescriptor, window)
+		if windowErr != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
-				operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, labFidelityFailed, evidenceErr.Error(), true
+				operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, labFidelityFailed, windowErr.Error(), true
 			})
 			return
-		}
-		if !window.Primary {
-			labFidelityOperations.update(id, func(operation *LabFidelityOperation) { operation.Phase = "additional_window_metrics" })
-		}
-		metrics, metricsErr := labGeneratePreviewFrameMetrics(ctx, windowDescriptor, evidence)
-		if metricsErr != nil {
-			metrics = previewFrameMetrics{Reason: metricsErr.Error()}
-		}
-		canonical := labEvaluateCanonicalFidelity(windowDescriptor, evidence)
-		if windowLease != nil {
-			windowLease.release()
-		}
-		result := models.JSONMap{
-			"position": window.Position, "startSeconds": window.Start, "durationSeconds": window.Duration,
-			"source": evidence.Source, "output": evidence.Output, "metrics": metrics,
-			"sourceFrameStructure": evidence.SourceFrames, "outputFrameStructure": evidence.OutputFrames,
-			"hevcBitstreamEvidence": evidence.HEVC,
-			"requestId":             windowDescriptor.requestID,
-			"artifactId":            windowDescriptor.ArtifactID, "generationToken": windowDescriptor.GenerationToken,
-			"generationVersion": windowDescriptor.GenerationVersion, "status": "completed",
-			"canonicalFidelity": canonical,
 		}
 		completed = append(completed, result)
 		labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 			operation.CompletedWindows = index + 1
 			operation.Windows = append([]models.JSONMap(nil), completed...)
-			operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, false)
+			operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, len(windows), false)
 		})
 	}
 
 	labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 		operation.Status = labFidelityCompleted
 		operation.Phase = "aggregate"
-		operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, true)
+		operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, len(windows), true)
 		operation.CurrentStart = 0
 		operation.CurrentDuration = 0
 		operation.Error = ""
 		operation.Retryable = false
 	})
+}
+
+func (h AssetHandler) collectLabFidelityWindow(ctx context.Context, descriptor *compatiblePreviewDescriptor, window labFidelityWindowPlan) (models.JSONMap, error) {
+	_, lease, err := acquireCompatiblePreviewArtifact(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	if lease != nil {
+		defer lease.release()
+	}
+
+	evidence, err := labCollectPreviewEvidence(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	metrics, err := labGeneratePreviewFrameMetrics(ctx, descriptor, evidence)
+	if err != nil {
+		return nil, err
+	}
+	canonical := labEvaluateCanonicalFidelity(descriptor, evidence)
+	return models.JSONMap{
+		"position": window.Position, "startSeconds": window.Start, "durationSeconds": window.Duration,
+		"source": evidence.Source, "output": evidence.Output, "metrics": metrics,
+		"sourceFrameStructure": evidence.SourceFrames, "outputFrameStructure": evidence.OutputFrames,
+		"hevcBitstreamEvidence": evidence.HEVC,
+		"requestId":             descriptor.requestID,
+		"artifactId":            descriptor.ArtifactID, "generationToken": descriptor.GenerationToken,
+		"generationVersion": descriptor.GenerationVersion, "status": "completed",
+		"canonicalFidelity": canonical,
+	}, nil
 }
 
 func labFidelityAdditionalWindowRequest(descriptor *compatiblePreviewDescriptor, window labFidelityWindowPlan) compatiblePreviewRequest {
@@ -601,7 +597,7 @@ func labEvaluateCanonicalFidelity(descriptor *compatiblePreviewDescriptor, evide
 	)
 }
 
-func labFidelityOperationResult(input labFidelityOperationInput, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap, plan SamplingPlan, complete bool) models.JSONMap {
+func labFidelityOperationResult(input labFidelityOperationInput, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap, plan SamplingPlan, totalWindows int, complete bool) models.JSONMap {
 	if len(windows) == 0 {
 		return nil
 	}
@@ -633,6 +629,7 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 	if complete {
 		status = "completed"
 	}
+	visualAggregate := labFidelityVisualAggregate(windows, totalWindows)
 	result := models.JSONMap{
 		"assetPath": descriptor.Path, "draftSignature": input.DraftSignature,
 		"source": first["source"], "reference": first["source"], "conversion": first["output"],
@@ -648,10 +645,164 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 		"metrics": first["metrics"], "referenceRequestId": input.ReferenceRequestID, "conversionRequestId": descriptor.requestID,
 		"canonicalFidelity": canonicalSummary, "hevcBitstreamEvidence": first["hevcBitstreamEvidence"],
 		"fidelityWindows": windows, "canonicalStatus": canonicalStatus, "aggregateStatus": status,
-		"samplingPolicy": models.JSONMap{"windowSeconds": plan.WindowSeconds, "positions": plan.Positions},
-		"completedAt":    map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
+		"visualAggregate": visualAggregate,
+		"samplingPolicy":  models.JSONMap{"windowSeconds": plan.WindowSeconds, "positions": plan.Positions},
+		"completedAt":     map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
+	}
+	if complete {
+		result["overallVerdict"] = labFidelityOverallVerdict(canonicalStatus, visualAggregate)
 	}
 	return result
+}
+
+func labFidelityVisualAggregate(windows []models.JSONMap, totalWindows int) models.JSONMap {
+	if totalWindows <= 0 {
+		totalWindows = len(windows)
+	}
+	comparableCount := 0
+	ssimValues := make([]float64, 0, len(windows))
+	psnrValues := make([]float64, 0, len(windows))
+	worstIndex := -1
+	worstSSIM := math.Inf(1)
+	var worstPosition float64
+	for index, window := range windows {
+		metrics, ok := labFidelityMetrics(window["metrics"])
+		if !ok || !metrics.Comparable || !isFiniteMetric(metrics.SSIM) {
+			continue
+		}
+		comparableCount++
+		ssimValues = append(ssimValues, metrics.SSIM)
+		if isFiniteMetric(metrics.PSNR) {
+			psnrValues = append(psnrValues, metrics.PSNR)
+		}
+		if metrics.SSIM < worstSSIM {
+			worstSSIM = metrics.SSIM
+			worstIndex = index
+			worstPosition = numberFromUnknown(window["position"])
+		}
+	}
+	aggregate := models.JSONMap{
+		"comparableCount": comparableCount,
+		"totalCount":      totalWindows,
+		"metricVerdict":   labFidelityMetricVerdict(worstSSIM, comparableCount > 0),
+	}
+	if len(ssimValues) > 0 {
+		aggregate["averageSSIM"] = averageMetric(ssimValues)
+		aggregate["minimumSSIM"] = minMetric(ssimValues)
+	}
+	if len(psnrValues) > 0 {
+		aggregate["averagePSNR"] = averageMetric(psnrValues)
+		aggregate["minimumPSNR"] = minMetric(psnrValues)
+	}
+	if worstIndex >= 0 {
+		aggregate["worstWindowIndex"] = worstIndex
+		aggregate["worstPosition"] = worstPosition
+	}
+	return aggregate
+}
+
+func labFidelityMetrics(value interface{}) (previewFrameMetrics, bool) {
+	switch typed := value.(type) {
+	case previewFrameMetrics:
+		return typed, true
+	case *previewFrameMetrics:
+		if typed != nil {
+			return *typed, true
+		}
+	case models.JSONMap:
+		return previewFrameMetrics{Comparable: labBoolFromUnknown(typed["comparable"]), SSIM: numberFromUnknown(typed["ssim"]), PSNR: numberFromUnknown(typed["psnr"])}, true
+	case map[string]interface{}:
+		return previewFrameMetrics{Comparable: labBoolFromUnknown(typed["comparable"]), SSIM: numberFromUnknown(typed["ssim"]), PSNR: numberFromUnknown(typed["psnr"])}, true
+	}
+	return previewFrameMetrics{}, false
+}
+
+func labBoolFromUnknown(value interface{}) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, err := strconv.ParseBool(typed)
+		return err == nil && parsed
+	default:
+		return false
+	}
+}
+
+func numberFromUnknown(value interface{}) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err == nil {
+			return parsed
+		}
+	}
+	return math.NaN()
+}
+
+func isFiniteMetric(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func averageMetric(values []float64) float64 {
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func minMetric(values []float64) float64 {
+	minimum := values[0]
+	for _, value := range values[1:] {
+		if value < minimum {
+			minimum = value
+		}
+	}
+	return minimum
+}
+
+func labFidelityMetricVerdict(minimumSSIM float64, hasComparable bool) string {
+	if !hasComparable || !isFiniteMetric(minimumSSIM) {
+		return "Review"
+	}
+	if minimumSSIM >= 0.95 {
+		return "Safe"
+	}
+	if minimumSSIM >= 0.90 {
+		return "Review"
+	}
+	return "Reject"
+}
+
+func labFidelityOverallVerdict(canonicalStatus string, visualAggregate models.JSONMap) string {
+	if canonicalStatus == "mismatch" {
+		return "Reject"
+	}
+	if canonicalStatus != "passed" {
+		return "Review"
+	}
+	metricVerdict := stringFromUnknown(visualAggregate["metricVerdict"])
+	comparableCount := int(numberFromUnknown(visualAggregate["comparableCount"]))
+	totalCount := int(numberFromUnknown(visualAggregate["totalCount"]))
+	if comparableCount < totalCount {
+		if metricVerdict == "Reject" {
+			return "Reject"
+		}
+		return "Review"
+	}
+	if metricVerdict == "Safe" || metricVerdict == "Reject" {
+		return metricVerdict
+	}
+	return "Review"
 }
 
 func labCollectPreviewEvidence(ctx context.Context, descriptor *compatiblePreviewDescriptor) (labPreviewArtifactEvidence, error) {
